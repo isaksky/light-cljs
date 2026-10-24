@@ -127,13 +127,14 @@ ClassMethod         = PropertyName FormalParameters FunctionBody
                     | [ "async" [no LineTerminator here] ] [ "*" ] PropertyName FormalParameters FunctionBody
 Statement           = Block | ";" | IfStatement | WhileStatement | DoWhileStatement
                     | ForStatement | ForInStatement | ForOfStatement | SwitchStatement
-                    | VariableStatement
+                    | VariableStatement | WithStatement
                     | ReturnStatement | ThrowStatement | TryStatement
                     | BreakStatement | ContinueStatement | LabelledStatement
                     | ExpressionStatement
 Block               = "{" { StatementListItem } "}"
 IfStatement         = "if" "(" Expression ")" Statement [ "else" Statement ]
 WhileStatement      = "while" "(" Expression ")" Statement
+WithStatement       = "with" "(" Expression ")" Statement (* sloppy code only, clj-quickjs-110 *)
 DoWhileStatement    = "do" Statement "while" "(" Expression ")" [ ";" ]   (* ";" always optional *)
 ForStatement        = "for" "(" [ ForInit ] ";" [ Expression ] ";" [ Expression ] ")" Statement
 ForInit             = Expression[~In] | ( "let" | "const" | "var" ) Declarator[~In] { "," Declarator[~In] }
@@ -518,7 +519,8 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | `using` declarations at script top level (strict or sloppy), directly in a `case`/`default` clause, as a single-statement body, with binding patterns or without initializers (clj-quickjs-236) | Invalid at `using` |
 | `for (using x in o)`, `for (using [x] of a)`, `for (using {x} of a)` (clj-quickjs-238) | Invalid at `using` |
 | classic `for (using x = r; ;)` and `for (await using x of a)` heads | Unsupported at `using` / `await` |
-| a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger`, `with` | Unsupported |
+| a property as a for-in/for-of target (`for (a.b in o)`, `for (a.b of o)`, clj-quickjs-87), `debugger` | Unsupported |
+| `with` in strict code (clj-quickjs-110) | Invalid at `with` |
 | static initialization blocks, `import`/`export` in scripts, dynamic `import` | Unsupported |
 | private class names (`#x`) | UnknownToken |
 | module string-literal import/export names, import attributes (including `type: 'json'` and `type: 'json5'`), `import.meta`, top-level `await` | Unsupported |
@@ -547,6 +549,9 @@ Static module requests can be resolved and loaded through `module::ModuleLoader`
 (clj-quickjs-253/255), including cycles. The CLI remains script-only.
 
 ## Explicit gaps
+
+`with` shares Object conversion's deferred Boolean and BigInt wrapper gap;
+object, number, string and symbol environments execute (clj-quickjs-110).
 
 Synchronous `using` executes in blocks, function bodies, module top level and
 for-of heads; DisposableStack is supported. `await using` and AsyncDisposableStack
@@ -866,11 +871,11 @@ checks left to later stages:
   on a non-extensible object), which sloppy code ignores instead of
   throwing a `TypeError` (clj-quickjs-119), ignored stores to a function
   expression's own name, and direct-eval declaration hoisting, including
-  parameter environments (clj-quickjs-108/-109).
+  parameter environments (clj-quickjs-108/-109), and object environments
+  introduced by `with` (clj-quickjs-110).
   Every other
   sloppy-only form or behaviour is still the strict one, until the pellet
-  named for it: `with`
-  (clj-quickjs-110); `this` substitution (a sloppy function's `this` fails
+  named for it: `this` substitution (a sloppy function's `this` fails
   explicitly unless its receiver is an object, see above) and the mapped
   `arguments` object (not filed). Strict reserved words (`let`, `static`, `yield`,
   `implements`, `interface`, `package`, `private`, `protected`, `public`)
@@ -1043,6 +1048,33 @@ delete a[o];
 ```
 
 ## Execution
+
+Sloppy `with (value) statement` (clj-quickjs-110) converts `value` to an
+object, throwing TypeError for null or undefined. Identifier references in
+the body search its object environment before outer bindings; block lexical
+bindings and function parameters still shadow enclosing object environments.
+Each lookup checks inherited properties and then `Symbol.unscopables`; a
+truthy entry on an object-valued unscopables record hides that name. Reads,
+assignments (including `var` initializers), updates, `typeof`, deletion and
+calls use that resolution. Calls found on the object receive it as `this`,
+including optional calls and tagged templates. Assignments select their
+reference before evaluating the RHS. Closures and direct eval retain the
+environment after the body ends and observe later object changes. Captured
+objects are traced and remain subject to publication checks. Getters and
+setters run in resumable VM frames; collection between budget slices retains
+objects and selected references. Functions without eval or with retain static
+lookup; only references crossing an object environment use runtime lookup.
+Primitive boxing uses the existing Object conversion: numbers, strings and
+symbols are supported; Boolean and BigInt wrappers remain an explicit gap.
+
+```js sloppy-accept
+const o = { x: 1 };
+with (o) { var x = 2; (() => x); }
+```
+
+```js reject Invalid 1:1
+with (o) {}
+```
 
 Synchronous `using` validates resources left to right and snapshots each
 `Symbol.dispose` method once at declaration. Null and undefined are skipped;

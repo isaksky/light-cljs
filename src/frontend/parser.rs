@@ -825,6 +825,7 @@ impl<'a> Parser<'a> {
             TokenKind::Punct(Punct::Semicolon) => self.advance().map(|_| StmtKind::Empty),
             TokenKind::Keyword(Keyword::If) => self.parse_if(),
             TokenKind::Keyword(Keyword::While) => self.parse_while(),
+            TokenKind::Keyword(Keyword::With) => self.parse_with(),
             TokenKind::Keyword(Keyword::Do) => self.parse_do_while(),
             TokenKind::Keyword(Keyword::For) => self.parse_for(),
             TokenKind::Keyword(Keyword::Var) => self.parse_var(),
@@ -1016,6 +1017,23 @@ impl<'a> Parser<'a> {
             consequent,
             alternate,
         })
+    }
+
+    fn parse_with(&mut self) -> PResult<StmtKind> {
+        if self.strict {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                self.tok.span,
+                "`with` is not allowed in strict code",
+            ));
+        }
+        let saved = self.depth;
+        self.deeper(cost::BODY)?;
+        self.advance()?;
+        let object = self.parse_paren_condition()?;
+        let body = Box::new(self.parse_statement()?);
+        self.depth = saved;
+        Ok(StmtKind::With { object, body })
     }
 
     fn parse_while(&mut self) -> PResult<StmtKind> {
@@ -4273,7 +4291,6 @@ fn unsupported_statement(k: Keyword) -> Option<&'static str> {
     Some(match k {
         Keyword::Import => "modules (`import`) are",
         Keyword::Export => "modules (`export`) are",
-        Keyword::With => "`with` is",
         Keyword::Debugger => "`debugger` is",
         _ => return None,
     })

@@ -512,7 +512,8 @@ fn var_declared_names<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
         }
         StmtKind::While { body, .. }
         | StmtKind::DoWhile { body, .. }
-        | StmtKind::Labelled { body, .. } => var_declared_names(body, out),
+        | StmtKind::Labelled { body, .. }
+        | StmtKind::With { body, .. } => var_declared_names(body, out),
         StmtKind::Try {
             block,
             handler,

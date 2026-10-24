@@ -570,12 +570,11 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
         return Err(Fault::Internal("operand stack underflow"));
     };
     let popped = argc + 1 + usize::from(method);
-    if !method
-        && let Some(site) = state
-            .top()
-            .code
-            .eval_sites
-            .get(&state.top().pc.saturating_sub(1))
+    if let Some(site) = state
+        .top()
+        .code
+        .eval_sites
+        .get(&state.top().pc.saturating_sub(1))
         && matches!(callee(heap, f)?, Callee::Builtin(Builtin::Eval))
     {
         let site = site.clone();
@@ -2638,6 +2637,32 @@ fn step_instruction(
             })?;
             state.replace(1, v)?;
         }
+        Instr::IsCell => {
+            let value = state.pop()?;
+            let is_cell = match value {
+                Value::Object(id) => heap
+                    .read(id, |o| matches!(o, HeapObject::Cell(_)))
+                    .ok_or(Fault::Internal("environment was reclaimed"))?,
+                _ => false,
+            };
+            state.push(Value::Bool(is_cell));
+        }
+        Instr::IsObject => {
+            let value = state.pop()?;
+            state.push(Value::Bool(matches!(value, Value::Object(_))));
+        }
+        Instr::ToObject => {
+            let value = state
+                .operands()
+                .last()
+                .ok_or(Fault::Internal("missing with object"))?;
+            if matches!(value, Value::Undefined | Value::Null) {
+                return Err(Fault::TypeError("with object is null or undefined".into()));
+            }
+            let object =
+                builtin::object_constructor(heap, state.diag.task, std::slice::from_ref(value))?;
+            state.replace(1, object)?;
+        }
         Instr::CurrentFunction => {
             let f = match state.top().callee {
                 Some(id) => Value::Object(id),
@@ -2936,6 +2961,8 @@ fn global_step(
 /// holds is in its frames. Exhaustive, so a new instruction must decide.
 fn polls(instr: Instr, pc: usize) -> bool {
     match instr {
+        Instr::IsCell | Instr::IsObject => false,
+        Instr::ToObject => true,
         Instr::CheckHeritage | Instr::InitHeritage | Instr::GetNewTarget | Instr::GetSuperConstructor |
         Instr::ConstructSuper(_) | Instr::ConstructSuperSpread | Instr::BindThis | Instr::ResolveThis | Instr::ForwardArguments => true,
         Instr::GeneratorStart | Instr::GeneratorYield | Instr::GeneratorInitialYield | Instr::GeneratorYieldStar | Instr::AsyncStart | Instr::Await => true,

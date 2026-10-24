@@ -1255,6 +1255,9 @@ fn render_stmt(s: &Stmt) -> String {
             out
         }
         StmtKind::Empty => "(empty)".into(),
+        StmtKind::With { object, body } => {
+            format!("(with {} {})", render_expr(object), render_stmt(body))
+        }
     }
 }
 
@@ -4697,7 +4700,6 @@ fn rejects_unsupported_syntax_with_positions() {
     use SyntaxErrorKind::Unsupported;
     let cases: &[(&str, u32, u32, &str)] = &[
         ("await x;", 1, 1, "await"),
-        ("with (o) {}", 1, 1, "with"),
         ("debugger;", 1, 1, "debugger"),
         ("import x from 'y';", 1, 1, "import"),
         ("export const x = 1;", 1, 1, "export"),
@@ -4710,6 +4712,18 @@ fn rejects_unsupported_syntax_with_positions() {
         rejects_with(src, Unsupported, line, column, needle);
     }
     rejects_with("x = super.y;", SyntaxErrorKind::Invalid, 1, 5, "super");
+}
+
+#[test]
+fn with_statement_modes() {
+    parse_script_with("with (o) x;", ScriptOptions::SLOPPY).unwrap();
+    rejects_with("with (o) {}", SyntaxErrorKind::Invalid, 1, 1, "with");
+    assert_eq!(
+        parse_script_with("'use strict'; with(o) {}", ScriptOptions::SLOPPY)
+            .unwrap_err()
+            .kind,
+        SyntaxErrorKind::Invalid
+    );
 }
 
 #[test]

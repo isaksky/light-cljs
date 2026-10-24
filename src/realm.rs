@@ -1116,6 +1116,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         "toStringTag",
         "dispose",
         "asyncDispose",
+        "unscopables",
     ] {
         b.add_value(
             symbol,

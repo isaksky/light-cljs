@@ -125,8 +125,9 @@ pub struct EvalSite {
     /// None at script scope; arrows and eval inherit the enclosing function's
     /// binding, whose value can itself be undefined on an ordinary call.
     pub new_target: Option<EvalSource>,
-    /// Dynamic variable environments, nearest first. Each source holds a
-    /// task-owned cell containing a private null-prototype binding object.
+    /// Dynamic environments, nearest first. Variable environments are
+    /// task-owned cells containing private null-prototype binding objects;
+    /// with environments are the binding objects themselves.
     pub environments: Vec<EvalSource>,
     /// None denotes the global variable environment.
     pub variable_environment: Option<EvalSource>,
@@ -673,6 +674,9 @@ impl Executable {
                 Opcode::Dup3 => Instr::Dup3,
                 Opcode::PutSuperElemStrict => Instr::PutSuperElemStrict,
                 Opcode::UsingCheck => Instr::UsingCheck,
+                Opcode::IsCell => Instr::IsCell,
+                Opcode::IsObject => Instr::IsObject,
+                Opcode::ToObject => Instr::ToObject,
                 Opcode::PendingException => Instr::PendingException,
                 Opcode::SuppressedError => Instr::SuppressedError,
                 Opcode::PendingCancel => Instr::PendingCancel,
@@ -740,13 +744,15 @@ impl Executable {
             let mut names = std::collections::HashSet::new();
             // Runtime compilation imports the receiver and optional new.target
             // after the named bindings; the complete capture count is u16.
-            if !matches!(instrs[index], Instr::Call(_) | Instr::CallSpread)
-                || site.bindings.len() + site.environments.len()
-                    > usize::from(u16::MAX)
-                        - 1
-                        - usize::from(site.new_target.is_some())
-                        - usize::from(site.super_home.is_some())
-                        - usize::from(site.super_fields.is_some())
+            if !matches!(
+                instrs[index],
+                Instr::Call(_) | Instr::CallSpread | Instr::CallMethod(_) | Instr::CallMethodSpread
+            ) || site.bindings.len() + site.environments.len()
+                > usize::from(u16::MAX)
+                    - 1
+                    - usize::from(site.new_target.is_some())
+                    - usize::from(site.super_home.is_some())
+                    - usize::from(site.super_fields.is_some())
                 || !valid_source(site.receiver)
                 || site.new_target.is_some_and(|source| !valid_source(source))
                 || site.super_home.is_some_and(|source| !valid_source(source))

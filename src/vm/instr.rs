@@ -157,6 +157,9 @@
 //! | `SuppressedError` | 0xAB | – | new previous → error | intrinsic engine wrapping without JS |
 //! | `PendingCancel` | 0xAC | – | → boolean | whether this finally is unwinding cancellation |
 //! | `UsingDispose` | 0xAD | u16 count | (value method)* has-error error cancelling → undefined | shared resumable LIFO disposal |
+//! | `IsCell` | 0xAE | – | value → boolean | internal binding environment discriminator |
+//! | `IsObject` | 0xAF | – | value → boolean | JavaScript object test |
+//! | `ToObject` | 0xB0 | – | value → object | object environment boxing, rejecting nullish values |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -717,6 +720,9 @@ pub enum Opcode {
     PendingCancel = 0xAC,
     /// (value method)* has-error error cancelling → undefined; shared resumable disposal.
     UsingDispose = 0xAD,
+    IsCell = 0xAE,
+    IsObject = 0xAF,
+    ToObject = 0xB0,
 }
 
 /// Operand encoding of an opcode.
@@ -920,6 +926,9 @@ impl Opcode {
             0xAB => SuppressedError,
             0xAC => PendingCancel,
             0xAD => UsingDispose,
+            0xAE => IsCell,
+            0xAF => IsObject,
+            0xB0 => ToObject,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1103,6 +1112,9 @@ impl Opcode {
             SuppressedError => "suppressed_error",
             PendingCancel => "pending_cancel",
             UsingDispose => "using_dispose",
+            IsCell => "is_cell",
+            IsObject => "is_object",
+            ToObject => "to_object",
             PutGlobalStrict => "put_global_strict",
             PutFieldStrict => "put_field_strict",
             PutElemStrict => "put_elem_strict",
@@ -1199,6 +1211,7 @@ impl Opcode {
             | PutSuperElem | PutSuperElemStrict | ToSuperKey | Dup3 => OperandKind::None,
             UsingCheck | PendingException | SuppressedError | PendingCancel => OperandKind::None,
             UsingDispose => OperandKind::Count,
+            IsCell | IsObject | ToObject => OperandKind::None,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }
@@ -1431,6 +1444,9 @@ pub(crate) enum Instr {
     SuppressedError,
     PendingCancel,
     UsingDispose(u16),
+    IsCell,
+    IsObject,
+    ToObject,
 }
 
 impl Instr {
@@ -1606,6 +1622,9 @@ impl Instr {
             Instr::SuppressedError => Opcode::SuppressedError,
             Instr::PendingCancel => Opcode::PendingCancel,
             Instr::UsingDispose(_) => Opcode::UsingDispose,
+            Instr::IsCell => Opcode::IsCell,
+            Instr::IsObject => Opcode::IsObject,
+            Instr::ToObject => Opcode::ToObject,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
             Instr::PutFieldStrict(_) => Opcode::PutFieldStrict,
             Instr::PutElemStrict => Opcode::PutElemStrict,
@@ -1681,6 +1700,7 @@ impl Instr {
             InitHeritage => (3, 1),
             ForwardArguments => (0, 1),
             UsingCheck => (1, 1),
+            IsCell | IsObject | ToObject => (1, 1),
             UsingDispose(n) => (2 * usize::from(n) + 3, 1),
             PendingException => (0, 1),
             PendingCancel => (0, 1),
@@ -1707,6 +1727,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 173);
+        assert_eq!(assigned, 176);
     }
 }

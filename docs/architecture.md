@@ -2748,6 +2748,20 @@ those of ordinary objects; virtual properties introduce no heap edges.
 
 ## QuickJS references and provenance
 
+- Object environments (clj-quickjs-110): consulted `js_parse_statement_or_decl`
+  (`TOK_WITH`), `js_has_unscopable` and `OP_with_get_var` and siblings in
+  `research/quickjs/quickjs.c`, revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Nested eval cases in
+  `tests/js_source.rs::with_statement_resolution` adapt
+  `research/quickjs/tests/test_closure.js::test_with`; the file retains the
+  QuickJS MIT notice. The label case follows `tests/test_language.js::test_labels`.
+  Rust lowering, tracing and remaining fixtures are original. Object
+  environments are raw traced captures, interleaved with static lexical
+  scopes and eval's private cell-backed variable environments. Binding
+  selection lowers to HasProperty and resumable property bytecode, retaining
+  its selected object before evaluating RHS code. No Rust frame is retained
+  across a getter or setter call.
+
 - For-using-of heads (clj-quickjs-238): consulted
   `research/quickjs/quickjs.c` `js_parse_for_in_of`, `pop_break_entry` and
   `emit_break`, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.

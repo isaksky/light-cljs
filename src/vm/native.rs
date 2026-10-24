@@ -980,6 +980,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
     match instr {
         Reduce | NeedAll | GetIterator | UsingCheck | UsingDispose(_) => true,
         PendingException | SuppressedError | PendingCancel => false,
+        IsCell | IsObject | ToObject => false,
         RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add
         | Sub | Mul | Lt | StrictEq | Not | Jump(_) | JumpIfFalse(_) | Return | NewObject
         | HostEffect(_) | NewVector(_) | NewMap(_) | TemplateObject(_) | Count | Nth | Get

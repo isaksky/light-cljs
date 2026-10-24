@@ -534,6 +534,7 @@ enum ConstKey {
     /// Strings by content (code units).
     String(JsString),
     BigInt(crate::value::JsBigInt),
+    Symbol(crate::value::JsSymbol),
 }
 
 /// Internal bytecode emitter: byte code, one span per instruction, a
@@ -595,6 +596,10 @@ impl Emitter {
 
 /// One function being lowered.
 struct FnCtx {
+    /// Object environments interleaved with lexical statement-list scopes.
+    /// Depth is the number of scopes outside the with body. Objects are
+    /// captured directly; variable environments remain private binding cells.
+    with_envs: Vec<(usize, Place, usize)>,
     dynamic_env: Option<(Place, usize)>,
     environment_key: usize,
     parameter_env: Option<(Place, usize)>,
@@ -905,6 +910,7 @@ impl<'s> Lowerer<'s> {
         let parameter_environment_key = self.next_self_key;
         self.next_self_key -= 1;
         self.fns.push(FnCtx {
+            with_envs: Vec::new(),
             dynamic_env: None,
             environment_key,
             parameter_env: None,
@@ -1728,15 +1734,36 @@ impl<'s> Lowerer<'s> {
     /// Recursion depth is the function nesting depth, bounded by the tree
     /// height.
     fn resolve_in(&mut self, level: usize, name: &str) -> Access {
+        self.resolve_scopes(
+            level,
+            name,
+            self.fns[level].scopes.len(),
+            self.fns[level].with_envs.len(),
+        )
+    }
+
+    fn resolve_scopes(
+        &mut self,
+        level: usize,
+        name: &str,
+        end: usize,
+        with_count: usize,
+    ) -> Access {
         let ctx = &self.fns[level];
-        if let Some(b) = ctx
-            .scopes
+        let with_env = with_count.checked_sub(1).map(|i| ctx.with_envs[i]);
+        let start = with_env.map_or_else(
+            || {
+                if ctx.dynamic_env.is_some() {
+                    ctx.var_scope
+                } else {
+                    0
+                }
+            },
+            |e| e.0,
+        );
+        if let Some(b) = ctx.scopes[..end]
             .iter()
-            .skip(if ctx.dynamic_env.is_some() {
-                ctx.var_scope
-            } else {
-                0
-            })
+            .skip(start)
             .rev()
             .find_map(|scope| scope.get(name))
             .copied()
@@ -1764,6 +1791,10 @@ impl<'s> Lowerer<'s> {
                 initialized: b.initialized,
                 key: b.key,
             };
+        }
+        if let Some((depth, env, key)) = with_env {
+            let fallback = self.resolve_scopes(level, name, depth, with_count - 1);
+            return self.dynamic_access(env, key, name, fallback);
         }
         let env = self.fns[level].dynamic_env;
         let fallback = self.resolve_outside_body(level, name);
@@ -1892,10 +1923,95 @@ impl<'s> Lowerer<'s> {
     }
 
     fn environment_lookup(&mut self, env: Place, name: &str, at: Span) -> Result<(), SyntaxError> {
+        let object = self.out().label();
+        let done = self.out().label();
+        self.out().load(env, at);
+        self.out().op(Opcode::IsCell, at);
+        self.out().branch(Opcode::JumpIfFalse, object, at);
+        self.variable_lookup(env, name, at)?;
+        self.out().branch(Opcode::Jump, done, at);
+        self.out().bind(object);
+        // HasBinding checks HasProperty before reading @@unscopables. All
+        // observable reads use ordinary bytecode, whose getters can suspend.
+        let absent = self.out().label();
+        let primitive = self.out().label();
+        let index = self.name_index(name, at)?;
+        self.out().op_u16(Opcode::Const, index, at);
+        self.out().load(env, at);
+        self.out().op(Opcode::In, at);
+        self.out().branch(Opcode::JumpIfFalse, absent, at);
+        self.out().load(env, at);
+        self.constant(
+            Primitive::Symbol(crate::value::symbol::well_known("unscopables")),
+            at,
+        )?;
+        self.out().op(Opcode::GetElem, at);
+        self.out().op(Opcode::Dup, at);
+        self.out().op(Opcode::IsObject, at);
+        self.out().branch(Opcode::JumpIfFalse, primitive, at);
+        self.out().op_u16(Opcode::GetField, index, at);
+        self.out().op(Opcode::Not, at);
+        self.out().branch(Opcode::Jump, done, at);
+        self.out().bind(primitive);
+        self.out().op(Opcode::Pop, at);
+        self.constant(Primitive::Bool(true), at)?;
+        self.out().branch(Opcode::Jump, done, at);
+        self.out().bind(absent);
+        self.constant(Primitive::Bool(false), at)?;
+        self.out().bind(done);
+        Ok(())
+    }
+
+    fn variable_lookup(&mut self, env: Place, name: &str, at: Span) -> Result<(), SyntaxError> {
         let index = self.name_index(name, at)?;
         self.out().load(env, at);
         self.out().op(Opcode::CellGet, at);
         self.out().op_u16(Opcode::GetField, index, at);
+        Ok(())
+    }
+
+    /// GetValue on an already selected reference, without HasBinding again.
+    fn environment_get(&mut self, env: Place, name: &str, at: Span) -> Result<(), SyntaxError> {
+        let object = self.out().label();
+        let done = self.out().label();
+        self.out().load(env, at);
+        self.out().op(Opcode::IsCell, at);
+        self.out().branch(Opcode::JumpIfFalse, object, at);
+        self.variable_lookup(env, name, at)?;
+        self.out().op(Opcode::CellGet, at);
+        self.out().branch(Opcode::Jump, done, at);
+        self.out().bind(object);
+        self.check_object_binding(env, name, at)?;
+        self.out().load(env, at);
+        let index = self.name_index(name, at)?;
+        self.out().op_u16(Opcode::GetField, index, at);
+        self.out().bind(done);
+        Ok(())
+    }
+
+    /// Object GetBindingValue/SetMutableBinding recheck existence after
+    /// unscopables getters or the RHS may have deleted the selected property.
+    fn check_object_binding(
+        &mut self,
+        env: Place,
+        name: &str,
+        at: Span,
+    ) -> Result<(), SyntaxError> {
+        if self.cur().strict || self.cur().strict_expression {
+            let missing = self.out().label();
+            let done = self.out().label();
+            let index = self.name_index(name, at)?;
+            self.out().op_u16(Opcode::Const, index, at);
+            self.out().load(env, at);
+            self.out().op(Opcode::In, at);
+            self.out().branch(Opcode::JumpIfFalse, missing, at);
+            self.out().branch(Opcode::Jump, done, at);
+            self.out().bind(missing);
+            self.throw(ThrowKind::Unresolvable, at);
+            // ThrowError has an expression result in the bytecode verifier.
+            self.out().op(Opcode::Pop, at);
+            self.out().bind(done);
+        }
         Ok(())
     }
 
@@ -1974,7 +2090,7 @@ impl<'s> Lowerer<'s> {
         strict: bool,
     ) -> Result<(), SyntaxError> {
         let done = self.out().label();
-        self.environment_lookup(env, name, at)?;
+        self.variable_lookup(env, name, at)?;
         self.out().op(Opcode::Dup, at);
         self.out().op(Opcode::Not, at);
         self.out().branch(Opcode::JumpIfFalse, done, at);
@@ -2195,25 +2311,17 @@ impl<'s> Lowerer<'s> {
                 let done = self.out().label();
                 self.out().op_u16(Opcode::GetLocal, slot, at);
                 self.out().branch(Opcode::JumpIfFalse, missing, at);
-                self.environment_lookup(Place::Local(slot), &name, at)?;
-                self.out().op(Opcode::CellGet, at);
+                self.environment_get(Place::Local(slot), &name, at)?;
                 self.out().branch(Opcode::Jump, done, at);
                 self.out().bind(missing);
                 self.load_reference(fallback, at, typeof_name)?;
                 self.out().bind(done);
             }
             Access::Dynamic(_) => {
-                let missing = self.out().label();
-                let done = self.out().label();
-                let fallback = self.lookup_reference(access, at)?;
-                self.out().op(Opcode::Dup, at);
-                self.out().branch(Opcode::JumpIfFalse, missing, at);
-                self.out().op(Opcode::CellGet, at);
-                self.out().branch(Opcode::Jump, done, at);
-                self.out().bind(missing);
-                self.out().op(Opcode::Pop, at);
-                self.load_reference(fallback, at, typeof_name)?;
-                self.out().bind(done);
+                let saved = self.cur().next_slot;
+                let prepared = self.prepare_reference(access, at)?;
+                self.load_reference(prepared, at, typeof_name)?;
+                self.cur_mut().next_slot = saved;
             }
             Access::Found {
                 initialized: false, ..
@@ -2262,8 +2370,12 @@ impl<'s> Lowerer<'s> {
                 self.out().op_u16(Opcode::SetLocal, tmp, at);
                 let missing = self.out().label();
                 let done = self.out().label();
+                let object = self.out().label();
                 self.out().op_u16(Opcode::GetLocal, slot, at);
                 self.out().branch(Opcode::JumpIfFalse, missing, at);
+                self.out().op_u16(Opcode::GetLocal, slot, at);
+                self.out().op(Opcode::IsCell, at);
+                self.out().branch(Opcode::JumpIfFalse, object, at);
                 self.environment_cell(
                     Place::Local(slot),
                     &name,
@@ -2274,6 +2386,14 @@ impl<'s> Lowerer<'s> {
                 self.out().op(Opcode::CellSet, at);
                 self.out().op_u16(Opcode::GetLocal, tmp, at);
                 self.out().branch(Opcode::Jump, done, at);
+                self.out().bind(object);
+                self.check_object_binding(Place::Local(slot), &name, at)?;
+                self.out().op_u16(Opcode::GetLocal, slot, at);
+                self.out().op_u16(Opcode::GetLocal, tmp, at);
+                let index = self.name_index(&name, at)?;
+                let op = self.strict_op(Opcode::PutField);
+                self.out().op_u16(op, index, at);
+                self.out().branch(Opcode::Jump, done, at);
                 self.out().bind(missing);
                 self.out().op_u16(Opcode::GetLocal, tmp, at);
                 self.store(fallback, at)?;
@@ -2281,23 +2401,10 @@ impl<'s> Lowerer<'s> {
                 self.cur_mut().next_slot -= 1;
             }
             Access::Dynamic(_) => {
-                let tmp = self.temp(at)?;
-                self.out().op_u16(Opcode::SetLocal, tmp, at);
-                let missing = self.out().label();
-                let done = self.out().label();
-                let fallback = self.lookup_reference(access, at)?;
-                self.out().op(Opcode::Dup, at);
-                self.out().branch(Opcode::JumpIfFalse, missing, at);
-                self.out().op_u16(Opcode::GetLocal, tmp, at);
-                self.out().op(Opcode::CellSet, at);
-                self.out().op_u16(Opcode::GetLocal, tmp, at);
-                self.out().branch(Opcode::Jump, done, at);
-                self.out().bind(missing);
-                self.out().op(Opcode::Pop, at);
-                self.out().op_u16(Opcode::GetLocal, tmp, at);
-                self.store(fallback, at)?;
-                self.out().bind(done);
-                self.cur_mut().next_slot -= 1;
+                let saved = self.cur().next_slot;
+                let prepared = self.prepare_reference(access, at)?;
+                self.store(prepared, at)?;
+                self.cur_mut().next_slot = saved;
             }
             Access::Intrinsic => {
                 return Err(self.error(
@@ -2420,7 +2527,14 @@ impl<'s> Lowerer<'s> {
         let level = self.fns.len() - 1;
         let mut environments = Vec::new();
         for owner in (0..=level).rev() {
-            for (mut place, key) in [self.fns[owner].dynamic_env, self.fns[owner].parameter_env]
+            let with_envs = self.fns[owner]
+                .with_envs
+                .iter()
+                .rev()
+                .map(|&(_, p, k)| Some((p, k)));
+            for (mut place, key) in with_envs
+                .chain([self.fns[owner].dynamic_env, self.fns[owner].parameter_env])
+                .collect::<Vec<_>>()
                 .into_iter()
                 .flatten()
             {
@@ -3004,6 +3118,25 @@ impl<'s> Lowerer<'s> {
                 self.out().op(Opcode::Return, span);
             }
             StmtKind::Block(body) => self.statement_list(body, &[], false)?,
+            StmtKind::With { object, body } => {
+                self.reset_completion(span);
+                let saved = self.cur().next_slot;
+                let slot = self.temp(span)?;
+                let key = self.next_self_key;
+                self.next_self_key -= 1;
+                self.expr(object)?;
+                self.out().op(Opcode::ToObject, span);
+                self.out().op_u16(Opcode::SetLocal, slot, span);
+                let depth = self.cur().scopes.len();
+                self.cur_mut()
+                    .with_envs
+                    .push((depth, Place::Local(slot), key));
+                self.statement(body)?;
+                self.cur_mut().with_envs.pop();
+                self.out().op(Opcode::Undefined, span);
+                self.out().op_u16(Opcode::SetLocal, slot, span);
+                self.cur_mut().next_slot = saved;
+            }
             StmtKind::If {
                 test,
                 consequent,
@@ -4309,7 +4442,7 @@ impl<'s> Lowerer<'s> {
             Primitive::Bool(b) => ConstKey::Bool(*b),
             Primitive::Number(n) => ConstKey::Number(n.to_bits()),
             Primitive::String(s) => ConstKey::String(s.clone()),
-            Primitive::Symbol(_) => unreachable!("symbols have no literal syntax"),
+            Primitive::Symbol(s) => ConstKey::Symbol(s.clone()),
             Primitive::BigInt(n) => ConstKey::BigInt(n.clone()),
             Primitive::Undefined => {
                 self.out().op(Opcode::Undefined, span);
@@ -4616,12 +4749,12 @@ impl<'s> Lowerer<'s> {
         span: Span,
     ) -> Result<(), SyntaxError> {
         let end = self.out().label();
-        let mut method = matches!(links[0].kind, ChainLinkKind::Call(_)) && base.is_method_callee();
-        if method {
-            self.method_callee(base)?;
+        let mut method = if matches!(links[0].kind, ChainLinkKind::Call(_)) {
+            self.call_callee(base)?
         } else {
             self.expr(base)?;
-        }
+            false
+        };
         for (i, link) in links.iter().enumerate() {
             let at = link.op_span;
             let last = i + 1 == links.len();
@@ -5261,7 +5394,12 @@ impl<'s> Lowerer<'s> {
                 self.environment_lookup(env, &name, at)?;
                 self.out().branch(Opcode::JumpIfFalse, missing, at);
                 self.out().load(env, at);
+                let object = self.out().label();
+                self.out().op(Opcode::Dup, at);
+                self.out().op(Opcode::IsCell, at);
+                self.out().branch(Opcode::JumpIfFalse, object, at);
                 self.out().op(Opcode::CellGet, at);
+                self.out().bind(object);
                 self.constant(Primitive::String(JsString::from(name.as_str())), at)?;
                 self.out().op(Opcode::Delete, at);
                 self.out().branch(Opcode::Jump, done, at);
@@ -5457,7 +5595,7 @@ impl<'s> Lowerer<'s> {
         op_span: Span,
     ) -> Result<(), SyntaxError> {
         let direct = matches!(&callee.kind, ExprKind::Identifier(name) if name == "eval");
-        let method = callee.is_method_callee();
+        let saved = self.cur().next_slot;
         if let ExprKind::Member {
             object, property, ..
         } = &callee.kind
@@ -5465,12 +5603,43 @@ impl<'s> Lowerer<'s> {
         {
             return self.intrinsic(property, args, span, op_span);
         }
-        if method {
+        let method = self.call_callee(callee)?;
+        self.call_arguments(args, method, span, op_span, direct.then_some(callee.span))?;
+        self.cur_mut().next_slot = saved;
+        Ok(())
+    }
+
+    /// Evaluate a call reference once, preserving WithBaseObject as `this`.
+    fn call_callee(&mut self, callee: &Expr) -> Result<bool, SyntaxError> {
+        let saved = self.cur().next_slot;
+        let method = if let ExprKind::Identifier(name) = &callee.kind
+            && let access = self.resolve_reference(name)
+            && matches!(access, Access::Dynamic(_))
+        {
+            let prepared = self.prepare_reference(access, callee.span)?;
+            let Access::Prepared { slot, .. } = prepared else {
+                unreachable!()
+            };
+            let receiver_done = self.out().label();
+            self.out().op_u16(Opcode::GetLocal, slot, callee.span);
+            self.out().op(Opcode::Dup, callee.span);
+            self.out().op(Opcode::IsCell, callee.span);
+            self.out()
+                .branch(Opcode::JumpIfFalse, receiver_done, callee.span);
+            self.out().op(Opcode::Pop, callee.span);
+            self.out().op(Opcode::Undefined, callee.span);
+            self.out().bind(receiver_done);
+            self.load(prepared, callee.span)?;
+            true
+        } else if callee.is_method_callee() {
             self.method_callee(callee)?;
+            true
         } else {
             self.expr(callee)?;
-        }
-        self.call_arguments(args, method, span, op_span, direct.then_some(callee.span))
+            false
+        };
+        self.cur_mut().next_slot = saved;
+        Ok(method)
     }
 
     #[inline(never)]
@@ -5882,12 +6051,7 @@ impl<'s> Lowerer<'s> {
                 "more than 65,535 template arguments",
             ));
         }
-        let method = tag.is_method_callee();
-        if method {
-            self.method_callee(tag)?;
-        } else {
-            self.expr(tag)?;
-        }
+        let method = self.call_callee(tag)?;
         for part in quasis {
             match &part.cooked {
                 Some(s) => self.constant(Primitive::String(s.clone()), part.span)?,
@@ -6183,7 +6347,8 @@ fn var_names_in<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
         }
         StmtKind::While { body, .. }
         | StmtKind::DoWhile { body, .. }
-        | StmtKind::Labelled { body, .. } => var_names_in(body, out),
+        | StmtKind::Labelled { body, .. }
+        | StmtKind::With { body, .. } => var_names_in(body, out),
         StmtKind::Try {
             block,
             handler,

@@ -56,6 +56,7 @@ pub(crate) fn well_known(name: &str) -> JsSymbol {
     static TO_STRING_TAG: OnceLock<JsSymbol> = OnceLock::new();
     static DISPOSE: OnceLock<JsSymbol> = OnceLock::new();
     static ASYNC_DISPOSE: OnceLock<JsSymbol> = OnceLock::new();
+    static UNSCOPABLES: OnceLock<JsSymbol> = OnceLock::new();
     let slot = match name {
         "iterator" => &ITERATOR,
         "toPrimitive" => &TO_PRIMITIVE,
@@ -63,6 +64,7 @@ pub(crate) fn well_known(name: &str) -> JsSymbol {
         "toStringTag" => &TO_STRING_TAG,
         "dispose" => &DISPOSE,
         "asyncDispose" => &ASYNC_DISPOSE,
+        "unscopables" => &UNSCOPABLES,
         _ => unreachable!("unknown well-known symbol"),
     };
     slot.get_or_init(|| JsSymbol::new(Some(JsString::from(format!("Symbol.{name}").as_str()))))

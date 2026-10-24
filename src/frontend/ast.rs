@@ -162,9 +162,9 @@ impl Stmt {
                     .max(update.as_ref().map_or(0, |e| e.height))
                     .max(body.height)
             }
-            StmtKind::ForIn { object, body, .. } | StmtKind::ForOf { object, body, .. } => {
-                object.height.max(body.height)
-            }
+            StmtKind::ForIn { object, body, .. }
+            | StmtKind::ForOf { object, body, .. }
+            | StmtKind::With { object, body } => object.height.max(body.height),
             StmtKind::Try {
                 block,
                 handler,
@@ -294,6 +294,11 @@ pub enum StmtKind {
     },
     /// `;`
     Empty,
+    /// Sloppy `with (object) body`; creates an object environment.
+    With {
+        object: Expr,
+        body: Box<Stmt>,
+    },
 }
 
 /// A `case test:` clause (or, without a test, `default:`) of a `switch`

@@ -14798,6 +14798,154 @@ fn sloppy_eval(src: &str) -> ValueView {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. The nested eval cases follow
+/// QuickJS tests/test_closure.js::test_with; its MIT notice appears above
+/// strict_direct_eval in this file.
+#[test]
+fn with_statement_resolution() {
+    for source in [
+        r#"function test() {
+            var o1 = {x:'o1', y:'o1'}, x = 'local';
+            eval('var z="var_obj"');
+            with (o1) {
+                if (x !== 'o1' || eval('x') !== 'o1') return false;
+                var f = function() {
+                    var o2 = {x:'o2'};
+                    with (o2) {
+                        return x === 'o2' && y === 'o1' && z === 'var_obj'
+                            && eval('x') === 'o2' && eval('y') === 'o1'
+                            && eval('z') === 'var_obj' && eval('eval("x")') === 'o2';
+                    }
+                };
+            }
+            return f();
+        } test()"#,
+        "const o = {x:1}; with (o) { var x = 2; } o.x === 2",
+        "let f, o={x:1}; with(o) { f=()=>x; } o.x=9; f()===9",
+        "let f, o={x:1}; with(o) { f=eval('(function() { return x; })'); } o.x=9; f()===9",
+        "let x=1, o={x:2}; with(o) { let x=3; if(x!==3) throw 99; } x===1",
+        "let o={x:2, f(){return this.x;}}; with(o) { f()===2 && (f)()===2 && typeof absent==='undefined' }",
+        "let o={x:2, f(){return this.x;}}; with(o) { f?.()===2 && f``===2 && f(...[])===2 }",
+        "let o={x:2, eval}; with(o) { eval('x')===2 && eval(...['x'])===2 }",
+        "function f(){var x=1, o={x:2}; with(o) { eval('var x=3; var y=4'); } return x===1 && o.x===3 && y===4;} f()",
+        "function f(){var x=1, o={x:2}; with(o) { return eval('let x=3; x')===3 && eval('\"use strict\"; x')===2; }} f()",
+        "let f, o={x:2}; with(o) { f=function(){'use strict'; return x;}; } f()===2",
+        "let f, o={x:2}; with(o) { f=function(){'use strict'; x=(delete o.x, 3);}; } let caught; try{f();}catch(e){caught=e;} caught instanceof ReferenceError && !('x' in o)",
+        "let f, o={x:2,get [Symbol.unscopables](){delete this.x; return {};}}; with(o) { f=function(){'use strict'; return x;}; } let caught; try{f();}catch(e){caught=e;} caught instanceof ReferenceError",
+        "let o=Object.create({x:2}); with(o) { x+=3; } o.x===5",
+        "let x=1, o={x:2, [Symbol.unscopables]:{x:true}}; with(o) { x=3; } x===3 && o.x===2",
+        "let x=1, o={x:2, [Symbol.unscopables]:{x:false}}; with(o) { x++; } x===1 && o.x===3",
+        "let n=0, o={get x(){n++; return 3;}}; with(o) { x===3 && n===1 }",
+        "let n=0, o={set x(v){n=v;}}; with(o) { x=7; } n===7",
+        "let x=1, n=0, o={x:2, get [Symbol.unscopables](){n++; return {get x(){n++; return true;}};}}; with(o) { x===1 } n===2",
+        "let n=0, o={get [Symbol.unscopables](){n++; return {};}}; with(o) { typeof absent; } n===0",
+        "let o={x:2,[Symbol.unscopables]:true}; with(o) { x===2 }",
+        "let x=1, o={x:2}; with(o) { x=(o[Symbol.unscopables]={x:true}, 4); } x===1 && o.x===4",
+        "let o={get x(){throw 7;}}; let caught; try { with(o) { x; } } catch(e) {caught=e;} caught===7",
+        "let o={get [Symbol.unscopables](){throw 7;},x:2}; let caught; try { with(o) { x; } } catch(e) {caught=e;} caught===7",
+        "let x=1; with({x:2}) { breakHere: { with({x:3}) {break breakHere;} } if(x!==2) throw 99; } x===1",
+        "let o={x:1}; with(o) { x=(delete o.x, 4); } o.x===4",
+        "let x=1, o={}; with(o) { x=(o.x=3, 4); } x===4 && o.x===3",
+        "let o={x:1}; with(o) { delete x; } !('x' in o)",
+        "let caught=0; try { with(null) {} } catch(e) { if(e instanceof TypeError) caught++; } try { with(undefined) {} } catch(e) { if(e instanceof TypeError) caught++; } caught===2",
+        "with({}) x: { break x; } true",
+        "with('abc') { length===3 }",
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
+    }
+    let rt = Runtime::new();
+    let code = compile_script_with(
+        "with-capture",
+        "let o={x:1}; with(o) { (()=>x); }",
+        ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    let RunOutcome::Complete(value) = rt.spawn(&code, &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    assert!(matches!(
+        rt.publish(&value),
+        Err(clj_quickjs::PublishError::NotShareable { .. })
+    ));
+    let plain = compile_function_with(
+        "function f() { const x=1; return ()=>x; }",
+        ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    for op in [Opcode::NewCell, Opcode::IsCell, Opcode::ToObject] {
+        assert!(!opcodes(&plain).contains(&op));
+    }
+    let rt = Runtime::new();
+    let code = compile_script_with("with-gc", "let f, o={x:0, get step(){ return 1; }}; with(o) { f=()=>x; while(x<8) x+=step; } o=undefined; f()===8", ScriptOptions::SLOPPY).unwrap();
+    let code = Executable::load(code.to_spec()).unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut yields = 0;
+    for _ in 0..2000 {
+        let result = task
+            .run_with(Budget::instructions(5), &mut NoEffects)
+            .unwrap();
+        rt.collect().unwrap();
+        match result {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert!(yields > 0);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("with loop did not finish");
+}
+
+/// Synthetic fixture, not light-cljs output. Every property callback waits;
+/// all slices migrate and collect while references and receivers are live.
+#[test]
+fn with_statement_accessors_wait_and_migrate() {
+    let source = "let result; const o={get [Symbol.unscopables](){__rt.need(110,1); return {get x(){__rt.need(110,2); return false;}};}, get x(){__rt.need(110,3); return 7;}, set x(v){__rt.need(110,4); result=v;}}; with(o){x+=1;} result===8";
+    let rt = Runtime::new();
+    let code = compile_script_with("with-waits", source, ScriptOptions::SLOPPY).unwrap();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    let mut waits = 0;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(5), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        task = next;
+        rt.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(_) => {
+                waits += 1;
+                assert!(waits <= 4);
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waits, 4);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("with accessors did not finish");
+}
+
 /// `Object.defineProperty` and `Object.getOwnPropertyDescriptor` with data
 /// property attributes, and `[[Set]]` honouring `writable`
 /// (clj-quickjs-119; `src/vm/descriptor.rs`). The `a.y === 3` row follows
