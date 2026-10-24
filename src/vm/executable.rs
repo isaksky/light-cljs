@@ -472,6 +472,7 @@ impl Executable {
                 Opcode::PutElem => Instr::PutElem,
                 Opcode::Dup2 => Instr::Dup2,
                 Opcode::ToPropertyKey => Instr::ToPropertyKey,
+                Opcode::Construct => Instr::Construct(operand as u16),
                 Opcode::Reduce => Instr::Reduce,
                 Opcode::NeedAll => Instr::NeedAll,
                 Opcode::BitAnd => Instr::BitAnd,
@@ -589,6 +590,9 @@ impl Executable {
                 | Instr::NewMap(v)
                 | Instr::Function(v, _)
                 | Instr::Call(v)
+                | Instr::CallMethod(v)
+                | Instr::Construct(v)
+                | Instr::GetBuiltinGlobal(v)
                 | Instr::GetCapture(v)
                 | Instr::GetField(v)
                 | Instr::PutField(v)

@@ -860,3 +860,49 @@ fn a_method_resumes_with_the_same_this_after_a_wait_and_migration() {
     assert_eq!(*effects.lock().unwrap(), [(w0, 1.0), (w1, 2.0)]);
     exec.shutdown(TIMEOUT).unwrap();
 }
+
+/// A construct frame (clj-quickjs-71) is task-owned state like any frame:
+/// the constructor writes through `this` (the new object, held only by the
+/// frame's traced `this` slot), suspends at `__rt.need` on a pending cell,
+/// and is collected around on both workers. After publication it resumes
+/// on the other worker, finishes, and its non-object `return 5` is
+/// replaced by the same new object, which still inherits from
+/// `F.prototype`. Each effect ran once.
+#[test]
+fn a_constructor_resumes_with_its_new_object_after_a_wait_and_migration() {
+    let rt = Runtime::new();
+    let effects = WorkerEffects::default();
+    let exec = migrating_executor(&rt, &effects);
+    let exe = compile_script(
+        "construct_need",
+        "function F(a) {
+           this.y = __rt.effect(1, a);
+           let v = __rt.need(5, 3);
+           this.v = v + __rt.effect(1, 2);
+           return 5;
+         }
+         F.prototype.get = function () { return this.y * 100 + this.v; };
+         const o = new F(1);
+         o.constructor === F ? o.get() : -1",
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    exec.submit_with(task.clone(), Placement::Worker(WorkerId::new(0)))
+        .unwrap();
+    let parked = OutcomeKind::Waiting(key(&rt, NUMBER));
+    assert!(exec.wait_for(TIMEOUT, |ev| {
+        ev.iter()
+            .any(|e| e.task == Some(task.id()) && e.kind == EventKind::Released(parked))
+    }));
+    collect_on_worker(&exec, WorkerId::new(0));
+    collect_on_worker(&exec, WorkerId::new(1));
+    assert_eq!(task.status(), TaskStatus::Waiting);
+
+    let request = one_request(&task, key(&rt, NUMBER));
+    assert_eq!(exec.wake(publish_number(&rt, &request, 7.0)).unwrap(), 1);
+    let outcome = exec.take_outcome(task.id(), TIMEOUT).expect("an outcome");
+    assert_eq!(number(outcome), 100.0 + 7.0 + 2.0);
+    let (w0, w1) = (WorkerId::new(0), WorkerId::new(1));
+    assert_eq!(*effects.lock().unwrap(), [(w0, 1.0), (w1, 2.0)]);
+    exec.shutdown(TIMEOUT).unwrap();
+}

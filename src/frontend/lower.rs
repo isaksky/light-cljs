@@ -2617,6 +2617,7 @@ impl<'s> Lowerer<'s> {
                 };
                 self.out().op_u16(call, args.len() as u16, *op_span);
             }
+            ExprKind::New { .. } => return self.new_expr(e),
             ExprKind::Member { .. }
             | ExprKind::Object(_)
             | ExprKind::AssignMember { .. }
@@ -2645,6 +2646,37 @@ impl<'s> Lowerer<'s> {
                 self.expr(right)?;
             }
         }
+        Ok(())
+    }
+
+    /// `new callee(args)` (clj-quickjs-71; ECMAScript EvaluateNew, QuickJS
+    /// `OP_call_constructor`): the callee, then the arguments, then
+    /// `Construct` at the `new` token, which checks the callee is a
+    /// constructor. Out of line, like [`Self::get_field`].
+    #[inline(never)]
+    fn new_expr(&mut self, e: &Expr) -> Result<(), SyntaxError> {
+        let ExprKind::New {
+            callee,
+            args,
+            op_span,
+        } = &e.kind
+        else {
+            return Err(self.internal(e.span, "not a new expression"));
+        };
+        let (span, op_span) = (e.span, *op_span);
+        if args.len() > MAX_COUNT {
+            return Err(self.error(
+                SyntaxErrorKind::TooLarge,
+                span,
+                "more than 65,535 constructor arguments",
+            ));
+        }
+        self.expr(callee)?;
+        for arg in args {
+            self.expr(arg)?;
+        }
+        self.out()
+            .op_u16(Opcode::Construct, args.len() as u16, op_span);
         Ok(())
     }
 

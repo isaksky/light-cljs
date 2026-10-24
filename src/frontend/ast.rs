@@ -356,7 +356,7 @@ impl Expr {
                 alternate,
             } => test.height.max(consequent.height).max(alternate.height),
             ExprKind::Assign { value, .. } | ExprKind::CompoundAssign { value, .. } => value.height,
-            ExprKind::Call { callee, args, .. } => args
+            ExprKind::Call { callee, args, .. } | ExprKind::New { callee, args, .. } => args
                 .iter()
                 .map(|a| a.height)
                 .fold(callee.height, usize::max),
@@ -567,6 +567,16 @@ pub enum ExprKind {
         /// The `op=` token, where run-time failures of the operator are
         /// reported (the read and the write are reported at the member's
         /// `.` or `[`).
+        op_span: Span,
+    },
+    /// `new callee(args)` or `new callee` (no argument list: no arguments),
+    /// clj-quickjs-71. `callee`, then the arguments are evaluated; then
+    /// the constructor check runs.
+    New {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+        /// The `new` token, where run-time failures of the construction
+        /// are reported and where a caller frame of a failure is located.
         op_span: Span,
     },
 }

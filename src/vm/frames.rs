@@ -118,6 +118,10 @@ pub(crate) struct Frame {
     /// native's callback and the entry frame. Task-owned and traced with the
     /// frame; `GetThis` reads it.
     pub(crate) this: Value,
+    /// A construct frame (clj-quickjs-71): entered by `Construct` with the
+    /// new object as `this`. When it returns a value that is not an object,
+    /// the caller receives `this` instead (the return-override rule).
+    pub(crate) construct: bool,
     /// Index of the next instruction to execute in `code`.
     pub(crate) pc: usize,
     /// Index of this frame's local 0 in [`VmState::stack`].
@@ -234,6 +238,7 @@ impl VmState {
                 code: Arc::clone(code),
                 callee: None,
                 this: Value::Undefined,
+                construct: false,
                 pc: 0,
                 base: 0,
             },
@@ -391,6 +396,7 @@ impl VmState {
             code,
             callee: Some(callee),
             this,
+            construct: false,
             pc: 0,
             base,
         });
@@ -399,7 +405,8 @@ impl VmState {
 
     /// Leave the running frame with `result`. Returns `Some(result)` when it
     /// was the entry frame (the task completes); otherwise pops the frame,
-    /// discarding its locals and operands, and pushes `result` for the caller.
+    /// discarding its locals and operands, and pushes `result` for the caller
+    /// (a construct frame's `this` instead, unless `result` is an object).
     fn leave(&mut self, result: Value) -> Option<Value> {
         let frame = self.frame_index();
         while self.handlers.last().is_some_and(|h| h.frame >= frame) {
@@ -409,6 +416,11 @@ impl VmState {
             None => Some(result),
             Some(frame) => {
                 self.stack.truncate(frame.base);
+                let result = match result {
+                    Value::Object(_) => result,
+                    _ if frame.construct => frame.this,
+                    _ => result,
+                };
                 self.stack.push(result);
                 None
             }

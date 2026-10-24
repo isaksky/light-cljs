@@ -101,8 +101,12 @@ fn render_expr(e: &Expr) -> String {
         ExprKind::Assign { target, value } => {
             format!("(= {} {})", target.name, render_expr(value))
         }
-        ExprKind::Call { callee, args, .. } => {
-            let mut out = format!("(call {}", render_expr(callee));
+        ExprKind::Call { callee, args, .. } | ExprKind::New { callee, args, .. } => {
+            let head = match &e.kind {
+                ExprKind::New { .. } => "new",
+                _ => "call",
+            };
+            let mut out = format!("({head} {}", render_expr(callee));
             for arg in args {
                 out.push(' ');
                 out.push_str(&render_expr(arg));
@@ -1645,6 +1649,52 @@ fn this_expressions() {
 }
 
 #[test]
+fn new_expressions() {
+    use SyntaxErrorKind::{Invalid, UnexpectedToken, Unsupported};
+    // clj-quickjs-71: `new MemberExpression Arguments?`.
+    assert_eq!(ast("new F;"), "(new F)");
+    assert_eq!(ast("new F(1, 2);"), "(new F 1 2)");
+    assert_eq!(ast("new a.b(c);"), "(new (. a b) c)");
+    // The first argument list belongs to `new`; the next one calls the
+    // constructed value.
+    assert_eq!(ast("new F()();"), "(call (new F))");
+    assert_eq!(ast("new new F()();"), "(new (new F))");
+    assert_eq!(ast("new new F;"), "(new (new F))");
+    // Member accesses before the arguments belong to the constructor,
+    // after them to the result.
+    assert_eq!(ast("new a[b].c(1).d;"), "(. (new (. ([] a b) c) 1) d)");
+    assert_eq!(ast("new F().x;"), "(. (new F) x)");
+    assert_eq!(ast("new F.x;"), "(new (. F x))");
+    assert_eq!(ast("(new F).x;"), "(. (new F) x)");
+    assert_eq!(ast("new (f())(1);"), "(new (call f) 1)");
+    assert_eq!(ast("new (a.b);"), "(new (. a b))");
+    // `new` binds tighter than unary and binary operators and postfix `++`
+    // applies to the whole expression (and is then rejected as a target).
+    assert_eq!(ast("!new F() + 1;"), "(+ (! (new F)) 1)");
+    assert_eq!(
+        ast("x = new F(1) === new F(1);"),
+        "(= x (=== (new F 1) (new F 1)))"
+    );
+    assert_eq!(
+        ast("function F(x) { this.x = x; } const b = new F(2);"),
+        "(function F (x) (= (. this x) x)) (const (b (new F 2)))"
+    );
+    rejects("new F()++;", Invalid, 1, 1);
+    rejects("new F() = 1;", Invalid, 1, 1);
+    // `new.target` (clj-quickjs-99) stays unsupported; a missing
+    // constructor or an unclosed argument list is a syntax error.
+    rejects_with(
+        "function f() { return new.target; }",
+        Unsupported,
+        1,
+        23,
+        "`new.target`",
+    );
+    rejects("new;", UnexpectedToken, 1, 4);
+    rejects("new F(1;", UnexpectedToken, 1, 8);
+}
+
+#[test]
 fn default_parameters() {
     use SyntaxErrorKind::{Invalid, UnexpectedToken};
     // clj-quickjs-100: `name = AssignmentExpression`, in function
@@ -2901,7 +2951,6 @@ fn rejects_unsupported_syntax_with_positions() {
         ("import x from 'y';", 1, 1, "import"),
         ("export const x = 1;", 1, 1, "export"),
         ("x = import('y');", 1, 5, "import"),
-        ("x = new F();", 1, 5, "new"),
         ("x = this;", 1, 5, "this"),
         ("x = super.y;", 1, 5, "super"),
         ("delete x.y;", 1, 1, "delete"),

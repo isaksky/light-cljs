@@ -463,7 +463,8 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
 ```
  VmState (task-owned)
    entry: Frame ─┐   calls: [Frame, Frame, …]      each Frame = { code: Arc<Code>,
-                 │                                   callee, this, pc, base }
+                 │                                   callee, this, construct,
+                                                     pc, base }
    stack: [ entry locals | entry operands | f1 locals | f1 operands | f2 … ]
                                            ▲ f1.base     (callee slot reused)
 ```
@@ -517,6 +518,26 @@ docs), entry point `Runtime::publish`. Design: `design.md` §4.
   clj-quickjs-104, primitive wrappers clj-quickjs-73). The compiler emits
   `get_this` for `this` in a non-arrow function; the parser still rejects
   it at the script top level and in arrows (clj-quickjs-104, -98).
+- **`new` (clj-quickjs-71).** `construct n` (`0x5E`) is `call n` for a
+  constructor: the callee must be a function object whose code is an
+  ordinary function (`ExecutableSpec::constructor`; arrows, built-ins and
+  everything else are a catchable `TypeError` "… is not a constructor").
+  It reads `F.prototype` (creating the lazy prototype object), allocates
+  an ordinary object owned by the running task that inherits from it, or
+  from `Object.prototype` when it is not an object, and enters `F` like a
+  call with that object as the frame's `this` and the frame's `construct`
+  flag set. Leaving a construct frame applies the return-override rule in
+  one place (`VmState::leave`, which `return` and a finally block's
+  pending return both reach): an object result is kept, any other result
+  is replaced by the frame's `this`. QuickJS (`JS_CallConstructorInternal`,
+  `JS_CreateFromConstructor`, revision 7d1c13c5d8f8) creates the object before
+  a recursive `JS_CallInternal` and checks the result after it returns on
+  the C stack; here the object and the flag are frame state, so a
+  constructor suspended at `__rt.need` holds nothing on the Rust stack and
+  its new object, reachable only from the traced `this` slot, survives
+  collections and migration (`tests/need.rs`). The allocation and the
+  frame entry happen in one instruction, so no collection falls between
+  them.
 - **Context and diagnostics.** Task identity and world are task-wide, so a
   call never changes world. A failure reports the failing frame's executable,
   instruction and source location plus `Diagnostic::call_chain`: each
@@ -653,7 +674,7 @@ Code: `src/vm/function.rs` (contract), `src/vm/dispatch.rs`; tests:
   JavaScript source executed by this VM; no C engine is involved.
 - **Deferred.** Method calls and function properties (so no `f.call`;
   string values run since clj-quickjs-65, object literals and named
-  properties since clj-quickjs-114, `this` since clj-quickjs-116); `arguments`, `new`, rest
+  properties since clj-quickjs-114, `this` since clj-quickjs-116, `new` since clj-quickjs-71); `arguments`, rest
   parameters (defaults: clj-quickjs-100) (var-scoped redeclaration by function declarations runs since
   clj-quickjs-94); an initialize-once immutable cell, which would let a
   hoisted declaration capture a `const` of its own scope by value.
@@ -2424,7 +2445,8 @@ and Charlie Gordon) and is listed here with its source path and revision:
   expected)` comparison of the `assert` helper (line 1) in
   `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
   Modified: each `assert` is a Rust assertion on the expression's value;
-  `new Object()` waits for clj-quickjs-71 and `Object.getPrototypeOf` for
+  `new Object()` waits for built-in constructors (clj-quickjs-71 constructs
+  with ordinary functions only) and `Object.getPrototypeOf` for
   the reflection pellet. The notice on `object_literals_and_named_properties`
   covers them. `research/quickjs/quickjs.c` `js_object_constructor`,
   `js_object_toString`, `js_object_valueOf`, `js_object_is`, `JS_ToObject`,
@@ -2447,7 +2469,7 @@ and Charlie Gordon) and is listed here with its source path and revision:
   writable: true, configurable: true, enumerable: true }); a.y === 3` case
   of `test` (line 124) in `research/quickjs/tests/test_builtin.js`,
   revision 7d1c13c5d8f8. Modified: `new Object()` is `Object()`
-  (clj-quickjs-71) and the `assert` is a Rust assertion. The notice on
+  (built-in constructors are not constructors yet) and the `assert` is a Rust assertion. The notice on
   `object_literals_and_named_properties` covers it.
   `research/quickjs/quickjs.c` `js_object_defineProperty`,
   `JS_DefineProperty`, `js_update_property_flags`, `js_obj_to_desc` and
@@ -2463,3 +2485,15 @@ and Charlie Gordon) and is listed here with its source path and revision:
   notice on `loose_equality_with_a_boolean_left_operand` covers them.
   `research/quickjs/quickjs.c` `js_instantiate_prototype`, `js_closure2`
   and `js_closure` were consulted only, for semantics. No code was copied.
+- `tests/js_source.rs` `new_operator_constructs_objects` (clj-quickjs-71):
+  the constructor `F` (`function F(x) { this.x = x; }`, line 190) and the
+  `b = new F(2); b.x === 2` case of `test_op2` (line 195) in
+  `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8.
+  Modified: the `assert` is a Rust assertion; the `a = new Object` case is
+  asserted to be a catchable `TypeError` (built-in constructors are not
+  constructors yet). The notice on
+  `loose_equality_with_a_boolean_left_operand` covers it.
+  `research/quickjs/quickjs.c` `js_parse_postfix_expr` (`TOK_NEW`),
+  `OP_call_constructor`, `JS_CallConstructorInternal`,
+  `JS_CreateFromConstructor` and `js_get_prototype_from_ctor` were consulted
+  only, for semantics. No code was copied.

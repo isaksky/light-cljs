@@ -150,7 +150,9 @@ Exponentiation        = Unary | Update "**" Exponentiation
 Unary                 = ( "!" | "-" | "+" | "~" | "typeof" | "void" ) Unary | Update
 Update                = ( "++" | "--" ) Unary
                       | Call [ [no LineTerminator here] ( "++" | "--" ) ]
-Call                  = Primary { Arguments | "." IdentifierName | "[" Expression "]" }
+Call                  = ( Primary | New ) { Arguments | "." IdentifierName | "[" Expression "]" }
+New                   = "new" ( Primary | New ) { "." IdentifierName | "[" Expression "]" } [ Arguments ]
+                        (* the first Arguments belong to `new`: `new F()()` calls the result *)
 Arguments             = "(" [ AssignmentExpression { "," AssignmentExpression } [ "," ] ] ")"
 Primary               = Identifier | Literal | FunctionExpression | ObjectLiteral
                       | ArrayLiteral | TemplateLiteral | "this" | "(" Expression ")"
@@ -342,7 +344,7 @@ Every form below is rejected where it starts. Error kinds:
 | Form | Kind |
 |------|------|
 | `var` as a `for` head, for-in and for-of loops, `debugger`, `with` | Unsupported |
-| classes, `new`, `super`, `import`/`export`, dynamic `import` | Unsupported |
+| classes, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
 | `this` at the script top level (clj-quickjs-104) and inside an arrow function, its parameters included (lexical `this`, clj-quickjs-98) | Unsupported |
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
 | rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
@@ -466,8 +468,9 @@ checks left to later stages:
   shadows the built-in as usual.
 - **`this` is only a non-arrow function's receiver** (clj-quickjs-116):
   `this` at the script top level (the global object, clj-quickjs-104) and
-  an arrow's lexical `this` (clj-quickjs-98) are rejected; there is no
-  `new` (clj-quickjs-71) or `call`/`apply`/`bind` (clj-quickjs-102); a
+  an arrow's lexical `this` (clj-quickjs-98) are rejected; `new F()`
+  passes the new object (clj-quickjs-71); there is no
+  `call`/`apply`/`bind` (clj-quickjs-102); a
   computed method call `o[k]()` passes `o` like `o.m()` (clj-quickjs-118).
   In sloppy code `this` of a call without an object receiver (a plain
   call `f()`, which would see the global object, or a primitive one,
@@ -479,8 +482,9 @@ checks left to later stages:
   (`Object.call`, `Object.is.toString`) fails with `UnsupportedOperand`.
   `Object(v)` of a number, string or boolean and
   `Object.prototype.toString`/`valueOf` of such a receiver need wrapper
-  objects (clj-quickjs-72, -73) and fail the same way; `new Object()` is
-  clj-quickjs-71.
+  objects (clj-quickjs-72, -73) and fail the same way. Built-in functions
+  are not constructors yet: `new Object()` is a catchable `TypeError`
+  (clj-quickjs-71 constructs with ordinary functions only).
 - **Objects are task-owned.** An object or array belongs to the task that
   created it: only that task reads or writes its properties (another task
   fails with `ForeignObject`), and publishing a value that reaches one to
@@ -743,6 +747,7 @@ Executed, with JavaScript semantics:
 | `function f(a, b = expr) { ... }`, `(a = expr) => ...` (clj-quickjs-100) | on entry, the parameters are initialized left to right; a parameter's default is evaluated only when its argument is `undefined` (missing or passed: `f(1)` and `f(1, undefined)` run it, `f(1, null)` does not) and becomes its value. Parameters are bindings with a temporal dead zone: a default sees the parameters before it, the enclosing scopes and the function's own name, but reading itself or a later parameter is a ReferenceError (`function f(a = b, b) {} f()`). The parameters have a scope of their own around the body's: the body's `let`/`const`/`var`/function declarations are invisible to the defaults (`const x = 1; function f(a = () => x) { var x = 2; return a(); }` gives 1); a body `var` that repeats a parameter is a separate binding starting with the parameter's value, and a body function declaration may repeat one (a `let`/`const` may not). Closures created in a default capture the parameter bindings under the usual value/cell rule, so they see the body's later assignments to a parameter, and one run before its parameter is initialized fails with the run-time ReferenceError. QuickJS: `js_parse_function_decl2` (`has_parameter_expressions`) |
 | `o.m(a, b)` (clj-quickjs-117) | a method call: evaluates `o` once, reads `m` (the checks of `o.name`), evaluates the arguments, then calls with `o` as the receiver (`call_method`); a parenthesized callee `(o.m)()` is the same call, `(0, o.m)()` is a plain call. A built-in function sees the receiver as `this`, and so does a JavaScript function (clj-quickjs-116). `(f = o.m)()` and `let f = o.m; f()` are plain calls too. A plain call passes `undefined` as the receiver |
 | `this` (clj-quickjs-116) | inside a non-arrow function (its body and its parameters' defaults, and blocks, `try` and nested statements in it): the receiver the running call was made with, the very object (`get_this`, which reads the frame's `this` slot and allocates nothing): `o` for a method call `o.m()`, `undefined` for a plain call `f()`, for a task's entry function and for a callback of a resumable native (`__rt.reduce`). A function nested in it has its own `this`. In strict code the receiver is used as is, so `this.x` in a plain call throws a catchable TypeError. In sloppy code an object receiver is used as is, and evaluating `this` with any other receiver fails the task with `UnsupportedOperand` (it would be the global object, clj-quickjs-104, or a wrapper, clj-quickjs-73). The frame's `this` is task-owned and traced with the frame, so it survives waits, collections and migration |
+| `new F(a, b)`, `new F` (clj-quickjs-71) | evaluates `F`, then the arguments (none without an argument list), then `construct` at the `new` token (ECMAScript EvaluateNew, QuickJS `OP_call_constructor`): `F` must be a function from a `function` declaration or expression; anything else (a primitive, an arrow function, a built-in such as `Object`, a collection, a plain object) is a catchable TypeError `… is not a constructor` reported at `new`. A new ordinary object owned by the task inherits from `F.prototype` (the lazy prototype object, created on first use, whose `constructor` is `F`) or, when `F.prototype` is not an object, from `Object.prototype`; `F` runs in a new task-owned frame with it as `this` (so it may yield, wait on `__rt.need`, be collected around and migrate like any call). If `F` returns an object, that object is the result, otherwise the new object is (return override). `new F()()` calls the result; `new new F()()` constructs with it. `new` on a published (shared) function fails like reading its `prototype` |
 | `Object` and other built-in globals (clj-quickjs-117) | a name with no lexical binding that is a built-in global (today only `Object`) is the runtime's shared, immutable intrinsic (`get_builtin_global`), the same object in every task; a `let`/`const`/`var`/parameter of that name shadows it |
 | `Object(v)`, `Object()` (clj-quickjs-117) | `undefined`, `null` or no argument: a new ordinary object inheriting from `Object.prototype`; an object (any heap value): `v` itself; a number, string or boolean: `UnsupportedOperand` (wrapper objects, clj-quickjs-72). `Object.length` is 1, `Object.prototype.constructor === Object` |
 | `Object.is(a, b)` (clj-quickjs-117) | SameValue: like `===` except `Object.is(NaN, NaN)` and `!Object.is(0, -0)` |
@@ -1045,7 +1050,7 @@ Gaps specific to execution:
   clj-quickjs-102/-103): those names fail with `UnsupportedOperand`. A
   function with own properties (or a read `prototype`) cannot be
   published, and a published function cannot get any (`TypeError`) or
-  create its `prototype` (`UnsupportedOperand`). No `arguments`, `new`,
+  create its `prototype` (`UnsupportedOperand`), so `new` on it fails too. No `arguments`,
   rest parameters, getters or generators; `this` is only a non-arrow function's receiver (see
   "Explicit gaps").
 
@@ -1326,6 +1331,20 @@ let counter = {n: 0, add: function (k = 1) { this.n = this.n + k; return this; }
 counter.add().add(2).n === 3 && (counter.add)() === counter;
 function who() { return this; }
 who() === undefined && (0, counter.add) !== undefined;
+```
+
+`new` on ordinary functions (clj-quickjs-71); each line below evaluates to
+`true`:
+
+```js accept
+function F(x) { this.x = x; } const b = new F(2); b.x === 2 && (new F).x === undefined && new F(1) !== new F(1);
+function G() { this.y = 1; return {y: 2}; } function H() { this.z = 1; return 5; } new G().y === 2 && new H().z === 1;
+function P(v) { this.v = v; } P.prototype.twice = function () { return this.v * 2; }; new P(3).twice() === 6 && new P(3).constructor === P;
+let r = false; try { new Object(); } catch (e) { r = true; } r;
+```
+
+```js reject Unsupported 1:23
+function f() { return new.target; }
 ```
 
 Data property attributes (clj-quickjs-119); each line below evaluates to

@@ -1964,7 +1964,12 @@ impl<'a> Parser<'a> {
     /// value is not a callee or member object (`a++()` is a syntax error).
     fn parse_call(&mut self) -> PResult<Expr> {
         let saved = self.depth;
-        let mut expr = self.parse_primary()?;
+        let head = if self.is_keyword(Keyword::New) {
+            self.parse_new()
+        } else {
+            self.parse_primary()
+        };
+        let mut expr = head?;
         loop {
             if self.is_punct(Punct::LParen) {
                 self.deeper(cost::CALL)?;
@@ -2004,6 +2009,65 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        self.depth = saved;
+        Ok(expr)
+    }
+
+    /// `new` MemberExpression Arguments? (clj-quickjs-71; QuickJS
+    /// `js_parse_postfix_expr`, `TOK_NEW`, revision 7d1c13c5d8f8), at the
+    /// `new` token. The MemberExpression is a primary expression or another
+    /// `new` expression followed by `.` and `[ ]` accesses only, so the
+    /// first argument list belongs to this `new` (`new F()()` calls the
+    /// constructed value, `new new F()()` constructs with the result of
+    /// `new F()`). Without an argument list there are no arguments
+    /// (`new F`). `new.target` is not supported (clj-quickjs-99).
+    #[inline(never)]
+    fn parse_new(&mut self) -> PResult<Expr> {
+        let saved = self.depth;
+        self.deeper(cost::CALL)?;
+        let op_span = self.advance()?.span;
+        if self.is_punct(Punct::Dot) {
+            return Err(self.unsupported(self.span_from(op_span.start), "`new.target` is"));
+        }
+        let mut callee = if self.is_keyword(Keyword::New) {
+            self.parse_new()?
+        } else {
+            self.parse_primary()?
+        };
+        loop {
+            if self.is_punct(Punct::Dot) {
+                self.deeper(cost::OPERATOR)?;
+                let dot = self.tok.span;
+                let property = self.parse_property_name()?;
+                let span = callee.span.to(property.span);
+                callee = self.expr(
+                    ExprKind::Member {
+                        object: Box::new(callee),
+                        property,
+                        op_span: dot,
+                    },
+                    span,
+                )?;
+            } else if self.is_punct(Punct::LBracket) && !is_reserved_binding(&callee) {
+                callee = self.parse_index(callee)?;
+            } else {
+                break;
+            }
+        }
+        let args = if self.is_punct(Punct::LParen) {
+            self.parse_arguments()?
+        } else {
+            Vec::new()
+        };
+        let span = self.span_from(op_span.start);
+        let expr = self.expr(
+            ExprKind::New {
+                callee: Box::new(callee),
+                args,
+                op_span,
+            },
+            span,
+        )?;
         self.depth = saved;
         Ok(expr)
     }
@@ -2375,7 +2439,6 @@ fn unsupported_statement(k: Keyword) -> Option<&'static str> {
 fn unsupported_expression_keyword(k: Keyword) -> Option<&'static str> {
     Some(match k {
         Keyword::Class => "classes are",
-        Keyword::New => "the `new` operator is",
         Keyword::This => "`this` is",
         Keyword::Super => "`super` is",
         Keyword::Import => "dynamic `import` is",

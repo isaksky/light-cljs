@@ -88,6 +88,7 @@
 //! | `NewObjectLiteral` | 0x54 | –               | → obj                  | allocate a fresh ordinary object inheriting from `Object.prototype` (an object literal) |
 //! | `ToString`      | 0x55 | –                  | v → s                  | JavaScript ToString on primitives (clj-quickjs-57) |
 //! | `GetThis`       | 0x56 | –                  | → this                 | push the running frame's `this` value (the receiver it was called with) |
+//! | `Construct`     | 0x5E | u16 argument count | f a1 … an → obj        | `new f(a1, …, an)`: construct with the ordinary function `f` (clj-quickjs-71) |
 //!
 //! Opcodes `0x12`–`0x20` are the private collection intrinsics and builder
 //! operations. Their contract (operand validation, errors, the builder
@@ -324,6 +325,22 @@
 //! `UnsupportedOperand` instead of pushing a wrong value. It never
 //! allocates and is not a poll point.
 //!
+//! Opcode `0x5E`, `Construct` (clj-quickjs-71), is `new f(args)` (QuickJS
+//! `OP_call_constructor`, `JS_CallConstructorInternal`, revision
+//! 7d1c13c5d8f8). It checks that `f` is a constructor: a function object
+//! whose code is an ordinary function (`ExecutableSpec::constructor`, a
+//! `function` declaration or expression). Anything else (a primitive, a
+//! built-in, an arrow function, a collection) fails with a catchable
+//! `TypeError` "… is not a constructor". It then reads `f.prototype`
+//! (materializing the lazy prototype object, `crate::vm::function`),
+//! allocates an ordinary object owned by the running task whose prototype
+//! is that value if it is an object and `Object.prototype` otherwise, and
+//! enters `f` in a new frame exactly like `Call`, with the new object as
+//! its `this` and the frame marked as a construct frame
+//! (`crate::vm::frames`). When that frame returns, a returned object is the
+//! result and any other value is replaced by the frame's `this` (the
+//! return-override rule). It may allocate, so it is a poll point.
+//!
 //! Byte `0x00` is deliberately unassigned so zeroed memory never decodes.
 //! Branch targets are absolute byte offsets that must land on an instruction
 //! boundary. The opcode list is an append-only registry: new opcodes take the
@@ -442,6 +459,7 @@ pub enum Opcode {
     PutElem = 0x5B,
     Dup2 = 0x5C,
     ToPropertyKey = 0x5D,
+    Construct = 0x5E,
 }
 
 /// Operand encoding of an opcode.
@@ -590,6 +608,7 @@ impl Opcode {
             0x5B => PutElem,
             0x5C => Dup2,
             0x5D => ToPropertyKey,
+            0x5E => Construct,
             _ => return None,
         })
     }
@@ -691,6 +710,7 @@ impl Opcode {
             PutElem => "put_elem",
             Dup2 => "dup2",
             ToPropertyKey => "to_property_key",
+            Construct => "construct",
         }
     }
 
@@ -704,7 +724,7 @@ impl Opcode {
             NewVector | NewMap => OperandKind::Count,
             ThrowError => OperandKind::ThrowKind,
             Function => OperandKind::Function,
-            Call | CallMethod => OperandKind::ArgCount,
+            Call | CallMethod | Construct => OperandKind::ArgCount,
             GetBuiltinGlobal => OperandKind::BuiltinGlobal,
             GetCapture => OperandKind::Capture,
             GetField | PutField | DefineField => OperandKind::Name,
@@ -861,6 +881,8 @@ pub(crate) enum Instr {
     PutElem,
     Dup2,
     ToPropertyKey,
+    /// Argument count (the constructor is below the arguments).
+    Construct(u16),
 }
 
 impl Instr {
@@ -959,6 +981,7 @@ impl Instr {
             Instr::PutElem => Opcode::PutElem,
             Instr::Dup2 => Opcode::Dup2,
             Instr::ToPropertyKey => Opcode::ToPropertyKey,
+            Instr::Construct(_) => Opcode::Construct,
         }
     }
 
@@ -991,6 +1014,7 @@ impl Instr {
             NewVector(n) => (usize::from(n), 1),
             NewMap(n) => (2 * usize::from(n), 1),
             Call(n) => (usize::from(n) + 1, 1),
+            Construct(n) => (usize::from(n) + 1, 1),
             CallMethod(n) => (usize::from(n) + 2, 1),
             Function(_, captures) => (usize::from(captures), 1),
         }
@@ -1011,6 +1035,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 93);
+        assert_eq!(assigned, 94);
     }
 }

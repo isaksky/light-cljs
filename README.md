@@ -464,7 +464,7 @@ Supported (VM level; early VM tests use hand-assembled bytecode,
 Deferred:
 
 - (Compiling functions and calls from source: clj-quickjs-21, below.)
-- `arguments`, `new`, rest parameters (defaults: clj-quickjs-100, below), function properties
+- `arguments`, rest parameters (defaults: clj-quickjs-100, below), function properties
   (`length`, `name`), and native or host-function callees. (`this`:
   clj-quickjs-116, below.)
   (Catching `StackOverflow` and `TypeError`: clj-quickjs-11, below.)
@@ -633,7 +633,8 @@ Deferred:
 
 - Property access (`f.call`, methods, objects), `this` (clj-quickjs-116
   below), (string values: clj-quickjs-65 below)
-  `arguments`, `new`, rest parameters (defaults: clj-quickjs-100, below), generators. (Arrow
+  `arguments`, rest parameters (defaults: clj-quickjs-100, below), generators (`new`:
+  clj-quickjs-71, below). (Arrow
   functions: clj-quickjs-53 below.)
 - (A function declaration repeating a parameter or another declaration at
   the top level of a script or function body runs since clj-quickjs-94,
@@ -1848,7 +1849,7 @@ Deferred:
   `docs/grammar.md`, "Explicit gaps"); assigning `Object` is a compile-time
   `Unsupported` error until the global object (clj-quickjs-104).
 - (`this` inside JavaScript functions: clj-quickjs-116, below.) `new Object()`
-  (clj-quickjs-71), `Function.prototype` (built-in functions' inherited
+  (built-in constructors; `new` on ordinary functions is clj-quickjs-71), `Function.prototype` (built-in functions' inherited
   properties fail with `UnsupportedOperand`, clj-quickjs-102), wrapper
   objects for `Object(1)` and primitive receivers (clj-quickjs-72/-73),
   `Object.getPrototypeOf` and the other reflection functions.
@@ -1889,8 +1890,8 @@ Deferred:
 
 - `this` at the script top level (the global object, clj-quickjs-104) and
   an arrow's lexical `this` (clj-quickjs-98): `Unsupported` compile errors.
-- `new` (clj-quickjs-71; `o[k]()` passes `o` as `this` since
-  clj-quickjs-118), `call`/`apply` (clj-quickjs-102).
+- `call`/`apply` (clj-quickjs-102). (`new`: clj-quickjs-71; `o[k]()` passes `o`
+  as `this` since clj-quickjs-118.)
 - Sloppy-mode `this` substitution: in sloppy code `this` with an
   `undefined`, `null` or primitive receiver fails with
   `UnsupportedOperand` (the global object is clj-quickjs-104, wrappers
@@ -1983,5 +1984,36 @@ Deferred:
   `call`/`apply`/`bind`/`toString` (clj-quickjs-102/-103): those names fail
   with `UnsupportedOperand`, also in `Object.defineProperty` /
   `getOwnPropertyDescriptor` (which otherwise work on functions, through
-  the record). `Object.getPrototypeOf(f)` (clj-quickjs-121), `new` (clj-quickjs-71). Creating the `prototype` of a
+  the record). `Object.getPrototypeOf(f)` (clj-quickjs-121). Creating the `prototype` of a
   published function fails with `UnsupportedOperand`.
+
+### `new` on ordinary function constructors (clj-quickjs-71)
+
+Supported (`cargo test --test js_source new_operator_constructs_objects`,
+`cargo test --test js_source a_constructor_suspends_at_a_need_and_completes_after_publication`,
+`cargo test --test need a_constructor_resumes_with_its_new_object_after_a_wait_and_migration`,
+`cargo test --lib frontend::tests::new_expressions`):
+
+- `new F(args)` and `new F` (`new MemberExpression Arguments?`: `new a.b(c)`,
+  `new F()()` calls the result, `new new F()()`) on a `function`
+  declaration or expression: a new task-owned ordinary object inheriting
+  from `F.prototype` (or `Object.prototype` when that is not an object)
+  is `F`'s `this`; an object returned by `F` replaces it, any other return
+  value is ignored.
+- Anything else (`new 1`, an arrow function, a built-in such as `Object`,
+  a collection, a plain object) is a catchable `TypeError` "… is not a
+  constructor" at the `new` token, after the callee and the arguments are
+  evaluated.
+- The constructor runs in an ordinary task-owned frame marked as a
+  construct frame, so it may yield, wait on `__rt.need`, be collected
+  around and migrate between workers.
+- New opcode `construct` (`0x5E`, u16 argument count).
+
+Deferred:
+
+- `new.target` (clj-quickjs-99, `Unsupported`), classes and `super`
+  (clj-quickjs-135..-139), built-in constructors such as `new Object()`,
+  `new Number(1)`, `new String("abc")` (clj-quickjs-72), `instanceof`
+  (clj-quickjs-75), spread arguments.
+- `new` on a published function whose `prototype` was never created fails
+  with `UnsupportedOperand`, as reading that `prototype` does.

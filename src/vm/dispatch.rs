@@ -457,6 +457,59 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
     }
 }
 
+/// `Construct argc` (clj-quickjs-71; ECMAScript EvaluateNew steps 7-8,
+/// OrdinaryCreateFromConstructor; QuickJS `JS_CallConstructorInternal` and
+/// `js_get_prototype_from_ctor`, revision 7d1c13c5d8f8): the constructor and
+/// the arguments are the top operands. Only a function object whose code is
+/// an ordinary function is a constructor; anything else is a TypeError. The
+/// new object inherits from `f.prototype` when that is an object, else from
+/// `Object.prototype`, and becomes the `this` of a construct frame entered
+/// like a call; `VmState::leave` applies the return-override rule.
+fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault> {
+    let argc = usize::from(argc);
+    let task = state.diag.task;
+    let [f, ..] = top_operands(state, argc + 1)? else {
+        return Err(Fault::Internal("operand stack underflow"));
+    };
+    let f = f.clone();
+    let (id, code) = match callee(heap, &f) {
+        Ok(Callee::Code(id, code)) if code.constructor => (id, code),
+        Ok(_) => return Err(not_a_constructor(&f, "function")),
+        Err(Fault::NotCallable(what)) => return Err(not_a_constructor(&f, what)),
+        Err(fault) => return Err(fault),
+    };
+    // Reading `prototype` may create the lazy prototype object and build
+    // the realm; nothing is held across it but `f`, which is an operand.
+    let prototype = match property::get_field(heap, task, &f, &JsString::from("prototype"))? {
+        Value::Object(prototype) => prototype,
+        _ => {
+            realm::intrinsics(heap)
+                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+                .object_prototype
+        }
+    };
+    // The new object goes straight into the new frame's traced `this` in
+    // this instruction: no collection can run in between.
+    let object = heap
+        .alloc(HeapObject::Plain(OrdinaryObject::with_prototype(
+            task, prototype,
+        )))
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+    state.enter(code, id, Value::Object(object), argc)?;
+    state.top_mut().construct = true;
+    Ok(Flow::FrameChanged)
+}
+
+/// The TypeError of `new v` for a `v` that is not a constructor; `what`
+/// names a non-number value's kind.
+fn not_a_constructor(v: &Value, what: &str) -> Fault {
+    let what = match v {
+        Value::Number(_) => describe(v),
+        _ => what.to_string(),
+    };
+    Fault::TypeError(format!("{what} is not a constructor"))
+}
+
 /// The running frame's `this` for `GetThis`. Strict code sees the receiver
 /// as passed. Sloppy code would see the global object for an `undefined` or
 /// `null` receiver and ToObject of a primitive one; neither exists in this
@@ -1129,6 +1182,7 @@ fn step(
         }
         Instr::Call(argc) => return call(state, heap, argc, false),
         Instr::CallMethod(argc) => return call(state, heap, argc, true),
+        Instr::Construct(argc) => return construct(state, heap, argc),
         Instr::GetThis => {
             let this = this_value(state)?;
             state.push(this);
@@ -1155,7 +1209,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         Instr::Jump(target) | Instr::JumpIfFalse(target) => target as usize <= pc,
         // `CallFinally` may enter a finally block before it, and every cycle
         // through a jump completion's resume point passes one.
-        Instr::Call(_) | Instr::CallMethod(_) | Instr::Return | Instr::CallFinally => true,
+        Instr::Call(_) | Instr::CallMethod(_) | Instr::Return | Instr::CallFinally
+        | Instr::Construct(_) => true,
         // Builds the realm on first use (`crate::realm`).
         Instr::GetBuiltinGlobal(_) => true,
         // On a function object these may allocate its property record and

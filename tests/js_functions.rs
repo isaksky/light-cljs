@@ -920,8 +920,9 @@ fn arrow_function_values() {
 /// called instead of asking its `length` (clj-quickjs-101), and
 /// `f = function f(a = f) { return a; }; f() === f` of
 /// `test_argument_scope` (line 453), as a `const` binding a differently
-/// named expression and as a declaration. Its `arguments`, `this` and
-/// `eval` cases wait for clj-quickjs-97, -71 and -109; see
+/// named expression and as a declaration. Its `arguments`, `this`
+/// (`f.call(123)`; a `new F()` stand-in runs here) and `eval` cases wait
+/// for clj-quickjs-97, -102 and -109; see
 /// `docs/architecture.md`, "QuickJS references and provenance".
 ///
 /// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
@@ -1074,6 +1075,11 @@ fn default_parameters() {
     assert_eq!(
         eval("function F(a = this) { return a; } F()"),
         ValueView::Undefined
+    );
+    // In a construct call (clj-quickjs-71) a default sees the new object.
+    assert_eq!(
+        eval("function F(a = this) { this.d = a; } const o = new F(); o.d === o"),
+        ValueView::Bool(true)
     );
     assert_eq!(
         compile_err("let F = (a = this) => a;"),

@@ -8,8 +8,9 @@ use clj_quickjs::frontend::{
     compile_script_with,
 };
 use clj_quickjs::{
-    Budget, Cancel, Executable, Host, HostCall, Opcode, Primitive, RunOutcome, Runtime,
-    ValidationErrorKind, ValueView, VmError, VmErrorKind,
+    Budget, Cancel, Completion, DependencyId, DependencyKey, Executable, Host, HostCall, Opcode,
+    Primitive, ResultKind, RunOutcome, Runtime, ValidationErrorKind, ValueView, VmError,
+    VmErrorKind,
 };
 
 /// A host for budgeted runs of code that performs no host effects.
@@ -93,7 +94,8 @@ fn decode(code: &[u8]) -> Vec<(usize, Opcode)> {
             | Opcode::PutField
             | Opcode::DefineField
             | Opcode::GetBuiltinGlobal
-            | Opcode::CallMethod => 2,
+            | Opcode::CallMethod
+            | Opcode::Construct => 2,
             _ => 0,
         };
     }
@@ -4611,6 +4613,223 @@ fn method_calls_bind_this() {
     match sloppy("function g() { 'use strict'; return this; } g()") {
         RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Undefined),
         other => panic!("{other:?}"),
+    }
+}
+
+/// `new` on ordinary function constructors (clj-quickjs-71; the constructor
+/// `F` and the `new F(2)` case of `test_op2` in
+/// `research/quickjs/tests/test_language.js`, revision 7d1c13c5d8f8; QuickJS
+/// copyright and MIT license notice: see
+/// `loose_equality_with_a_boolean_left_operand`).
+#[test]
+fn new_operator_constructs_objects() {
+    let f = "function F(x) { this.x = x; }";
+    assert_eq!(num(&format!("{f} const b = new F(2); b.x")), 2.0);
+    assert_eq!(eval(&format!("{f} (new F).x")), ValueView::Undefined);
+    assert_eq!(
+        eval(&format!("{f} new F(1) !== new F(1)")),
+        ValueView::Bool(true)
+    );
+    // The new object inherits from `F.prototype`, whose `constructor` is
+    // `F`; instances share it and see properties added to it later.
+    assert_eq!(
+        eval(&format!(
+            "{f} const a = new F(1), b = new F(2); F.prototype.k = 7; \
+             a.constructor === F && b.k === 7 && a.k === 7 && a.x === 1"
+        )),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        num(
+            "function P() {} P.prototype = {m: function () { return this.v * 2; }}; \
+             function Q(v) { this.v = v; } Q.prototype = P.prototype; new Q(21).m()"
+        ),
+        42.0
+    );
+    // A `prototype` that is not an object: the new object inherits from
+    // `Object.prototype` instead.
+    assert_eq!(
+        eval(
+            "function N() {} N.prototype = 5; const n = new N(); \
+             n.constructor === Object && n.hasOwnProperty === Object.prototype.hasOwnProperty"
+        ),
+        ValueView::Bool(true)
+    );
+    // Return override: an object result replaces the new object, any other
+    // result is ignored.
+    assert_eq!(
+        num("function G() { this.y = 1; return {y: 2}; } new G().y"),
+        2.0
+    );
+    assert_eq!(num("function H() { this.z = 1; return 5; } new H().z"), 1.0);
+    assert_eq!(num("function U() { this.z = 3; return; } new U().z"), 3.0);
+    assert_eq!(
+        num("function U() { this.z = 3; return null; } new U().z"),
+        3.0
+    );
+    assert_eq!(
+        eval(
+            "const fn = function () { return 1; }; \
+             function R() { this.r = 1; return fn; } new R() === fn"
+        ),
+        ValueView::Bool(true)
+    );
+    // Through try/finally: the return a finally block completes is checked.
+    assert_eq!(
+        num(
+            "function T() { try { this.a = 1; return 2; } finally { this.b = 3; } } \
+             const t = new T(); t.a * 10 + t.b"
+        ),
+        13.0
+    );
+    // Arguments, nesting, and the result as a callee or a base.
+    assert_eq!(
+        num("function S(a, b) { this.s = a + b; } new S(1, 2).s + new S(new S(3, 4).s, 1).s"),
+        11.0
+    );
+    assert_eq!(
+        num("function K() { return function () { return 9; }; } new K()()"),
+        9.0
+    );
+    assert_eq!(
+        num("const ns = {C: function (v) { this.v = v; }}; new ns.C(6).v"),
+        6.0
+    );
+    assert_eq!(
+        num(
+            "function A() { this.n = 1; } function B() { return new A(); } new new B().constructor().n"
+        ),
+        1.0
+    );
+    // A plain call of a function is not a construction (strict: `this` is
+    // undefined), also from inside a constructor, whose `this` is intact
+    // afterwards.
+    assert_eq!(
+        eval("function P() { return this; } P()"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        num("function inner() { return this === undefined ? 1 : 0; } \
+             function O() { this.u = inner(); this.w = this.u + 1; } new O().w"),
+        2.0
+    );
+    // A sloppy-mode constructor sees the new object as well.
+    let sloppy = compile_script_with(
+        "test",
+        "function W() { this.w = 4; } new W().w",
+        ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    match run(&sloppy, &[]) {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(4.0)),
+        other => panic!("{other:?}"),
+    }
+    // Not constructors: catchable TypeErrors, reported at the `new` token.
+    for (src, message) in [
+        ("new 1", "1 is not a constructor"),
+        (
+            "const v = __rt.vector(); new v",
+            "vector is not a constructor",
+        ),
+        ("new undefined", "undefined is not a constructor"),
+        (
+            "const a = () => 1; new a()",
+            "function is not a constructor",
+        ),
+        ("new Object()", "function is not a constructor"),
+        ("const o = {}; new o()", "object is not a constructor"),
+    ] {
+        assert_eq!(
+            string(&format!(
+                "let r = 'none'; try {{ {src}; }} catch (e) {{ r = 'caught'; }} r"
+            )),
+            "caught",
+            "{src}"
+        );
+        let (kind, got, line, column) = failure_at(&format!("\n{src};"));
+        assert_eq!(kind, VmErrorKind::TypeError, "{src}");
+        assert_eq!(got, message, "{src}");
+        let at = src.rfind("new").unwrap() as u32 + 1;
+        assert_eq!((line, column), (2, at), "{src}");
+    }
+    // The callee and the arguments are evaluated before the check.
+    assert_eq!(
+        string(
+            "let log = ''; function c() { log = log + 'c'; return 1; } \
+             function a() { log = log + 'a'; return 0; } \
+             try { new (c())(a()); } catch (e) { log = log + 'e'; } log"
+        ),
+        "cae"
+    );
+    // `new` compiles to `construct`.
+    assert!(opcodes(&exe(&format!("{f} new F(1)"))).contains(&Opcode::Construct));
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        "function F(x) { this.x = x; } const b = new F(2); b.x === 2 && (new F).x === undefined && new F(1) !== new F(1);",
+        "function G() { this.y = 1; return {y: 2}; } function H() { this.z = 1; return 5; } new G().y === 2 && new H().z === 1;",
+        "function P(v) { this.v = v; } P.prototype.twice = function () { return this.v * 2; }; new P(3).twice() === 6 && new P(3).constructor === P;",
+        "let r = false; try { new Object(); } catch (e) { r = true; } r;",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// `new` near the parser's nesting budget (clj-quickjs-71): 84 nested
+/// `new`s and 60 constructions nested in arguments compile on the same
+/// 2 MiB thread stack as `deep_expressions_compile_within_a_small_stack`.
+#[test]
+fn deep_new_expressions_compile_within_a_small_stack() {
+    let news = format!("{}F;", "new ".repeat(84));
+    let args = format!("{}1{};", "new F(".repeat(60), ")".repeat(60));
+    let handle = std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(move || {
+            let a = compile_script("news", &news).map(|_| ());
+            let b = compile_script("args", &args).map(|_| ());
+            (a, b)
+        })
+        .unwrap();
+    let (a, b) = handle.join().unwrap();
+    a.unwrap();
+    b.unwrap();
+}
+
+/// A constructor that waits on a pending cell (clj-quickjs-71): its frame,
+/// whose `this` is the new object, is task-owned state, so the task
+/// suspends at `__rt.need`, survives a collection, and completes with the
+/// constructed object after the cell is published.
+#[test]
+fn a_constructor_suspends_at_a_need_and_completes_after_publication() {
+    let rt = Runtime::new();
+    let script = exe("function F(a) { this.a = a; this.v = __rt.need(5, 3); } \
+         const o = new F(4); \
+         o.constructor === F ? o.a * 100 + o.v : -1");
+    let task = rt.spawn(&script, &[]).unwrap();
+    let key = DependencyKey::new(rt.world(), DependencyId::new(5), ResultKind::new(3));
+    match task.run().unwrap() {
+        RunOutcome::Waiting(k) => assert_eq!(k, key),
+        other => panic!("expected Waiting, got {other:?}"),
+    }
+    let mut requests = task.take_producer_requests();
+    assert_eq!(requests.len(), 1);
+    let request = requests.pop().unwrap();
+    rt.collect().unwrap();
+    let value = rt.root(Primitive::Number(7.0));
+    let wakeups = rt
+        .complete(request.key(), request.producer(), Completion::Ready(&value))
+        .unwrap();
+    let mut runnable = wakeups.into_runnable();
+    assert_eq!(runnable.len(), 1);
+    match runnable.pop().unwrap().run().unwrap() {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Number(407.0)),
+        other => panic!("expected Complete, got {other:?}"),
+    }
+    // The task's completion value is the constructed object itself (the
+    // cell is complete now: no wait).
+    let direct = exe("function F() { this.v = __rt.need(5, 3); } new F()");
+    match rt.spawn(&direct, &[]).unwrap().run().unwrap() {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Object),
+        other => panic!("expected Complete, got {other:?}"),
     }
 }
 
