@@ -840,7 +840,7 @@ Supported:
   catch target starts one value deeper). `return` consults the handler
   stack.
 - ReferenceError, TypeError and StackOverflow failures are catchable: the
-  caught value is a fresh immutable error object; rethrowing it reports the
+  caught value is a fresh immutable engine-raised error object; rethrowing it reports the
   original error. An uncaught `throw` of any other value fails the task with
   `VmErrorKind::Thrown` ("uncaught exception: 42") at the throw, with its
   source position and call chain, also after leaving through finally
@@ -930,7 +930,7 @@ terms of the claimant.
 | Command | What happens | What it proves (§13) |
 |---------|--------------|----------------------|
 | `cargo run --example e2e` (`success`) | as above; the finally block around the need runs once, after the wait (CLEANUP before POST) | items 1-7, item 8 completion; exception/finally state held across a wait, collection and migration |
-| `cargo run --example e2e -- failure` | the producer task is given slot -1, `producer.js` throws and the task fails; the host publishes `Completion::Failed` with a value naming the throw's line and column; the one publication wakes both consumers | item 8 failure: both consumers are woken once, resume on the other worker, their `catch` observes the dependency error (CAUGHT), the finally block runs after it, and each returns the error object whose `Rooted::error_cause` *is* the published value; the cell holds that object; nothing before the need is replayed |
+| `cargo run --example e2e -- failure` | the producer task is given slot -1, `producer.js` throws and the task fails; the host publishes `Completion::Failed` with a value naming the throw's line and column; the one publication wakes both consumers | item 8 failure: both consumers are woken once, resume on the other worker, their `catch` observes the dependency error (CAUGHT), the finally block runs after it, and each returns the engine-raised error object whose `Rooted::error_cause` *is* the published value; the cell holds that object; nothing before the need is replayed |
 | `cargo run --example e2e -- cancel` | after both consumers park, the host cancels the one whose need claimed the producer request (`Executor::cancel`) | item 8 cancellation: its cleanup run (enqueued as `Cancelled`, on the other worker) runs the pending finally block once (no catch, nothing after the need) and ends `Cancelled`; the cell keeps its producer and loses only that waiter; the producer still completes and its publication wakes only the other consumer, which completes with the input's subtree by identity |
 | `cargo run --example e2e -- companion` | one `companion.js` task reaches the helper from inside `__rt.reduce`'s JavaScript callback, inside two `try`/`finally` blocks, with two closures sharing a reassigned local | closing paragraph: a nested call (fold → callback → helper), a live closure-captured local, try/finally state and native-to-JavaScript reentry. The task suspends inside the fold's callback, is parked through a collection, resumes on the other worker; VISIT runs once per step (1, then 2: the counter is one live binding, no step repeated), the inner then outer finally run once each after the fold, and the returned vector holds the input's body and inner subtrees by identity (not equal copies) |
 
@@ -944,7 +944,7 @@ Deferred:
 
 - An uncaught dependency failure, and a cancellation or failure while
   parked inside the native fold, are not part of the example (covered by
-  `tests/exception_waits.rs` and `tests/native_unwind.rs`); error objects
+  `tests/exception_waits.rs` and `tests/native_unwind.rs`); engine-raised error objects
   still have no JavaScript-readable properties, so the consumer returns the
   caught error for Rust to inspect.
 
@@ -995,12 +995,12 @@ Supported:
   and exceptions), frames and locals stay in the task across the wait,
   collection and migration to another thread or worker; a finally block
   that waits then completes its pending `return` or rethrow.
-- A failed or cancelled cell raises a catchable error object at the `need`
+- A failed or cancelled cell raises a catchable engine-raised error object at the `need`
   (ready at the need or delivered on resume): `VmErrorKind::DependencyFailed`
   / `DependencyCancelled` with the key (world, definition, kind), the need's
   source position and call chain, and the producer's published error value
   as its cause. `Rooted::error()` and `Rooted::error_cause()` read a caught
-  error object from Rust. Uncaught (also after finally blocks or a rethrow)
+  engine-raised error object from Rust. Uncaught (also after finally blocks or a rethrow)
   the run fails with that error.
 - Consumer cancellation (`Task::cancel`) is not catchable and runs finally
   blocks, like a generator's `return()`: the observing run leaves the cell,
@@ -1625,7 +1625,7 @@ Supported (`cargo test --test js_source typeof_operator`,
   `"boolean"`, `"number"`, `"string"`, `"function"` for function objects
   (declarations, expressions, arrows, closures: the only callable values),
   and `"object"` for every other object (persistent vectors, maps and
-  occurrences, builders, atoms, caught error objects, plain objects). New
+  occurrences, builders, atoms, caught engine-raised error objects, plain objects). New
   opcode `typeof` (`0x4E`).
 - A name with no binding as the operand, possibly parenthesized
   (`typeof nope`, `typeof (nope)`), is `"undefined"` rather than a
@@ -1701,7 +1701,7 @@ Deferred:
   Computed keys in literals (clj-quickjs-233;
   `o[k]` is clj-quickjs-115, below; `delete` is clj-quickjs-124, below),
   `__proto__` (property `++`/`--` and compound assignment: clj-quickjs-76,
-  -260, above); properties of error objects and
+  -260, above); properties of engine-raised error objects and
   primitives fail with `UnsupportedOperand` (function properties:
   clj-quickjs-125, below).
 
@@ -1820,7 +1820,8 @@ Supported (`cargo test --test js_source object_intrinsics`,
 - The free name `Object` resolves after lexical scopes (shadowable);
   `typeof Object` is `"function"`.
 - `Object(v)` (`undefined`/`null`: a new object; an object: itself),
-  `Object.is` (SameValue), `toString` (`"[object Object]"`, and
+  `Object.is` (SameValue), `toString` (`"[object Object]"`,
+  `"[object Error]"` for a constructed Error instance, and
   `"[object Undefined]"`/`"[object Null]"` for a plain call), `valueOf`.
 - Method calls `o.m(...)` evaluate `o` once and pass it as the receiver of
   a built-in function (`call_method`); JavaScript methods are called with
@@ -2031,7 +2032,7 @@ Supported (`cargo test --test js_source prototype_reflection`, `cargo test --lib
 
 Deferred:
 
-- `Object.getPrototypeOf` on primitives and error objects
+- `Object.getPrototypeOf` on primitives and engine-raised error objects
   (clj-quickjs-230), changing a function's prototype, and
   `Object.create`'s second argument (`Object.defineProperties`). Extensibility (clj-quickjs-122) and
   `Object.getOwnPropertyNames` (clj-quickjs-123) have their own sections below.
@@ -2060,7 +2061,7 @@ Deferred:
 - Freezing does not change ownership: a frozen object stays task-owned and cannot be published,
   and freezing a function makes it unpublishable (it gets a property record).
 - `Object.seal`,
-  `Object.isSealed` and `Reflect`'s extensibility functions are not provided; error objects fail with `UnsupportedOperand`
+  `Object.isSealed` and `Reflect`'s extensibility functions are not provided; engine-raised error objects fail with `UnsupportedOperand`
   (clj-quickjs-230).
 
 ### `Object.keys` and `Object.getOwnPropertyNames` (clj-quickjs-123)
@@ -2119,7 +2120,7 @@ Supported (`cargo test --test js_source delete_property_references`,
 Deferred:
 
 - `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for those forms;
-  properties of error objects
+  properties of engine-raised error objects
   (clj-quickjs-230) fail with `UnsupportedOperand`. Built-in objects are immutable: deleting a
   property they have is a `TypeError` in both modes.
 
@@ -2141,7 +2142,7 @@ Supported (`cargo test --test js_source in_operator`,
 Deferred:
 
 - Names `Function.prototype` does not have yet
-  (`toString`; `call`/`apply`/`bind` are supported) and error objects' properties (clj-quickjs-230) fail
+  (`toString`; `call`/`apply`/`bind` are supported) and engine-raised error objects' properties (clj-quickjs-230) fail
   with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist.
 
 ### `for`-`in` over own properties (clj-quickjs-85)
@@ -2197,7 +2198,7 @@ in `src/vm/keys.rs`, "Prototype chain"):
   unlinked during the loop survives waits, collections and migration until
   the walk leaves it.
 
-Deferred: an error object on the chain fails with `UnsupportedOperand` (its
+Deferred: an engine-raised error object on the chain fails with `UnsupportedOperand` (its
 own keys are clj-quickjs-230); Proxy traps (clj-quickjs-91) as above.
 
 ### `for`-`in` over arrays (clj-quickjs-88)
