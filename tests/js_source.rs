@@ -9197,6 +9197,10 @@ fn primitive_wrapper_constructors_and_methods() {
         "let s = new String('a'); s.valueOf = function () { return 'b'; }; s.valueOf() === 'b' && s.toString() === 'a'",
         r"(new String('\u{d800}')).valueOf() === '\u{d800}'",
         "let log = ''; Number(1, log = log + 'n'); new String('x', log = log + 's'); log === 'ns'",
+        "Number.call(null, '0x10') === 16 && String.apply(null, [1e21]) === '1e+21'",
+        "Number.prototype.valueOf.call(new Number(7)) === 7 && String.prototype.toString.apply(new String('abc'), []) === 'abc'",
+        "Number.prototype.toString.call(5) === '5' && String.prototype.valueOf.call('a') === 'a'",
+        "let r = 0; try { Number.prototype.valueOf.call({}); } catch (e) { r = 1; } try { String.prototype.toString.call(new Number(1)); } catch (e) { r = r + 10; } r === 11",
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
