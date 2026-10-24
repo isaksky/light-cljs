@@ -13133,7 +13133,7 @@ fn primitive_wrappers_string_properties() {
         "let s = new String('ab'); s['01'] = 7; s[2] = 'c'; delete s[2] && delete s['01'] && s[2] === undefined && s.length === 2",
         "let s = ''; for (let k in new String('abc')) { s = s + k; } s === '012'",
         "let k = Object.getOwnPropertyNames(new String('')); k.length === 1 && k[0] === 'length'",
-        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k[7] === 'indexOf' && k[8] === 'lastIndexOf' && k[9] === 'substring' && k[10] === 'slice' && k[11] === 'concat' && k[12] === 'padStart' && k[13] === 'padEnd' && k[14] === 'split' && k.length === 15",
+        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k[7] === 'indexOf' && k[8] === 'lastIndexOf' && k[9] === 'substring' && k[10] === 'slice' && k[11] === 'concat' && k[12] === 'padStart' && k[13] === 'padEnd' && k[14] === 'split' && k[15] === 'replace' && k[16] === 'replaceAll' && k.length === 17",
         "'length' in new String('abc') && 0 in new String('abc') && !(3 in new String('abc'))",
         "let s = new String('abc'); Object.setPrototypeOf(s, null); s.length === 3 && s[1] === 'b' && s.toString === undefined",
         "Object.create(new String('abc')).length === 3 && Object.create(new String('abc'))[1] === 'b'",
@@ -16748,4 +16748,146 @@ fn typed_array_array_source_collection_order() {
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
+}
+/// Synthetic fixtures, not light-cljs output. Replacement positions and
+/// captures are UTF-16 code units; dollar substitutions follow GetSubstitution.
+#[test]
+fn string_replace() {
+    for source in [
+        r#""abcabc".replace("b", "X") === "aXcabc""#,
+        r#""abcabc".replaceAll("b", "X") === "aXcaXc""#,
+        r#""ab".replaceAll("", "-") === "-a-b-""#,
+        r#""aAbB".replace(/a/g, "X") === "XAbB""#,
+        r#""abc".replace(/(?:)/g, "-") === "-a-b-c-""#,
+        r#""abc".replace(/b/, "[$&$`$'$$]") === "a[bac$]c""#,
+        r#""abc".replace(/(b)/, "$1$2$01") === "ab$2bc""#,
+        r#""abc".replace(/(?<x>b)/, "<$<x>>") === "a<b>c""#,
+        r#"let caught = false; try { "aa".replaceAll(/a/, "b"); } catch(e) { caught = e instanceof TypeError; } caught"#,
+        r#"let r = /a/g; r.lastIndex = 99; "aa".replace(r, "b") === "bb" && r.lastIndex === 0"#,
+        r#"let r = /(?:)/g; "ab".replaceAll(r, "-") === "-a-b-" && r.lastIndex === 0"#,
+        r#""aaa".replaceAll("aa", "X") === "Xa" && "".replaceAll("", "-") === "-""#,
+        r#""abc".replace("", "-") === "-abc" && "abc".replace("z", "x") === "abc""#,
+        r#""b".replace(/(a)?b/, "<$1>") === "<>" && "b".replace(/b/, "$<x>$0$00$01$10$") === "$<x>$0$00$01$10$""#,
+        r#""ab".replace(/(a)(b)/, "$12-$02-$99") === "a2-b-$99""#,
+        r#""ab".replace(/(?<x>a)(?<y>z)?/, "$<x>:$<y>:$<absent>:$<x") === "a:::$<xb""#,
+        r#""ab".replace("a", "$1$<x>$&") === "$1$<x>ab""#,
+        r#"let r = /b/y; r.lastIndex = 1; "abc".replace(r, "X") === "aXc" && r.lastIndex === 2"#,
+        r#"let r = /b/; r.lastIndex = 2; "abc".replace(r, "X") === "aXc" && r.lastIndex === 2"#,
+        r#""\uD800\uDC00".replaceAll("", "-") === "-\uD800-\uDC00-""#,
+        r#"let r = /a/g; let n = 0; "aa".replace(r, function(m, p, s) { n++; return m + p + s.length; }) === "a02a12" && n === 2"#,
+        r#""ab".replaceAll("", (m, p, s) => p) === "0a1b2""#,
+        r#""ab".replace(/(?<x>a)(z)?/, function(m, a, z, p, s, groups) { return m === a && z === undefined && p === 0 && s === 'ab' && groups.x === a && Object.getPrototypeOf(groups) === null ? '$&' : 'bad'; }) === "$&b""#,
+        r#"let r = /a/g; let n = 0; "aa".replace(r, () => { n++; let zero = r.lastIndex === 0; r.lastIndex = 77; return zero ? 'X' : 'Y'; }) === "XY" && n === 2 && r.lastIndex === 77"#,
+        r#"let caught = false; try { 'x'.replace('x', () => { throw 42; }); } catch(e) { caught = e === 42; } caught"#,
+        r#"let log = ''; let r = String.prototype.replace.call({toString(){log += 't'; return 'aba';}}, {toString(){log += 's'; return 'a';}}, {toString(){log += 'r'; return 'X';}}); r === 'Xba' && log === 'tsr'"#,
+        r#"String.prototype.replace.call(123, 2, 4) === '143' && 'undefined'.replace() === 'undefined'"#,
+        r#"let d = Object.getOwnPropertyDescriptor(String.prototype, 'replaceAll'); d.value.length === 2 && d.value.name === 'replaceAll' && d.writable && !d.enumerable && d.configurable && String.prototype.replace.length === 2"#,
+        r#"let caught = false; try { String.prototype.replace.call(null, '', 'x'); } catch(e) { caught = e instanceof TypeError; } caught"#,
+        r#"let caught = false; try { 'x'.replace(Symbol(), ''); } catch(e) { caught = e instanceof TypeError; } caught"#,
+        r#"let r = /a/g; Object.defineProperty(r, 'lastIndex', {writable:false}); let caught = false; try { 'a'.replace(r, 'b'); } catch(e) { caught = e instanceof TypeError; } caught"#,
+        // The documented brand-dispatch policy ignores overridden exec/flags.
+        r#"let r = /a/g; r.exec = () => {throw 1;}; Object.defineProperty(r,'flags',{get(){throw 2;}}); 'aa'.replaceAll(r, 'b') === 'bb'"#,
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Saved arguments, replacer
+/// closures, groups and callback results remain live across every boundary.
+#[test]
+fn string_replace_wait_yield_collect_and_migrate() {
+    for expression in [
+        "String.prototype.replace.call({get toString(){count++; __rt.need(189,1); return () => 'abc';}}, 'b', 'X') === 'aXc'",
+        "'abc'.replace({toString(){count++; __rt.need(189,1); return 'b';}}, 'X') === 'aXc'",
+        "'abc'.replaceAll('b', {toString(){count++; __rt.need(189,1); return 'X';}}) === 'aXc'",
+        "let r = /b/; r.lastIndex = {valueOf(){count++; __rt.need(189,1); return 0;}};| 'abc'.replace(r,'X') === 'aXc'",
+        "let captured = {text:'X'};| 'abc'.replace(/(?<x>b)(z)?/, (m,b,z,p,s,g) => { count++; __rt.need(189,1); return captured.text + g.x + p + s + String(z); }) === 'aXb1abcundefinedc'",
+        "'abc'.replaceAll('b', () => ({get toString(){count++; __rt.need(189,1); return () => 'X';}})) === 'aXc'",
+        "let caught = false; try { 'abc'.replace(/b/, () => { count++; __rt.need(189,1); throw 42; }); } catch(e) { caught = e === 42; }| caught",
+    ] {
+        let rt = Runtime::new();
+        let (setup, result) = expression.split_once('|').unwrap_or(("", expression));
+        let source = format!(
+            "let count = 0; let result = (() => {{ {setup} return {result}; }})(); result && count === 1"
+        );
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut waits = 0;
+        let mut done = false;
+        for _ in 0..1500 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1, "callback replay: {source}");
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(v) => {
+                    assert_eq!(v.view(), ValueView::Bool(true), "{source}");
+                    done = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(done, "instruction bound: {source}");
+        assert_eq!(waits, 1);
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Check limits before flattening
+/// arguments, and bound aggregate substitution/capture work across steps.
+#[test]
+fn string_replace_limits_and_budgeted_scans() {
+    for source in [
+        "let s = ''.padEnd(65537, 'a'); let caught = false; try { s.replace('a','b'); } catch(e) { caught = e instanceof RangeError; } caught",
+        "let s = ''.padEnd(65537, 'a'); let caught = false; try { 'a'.replace(s,'b'); } catch(e) { caught = e instanceof RangeError; } caught",
+        "let s = ''.padEnd(65537, 'a'); let caught = false; try { 'a'.replace('a',s); } catch(e) { caught = e instanceof RangeError; } caught",
+        "let s = ''.padEnd(65537, 'a'); let caught = false; try { 'a'.replace('a',() => s); } catch(e) { caught = e instanceof RangeError; } caught",
+        "let s = ''.padEnd(2000, 'a'); let caught = false; try { s.replaceAll('',s); } catch(e) { caught = e instanceof RangeError && e.message.indexOf('work limit') >= 0; } caught",
+        "let caught = false; try { (''.padEnd(100,'a') + 'b').replace(/^(a+)+$/, 'x'); } catch(e) { caught = e instanceof RangeError && e.message.indexOf('regular expression step limit') >= 0; } caught",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    let rt = Runtime::new();
+    let input = rt.root(Primitive::String(
+        ("a".repeat(65_535) + "b").as_str().into(),
+    ));
+    let code = compile_function(
+        "function replace(s) { return s.replace('b', 'X').charAt(65535) === 'X'; }",
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[&input]).unwrap();
+    let mut yields = 0;
+    for _ in 0..2000 {
+        match task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(v) => {
+                assert_eq!(v.view(), ValueView::Bool(true));
+                assert!(yields > 200, "long scan must yield between bounded batches");
+                return;
+            }
+            other => panic!("replacement scan: {other:?}"),
+        }
+    }
+    panic!("replacement scan exceeded instruction bound");
 }

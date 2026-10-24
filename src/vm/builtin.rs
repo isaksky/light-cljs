@@ -315,6 +315,9 @@ pub(crate) enum Builtin {
     TypedArraySet,
     TypedArrayFill,
     TypedArrayJoin,
+
+    StringPrototypeReplace,
+    StringPrototypeReplaceAll,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -377,6 +380,8 @@ impl Builtin {
             Builtin::IntlLocaleMaximize => "maximize",
             Builtin::IntlLocaleMinimize => "minimize",
             Builtin::RegExp => "RegExp",
+            Builtin::StringPrototypeReplace => "replace",
+            Builtin::StringPrototypeReplaceAll => "replaceAll",
             Builtin::RegExpExec => "exec",
             Builtin::RegExpTest => "test",
             Builtin::RegExpToString => "toString",
@@ -507,6 +512,7 @@ impl Builtin {
             | Builtin::IntlLocaleMaximize
             | Builtin::IntlLocaleMinimize => 0,
             Builtin::RegExp => 2,
+            Builtin::StringPrototypeReplace | Builtin::StringPrototypeReplaceAll => 2,
             Builtin::RegExpExec | Builtin::RegExpTest => 1,
             Builtin::RegExpToString
             | Builtin::RegExpSource
@@ -647,6 +653,8 @@ pub(crate) fn call(
             crate::object::typed_array::inspect(heap, task, this, which)
         }
         Builtin::RegExp
+        | Builtin::StringPrototypeReplace
+        | Builtin::StringPrototypeReplaceAll
         | Builtin::RegExpExec
         | Builtin::RegExpTest
         | Builtin::RegExpToString

@@ -575,3 +575,14 @@ see `research/quickjs/LICENSE`. Fixtures are synthetic, not light-cljs output.
 `js_typed_array_fill` and `js_typed_array_join` in `research/quickjs/quickjs.c`
 at that revision were semantic references. The Rust continuation and tests
 for overlap, resumability and edge cases were written afresh.
+
+## String replacement (clj-quickjs-189)
+
+`js_string_GetSubstitution`, `js_string_replace` and
+`js_regexp_Symbol_replace` in `research/quickjs/quickjs.c`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), were read
+as semantic references for dollar substitutions, empty-match progress,
+lastIndex handling and callback ordering. The Rust continuation and
+substitution code was written independently; no C implementation was copied
+or linked. Replacement tests are synthetic fixtures, not light-cljs output
+or adapted QuickJS test text. Upstream license: `research/quickjs/LICENSE`.

@@ -3605,3 +3605,47 @@ to array-like objects inheriting Array.prototype. Explicit null/undefined
 iterator overrides, or removal of Array.prototype from the chain, select
 array-like read/conversion order. `set` always uses array-like order for
 ordinary sources and ignores their iterator properties.
+
+### String replacement (clj-quickjs-189)
+
+Execution: `String.prototype.replace(search, replacement)` and `replaceAll`
+accept strings and internally branded RegExp objects. String replacement is
+first-occurrence/all non-overlapping occurrences respectively; empty string
+search visits UTF-16 boundaries, including both ends for `replaceAll`.
+Nonglobal regexps replace once; global regexps start at lastIndex zero,
+collect all matches before invoking replacers, advance past empty matches,
+and reset lastIndex to zero on the final failed match. Sticky/nonglobal
+lastIndex behavior follows `exec`. `replaceAll` rejects a nonglobal RegExp
+with a catchable TypeError. Captures, offsets and empty-match advancement
+use code units for currently supported non-Unicode patterns.
+
+String replacements expand `$$`, `$&`, `` $` ``, `$'`, `$n`, `$nn` and
+`$<name>`. Unmatched captures expand to empty strings; invalid numbered
+references stay literal; named references stay literal without named
+captures, and missing names expand to empty strings when names exist.
+Function replacers receive `(match, ...captures, offset, input[, groups])`
+with undefined `this`; named groups have a null prototype. Returned values
+use ToString and are inserted literally. All argument coercions, lastIndex
+ToLength and replacer calls/results use resumable VM frames, permitting
+yield, dependency waits, collection and migration without replay.
+
+String scans use 256-comparison KMP steps; each regexp search retains the
+1,000,000-step matcher bound. Before flattening, receiver/search/replacement
+strings and callback result strings are limited to 65,536 code units each.
+An aggregate 1,000,000-unit allowance bounds capture storage, substring
+copying, substitution parsing/name comparisons and output across all steps.
+Exhaustion throws catchable RangeError, including output expansion.
+
+Explicit gaps/dispatch decision: these methods use internal RegExp slots,
+not `Symbol.replace`/`Symbol.match` dispatch. RegExp overrides of `exec`,
+`flags` and boolean flag properties are ignored; internal flags select the
+loop. Other search objects undergo ToString. Symbol-based protocols and
+generic `RegExp.prototype[Symbol.replace]`, `match`/`search`, Unicode/case
+folding and the other deferred RegExp flags remain separate work.
+
+```js accept
+'abcabc'.replace('b', 'X') === 'aXcabc';
+'ab'.replaceAll('', '-') === '-a-b-';
+'abc'.replace(/(?<x>b)/, '<$<x>>') === 'a<b>c';
+'ab'.replaceAll('', (match, offset) => offset) === '0a1b2';
+```

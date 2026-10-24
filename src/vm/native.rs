@@ -215,6 +215,7 @@ use std::marker::PhantomData;
 mod intl;
 pub(crate) mod regexp;
 mod string_raw;
+mod string_replace;
 mod typed_array;
 
 use super::builtin;
@@ -390,6 +391,7 @@ enum NativeState {
     },
     Error(error::ErrorState),
     RegExp(regexp::State),
+    StringReplace(Box<string_replace::State>),
     Bind {
         target: Value,
         args: Vec<Value>,
@@ -674,6 +676,7 @@ impl Trace for NativeFrame {
             NativeState::ArrayToString { this, .. } => this.trace(visit),
             NativeState::Error(error) => error.trace(visit),
             NativeState::RegExp(re) => re.trace(visit),
+            NativeState::StringReplace(replace) => replace.trace(visit),
             NativeState::Reduce { f, vec, acc, .. } => {
                 for v in [f, vec, acc] {
                     v.trace(visit);
@@ -957,6 +960,16 @@ pub(crate) fn start_builtin(
         let native = typed_array::TypedArray::constructor(kind, source.clone());
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::TypedArray(Box::new(native)))?;
+        return Ok(true);
+    }
+    if matches!(
+        which,
+        Builtin::StringPrototypeReplace | Builtin::StringPrototypeReplaceAll
+    ) && !construct
+    {
+        let native = string_replace::State::new(heap, state.diag.task, which, this, args)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::StringReplace(Box::new(native)))?;
         return Ok(true);
     }
     if (which == Builtin::IntlLocale && construct)
@@ -2004,6 +2017,7 @@ impl NativeState {
             }
             NativeState::Error(error) => error.step(heap, task, input),
             NativeState::RegExp(re) => re.step(heap, task, input),
+            NativeState::StringReplace(replace) => replace.step(heap, task, input),
             NativeState::Bind {
                 target,
                 args,
@@ -2874,6 +2888,7 @@ impl NativeState {
                 | NativeState::TypedArray(_)
                 | NativeState::Error(_)
                 | NativeState::RegExp(_)
+                | NativeState::StringReplace(_)
                 | NativeState::PropertyCall { .. }
                 | NativeState::DefineProperty(_)
                 | NativeState::Instanceof { .. }

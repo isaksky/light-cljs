@@ -783,6 +783,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         Builtin::StringPrototypePadStart,
         Builtin::StringPrototypePadEnd,
         Builtin::StringPrototypeSplit,
+        Builtin::StringPrototypeReplace,
+        Builtin::StringPrototypeReplaceAll,
     ] {
         let method = b.function(which, &[])?;
         b.add(
@@ -1665,7 +1667,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 194); // Includes typed-array set/fill/join (-168).
+        assert_eq!(first.all.len(), 196); // Includes typed-array methods and String replace/replaceAll.
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

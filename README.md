@@ -3026,3 +3026,19 @@ Element loops are budgeted; backing buffers and iterable lists use the existing
 
 Deferred: BigInt views, resizable/shared buffers, species/subclassing and
 other typed-array methods (including iteration methods on typed arrays).
+
+### String replacement (clj-quickjs-189)
+
+Supported: `replace`/`replaceAll` with string or RegExp search and string or
+function replacement, all dollar substitutions (including named captures),
+UTF-16 empty-string matches, global lastIndex reset and empty-match progress.
+`replaceAll` requires global regexps. Function replacers receive captures,
+offset, input and optional named groups; calls and all coercions may suspend.
+
+Dispatch uses the internal RegExp brand and flags; Symbol.replace and custom
+exec/flags hooks, generic RegExp replacement, match/search and the previously
+deferred flags remain deferred. String scans yield in 256-comparison batches;
+regexp searches retain the matcher step limit. Strings supplied to replacement
+and callback results are capped at 65,536 code units; aggregate capture,
+substitution and output work at 1,000,000 units. Limits throw catchable
+RangeError. Tests: `CARGO_BUILD_JOBS=3 cargo test --test js_source string_replace -- --test-threads=3`.

@@ -392,8 +392,8 @@ pub(crate) struct StringSearch {
 
 impl StringSearch {
     /// Resume after a consumed match without rebuilding the prefix table.
-    /// Split consumes non-overlapping matches, so no partial match survives.
-    fn restart(&mut self, position: usize) {
+    /// Split/replacement consume non-overlapping matches, so no partial match survives.
+    pub(crate) fn restart(&mut self, position: usize) {
         self.next = position;
         self.matched = 0;
         self.result = -1;

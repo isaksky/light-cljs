@@ -5291,3 +5291,35 @@ each indexed read and collects values before any numeric conversion. Explicit
 null/undefined iterator overrides select array-like behavior; custom iterators
 use the ordinary iterator stages. This fallback becomes unused when the
 standard iterator intrinsic lands, without changing the public realm here.
+
+## String replacement (clj-quickjs-189)
+
+Two appended built-ins expose `replace` and `replaceAll` on String.prototype.
+`vm::native::string_replace::State` retains/traces the receiver, search and
+replacement values. Other saved fields are immutable JsStrings/compiled
+regexp programs, capture ranges and Rust-owned buffers without heap edges.
+Callbacks receive fresh task-owned null-prototype named-group objects; call
+arguments and returned objects stay rooted by the ordinary VM/native frames.
+No heap kind or publication category changes. Coercions and callbacks use
+Action::ToString/ToNumber/Call and may suspend without a retained Rust stack.
+
+Dispatch deliberately checks internal RegExp slots rather than observable
+Symbol.replace/exec/flags hooks (see grammar for the deviation). Non-RegExp
+objects use resumable ToString. Matching collects immutable capture ranges
+before any replacer calls, so global lastIndex reaches zero before callbacks.
+The own non-configurable lastIndex data property uses strict writes and its
+value uses resumable ToLength, including nonglobal calls. Global empty-match
+advancement implements AdvanceStringIndex; supported flags currently select
+UTF-16 code units, with a surrogate-pair branch ready for Unicode matching.
+
+String searches reuse the existing incremental KMP prefix table and restart
+after each non-overlapping match, at most 256 comparisons per native step.
+Regexp collection executes one MAX_MATCH_STEPS-bounded search per step.
+Rendering handles one match/callback per step; its synchronous copying and
+GetSubstitution work share a 1,000,000-unit aggregate allowance, including
+capture-range storage, callback substring copying, name comparisons and
+output. Receiver/search/replacement and callback result strings are checked
+against 65,536 units before flattening. These documented implementation
+limits throw catchable RangeError; no dependency or instruction budget can
+turn exhaustion into a successful partial replacement. Realm/GC inventory
+counts grow by the two additional immutable built-in functions.
