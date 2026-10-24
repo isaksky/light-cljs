@@ -253,8 +253,8 @@ impl Intl {
                 Ok(Action::Continue)
             }
             Stage::Options => {
-                if matches!(self.options, Value::Null) {
-                    return Err(Fault::TypeError("Locale options cannot be null".into()));
+                if !matches!(self.options, Value::Undefined | Value::Object(_)) {
+                    return Err(Fault::TypeError("Locale options must be an object".into()));
                 }
                 if self.tag.is_none() {
                     self.tag = Some(Self::parse(&self.source)?);
@@ -307,7 +307,17 @@ impl Intl {
             }
             Stage::List => {
                 self.result = property::new_array(heap, task)?;
-                if matches!(self.source, Value::Undefined) {
+                // Non-string primitive wrappers have no length in this realm:
+                // intrinsic prototypes are immutable, and Boolean/Symbol/BigInt
+                // wrappers are not otherwise exposed. Avoid a wrapper allocation.
+                if matches!(
+                    self.source,
+                    Value::Undefined
+                        | Value::Bool(_)
+                        | Value::Number(_)
+                        | Value::Symbol(_)
+                        | Value::BigInt(_)
+                ) {
                     self.stage = Stage::Done;
                 } else if matches!(self.source, Value::Null) {
                     return Err(Fault::TypeError("locales cannot be null".into()));

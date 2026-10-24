@@ -865,6 +865,7 @@ intrinsic mutation restrictions. Formatting service constructors are not install
 
 `Intl.getCanonicalLocales(locales)` canonicalizes a string, Locale, or array-like
 list, skipping absent indices and removing duplicates in first-occurrence order.
+Non-string primitive inputs have no length and give empty lists in this realm.
 `undefined` gives an empty list; `null` and non-string/non-object elements throw
 TypeError. Locale objects use their internal tags without calling `toString`.
 Other object elements use resumable ToString; length/index getters and ToLength
@@ -872,7 +873,8 @@ also run through resumable native frames.
 
 `new Intl.Locale(tag, options)` accepts a string or an object (a Locale's internal
 tag, otherwise resumable ToString), with optional language/script/region and
-calendar/collation/hourCycle/caseFirst/numeric/numberingSystem overrides. Calling
+calendar/collation/hourCycle/caseFirst/numeric/numberingSystem overrides. Options
+must be an object or `undefined`, matching QuickJS GetOptionsObject. Calling
 without `new` throws TypeError. Tags parse language, script, region, variants,
 Unicode/other extensions and private use; canonicalization adjusts case, selected
 deprecated aliases, variant order, attributes, keywords and singleton order.
