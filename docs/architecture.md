@@ -3104,6 +3104,24 @@ and Charlie Gordon) and is listed here with its source path and revision:
   through enclosing functions and threading captures down) and
   `instantiate_hoisted_definitions` (function declarations created on scope
   entry). No code was copied.
+- `tests/fixtures/js/quickjs_test_loop_statements.js` and
+  `tests/fixtures/js/quickjs_test_language_labels.js` (clj-quickjs-92):
+  `research/quickjs/tests/test_loop.js` lines 1-20, 23-252 and 374-383,
+  followed by calls from lines 384-393; and
+  `research/quickjs/tests/test_language.js` lines 1-35 and 399-426,
+  followed by `test_labels();` and `test_labels2();`, respectively, at revision
+  `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+  Selected bytes, helpers, caught `__loadScript` attempts and assertions
+  are unchanged; adapted rows: none. Only descriptive headers, the full MIT
+  notice from `research/quickjs/LICENSE` and trailing calls are added.
+  Both are synthetic fixtures, not light-cljs output.
+  `tests/js_source.rs::quickjs_loop_and_label_cases_run_unmodified` compiles
+  each case independently in upstream non-strict mode with every definition
+  retained, including the compiled but uncalled `test_cyclic_labels`.
+  Runs use bounded instruction slices with collection between slices;
+  failures are aggregated so one unsupported case cannot hide later cases.
+  All twelve upstream cases complete unmodified, including the Proxy
+  for-in case supported by clj-quickjs-91.
 - `tests/fixtures/js/quickjs_test_loop_try_catch.js` (clj-quickjs-232):
   `research/quickjs/tests/test_loop.js`, revision
   `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04),

@@ -25724,6 +25724,85 @@ fn intl_list_format_ownership_and_host_default() {
     assert!(task.dependency_log().edges().is_empty());
 }
 
+/// Adapted QuickJS text; synthetic fixtures, not light-cljs output.
+/// Selected upstream bytes and assertions are unchanged; adapted rows: none.
+#[test]
+fn quickjs_loop_and_label_cases_run_unmodified() {
+    let fixtures: [(&str, &str, &[&str], usize); 2] = [
+        (
+            "loop statements",
+            include_str!("fixtures/js/quickjs_test_loop_statements.js"),
+            &[
+                "test_while",
+                "test_while_break",
+                "test_do_while",
+                "test_for",
+                "test_for_break",
+                "test_switch1",
+                "test_switch2",
+                "test_for_in",
+                "test_for_in2",
+                "test_for_in_proxy",
+            ],
+            20 + 230 + 10,
+        ),
+        (
+            "language labels",
+            include_str!("fixtures/js/quickjs_test_language_labels.js"),
+            &["test_labels", "test_labels2"],
+            35 + 28,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, fixture, cases, upstream_lines) in fixtures {
+        let (_, body) = fixture.split_once("*/\n").expect("license header");
+        let calls: String = cases.iter().map(|case| format!("{case}();\n")).collect();
+        let definitions = body.strip_suffix(&calls).expect("appended upstream calls");
+        // Compared byte for byte with the pinned checkout at 7d1c13c5d8f8.
+        assert_eq!(definitions.lines().count(), upstream_lines, "{name}");
+        for case in cases {
+            // Retain every definition, including the uncalled infinite loop in
+            // test_cyclic_labels, and both caught __loadScript attempts.
+            let source = format!("{definitions}{case}();\n");
+            let executable = match compile_script_with(case, &source, ScriptOptions::SLOPPY) {
+                Ok(executable) => executable,
+                Err(error) => {
+                    failures.push(format!("{case}: compile: {error}"));
+                    continue;
+                }
+            };
+            let runtime = Runtime::new();
+            let task = runtime.spawn(&executable, &[]).unwrap();
+            let mut finished = false;
+            for _ in 0..10_000 {
+                match task
+                    .run_with(Budget::instructions(100), &mut NoEffects)
+                    .unwrap()
+                {
+                    RunOutcome::Complete(value) => {
+                        assert_eq!(value.view(), ValueView::Undefined, "{case}");
+                        eprintln!("{case}: complete (unmodified; adapted rows: none)");
+                        finished = true;
+                        break;
+                    }
+                    RunOutcome::Yielded => {
+                        runtime.collect().unwrap();
+                    }
+                    other => {
+                        failures.push(format!("{case}: {other:?}"));
+                        finished = true;
+                        break;
+                    }
+                }
+            }
+            if !finished {
+                failures.push(format!("{case}: exceeded instruction bound"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// Adapted QuickJS text; synthetic fixture, not light-cljs output.
 /// Both cases preserve upstream bytes, assertions and expected values,
 /// including the direct eval of a NUL-containing RegExp literal.

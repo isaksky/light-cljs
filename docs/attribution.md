@@ -1370,3 +1370,19 @@ All original assertions and expected values are unchanged; helpers and
 `test_await_using` are byte-for-byte upstream. The Rust driver in
 `tests/exceptions.rs` is original. This is synthetic fixture text, not
 light-cljs output; no QuickJS implementation code is copied or wrapped.
+
+### Unmodified loop and label source fixtures (clj-quickjs-92)
+
+`tests/fixtures/js/quickjs_test_loop_statements.js` preserves lines 1-20,
+23-252 and 374-383 of `research/quickjs/tests/test_loop.js`, with its calls
+from lines 384-393 appended. `tests/fixtures/js/quickjs_test_language_labels.js`
+preserves lines 1-35 and 399-426 of `research/quickjs/tests/test_language.js`,
+with one call per label case appended. Both use revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+Selected bytes, assertion helpers, expected values and caught `__loadScript`
+attempts are unchanged; adapted rows: none. Only descriptive headers, the
+full copyright/MIT notice from `research/quickjs/LICENSE` and trailing calls
+are added. These are adapted QuickJS test text, synthetic fixtures, not
+light-cljs output. The driver retains upstream non-strict mode and compiles
+`test_cyclic_labels` without calling it. All twelve upstream cases complete
+unmodified, including the Proxy for-in case supported by clj-quickjs-91.
