@@ -539,6 +539,12 @@ impl RunGuard<'_> {
     /// park (the wake was remembered), or if this run has no pending need
     /// (nothing to wait for): the caller requeues the task itself, and its
     /// next run reads the result. The task's VM state is kept either way.
+    ///
+    /// A wake remembered for an earlier subscription of this same run (a
+    /// need that was pending, then completed and was needed again) also
+    /// makes the park yield. That resume is spurious but harmless: the next
+    /// run needs the key again, finds it pending, and parks with a fresh
+    /// handle.
     pub fn park(self) -> RunOutcome {
         let RunGuard {
             task,
