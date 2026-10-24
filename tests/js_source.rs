@@ -9344,8 +9344,8 @@ fn primitive_wrapper_constructors_convert_object_arguments() {
     for src in [
         "Number({valueOf: function () { return 7; }}) === 7",
         "String({toString: function () { return 's'; }}) === 's'",
-        "new Number({valueOf: function () { return 7; }}) == 7",
-        "new String({toString: function () { return 's'; }}) == 's'",
+        "let n = new Number({valueOf: function () { return 7; }}); typeof n === 'object' && Object.getPrototypeOf(n) === Number.prototype && n.valueOf() === 7 && n.toString() === '7' && n !== 7",
+        "let s = new String({toString: function () { return 's'; }}); typeof s === 'object' && Object.getPrototypeOf(s) === String.prototype && s.valueOf() === 's' && s.toString() === 's' && s !== 's'",
         "Number(new String('0x10')) === 16 && String(new Number(1e21)) === '1e+21'",
         "let o = {valueOf: function () { return 3; }, toString: function () { return 's'; }}; Number(o) === 3 && String(o) === 's'",
         "Number({valueOf: function () { return {}; }, toString: function () { return '4'; }}) === 4",
@@ -9353,8 +9353,8 @@ fn primitive_wrapper_constructors_convert_object_arguments() {
         "let log = ''; let o = {valueOf: function () { log = log + 'v'; return 3; }}; Number(o, log = log + 'a') === 3 && log === 'av'",
         "let o = {valueOf: function () { return 3; }}; Number.call(null, o) === 3 && Number.apply(null, [o]) === 3 && Reflect.apply(Number, null, [o]) === 3",
         "let o = {toString: function () { return 's'; }}; String.call(null, o) === 's' && String.apply(null, [o]) === 's' && Reflect.apply(String, null, [o]) === 's'",
-        "let N = Number.bind(null, {valueOf: function () { return 8; }}); N() === 8 && new N() == 8",
-        "let S = String.bind(null, {toString: function () { return 's'; }}); S() === 's' && new S() == 's'",
+        "let N = Number.bind(null, {valueOf: function () { return 8; }}); let n = new N(); N() === 8 && typeof n === 'object' && Object.getPrototypeOf(n) === Number.prototype && n.valueOf() === 8 && n.toString() === '8' && n !== 8",
+        "let S = String.bind(null, {toString: function () { return 's'; }}); let s = new S(); S() === 's' && typeof s === 'object' && Object.getPrototypeOf(s) === String.prototype && s.valueOf() === 's' && s.toString() === 's' && s !== 's'",
         "let o = {valueOf: Number.bind(null, {valueOf: function () { return 6; }})}; +o === 6",
         "let o = {toString: String.bind(null, {toString: function () { return 's'; }})}; String(o) === 's'",
         "__rt.reduce(Number, 0, __rt.vector({valueOf: function () { return 4; }})) === 0",
@@ -9390,6 +9390,18 @@ fn primitive_wrapper_conversion_waits_yields_collects_and_migrates() {
         ("wrapper() + 1", "8"),
     ] {
         let rt = Runtime::new();
+        let wrapper_check = if expression.starts_with("new ") {
+            let constructor = if expression.contains("Number") {
+                "Number"
+            } else {
+                "String"
+            };
+            format!(
+                "typeof result === 'object' && Object.getPrototypeOf(result) === {constructor}.prototype && result.valueOf() === {expected} && result !== {expected}"
+            )
+        } else {
+            "true".to_string()
+        };
         let src = format!(
             "let calls = 0; function argument() {{ return {{n: 7, s: 'seven',
                 valueOf: function () {{ calls++; __rt.need(72, 1); return this.n; }},
@@ -9397,7 +9409,7 @@ fn primitive_wrapper_conversion_waits_yields_collects_and_migrates() {
             }}; }}
             function wrapper() {{ let n = new Number(3); n.n = 7;
                 n.valueOf = argument().valueOf; return n; }}
-            let result = {expression}; result == {expected} && calls === 1"
+            let result = {expression}; result == {expected} && calls === 1 && ({wrapper_check})"
         );
         let script = exe(&src);
         let mut task = rt.spawn(&script, &[]).unwrap();
