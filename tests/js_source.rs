@@ -640,6 +640,16 @@ fn string_code_unit_coercion_waits_yields_collects_and_migrates() {
             3,
         ),
         (
+            "String.prototype.split.call(receiver(), search(), position()).join('|') === 'a'",
+            "spb",
+            3,
+        ),
+        (
+            "String.prototype.split.bind(receiver(), search()).apply(null, [code(0, 144)]).length === 0",
+            "snb",
+            3,
+        ),
+        (
             "String.prototype.substring.call(receiver(), position(), code(2, 145)) === 'b'",
             "spn",
             3,
@@ -851,6 +861,185 @@ fn string_index_of_and_last_index_of() {
         )),
         ValueView::Bool(true)
     );
+}
+
+/// Split rows adapted from QuickJS tests/test_builtin.js, test_string,
+/// revision 7d1c13c5d8f8, under the full QuickJS copyright and MIT permission
+/// notice on string_code_unit_access above. Synthetic fixtures, not light-cljs output.
+#[test]
+fn string_split() {
+    for (expression, expected) in [
+        (r#""a,b,c".split(",")"#, vec!["a", "b", "c"]),
+        (r#"",b,c".split(",")"#, vec!["", "b", "c"]),
+        (r#""a,b,".split(",")"#, vec!["a", "b", ""]),
+        (r#""aaaa".split()"#, vec!["aaaa"]),
+        (r#""aaaa".split(undefined, 0)"#, vec![]),
+        (r#""aaaa".split("")"#, vec!["a", "a", "a", "a"]),
+        (r#""aaaa".split("", 0)"#, vec![]),
+        (r#""aaaa".split("", 1)"#, vec!["a"]),
+        (r#""aaaa".split("", 2)"#, vec!["a", "a"]),
+        (r#""aaaa".split("a")"#, vec!["", "", "", "", ""]),
+        (r#""aaaa".split("a", 2)"#, vec!["", ""]),
+        (r#""aaaa".split("aa")"#, vec!["", "", ""]),
+        (r#""aaaa".split("aa", 0)"#, vec![]),
+        (r#""aaaa".split("aa", 1)"#, vec![""]),
+        (r#""aaaa".split("aa", 2)"#, vec!["", ""]),
+        (r#""aaaa".split("aaa")"#, vec!["", "a"]),
+        (r#""aaaa".split("aaaa")"#, vec!["", ""]),
+        (r#""aaaa".split("aaaaa")"#, vec!["aaaa"]),
+        (r#""aaaa".split("aaaaa", 0)"#, vec![]),
+        (r#""aaaa".split("aaaaa", 1)"#, vec!["aaaa"]),
+        (r#""".split("")"#, vec![]),
+        (r#""".split(",")"#, vec![""]),
+        (r#""a,b".split(",", -1)"#, vec!["a", "b"]),
+        (r#""a1b1c".split(1)"#, vec!["a", "b", "c"]),
+    ] {
+        let elements = expected
+            .iter()
+            .enumerate()
+            .map(|(i, value)| format!(" && a[{i}] === {value:?}"))
+            .collect::<String>();
+        let src = format!(
+            "let a = {expression}; Object.getPrototypeOf(a) === Array.prototype && a.length === {}{elements} && a.join('|') === {:?}",
+            expected.len(),
+            expected.join("|")
+        );
+        assert_eq!(eval(&src), ValueView::Bool(true), "{expression}");
+    }
+    assert_eq!(
+        eval(r#""\u{10000}".split("").length"#),
+        ValueView::Number(2.0)
+    );
+    assert_eq!(
+        failure("String.prototype.split.call(null, ',')").kind(),
+        VmErrorKind::TypeError
+    );
+    assert_eq!(
+        eval(
+            "let caught = false; try { String.prototype.split.call(null, ','); } catch (e) { caught = true; } caught"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn string_split_coercion_and_boundaries() {
+    for src in [
+        "let a = '\\u{10000}'.split(''); a.length === 2 && a[0] === '\\ud800' && a[1] === '\\udc00'",
+        "'abababa'.split('aba').join('|') === '|b|' && 'aaaaa'.split('aa').join('|') === '||a'",
+        "'a,b,c'.split(',', 2.9).join('|') === 'a|b' && 'a,b'.split(',', 4294967297).join('|') === 'a'",
+        "'a,b'.split(',', NaN).length === 0 && 'a,b'.split(',', Infinity).length === 0 && 'a,b'.split(',', null).length === 0",
+        "'a,b'.split(',', -4294967296).length === 0 && 'a,b'.split(',', -1.9).length === 2",
+        "'undefinedxundefined'.split(undefined).join('|') === 'undefinedxundefined'",
+        "'undefinedxundefined'.split({toString() { return undefined; }}).join('|') === '|x|'",
+        "'a,b'.split(',', {valueOf() { return undefined; }}).length === 0",
+        "String.prototype.split.call(121, 2).join('|') === '1|1' && String.prototype.split.call(true, 'r').join('|') === 't|ue'",
+        "let s = new String('a,b'); s.toString = () => 'c,d'; s.split(',').join('|') === 'c|d'",
+        "let log = ''; let r = {toString() { log += 'r'; return 'a,b'; }}; let l = {valueOf() { log += 'l'; return 0; }}; let s = {toString() { log += 's'; return ','; }}; String.prototype.split.call(r, s, l).length === 0 && log === 'rls'",
+        "let log = ''; let r = {get toString() { log += 'g'; return () => {log += 'r'; return {}; }; }, valueOf() { log += 'v'; return 'a,b'; }}; String.prototype.split.call(r, ',').join('|') === 'a|b' && log === 'grv'",
+        "let hit = 0; let o = {valueOf() { hit++; return 1; }, toString() { hit++; return ','; }}; let caught = false; try { String.prototype.split.call(undefined, o, o); } catch(e) { caught = true; } caught && hit === 0",
+        "let caught = false; try { 'a,b'.split({toString() { throw 42; }}, 0); } catch(e) { caught = e === 42; } caught",
+        "let hit = 0; let caught = false; try { 'a,b'.split({toString() { hit++; return ','; }}, {valueOf() { throw 43; }}); } catch(e) { caught = e === 43; } caught && hit === 0",
+        "let hit = 0; let caught = false; try { String.prototype.split.call({toString() { throw 44; }}, ',', {valueOf() { hit++; return 1; }}); } catch(e) { caught = e === 44; } caught && hit === 0",
+        "let a = 'a,b'.split(','); let b = 'a,b'.split(','); a[0] = 'c'; a !== b && b[0] === 'a' && Object.getPrototypeOf(a) === Array.prototype && Object.keys(a).join('|') === '0|1'",
+        "let a = ''.split(''); let b = ''.split(''); a !== b && a instanceof Array && a.length === 0",
+        "let a = 'a,b'.split(','); let d = Object.getOwnPropertyDescriptor(a, '0'); d.value === 'a' && d.writable && d.enumerable && d.configurable",
+        "let d = Object.getOwnPropertyDescriptor(String.prototype, 'split'); d.writable && !d.enumerable && d.configurable && d.value.name === 'split' && d.value.length === 2",
+        "__rt.reduce(String.prototype.split.bind('a,b'), ',', __rt.vector(1)).join('|') === 'a'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "new String.prototype.split()",
+        "String.prototype.split.call(Object.create(null), ',')",
+        "'a,b'.split(Object.create(null))",
+        "'a,b'.split(',', Object.create(null))",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Yield/collect on migrated
+/// tasks with an otherwise unreachable result array and partially copied text.
+#[test]
+fn string_split_long_work_yields_collects_and_migrates() {
+    for (expression, expected_len, expected_first, expected_last, minimum_yields) in [
+        (
+            format!("'{}b'.split('aaaab')", "a".repeat(8192)),
+            2,
+            8188,
+            0,
+            32,
+        ),
+        (
+            format!("'{}b'.split('{}b')", "a".repeat(8192), "a".repeat(8192)),
+            2,
+            0,
+            0,
+            32,
+        ),
+        (
+            format!("'x{}z'.split('x')", "a".repeat(8192)),
+            2,
+            0,
+            8193,
+            32,
+        ),
+        (
+            format!("'{}'.split('')", "a".repeat(1024)),
+            1024,
+            1,
+            1,
+            1024,
+        ),
+        (
+            format!("'{}'.split('aa')", "a".repeat(2048)),
+            1025,
+            0,
+            0,
+            1025,
+        ),
+        (format!("'{}'.split('a', 1)", "a".repeat(8192)), 1, 0, 0, 0),
+    ] {
+        let src = format!(
+            "let a = {expression}; a.length === {expected_len} && a[0].length === {expected_first} && a[a.length - 1].length === {expected_last}"
+        );
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(&src), &[]).unwrap();
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..5000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{expression}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(
+            complete && yields > minimum_yields,
+            "complete={complete}, yields={yields}"
+        );
+        if expected_len == 1 {
+            assert!(yields < 100, "small limit did not stop scanning");
+        }
+    }
 }
 
 /// Synthetic fixtures, not light-cljs output.
@@ -10615,7 +10804,7 @@ fn primitive_wrappers_string_properties() {
         "let s = new String('ab'); s['01'] = 7; s[2] = 'c'; delete s[2] && delete s['01'] && s[2] === undefined && s.length === 2",
         "let s = ''; for (let k in new String('abc')) { s = s + k; } s === '012'",
         "let k = Object.getOwnPropertyNames(new String('')); k.length === 1 && k[0] === 'length'",
-        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k[7] === 'indexOf' && k[8] === 'lastIndexOf' && k[9] === 'substring' && k[10] === 'slice' && k[11] === 'concat' && k[12] === 'padStart' && k[13] === 'padEnd' && k.length === 14",
+        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k[7] === 'indexOf' && k[8] === 'lastIndexOf' && k[9] === 'substring' && k[10] === 'slice' && k[11] === 'concat' && k[12] === 'padStart' && k[13] === 'padEnd' && k[14] === 'split' && k.length === 15",
         "'length' in new String('abc') && 0 in new String('abc') && !(3 in new String('abc'))",
         "let s = new String('abc'); Object.setPrototypeOf(s, null); s.length === 3 && s[1] === 'b' && s.toString === undefined",
         "Object.create(new String('abc')).length === 3 && Object.create(new String('abc'))[1] === 'b'",

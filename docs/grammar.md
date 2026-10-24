@@ -419,6 +419,11 @@ Every form below is rejected where it starts. Error kinds:
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
 
+- **String split** (clj-quickjs-157): string and undefined separators,
+  ToUint32 limits, generic receivers and resumable object coercion execute.
+  RegExp separators and `Symbol.split` dispatch remain deferred to the RegExp
+  pellets; object separators currently undergo ToString. Long scans and
+  result copying are budgeted.
 - **Error instances** (clj-quickjs-228): `Error` is callable and constructible,
   with resumable message conversion, inherited/accessor `options.cause`, and
   generic `Error.prototype.toString`. Engine-raised errors remain opaque
@@ -789,6 +794,18 @@ delete a[o];
 ```
 
 ## Execution
+
+`String.prototype.split(separator, limit)` returns a fresh array of UTF-16
+substrings (clj-quickjs-157). Undefined separator returns the whole receiver;
+an empty separator emits individual code units, including lone surrogates.
+Nonempty separators consume non-overlapping matches from left to right,
+preserving empty fields. Undefined limit defaults to `2^32 - 1`; other limits
+use ToUint32 (so `-1` wraps), and zero returns an empty array. Coercion runs
+in receiver, limit, separator order, including separator conversion for zero
+limit. Null/undefined receivers throw TypeError before coercing arguments.
+Object conversion callbacks can yield, wait, collect and migrate. Each scan
+or copying step does at most 256 units/comparisons; appending emits one
+ordinary own array element per step. RegExp/`Symbol.split` dispatch is deferred.
 
 Global `parseInt(string, radix)` and `parseFloat(string)` parse the longest
 valid prefix after leading StrWhiteSpace and ToString. `Number.parseInt`

@@ -2574,3 +2574,18 @@ Tests: `cargo test --test js_source error_` and
 `cargo test --test exceptions uncaught_error_objects_report_name_and_message`.
 NativeError constructors, engine-raised errors as instances, stacks,
 subclasses and `Reflect.construct` remain deferred.
+
+### String splitting (clj-quickjs-157)
+
+`String.prototype.split(separator, limit)` returns fresh arrays, preserving
+empty fields and consuming non-overlapping string separators. Undefined
+separators return the whole string; empty separators split UTF-16 code units,
+including surrogate pairs. Limits use ToUint32, with undefined defaulting to
+`2^32 - 1`. Generic receivers and object arguments use resumable conversion
+in receiver/limit/separator order. Long scans and copies run in 256-unit
+batches, and array fields are appended one per step. Null/undefined receivers
+throw TypeError. RegExp separators and `Symbol.split` remain deferred; object
+separators currently undergo ToString.
+
+Tests: `cargo test --test js_source string_split` and
+`cargo test --test js_source string_code_unit_coercion_waits_yields_collects_and_migrates`.

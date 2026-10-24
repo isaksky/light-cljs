@@ -3973,3 +3973,31 @@ QuickJS references and provenance: `research/quickjs/quickjs.c`, revision
 `js_error_toString`, `js_error_proto_funcs` and `JS_NewCConstructor` were
 consulted for semantics. Implementation and synthetic source tests were
 written fresh; no QuickJS source or test text was copied.
+
+## String splitting (clj-quickjs-157)
+
+`String.prototype.split` is appended to the realm as a non-enumerable method
+with length 2. `ConvertTarget::StringSplit` validates RequireObjectCoercible
+before entering resumable OrdinaryToPrimitive: receiver with string hint,
+limit with number hint and ToUint32, then separator with string hint. Flags
+preserve the distinction between an originally undefined operand and an
+object returning undefined. Even a zero limit observes separator coercion.
+Objects use ToString; RegExp and `Symbol.split` dispatch remain deferred.
+
+`NativeState::StringSplit` traces its fresh task-owned array while
+`value::string::StringSplit` retains only immutable string leaves, KMP search
+indices/prefix storage and an incremental string builder. Each step scans
+at most 256 comparisons, copies at most 256 units/boundaries, or appends one
+field with CreateDataProperty semantics through the existing array-literal
+append helper. The search prefix table is reused between non-overlapping
+matches. Empty separators emit one UTF-16 unit per step; undefined separators
+reuse the receiver's immutable body. Limits stop work immediately after the
+requested number of fields. Results have Array.prototype and ordinary
+writable/enumerable/configurable elements; no heap kinds or publication
+categories change. Allocation itself and bulk primitive coercion retain
+the existing limitations documented for string built-ins (clj-quickjs-265).
+
+Tests cover all 20 upstream rows with length, every element and join, limit
+wrapping, empty inputs, surrogate pairs, conversion order and throws,
+forwarding, callback dependency waits, collection and thread migration
+during coercion, scanning, copying and result-array construction.

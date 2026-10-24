@@ -174,3 +174,14 @@ join/toString rows in `tests/js_source.rs::array_join_and_to_string` cover
 `tests/test_builtin.js::test_array` at that revision; the full QuickJS MIT
 copyright and permission notice is retained with that test. Other tests are
 synthetic fixtures, not light-cljs output; no C implementation was copied.
+
+## String splitting (clj-quickjs-157)
+
+`tests/js_source.rs::string_split` adapts all 20 split assertions in
+`research/quickjs/tests/test_builtin.js`, `test_string` lines 317-337,
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright and MIT permission notice is retained on
+`string_code_unit_access` in that file (`research/quickjs/LICENSE`). Other
+split fixtures are synthetic, not light-cljs output. `js_string_split` in
+`research/quickjs/quickjs.c` at that revision was consulted for semantics;
+the resumable Rust implementation was written afresh.

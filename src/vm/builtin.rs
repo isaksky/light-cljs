@@ -238,12 +238,15 @@ pub(crate) enum Builtin {
     /// Error construction and generic stringification (clj-quickjs-228).
     Error,
     ErrorPrototypeToString,
+    /// UTF-16 string splitting (clj-quickjs-157).
+    StringPrototypeSplit,
 }
 
 impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::StringPrototypeSplit => "split",
             Builtin::Object => "Object",
             Builtin::ObjectIs => "is",
             Builtin::ObjectPrototypeToString => "toString",
@@ -344,6 +347,7 @@ impl Builtin {
             | Builtin::StringPrototypePadStart
             | Builtin::StringPrototypePadEnd => 1,
             Builtin::StringPrototypeSubstring | Builtin::StringPrototypeSlice => 2,
+            Builtin::StringPrototypeSplit => 2,
             Builtin::GlobalIsNaN
             | Builtin::GlobalIsFinite
             | Builtin::NumberIsNaN
@@ -487,6 +491,7 @@ pub(crate) fn call(
         | Builtin::StringPrototypeConcat
         | Builtin::StringPrototypePadStart
         | Builtin::StringPrototypePadEnd
+        | Builtin::StringPrototypeSplit
         | Builtin::ParseInt
         | Builtin::ParseFloat => Err(Fault::Internal(
             "operation requires a resumable native frame",

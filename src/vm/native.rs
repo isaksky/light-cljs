@@ -309,6 +309,10 @@ enum Hint {
 /// What to finish after OrdinaryToPrimitive has converted its operands.
 #[derive(Clone, Copy, Debug)]
 enum ConvertTarget {
+    StringSplit {
+        separator_undefined: bool,
+        limit_undefined: bool,
+    },
     NumberValue,
     StringValue,
     Instruction(Instr),
@@ -342,6 +346,11 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    StringSplit {
+        split: Box<crate::value::string::StringSplit>,
+        out: Value,
+        remaining: u32,
+    },
     Error(error::ErrorState),
     Bind {
         target: Value,
@@ -593,6 +602,7 @@ pub(crate) struct NativeFrame {
 impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         match &self.state {
+            NativeState::StringSplit { out, .. } => out.trace(visit),
             NativeState::Join(join) => {
                 join.this.trace(visit);
                 join.separator.trace(visit);
@@ -1001,6 +1011,24 @@ pub(crate) fn start_builtin(
                     concat_len: 0,
                 },
                 vec![this.clone(), pos],
+                Hint::String,
+            )
+        }
+        Builtin::StringPrototypeSplit if !construct => {
+            if matches!(this, Value::Null | Value::Undefined) {
+                return Err(Fault::TypeError(format!(
+                    "String.prototype.split called on {}",
+                    this.type_name()
+                )));
+            }
+            let separator = args.first().cloned().unwrap_or(Value::Undefined);
+            let limit = args.get(1).cloned().unwrap_or(Value::Undefined);
+            (
+                ConvertTarget::StringSplit {
+                    separator_undefined: matches!(separator, Value::Undefined),
+                    limit_undefined: matches!(limit, Value::Undefined),
+                },
+                vec![this.clone(), limit, separator],
                 Hint::String,
             )
         }
@@ -1878,6 +1906,27 @@ impl NativeState {
                 while *next < *end {
                     let receiver = &operands[*next];
                     if !matches!(receiver, Value::Object(_)) {
+                        if let ConvertTarget::StringSplit {
+                            limit_undefined, ..
+                        } = target
+                        {
+                            operands[*next] = if *next == 1 {
+                                Value::Number(if *limit_undefined {
+                                    u32::MAX as f64
+                                } else {
+                                    dispatch::to_int32(dispatch::to_number(receiver)?) as u32 as f64
+                                })
+                            } else {
+                                Value::String(dispatch::to_js_string(receiver)?)
+                            };
+                            *hint = if *next == 0 {
+                                Hint::Number
+                            } else {
+                                Hint::String
+                            };
+                            *next += 1;
+                            continue;
+                        }
                         if let ConvertTarget::Math { magnitude, .. } = target {
                             let number = dispatch::to_number(receiver)?;
                             *magnitude = magnitude.max(number.abs());
@@ -1970,6 +2019,26 @@ impl NativeState {
                     ));
                 }
                 match *target {
+                    ConvertTarget::StringSplit {
+                        separator_undefined,
+                        ..
+                    } => {
+                        let text = dispatch::to_js_string(&operands[0])?;
+                        let remaining = dispatch::to_number(&operands[1])? as u32;
+                        let separator = if separator_undefined {
+                            None
+                        } else {
+                            Some(dispatch::to_js_string(&operands[2])?)
+                        };
+                        *self = NativeState::StringSplit {
+                            split: Box::new(crate::value::string::StringSplit::new(
+                                text, separator,
+                            )),
+                            out: property::new_array(heap, task)?,
+                            remaining,
+                        };
+                        Ok(Action::Continue)
+                    }
                     ConvertTarget::NumberParse { integer } => {
                         let text = dispatch::to_js_string(&operands[0])?;
                         let radix = if integer {
@@ -2089,6 +2158,28 @@ impl NativeState {
                     Ok(Action::Return(Value::Number(*magnitude * sum.sqrt())))
                 }
             }
+            NativeState::StringSplit {
+                split,
+                out,
+                remaining,
+            } => {
+                use crate::value::string::SplitStep;
+                if *remaining == 0 {
+                    return Ok(Action::Return(out.clone()));
+                }
+                match split
+                    .advance()
+                    .ok_or(Fault::OutOfMemory("split string allocation failed"))?
+                {
+                    SplitStep::Continue => Ok(Action::Continue),
+                    SplitStep::Done => Ok(Action::Return(out.clone())),
+                    SplitStep::Part(part) => {
+                        property::append(heap, task, out, Some(Value::String(part)))?;
+                        *remaining -= 1;
+                        Ok(Action::Continue)
+                    }
+                }
+            }
             NativeState::StringSearch(search) => Ok(match search.advance(256) {
                 Some(index) => Action::Return(Value::Number(index as f64)),
                 None => Action::Continue,
@@ -2127,6 +2218,7 @@ impl NativeState {
                 | NativeState::Convert { .. }
                 | NativeState::MathHypot { .. }
                 | NativeState::StringSearch(_)
+                | NativeState::StringSplit { .. }
                 | NativeState::StringBuild(_)
                 | NativeState::NumberParse(_),
                 Failure::Callback | Failure::Dependency | Failure::Step,

@@ -598,6 +598,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         Builtin::StringPrototypeConcat,
         Builtin::StringPrototypePadStart,
         Builtin::StringPrototypePadEnd,
+        Builtin::StringPrototypeSplit,
     ] {
         let method = b.function(which, &[])?;
         b.add(

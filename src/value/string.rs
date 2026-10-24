@@ -250,6 +250,15 @@ pub(crate) struct StringSearch {
 }
 
 impl StringSearch {
+    /// Resume after a consumed match without rebuilding the prefix table.
+    /// Split consumes non-overlapping matches, so no partial match survives.
+    fn restart(&mut self, position: usize) {
+        self.next = position;
+        self.matched = 0;
+        self.result = -1;
+        self.done = self.needle.len() > self.text.len();
+    }
+
     /// Position is already clamped to [0, text.len()]. For reverse search,
     /// scan forward through the last eligible match and retain its start.
     pub(crate) fn new(text: JsString, needle: JsString, position: usize, last: bool) -> Self {
@@ -321,6 +330,96 @@ impl StringSearch {
             }
         }
         None
+    }
+}
+
+/// Incremental string split. Each advance scans or copies at most 256 units
+/// (including KMP fallback work), or emits one code-unit/whole-string part.
+/// This owns only immutable leaf strings and Rust buffers, with no heap edges.
+#[derive(Debug)]
+pub(crate) struct StringSplit {
+    text: JsString,
+    separator: Option<JsString>,
+    search: Option<StringSearch>,
+    build: Option<StringBuild>,
+    start: usize,
+    tail: bool,
+    done: bool,
+}
+
+pub(crate) enum SplitStep {
+    Continue,
+    Part(JsString),
+    Done,
+}
+
+impl StringSplit {
+    pub(crate) fn new(text: JsString, separator: Option<JsString>) -> Self {
+        let search = separator
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|s| StringSearch::new(text.clone(), s.clone(), 0, false));
+        Self {
+            text,
+            separator,
+            search,
+            build: None,
+            start: 0,
+            tail: false,
+            done: false,
+        }
+    }
+
+    pub(crate) fn advance(&mut self) -> Option<SplitStep> {
+        if self.done {
+            return Some(SplitStep::Done);
+        }
+        if let Some(build) = &mut self.build {
+            return Some(match build.advance(256) {
+                None => SplitStep::Continue,
+                Some(part) => {
+                    self.build = None;
+                    self.done = self.tail;
+                    SplitStep::Part(part)
+                }
+            });
+        }
+        let Some(separator) = &self.separator else {
+            self.done = true;
+            return Some(SplitStep::Part(self.text.clone()));
+        };
+        if separator.is_empty() {
+            return Some(match self.text.code_unit_at(self.start) {
+                None => {
+                    self.done = true;
+                    SplitStep::Done
+                }
+                Some(part) => {
+                    self.start += 1;
+                    SplitStep::Part(part)
+                }
+            });
+        }
+        let search = self.search.as_mut()?;
+        let Some(index) = search.advance(256) else {
+            return Some(SplitStep::Continue);
+        };
+        let end = if index < 0 {
+            self.tail = true;
+            self.text.len()
+        } else {
+            index as usize
+        };
+        self.build = Some(StringBuild::new(vec![(
+            self.text.clone(),
+            self.start,
+            end - self.start,
+        )])?);
+        self.start = end + if self.tail { 0 } else { separator.len() };
+        if !self.tail {
+            search.restart(self.start);
+        }
+        Some(SplitStep::Continue)
     }
 }
 
