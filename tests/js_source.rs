@@ -334,6 +334,14 @@ fn script_completion_value_follows_javascript() {
         num("while (true) { try { throw 1; } finally { 8; break; } }"),
         8.0
     );
+    assert_eq!(
+        eval("while (true) { try { 6; break; } finally { break; } }"),
+        ValueView::Undefined
+    );
+    assert_eq!(
+        eval("let i = 0; while (i < 2) { i = i + 1; try { 6; } finally { continue; } }"),
+        ValueView::Undefined
+    );
 }
 
 /// Unlabelled `break` and `continue` in `while` loops (clj-quickjs-78).

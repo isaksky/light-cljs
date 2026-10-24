@@ -1219,7 +1219,9 @@ impl<'s> Lowerer<'s> {
     /// saves the return value as the pending completion. In a script, the
     /// completion value is that of the block or catch body (`undefined` if
     /// empty), never that of a finally block that completes normally: the
-    /// finally block runs with the value saved in a scratch local.
+    /// finally block runs with the value saved in a scratch local and the
+    /// completion value reset to `undefined` (what a `break`/`continue` out
+    /// of it carries if it produced no value).
     fn try_statement(
         &mut self,
         block: &[Stmt],
@@ -1285,6 +1287,11 @@ impl<'s> Lowerer<'s> {
                     let tmp = self.temp(span)?;
                     self.out().op_u16(Opcode::GetLocal, slot, span);
                     self.out().op_u16(Opcode::SetLocal, tmp, span);
+                    // A `break`/`continue` out of the finally body carries
+                    // only the value that body produced (UpdateEmpty with
+                    // `undefined`), never the saved one.
+                    self.out().op(Opcode::Undefined, span);
+                    self.out().op_u16(Opcode::SetLocal, slot, span);
                     Some((slot, tmp))
                 }
                 None => None,
