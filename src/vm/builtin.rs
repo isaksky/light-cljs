@@ -335,6 +335,12 @@ pub(crate) enum Builtin {
     DateGetLocalField(u8),
     DateSetLocalField(u8),
     DateTimezoneOffset,
+
+    IntlNumberFormat,
+    IntlNumberFormatGetFormat,
+    IntlNumberFormatBound,
+    IntlNumberFormatResolvedOptions,
+    IntlNumberFormatSupportedLocales,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -385,6 +391,12 @@ impl Builtin {
 
             Builtin::BigIntPrototypeToString => "toString",
             Builtin::BigIntPrototypeValueOf => "valueOf",
+
+            Builtin::IntlNumberFormat => "NumberFormat",
+            Builtin::IntlNumberFormatGetFormat => "get format",
+            Builtin::IntlNumberFormatBound => "",
+            Builtin::IntlNumberFormatResolvedOptions => "resolvedOptions",
+            Builtin::IntlNumberFormatSupportedLocales => "supportedLocalesOf",
             Builtin::IntlLocale => "Locale",
             Builtin::IntlGetCanonicalLocales => "getCanonicalLocales",
             Builtin::IntlLocaleToString => "toString",
@@ -532,6 +544,11 @@ impl Builtin {
             Builtin::TypedArrayJoin => 1,
 
             Builtin::BigIntPrototypeToString | Builtin::BigIntPrototypeValueOf => 0,
+
+            Builtin::IntlNumberFormat
+            | Builtin::IntlNumberFormatBound
+            | Builtin::IntlNumberFormatSupportedLocales => 1,
+            Builtin::IntlNumberFormatGetFormat | Builtin::IntlNumberFormatResolvedOptions => 0,
             Builtin::IntlLocale | Builtin::IntlGetCanonicalLocales => 1,
             Builtin::IntegerTypedArray(_) => 3,
             Builtin::TypedArray => 0,
@@ -673,6 +690,17 @@ pub(crate) fn call(
         Builtin::TypedArraySet | Builtin::TypedArrayFill | Builtin::TypedArrayJoin => Err(
             Fault::Internal("typed array method requires a resumable frame"),
         ),
+        Builtin::IntlNumberFormat
+        | Builtin::IntlNumberFormatBound
+        | Builtin::IntlNumberFormatSupportedLocales => {
+            Err(Fault::Internal("NumberFormat requires native frame"))
+        }
+        Builtin::IntlNumberFormatGetFormat => {
+            crate::intl::number_format::get_format(heap, task, this)
+        }
+        Builtin::IntlNumberFormatResolvedOptions => {
+            crate::intl::number_format::record(heap, task, this)?.resolved(heap, task)
+        }
         Builtin::IntlLocale => Err(Fault::TypeError("Intl.Locale requires new".into())),
         Builtin::IntlGetCanonicalLocales => {
             Err(Fault::Internal("locale lists require a resumable frame"))

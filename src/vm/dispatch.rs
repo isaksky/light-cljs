@@ -676,7 +676,8 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
             | Builtin::IntlLocale
             | Builtin::IntegerTypedArray(_)
             | Builtin::RegExp
-            | Builtin::Promise),
+            | Builtin::Promise
+            | Builtin::IntlNumberFormat),
         )) => {
             if super::native::start_builtin(
                 heap,

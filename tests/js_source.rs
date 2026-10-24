@@ -17339,3 +17339,252 @@ fn bigint_number_conversion_waits_collects_and_migrates() {
         assert!(completed, "{expression}");
     }
 }
+
+/*
+QuickJS Javascript Engine
+
+Copyright (c) 2017-2021 Fabrice Bellard
+Copyright (c) 2017-2021 Charlie Gordon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+*/
+/// Synthetic fixtures, not light-cljs output. Decimal examples follow
+/// research/quickjs/tests/test_intl.js (7d1c13c5d8f8); see docs/attribution.md.
+#[test]
+fn intl_number_format_decimal() {
+    for (locale, expected) in [
+        ("en", "1,234,567.89"),
+        ("de", "1.234.567,89"),
+        ("fr", "1\u{202f}234\u{202f}567,89"),
+        ("es", "1.234.567,89"),
+        ("ja", "1,234,567.89"),
+        ("zh", "1,234,567.89"),
+        ("ar", "1,234,567.89"),
+        ("ru", "1\u{a0}234\u{a0}567,89"),
+        ("pt-BR", "1.234.567,89"),
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "new Intl.NumberFormat('{locale}').format(1234567.89) === '{expected}'"
+            )),
+            ValueView::Bool(true)
+        );
+    }
+    for source in [
+        "new Intl.NumberFormat('en').format(1000000) === '1,000,000'",
+        "new Intl.NumberFormat('de').format(1000000) === '1.000.000'",
+        "new Intl.NumberFormat('fr').format(1000000) === '1\u{202f}000\u{202f}000'",
+        "let f = new Intl.NumberFormat('en').format; f(0.1234567) === '0.123' && f(-0) === '-0' && f(NaN) === 'NaN' && f(Infinity) === '∞'",
+        "new Intl.NumberFormat('en', {useGrouping:false}).format(1234) === '1234'",
+        "new Intl.NumberFormat('en', {maximumFractionDigits:1}).format(2.25) === '2.3'",
+        "let n = new Intl.NumberFormat('de'); let f = n.format; f(1.5) === '1,5' && f === n.format && f !== new Intl.NumberFormat('de').format",
+        "let caught = false; try { new Intl.NumberFormat('en', {maximumFractionDigits:101}); } catch(e) {caught = e instanceof RangeError;} caught",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_number_format_options_and_rounding() {
+    for source in [
+        "let o=Intl.NumberFormat().resolvedOptions(); o.locale === 'en-US' && o.numberingSystem === 'latn' && o.style === 'decimal' && o.minimumIntegerDigits === 1 && o.minimumFractionDigits === 0 && o.maximumFractionDigits === 3 && o.useGrouping === 'auto' && o.roundingMode === 'halfExpand' && o.notation === 'standard'",
+        "let o=new Intl.NumberFormat('EN-us-u-nu-latn').resolvedOptions(); o.locale === 'en-US-u-nu-latn'",
+        "Intl.NumberFormat.supportedLocalesOf(['xx','DE-de','en-US-u-nu-latn','pt','pt-BR','de-DE']).join() === 'de-DE,en-US-u-nu-latn,pt-BR'",
+        "let n=new Intl.NumberFormat('en',{minimumIntegerDigits:5,minimumFractionDigits:4}); n.format(1.2) === '00,001.2000' && n.resolvedOptions().maximumFractionDigits === 4",
+        "let n=new Intl.NumberFormat('en',{useGrouping:'min2'}); n.format(1234) === '1234' && n.format(12345) === '12,345' && n.format(1234567) === '1,234,567'",
+        "new Intl.NumberFormat('es',{useGrouping:'auto'}).format(1234.5) === '1.234,5'",
+        "let n=new Intl.NumberFormat('en',{maximumFractionDigits:2}); n.format(1.005) === '1.01' && n.format(9.999) === '10' && n.format(-0.0001) === '-0' && n.format(1e21) === '1,000,000,000,000,000,000,000'",
+        "let n=new Intl.NumberFormat('en',{minimumSignificantDigits:3,maximumSignificantDigits:3}); n.format(0.00123456) === '0.00123' && n.format(999.9) === '1,000' && n.format(9.999) === '10.0' && n.format(1) === '1.00' && n.format(0) === '0.00' && n.resolvedOptions().maximumSignificantDigits === 3 && n.resolvedOptions().maximumFractionDigits === 3",
+        "let n=new Intl.NumberFormat('en',{useGrouping:false}); n.format(123456789012345678901234567890n) === '123456789012345678901234567890' && n.format('123456789012345678901234567890.125') === '123456789012345678901234567890.125'",
+        "new Intl.NumberFormat('de',{minimumFractionDigits:2}).format(-12345678901234567890n) === '-12.345.678.901.234.567.890,00'",
+        "let n=new Intl.NumberFormat('ar'); n.format(-1) === '\u{200e}-1' && n.format(NaN) === 'ليس\u{00a0}رقمًا'",
+        "let n=new Intl.NumberFormat('ru'); n.format(NaN) === 'не\u{00a0}число'",
+        "let n=new Intl.NumberFormat('en'); n[Symbol.toStringTag] === 'Intl.NumberFormat' && n instanceof Intl.NumberFormat && n.format.length === 1 && n.format.name === '' && n.format.call({},1.5) === '1.5'",
+        "let g=Object.getOwnPropertyDescriptor(Intl.NumberFormat.prototype,'format'); !g.enumerable && g.configurable && g.set === undefined && g.get.name === 'get format' && g.get.length === 0 && Intl.NumberFormat.name === 'NumberFormat' && Intl.NumberFormat.length === 1 && Intl.NumberFormat.supportedLocalesOf.length === 1",
+        "let n=new Intl.NumberFormat('en'); Object.freeze(n); n.format === n.format && n.format(1.5) === '1.5'",
+        "let n=new Intl.NumberFormat('en',{useGrouping:''}); n.format(1234) === '1234'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for (mode, positive, negative) in [
+        ("ceil", "2.3", "-2.2"),
+        ("floor", "2.2", "-2.3"),
+        ("expand", "2.3", "-2.3"),
+        ("trunc", "2.2", "-2.2"),
+        ("halfCeil", "2.3", "-2.2"),
+        ("halfFloor", "2.2", "-2.3"),
+        ("halfExpand", "2.3", "-2.3"),
+        ("halfTrunc", "2.2", "-2.2"),
+        ("halfEven", "2.2", "-2.2"),
+    ] {
+        let source = format!(
+            "let n=new Intl.NumberFormat('en',{{maximumFractionDigits:1,roundingMode:'{mode}'}}); n.format(2.25) === '{positive}' && n.format(-2.25) === '{negative}'"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for option in [
+        "minimumIntegerDigits:0",
+        "minimumIntegerDigits:22",
+        "minimumFractionDigits:-1",
+        "maximumFractionDigits:101",
+        "maximumFractionDigits:NaN",
+        "minimumFractionDigits:2,maximumFractionDigits:1",
+        "minimumSignificantDigits:0",
+        "maximumSignificantDigits:22",
+        "minimumSignificantDigits:4,maximumSignificantDigits:3",
+        "notation:'scientific'",
+        "notation:'compact'",
+        "roundingMode:'unknown'",
+        "localeMatcher:'unknown'",
+        "numberingSystem:'bad!'",
+        "useGrouping:'never'",
+        "useGrouping:1",
+        "style:'currency'",
+        "style:'percent'",
+    ] {
+        let source = format!("new Intl.NumberFormat('en',{{{option}}})");
+        assert_eq!(failure(&source).kind(), VmErrorKind::RangeError, "{source}");
+    }
+    for source in [
+        "new Intl.NumberFormat('en',null)",
+        "Intl.NumberFormat.prototype.resolvedOptions.call({})",
+        "Object.getOwnPropertyDescriptor(Intl.NumberFormat.prototype,'format').get.call({})",
+        "new Intl.NumberFormat('en').format(Symbol())",
+        "new Intl.NumberFormat.supportedLocalesOf('en')",
+        "Intl.NumberFormat.supportedLocalesOf(null)",
+    ] {
+        assert_eq!(failure(source).kind(), VmErrorKind::TypeError, "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Saved options, locale-list and
+/// numeric coercions survive collection at each yield and worker migration.
+#[test]
+fn intl_number_format_callbacks_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let n=new Intl.NumberFormat({get length(){log+='l';__rt.need(1,1);return 1;},get 0(){log+='t';__rt.need(2,1);return 'DE';}},
+            {get maximumFractionDigits(){log+='f';__rt.need(3,1);return {valueOf(){log+='v';__rt.need(4,1);return 1;}};},get useGrouping(){log+='g';__rt.need(5,1);return false;}});
+        let f=n.format; n=null;
+        let text=f({valueOf(){log+='n';__rt.need(6,1);return 2.25;}});
+        let big=f({valueOf(){log+='b';__rt.need(7,1);return 12345678901234567890n;}});
+        text === '2,3' && big === '12345678901234567890' && log === 'ltfvgnb'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 7);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 7);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("NumberFormat continuation did not finish");
+}
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn intl_number_format_host_default_and_ownership() {
+    struct LocaleHost(&'static str, usize);
+    impl Host for LocaleHost {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            unreachable!()
+        }
+        fn default_locale(&mut self) -> String {
+            self.1 += 1;
+            self.0.into()
+        }
+    }
+    let rt = Runtime::new();
+    let task=rt.spawn(&exe("let n=new Intl.NumberFormat(); __rt.need(1,1); n.format(1.5) === '1,5' && n.resolvedOptions().locale === 'de'"),&[]).unwrap();
+    let mut host = LocaleHost("de", 0);
+    assert!(matches!(
+        task.run_with(Budget::instructions(10000), &mut host)
+            .unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    assert_eq!(host.1, 1);
+    host.0 = "fr";
+    let request = task.take_producer_requests().pop().unwrap();
+    let zero = rt.root(Primitive::Number(0.0));
+    let task = rt
+        .complete(request.key(), request.producer(), Completion::Ready(&zero))
+        .unwrap()
+        .into_runnable()
+        .pop()
+        .unwrap();
+    assert!(
+        matches!(task.run_with(Budget::instructions(10000),&mut host).unwrap(),RunOutcome::Complete(value) if value.view()==ValueView::Bool(true))
+    );
+    assert_eq!(host.1, 1);
+    for source in [
+        "new Intl.NumberFormat('en')",
+        "new Intl.NumberFormat('en').format",
+    ] {
+        let owner = rt.spawn(&exe(source), &[]).unwrap();
+        let RunOutcome::Complete(value) = owner.run().unwrap() else {
+            panic!("expected formatter")
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable { .. })
+        ));
+        let body = if source.ends_with(".format") {
+            "value(1)"
+        } else {
+            "Intl.NumberFormat.prototype.resolvedOptions.call(value)"
+        };
+        let code = compile_function(&format!("function f(value){{return {body};}}")).unwrap();
+        let caller = rt.spawn(&code, &[&value]).unwrap();
+        assert!(
+            matches!(caller.run().unwrap(),RunOutcome::Failed(error) if matches!(error.kind(),VmErrorKind::ForeignObject{..}))
+        );
+    }
+    rt.collect().unwrap();
+}

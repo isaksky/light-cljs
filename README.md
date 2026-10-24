@@ -3108,3 +3108,25 @@ See `src/host/timezone/tables.rs` for the supported canonical/alias records and
 individual transition ranges. Parsing, `Date()` string results, other formats,
 legacy `getYear`/`setYear` and default Date coercion remain deferred.
 Tests: `CARGO_BUILD_JOBS=3 cargo test --test date_host -- --test-threads=3`.
+
+### Decimal NumberFormat (clj-quickjs-213)
+
+Supported: `Intl.NumberFormat(locales, options)` with or without `new`, decimal
+standard notation, cached detached `format`, `resolvedOptions`,
+`supportedLocalesOf`, and `Symbol.toStringTag`. The policy's test locales use
+pinned grouping sizes, decimal/group separators, minus signs, NaN and infinity
+symbols. Default fraction digits are 0..3; integer/fraction/significant digit
+options and all nine rounding modes use exact decimal digit arithmetic over the
+shared Number::toString output. BigInts and decimal strings retain their digits.
+Options and argument coercions can wait, yield, collect and migrate. The host
+supplies the default locale once per constructor; absent a host it is en-US.
+
+Deferred: percent/currency styles (clj-quickjs-214), other styles and notations
+(explicit RangeError), non-Latin numbering systems (well-formed unsupported
+requests fall back to latn), parts/range methods, ChainNumberFormat's legacy
+fallback receiver, and general Object.prototype.toString tag consumption.
+Both localeMatcher values currently use lookup over the policy's test locales.
+Decimal string input is bounded to 100,000 coefficient characters and exponent
+magnitude 10,000 (RangeError beyond those limits).
+
+Check: `cargo test --test js_source intl_number_format -- --test-threads=3`.

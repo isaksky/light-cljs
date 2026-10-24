@@ -256,4 +256,5 @@ mod tests {
 
 pub mod likely;
 pub(crate) mod locale;
+pub(crate) mod number_format;
 pub mod tag;

@@ -643,3 +643,15 @@ The QuickJS MIT notice is retained beside the test; see
 output. `js_bigint_to_float64` and `js_number_constructor` in
 `research/quickjs/quickjs.c` at that revision were semantic references.
 The Rust sign/magnitude rounding implementation was written independently.
+
+## Decimal NumberFormat (clj-quickjs-213)
+
+Semantic references: `research/quickjs/intl/numberformat.c`
+(`intl_mv_init_from_value`, fraction/significant rounding, `add_grouping`,
+constructor, bound getter, resolvedOptions) and decimal rows in
+`research/quickjs/tests/test_intl.js::test_numberFormat`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The Rust implementation is written afresh and consumes the already attributed
+pinned locale tables without changing generated data. The decimal integration
+examples adapt the upstream test expectations and retain the QuickJS MIT notice
+beside the test. No C engine, ICU, new dataset or crate dependency is used.

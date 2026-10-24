@@ -896,7 +896,7 @@ fn object_property_reclaims() {
     assert_eq!(rt.heap_usage().objects.plain, 3 + 34);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 34);
+    assert_eq!(rt.heap_usage().objects.plain, 35);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -1002,6 +1002,11 @@ fn realm_intrinsics_retain() {
         "Object.getOwnPropertyDescriptor(RegExp.prototype, 'sticky').get",
         "BigInt.prototype.toString",
         "BigInt.prototype.valueOf",
+        "Intl.NumberFormat",
+        "Intl.NumberFormat.prototype",
+        "Intl.NumberFormat.supportedLocalesOf",
+        "Intl.NumberFormat.prototype.resolvedOptions",
+        "Object.getOwnPropertyDescriptor(Intl.NumberFormat.prototype, 'format').get",
     ];
     let weak: Vec<WeakHandle> = exprs
         .iter()
@@ -1057,8 +1062,9 @@ fn realm_intrinsics_retain() {
     // BigInt conversion adds two built-in methods (-202).
     // Promise adds one prototype and five built-ins (-246).
     // Local Date fields and host inputs add seventeen built-ins (-182).
-    assert_eq!(rt.heap_usage().objects.builtin, 187);
-    assert_eq!(rt.heap_usage().objects.plain, 34);
+    // NumberFormat adds one prototype and five built-ins (-213).
+    assert_eq!(rt.heap_usage().objects.builtin, 192);
+    assert_eq!(rt.heap_usage().objects.plain, 35);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1924,4 +1930,29 @@ fn finished_task_releases_global_object() {
     assert!(weak.is_live());
     assert_eq!(run_to_end(&task).view(), ValueView::Number(0.0));
     assert_reclaimed(&rt, Held::new(vec![weak], || {}).keeping(task));
+}
+
+/// Synthetic fixture, not light-cljs output. The formatter-to-cache edge keeps
+/// the bound callable alive, and the reverse edge retains a detached receiver.
+#[test]
+fn intl_number_format_bound_cache_retains_and_reclaims() {
+    for result in ["n", "n.format"] {
+        let rt = Runtime::new();
+        let source = format!("let n=new Intl.NumberFormat('de'); n.format; {result}");
+        let code = clj_quickjs::frontend::compile_script("formatter", &source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let RunOutcome::Complete(value) = task.run().unwrap() else {
+            panic!("expected formatter")
+        };
+        let weak = value.downgrade();
+        drop(task);
+        rt.collect().unwrap();
+        assert!(weak.upgrade().is_ok());
+        assert_eq!(rt.heap_usage().objects.bound_function, 1);
+        drop(value);
+        rt.collect().unwrap();
+        assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
+        assert_eq!(rt.heap_usage().objects.bound_function, 0);
+        assert_eq!(rt.heap_usage().objects.plain, 35);
+    }
 }

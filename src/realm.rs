@@ -388,6 +388,10 @@ pub(crate) struct Intrinsics {
     bigint: ObjectId,
     pub(crate) promise_prototype: ObjectId,
     promise: ObjectId,
+
+
+    pub(crate) intl_number_format_prototype: ObjectId,
+    pub(crate) intl_number_format_bound: ObjectId,
 }
 
 /// The immutable property view of one intrinsic object.
@@ -1028,6 +1032,11 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         let function = b.function(which, &[])?;
         b.add(target, name, function, PropertyFlags::METHOD)?;
     }
+
+
+
+    let (intl_number_format_prototype, intl_number_format_bound) =
+        intl_number_format_intrinsics(&mut b, object_prototype, intl)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1095,6 +1104,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
         promise_prototype,
         promise,
+
+        intl_number_format_prototype,
+        intl_number_format_bound,
     })
 }
 
@@ -1395,6 +1407,68 @@ fn date_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
         b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
     }
     Some((prototype, constructor))
+}
+
+/// Append NumberFormat after all previously allocated realm identities.
+fn intl_number_format_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+    intl: ObjectId,
+) -> Option<(ObjectId, ObjectId)> {
+    let heap = b.heap;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+        object_prototype,
+    ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::IntlNumberFormat,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    b.add(intl, "NumberFormat", constructor, PropertyFlags::METHOD)?;
+    let supported = b.function(Builtin::IntlNumberFormatSupportedLocales, &[])?;
+    b.add(
+        constructor,
+        "supportedLocalesOf",
+        supported,
+        PropertyFlags::METHOD,
+    )?;
+    let resolved = b.function(Builtin::IntlNumberFormatResolvedOptions, &[])?;
+    b.add(
+        prototype,
+        "resolvedOptions",
+        resolved,
+        PropertyFlags::METHOD,
+    )?;
+    let getter = b.function(Builtin::IntlNumberFormatGetFormat, &[])?;
+    let key = heap.keys().intern(&JsString::from("format"))?;
+    let descriptor = PropertyDescriptor {
+        get: Some(Value::Object(getter)),
+        enumerable: Some(false),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    if heap.with_object_mut(prototype, |o| match o {
+        HeapObject::Plain(o) => o.define_own_property(key, &descriptor),
+        _ => unreachable!(),
+    })? != DefineOutcome::Done
+    {
+        return None;
+    }
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    heap.with_object_mut(prototype, |o| match o {
+        HeapObject::Plain(o) => o.define_with(
+            key,
+            Value::String(JsString::from("Intl.NumberFormat")),
+            PropertyFlags::FUNCTION_INFO,
+        ),
+        _ => false,
+    })?
+    .then_some(())?;
+    let bound = b.function(Builtin::IntlNumberFormatBound, &[])?;
+    Some((prototype, bound))
 }
 
 /// Define `name` on an intrinsic under construction.

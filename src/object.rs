@@ -289,6 +289,9 @@ pub(crate) struct OrdinaryObject {
     date_value: Option<f64>,
     /// Immutable RegExp code has no heap edges; mutable state is lastIndex.
     regexp: Option<std::sync::Arc<crate::regexp::object::Compiled>>,
+
+    number_format: Option<Box<crate::intl::number_format::NumberFormat>>,
+    number_format_bound: Option<Value>,
 }
 
 impl OrdinaryObject {
@@ -309,6 +312,9 @@ impl OrdinaryObject {
 
             date_value: None,
             regexp: None,
+
+            number_format: None,
+            number_format_bound: None,
         }
     }
 
@@ -373,6 +379,23 @@ impl OrdinaryObject {
 
     pub(crate) fn regexp(&self) -> Option<&std::sync::Arc<crate::regexp::object::Compiled>> {
         self.regexp.as_ref()
+    }
+
+    pub(crate) fn with_number_format(
+        mut self,
+        data: crate::intl::number_format::NumberFormat,
+    ) -> Self {
+        self.number_format = Some(Box::new(data));
+        self
+    }
+    pub(crate) fn number_format(&self) -> Option<&crate::intl::number_format::NumberFormat> {
+        self.number_format.as_deref()
+    }
+    pub(crate) fn number_format_bound(&self) -> Option<&Value> {
+        self.number_format_bound.as_ref()
+    }
+    pub(crate) fn set_number_format_bound(&mut self, value: Value) {
+        self.number_format_bound = Some(value);
     }
 
     pub(crate) fn with_error_data(mut self) -> Self {
@@ -774,6 +797,11 @@ impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         // PrimitiveData and DateValue contain only f64 / JsString, with no heap edges.
         // locale_data owns Rust strings and also contains no heap edges.
+        // NumberFormat options own strings/static data; the cached bound
+        // callable is a heap edge, including its cycle back to this object.
+        if let Some(bound) = &self.number_format_bound {
+            bound.trace(visit);
+        }
         if let Some(error) = &self.engine_error {
             error.trace(visit);
         }

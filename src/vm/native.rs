@@ -217,6 +217,8 @@
 use std::marker::PhantomData;
 mod intl;
 pub(crate) mod regexp;
+
+mod number_format;
 mod string_raw;
 mod string_replace;
 mod typed_array;
@@ -283,6 +285,8 @@ pub(crate) enum Action {
     },
 
     ToNumber(Value),
+    ToPrimitiveNumber(Value),
+    DefaultLocale,
     /// Limit leaf StringToNumber after observable ToPrimitive completes.
     ToNumberLimited(Value, usize),
     ToString(Value),
@@ -341,6 +345,7 @@ enum ConvertTarget {
         limit_undefined: bool,
     },
     NumberValue,
+    PrimitiveValue,
     StringValue,
     Instruction(Instr),
     PrimitiveConstructor {
@@ -495,6 +500,7 @@ enum NativeState {
     Join(Box<ArrayJoin>),
     StringRaw(Box<string_raw::StringRaw>),
     Intl(Box<intl::Intl>),
+    NumberFormat(Box<number_format::State>),
     ArrayToString {
         this: Value,
         stage: u8,
@@ -689,6 +695,7 @@ impl Trace for NativeFrame {
             }
             NativeState::StringRaw(raw) => raw.trace(visit),
             NativeState::Intl(intl) => intl.trace(visit),
+            NativeState::NumberFormat(format) => format.trace(visit),
             NativeState::Join(join) => {
                 join.this.trace(visit);
                 join.separator.trace(visit);
@@ -998,6 +1005,18 @@ pub(crate) fn start_builtin(
         let native = string_replace::State::new(heap, state.diag.task, which, this, args)?;
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::StringReplace(Box::new(native)))?;
+        return Ok(true);
+    }
+    if matches!(
+        which,
+        Builtin::IntlNumberFormat
+            | Builtin::IntlNumberFormatSupportedLocales
+            | Builtin::IntlNumberFormatBound
+    ) && (!construct || which == Builtin::IntlNumberFormat)
+    {
+        let native = number_format::State::new(which, this, args, heap, state.diag.task)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::NumberFormat(Box::new(native)))?;
         return Ok(true);
     }
     if (which == Builtin::IntlLocale && construct)
@@ -1714,6 +1733,8 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::SetProperty { .. }
             | Action::Call { .. }
             | Action::ToNumber(_)
+            | Action::ToPrimitiveNumber(_)
+            | Action::DefaultLocale
             | Action::ToNumberLimited(_, _)
             | Action::ToString(_)
             | Action::Builtin { .. }
@@ -1784,6 +1805,12 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     };
     state.truncate_operands(base)?;
     match action {
+        Action::DefaultLocale => {
+            let locale = crate::intl::default_locale(Some(host));
+            set_awaiting(state, Awaiting::CallResult)?;
+            state.push(Value::String(JsString::from(locale.as_str())));
+            Ok(Flow::Next)
+        }
         Action::SetProperty {
             this,
             key,
@@ -1804,8 +1831,14 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             }
             Ok(Flow::Next)
         }
-        Action::ToNumber(_) | Action::ToNumberLimited(_, _) | Action::ToString(_) => {
+        Action::ToNumber(_)
+        | Action::ToNumberLimited(_, _)
+        | Action::ToString(_)
+        | Action::ToPrimitiveNumber(_) => {
             let (value, target, hint) = match action {
+                Action::ToPrimitiveNumber(value) => {
+                    (value, ConvertTarget::PrimitiveValue, Hint::Number)
+                }
                 Action::ToNumber(value) => (value, ConvertTarget::NumberValue, Hint::Number),
                 Action::ToNumberLimited(value, limit) => (
                     value,
@@ -2112,6 +2145,8 @@ impl NativeState {
             NativeState::TypedArray(array) => array.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::Promise(p) => p.step(heap, task, input),
+
+            NativeState::NumberFormat(format) => format.step(heap, task, input),
             NativeState::StringRaw(raw) => {
                 if let Some(build) = raw.finish()? {
                     *self = NativeState::StringBuild(build);
@@ -2868,6 +2903,7 @@ impl NativeState {
                         }
                         dispatch::to_number(&operands[0]).map(|n| Action::Return(Value::Number(n)))
                     }
+                    ConvertTarget::PrimitiveValue => Ok(Action::Return(operands[0].clone())),
                     ConvertTarget::StringValue => dispatch::to_js_string(&operands[0])
                         .map(|s| Action::Return(Value::String(s))),
                     ConvertTarget::PropertyBuiltin { which } => Ok(Action::Builtin {
@@ -3158,6 +3194,7 @@ impl NativeState {
                 | NativeState::Join(_)
                 | NativeState::StringRaw(_)
                 | NativeState::Intl(_)
+                | NativeState::NumberFormat(_)
                 | NativeState::ArrayToString { .. }
                 | NativeState::Bind { .. }
                 | NativeState::NeedAll { .. }

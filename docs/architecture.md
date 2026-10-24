@@ -5553,3 +5553,42 @@ that rejection; `docs/grammar.md` lists the numeric entry points. Tests exercise
 rounding across every binary64 integer exponent, the overflow midpoint,
 Number wrappers and callback continuations across yields, dependency waits,
 collection and worker migration. No builtin/realm entries or heap kinds change.
+
+## Decimal NumberFormat (clj-quickjs-213)
+
+`intl::number_format` holds immutable formatting options and decimal arithmetic;
+`vm::native::number_format` embeds the existing CanonicalizeLocaleList state and
+saves option getter/coercion and FormatNumeric argument-coercion stages. A new
+native ToPrimitive-with-number-hint action preserves String and BigInt results
+instead of converting them through binary64. The trampoline reads the guarded
+host default locale only when requested locales cannot resolve, then captures
+it in the instance. No callback or host input retains a Rust stack over a wait.
+The service supports the policy's locale set with lookup for both matchers;
+latn is the available numbering system, including the `nu-latn` extension.
+Other well-formed numbering systems fall back to latn.
+
+NumberFormat instances are ordinary task-owned objects. Their private record
+owns strings and static locale-data references; a separate cached bound-function
+slot is traced. The bound callable retains its formatter through its immutable
+`this`, so a detached function keeps the formatter alive. The collector handles
+that cycle; publication rejects both the mutable formatter and a callable
+capturing it. Brand checks enforce task ownership even through borrowed methods.
+The append-only realm adds one prototype and five built-ins, including a hidden
+bound-call target. The public format getter lazily allocates a nonconstructible
+bound callable with name "" and length 1; freezing ordinary properties does not
+prevent initializing that internal cache.
+
+Numbers reuse `value::string::number_to_string` before decimal rounding, matching
+QuickJS's Intl mathematical-value path rather than scaling binary floats.
+Coefficient digits and point position support all nine rounding modes, including
+carry, significant digit padding and negative zero. BigInts and decimal strings
+bypass f64. Symbols/group sizes come from the existing pinned locale tables;
+auto groups four-digit Spanish numbers as QuickJS does, while min2 requires a
+two-digit leading group. Generated data is unchanged. Input coefficients and
+exponents have explicit resource bounds (100,000 characters and magnitude
+10,000); oversized inputs throw RangeError. No dependencies or OS locale access.
+
+Percent/currency styles, nonstandard notations, other numbering systems,
+formatToParts/ranges, and legacy ChainNumberFormat receivers remain deferred.
+Non-decimal styles and nonstandard notations throw RangeError. General
+Object.prototype.toString tag consumption remains the existing explicit gap.

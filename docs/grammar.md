@@ -3802,3 +3802,25 @@ rules. `Number` is the explicit numeric conversion exception.
 
 Explicit gaps: BigInt wrapper objects, `asIntN`/`asUintN`, and BigInt typed-array
 storage remain deferred. This adds no Number prototype methods or Math methods.
+
+### Decimal NumberFormat (clj-quickjs-213)
+
+Execution: `Intl.NumberFormat(locales, options)` and `new Intl.NumberFormat(...)`
+create decimal formatters in standard notation. A cached `format` getter returns
+a detached callable; `resolvedOptions()` reports immutable selected settings,
+and `supportedLocalesOf(locales, options)` returns supported canonical requests.
+Instances inherit `Symbol.toStringTag = 'Intl.NumberFormat'`. Locale lists and
+options use resumable property reads/coercions, as do object format arguments.
+Numbers, BigInts and decimal strings format with locale symbols/grouping,
+negative zero, NaN and infinity. Options cover localeMatcher, numberingSystem,
+useGrouping (booleans, auto/always/min2), minimumIntegerDigits (1..21), fraction
+digits (0..100), significant digits (1..21), and all nine rounding modes
+(default halfExpand); default fraction bounds are 0..3. Invalid listed options
+throw catchable RangeErrors; invalid receivers and Symbol numbers throw TypeError.
+
+Explicit gaps: percent/currency (clj-quickjs-214), other styles and nonstandard
+notations throw RangeError. Only latn numbering is available; well-formed other
+systems fall back to latn. Both matchers use lookup over the policy's test locales.
+Parts/range methods, ChainNumberFormat legacy receivers and general
+Object.prototype.toString tag consumption remain deferred. Decimal coefficient
+input over 100,000 characters or exponent magnitude over 10,000 throws RangeError.
