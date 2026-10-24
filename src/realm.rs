@@ -1035,6 +1035,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
     let (intl_number_format_prototype, intl_number_format_bound) =
         intl_number_format_intrinsics(&mut b, object_prototype, intl)?;
+    date_string_intrinsics(&mut b, date_prototype)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1404,6 +1405,11 @@ fn date_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
         let method = b.function(which, &[])?;
         b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
     }
+    Some((prototype, constructor))
+}
+
+/// Append formatting functions after every existing realm allocation.
+fn date_string_intrinsics(b: &mut Build<'_>, prototype: ObjectId) -> Option<()> {
     for part in 1..=3 {
         let which = Builtin::DateToLocalString(part);
         let method = b.function(which, &[])?;
@@ -1412,7 +1418,7 @@ fn date_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
     let utc_string = b.function(Builtin::DateToUtcString, &[])?;
     b.add(prototype, "toUTCString", utc_string, PropertyFlags::METHOD)?;
     b.add(prototype, "toGMTString", utc_string, PropertyFlags::METHOD)?;
-    Some((prototype, constructor))
+    Some(())
 }
 
 /// Append NumberFormat after all previously allocated realm identities.
