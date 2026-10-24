@@ -557,7 +557,9 @@ checks left to later stages:
   resumable ToString and budgeted parsing. Open-container depth is capped
   at 512 and decoded member names at 4096 UTF-16 units, with catchable
   SyntaxErrors; callable revivers fail explicitly with TypeError.
-  Reviver traversal remains deferred. `JSON.stringify` (clj-quickjs-160/-161)
+  SyntaxError stacks start with `<input>:line:column`, followed by the
+  JavaScript caller frames (clj-quickjs-162). Reviver traversal remains
+  deferred. `JSON.stringify` (clj-quickjs-160/-161)
   serializes primitives, wrappers, arrays and objects with resumable getters/
   `toJSON`, cycle checks, bounded quoting/traversal and the indentation space
   argument. Replacer functions/lists fail explicitly; see "JSON.stringify"
@@ -3071,18 +3073,25 @@ Duplicate keys replace values without changing the first key's position;
 `__proto__` creates an ordinary own data property. Results have the normal
 Array/Object prototypes and property attributes. Trailing garbage fails.
 
-Malformed input throws through the existing catchable `Fault::SyntaxError`
-engine-error path. Messages name the problem and record 1-based input line
-and UTF-16 column, plus the zero-based code-unit offset; CRLF counts as one
-line break. These positions describe JSON input separately from the source
-location of the JavaScript call. NativeError constructor/prototype integration
-for engine-raised errors remains the exceptions workstream's responsibility.
+Malformed input throws an instance of the realm's SyntaxError with QuickJS
+JSON error messages. Its non-enumerable, writable/configurable `stack`
+starts with `    at <input>:line:column\n`, then the usual captured JavaScript
+frames, starting at the JSON.parse call site (clj-quickjs-162). Input lines
+and UTF-16 columns are 1-based; LF, CRLF and CR separate lines. Invalid
+escapes point to the offending escape unit; unexpected tokens point to
+their start (including malformed literals such as `tru`), and missing
+input points one unit past the end. The input location is separate from
+the JavaScript call diagnostic and is preserved when the error is rethrown.
+Messages no longer embed line/column/offset annotations. Conversion errors
+and the unsupported callable-reviver TypeError keep their ordinary stacks.
 
 The parser runs in budgeted native steps, roots all partial containers and
 results, and uses an explicit stack with a limit of 512 open containers.
 Exceeding the limit throws a catchable SyntaxError, including 100,000 `[`;
 no input nesting uses the Rust call stack. Whitespace, string scanning and
-decoding, and numeric scanning/conversion yield during long inputs.
+decoding, identifier scanning and numeric scanning/conversion yield during
+long inputs. Rope inputs are flattened incrementally before parsing, with
+flat inputs reused; position tracking never rescans an input on failure.
 Object member names are limited to 4096 decoded UTF-16 units so the shared
 leaf property-key interner's hashing and equality have a bounded name size.
 The limit is checked incrementally before decoding/interning, with a
@@ -3091,7 +3100,10 @@ count equally; string values retain the normal `2^30 - 1` code-unit limit.
 
 Explicit gaps: a callable reviver throws a catchable TypeError after parsing;
 a non-callable second argument is ignored. Reviver traversal,
-JSON extensions and richer error-position properties are deferred.
+JSON extensions and separate `fileName`/`lineNumber`/`columnNumber` properties
+are deferred. The requested CR/UTF-16/EOF position convention also applies
+where the pinned QuickJS diagnostic helper counts only LF/scalar columns
+or points an unterminated string back to its opening quote.
 
 Synthetic fixtures, not light-cljs output:
 

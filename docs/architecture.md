@@ -4233,9 +4233,31 @@ UTF-16 units, checked incrementally while scanning, so the shared key
 interner hashes/compares a bounded key. Exceeding that resource limit throws
 SyntaxError; string values are unaffected. Object/array storage and the key
 table may grow, as in source literals.
-SyntaxError messages retain JSON input line/UTF-16 column/offset independently
-of the VM call diagnostic. The engine's existing catchable error path is
-used; NativeError constructors and engine-error prototypes are separate work.
+JSON tokenization precedes grammar checks, preserving QuickJS's lexical
+error precedence and message text (clj-quickjs-162). Tokens retain their
+start offset/line/column while the cursor advances; malformed identifiers
+and leading-zero numbers report that start, while invalid escapes and
+incomplete fractions/exponents report the offending unit. Identifier scans
+are budgeted, and unexpected-token messages use QuickJS's bounded 255-byte
+message size rather than copying an arbitrarily long token. The inherited
+512-container and 4096-member-name limits retain their explicit messages.
+
+Before tokenization, the existing `StringFlatten` cursor reuses flat input
+or visits/copies rope nodes/units in steps of at most 256 operations, without
+a final buffer copy. Position tracking is constant work per consumed UTF-16
+unit, including CR/LF/CRLF handling; failures never rescan the input. The
+requested UTF-16/CR/EOF position convention takes precedence where the
+pinned QuickJS `get_line_col` counts scalar values/LF only or unterminated
+strings use their opening token's position.
+
+`Fault::JsonSyntaxError` carries the input line/column separately from the
+message. Dispatch uses the existing engine SyntaxError instance allocation
+and prepends `    at <input>:line:column\n` to the usual snapshot of at most
+64 JavaScript callers. The call site remains the VM diagnostic; no new heap
+kind, error-message parsing, callback or input-length work is introduced in
+error construction. The saved stack retains its normal property attributes
+and survives frame teardown, rethrows, waits, collection and migration.
+Unobserved failures still avoid allocating a JavaScript error instance.
 
 ## Tagged template objects and String.raw (clj-quickjs-58)
 

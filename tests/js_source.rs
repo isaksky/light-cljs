@@ -5233,7 +5233,92 @@ fn json_parse_large_input_yields_and_traces_partial_results() {
 }
 
 #[test]
-fn json_parse_depth_and_error_positions() {
+fn json_parse_error_positions() {
+    // Adapt get_string_pos/assert_json_error and the two test_json rows from
+    // QuickJS tests/test_builtin.js, revision 7d1c13c5d8f8. The copyright/MIT
+    // notice at string_code_unit_access applies. Synthetic JS fixtures.
+    fn marked(text: &str) -> (String, usize, usize) {
+        let marker = text.find('@').unwrap();
+        let mut line = 1;
+        let mut column = 1;
+        let mut cr = false;
+        for unit in text[..marker].encode_utf16() {
+            match unit {
+                13 => {
+                    line += 1;
+                    column = 1;
+                }
+                10 if cr => {}
+                10 => {
+                    line += 1;
+                    column = 1;
+                }
+                _ => column += 1,
+            }
+            cr = unit == 13;
+        }
+        (text.replacen('@', "", 1), line, column)
+    }
+    let (source, caller_line, caller_column) = marked(
+        "\nfunction parse(text) {\n  try { return JSON.parse@(text); } catch (e) {\n    if (!(e instanceof SyntaxError) || e.message.length === 0) throw 42;\n    return e.stack + '|' + e.message;\n  }\n}",
+    );
+    let code = compile_function(&source).unwrap();
+    for (input, message) in [
+        ("\n\"  \\@x\"", "Bad escaped character"),
+        ("\n{ \"a\": @x }\"", "unexpected token: 'x'"),
+        ("[1,@", "Unexpected end of JSON input"),
+        (" \r\n@", "Unexpected end of JSON input"),
+        ("\"abc@", "Unexpected end of JSON input"),
+        ("\"abc\\@", "Unexpected end of JSON input"),
+        ("{\r\n  \"a\": @tru }", "unexpected token: 'tru'"),
+        ("\r{\"a\": @x}", "unexpected token: 'x'"),
+        ("\r\n\r\n@x", "unexpected token: 'x'"),
+        ("[\"😀\",@x]", "unexpected token: 'x'"),
+        ("\"😀\\@x\"", "Bad escaped character"),
+        ("\"\\u00@xz\"", "Bad Unicode escape"),
+        ("\"a@\t\"", "Bad control character in string literal"),
+        ("@01", "Unexpected number"),
+        ("-@01", "Unexpected number"),
+        ("-@", "Unexpected token '"),
+        ("1.@", "Unterminated fractional number"),
+        ("1e+@", "Exponent part is missing a number"),
+        ("[1 @2]", "expecting ']'"),
+        ("{\"a\" @1}", "expecting ':'"),
+        ("{\"a\"@", "expecting ':'"),
+        ("{\"a\":1 @2}", "expecting '}'"),
+        ("{@1:2}", "expecting property name"),
+        ("true @false", "unexpected data at the end"),
+        ("@truex", "unexpected token: 'truex'"),
+        ("@é", "unexpected character"),
+        // Lexical errors take precedence even where punctuation was expected.
+        ("[1 \"\\@x\"]", "Bad escaped character"),
+        ("true \"\\@x\"", "Bad escaped character"),
+    ] {
+        let (text, line, column) = marked(input);
+        let rt = Runtime::new();
+        let root = rt.root(Primitive::String(text.as_str().into()));
+        let RunOutcome::Complete(value) = rt.spawn(&code, &[&root]).unwrap().run().unwrap() else {
+            panic!("expected a caught SyntaxError for {input:?}");
+        };
+        let result = value.string().unwrap().to_string();
+        let (stack, actual_message) = result.split_once('|').unwrap();
+        let frames: Vec<_> = stack.lines().collect();
+        assert_eq!(
+            frames[0],
+            format!("    at <input>:{line}:{column}"),
+            "{input:?}"
+        );
+        assert_eq!(frames.len(), 2, "{input:?}: {stack}");
+        assert!(
+            frames[1].ends_with(&format!(":{caller_line}:{caller_column})")),
+            "{input:?}: {stack}"
+        );
+        assert_eq!(actual_message, message, "{input:?}");
+    }
+}
+
+#[test]
+fn json_parse_depth_and_error_messages() {
     let code = compile_function("function parse(text) { let a = JSON.parse(text); for (let i = 0; i < 512; i++) { a = a[0]; } return a === 7; }").unwrap();
     let text = format!("{}7{}", "[".repeat(512), "]".repeat(512));
     assert!(
@@ -5252,18 +5337,88 @@ fn json_parse_depth_and_error_positions() {
     assert!(
         matches!(run(&caught, &[Primitive::String(deep.as_str().into())]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
     );
-    for (text, position) in [
-        ("\r\n{\"a\":x}", "line 2 column 6 (UTF-16 offset 7)"),
-        ("[\"😀\",x]", "line 1 column 7 (UTF-16 offset 6)"),
-        ("\n\"  \\x\"", "line 2 column 5 (UTF-16 offset 5)"),
+    for (text, message) in [
+        ("\r\n{\"a\":x}", "unexpected token: 'x'"),
+        ("[\"😀\",x]", "unexpected token: 'x'"),
+        ("\n\"  \\x\"", "Bad escaped character"),
     ] {
         match run(&code, &[Primitive::String(text.into())]) {
             RunOutcome::Failed(e) => {
                 assert_eq!(e.kind(), VmErrorKind::SyntaxError);
-                assert!(e.message().contains(position), "{}", e.message());
+                assert_eq!(e.message(), message);
             }
             other => panic!("{other:?}"),
         }
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Position state survives rope
+/// flattening, coercion waits, budget yields, migration and error rethrows.
+#[test]
+fn json_parse_error_stack_survives_suspension() {
+    let code = compile_function("function parse(text) {\n  function make() {\n    try { JSON.parse({toString() { __rt.need(1, 162); return text; }}); }\n    catch(e) { return e; }\n  }\n  let e = make(); __rt.need(2, 162);\n  try { throw e; } catch (saved) {\n    let d = Object.getOwnPropertyDescriptor(saved, 'stack');\n    if (!(saved instanceof SyntaxError) || !d.writable || !d.configurable || d.enumerable) throw 42;\n    return saved.stack;\n  }\n}").unwrap();
+    let mut text = clj_quickjs::JsString::from(" ".repeat(1024).as_str());
+    for _ in 0..128 {
+        text = text.concat(&clj_quickjs::JsString::from("\r\n")).unwrap();
+    }
+    text = text
+        .concat(&clj_quickjs::JsString::from("{ \"a\": tru }"))
+        .unwrap();
+    let rt = Runtime::new();
+    let root = rt.root(Primitive::String(text));
+    let mut task = rt.spawn(&code, &[&root]).unwrap();
+    let mut waited = 0;
+    let mut yields = 0;
+    for _ in 0..1024 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 2);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let ready = rt.root(Primitive::Undefined);
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&ready))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(waited, 2);
+                assert!(yields >= 12, "parsing should yield repeatedly");
+                assert_eq!(
+                    value.string().unwrap().to_string(),
+                    "    at <input>:129:8\n    at make (parse:3:21)\n    at parse (parse:6:15)\n"
+                );
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("JSON error stack did not finish");
+}
+
+#[test]
+fn json_parse_callback_errors_keep_their_own_stacks() {
+    for source in [
+        "try { JSON.parse({toString() { throw SyntaxError('conversion'); }}); } catch(e) { e.stack.indexOf('<input>') === -1 && e.message === 'conversion'; }",
+        "try { JSON.parse('1', function() {}); } catch(e) { e instanceof TypeError && e.stack.indexOf('<input>') === -1; }",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true));
     }
 }
 

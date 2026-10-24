@@ -7,7 +7,7 @@ use super::{builtin, dispatch::Fault, property};
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, ObjectId};
 use crate::ids::TaskId;
-use crate::value::string::NumberParse;
+use crate::value::string::{NumberParse, StringFlatten};
 use crate::value::{JsString, Value};
 
 // A catchable, documented resource limit, independent of the native stack.
@@ -39,27 +39,48 @@ struct Container {
 #[derive(Debug)]
 enum Token {
     Syntax,
+    Ready(Lexeme, Position),
+    Identifier(Position),
     StringScan {
         start: usize,
+        position: Position,
         key: bool,
         decoded: usize,
     },
     StringDecode {
+        position: Position,
         next: usize,
         end: usize,
-        key: bool,
         units: Vec<u16>,
     },
     NumberScan {
         start: usize,
+        position: Position,
         state: u8,
     },
-    NumberValue(Box<NumberParse>),
+    NumberValue(Box<NumberParse>, Position),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Position {
+    offset: usize,
+    line: usize,
+    column: usize,
+}
+
+#[derive(Debug)]
+enum Lexeme {
+    Value(Value),
+    String(JsString),
+    Punct(u16),
+    Identifier,
+    End,
 }
 
 #[derive(Debug)]
 pub(super) struct Parser {
     text: JsString,
+    flatten: Option<StringFlatten>,
     next: usize,
     line: usize,
     column: usize,
@@ -77,13 +98,17 @@ impl Trace for Parser {
         if let Some(value) = &self.result {
             value.trace(visit);
         }
+        if let Token::Ready(Lexeme::Value(value), _) = &self.token {
+            value.trace(visit);
+        }
     }
 }
 
 impl Parser {
-    pub(super) fn new(text: JsString) -> Self {
-        Self {
-            text,
+    pub(super) fn new(text: JsString) -> Result<Self, Fault> {
+        Ok(Self {
+            text: JsString::from(""),
+            flatten: Some(StringFlatten::new(text).ok_or(Fault::OutOfMemory("JSON input buffer"))?),
             next: 0,
             line: 1,
             column: 1,
@@ -91,7 +116,7 @@ impl Parser {
             stack: Vec::new(),
             result: None,
             token: Token::Syntax,
-        }
+        })
     }
 
     fn peek(&self) -> Option<u16> {
@@ -116,11 +141,47 @@ impl Parser {
         self.cr = c == 13;
     }
 
-    fn error(&self, problem: &str) -> Fault {
-        Fault::SyntaxError(format!(
-            "JSON.parse: {problem} at line {} column {} (UTF-16 offset {})",
-            self.line, self.column, self.next
-        ))
+    fn position(&self) -> Position {
+        Position {
+            offset: self.next,
+            line: self.line,
+            column: self.column,
+        }
+    }
+
+    fn error_at(&self, position: Position, message: &str) -> Fault {
+        Fault::JsonSyntaxError {
+            message: message.to_string(),
+            line: position.line,
+            column: position.column,
+        }
+    }
+
+    fn error(&self, message: &str) -> Fault {
+        self.error_at(self.position(), message)
+    }
+
+    fn unexpected(&self, position: Position, token: &Lexeme) -> Fault {
+        if matches!(token, Lexeme::End) {
+            return self.error_at(position, "Unexpected end of JSON input");
+        }
+        // QuickJS formats through a 256-byte error buffer. Identifier tokens
+        // are ASCII; all other unexpected tokens are one ASCII unit. Bound
+        // message construction even for an input-sized invalid identifier.
+        let mut message = String::from("unexpected token: '");
+        for &unit in self.text.code_units()[position.offset..self.next]
+            .iter()
+            .take(255 - message.len())
+        {
+            if unit == 0 {
+                break;
+            }
+            message.push(char::from_u32(u32::from(unit)).expect("ASCII JSON token"));
+        }
+        if message.len() < 255 {
+            message.push('\'');
+        }
+        self.error_at(position, &message)
     }
 
     fn accept(&mut self, heap: &Heap, task: TaskId, value: Value) -> Result<(), Fault> {
@@ -149,24 +210,78 @@ impl Parser {
     }
 
     fn close(&mut self, heap: &Heap, task: TaskId) -> Result<(), Fault> {
-        self.consume();
         let container = self.stack.pop().expect("JSON container");
         self.accept(heap, task, container.value)
     }
 
-    fn value(&mut self, heap: &Heap, task: TaskId) -> Result<(), Fault> {
-        match self.peek() {
-            Some(91 | 123) => {
-                if self.stack.len() == MAX_DEPTH {
-                    return Err(self.error("nesting limit of 512 exceeded"));
+    fn grammar(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        token: Lexeme,
+        position: Position,
+    ) -> Result<Option<Value>, Fault> {
+        match self.stack.last().map(|top| top.expect) {
+            None if self.result.is_some() => {
+                return if matches!(token, Lexeme::End) {
+                    Ok(self.result.take())
+                } else {
+                    Err(self.error_at(position, "unexpected data at the end"))
+                };
+            }
+            Some(Expect::ArrayFirst) if matches!(token, Lexeme::Punct(93)) => {
+                self.close(heap, task)?;
+                return Ok(None);
+            }
+            Some(Expect::ArrayComma) => {
+                match token {
+                    Lexeme::Punct(93) => self.close(heap, task)?,
+                    Lexeme::Punct(44) => self.stack.last_mut().unwrap().expect = Expect::ArrayValue,
+                    _ => return Err(self.error_at(position, "expecting ']'")),
                 }
-                let array = self.peek() == Some(91);
+                return Ok(None);
+            }
+            Some(Expect::ObjectFirst) if matches!(token, Lexeme::Punct(125)) => {
+                self.close(heap, task)?;
+                return Ok(None);
+            }
+            Some(Expect::ObjectFirst | Expect::ObjectKey) => {
+                let Lexeme::String(key) = token else {
+                    return Err(self.error_at(position, "expecting property name"));
+                };
+                let top = self.stack.last_mut().unwrap();
+                top.key = Some(key);
+                top.expect = Expect::ObjectColon;
+                return Ok(None);
+            }
+            Some(Expect::ObjectColon) => {
+                if !matches!(token, Lexeme::Punct(58)) {
+                    return Err(self.error_at(position, "expecting ':'"));
+                }
+                self.stack.last_mut().unwrap().expect = Expect::ObjectValue;
+                return Ok(None);
+            }
+            Some(Expect::ObjectComma) => {
+                match token {
+                    Lexeme::Punct(125) => self.close(heap, task)?,
+                    Lexeme::Punct(44) => self.stack.last_mut().unwrap().expect = Expect::ObjectKey,
+                    _ => return Err(self.error_at(position, "expecting '}'")),
+                }
+                return Ok(None);
+            }
+            _ => {}
+        }
+        match token {
+            Lexeme::Punct(c @ (91 | 123)) => {
+                if self.stack.len() == MAX_DEPTH {
+                    return Err(self.error_at(position, "nesting limit of 512 exceeded"));
+                }
+                let array = c == 91;
                 let value = if array {
                     property::new_array(heap, task)?
                 } else {
                     builtin::new_object(heap, task)?
                 };
-                self.consume();
                 self.stack.push(Container {
                     value,
                     expect: if array {
@@ -177,37 +292,11 @@ impl Parser {
                     key: None,
                 });
             }
-            Some(34) => {
-                self.consume();
-                self.token = Token::StringScan {
-                    start: self.next,
-                    key: false,
-                    decoded: 0,
-                };
-            }
-            Some(45 | 48..=57) => {
-                self.token = Token::NumberScan {
-                    start: self.next,
-                    state: 0,
-                };
-            }
-            Some(116 | 102 | 110) => {
-                let (word, value) = match self.peek() {
-                    Some(116) => ("true", Value::Bool(true)),
-                    Some(102) => ("false", Value::Bool(false)),
-                    _ => ("null", Value::Null),
-                };
-                for c in word.bytes() {
-                    if self.peek() != Some(u16::from(c)) {
-                        return Err(self.error("invalid literal"));
-                    }
-                    self.consume();
-                }
-                self.accept(heap, task, value)?;
-            }
-            _ => return Err(self.error("expected a JSON value")),
+            Lexeme::String(text) => self.accept(heap, task, Value::String(text))?,
+            Lexeme::Value(value) => self.accept(heap, task, value)?,
+            _ => return Err(self.unexpected(position, &token)),
         }
-        Ok(())
+        Ok(None)
     }
 
     /// At most 256 scanning/decoding/grammar operations plus 256 numeric
@@ -217,6 +306,13 @@ impl Parser {
     /// String bodies are sized once after scanning and transferred without
     /// a final linear copy. Property insertion uses the ordinary leaf API.
     pub(super) fn advance(&mut self, heap: &Heap, task: TaskId) -> Result<Option<Value>, Fault> {
+        if let Some(flatten) = &mut self.flatten {
+            if let Some(text) = flatten.advance(STEP) {
+                self.text = text;
+                self.flatten = None;
+            }
+            return Ok(None);
+        }
         for _ in 0..STEP {
             match std::mem::replace(&mut self.token, Token::Syntax) {
                 Token::Syntax => {
@@ -224,58 +320,58 @@ impl Parser {
                         self.consume();
                         continue;
                     }
-                    match self.stack.last().map(|top| top.expect) {
-                        None if self.result.is_some() => {
-                            if self.peek().is_some() {
-                                return Err(self.error("unexpected trailing character"));
-                            }
-                            return Ok(self.result.take());
-                        }
-                        Some(Expect::ArrayFirst) if self.peek() == Some(93) => {
-                            self.close(heap, task)?
-                        }
-                        Some(Expect::ArrayComma) => match self.peek() {
-                            Some(93) => self.close(heap, task)?,
-                            Some(44) => {
-                                self.consume();
-                                self.stack.last_mut().unwrap().expect = Expect::ArrayValue;
-                            }
-                            _ => return Err(self.error("expected ',' or ']'")),
-                        },
-                        Some(Expect::ObjectFirst) if self.peek() == Some(125) => {
-                            self.close(heap, task)?
-                        }
-                        Some(Expect::ObjectFirst | Expect::ObjectKey) => {
-                            if self.peek() != Some(34) {
-                                return Err(self.error("expected a double-quoted property name"));
-                            }
+                    let position = self.position();
+                    self.token = match self.peek() {
+                        Some(34) => {
+                            let key = matches!(
+                                self.stack.last().map(|top| top.expect),
+                                Some(Expect::ObjectFirst | Expect::ObjectKey)
+                            );
                             self.consume();
-                            self.token = Token::StringScan {
+                            Token::StringScan {
                                 start: self.next,
-                                key: true,
+                                position,
+                                key,
                                 decoded: 0,
-                            };
-                        }
-                        Some(Expect::ObjectColon) => {
-                            if self.peek() != Some(58) {
-                                return Err(self.error("expected ':'"));
                             }
-                            self.consume();
-                            self.stack.last_mut().unwrap().expect = Expect::ObjectValue;
                         }
-                        Some(Expect::ObjectComma) => match self.peek() {
-                            Some(125) => self.close(heap, task)?,
-                            Some(44) => {
-                                self.consume();
-                                self.stack.last_mut().unwrap().expect = Expect::ObjectKey;
-                            }
-                            _ => return Err(self.error("expected ',' or '}'")),
+                        Some(45 | 48..=57) => Token::NumberScan {
+                            start: self.next,
+                            position,
+                            state: 0,
                         },
-                        _ => self.value(heap, task)?,
+                        Some(65..=90 | 97..=122 | 36 | 95) => Token::Identifier(position),
+                        Some(128..=65535) => return Err(self.error("unexpected character")),
+                        Some(c) => {
+                            self.consume();
+                            Token::Ready(Lexeme::Punct(c), position)
+                        }
+                        None => Token::Ready(Lexeme::End, position),
+                    };
+                }
+                Token::Ready(token, position) => {
+                    if let Some(value) = self.grammar(heap, task, token, position)? {
+                        return Ok(Some(value));
+                    }
+                }
+                Token::Identifier(position) => {
+                    if matches!(self.peek(), Some(65..=90 | 97..=122 | 48..=57 | 36 | 95)) {
+                        self.consume();
+                        self.token = Token::Identifier(position);
+                    } else {
+                        let word = &self.text.code_units()[position.offset..self.next];
+                        let token = match word {
+                            [116, 114, 117, 101] => Lexeme::Value(Value::Bool(true)),
+                            [102, 97, 108, 115, 101] => Lexeme::Value(Value::Bool(false)),
+                            [110, 117, 108, 108] => Lexeme::Value(Value::Null),
+                            _ => Lexeme::Identifier,
+                        };
+                        self.token = Token::Ready(token, position);
                     }
                 }
                 Token::StringScan {
                     start,
+                    position,
                     key,
                     decoded,
                 } => {
@@ -291,9 +387,9 @@ impl Parser {
                                 .try_reserve_exact(end - start)
                                 .map_err(|_| Fault::OutOfMemory("JSON string buffer"))?;
                             self.token = Token::StringDecode {
+                                position,
                                 next: start,
                                 end,
-                                key,
                                 units,
                             };
                             continue;
@@ -306,43 +402,38 @@ impl Parser {
                                     self.consume();
                                     for _ in 0..4 {
                                         if self.peek().and_then(hex).is_none() {
-                                            return Err(self
-                                                .error("expected four hexadecimal escape digits"));
+                                            return Err(self.error("Bad Unicode escape"));
                                         }
                                         self.consume();
                                     }
                                 }
-                                _ => return Err(self.error("invalid string escape")),
+                                None => return Err(self.error("Unexpected end of JSON input")),
+                                _ => return Err(self.error("Bad escaped character")),
                             }
                         }
                         Some(0..=31) => {
-                            return Err(self.error("unescaped control character in string"));
+                            return Err(self.error("Bad control character in string literal"));
                         }
-                        None => return Err(self.error("unterminated string")),
+                        None => return Err(self.error("Unexpected end of JSON input")),
                         Some(_) => self.consume(),
                     }
                     self.token = Token::StringScan {
                         start,
+                        position,
                         key,
                         decoded: decoded + 1,
                     };
                 }
                 Token::StringDecode {
+                    position,
                     mut next,
                     end,
-                    key,
                     mut units,
                 } => {
                     if next == end {
                         let text = JsString::from_owned_code_units(units)
                             .ok_or_else(|| Fault::RangeError("JSON string too long".to_string()))?;
-                        if key {
-                            let top = self.stack.last_mut().expect("JSON object");
-                            top.key = Some(text);
-                            top.expect = Expect::ObjectColon;
-                        } else {
-                            self.accept(heap, task, Value::String(text))?;
-                        }
+                        self.token = Token::Ready(Lexeme::String(text), position);
                         continue;
                     }
                     let input = self.text.code_units();
@@ -372,14 +463,27 @@ impl Parser {
                     }
                     units.push(c);
                     self.token = Token::StringDecode {
+                        position,
                         next,
                         end,
-                        key,
                         units,
                     };
                 }
-                Token::NumberScan { start, state } => {
+                Token::NumberScan {
+                    start,
+                    position,
+                    state,
+                } => {
                     let digit = matches!(self.peek(), Some(48..=57));
+                    if state == 2 && digit {
+                        // QuickJS points at the leading zero, after any '-'.
+                        let zero = Position {
+                            offset: self.next - 1,
+                            line: self.line,
+                            column: self.column - 1,
+                        };
+                        return Err(self.error_at(zero, "Unexpected number"));
+                    }
                     let next_state = match (state, self.peek()) {
                         (0, Some(45)) => Some(1),
                         (0 | 1, Some(48)) => Some(2),
@@ -393,24 +497,45 @@ impl Parser {
                     };
                     if let Some(state) = next_state {
                         self.consume();
-                        self.token = Token::NumberScan { start, state };
-                    } else {
-                        if !matches!(state, 2 | 3 | 5 | 8) {
-                            return Err(self.error("incomplete JSON number"));
-                        }
-                        self.token = Token::NumberValue(Box::new(NumberParse::range(
-                            self.text.clone(),
-                            None,
+                        self.token = Token::NumberScan {
                             start,
-                            self.next,
-                        )));
+                            position,
+                            state,
+                        };
+                    } else {
+                        match state {
+                            0 | 1 => {
+                                let c = self.peek().unwrap_or(0);
+                                let message = if c == 0 {
+                                    "Unexpected token '".to_string()
+                                } else {
+                                    format!(
+                                        "Unexpected token '{}'",
+                                        char::from_u32(u32::from(c)).unwrap_or('\u{fffd}')
+                                    )
+                                };
+                                return Err(self.error(&message));
+                            }
+                            4 => return Err(self.error("Unterminated fractional number")),
+                            6 | 7 => return Err(self.error("Exponent part is missing a number")),
+                            _ => {}
+                        }
+                        self.token = Token::NumberValue(
+                            Box::new(NumberParse::range(
+                                self.text.clone(),
+                                None,
+                                start,
+                                self.next,
+                            )),
+                            position,
+                        );
                     }
                 }
-                Token::NumberValue(mut parse) => {
+                Token::NumberValue(mut parse, position) => {
                     if let Some(number) = parse.advance(STEP) {
-                        self.accept(heap, task, Value::Number(number))?;
+                        self.token = Token::Ready(Lexeme::Value(Value::Number(number)), position);
                     } else {
-                        self.token = Token::NumberValue(parse);
+                        self.token = Token::NumberValue(parse, position);
                     }
                     // Numeric scanning consumes its own full step budget.
                     return Ok(None);
@@ -1046,6 +1171,71 @@ impl Stringifier {
 mod stringify_budget_tests {
     use super::*;
     use crate::value::string::cursor_release_counts;
+
+    #[test]
+    fn json_parse_invalid_identifier_is_budgeted() {
+        let text = JsString::from("x".repeat(65536).as_str());
+        let heap = Heap::default();
+        let mut parser = Parser::new(text).ok().expect("input buffer");
+        for step in 0..1000 {
+            match parser.advance(&heap, TaskId::from_raw(1)) {
+                Ok(None) => {}
+                Err(Fault::JsonSyntaxError {
+                    message,
+                    line,
+                    column,
+                }) => {
+                    assert!(step >= 65536 / STEP);
+                    assert_eq!((line, column), (1, 1));
+                    assert_eq!(message, format!("unexpected token: '{}", "x".repeat(236)));
+                    assert_eq!(message.len(), 255);
+                    return;
+                }
+                _ => panic!("expected an invalid identifier"),
+            }
+        }
+        panic!("JSON parser did not finish");
+    }
+
+    #[test]
+    fn json_parse_rope_error_position_work_is_budgeted() {
+        let mut text = JsString::from(" ".repeat(1024).as_str());
+        for _ in 0..2048 {
+            text = text.concat(&JsString::from("\r\n")).unwrap();
+        }
+        let suffix = JsString::from_code_units(vec![
+            91, 34, 0xd83d, 0xde00, 0xd800, 34, 44, 116, 114, 117, 93,
+        ])
+        .unwrap();
+        text = text.concat(&suffix).unwrap();
+        let heap = Heap::default();
+        let mut parser = Parser::new(text).ok().expect("input buffer");
+        let mut steps = 0;
+        for _ in 0..1000 {
+            let copies = JsString::copied_code_units();
+            let result = parser.advance(&heap, TaskId::from_raw(1));
+            assert!(
+                JsString::copied_code_units() - copies <= STEP as u64,
+                "a parser step flattened the rope synchronously"
+            );
+            steps += 1;
+            match result {
+                Ok(None) => {}
+                Err(Fault::JsonSyntaxError {
+                    message,
+                    line,
+                    column,
+                }) => {
+                    assert_eq!((line, column), (2049, 8));
+                    assert_eq!(message, "unexpected token: 'tru'");
+                    assert!(steps >= 40);
+                    return;
+                }
+                _ => panic!("expected a positioned JSON error"),
+            }
+        }
+        panic!("JSON parser did not finish");
+    }
 
     #[test]
     fn json_stringify_space_prefix_cleanup_is_budgeted() {

@@ -3565,7 +3565,7 @@ impl NativeState {
                         return Err(Fault::Internal("JSON.parse expected ToString result"));
                     };
                     *text = Value::Undefined;
-                    *parser = Some(Box::new(super::json::Parser::new(input)));
+                    *parser = Some(Box::new(super::json::Parser::new(input)?));
                 }
                 match parser.as_mut().unwrap().advance(heap, task)? {
                     Some(value) => {

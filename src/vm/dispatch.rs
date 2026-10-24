@@ -169,6 +169,12 @@ pub(crate) enum Fault {
     /// An invalid array length (clj-quickjs-154).
     RangeError(String),
     SyntaxError(String),
+    /// A JSON syntax error has an input pseudo-frame before the JS callers.
+    JsonSyntaxError {
+        message: String,
+        line: usize,
+        column: usize,
+    },
 }
 
 /// What the loop does after an instruction (or a native step).
@@ -1046,7 +1052,9 @@ fn return_flow(state: &mut VmState, v: Value) -> Result<Flow, Fault> {
 /// The error kind and message of a fault that is not an exception value.
 fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
     match fault {
-        Fault::SyntaxError(m) => (VmErrorKind::SyntaxError, m),
+        Fault::SyntaxError(m) | Fault::JsonSyntaxError { message: m, .. } => {
+            (VmErrorKind::SyntaxError, m)
+        }
         Fault::RangeError(m) => (VmErrorKind::RangeError, m),
         Fault::Unsupported(m) => (VmErrorKind::UnsupportedOperand, m),
         Fault::Internal(m) => (VmErrorKind::Internal, m.to_string()),
@@ -1162,6 +1170,16 @@ pub(crate) fn raise_failure(
     error: VmError,
     cause: Value,
 ) -> Option<Exit> {
+    raise_failure_with_input(state, heap, error, cause, None)
+}
+
+fn raise_failure_with_input(
+    state: &mut VmState,
+    heap: &Heap,
+    error: VmError,
+    cause: Value,
+    input: Option<(usize, usize)>,
+) -> Option<Exit> {
     if !catchable(error.kind) || !state.has_handlers() {
         return Some(Exit::Fail(error));
     }
@@ -1204,7 +1222,17 @@ pub(crate) fn raise_failure(
         if matches!(error.kind, VmErrorKind::DependencyFailed(_)) {
             define("cause", cause)?;
         }
-        define("stack", Value::String(state.error_stack(pc)))?;
+        let callers = state.error_stack(pc);
+        let stack = if let Some((line, column)) = input {
+            // A fixed-size input location, followed by the existing bounded
+            // snapshot. No rescanning or JavaScript callbacks on failure.
+            JsString::from(format!("    at <input>:{line}:{column}\n").as_str())
+                .concat(&callers)
+                .ok_or("error stack too long")?
+        } else {
+            callers
+        };
+        define("stack", Value::String(stack))?;
         heap.alloc(HeapObject::Plain(object))
             .ok_or("heap object table exhausted")
     })();
@@ -2284,9 +2312,13 @@ pub(crate) fn execute_budgeted(
                 // A failed instruction leaves the running frame as it was (a
                 // failing `Call` pushes no frame), so the failure names it
                 // and its callers.
+                let input = match &fault {
+                    Fault::JsonSyntaxError { line, column, .. } => Some((*line, *column)),
+                    _ => None,
+                };
                 let (kind, message) = fault_error(fault, &code, pc);
                 let error = state.failure(kind, message, pc);
-                raise_failure(state, heap, error, Value::Undefined)
+                raise_failure_with_input(state, heap, error, Value::Undefined, input)
             }
         };
         match raised {

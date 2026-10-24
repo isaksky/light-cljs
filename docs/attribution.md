@@ -226,6 +226,22 @@ output; eval and NativeError instance checks are left to their own pellets.
 same revision were read as semantic references. No C code was copied;
 capture uses this runtime's explicit frames and immutable string storage.
 
+## JSON.parse input error stacks (clj-quickjs-162)
+
+`tests/js_source.rs::json_parse_error_positions` adapts the `@` marker
+technique from `get_string_pos`/`assert_json_error` and the two invalid JSON
+rows in `research/quickjs/tests/test_builtin.js::test_json`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The copyright/MIT notice at `string_code_unit_access` in that test file
+applies to these adapted rows as well. All fixtures are synthetic JavaScript,
+not light-cljs output. `json_next_token`, `json_parse_string`,
+`json_parse_number`, `json_parse_value`, `js_parse_error_pos`, `get_line_col`,
+`JS_ThrowError2` and `build_backtrace` in `research/quickjs/quickjs.c` at the
+same revision were consulted for token positions, messages and stack format;
+no C implementation was copied. The requested UTF-16/CR/EOF diagnostic
+convention is documented in grammar/architecture where it differs from the
+pinned helper.
+
 ## Math.pow (clj-quickjs-164)
 
 `research/quickjs/quickjs.c`, `js_pow` and the `pow` registration in
