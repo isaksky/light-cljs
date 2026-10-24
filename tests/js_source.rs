@@ -3857,6 +3857,24 @@ fn update_expressions_on_properties() {
         string("let r = 'none', u; try { --u['k']; } catch (e) { r = 'caught'; } r"),
         "caught"
     );
+    // A failed write (a non-writable property, clj-quickjs-119) is a
+    // catchable TypeError at the `.` or `[`, after the read and the
+    // conversion; the property keeps its value.
+    let frozen = "let o = {}; Object.defineProperty(o, 'k', {value: 1});";
+    let (kind, message, line, column) = failure_at(&format!("{frozen}\no.k++;"));
+    assert_eq!(
+        (kind, line, column),
+        (VmErrorKind::TypeError, 2, 2),
+        "{message}"
+    );
+    let (kind, _, line, column) = failure_at(&format!("{frozen}\n--o['k'];"));
+    assert_eq!((kind, line, column), (VmErrorKind::TypeError, 2, 4));
+    assert_eq!(
+        num(&format!(
+            "{frozen} let r = 0; try {{ o.k++; }} catch (e) {{ r = 1; }} r * 10 + o.k"
+        )),
+        11.0
+    );
     // An object value needs ToPrimitive (deferred, clj-quickjs-70); the
     // conversion fails at the operator token.
     let (kind, _, line, column) = failure_at("let o = {p: {}};\no.p ++;");
