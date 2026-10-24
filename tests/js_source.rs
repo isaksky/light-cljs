@@ -9139,3 +9139,26 @@ fn object_conversions_cover_hints_operators_and_property_keys() {
         "okvs"
     );
 }
+
+/// Synthetic fixtures, not light-cljs output: relational operators compare
+/// the primitives produced by conversion, including UTF-16 string ordering.
+#[test]
+fn objects_compare_after_to_primitive() {
+    for (a, b, results) in [
+        ("'10'", "'2'", [true, false, true, false]),
+        ("'2'", "'10'", [false, true, false, true]),
+        ("'10'", "2", [false, true, false, true]),
+        ("2", "'10'", [true, false, true, false]),
+        ("'2'", "'2'", [false, false, true, true]),
+        ("undefined", "1", [false; 4]),
+        ("1", "undefined", [false; 4]),
+    ] {
+        for (op, expected) in ["<", ">", "<=", ">="].into_iter().zip(results) {
+            let src = format!(
+                "let a = {{valueOf: function () {{ return {a}; }}}}; \
+                 let b = {{valueOf: function () {{ return {b}; }}}}; a {op} b"
+            );
+            assert_eq!(eval(&src), ValueView::Bool(expected), "{src}");
+        }
+    }
+}
