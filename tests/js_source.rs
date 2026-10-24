@@ -1095,6 +1095,31 @@ fn date_utc_huge_months() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output: one rounding of the calendar day.
+#[test]
+fn date_utc_huge_year_cancellation() {
+    for args in [
+        "35184372088833, 0, -12850828021936060",
+        "35184372088833, 2, -12850828021936120",
+        "-35184372088833, 0, 12850828023375116",
+        "-35184372088833, 2, 12850828023375056",
+    ] {
+        let src = format!("Date.UTC({args})");
+        assert_eq!(eval(&src), ValueView::Number(-86400000.0), "{src}");
+    }
+    for year in [
+        "2 ** 126",
+        "-(2 ** 126)",
+        "2 ** 127",
+        "-(2 ** 127)",
+        "1e308",
+        "-1e308",
+    ] {
+        let src = format!("Number.isNaN(Date.UTC({year}, 0))");
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output: slots, descriptors, coercion
 /// ordering, clipping and the intentionally deferred constructor forms.
 #[test]

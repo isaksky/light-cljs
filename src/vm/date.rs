@@ -68,20 +68,32 @@ pub(crate) fn make_day(year: f64, month: f64, date: f64) -> f64 {
         month / 12.0
     };
     let year = year.trunc() + whole_years;
-    if !year.is_finite() {
+    const I128_LIMIT: f64 = (1_u128 << 127) as f64;
+    if !(-I128_LIMIT..I128_LIMIT).contains(&year) {
         return f64::NAN;
     }
+    let year = year as i128;
     let month = ((month % 12.0 + 12.0) % 12.0) as usize;
-    let leap = year % 4.0 == 0.0 && (year % 100.0 != 0.0 || year % 400.0 == 0.0);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
     const BEFORE_MONTH: [u16; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    // Gregorian leap counts use floor, including negative years. No TimeClip
-    // or year-range cutoff is applied to intermediate days: later fields can
-    // cancel them. Integer day counts throughout the clipped range are exact.
-    let days = 365.0 * (year - 1970.0) + ((year - 1969.0) / 4.0).floor()
-        - ((year - 1901.0) / 100.0).floor()
-        + ((year - 1601.0) / 400.0).floor();
-    let start = days + f64::from(BEFORE_MONTH[month]) + f64::from(leap && month >= 2);
-    start + date.trunc() - 1.0
+    // Gregorian counts and month offsets are mathematical integers, converted
+    // to Number only once. Euclidean division floors negative years. Do not
+    // TimeClip intermediates: later fields can cancel even huge day counts.
+    // Reject calendar values beyond our checked integer storage, rather than
+    // saturating a cast, overflowing, or returning a rounded calendar count.
+    let start = (|| {
+        year.checked_sub(1970)?
+            .checked_mul(365)?
+            .checked_add(year.checked_sub(1969)?.div_euclid(4))?
+            .checked_sub(year.checked_sub(1901)?.div_euclid(100))?
+            .checked_add(year.checked_sub(1601)?.div_euclid(400))?
+            .checked_add(i128::from(BEFORE_MONTH[month]))?
+            .checked_add(i128::from(leap && month >= 2))
+    })();
+    let Some(start) = start else {
+        return f64::NAN;
+    };
+    start as f64 + date.trunc() - 1.0
 }
 
 pub(crate) fn make_date(day: f64, time: f64) -> f64 {
@@ -404,6 +416,30 @@ mod tests {
         assert_eq!(calculate(&[275760.0, 8.0, 13.0]), 8.64e15);
         assert_eq!(calculate(&[-271821.0, 3.0, 20.0]), -8.64e15);
         assert_eq!(make_day(1_001_970.0, -12_000_000.0, 1.0), 0.0);
+        assert_eq!(
+            calculate(&[35184372088833.0, 0.0, -12850828021936060.0]),
+            -86400000.0
+        );
+        for (year, month, start) in [
+            (35184372088833.0, 0.0, 12850828021936060_i128),
+            (35184372088833.0, 2.0, 12850828021936119),
+            (-35184372088833.0, 0.0, -12850828023375115),
+            (-35184372088833.0, 2.0, -12850828023375056),
+        ] {
+            assert_eq!(calculate(&[year, month, -(start as f64)]), -86400000.0);
+        }
+        for (year, february_days) in [(-100.0, 28.0), (-400.0, 29.0)] {
+            assert_eq!(
+                make_day(year, 2.0, 1.0) - make_day(year, 1.0, 1.0),
+                february_days
+            );
+        }
+        for sign in [-1.0, 1.0] {
+            assert!(make_day(sign * 2.0_f64.powi(100), 0.0, 1.0).is_finite());
+            for year in [2.0_f64.powi(126), 2.0_f64.powi(127), f64::MAX] {
+                assert!(make_day(sign * year, 0.0, 1.0).is_nan());
+            }
+        }
         // Even a normalized year outside TimeClip can cancel against date.
         let days = make_day(1_000_000.0, 0.0, 1.0);
         assert_eq!(calculate(&[1_000_000.0, 0.0, 1.0 - days]), 0.0);
