@@ -178,7 +178,7 @@ fn tagged_templates() {
     for src in [
         r#"let b = 123; String.raw `abc${b}d` === 'abc123d'"#,
         r#"String.raw`a\nb` === 'a\\nb' && String.raw`a\nb`.length === 4"#,
-        r#"function tag(s) { return s; } function site() { return tag`x${1}y`; } let a = site(), b = site(); a === b && a !== tag`x${1}y` && a !== tag`x${1}y` && a[0] === 'x' && a[1] === 'y' && a.length === 2 && Object.isFrozen(a) && Object.isFrozen(a.raw) && Object.getPrototypeOf(a) === Array.prototype"#,
+        r#"function tag(s) { return s; } function site() { return tag`x${1}y`; } let a = site(), b = site(); a === b && a !== tag`x${1}y` && a !== tag`x${1}y` && a[0] === 'x' && a[1] === 'y' && a.length === 2 && Object.isFrozen(a) && Object.isFrozen(a.raw) && Array.isArray(a) && Array.isArray(a.raw) && Object.getPrototypeOf(a) === Array.prototype"#,
         r#"function tag(s) { let d = Object.getOwnPropertyDescriptor(s, 'raw'); let e = Object.getOwnPropertyDescriptor(s, '0'); return !d.writable && !d.enumerable && !d.configurable && !e.writable && e.enumerable && !e.configurable && Object.freeze(s) === s; } tag`x`"#,
         r#"function tag(s) { return s[0] === undefined && s.raw[0] === '\\unicode' && s.raw[0].length === 8; } tag`\unicode`"#,
         r#"let log = ''; function tag(s, x) { log += s[0]; return {get value() { log += 'v'; return x; }}; } tag`a${log += 's'}`.value === 's' && log === 'sav'"#,
