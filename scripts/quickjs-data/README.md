@@ -33,7 +33,7 @@ nix develop --command bash scripts/quickjs-data/verify.sh \
 ## Conversion
 
 Inputs are pinned to QuickJS revision
-`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. `inputs.sha256` pins all ten local
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. `inputs.sha256` pins all eleven local
 data/header files read by the exporter. Hashes are checked before and after
 conversion; an upstream change needs an explicit manifest and converter review.
 
@@ -385,3 +385,29 @@ NumberFormat's unit-pattern data is available; its unit-style options and
 formatting entry point remain explicitly unsupported. DurationFormat consumes
 the shared decimal core plus these patterns, preserving QuickJS's fallback to
 literal unit identifiers where a locale/unit has no row.
+
+### DisplayNames language compounds (clj-quickjs-224)
+
+`intl/displaynames.c` is pinned as an additional input. The exporter extracts
+only the two literal pairs in `dn_fallback_language`, rejects other statement
+shapes, and emits `dn_language_fallbacks`. The original C literals and every
+generated Rust byte pass through the complete wire comparison. Existing
+`dn_en_languages` / `dn_fr_languages` pools remain intact; the Intl repacker
+places the new array in `display_names.rs`. Edge tests pin the Chinese
+compound spellings and English/French language pairs. No service code is linked.
+
+Regenerate inside the worktree with a new directory, then install the two files:
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/clj-quickjs/research/quickjs target/display-names-import-new
+cp target/display-names-import-new/intl-first/display_names.rs src/intl/data/
+cp target/display-names-import-new/intl-first/provenance.txt src/intl/data/
+CARGO_BUILD_JOBS=3 cargo test --test js_source intl_display_names -- --test-threads=3
+CARGO_BUILD_JOBS=3 cargo test --lib display_names -- --test-threads=3
+```
+
+The snapshot contains no locale display-pattern, separator or variant-name
+tables. The runtime documents its en/fr composition punctuation and retains
+canonical codes for unnamed components. All styles use the snapshot language
+pool; its `-alt-short` metadata keys are not language identifiers.

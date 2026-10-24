@@ -15,6 +15,18 @@ fn complete_top_level_collections() {
 }
 
 #[test]
+fn display_names_compound_language_literals_survive() {
+    assert_eq!(dn_language_fallbacks, &[
+        Some(&b"zh-Hans-CN\0"[..]), Some(&b"Chinese (Simplified, China)\0"[..]),
+        Some(&b"zh-Hant-TW\0"[..]), Some(&b"Chinese (Traditional, Taiwan)\0"[..]),
+    ]);
+    let english = display_names_data[0].languages.unwrap();
+    assert!(english.windows(b"en-US\0American English\0".len()).any(|s| s == b"en-US\0American English\0"));
+    let french = display_names_data[1].languages.unwrap();
+    assert!(french.windows("de\0allemand\0".len()).any(|s| s == b"de\0allemand\0"));
+}
+
+#[test]
 fn embedded_nuls_and_utf8_survive() {
     assert_eq!(likely_subtags_tab[0], Some(&b"aa\0aa-Latn-ET\0"[..]));
     let french = locale_data_table.iter().find(|l| l.locale == Some(&b"fr\0"[..])).unwrap();

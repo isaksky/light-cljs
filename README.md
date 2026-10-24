@@ -3869,10 +3869,26 @@ ToString callbacks can yield, wait, collect and migrate; long calendar types
 are validated and canonicalized in bounded steps. Host defaults use the shared
 leaf locale boundary.
 
-Deferred to clj-quickjs-224: language names and dialect display; constructing
-`type: 'language'` processes `languageDisplay`, but `of` throws an explicit
-TypeError. The symbol tag is readable directly; generic
+Language names and dialect display are supported as described below. The
+symbol tag is readable directly; generic
 `Object.prototype.toString` tag consumption retains its existing explicit gap.
+
+### Intl.DisplayNames language names (clj-quickjs-224)
+
+Supported: `type: 'language'` validates Unicode language identifiers, rejects
+extensions/private use with RangeError, and reuses Locale's canonical aliases.
+`languageDisplay: 'dialect'` (default) prefers compound names such as American
+English; `standard` composes English (United States). Unmatched scripts,
+regions and variants are appended in parentheses. Unknown base languages
+return the canonical tag or undefined for fallback none. English/French pools
+and the snapshot's two Chinese compound spellings come through the verified
+data pipeline; other test locales use English names. All styles use the same
+snapshot language pool. Option/code callbacks remain resumable and GC-safe.
+
+Coverage limits: the snapshot has no locale display-pattern or variant-name
+tables. Composition uses `{0} ({1})` and `, ` for both translated locales;
+unnamed components retain canonical codes. Explicit script/region subtags are
+preserved rather than inferred or removed using likely subtags.
 
 ### Intl.DurationFormat (clj-quickjs-225)
 

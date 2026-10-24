@@ -25170,7 +25170,6 @@ fn intl_display_names_validation_and_options() {
         "Intl.DisplayNames.prototype.resolvedOptions.call({})",
         "Intl.DisplayNames.prototype.of.call({},{toString(){throw 99;}})",
         "new Intl.DisplayNames('en',{type:'region'}).of(Symbol())",
-        "new Intl.DisplayNames('en',{type:'language'}).of('en')",
     ] {
         let check = format!(
             "let caught=false;try {{{source};}}catch(e){{caught=e instanceof TypeError;}}caught"
@@ -25179,56 +25178,134 @@ fn intl_display_names_validation_and_options() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Acceptance rows adapted from
+/// QuickJS tests/test_intl.js::test_displayNames (MIT notice retained above).
+#[test]
+fn intl_display_names_language() {
+    for source in [
+        "let d=new Intl.DisplayNames('en',{type:'language'}); d.of('de') === 'German' && d.of('en-US') === 'American English' && d.of('zh-Hans-CN') === 'Chinese (Simplified, China)'",
+        "let d=new Intl.DisplayNames('fr',{type:'language'}); d.of('de') === 'allemand' && d.of('en') === 'anglais'",
+        "let o=new Intl.DisplayNames('en',{type:'language'}).resolvedOptions(); o.locale === 'en' && o.style === 'long' && o.type === 'language' && o.fallback === 'code' && o.languageDisplay === 'dialect'",
+        "new Intl.DisplayNames('en',{type:'language',languageDisplay:'standard'}).of('en-US') === 'English (United States)'",
+        "new Intl.DisplayNames('en',{type:'language',fallback:'none'}).of('xyz') === undefined",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for code in ["en-u-ca-gregory", "en-", "root"] {
+        let source = format!(
+            "let caught=false;try{{new Intl.DisplayNames('en',{{type:'language'}}).of('{code}');}}catch(e){{caught=e instanceof RangeError;}}caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{code}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn intl_display_names_language_composition() {
+    for source in [
+        "let d=new Intl.DisplayNames('en',{type:'language'}); d.of('EN-us') === 'American English' && d.of('en-GB') === 'British English' && d.of('iw') === 'Hebrew' && d.of('in-ID') === 'Indonesian (Indonesia)'",
+        "let d=new Intl.DisplayNames('en',{type:'language',languageDisplay:'standard'}); d.of('zh-Hans-CN') === 'Chinese (Simplified, China)' && d.of('en-Latn-US') === 'English (Latin, United States)' && d.of('de-DE-1901') === 'German (Germany, 1901)'",
+        "let d=new Intl.DisplayNames('en',{type:'language'}); d.of('zh-Hant') === 'Traditional Chinese' && d.of('zh-Hant-TW') === 'Chinese (Traditional, Taiwan)' && d.of('en-Cyrl-GB') === 'British English (Cyrillic)' && d.of('en-US-fonipa') === 'American English (fonipa)'",
+        "let d=new Intl.DisplayNames('fr-CA',{type:'language',languageDisplay:'standard'}); d.of('en-Latn-US') === 'anglais (latin, États-Unis)'",
+        "new Intl.DisplayNames('de',{type:'language'}).of('en-US') === 'American English'",
+        "let d=new Intl.DisplayNames('en',{type:'language'}); d.of('XYZ-lATN-us') === 'xyz-Latn-US' && d.of('en-Qaaa-QQ') === 'English (Qaaa, QQ)'",
+        "new Intl.DisplayNames('en',{type:'language',fallback:'none'}).of('xyz-US') === undefined",
+        "let d=new Intl.DisplayNames('en',{type:'language',style:'short'}); d.of('en-US') === 'American English' && d.of('az') === 'Azerbaijani'",
+        "let d=new Intl.DisplayNames('en',{type:'language'}); d.of('en-Latn-US-abcde-abcdef-abcdefg-abcdefgh') === 'American English (Latin, abcde, abcdef, abcdefg, abcdefgh)'",
+        "let code='en';for(let i=0;i<1000;i++){code+='-abcde';}let caught=false;try{new Intl.DisplayNames('en',{type:'language'}).of(code);}catch(e){caught=e instanceof RangeError;}caught",
+        "let log='';let d=new Intl.DisplayNames('en',{get type(){log+='t';return 'language';},get languageDisplay(){log+='l';return {toString(){log+='s';return 'standard';}};}});d.of({toString(){log+='c';return 'en-US';}}) === 'English (United States)' && log === 'tlsc'",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for code in [
+        "",
+        "en_US",
+        "en-x-private",
+        "en-a-abc",
+        "en-t-de",
+        "en-u-attr",
+        "en-abcde-ABCDE",
+        "en-1234-",
+        "en-ü",
+        "en-\\0",
+        "en--US",
+    ] {
+        let source = format!(
+            "let caught=false;try{{new Intl.DisplayNames('en',{{type:'language'}}).of('{code}');}}catch(e){{caught=e instanceof RangeError;}}caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{code}");
+    }
+}
+
 /// Synthetic fixture, not light-cljs output. Every callback waits once; GC
 /// and worker migration happen between instructions and at each wait.
 #[test]
 fn intl_display_names_callbacks_wait_collect_and_migrate() {
-    let rt = Runtime::new();
-    let source = r#"
+    for (source, expected_waits) in [
+        (
+            r#"
+        let log='';
+        let d=new Intl.DisplayNames({get length(){log+='l';__rt.need(1,1);return 1;},get 0(){log+='t';__rt.need(2,1);return 'FR';}},
+            {get type(){log+='k';__rt.need(3,1);return {toString(){log+='s';__rt.need(4,1);return 'language';}};},
+             get languageDisplay(){log+='d';__rt.need(5,1);return {toString(){log+='v';__rt.need(6,1);return 'standard';}};}});
+        let name=d.of({toString(){log+='c';__rt.need(7,1);return 'EN-latn-us';}});
+        name === 'anglais (latin, États-Unis)' && log === 'ltksdvc'
+    "#,
+            7,
+        ),
+        (
+            r#"
         let log='';
         let d=new Intl.DisplayNames({get length(){log+='l';__rt.need(1,1);return 1;},get 0(){log+='t';__rt.need(2,1);return 'FR';}},
             {get type(){log+='k';__rt.need(3,1);return {toString(){log+='s';__rt.need(4,1);return 'currency';}};}});
         let name=d.of({toString(){log+='c';__rt.need(5,1);return 'USD';}});
         name === 'dollar des États-Unis' && log === 'ltksc'
-    "#;
-    let mut task = rt.spawn(&exe(source), &[]).unwrap();
-    let mut waited = 0;
-    for _ in 0..3000 {
-        let (next, outcome) = std::thread::spawn(move || {
-            let outcome = task
-                .run_with(Budget::instructions(1), &mut NoEffects)
-                .unwrap();
-            (task, outcome)
-        })
-        .join()
-        .unwrap();
-        task = next;
-        match outcome {
-            RunOutcome::Yielded => {
-                rt.collect().unwrap();
-            }
-            RunOutcome::Waiting(_) => {
-                waited += 1;
-                assert!(waited <= 5);
-                rt.collect().unwrap();
-                let request = task.take_producer_requests().pop().unwrap();
-                let value = rt.root(Primitive::Number(0.0));
-                task = rt
-                    .complete(request.key(), request.producer(), Completion::Ready(&value))
-                    .unwrap()
-                    .into_runnable()
-                    .pop()
+    "#,
+            5,
+        ),
+    ] {
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut waited = 0;
+        let mut finished = false;
+        for _ in 0..3000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
                     .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waited += 1;
+                    assert!(waited <= expected_waits);
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true));
+                    assert_eq!(waited, expected_waits);
+                    finished = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
             }
-            RunOutcome::Complete(value) => {
-                assert_eq!(value.view(), ValueView::Bool(true));
-                assert_eq!(waited, 5);
-                return;
-            }
-            other => panic!("{other:?}"),
         }
+        assert!(finished, "DisplayNames continuation did not finish");
     }
-    panic!("DisplayNames continuation did not finish");
 }
 
 /// Synthetic fixtures, not light-cljs output.

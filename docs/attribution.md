@@ -1217,6 +1217,19 @@ fresh in Rust. Name data reuses `src/intl/data/display_names.rs`, already
 exported and repacked by `scripts/quickjs-data/`; its provenance, QuickJS
 license and `docs/UNICODE-LICENSE` remain applicable and unchanged.
 
+### Intl.DisplayNames language names (clj-quickjs-224)
+
+Language-name semantics reference `research/quickjs/intl/displaynames.c`,
+`intl/intl.c::js_intl_find_display_name`, and the shared Locale parser at
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. Runtime code is written
+fresh in Rust. The `js_source::intl_display_names_language` acceptance rows
+adapt `research/quickjs/tests/test_intl.js::test_displayNames`; the full MIT
+notice already retained in that file applies. The pipeline pins and extracts
+the literal pairs in `intl/displaynames.c::dn_fallback_language`, retaining
+the existing en/fr language pools from `intl/locale-data.c`. Generated data
+and updated input/converter hashes are in `src/intl/data/display_names.rs`
+and `provenance.txt`; `QUICKJS-LICENSE` and `docs/UNICODE-LICENSE` apply.
+
 ### Intl.DurationFormat (clj-quickjs-225)
 
 DurationFormat semantics were researched in `research/quickjs/intl/durationformat.c`

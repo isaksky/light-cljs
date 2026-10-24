@@ -7785,7 +7785,7 @@ English/French code-name and language pools, emitted by `repack-intl.pl`.
 The new safe reader checks alternating NUL-separated code/name pairs; a
 consumer test checks all seven pools for both languages, including UTF-8 and
 terminal sentinels. No generation changes or manual table copies are needed.
-Language pools remain available to -224. Short/narrow region lookup tries the
+Language pools also feed the -224 reader below. Short/narrow region lookup tries the
 short pool before the full pool; other types use the snapshot's single pool.
 The shared service locale set preserves QuickJS's required `de` metadata and
 supportedLocalesOf output, while name lookup explicitly falls back to English
@@ -7804,6 +7804,36 @@ validation failure has no pending rope tree. SupportedLocalesOf applies
 ToObject-equivalent property reads to non-null primitive options, separately
 from the strict constructor options rule. Callback failure tests preserve
 thrown identities and dependency-failure causes after waits and GC.
+
+### Intl.DisplayNames language names (clj-quickjs-224)
+
+The immutable DisplayNames payload also handles language identifiers. The
+consumer reuses `intl/tag.rs::LanguageTag` validation and canonical aliases
+from Locale (-210), rejecting all singleton extensions including private use.
+It does not maximize/minimize (-211): doing so would add or erase components
+that the caller explicitly requested for display. The existing parser bounds
+identifiers to 511 ASCII bytes; larger rope arguments use the native cleanup
+cursor and throw RangeError without flattening or recursive rope disposal.
+
+Dialect display tries an exact compound name, then language-script-region,
+language-script and language-region keys, consuming only matched components.
+Standard display uses the base-language name; unmatched components are named
+through the sibling script/region readers and composed with variants in order.
+An unknown base language returns the complete canonical code or undefined.
+All styles use the snapshot's single language pool. Locale resolution and the
+English fallback for test locales without translations remain shared with -223.
+
+The verified exporter additionally pins `intl/displaynames.c` and imports only
+the two literal `dn_fallback_language` pairs, not service code. Repacking adds
+`dn_language_fallbacks` beside the existing language pools. Dialect display
+prefers these complete Chinese spellings over partial dialect keys, preserving
+the snapshot's English strings even in French. Standard display composes the
+localized components. The snapshot omits localeDisplayPattern, separator and
+variant-name data; `{0} ({1})`, `, ` and canonical unnamed-component codes are
+the explicit en/fr composition policy. The pipeline checks C/Rust literal
+equality, repeatability, input pinning and semantic edge cases. Source tests
+cover aliases, dialect/standard names, fallback, validation, long codes, and
+waiting languageDisplay/code callbacks with GC and worker migration.
 
 ### Intl.DurationFormat (clj-quickjs-225)
 

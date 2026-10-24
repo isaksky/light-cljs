@@ -185,6 +185,18 @@ die "relative-time auto locales\n" unless @auto_locales == 6;
 string_array('rtf_auto_locales', \@auto_locales);
 string_array('rtf_auto', \@auto_values);
 
+# Compound language spellings live beside DisplayNames service code. Export
+# only the literal fallback pairs, through the same C/Rust value comparison.
+my $dn = strip_comments(read_file("$root/intl/displaynames.c"));
+$dn =~ /static const char \*dn_fallback_language\(const char \*code\)\s*\{(.*?)\n\}/s
+    or die "missing DisplayNames language fallback\n";
+my $dn_body = $1;
+my @dn_fallbacks;
+$dn_body =~ s{if \(!strcmp\(code, ("(?:\\.|[^"\\])*")\)\)\s*return ("(?:\\.|[^"\\])*");}{push @dn_fallbacks, $1, $2; ''}gse;
+$dn_body =~ s/return NULL;//;
+die "unsupported DisplayNames fallback\n" if $dn_body =~ /\S/ || @dn_fallbacks != 4;
+string_array('dn_language_fallbacks', \@dn_fallbacks);
+
 my %numbers = (uint8_t=>'u8', uint16_t=>'u16', uint32_t=>'u32',
     int32_t=>'i32', int64_t=>'i64', int=>'i32', unsigned=>'u32');
 sub rust_type {

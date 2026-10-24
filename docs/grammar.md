@@ -5607,9 +5607,28 @@ set is recognized; languages without translated pools use English name data.
 Calling the constructor without new throws TypeError. Option getters and code
 coercions use ordinary resumable calls; calendar validation is budgeted.
 
-Explicit gaps: `type: 'language'` can be constructed with dialect/standard
-languageDisplay but its `of` throws a documented TypeError until -224. Generic
-Object.prototype.toString consumption of Symbol.toStringTag remains deferred.
+Explicit gaps: generic Object.prototype.toString consumption of
+Symbol.toStringTag remains deferred.
+
+### Execution: Intl.DisplayNames language names (clj-quickjs-224)
+
+`type: 'language'` accepts a Unicode language identifier without extensions or
+private use. It canonicalizes with the shared Locale parser, rejects malformed
+identifiers with RangeError, and preserves explicit script/region components.
+`languageDisplay` defaults to dialect and appears in resolvedOptions only for
+language objects. Dialect display prefers the longest available compound name;
+standard uses a base-language name. Remaining script, region and variant
+components are composed as `Language (Script, Region, variant)`. Missing base
+languages return the canonical tag or undefined according to fallback. The
+snapshot's Chinese compound exceptions and en/fr pools are generated data.
+All styles share the snapshot's language pool. Option getters/conversions and
+code coercion can wait, collect and migrate. Rejected long ropes are drained
+in bounded cleanup steps before RangeError.
+
+Explicit gaps: no display-pattern or variant-name tables exist in the pinned
+snapshot; both en/fr use `{0} ({1})` with `, ` separators, and unnamed
+components use canonical codes. Other test locales retain English-name data
+fallback. No likely-subtag maximization/minimization is applied during display.
 
 ### Execution: Intl.DurationFormat (clj-quickjs-225)
 

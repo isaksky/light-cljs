@@ -103,11 +103,7 @@ impl DisplayNames {
                 }
                 code.to_owned()
             }
-            "language" => {
-                return Err(Fault::TypeError(
-                    "DisplayNames language names are not implemented (clj-quickjs-224)".into(),
-                ));
-            }
+            "language" => return self.language_name(code),
             _ => unreachable!(),
         };
         let data = locale_data(&self.locale);
@@ -137,6 +133,99 @@ impl DisplayNames {
             None => string(&code),
         })
     }
+
+    fn language_name(&self, code: &str) -> Result<Value, Fault> {
+        // A unicode_language_id contains no singleton extensions, including
+        // private use. Use Locale's parser/aliases without maximizing or
+        // minimizing: explicitly supplied scripts and regions remain visible.
+        if code.split('-').any(|part| part.len() == 1) {
+            return Err(Fault::RangeError("invalid language code".into()));
+        }
+        let tag = super::tag::LanguageTag::parse(code)
+            .map_err(|_| Fault::RangeError("invalid language code".into()))?;
+        let code = tag.base_name();
+        let data = locale_data(&self.locale);
+        // Like the snapshot, all styles read the same language-name pool;
+        // CLDR metadata keys such as -alt-short are not language identifiers.
+        let language_name = |key: &str| find(data.languages, key);
+        let Some(mut name) = language_name(&tag.language) else {
+            return Ok(if self.fallback == "none" {
+                Value::Undefined
+            } else {
+                string(&code)
+            });
+        };
+        let mut script = tag.script.as_deref();
+        let mut region = tag.region.as_deref();
+        if self.language_display == "dialect" {
+            // The snapshot explicitly supplies these compound spellings in
+            // displaynames.c. They precede partial dialect lookup, preserving
+            // e.g. Chinese (Simplified, China) rather than Simplified Chinese
+            // (China), including the snapshot's English spelling in French.
+            let dialect_name =
+                |key: &str| compound_language_name(key).or_else(|| language_name(key));
+            if let Some(exact) = dialect_name(&code) {
+                return Ok(string(exact));
+            }
+            // Prefer the longest dialect key. Script+region precedes script,
+            // which precedes region; unmatched components are composed below.
+            let mut candidates = Vec::with_capacity(3);
+            if let (Some(sc), Some(rg)) = (script, region) {
+                candidates.push((format!("{}-{sc}-{rg}", tag.language), true, true));
+            }
+            if let Some(sc) = script {
+                candidates.push((format!("{}-{sc}", tag.language), true, false));
+            }
+            if let Some(rg) = region {
+                candidates.push((format!("{}-{rg}", tag.language), false, true));
+            }
+            for (key, used_script, used_region) in candidates {
+                if let Some(dialect) = dialect_name(&key) {
+                    name = dialect;
+                    if used_script {
+                        script = None;
+                    }
+                    if used_region {
+                        region = None;
+                    }
+                    break;
+                }
+            }
+        }
+        let mut details = Vec::new();
+        if let Some(script) = script {
+            details.push(find(data.scripts, script).unwrap_or(script));
+        }
+        if let Some(region) = region {
+            let short = (self.style != "long")
+                .then(|| find(data.regions_short, region))
+                .flatten();
+            details.push(
+                short
+                    .or_else(|| find(data.regions, region))
+                    .unwrap_or(region),
+            );
+        }
+        details.extend(tag.variants.iter().map(String::as_str));
+        // The pinned snapshot has no localeDisplayPattern, separator or variant
+        // pools. Both translated locales use this shared pattern; unknown
+        // components retain canonical codes rather than invented translations.
+        Ok(if details.is_empty() {
+            string(name)
+        } else {
+            string(&format!("{name} ({})", details.join(", ")))
+        })
+    }
+}
+
+fn compound_language_name(code: &str) -> Option<&'static str> {
+    data::dn_language_fallbacks
+        .chunks_exact(2)
+        .find_map(|pair| {
+            (super::pool_string(pair[0]?, 0)? == code)
+                .then(|| super::pool_string(pair[1]?, 0))
+                .flatten()
+        })
 }
 fn string(text: &str) -> Value {
     Value::String(JsString::from(text))

@@ -278,7 +278,11 @@ impl State {
                     unreachable!()
                 };
                 let slots = self.slots.as_ref().unwrap();
-                if code.len() > 32 {
+                // Locale's parser accepts at most 511 ASCII units. All valid
+                // language ids therefore fit a bounded leaf parse; longer
+                // ropes still drain through the saved cleanup cursor.
+                let limit = if slots.kind == "language" { 511 } else { 32 };
+                if code.len() > limit {
                     self.calendar = Some(UnitCursor::new(code));
                     if slots.kind != "calendar" {
                         return Ok(self.reject(slots.kind));
@@ -347,14 +351,7 @@ impl State {
                         }
                     } else {
                         let kind = self.failure.take().unwrap();
-                        return Err(if kind == "language" {
-                            Fault::TypeError(
-                                "DisplayNames language names are not implemented (clj-quickjs-224)"
-                                    .into(),
-                            )
-                        } else {
-                            Fault::RangeError(format!("invalid {kind} code"))
-                        });
+                        return Err(Fault::RangeError(format!("invalid {kind} code")));
                     }
                 }
                 Ok(Action::Continue)
@@ -437,12 +434,6 @@ mod tests {
                     }
                     Err(Fault::RangeError(_)) => {
                         assert_ne!(invalid, 0);
-                        assert_ne!(kind, "language");
-                        finished = true;
-                        break;
-                    }
-                    Err(Fault::TypeError(_)) => {
-                        assert_eq!(kind, "language");
                         finished = true;
                         break;
                     }

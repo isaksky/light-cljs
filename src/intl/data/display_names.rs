@@ -52,3 +52,9 @@ DisplayNamesData { locale: Some(b"fr\x00"), languages: Some(dn_fr_languages), re
 ];
 #[rustfmt::skip]
 pub static display_names_count: i32 = 2;
+#[rustfmt::skip]
+pub static dn_language_fallbacks: &'static [Option<&'static [u8]>] = &[Some(b"zh-Hans-CN\x00"),
+Some(b"Chinese (Simplified, China)\x00"),
+Some(b"zh-Hant-TW\x00"),
+Some(b"Chinese (Traditional, Taiwan)\x00"),
+];
