@@ -327,7 +327,7 @@ fn explicit_stacks_and_shared_work_limit() {
         exec(&program("b", "").unwrap(), &vec![97; MAX_MATCH_STEPS], 0),
         Err(MatchError::LimitExceeded)
     );
-    // Backreferences compare one code unit at a time under the same budget.
+    // Lookahead and backreferences share the search's work allowance.
     assert_eq!(
         exec(&program(r"(?=(a*))\1b", "").unwrap(), &vec![97; 2000], 0),
         Err(MatchError::LimitExceeded)
@@ -341,6 +341,21 @@ fn explicit_stacks_and_shared_work_limit() {
         program(&"a".repeat(MAX_MATCH_STEPS), ""),
         Err(MatchError::LimitExceeded)
     ));
+}
+
+#[test]
+fn backreference_comparisons_share_work_limit() {
+    // Setup and instruction work fit the allowance; the million code-unit
+    // comparisons must consume it. Anchoring prevents a costly search from
+    // masking a missing comparison charge.
+    assert_eq!(
+        exec(
+            &program(r"^(a{1000})\1{1000}$", "").unwrap(),
+            &vec![97; 1_001_000],
+            0,
+        ),
+        Err(MatchError::LimitExceeded)
+    );
 }
 
 #[test]
