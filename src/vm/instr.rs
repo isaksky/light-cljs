@@ -155,6 +155,7 @@
 //! | `UsingCheck` | 0xA9 | – | resource → method | snapshot and validate Symbol.dispose (resumable getter) |
 //! | `PendingException` | 0xAA | – | → value | pending throw value, or undefined |
 //! | `SuppressedError` | 0xAB | – | new previous → error | intrinsic engine wrapping without JS |
+//! | `PendingCancel` | 0xAC | – | → boolean | whether this finally is unwinding cancellation |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -709,6 +710,8 @@ pub enum Opcode {
     PendingException = 0xAA,
     /// new-error previous-error → intrinsic SuppressedError instance.
     SuppressedError = 0xAB,
+    /// → boolean: the innermost handler is a pending cancellation.
+    PendingCancel = 0xAC,
 }
 
 /// Operand encoding of an opcode.
@@ -910,6 +913,7 @@ impl Opcode {
             0xA9 => UsingCheck,
             0xAA => PendingException,
             0xAB => SuppressedError,
+            0xAC => PendingCancel,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1091,6 +1095,7 @@ impl Opcode {
             UsingCheck => "using_check",
             PendingException => "pending_exception",
             SuppressedError => "suppressed_error",
+            PendingCancel => "pending_cancel",
             PutGlobalStrict => "put_global_strict",
             PutFieldStrict => "put_field_strict",
             PutElemStrict => "put_elem_strict",
@@ -1185,7 +1190,7 @@ impl Opcode {
             CheckHeritage | InitHeritage | GetSuperConstructor | ConstructSuperSpread
             | BindThis | ResolveThis | ForwardArguments | GetSuperBase | GetSuperElem
             | PutSuperElem | PutSuperElemStrict | ToSuperKey | Dup3 => OperandKind::None,
-            UsingCheck | PendingException | SuppressedError => OperandKind::None,
+            UsingCheck | PendingException | SuppressedError | PendingCancel => OperandKind::None,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }
@@ -1416,6 +1421,7 @@ pub(crate) enum Instr {
     UsingCheck,
     PendingException,
     SuppressedError,
+    PendingCancel,
 }
 
 impl Instr {
@@ -1589,6 +1595,7 @@ impl Instr {
             Instr::UsingCheck => Opcode::UsingCheck,
             Instr::PendingException => Opcode::PendingException,
             Instr::SuppressedError => Opcode::SuppressedError,
+            Instr::PendingCancel => Opcode::PendingCancel,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
             Instr::PutFieldStrict(_) => Opcode::PutFieldStrict,
             Instr::PutElemStrict => Opcode::PutElemStrict,
@@ -1665,6 +1672,7 @@ impl Instr {
             ForwardArguments => (0, 1),
             UsingCheck => (1, 1),
             PendingException => (0, 1),
+            PendingCancel => (0, 1),
             SuppressedError => (2, 1),
             BindThis => (2, 1),
             CallMethod(n) => (usize::from(n) + 2, 1),

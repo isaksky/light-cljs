@@ -1149,6 +1149,12 @@ impl<'s> Lowerer<'s> {
             self.out().op_u16(Opcode::SetLocal, value, span);
         }
         let end = self.out().label();
+        // A throw across a pending Cancel terminates ordinary finally
+        // cleanup. Disposal must instead discard its errors and continue
+        // cancellation through every enclosing resource scope.
+        self.out().op(Opcode::PendingCancel, span);
+        self.out().op(Opcode::Not, span);
+        self.out().branch(Opcode::JumpIfFalse, end, span);
         self.out().op_u16(Opcode::GetLocal, changed, span);
         self.out().branch(Opcode::JumpIfFalse, end, span);
         self.out().op_u16(Opcode::GetLocal, error, span);

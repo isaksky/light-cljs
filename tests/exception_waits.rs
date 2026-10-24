@@ -186,6 +186,31 @@ fn cancellation_disposes_using_resources() {
 }
 
 #[test]
+fn cancellation_disposes_nested_scopes_after_disposal_errors() {
+    let rt = Runtime::new();
+    let task = spawn(
+        &rt,
+        r#"
+        function f() {
+            using outer = {[Symbol.dispose]() { __rt.effect(1, 1); throw 1; }};
+            {
+                using inner = {[Symbol.dispose]() { __rt.effect(1, 2); throw 2; }};
+                __rt.need(5, 3);
+            }
+        }
+        try { using caller = {[Symbol.dispose]() { __rt.effect(1, 0); }}; f(); }
+        catch(e) { __rt.effect(1, 99); }
+    "#,
+    );
+    let mut log = Log::default();
+    run_to_wait(&rt, &task, &mut log, A);
+    let task = cancel_parked(&task);
+    let (outcome, log) = run_elsewhere(task, log);
+    cancelled(outcome);
+    assert_eq!(log.0, [2.0, 1.0, 0.0]);
+}
+
+#[test]
 fn using_dispose_getter_waits_before_binding_initialization() {
     let rt = Runtime::new();
     let task = spawn(

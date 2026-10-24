@@ -668,6 +668,7 @@ impl Executable {
                 Opcode::UsingCheck => Instr::UsingCheck,
                 Opcode::PendingException => Instr::PendingException,
                 Opcode::SuppressedError => Instr::SuppressedError,
+                Opcode::PendingCancel => Instr::PendingCancel,
                 Opcode::DefineGetterElem => Instr::DefineGetterElem,
                 Opcode::DefineSetterElem => Instr::DefineSetterElem,
                 Opcode::SetComputedName => Instr::SetComputedName(operand as u16),

@@ -925,6 +925,13 @@ impl VmState {
         }
     }
 
+    pub(crate) fn pending_cancel(&self) -> bool {
+        self.handlers.last().is_some_and(|h| {
+            h.frame == self.frame_index()
+                && matches!(h.kind, HandlerKind::Pending(Completion::Cancel))
+        })
+    }
+
     /// A suspension must not detach this frame's pending cancellation and
     /// allow its caller to continue ordinary execution during cleanup.
     pub(crate) fn activation_cancelling(&self) -> bool {

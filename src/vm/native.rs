@@ -974,7 +974,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
     use Instr::*;
     match instr {
         Reduce | NeedAll | GetIterator | UsingCheck => true,
-        PendingException | SuppressedError => false,
+        PendingException | SuppressedError | PendingCancel => false,
         RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add
         | Sub | Mul | Lt | StrictEq | Not | Jump(_) | JumpIfFalse(_) | Return | NewObject
         | HostEffect(_) | NewVector(_) | NewMap(_) | TemplateObject(_) | Count | Nth | Get

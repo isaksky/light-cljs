@@ -2388,6 +2388,7 @@ fn step_instruction(
         }
         Instr::PendingThrow => state.push(Value::Bool(state.pending_throw())),
         Instr::PendingException => state.push(state.pending_exception()),
+        Instr::PendingCancel => state.push(Value::Bool(state.pending_cancel())),
         Instr::SuppressedError => {
             let [error, suppressed] = top_operands(state, 2)? else {
                 return Err(Fault::Internal("operand stack underflow"));
@@ -3057,6 +3058,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::RequireObject
         | Instr::PendingThrow
         | Instr::PendingException
+        | Instr::PendingCancel
         | Instr::UsingCheck
         | Instr::NeedAll
         // Leaves the loop; continuing after it re-enters `execute`, which

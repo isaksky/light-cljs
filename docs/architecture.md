@@ -1206,8 +1206,10 @@ docs.
   combine errors without running JS. Hidden error locals distinguish an
   empty error state from a thrown undefined. The existing completion stack
   retains returns, jumps, exception identity and cancellation; catches inside
-  disposal keep later resources running, and the final throw cannot override
-  cancellation. `using_check` has a traced native continuation for a
+  disposal keep later resources running. `pending_cancel` discards the final
+  error during cancellation so `end_finally` can visit outer resource scopes;
+  ordinary throws escaping a cancel finally would terminate all cleanup.
+  `using_check` has a traced native continuation for a
   `Symbol.dispose` getter. Every getter and disposer can suspend and migrate;
   the collector traces resources, snapshots and errors through existing
   task locals/native frames. Module evaluation uses the same protected body
