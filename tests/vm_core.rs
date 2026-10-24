@@ -115,6 +115,7 @@ fn invalid_bytecode_is_rejected_at_load_time() {
         captures: 0,
         strict: true,
         constructor_kind: clj_quickjs::ConstructorKind::None,
+        eval_sites: Vec::new(),
     };
     let cases = [
         (
@@ -286,6 +287,7 @@ fn constant_pool_index_limit_is_enforced() {
         captures: 0,
         strict: true,
         constructor_kind: clj_quickjs::ConstructorKind::None,
+        eval_sites: Vec::new(),
     })
     .unwrap();
     let result = complete(rt.spawn(&exe, &[]).unwrap().run().unwrap());

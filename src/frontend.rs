@@ -263,11 +263,20 @@ pub fn compile_script_with(
     lower::lower_script(name, source, &script)
 }
 
-/// Compile an eval script independently of the calling frame. Keeping this
-/// entry separate lets direct eval supply its environment in a later slice.
+/// Compile an indirect eval script in the global environment.
 pub(crate) fn compile_eval(name: &str, source: &str) -> Result<Executable, SyntaxError> {
     let script = parse_script_with(source, ScriptOptions::SLOPPY)?;
     lower::lower_eval(name, source, &script)
+}
+
+pub(crate) fn compile_direct_eval(
+    name: &str,
+    source: &str,
+    strict: bool,
+    bindings: &[crate::vm::executable::EvalBinding],
+) -> Result<Executable, SyntaxError> {
+    let script = parse_script_with(source, ScriptOptions { strict })?;
+    lower::lower_direct_eval(name, source, &script, bindings)
 }
 
 /// Compile `source`, which must consist of exactly one function declaration,

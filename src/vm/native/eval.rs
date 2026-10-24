@@ -3,7 +3,17 @@
 //! is synchronous, so its input is capped to bound a compilation step as well.
 
 use super::{Action, Fault};
+use crate::heap::gc::Trace;
+use crate::value::Value;
 use crate::value::{JsString, string::StringFlatten};
+use crate::vm::executable::EvalBinding;
+
+#[derive(Debug)]
+pub(super) struct Caller {
+    pub(super) strict: bool,
+    pub(super) bindings: Vec<EvalBinding>,
+    pub(super) captures: Vec<Value>,
+}
 
 pub(crate) const MAX_SOURCE_UNITS: usize = 16_384;
 
@@ -13,6 +23,7 @@ pub(crate) struct State {
     text: Option<JsString>,
     next: usize,
     source: String,
+    pub(super) caller: Option<Caller>,
 }
 
 impl State {
@@ -28,6 +39,7 @@ impl State {
             text: None,
             next: 0,
             source: String::new(),
+            caller: None,
         })
     }
 
@@ -69,14 +81,29 @@ impl State {
         // compilation (including AST teardown on errors) on a bounded helper
         // stack; no JavaScript or task continuation runs on this thread.
         let source = std::mem::take(&mut self.source);
-        std::thread::Builder::new()
+        let scope = self.caller.as_ref().map(|c| (c.strict, c.bindings.clone()));
+        let executable = std::thread::Builder::new()
             .name("eval-compiler".into())
             .stack_size(2 * 1024 * 1024)
-            .spawn(move || crate::frontend::compile_eval("<eval>", &source))
+            .spawn(move || match scope {
+                Some((strict, bindings)) => {
+                    crate::frontend::compile_direct_eval("<eval>", &source, strict, &bindings)
+                }
+                None => crate::frontend::compile_eval("<eval>", &source),
+            })
             .map_err(|_| Fault::OutOfMemory("eval compiler thread"))?
             .join()
             .map_err(|_| Fault::Internal("eval compiler panicked"))?
-            .map(Action::Eval)
-            .map_err(|error| Fault::SyntaxError(format!("<eval>:{error}")))
+            .map_err(|error| Fault::SyntaxError(format!("<eval>:{error}")))?;
+        let captures = self.caller.take().map_or_else(Vec::new, |c| c.captures);
+        Ok(Action::Eval(executable, captures))
+    }
+}
+
+impl Trace for State {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        if let Some(caller) = &self.caller {
+            caller.captures.trace(visit);
+        }
     }
 }

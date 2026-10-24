@@ -218,6 +218,7 @@ impl Assembler {
             captures: self.captures,
             strict: true,
             constructor_kind: crate::vm::ConstructorKind::None,
+            eval_sites: Vec::new(),
         }
     }
 

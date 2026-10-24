@@ -557,6 +557,19 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
         return Err(Fault::Internal("operand stack underflow"));
     };
     let popped = argc + 1 + usize::from(method);
+    if !method
+        && let Some(site) = state
+            .top()
+            .code
+            .eval_sites
+            .get(&state.top().pc.saturating_sub(1))
+        && matches!(callee(heap, f)?, Callee::Builtin(Builtin::Eval))
+    {
+        let site = site.clone();
+        let args = args.to_vec();
+        super::native::start_direct_eval(heap, state, site, &args, popped)?;
+        return Ok(Flow::FrameChanged);
+    }
     let (max_args, max_hops) = state.forward_limits(state.stack_len() - popped);
     let forward = builtin::Forward {
         callee: f.clone(),
@@ -884,7 +897,7 @@ fn not_a_constructor(state: &VmState, v: &Value, what: &str) -> Fault {
 }
 
 /// Lazily materialize and root the global object before returning it.
-fn global_object(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
+pub(super) fn global_object(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
     if let Some(id) = state.global_object {
         return Ok(Value::Object(id));
     }
@@ -3033,6 +3046,7 @@ mod tests {
         for (instrs, functions) in programs {
             let code = Code {
                 regexps: std::collections::HashMap::new(),
+                eval_sites: std::collections::HashMap::new(),
                 name: "corrupt".into(),
                 params: 0,
                 function_length: 0,

@@ -57,6 +57,42 @@ impl ConstructorKind {
     }
 }
 
+/// A caller value exposed to direct eval. These are validated frame indices,
+/// never pointers into a worker's stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalSource {
+    Local(u16),
+    Capture(u16),
+    CurrentFunction,
+    This,
+    GlobalObject,
+}
+
+/// Assignment semantics retained when compiling against a caller's scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalBindingKind {
+    Mutable,
+    Const,
+    FunctionName,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalBinding {
+    pub name: String,
+    pub source: EvalSource,
+    pub kind: EvalBindingKind,
+    pub cell: bool,
+}
+
+/// The lexical scope at a syntactic `eval(...)` call. Offsets refer to the
+/// encoded Call/CallSpread instruction, and survive executable round trips.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalSite {
+    pub offset: u32,
+    pub bindings: Vec<EvalBinding>,
+    pub receiver: EvalSource,
+}
+
 /// Input to [`Executable::load`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExecutableSpec {
@@ -97,6 +133,8 @@ pub struct ExecutableSpec {
     /// arrows and hand-assembled code use `None`. Generator code also uses
     /// `None` despite having an own `prototype` (see `crate::vm::function`).
     pub constructor_kind: ConstructorKind,
+    /// Direct-eval call sites; empty for hand-assembled code by default.
+    pub eval_sites: Vec<EvalSite>,
 }
 
 /// Validated code shared by every task that runs it.
@@ -129,6 +167,8 @@ pub(crate) struct Code {
     /// Source text and per-instruction source locations, for code compiled
     /// from JavaScript; `None` for code loaded from an [`ExecutableSpec`].
     pub(crate) debug: Option<DebugInfo>,
+    /// Indexed by decoded instruction position; absent for ordinary calls.
+    pub(crate) eval_sites: std::collections::HashMap<usize, EvalSite>,
 }
 
 impl Code {
@@ -274,6 +314,7 @@ pub enum ValidationErrorKind {
     UnknownBuiltinGlobal {
         index: u16,
     },
+    InvalidEvalSite,
 }
 
 impl fmt::Display for ValidationError {
@@ -343,6 +384,7 @@ impl Executable {
             captures,
             strict,
             constructor_kind,
+            eval_sites,
         } = spec;
         if code.is_empty() {
             return Err(err(0, EmptyCode));
@@ -610,6 +652,34 @@ impl Executable {
             });
         }
 
+        let mut sites = std::collections::HashMap::new();
+        for site in eval_sites {
+            let offset = site.offset;
+            let index = index_at
+                .get(offset as usize)
+                .copied()
+                .flatten()
+                .ok_or(err(offset, InvalidEvalSite))? as usize;
+            let valid_source = |source| match source {
+                EvalSource::Local(i) => i < locals,
+                EvalSource::Capture(i) => i < captures,
+                _ => true,
+            };
+            let mut names = std::collections::HashSet::new();
+            if !matches!(instrs[index], Instr::Call(_) | Instr::CallSpread)
+                || site.bindings.len() >= usize::from(u16::MAX)
+                || !valid_source(site.receiver)
+                || site.bindings.iter().any(|b| {
+                    !valid_source(b.source)
+                        || !names.insert(&b.name)
+                        || (b.kind == EvalBindingKind::Mutable && !b.cell)
+                })
+                || sites.contains_key(&index)
+            {
+                return Err(err(offset, InvalidEvalSite));
+            }
+            sites.insert(index, site);
+        }
         let max_stack = check_stack(&instrs, &offsets)?;
         let debug = match debug {
             Some(info) if info.locations.len() != instrs.len() => {
@@ -651,6 +721,7 @@ impl Executable {
             offsets: offsets.into(),
             max_stack,
             debug,
+            eval_sites: sites,
         })))
     }
 
@@ -766,6 +837,11 @@ impl Executable {
             captures: code.captures,
             strict: code.strict,
             constructor_kind: code.constructor_kind,
+            eval_sites: {
+                let mut sites: Vec<_> = code.eval_sites.values().cloned().collect();
+                sites.sort_by_key(|s| s.offset);
+                sites
+            },
         }
     }
 }
@@ -869,6 +945,7 @@ mod tests {
             captures: 0,
             strict: true,
             constructor_kind: ConstructorKind::None,
+            eval_sites: Vec::new(),
         })
     }
 
@@ -970,6 +1047,7 @@ mod tests {
             captures: 0,
             strict: true,
             constructor_kind: ConstructorKind::None,
+            eval_sites: Vec::new(),
         });
         assert_eq!(
             kind(e),
@@ -1068,6 +1146,7 @@ mod tests {
             captures: 0,
             strict: true,
             constructor_kind: ConstructorKind::None,
+            eval_sites: Vec::new(),
         };
         let at = SourceLocation {
             span: crate::frontend::Span::new(0, 1),
@@ -1136,6 +1215,7 @@ mod tests {
             captures: 0,
             strict: true,
             constructor_kind: ConstructorKind::None,
+            eval_sites: Vec::new(),
         }
     }
 

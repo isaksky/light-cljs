@@ -530,6 +530,215 @@ fn object_destructuring() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Exercise caller environments
+/// through runtime compilation rather than statically visible references.
+/// The basic eval rows adapt QuickJS tests/test_builtin.js::test_eval and
+/// tests/test_closure.js::test_eval_closure/test_eval_const, revision
+/// 7d1c13c5d8f8. QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and
+/// Charlie Gordon, released under the MIT license:
+/// Permission is hereby granted, free of charge, to any person obtaining a
+/// copy of this software and associated documentation files (the "Software"),
+/// to deal in the Software without restriction, including without limitation
+/// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+/// and/or sell copies of the Software, and to permit persons to whom the
+/// Software is furnished to do so, subject to the following conditions:
+/// The above copyright notice and this permission notice shall be included
+/// in all copies or substantial portions of the Software. THE SOFTWARE IS
+/// PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+/// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+/// FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+/// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+/// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+/// DEALINGS IN THE SOFTWARE.
+#[test]
+fn strict_direct_eval() {
+    for source in [
+        r#"eval('1+1;') === 2 && eval('if (1) 2; else 3;') === 2 && eval('if (0) 2; else 3;') === 3"#,
+        r#"eval('var my_var=2; my_var;') === 2 && typeof my_var === 'undefined'"#,
+        r#"let a = 4; function f(b) { var x = 1; return eval(b); } f.call(1, 'this') === 1 && f('arguments.length', 1) === 2 && f('arguments[1]', 1) === 1 && f('x') === 1 && f('a') === 4 && f('a=3') === 3 && a === 3"#,
+        r#"let a = 2; eval('a') === 2 && eval('a=3') === 3 && a === 3"#,
+        r#"function f() { return (() => eval('this'))(); } f.call(5) === 5"#,
+        r#"function f() { return (() => eval('arguments[1]'))(); } f(2, 7) === 7"#,
+        r#"let fs = []; for (let i = 0; i < 3; i++) fs.push(eval('() => i')); fs[0]() === 0 && fs[1]() === 1 && fs[2]() === 2"#,
+        r#"let fs = []; for (let i = 0; i < 3; i++) { function f() { return eval('() => i'); } fs.push(f()); } fs[0]() === 0 && fs[1]() === 1 && fs[2]() === 2"#,
+        r#"const a = 1; function f() { eval('a=1'); } let caught = false; try { f(); } catch(e) { caught = e instanceof TypeError; } caught"#,
+        r#"const g = function m() { eval('m=1'); }; let caught = false; try { g(); } catch(e) { caught = e instanceof TypeError; } caught"#,
+        r#"function f() { let caught = false; try { eval('a'); } catch(e) { caught = e instanceof ReferenceError; } let a = 1; return caught; } f()"#,
+        r#"function f() { let caught = false; try { eval('a=1'); } catch(e) { caught = e instanceof ReferenceError; } const a = 1; return caught; } f()"#,
+        r#"function f() { let x = 1; const g = eval('() => ++x'); return g() === 2 && x === 2; } f()"#,
+        r#"function f() { let x = 1; return eval('eval("x += 2")') === 3 && x === 3; } f()"#,
+        r#"let x = 1; { let x = 2; eval('x=3'); } x === 1"#,
+        r#"let n = 0; eval(7, n++) === 7 && n === 1 && eval() === undefined"#,
+        r#"function f() { let x = 4; return eval(...['x + 1']) === 5; } f()"#,
+        r#"function f() { return eval('var x=2; x') === 2 && typeof x === 'undefined'; } f()"#,
+        r#"function f() { let x=1; let g=()=>x; eval('x=4'); return g() === 4; } f()"#,
+        r#"function f() { return eval('function g() { return 7; } g()') === 7 && typeof g === 'undefined'; } f()"#,
+        r#"function f() { let x=2; return eval('let x=3; x') === 3 && x === 2; } f()"#,
+        r#"function f() { let x=2; return eval('var x=3; x') === 3 && x === 2; } f()"#,
+        r#"function f() { eval('f=7'); } f(); f === 7"#,
+        r#"function f() { try { eval('010'); } catch(e) { return e instanceof SyntaxError; } } f()"#,
+        r#"function f() { let x=7; return eval.call(null, 'typeof x') === 'undefined' && eval.bind(null)('typeof x') === 'undefined' && (0,eval)('typeof x') === 'undefined'; } f()"#,
+        r#"let n=0; try { eval('1', (()=>{throw 7;})()); } catch(e) { n=e; } n === 7"#,
+        r#"function f() { let x=1; return eval('x', x=4) === 4; } f()"#,
+        r#"try { throw 8; } catch(e) { eval('e') === 8; }"#,
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    assert_eq!(
+        sloppy_eval("function h(eval) { return eval(1, 2); } h((a, b) => a + b)"),
+        ValueView::Number(3.0)
+    );
+    assert_eq!(
+        sloppy_eval(r#"function f() { let x=3; return eval('"use strict"; var y=2; x+y'); } f()"#),
+        ValueView::Number(5.0)
+    );
+    assert_eq!(
+        sloppy_eval(r#"let x=1; eval('x+=2'); x"#),
+        ValueView::Number(3.0)
+    );
+    assert_eq!(
+        sloppy_eval(
+            r#"let x=0; let caught=false; try { eval('x=1; var injected107=2'); } catch(e) { caught=e instanceof SyntaxError; } caught && x === 0 && typeof injected107 === 'undefined'"#
+        ),
+        ValueView::Bool(true)
+    );
+    let rt = Runtime::new();
+    let script = compile_script(
+        "direct-eval.js",
+        r#"function f() { let n=0; eval('while(n < 25) n++'); return n; } f()"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&script, &[]).unwrap();
+    let mut yields = 0;
+    loop {
+        match task
+            .run_with(Budget::instructions(5), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(v) => {
+                assert_eq!(v.view(), ValueView::Number(25.0));
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(yields < 1000);
+    }
+    assert!(yields > 1);
+}
+
+/// Synthetic fixtures: publication policy and serialized scope descriptors.
+#[test]
+fn direct_eval_capture_publication_and_roundtrip() {
+    let rt = Runtime::new();
+    for source in [
+        "function f() { const x=1; if(false) eval(''); return () => x; } f()",
+        "function f() { const x=1; return () => eval('x'); } f()",
+        "function f() { const x=1; return eval('() => x'); } f()",
+    ] {
+        let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!("{source}")
+        };
+        assert!(
+            matches!(
+                rt.publish(&value),
+                Err(clj_quickjs::PublishError::NotShareable {
+                    found: "binding cell",
+                    ..
+                })
+            ),
+            "{source}"
+        );
+    }
+    let plain = compile_function("function f() { const x=1; return () => x; }").unwrap();
+    assert!(plain.to_spec().eval_sites.is_empty());
+    assert!(!opcodes(&plain).contains(&Opcode::NewCell));
+    let RunOutcome::Complete(value) = rt.spawn(&plain, &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    rt.publish(&value).unwrap();
+
+    let code = compile_function("function f(a) { let x=a; eval('x++'); return x; }").unwrap();
+    let spec = code.to_spec();
+    assert_eq!(spec.eval_sites.len(), 1);
+    let code = Executable::load(spec.clone()).unwrap();
+    let arg = rt.root(Primitive::Number(3.0));
+    let RunOutcome::Complete(value) = rt.spawn(&code, &[&arg]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    assert_eq!(value.view(), ValueView::Number(4.0));
+    let mut bad = spec.clone();
+    bad.eval_sites[0].offset += 1;
+    assert_eq!(
+        Executable::load(bad).unwrap_err().kind,
+        ValidationErrorKind::InvalidEvalSite
+    );
+    let mut bad = spec.clone();
+    bad.eval_sites[0].bindings[0].source = clj_quickjs::vm::executable::EvalSource::Local(u16::MAX);
+    assert_eq!(
+        Executable::load(bad).unwrap_err().kind,
+        ValidationErrorKind::InvalidEvalSite
+    );
+    let mut bad = spec;
+    bad.eval_sites.push(bad.eval_sites[0].clone());
+    assert_eq!(
+        Executable::load(bad).unwrap_err().kind,
+        ValidationErrorKind::InvalidEvalSite
+    );
+}
+
+/// Synthetic fixtures: every slice migrates onto a small worker stack, with
+/// a collection between slices and a dependency wait inside the eval frame.
+#[test]
+fn direct_eval_waits_collects_and_migrates() {
+    let source = r#"function f() { let x={value:7}; const g=eval('() => x.value'); eval('__rt.need(107,1); x={value:9}'); return g() === 9; } f()"#;
+    let rt = Runtime::new();
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waits = 0;
+    for _ in 0..2000 {
+        let (next, outcome) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        task = next;
+        rt.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(_) => {
+                waits += 1;
+                assert_eq!(waits, 1);
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waits, 1);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("direct eval did not complete");
+}
+
 #[test]
 fn indirect_eval() {
     for (source, expected) in [
@@ -606,8 +815,8 @@ fn indirect_eval() {
     }
     assert!(yields > 1);
     assert_eq!(
-        failure(r#"(0, eval)('function f(eval) { return eval("x"); } f(globalThis.eval)')"#).kind(),
-        VmErrorKind::UnsupportedOperand
+        eval(r#"(0, eval)('function f(eval) { var x=8; return eval("x"); } f(globalThis.eval)')"#),
+        ValueView::Number(8.0)
     );
     let error = failure(r#"(0, eval)('\nmissing')"#);
     assert_eq!(&*error.diagnostic().executable, "<eval>");

@@ -2078,6 +2078,7 @@ mod tests {
     fn spawn_with_constant(rt: &Runtime, constant: ObjectId, args: &[&Rooted]) -> crate::Task {
         let code = Code {
             regexps: std::collections::HashMap::new(),
+            eval_sites: std::collections::HashMap::new(),
             name: "object-constant".into(),
             params: 1,
             function_length: 1,

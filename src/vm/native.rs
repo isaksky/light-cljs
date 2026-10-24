@@ -238,7 +238,7 @@ use super::frames::VmState;
 use super::instr::Instr;
 use crate::collections as coll;
 use crate::heap::gc::Trace;
-use crate::heap::{Heap, ObjectId};
+use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::host::Host;
 use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::value::{JsString, Value};
@@ -283,7 +283,7 @@ enum Failure {
 #[derive(Debug)]
 pub(crate) enum Action {
     /// Enter newly compiled eval code after releasing the native borrow.
-    Eval(super::executable::Executable),
+    Eval(super::executable::Executable, Vec<Value>),
     SimTimer {
         callback: Value,
         delay: f64,
@@ -836,7 +836,7 @@ impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match &self.state {
             NativeState::Async(a) => a.trace(visit),
-            NativeState::Eval(_) => {} // Source and compiler state have no heap edges.
+            NativeState::Eval(eval) => eval.trace(visit),
             NativeState::ArrayFrom(from) => from.trace(visit),
             NativeState::MathSumPrecise(sum) => sum.trace(visit),
             NativeState::ArraySort(sort) => sort.trace(visit),
@@ -1155,6 +1155,77 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
         },
     });
     Ok(true)
+}
+
+/// Snapshot the caller's binding references after argument evaluation. The
+/// native continuation owns and traces them until compiled code takes over.
+#[inline(never)]
+pub(crate) fn start_direct_eval(
+    heap: &Heap,
+    state: &mut VmState,
+    site: super::executable::EvalSite,
+    args: &[Value],
+    popped: usize,
+) -> Result<(), Fault> {
+    let value = args.first().cloned().unwrap_or(Value::Undefined);
+    let Value::String(text) = value else {
+        state.replace(popped, value)?;
+        return Ok(());
+    };
+    let mut native = eval::State::new(text)?;
+    let mut captures = Vec::with_capacity(site.bindings.len() + 1);
+    for binding in &site.bindings {
+        captures.push(eval_source(heap, state, binding.source)?);
+    }
+    captures.push(eval_source(heap, state, site.receiver)?);
+    native.caller = Some(eval::Caller {
+        strict: state.top().code.strict,
+        bindings: site.bindings,
+        captures,
+    });
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::Eval(Box::new(native)))?;
+    Ok(())
+}
+
+fn eval_source(
+    heap: &Heap,
+    state: &mut VmState,
+    source: super::executable::EvalSource,
+) -> Result<Value, Fault> {
+    use super::executable::EvalSource;
+    match source {
+        EvalSource::Local(i) => Ok(state.local(i)?.clone()),
+        EvalSource::Capture(i) => state
+            .top()
+            .callee
+            .and_then(|id| {
+                heap.read(id, |object| match object {
+                    HeapObject::Function(f) => f.captures.get(usize::from(i)).cloned(),
+                    _ => None,
+                })
+                .flatten()
+            })
+            .ok_or(Fault::Internal("eval caller capture is missing")),
+        EvalSource::This => Ok(state.top().this.clone()),
+        EvalSource::GlobalObject => dispatch::global_object(state, heap),
+        EvalSource::CurrentFunction => {
+            if let Some(id) = state.top().callee {
+                return Ok(Value::Object(id));
+            }
+            let f = dispatch::new_function(
+                heap,
+                state.top().code.clone(),
+                Box::new([]),
+                state.diag.task,
+                None,
+            )?;
+            if let Value::Object(id) = f {
+                state.top_mut().callee = Some(id);
+            }
+            Ok(f)
+        }
+    }
 }
 
 /// Built-in object operands use the same resumable method lookup and callback
@@ -2131,7 +2202,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             Action::Continue
             | Action::SuspendAsync(_)
             | Action::ResumeAsync { .. }
-            | Action::Eval(_)
+            | Action::Eval(..)
             | Action::SimTimer { .. }
             | Action::SetProperty { .. }
             | Action::Call { .. }
@@ -2248,11 +2319,16 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             state.natives.pop();
             super::asynchronous::resume(heap, state, id, rejected, value)
         }
-        Action::Eval(executable) => {
+        Action::Eval(executable, captures) => {
             state.natives.pop();
             let code = executable.0;
-            let function =
-                dispatch::new_function(heap, code.clone(), Box::new([]), state.diag.task, None)?;
+            let function = dispatch::new_function(
+                heap,
+                code.clone(),
+                captures.into_boxed_slice(),
+                state.diag.task,
+                None,
+            )?;
             let Value::Object(id) = function else {
                 return Err(Fault::Internal("eval function is not an object"));
             };

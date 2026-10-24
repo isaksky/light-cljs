@@ -498,7 +498,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
 | a shorthand initializer outside a destructuring pattern (`({a = 1})`) | Invalid |
 | a second `__proto__: v` (or `"__proto__": v`) in one object literal (clj-quickjs-121; a shorthand `{__proto__}` does not count) | Invalid |
-| direct `eval(source)` calls without a declared binding named `eval` (compiler check; indirect calls are supported) | Unsupported |
+| direct `eval(source)` in parameter expressions (compiler check; clj-quickjs-109) | Unsupported |
 | reserved word as a binding name or reference; binding, assigning (also with a compound operator: `undefined += 1`), incrementing or decrementing `undefined`/`NaN`/`Infinity`; binding or assigning/updating `eval`/`arguments` in strict code, including a function name or parameter checked again because the function's body starts with a `"use strict"` directive | ReservedWord |
 | computed access to the reserved intrinsic binding (`__rt[x]`), assignment to one of its intrinsics (`__rt.count = f`), `++`/`--` on one (`__rt.count++`) or `delete` of one (`delete __rt.count`) | ReservedWord |
 | an arrow function as an operand, callee or member object without parentheses (`1 + x => x`, `() => {}()`), a line break before `=>` | UnexpectedToken |
@@ -784,8 +784,8 @@ checks left to later stages:
   on a non-extensible object), which sloppy code ignores instead of
   throwing a `TypeError` (clj-quickjs-119). Every other
   sloppy-only form or behaviour is still the strict one, until the pellet
-  named for it: direct eval (-107/-108) remains a compile
-  error (`Unsupported`, see "Indirect eval"); silently
+  named for it: sloppy direct-eval var/function hoisting (-108) remains
+  rejected during runtime compilation (see "Direct eval"); silently
   ignored stores to a function expression's own name (clj-quickjs-96);
   `with`
   (clj-quickjs-110); `this` substitution (a sloppy function's `this` fails
@@ -802,7 +802,8 @@ checks left to later stages:
   The object is ordinary,
   without a special arguments brand for `Object.prototype.toString`.
 - **Default parameter values lack what the subset lacks elsewhere**
-  (clj-quickjs-100): direct `eval` is rejected (-107, -109); indirect eval works.
+  (clj-quickjs-100): direct `eval` in parameter expressions is rejected
+  (-109); indirect eval works.
   An arrow's default sees its lexical
   `this` (clj-quickjs-98); a non-arrow function's default sees its own
   receiver (clj-quickjs-116). Anonymous function defaults infer their
@@ -1767,7 +1768,10 @@ Gaps specific to execution:
   holds a cell (clj-quickjs-100).
   Script-level `let` bindings use cells even without a statically visible
   assignment: indirect eval can update them dynamically (clj-quickjs-278).
-  Immutable `const` captures and function-local bindings retain the rules above.
+  Bindings visible to a syntactic direct eval, including enclosing functions'
+  bindings and immutable `const`s, also use cells. A closure over one cannot
+  be published, even if that eval call is never executed (clj-quickjs-107).
+  Functions without direct eval in their lexical subtree retain the rules above.
 - **Function properties are partial** (clj-quickjs-125). Functions take
   own properties, a lazy `prototype` and `Function.prototype`'s `call`
   and `apply` (clj-quickjs-102), and `bind` (clj-quickjs-103), but ordinary
@@ -4450,8 +4454,8 @@ never exposed to JavaScript or re-iterated when the call starts.
 Rejected forms: object spread, rest parameters and a standalone
 `(...a)` retain their syntax errors. Explicit gaps: compiler-reserved `__rt`
 intrinsics require statically supplied arguments and reject spread with
-`Unsupported`. Direct eval and dynamic Function construction retain their
-explicit rejection. Indirect eval supports ordinary and spread calls.
+`Unsupported`. Dynamic Function construction retains its explicit rejection.
+Direct and indirect eval support ordinary and spread calls.
 
 Synthetic fixtures, not light-cljs output:
 
@@ -4831,11 +4835,8 @@ let p = Promise.reject(2); Promise.resolve().then(() => p.catch(() => {})); 42;
 
 EBNF is unchanged: `eval` is an Identifier reference, and `(0, eval)(s)`,
 `globalThis.eval(s)` and an alias `const e = eval; e(s)` use ordinary Call
-syntax. A syntactic `eval(s)` without a declared binding named `eval` is
-rejected during compilation with `Unsupported`, pending direct eval (-107/-108).
-For a declared binding named `eval`, ordinary functions remain callable;
-the intrinsic eval value is rejected at runtime by `check_direct_eval`
-(`0x7F`, stack `callee -> callee`), rather than silently using indirect scope.
+syntax. Syntactic `eval(s)` calls use the caller's scope when their callee
+value is the intrinsic eval function (see "Direct eval" below).
 
 Execution: `eval` is a writable, configurable, non-enumerable property of the
 task's global object. The function's length is 1 and name is `"eval"`.
@@ -4870,7 +4871,8 @@ declarations never become global properties or escape into that environment.
 Global lexical bindings cannot be deleted. Immutable const captures retain
 their publication behavior; script let captures share mutable binding cells.
 
-Explicit gaps: direct eval and parameter-environment eval remain -107/-108/-109.
+Explicit gaps: sloppy direct-eval declaration hoisting and
+parameter-environment eval remain -108/-109.
 
 ```js accept
 const e = eval;
@@ -4882,7 +4884,7 @@ let outer = 7;
 outer === 9 && (0, eval)('outer') === 9;
 ```
 
-```js compile-reject Unsupported 1:1
+```js accept
 eval('1 + 1');
 ```
 
@@ -5005,3 +5007,54 @@ Rejected forms and explicit gaps remain as documented above: these fixtures
 do not add module import support or generator `return()`/`throw()` methods.
 The pinned generator case exercises `next()`, delegation, and operand/handler
 preservation across `yield` without calling those methods.
+
+### Direct eval (clj-quickjs-107)
+
+EBNF is unchanged: an Identifier callee `eval` uses ordinary Call syntax,
+including parentheses around the identifier and spread arguments. At runtime,
+the callee must be the intrinsic eval function to select direct eval. A
+shadowing function is called normally with all evaluated arguments. Extra
+arguments to intrinsic eval are evaluated and ignored; a missing or non-string
+first argument follows the indirect-eval rule above. Aliases, member calls,
+bound calls, and comma-expression callees remain indirect.
+
+Execution: runtime compilation inherits caller strictness; a `"use strict"`
+directive can also make the eval source strict. Eval reads and writes the
+caller's visible lexical and variable bindings, including parameters, implicit
+`arguments`, enclosing closures, catch bindings, and the current loop
+iteration's `let` cells. `this` comes from the caller, lexically through arrows.
+Const writes throw TypeError, uninitialized reads/writes throw ReferenceError,
+and a named function expression's immutable name rejects writes with TypeError.
+Strict eval's own `var` and function declarations stay in the eval frame;
+lexical declarations always do. Its result is the script completion value.
+
+Each call site carries a validated scope descriptor in its executable.
+Bindings exposed to eval use task-owned cells, including those only used in
+runtime source and those belonging to enclosing functions. Closures over these
+cells cannot be published, including closures created by eval. Functions with
+no direct eval in their lexical subtree retain the existing capture optimizations.
+Descriptors contain no heap references and survive executable spec round trips.
+The native compiler continuation traces its captured environment; eval executes
+in a fresh task-owned frame and can yield, wait, collect, and migrate, including
+on 64 KiB worker stacks. Source preparation and limits match indirect eval.
+
+Rejected forms and explicit gaps: syntactic direct eval in parameter
+expressions is rejected by the compiler with Unsupported (-109). Sloppy eval
+with `var` or top-level function declarations is rejected during runtime
+compilation with a catchable SyntaxError until caller hoisting lands (-108);
+sloppy eval without those declarations works. `new.target` (-99) and `super`
+(-112) remain unsupported everywhere, including runtime eval source.
+
+```js accept
+function f() { let x=1; eval('x += 2'); return x; }
+f() === 3;
+function receiver() { return (() => eval('this'))(); }
+receiver.call(5) === 5;
+let readers=[];
+for (let i=0; i<3; i++) readers.push(eval('() => i'));
+readers[0]() === 0 && readers[1]() === 1 && readers[2]() === 2;
+```
+
+```js compile-reject Unsupported 1:16
+function f(x = eval('1')) {}
+```

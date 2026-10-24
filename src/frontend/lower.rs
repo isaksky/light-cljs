@@ -65,6 +65,10 @@
 //! (a named function expression, or a function declaration whose binding is
 //! never assigned) is `current_function`, so a self-recursive function
 //! captures nothing.
+//! Syntactic direct eval exposes all visible bindings to runtime source:
+//! analysis forces those bindings into cells and emission records their
+//! locations at each call. The ordinary capture resolver carries outer cells
+//! through intervening functions; eval imports them into its own executable.
 //!
 //! **Temporal dead zone.** Within the function that declares a binding,
 //! whether it is initialized at a reference is still decided by position:
@@ -169,7 +173,9 @@ use super::{Span, SyntaxError, SyntaxErrorKind, line_columns};
 use crate::error::SourceLocation;
 use crate::value::string::number_to_string;
 use crate::value::{JsString, Primitive};
-use crate::vm::executable::{ConstructorKind, Executable, ExecutableSpec};
+use crate::vm::executable::{
+    ConstructorKind, EvalBinding, EvalBindingKind, EvalSite, EvalSource, Executable, ExecutableSpec,
+};
 use crate::vm::instr::{Opcode, ThrowKind};
 
 /// Locals are counted by a u16.
@@ -186,7 +192,7 @@ pub(crate) fn lower_script(
     source: &str,
     script: &Script,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, false)
+    lower_script_kind(name, source, script, false, None)
 }
 
 pub(crate) fn lower_eval(
@@ -194,7 +200,16 @@ pub(crate) fn lower_eval(
     source: &str,
     script: &Script,
 ) -> Result<Executable, SyntaxError> {
-    lower_script_kind(name, source, script, true)
+    lower_script_kind(name, source, script, true, None)
+}
+
+pub(crate) fn lower_direct_eval(
+    name: &str,
+    source: &str,
+    script: &Script,
+    bindings: &[EvalBinding],
+) -> Result<Executable, SyntaxError> {
+    lower_script_kind(name, source, script, true, Some(bindings))
 }
 
 fn lower_script_kind(
@@ -202,11 +217,33 @@ fn lower_script_kind(
     source: &str,
     script: &Script,
     eval: bool,
+    bindings: Option<&[EvalBinding]>,
 ) -> Result<Executable, SyntaxError> {
     let lower = |facts| {
         let mut lower = Lowerer::new(source, facts);
+        if let Some(bindings) = bindings {
+            lower.import_eval_bindings(bindings);
+            // Sloppy declaration injection belongs to -108. Reject it before
+            // running any code, rather than accidentally declaring globals.
+            if !script.strict {
+                let mut vars = Vec::new();
+                var_names(&script.body, &mut vars);
+                if !vars.is_empty()
+                    || script
+                        .body
+                        .iter()
+                        .any(|s| matches!(s.kind, StmtKind::FunctionDecl(_)))
+                {
+                    return Err(lower
+                        .unsupported(script.span, "sloppy direct eval var/function declarations"));
+                }
+            }
+        }
         lower.enter_function(None, true, script.strict);
-        lower.cur_mut().global_declarations = !eval || !script.strict;
+        if let Some(bindings) = bindings {
+            lower.cur_mut().captures = vec![Place::This; bindings.len() + 1];
+        }
+        lower.cur_mut().global_declarations = !eval || (!script.strict && bindings.is_none());
         lower.cur_mut().script_lexicals = !eval;
         lower.statement_list(&script.body, &[], true)?;
         let end = Span::new(script.span.end, script.span.end);
@@ -314,6 +351,8 @@ type Scope = HashMap<String, Binding>;
 /// [`Binding::key`]).
 #[derive(Clone, Copy, Default)]
 struct Facts {
+    /// Direct eval can read, assign and retain this binding dynamically.
+    eval_visible: bool,
     /// A reference resolves to this binding (including through an arrow).
     referenced: bool,
     /// Body var initialized from this parameter-scope binding. Its reads
@@ -332,7 +371,7 @@ struct Facts {
 impl Facts {
     fn repr(self) -> Repr {
         let captured = self.captured_initialized || self.self_referenced;
-        if self.captured_uninitialized || (self.assigned && captured) {
+        if self.eval_visible || self.captured_uninitialized || (self.assigned && captured) {
             Repr::Cell
         } else {
             Repr::Value
@@ -368,6 +407,16 @@ enum Place {
     Current,
     /// The nearest ordinary function's immutable frame receiver.
     This,
+}
+
+fn eval_source(place: Place) -> EvalSource {
+    match place {
+        Place::GlobalObject => EvalSource::GlobalObject,
+        Place::Local(i) => EvalSource::Local(i),
+        Place::Capture(i) => EvalSource::Capture(i),
+        Place::Current => EvalSource::CurrentFunction,
+        Place::This => EvalSource::This,
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -469,6 +518,8 @@ impl Emitter {
 
 /// One function being lowered.
 struct FnCtx {
+    eval_sites: Vec<EvalSite>,
+    in_parameters: bool,
     /// Only the original script registers lexicals; eval and functions use
     /// ordinary scope-local bindings for their own lexical declarations.
     script_lexicals: bool,
@@ -562,6 +613,7 @@ enum Exit {
 
 /// A lowered function waiting to be loaded ([`Lowerer::load_all`]).
 struct Sealed {
+    eval_sites: Vec<EvalSite>,
     name: String,
     params: u16,
     function_length: u16,
@@ -579,6 +631,8 @@ struct Sealed {
 }
 
 struct Lowerer<'s> {
+    eval_bindings: HashMap<String, Access>,
+    eval_this: Option<u16>,
     /// Names indexed by `Access::Global`, keeping the recursive resolver's
     /// return type small and Copy. Constant indices belong to each emitter.
     global_names: Vec<String>,
@@ -597,6 +651,8 @@ struct Lowerer<'s> {
 impl<'s> Lowerer<'s> {
     fn new(source: &'s str, facts: Option<HashMap<usize, Facts>>) -> Lowerer<'s> {
         Lowerer {
+            eval_bindings: HashMap::new(),
+            eval_this: None,
             global_names: Vec::new(),
             source,
             shared_source: Arc::from(source),
@@ -610,6 +666,28 @@ impl<'s> Lowerer<'s> {
 
     fn analyzing(&self) -> bool {
         self.emit.is_none()
+    }
+
+    fn import_eval_bindings(&mut self, bindings: &[EvalBinding]) {
+        for (i, b) in bindings.iter().enumerate() {
+            let key = self.next_self_key;
+            self.next_self_key -= 1;
+            self.eval_bindings.insert(
+                b.name.clone(),
+                Access::Found {
+                    place: Place::Capture(i as u16),
+                    target: match b.kind {
+                        EvalBindingKind::Mutable => Target::Binding(BindingKind::Let),
+                        EvalBindingKind::Const => Target::Binding(BindingKind::Const),
+                        EvalBindingKind::FunctionName => Target::SelfFn(SelfKind::Expression),
+                    },
+                    repr: if b.cell { Repr::Cell } else { Repr::Value },
+                    initialized: true,
+                    key,
+                },
+            );
+        }
+        self.eval_this = Some(bindings.len() as u16);
     }
 
     fn fact(&mut self, key: usize) -> &mut Facts {
@@ -663,6 +741,8 @@ impl<'s> Lowerer<'s> {
         let arguments_key = self.next_self_key;
         self.next_self_key -= 1;
         self.fns.push(FnCtx {
+            eval_sites: Vec::new(),
+            in_parameters: false,
             script_lexicals: false,
             global_declarations: script,
             out: Emitter::default(),
@@ -720,6 +800,7 @@ impl<'s> Lowerer<'s> {
             strict,
             constructor_kind,
             children,
+            eval_sites,
             ..
         } = ctx;
         if u32::try_from(out.code.len()).is_err() {
@@ -738,6 +819,7 @@ impl<'s> Lowerer<'s> {
             }
         }
         self.sealed.push(Sealed {
+            eval_sites,
             name: name.to_string(),
             params,
             function_length: length,
@@ -800,6 +882,7 @@ impl<'s> Lowerer<'s> {
                 captures: f.captures,
                 strict: f.strict,
                 constructor_kind: f.constructor_kind,
+                eval_sites: f.eval_sites,
             };
             let shared = Arc::clone(&self.shared_source);
             let exe = Executable::load_compiled(
@@ -1359,6 +1442,9 @@ impl<'s> Lowerer<'s> {
             };
         }
         if level == 0 {
+            if let Some(access) = self.eval_bindings.get(name) {
+                return *access;
+            }
             return if name == RESERVED_BINDING {
                 Access::Intrinsic
             } else {
@@ -1415,7 +1501,7 @@ impl<'s> Lowerer<'s> {
     #[inline(never)]
     fn resolve_this(&mut self, level: usize) -> Place {
         if self.fns[level].completion.is_some() {
-            return Place::GlobalObject;
+            return self.eval_this.map_or(Place::GlobalObject, Place::Capture);
         }
         if !self.fns[level].lexical_this {
             return Place::This;
@@ -1589,6 +1675,73 @@ impl<'s> Lowerer<'s> {
 
     // ----- functions -----
 
+    /// Materialize every visible name through the ordinary capture resolver.
+    /// Analysis forces their binding cells even when source code never names
+    /// them; emission records how this call reaches each cell. Shadowed names
+    /// are resolved once, from the innermost scope, and loop cells are read at
+    /// the call so a descriptor always sees the current iteration.
+    fn eval_site(&mut self, span: Span) -> Result<EvalSite, SyntaxError> {
+        if self.fns.iter().any(|f| f.in_parameters) {
+            return Err(self.unsupported(span, "direct eval in parameter expressions"));
+        }
+        let mut names: Vec<String> = self.eval_bindings.keys().cloned().collect();
+        for ctx in &self.fns {
+            for scope in &ctx.scopes {
+                names.extend(scope.keys().cloned());
+            }
+            if let Some((name, _)) = &ctx.self_name {
+                names.push(name.clone());
+            }
+        }
+        names.sort();
+        names.dedup();
+        let mut bindings = Vec::new();
+        for name in names {
+            if let Access::Found {
+                place,
+                target,
+                repr,
+                key,
+                ..
+            } = self.resolve(&name)
+            {
+                if self.analyzing() {
+                    let facts = self.fact(key);
+                    facts.eval_visible = true;
+                    facts.assigned = true;
+                    if let Target::SelfFn(SelfKind::Declaration { key }) = target {
+                        let facts = self.fact(key);
+                        facts.eval_visible = true;
+                        facts.assigned = true;
+                    }
+                }
+                bindings.push(EvalBinding {
+                    name,
+                    source: eval_source(place),
+                    kind: match target {
+                        Target::Binding(BindingKind::Const) => EvalBindingKind::Const,
+                        Target::SelfFn(_) => EvalBindingKind::FunctionName,
+                        _ => EvalBindingKind::Mutable,
+                    },
+                    cell: repr == Repr::Cell,
+                });
+            }
+        }
+        if bindings.len() >= MAX_COUNT {
+            return Err(self.error(
+                SyntaxErrorKind::TooLarge,
+                span,
+                "too many direct eval bindings",
+            ));
+        }
+        let receiver = eval_source(self.resolve_this(self.fns.len() - 1));
+        Ok(EvalSite {
+            offset: self.cur().out.code.len() as u32,
+            bindings,
+            receiver,
+        })
+    }
+
     /// Lower the parameters and body of `f`, the function just entered.
     /// With a simple parameter list, the parameters are bindings of the
     /// body's scope. With a default value (clj-quickjs-100) they have their
@@ -1616,7 +1769,9 @@ impl<'s> Lowerer<'s> {
             let names: Vec<Ident> = f.params.iter().flat_map(|p| p.names()).cloned().collect();
             return self.statement_list(&f.body, &names, true);
         }
+        self.cur_mut().in_parameters = true;
         self.parameter_scope(f)?;
+        self.cur_mut().in_parameters = false;
         if f.generator {
             self.out().op(Opcode::GeneratorInitialYield, f.span);
         }
@@ -3470,7 +3625,7 @@ impl<'s> Lowerer<'s> {
             }
             match &link.kind {
                 ChainLinkKind::Call(args) => {
-                    self.call_arguments(args, method, span, at)?;
+                    self.call_arguments(args, method, span, at, None)?;
                     method = false;
                     if last && let Some(delete_at) = delete {
                         self.out().op(Opcode::Pop, delete_at);
@@ -4151,23 +4306,7 @@ impl<'s> Lowerer<'s> {
         span: Span,
         op_span: Span,
     ) -> Result<(), SyntaxError> {
-        // Direct eval needs the caller's lexical environment (-107/-108).
-        // Preserve an explicit gap instead of silently using global scope.
-        if matches!(&callee.kind, ExprKind::Identifier(name) if name == "eval")
-            && !self.fns.iter().any(|ctx| {
-                ctx.scopes.iter().any(|scope| scope.contains_key("eval"))
-                    || ctx
-                        .self_name
-                        .as_ref()
-                        .is_some_and(|(name, _)| name == "eval")
-            })
-        {
-            return Err(self.error(
-                SyntaxErrorKind::Unsupported,
-                callee.span,
-                "direct eval is not supported; use an indirect call",
-            ));
-        }
+        let direct = matches!(&callee.kind, ExprKind::Identifier(name) if name == "eval");
         let method = callee.is_method_callee();
         if let ExprKind::Member {
             object, property, ..
@@ -4180,11 +4319,8 @@ impl<'s> Lowerer<'s> {
             self.method_callee(callee)?;
         } else {
             self.expr(callee)?;
-            if matches!(&callee.kind, ExprKind::Identifier(name) if name == "eval") {
-                self.out().op(Opcode::CheckDirectEval, callee.span);
-            }
         }
-        self.call_arguments(args, method, span, op_span)
+        self.call_arguments(args, method, span, op_span, direct.then_some(callee.span))
     }
 
     #[inline(never)]
@@ -4194,6 +4330,7 @@ impl<'s> Lowerer<'s> {
         method: bool,
         span: Span,
         op_span: Span,
+        direct: Option<Span>,
     ) -> Result<(), SyntaxError> {
         if args.len() > MAX_COUNT {
             return Err(self.error(
@@ -4204,6 +4341,10 @@ impl<'s> Lowerer<'s> {
         }
         if args.iter().any(|a| matches!(a.kind, ExprKind::Spread(_))) {
             self.spread_arguments(args, span)?;
+            if let Some(at) = direct {
+                let site = self.eval_site(at)?;
+                self.cur_mut().eval_sites.push(site);
+            }
             self.out().op(
                 if method {
                     Opcode::CallMethodSpread
@@ -4216,6 +4357,10 @@ impl<'s> Lowerer<'s> {
         }
         for arg in args {
             self.expr(arg)?;
+        }
+        if let Some(at) = direct {
+            let site = self.eval_site(at)?;
+            self.cur_mut().eval_sites.push(site);
         }
         let call = if method {
             Opcode::CallMethod

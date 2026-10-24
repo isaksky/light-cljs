@@ -7165,3 +7165,39 @@ QuickJS semantic references (no C code copied): research/quickjs/quickjs.c
 `js_symbol_get_description`, `js_symbol_proto_funcs`, `JS_ToObject`, revision
 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2. Adapted test rows and their retained
 license notice are recorded in docs/attribution.md.
+
+### Caller environments for direct eval (clj-quickjs-107)
+
+The lowerer's analysis pass resolves every visible binding at each syntactic
+`eval(...)` call, including through enclosing functions. Those facts force
+binding cells and the ordinary resolver threads captures through intervening
+closures. Emission records names, assignment semantics, receiver source, and
+validated local/capture locations at the Call/CallSpread byte offset. Loop
+descriptors read the current iteration's cells at the call. Arguments bindings
+are materialized when eval might reference them. Functions without eval retain
+their existing slot/value capture optimizations.
+
+The ordinary call slow path checks descriptors only for a direct intrinsic
+eval callee; forwarding, aliases and member calls keep global eval semantics.
+Its task-owned native continuation roots the captured cells and receiver while
+preparing source. The compiler helper receives only source and immutable scope
+metadata, and compiles against imported captures using inherited strictness.
+The trampoline enters the compiled executable as a normal closure/frame.
+Scope descriptors contain no heap edges and are validated and retained by
+ExecutableSpec round trips. Native continuation tracing covers values until
+the new function object owns them. Cell ownership and publication checks are
+unchanged: a closure holding an eval-visible cell is not publishable.
+
+Strict eval declarations use a private variable environment; lexical
+declarations always remain private. Sloppy var/function declaration injection
+is explicitly rejected until -108; parameter-expression eval remains -109.
+`new.target` (-99) and `super` (-112) are still frontend gaps.
+
+QuickJS references and provenance: consulted `research/quickjs/quickjs.c`
+`OP_eval`, `OP_apply_eval`, and `add_eval_variables` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, as semantic references only.
+`tests/js_source.rs::strict_direct_eval` adapts rows from
+`research/quickjs/tests/test_builtin.js::test_eval` and
+`research/quickjs/tests/test_closure.js::test_eval_closure/test_eval_const` at
+that revision and retains their MIT copyright/license notice. The implementation
+and the publication, serialization, and migration tests are written fresh.

@@ -126,7 +126,7 @@
 //! | `DefineGetterElem` | 0x85 | – | object key function → object | define own enumerable/configurable getter, merging an existing setter |
 //! | `DefineSetterElem` | 0x86 | – | object key function → object | define own enumerable/configurable setter, merging an existing getter |
 //! | `SetComputedName` | 0x87 | u16 name | key function → key function | set a fresh closure's name from a converted key and constant prefix (`""`, `"get "`, `"set "`); no heap allocation |
-//! | `CheckDirectEval` | 0x88 | – | callee → callee | reject the intrinsic eval through a shadowed direct-call candidate until direct eval is implemented |
+//! | `CheckDirectEval` | 0x88 | – | callee → callee | legacy intrinsic-eval rejection guard; source calls use executable scope descriptors |
 //! | `DeclareGlobalLet` | 0x89 | u16 name | cell → cell | register a script lexical binding in the task environment |
 //! | `DeclareGlobalConst` | 0x8A | u16 name | cell → cell | register an immutable script lexical binding |
 //! | `InitGlobalLexical` | 0x8B | u16 name | value → – | initialize a registered script lexical cell |

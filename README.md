@@ -3595,8 +3595,8 @@ input throws RangeError. Compilation uses a temporary 2 MiB stack so workers
 can execute eval on 64 KiB stacks. Indirect eval reads and writes script
 lexical bindings with const/TDZ checks; declaration conflicts are checked
 before creating global properties (clj-quickjs-278). Immutable const captures
-remain publishable under the existing rules. Direct eval remains explicitly
-unsupported. Raw unpaired
+remain publishable under the existing rules unless exposed to direct eval.
+Raw unpaired
 surrogates in source require Unicode escapes. See `docs/grammar.md`, "Indirect
 eval", for limits. Verification: `cargo test --test js_source indirect_eval`.
 
@@ -3697,3 +3697,13 @@ leaves no objects above the warmed heap baseline after collection.
 Deferred: this coverage adds no module loader or generator `return()`/`throw()`
 support; the pinned generator case does not call those methods.
 Verify with `CARGO_BUILD_JOBS=3 cargo test --test quickjs_async -- --test-threads=3`.
+
+Direct eval (clj-quickjs-107): `eval(source)` uses caller bindings, lexical
+`this`, and implicit `arguments` when the callee is intrinsic eval. Const and
+TDZ checks apply, loop closures capture each iteration, and strict eval
+declarations stay local. Eval-visible bindings use cells, so closures over them
+cannot be published. Ordinary functions without eval retain value captures.
+Eval frames can yield, wait, collect, and migrate on 64 KiB stacks.
+Sloppy var/function hoisting (-108), parameter-expression eval (-109), and
+`new.target` (-99) remain explicit gaps. Verification:
+`cargo test --test js_source direct_eval -- --test-threads=3`.
