@@ -75,6 +75,78 @@ fn number_predicates_and_constants() {
     }
 }
 
+#[test]
+fn accessor_properties() {
+    // Synthetic fixtures, not light-cljs output.
+    for src in [
+        "let a = {get z() { return 4; }, set z(v) { this.z_val = v; }}; let read = a.z; a.z = 5; read === 4 && a.z_val === 5",
+        "let a = {}; let setter = function(v) { this.z_val = v; }; Object.defineProperty(a, 'z', {get: function() { return 4; }, set: setter, configurable: true, enumerable: true}); let read = a.z; a.z = 5; read === 4 && a.z_val === 5 && Object.getOwnPropertyDescriptor(a, 'z').set === setter",
+        "let a = {get: 2, set: 3, async: 4, get a() { return this.get; }}; a.a === 2",
+        "let p = {get z() { return this.x; }, set z(v) { this.x = v; }}; let a = Object.create(p); a.x = 7; let read = a.z; a.z = 8; read === 7 && a.x === 8 && Object.getOwnPropertyDescriptor(a, 'z') === undefined",
+        "let a = {get z() { return 4; }}; let caught = false; try { a.z = 5; } catch(e) { caught = true; } caught && a.z === 4",
+        "let a = {get z() { throw 19; }}; let result = 0; try { a.z; } catch(e) { result = e; } result === 19",
+        "let a = {get z() { return 4; }, set z(v) { this.x = v; }}; let d = Object.getOwnPropertyDescriptor(a, 'z'); d.get.name === 'get z' && d.set.name === 'set z' && d.enumerable && d.configurable && !('value' in d) && !('writable' in d) && !('prototype' in d.get)",
+        "let a = {get z() { return 1; }, z: 9}; a.z === 9 && Object.getOwnPropertyDescriptor(a, 'z').value === 9",
+        "let a = {z: 1, set z(v) { this.x = v; }}; a.z === undefined && (a.z = 9) === 9 && a.x === 9",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn accessor_descriptors_and_integrity() {
+    // Synthetic fixtures, not light-cljs output.
+    for src in [
+        "let a = {get 'x'() { return 2; }, set 1(v) { this.x1 = v; }, get 1() { return this.x1; }}; a[1] = 3; a.x === 2 && a[1] === 3",
+        "let a = {get async() { return 3; }, get if() { return 4; }, get get() { return 5; }, get set() { return 6; }}; a.async + a.if + a.get + a.set === 18",
+        "let a = {get __proto__() { return 3; }, set __proto__(v) { this.x = v; }}; a.__proto__ = 4; a.__proto__ === 3 && a.x === 4 && Object.getPrototypeOf(a) === Object.prototype",
+        "let a = {get z() { return 1; }, set z(v) { this.x = v; }, get z() { return 2; }}; a.z = 3; a.z === 2 && a.x === 3",
+        "let a = {set z(v) { this.x = v; }, z: 1, get z() { return 2; }}; Object.getOwnPropertyDescriptor(a, 'z').set === undefined && a.z === 2",
+        "let get = () => 1; let a = {}; Object.defineProperty(a, 'z', {get: get}); Object.defineProperty(a, 'z', {get: get}); let caught = false; try { Object.defineProperty(a, 'z', {get: () => 2}); } catch(e) { caught = true; } caught && a.z === 1",
+        "let a = {get z() { return 1; }}; Object.defineProperty(a, 'z', {value: 3}); let d = Object.getOwnPropertyDescriptor(a, 'z'); a.z === 3 && !d.writable && d.enumerable && d.configurable && !('get' in d)",
+        "let a = {z: 1}; Object.defineProperty(a, 'z', {get: () => 3}); let d = Object.getOwnPropertyDescriptor(a, 'z'); a.z === 3 && d.set === undefined && d.enumerable && d.configurable && !('value' in d)",
+        "let n = 0; let a = {get z() { n++; return 1; }}; let names = Object.keys(a); let listed = ''; for (let k in a) { listed += k; } let has = 'z' in a; let d = Object.getOwnPropertyDescriptor(a, 'z'); let removed = delete a.z; n === 0 && has && removed && listed === 'z' && names[0] === 'z' && d.get.name === 'get z' && !('z' in a)",
+        "let n = 0; let a = {}; Object.defineProperty(a, 'z', {get: () => { n++; return 1; }}); let names = Object.keys(a); let listed = ''; for (let k in a) { listed += k; } names.length === 0 && listed === '' && ('z' in a) && n === 0",
+        "let x = 0; let a = {get z() { return x; }, set z(v) { x = v; }}; Object.freeze(a); a.z = 9; let d = Object.getOwnPropertyDescriptor(a, 'z'); Object.isFrozen(a) && a.z === 9 && !d.configurable && d.set !== undefined",
+        "let a = []; Object.defineProperty(a, 3, {get: () => 8, set: function(v) { this.x = v; }, configurable: true, enumerable: true}); let names = Object.keys(a); a[3] = 7; let ok = a.length === 4 && a[3] === 8 && a.x === 7 && names[0] === '3'; delete a[3]; ok && a.length === 4 && !(3 in a)",
+        "let x = 0; let a = []; Object.defineProperty(a, 0, {set: function(v) { x = v; }, configurable: true}); Object.freeze(a); a[0] = 4; Object.isFrozen(a) && a[0] === undefined && x === 4",
+        "let a = []; Object.defineProperty(a, 2, {get: () => 7, configurable: true}); a.length = 0; a.length === 0 && !(2 in a)",
+        "let a = []; Object.defineProperty(a, 2, {get: () => 7}); let caught = false; try { a.length = 0; } catch(e) { caught = true; } caught && a.length === 3 && a[2] === 7",
+        "let a = {get z() { return 8; }, set z(v) { this.x = v; }}; let b = Object.create(a); Object.preventExtensions(b); let caught = false; try { b.z = 3; } catch(e) { caught = true; } caught && !('x' in b) && b.z === 8",
+        "let o = {get z() { return 7; }}; let d = Object.getOwnPropertyDescriptor(o, 'z'); let caught = false; try { new d.get(); } catch(e) { caught = true; } caught && d.get.length === 0",
+        "let order = ''; let d = {get enumerable() { order += 'e'; return 1; }, get configurable() { order += 'c'; return 1; }, get value() { order += 'v'; return 7; }, get writable() { order += 'w'; return 1; }}; let o = {}; Object.defineProperty(o, 'z', d); order === 'ecvw' && o.z === 7",
+        "let order = ''; let d = {get get() { order += 'g'; return 1; }, get set() { order += 's'; return undefined; }}; let caught = false; try { Object.defineProperty({}, 'z', d); } catch(e) { caught = true; } caught && order === 'g'",
+        "let p = {get value() { return this.x; }}; let d = Object.create(p); d.x = 9; let a = {}; Object.defineProperty(a, 'z', d); a.z === 9",
+        "let f = () => 0; Object.defineProperty(f, 'name', {get: function() { return this.x; }}); f.x = 'F'; f.name === 'F' && Object.getOwnPropertyDescriptor(f, 'name').get !== undefined && ('name' in f)",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    assert_eq!(
+        sloppy_eval("let o = {get x() { return 1; }}; o.x = 2; o.x"),
+        ValueView::Number(1.0)
+    );
+}
+
+#[test]
+fn accessors_in_native_operations() {
+    // Synthetic fixtures, not light-cljs output.
+    for src in [
+        "let o = {x: 9}; let f = function() { return this.x; }; Object.defineProperty(o, 'z', {get: f.bind({x: 7})}); o.z === 7",
+        "let o = {}; Object.defineProperty(o, 'z', {get: Object.prototype.valueOf}); o.z === o",
+        "let p = {}; let f = () => 0; Object.defineProperty(f, 'prototype', {get: () => p}); let o = Object.create(p); o instanceof f && !(1 instanceof f)",
+        "let f = () => 0; Object.defineProperty(f, 'prototype', {get: () => { throw 7; }}); let caught = 0; try { ({}) instanceof f; } catch(e) { caught = e; } caught === 7 && !(1 instanceof f)",
+        "let f = (a, b) => a + b; Object.defineProperty(f, 'length', {get: () => 4}); Object.defineProperty(f, 'name', {get: () => 'sum'}); let b = f.bind(null, 2); b.length === 3 && b.name === 'bound sum' && b(3) === 5",
+        "let order = ''; let args = {get length() { order += 'l'; return 2; }, get 0() { order += 'a'; return 3; }, get 1() { order += 'b'; return 4; }}; let f = function(a, b) { return this.x + a + b; }; f.apply({x: 2}, args) === 9 && order === 'lab'",
+        "let args = {get length() { return {valueOf: () => 2}; }, get 0() { return 3; }, get 1() { return 4; }}; Reflect.apply((a, b) => a + b, null, args) === 7",
+        "let p = {set 0(v) { this.x = v; }}; let a = Object.create(p); a.length = 0; Array.prototype.push.call(a, 7) === 1 && a.x === 7 && a.length === 1 && Object.getOwnPropertyDescriptor(a, 0) === undefined",
+        "let order = ''; let a = {get length() { order += 'g'; return 0; }, set length(v) { order += 's'; this.len = v; }, set 0(v) { order += 'a'; this.x = v; }}; Array.prototype.push.call(a, 7) === 1 && a.x === 7 && a.len === 1 && order === 'gas'",
+        "let o = {get valueOf() { return () => 7; }}; +o === 7",
+        "let o = {get valueOf() { return 0; }, get toString() { return () => '8'; }}; +o === 8",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
 /// String access cases adapted from QuickJS tests/test_builtin.js,
 /// test_string and rope_concat, revision 7d1c13c5d8f8.
 /// Synthetic fixtures, not light-cljs output.
@@ -7910,24 +7982,13 @@ fn define_property_validation_and_targets() {
         string("Object.getOwnPropertyDescriptor(() => 1, 'name').value"),
         ""
     );
-    // What needs a later pellet fails explicitly: accessors
-    // (clj-quickjs-120), ToPrimitive of a key in this leaf built-in
-    // (clj-quickjs-70).
-    for (src, needle) in [
-        ("Object.defineProperty({}, 'k', {get: () => 1})", "accessor"),
-        (
-            "Object.defineProperty({}, 'k', {set: undefined})",
-            "accessor",
-        ),
-        (
-            "let o = {k: 1}; Object.defineProperty(o, 'k', {get: undefined})",
-            "accessor",
-        ),
-        ("Object.defineProperty({}, {}, {value: 1})", "ToPrimitive"),
+    for src in [
+        "let o = {}; Object.defineProperty(o, 'k', {get: () => 1}); o.k === 1",
+        "let o = {}; Object.defineProperty(o, 'k', {set: undefined}); o.k === undefined",
+        "let o = {k: 1}; Object.defineProperty(o, 'k', {get: undefined}); o.k === undefined",
+        "let o = {}; Object.defineProperty(o, {}, {value: 1}); o['[object Object]'] === 1",
     ] {
-        let (kind, message, ..) = failure_at(src);
-        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
-        assert!(message.contains(needle), "{src}: {message}");
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
     // Descriptors of the realm's intrinsic properties (ECMAScript §18
     // attributes) and of a value without properties.
@@ -8022,10 +8083,7 @@ fn define_property_validation_and_targets() {
         num("Object.defineProperty([1], 'length', {value: '1'}).length"),
         1.0
     );
-    // Accessors still fail explicitly.
-    let src = "Object.defineProperty([1], 0, {get: () => 1})";
-    let (kind, message, ..) = failure_at(src);
-    assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
+    assert_eq!(num("Object.defineProperty([1], 0, {get: () => 2})[0]"), 2.0);
 }
 
 /// Element and `length` attributes of arrays (clj-quickjs-119 over the
@@ -9861,7 +9919,6 @@ fn array_push() {
         );
     }
     for src in [
-        "Array.prototype.push.call({length: {valueOf: function () { return 1; }}}, 7)",
         "Array.prototype.push.call(1, 7)",
         "Array.prototype.push.call('abc', 7)",
         "Array.prototype.push.call(true, 7)",
@@ -9872,6 +9929,11 @@ fn array_push() {
             "{src}"
         );
     }
+
+    assert_eq!(
+        num("Array.prototype.push.call({length: {valueOf: function () { return 1; }}}, 7)"),
+        2.0
+    );
 
     assert_eq!(
         failure("let a = []; a.length = 4294967295; a.push(7)").kind(),

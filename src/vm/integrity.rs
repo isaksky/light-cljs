@@ -42,7 +42,7 @@
 //!
 //! The four run to completion inside their call instruction
 //! (`crate::vm::builtin`, "Calls"): they call no JavaScript (there are no
-//! accessors or proxies yet) and allocate only a function's property record
+//! proxies yet) and allocate only a function's property record
 //! and lazy `prototype`, which are reachable from the function, an operand
 //! of the running frame, before the next safepoint.
 

@@ -91,6 +91,8 @@
 //! | `Construct`     | 0x5E | u16 argument count | f a1 … an → obj        | `new f(a1, …, an)`: construct with the ordinary function `f` (clj-quickjs-71) |
 //! | `NewArguments`  | 0x65 | –                  | → obj                  | consume retained actual arguments into an unmapped ordinary object |
 //! | `Method`        | 0x66 | u16 function index | obj c1 … cn → obj f    | allocate a non-constructor closure with immutable home object `obj` |
+//! | `DefineGetter`  | 0x67 | u16 name index | obj f → obj | define/merge an enumerable configurable getter |
+//! | `DefineSetter`  | 0x68 | u16 name index | obj f → obj | define/merge an enumerable configurable setter |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -541,6 +543,8 @@ pub enum Opcode {
     ForInNext = 0x64,
     NewArguments = 0x65,
     Method = 0x66,
+    DefineGetter = 0x67,
+    DefineSetter = 0x68,
 }
 
 /// Operand encoding of an opcode.
@@ -698,6 +702,8 @@ impl Opcode {
             0x64 => ForInNext,
             0x65 => NewArguments,
             0x66 => Method,
+            0x67 => DefineGetter,
+            0x68 => DefineSetter,
             _ => return None,
         })
     }
@@ -808,6 +814,8 @@ impl Opcode {
             ForInNext => "for_in_next",
             NewArguments => "new_arguments",
             Method => "method",
+            DefineGetter => "define_getter",
+            DefineSetter => "define_setter",
         }
     }
 
@@ -824,7 +832,7 @@ impl Opcode {
             Call | CallMethod | Construct => OperandKind::ArgCount,
             GetBuiltinGlobal => OperandKind::BuiltinGlobal,
             GetCapture => OperandKind::Capture,
-            GetField | PutField | DefineField => OperandKind::Name,
+            GetField | PutField | DefineField | DefineGetter | DefineSetter => OperandKind::Name,
             Undefined | Pop | Dup | Add | Sub | Mul | Lt | StrictEq | Not | Return | NewObject
             | Count | Nth | Get | GetOr | Assoc | Dissoc | Conj | PopLast | NewVectorBuilder
             | NewMapBuilder | BuilderConj | BuilderAssoc | Freeze | Div | Rem | Neg | ToNumber
@@ -989,6 +997,8 @@ pub(crate) enum Instr {
     /// Allocate a non-constructor closure with the object below its captures
     /// as its immutable home object; keep that object on the stack.
     Method(u16, u16),
+    DefineGetter(u16),
+    DefineSetter(u16),
 }
 
 impl Instr {
@@ -1096,6 +1106,8 @@ impl Instr {
             Instr::ForInNext => Opcode::ForInNext,
             Instr::NewArguments => Opcode::NewArguments,
             Instr::Method(..) => Opcode::Method,
+            Instr::DefineGetter(_) => Opcode::DefineGetter,
+            Instr::DefineSetter(_) => Opcode::DefineSetter,
         }
     }
 
@@ -1122,7 +1134,8 @@ impl Instr {
             GetOr | Assoc | BuilderAssoc | Reduce => (3, 1),
             Not | HostEffect(_) | Count | PopLast | Freeze | Neg | ToNumber | CellGet | BitNot
             | Typeof | GetField(_) | ToString | AppendHole => (1, 1),
-            PutField(_) | DefineField(_) | AppendElement | GetElem | SetProto | Delete => (2, 1),
+            PutField(_) | DefineField(_) | DefineGetter(_) | DefineSetter(_) | AppendElement
+            | GetElem | SetProto | Delete => (2, 1),
             PutElem => (3, 1),
             Dup2 => (2, 4),
             ToPropertyKey => (2, 2),
@@ -1153,6 +1166,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 102);
+        assert_eq!(assigned, 104);
     }
 }

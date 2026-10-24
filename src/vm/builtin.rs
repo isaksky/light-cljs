@@ -33,13 +33,13 @@
 //!
 //! # Calls
 //!
-//! A built-in runs to completion inside its `Call`/`CallMethod`
+//! A leaf built-in runs to completion inside its `Call`/`CallMethod`
 //! instruction: it reads its receiver and arguments in place on the operand
 //! stack (so they stay rooted), may allocate (the call is a poll point, and
 //! the result replaces the operands in the same instruction, before the next
-//! safepoint), calls no JavaScript and never suspends. A later built-in that
-//! must call JavaScript (a getter, a `toString` method, a callback) will
-//! not run here: its call starts a resumable native frame
+//! safepoint), calls no JavaScript and never suspends. A built-in that
+//! must call JavaScript (a getter, a `toString` method, a callback) starts
+//! a resumable native frame before reaching the leaf dispatcher
 //! (`crate::vm::native`), so every JavaScript it runs is an ordinary VM
 //! frame across which the task may yield, wait or migrate.
 //!
@@ -51,20 +51,14 @@
 //! `Function.prototype.call`, `Function.prototype.apply` and
 //! `Reflect.apply` do nothing but call another function with a receiver
 //! and arguments they compute, and return its result unchanged. They are
-//! therefore not run by [`call`]: [`forward`] computes the call they make
-//! (validating the target and building the argument list, which reads
-//! properties but runs no JavaScript), and the caller makes that call *in
-//! place of* theirs (`crate::vm::dispatch::resolve`, a tail call): the
-//! `Call`/`CallMethod` instruction (or a native's callback step) replaces
-//! the forwarding call's operands with the target's and enters a new
-//! task-owned VM frame for a function object exactly as a direct call
-//! does, or runs a non-forwarding built-in to completion. No native frame
-//! is needed, since nothing remains to do after the target returns, and no
-//! Rust frame stands for the forwarding built-in, so the callee may yield,
-//! wait, be collected around and migrate like any callee. A forwarding
-//! target (`f.call.call(g)`) is followed in the same instruction, at most
-//! the task's call-depth limit of hops (`StackOverflow` past it: `apply`
-//! through an array that holds itself would otherwise never end).
+//! therefore not run by [`call`]. [`forward`] folds `call` synchronously
+//! through `dispatch::resolve`, bounded by the task's forwarding depth.
+//! `apply` and `Reflect.apply` stop that fold and start a native frame:
+//! CreateListFromArrayLike may run getters for length and indices, or
+//! ToPrimitive for an object-valued length. The frame retains the cursor
+//! and expanded arguments, then requests the final call through the same
+//! trampoline. No Rust frame survives a callback or wait, and nested
+//! native forwarding obeys the task's native depth limit.
 //!
 //! | Built-in | Result |
 //! |----------|--------|
@@ -74,8 +68,8 @@
 //! | `Object.prototype.valueOf()` | ToObject(receiver): an object is itself; `undefined`/`null` throw a catchable `TypeError`; a primitive: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
 //! | `Array.prototype.toString()` (clj-quickjs-118) | `UnsupportedOperand` until `Array.prototype.join` exists (clj-quickjs-39), never `Object.prototype.toString`'s answer |
 //! | `Array(...)` (clj-quickjs-118; reachable as `[].constructor`) | `UnsupportedOperand` until the Array constructor exists (clj-quickjs-39) |
-//! | `Array.prototype.push(...items)` (clj-quickjs-155) | ToObject(receiver), ToLength(`length`), Set each index and then `length` with Throw=true, return the new length; over `2^53 - 1`: catchable `TypeError`; null/undefined: catchable `TypeError`; primitive wrappers and object-valued lengths: `UnsupportedOperand` |
-//! | `Object.defineProperty(o, k, attributes)` | define or update the own data property `k` of `o` from the descriptor and return `o` (`crate::vm::descriptor`, clj-quickjs-119); a non-object `o` or descriptor, a descriptor with both `get`/`set` and `value`/`writable`, a define a non-configurable property forbids, a built-in object as `o`: catchable `TypeError`; an accessor descriptor: `UnsupportedOperand` (clj-quickjs-120) |
+//! | `Array.prototype.push(...items)` (clj-quickjs-155) | ToObject(receiver), ToLength(`length`), Set each index and then `length` with Throw=true, return the new length; over `2^53 - 1`: catchable `TypeError`; null/undefined: catchable `TypeError`; primitive receiver wrappers: `UnsupportedOperand`; object lengths convert resumably |
+//! | `Object.defineProperty(o, k, attributes)` | define or update the own data or accessor property `k` of `o` from the descriptor and return `o` (`crate::vm::descriptor`, clj-quickjs-119); a non-object `o` or descriptor, a descriptor with both `get`/`set` and `value`/`writable`, a define a non-configurable property forbids, a built-in object as `o`: catchable `TypeError` |
 //! | `Object.getOwnPropertyDescriptor(o, k)` | `undefined` if `o` has no own property `k`, else a fresh object `{value, writable, enumerable, configurable}` (clj-quickjs-119); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: its wrapper's own properties without allocating a wrapper (string indices and `length`, clj-quickjs-142; none for numbers or booleans) |
 //! | `Object.getPrototypeOf(v)` (clj-quickjs-121) | the `[[Prototype]]` of `v` (`crate::vm::prototype`), `null` at the end of a chain; `Function.prototype` for a function or built-in function (clj-quickjs-102); `undefined`/`null` `v`: catchable `TypeError`; a primitive or an error object: `UnsupportedOperand` (wrapper objects and `Error.prototype` do not exist yet) |
 //! | `Object.setPrototypeOf(o, proto)` (clj-quickjs-121) | set the `[[Prototype]]` of the object `o` and return `o`; a primitive `o` is returned unchanged; `undefined`/`null` `o`, a `proto` that is neither an object nor `null`, a cycle, a built-in or non-extensible `o`: catchable `TypeError` |
@@ -95,7 +89,7 @@
 //! | `Function.prototype(...)` (clj-quickjs-102) | `undefined`, whatever the receiver and arguments |
 //! | `Function(...)` (clj-quickjs-102; `Function.prototype.constructor`) | `UnsupportedOperand` until the Function constructor exists (clj-quickjs-111) |
 //! | `f.call(t, ...args)` (clj-quickjs-102) | forwards (above): calls the receiver `f` with `this` `t` and `args`; a receiver that is not callable: catchable `TypeError` |
-//! | `f.apply(t, list)` (clj-quickjs-102) | forwards: calls `f` with `this` `t` and no arguments for an `undefined`/`null` `list`, else CreateListFromArrayLike(`list`): `length` through ToLength, then `list[0 .. length]`; a non-callable `f` or a primitive `list`: catchable `TypeError`; an object `length`: `UnsupportedOperand` (ToPrimitive); a list longer than the value-stack room left: `StackOverflow` (QuickJS: a RangeError) |
+//! | `f.apply(t, list)` (clj-quickjs-102) | forwards: calls `f` with `this` `t` and no arguments for an `undefined`/`null` `list`, else CreateListFromArrayLike(`list`): `length` through ToLength, then `list[0 .. length]`; a non-callable `f` or a primitive `list`: catchable `TypeError`; an object `length`: resumable ToPrimitive; a list longer than the value-stack room left: `StackOverflow` (QuickJS: a RangeError) |
 //! | `Reflect.apply(f, t, list)` (clj-quickjs-102) | forwards: `f.apply(t, list)` without reading `f.apply`, except that `list` must be an object (`undefined` is a catchable `TypeError`) |
 
 use crate::atom::same_value;
@@ -111,7 +105,6 @@ use crate::vm::dispatch::{Fault, to_js_string, to_number};
 use crate::vm::exception::ErrorObject;
 use crate::vm::integrity;
 use crate::vm::keys::{self, KeyFilter};
-use crate::vm::property;
 use crate::vm::prototype;
 
 /// Which built-in function: the Rust code a [`BuiltinFunction`] runs.
@@ -388,11 +381,15 @@ pub(crate) fn call(
         Builtin::ArrayPrototypeToString => Err(Fault::Unsupported(
             "Array.prototype.toString (Array.prototype.join) is not supported".to_string(),
         )),
-        Builtin::ArrayPrototypePush => array_push(heap, task, this, args),
+        Builtin::ArrayPrototypePush => Err(Fault::Internal(
+            "push must run through the native trampoline",
+        )),
         Builtin::Array => Err(Fault::Unsupported(
             "the Array constructor is not supported".to_string(),
         )),
-        Builtin::ObjectDefineProperty => descriptor::define_property(heap, task, args),
+        Builtin::ObjectDefineProperty => Err(Fault::Internal(
+            "defineProperty must run through the native trampoline",
+        )),
         Builtin::ObjectGetOwnPropertyDescriptor => {
             descriptor::get_own_property_descriptor(heap, task, args)
         }
@@ -406,7 +403,9 @@ pub(crate) fn call(
         Builtin::ObjectKeys => keys::object_keys(heap, task, args, KeyFilter::Enumerable),
         Builtin::ObjectGetOwnPropertyNames => keys::object_keys(heap, task, args, KeyFilter::All),
         Builtin::FunctionPrototype => Ok(Value::Undefined),
-        Builtin::FunctionPrototypeBind => crate::vm::function::bind(heap, task, this, args),
+        Builtin::FunctionPrototypeBind => Err(Fault::Internal(
+            "bind must run through the native trampoline",
+        )),
         Builtin::Function => Err(Fault::Unsupported(
             "the Function constructor is not supported".to_string(),
         )),
@@ -812,19 +811,15 @@ pub(crate) struct Forward {
     pub(crate) args: Vec<Value>,
 }
 
-/// If `which` forwards, the call it makes when called with receiver `this`
-/// and arguments `args`: `None` for every other built-in. The target is
-/// checked to be callable before an argument list is read (ECMAScript
-/// order). At most `max_args` arguments are accepted from an array-like;
-/// a longer one fails with `StackOverflow` (QuickJS: "too many
-/// arguments", a RangeError) before anything is read past its `length`.
+/// Fold a synchronous `Function.prototype.call` forwarding hop. Apply
+/// operations return None and run their list expansion resumably instead.
 pub(crate) fn forward(
     heap: &Heap,
-    task: TaskId,
+    _task: TaskId,
     which: Builtin,
     this: &Value,
     args: &[Value],
-    max_args: usize,
+    _max_args: usize,
 ) -> Result<Option<Forward>, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     let (callee, this, args) = match which {
@@ -833,22 +828,8 @@ pub(crate) fn forward(
             callable(heap, this)?;
             (this.clone(), arg(0), args.get(1..).unwrap_or(&[]).to_vec())
         }
-        // `apply(thisArg, argArray)`: no arguments for `undefined`/`null`.
-        Builtin::FunctionPrototypeApply => {
-            callable(heap, this)?;
-            let list = match arg(1) {
-                Value::Undefined | Value::Null => Vec::new(),
-                array => list_from_array_like(heap, task, &array, max_args)?,
-            };
-            (this.clone(), arg(0), list)
-        }
-        // `Reflect.apply(target, thisArgument, argumentsList)`.
-        Builtin::ReflectApply => {
-            let target = arg(0);
-            callable(heap, &target)?;
-            let list = list_from_array_like(heap, task, &arg(2), max_args)?;
-            (target, arg(1), list)
-        }
+        // apply reads user properties, so the native trampoline expands
+        // its list before requesting the target call.
         _ => return Ok(None),
     };
     Ok(Some(Forward { callee, this, args }))
@@ -857,101 +838,6 @@ pub(crate) fn forward(
 /// IsCallable, failing with the `… is not a function` TypeError.
 fn callable(heap: &Heap, v: &Value) -> Result<(), Fault> {
     crate::vm::dispatch::callee(heap, v).map(drop)
-}
-
-/// `Array.prototype.push`: Set with Throw=true, including the final length
-/// even for zero items. Earlier successful writes survive a later failure.
-/// Indexed Set uses the array's dense Vec append path without scanning its
-/// elements; absent indices still consult the prototype chain. The loop is
-/// bounded by the task's operand-stack argument limit, not the array length.
-/// Object-valued lengths require resumable ToPrimitive and fail explicitly.
-fn array_push(heap: &Heap, task: TaskId, this: &Value, args: &[Value]) -> Result<Value, Fault> {
-    match this {
-        Value::Undefined | Value::Null => {
-            return Err(Fault::TypeError(format!(
-                "cannot convert {} to object",
-                this.type_name()
-            )));
-        }
-        Value::Object(_) => {}
-        _ => {
-            return Err(Fault::Unsupported(
-                "Array.prototype.push on a primitive needs a wrapper object, which is not supported"
-                    .to_string(),
-            ));
-        }
-    }
-    const MAX_LENGTH: u64 = (1 << 53) - 1;
-    let length_key = JsString::from("length");
-    let length = property::get_field(heap, task, this, &length_key)?;
-    let length = crate::vm::dispatch::to_number(&length)?;
-    // ToLength: clamp ToIntegerOrInfinity to [0, 2^53 - 1].
-    let length = if length.is_nan() || length <= 0.0 {
-        0
-    } else {
-        length.trunc().min(MAX_LENGTH as f64) as u64
-    };
-    if args.len() as u64 > MAX_LENGTH - length {
-        return Err(Fault::TypeError(
-            "array-like length exceeds 2^53 - 1".to_string(),
-        ));
-    }
-    for (offset, item) in args.iter().enumerate() {
-        let index = length + offset as u64;
-        let key = if index < u64::from(u32::MAX) {
-            property::Key::Index(index as u32)
-        } else {
-            property::Key::Name(JsString::from(index.to_string().as_str()))
-        };
-        property::put(heap, task, this, &key, item.clone(), true)?;
-    }
-    let new_length = Value::Number((length + args.len() as u64) as f64);
-    property::put_field(heap, task, this, &length_key, new_length.clone(), true)?;
-    Ok(new_length)
-}
-
-/// CreateListFromArrayLike (ECMAScript §7.3.18; QuickJS `build_arg_list`):
-/// `TypeError` for a non-object; otherwise ToLength of its `length`, then
-/// its elements `0 .. length` read with `[[Get]]` (a hole reads through the
-/// prototype chain). ToLength of an object needs ToPrimitive and fails
-/// with `UnsupportedOperand`.
-fn list_from_array_like(
-    heap: &Heap,
-    task: TaskId,
-    array: &Value,
-    max_args: usize,
-) -> Result<Vec<Value>, Fault> {
-    if !matches!(array, Value::Object(_)) {
-        return Err(Fault::TypeError(format!(
-            "an argument list must be an object, got {}",
-            array.type_name()
-        )));
-    }
-    let length = property::get_field(heap, task, array, &JsString::from("length"))?;
-    let length = crate::vm::dispatch::to_number(&length)?;
-    // ToLength: NaN and negatives are 0, the rest truncated (and at most
-    // 2^53 - 1, far above any accepted count).
-    let length = if length.is_nan() || length <= 0.0 {
-        0.0
-    } else {
-        length.trunc()
-    };
-    if length > max_args as f64 {
-        return Err(Fault::StackOverflow(format!(
-            "too many arguments: an argument list of length {length} exceeds the limit of {max_args}"
-        )));
-    }
-    // `length <= max_args`, a `usize`, and an integer: the cast is exact.
-    let length = length as usize;
-    let mut list = Vec::with_capacity(length);
-    for index in 0..length {
-        let key = match u32::try_from(index) {
-            Ok(index) if index != u32::MAX => property::Key::Index(index),
-            _ => property::Key::Name(JsString::from(index.to_string().as_str())),
-        };
-        list.push(property::get(heap, task, array, &key)?);
-    }
-    Ok(list)
 }
 
 /// A new ordinary object owned by `task` whose prototype is

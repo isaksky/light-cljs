@@ -475,6 +475,8 @@ impl Executable {
                 Opcode::GetField => Instr::GetField(operand as u16),
                 Opcode::PutField => Instr::PutField(operand as u16),
                 Opcode::DefineField => Instr::DefineField(operand as u16),
+                Opcode::DefineGetter => Instr::DefineGetter(operand as u16),
+                Opcode::DefineSetter => Instr::DefineSetter(operand as u16),
                 Opcode::GetBuiltinGlobal => Instr::GetBuiltinGlobal(operand as u16),
                 Opcode::CallMethod => Instr::CallMethod(operand as u16),
                 Opcode::NewObjectLiteral => Instr::NewObjectLiteral,
@@ -622,7 +624,9 @@ impl Executable {
                 | Instr::GetCapture(v)
                 | Instr::GetField(v)
                 | Instr::PutField(v)
-                | Instr::DefineField(v) => u32::from(v),
+                | Instr::DefineField(v)
+                | Instr::DefineGetter(v)
+                | Instr::DefineSetter(v) => u32::from(v),
                 Instr::ThrowError(kind) => u32::from(kind as u16),
                 // Branch targets are instruction indices once loaded.
                 Instr::Jump(t)

@@ -400,6 +400,28 @@ fn method_home_object_reclaims() {
     assert_reclaimed(&rt, held);
 }
 
+#[test]
+fn accessor_slots_and_home_objects_retain_and_reclaim() {
+    // Synthetic fixtures, not light-cljs output. The captured argument is
+    // reachable only through the getter/setter or its defining home object.
+    for src in [
+        "function f(o) { return {get z() { return o; }}; }",
+        "function f(o) { return {set z(v) { o; }}; }",
+        "function f(o) { let a = []; Object.defineProperty(a, 3, {get: () => o}); return a; }",
+        "function f(o) { let a = []; Object.defineProperty(a, 3, {set: v => o}); return a; }",
+        "function f(o) { let a = {get z() {}, value: o}; return Object.getOwnPropertyDescriptor(a, 'z').get; }",
+        "function f(o) { let a = {set z(v) {}, value: o}; return Object.getOwnPropertyDescriptor(a, 'z').set; }",
+    ] {
+        let rt = Runtime::new();
+        let (task, weak) = spawn_holding(&rt, src);
+        let object = run_to_end(&task);
+        drop(task);
+        let held = Held::new(vec![weak, object.downgrade()], move || drop(object));
+        assert_retained(&rt, &held);
+        assert_reclaimed(&rt, held);
+    }
+}
+
 /// Each bound operand is the only path to an object: target closure,
 /// bound receiver, bound argument, and own-property record. The immutable
 /// metadata is traced too.

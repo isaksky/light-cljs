@@ -1635,8 +1635,13 @@ impl<'s> Lowerer<'s> {
         }
         self.enter_function(self_name, false, f.strict);
         self.cur_mut().constructor = f.kind == FunctionKind::Ordinary;
-        self.cur_mut().own_arguments =
-            matches!(f.kind, FunctionKind::Ordinary | FunctionKind::Method);
+        self.cur_mut().own_arguments = matches!(
+            f.kind,
+            FunctionKind::Ordinary
+                | FunctionKind::Method
+                | FunctionKind::Getter
+                | FunctionKind::Setter
+        );
         self.cur_mut().lexical_this =
             matches!(f.kind, FunctionKind::Arrow | FunctionKind::ConciseArrow);
         self.function_body(f)?;
@@ -1684,7 +1689,10 @@ impl<'s> Lowerer<'s> {
                 "more than 65,536 functions in one function body",
             ));
         }
-        let opcode = if f.kind == FunctionKind::Method {
+        let opcode = if matches!(
+            f.kind,
+            FunctionKind::Method | FunctionKind::Getter | FunctionKind::Setter
+        ) {
             Opcode::Method
         } else {
             Opcode::Function
@@ -2705,6 +2713,27 @@ impl<'s> Lowerer<'s> {
                     PropertyName::String(n) => n.clone(),
                     PropertyName::Number(n) => JsString::from(number_to_string(*n).as_str()),
                 };
+                let name = match &property.value.kind {
+                    ExprKind::Function(f) if f.kind == FunctionKind::Getter => {
+                        JsString::concat(&JsString::from("get "), &name).ok_or_else(|| {
+                            self.error(
+                                SyntaxErrorKind::TooLarge,
+                                property.name_span,
+                                "accessor name too long",
+                            )
+                        })?
+                    }
+                    ExprKind::Function(f) if f.kind == FunctionKind::Setter => {
+                        JsString::concat(&JsString::from("set "), &name).ok_or_else(|| {
+                            self.error(
+                                SyntaxErrorKind::TooLarge,
+                                property.name_span,
+                                "accessor name too long",
+                            )
+                        })?
+                    }
+                    _ => name,
+                };
                 self.named_expr(&property.value, name)?;
             }
             if property.sets_prototype() {
@@ -2719,8 +2748,12 @@ impl<'s> Lowerer<'s> {
                     self.name_index(&number_to_string(*n), property.name_span)?
                 }
             };
-            self.out()
-                .op_u16(Opcode::DefineField, index, property.name_span);
+            let opcode = match &property.value.kind {
+                ExprKind::Function(f) if f.kind == FunctionKind::Getter => Opcode::DefineGetter,
+                ExprKind::Function(f) if f.kind == FunctionKind::Setter => Opcode::DefineSetter,
+                _ => Opcode::DefineField,
+            };
+            self.out().op_u16(opcode, index, property.name_span);
         }
         Ok(())
     }

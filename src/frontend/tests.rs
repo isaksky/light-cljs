@@ -244,6 +244,8 @@ fn render_function(f: &Function) -> String {
         ),
         FunctionKind::Arrow => format!("(arrow ({})", params.join(" ")),
         FunctionKind::Method => format!("(method ({})", params.join(" ")),
+        FunctionKind::Getter => format!("(getter ({})", params.join(" ")),
+        FunctionKind::Setter => format!("(setter ({})", params.join(" ")),
         FunctionKind::ConciseArrow => {
             let [
                 Stmt {
@@ -1613,8 +1615,6 @@ fn object_literals() {
     rejects_with("({a = 1});", Invalid, 1, 3, "destructuring");
     rejects_with("({[k]: 1});", Unsupported, 1, 3, "computed property names");
     rejects_with("({...o});", Unsupported, 1, 3, "spread properties");
-    rejects_with("({get x() {}});", Unsupported, 1, 3, "getters and setters");
-    rejects_with("({set x(v) {}});", Unsupported, 1, 3, "getters and setters");
     rejects_with("({async m() {}});", Unsupported, 1, 3, "async methods");
     rejects_with("({*g() {}});", Unsupported, 1, 3, "generator methods");
     // `__proto__: value` sets the prototype (clj-quickjs-121): only one per
@@ -1642,6 +1642,32 @@ fn object_literals() {
     );
     rejects_with("({a: 1 b: 2});", UnexpectedToken, 1, 8, "");
     rejects_with("({a});;({b: 1", SyntaxErrorKind::UnexpectedEnd, 1, 14, "");
+}
+
+#[test]
+fn accessor_literals() {
+    let script = parse_script("({get a() { return 1; }, set a(v) {}})").unwrap();
+    let StmtKind::Expr(expr) = &script.body[0].kind else {
+        panic!("expression")
+    };
+    let ExprKind::Object(properties) = &expr.kind else {
+        panic!("object")
+    };
+    for (property, expected) in properties
+        .iter()
+        .zip([FunctionKind::Getter, FunctionKind::Setter])
+    {
+        let ExprKind::Function(f) = &property.value.kind else {
+            panic!("function")
+        };
+        assert_eq!(f.kind, expected);
+        assert!(!property.sets_prototype());
+    }
+    assert!(parse_script("({get: 1, set: 2})").is_ok());
+    assert!(parse_script("({get, set})").is_ok());
+    for src in ["({get a(x) {}})", "({set a() {}})", "({set a(x, y) {}})"] {
+        assert!(parse_script(src).is_err(), "{src}");
+    }
 }
 
 #[test]

@@ -860,6 +860,28 @@ fn method_home_object_prevents_publication() {
     rt.publish(&complete(task.run().unwrap())).unwrap();
 }
 
+#[test]
+fn accessor_home_object_prevents_publication() {
+    // Synthetic fixtures, not light-cljs output.
+    for src in [
+        "Object.getOwnPropertyDescriptor({get z() {}}, 'z').get",
+        "Object.getOwnPropertyDescriptor({set z(v) {}}, 'z').set",
+        "let o = {get z() {}}; let f = Object.getOwnPropertyDescriptor(o, 'z').get; delete o.z; f",
+    ] {
+        let rt = Runtime::new();
+        let task = rt
+            .spawn(&compile_script("accessor-publication", src).unwrap(), &[])
+            .unwrap();
+        let function = complete(task.run().unwrap());
+        let owner = task.id();
+        drop(task);
+        assert_eq!(
+            not_shareable(rt.publish(&function).unwrap_err()),
+            (vec![PathStep::HomeObject], "object", Some(owner))
+        );
+    }
+}
+
 /// `'prototype' in f` (clj-quickjs-74) reports a constructor's lazy
 /// `prototype` without creating it, as QuickJS `JS_HasProperty` leaves
 /// autoinit properties alone: the function stays publishable, and a

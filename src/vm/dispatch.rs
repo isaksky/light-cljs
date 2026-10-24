@@ -469,7 +469,7 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
             Ok(Flow::FrameChanged)
         }
         (Callee::Builtin(which), forward) => {
-            if super::native::start_builtin_conversion(
+            if super::native::start_builtin(
                 state,
                 which,
                 &forward.this,
@@ -570,14 +570,8 @@ fn construct(state: &mut VmState, heap: &Heap, argc: u16) -> Result<Flow, Fault>
     let (id, code) = match callee(heap, &f) {
         Ok(Callee::Code(id, code)) if code.constructor => (id, code),
         Ok(Callee::Builtin(which @ (Builtin::Number | Builtin::String))) => {
-            if super::native::start_builtin_conversion(
-                state,
-                which,
-                &Value::Undefined,
-                &args,
-                true,
-                argc + 1,
-            )? {
+            if super::native::start_builtin(state, which, &Value::Undefined, &args, true, argc + 1)?
+            {
                 return Ok(Flow::Next);
             }
             let result = builtin::primitive_constructor(heap, task, which, &args, true)?;
@@ -1038,10 +1032,18 @@ pub(crate) fn step(
         Instr::GetField(i) => {
             let name = name_constant(code, i)?;
             let base = state.pop()?;
-            let v = property::get_field(heap, state.diag.task, &base, &name)?;
-            state.push(v);
+            let read = property::read(
+                heap,
+                state.diag.task,
+                &base,
+                &property::Key::from_name(&name),
+            )?;
+            super::native::read_result(state, read, base)?;
         }
-        Instr::PutField(i) | Instr::DefineField(i) => {
+        Instr::PutField(i)
+        | Instr::DefineField(i)
+        | Instr::DefineGetter(i)
+        | Instr::DefineSetter(i) => {
             // The value stays on the stack as the result (`o.x = v` is `v`;
             // a literal keeps its object for the next property).
             let name = name_constant(code, i)?;
@@ -1049,8 +1051,25 @@ pub(crate) fn step(
             let object = state.pop()?;
             let task = state.diag.task;
             if let Instr::PutField(_) = instr {
-                property::put_field(heap, task, &object, &name, v.clone(), code.strict)?;
-                state.push(v);
+                let setter = property::prepare_put(
+                    heap,
+                    task,
+                    &object,
+                    &property::Key::from_name(&name),
+                    v.clone(),
+                    code.strict,
+                )?;
+                super::native::write_result(state, setter, object, v)?;
+            } else if matches!(instr, Instr::DefineGetter(_) | Instr::DefineSetter(_)) {
+                property::define_accessor(
+                    heap,
+                    task,
+                    &object,
+                    &name,
+                    v,
+                    matches!(instr, Instr::DefineGetter(_)),
+                )?;
+                state.push(object);
             } else {
                 property::define_field(heap, task, &object, &name, v)?;
                 state.push(object);
@@ -1060,8 +1079,8 @@ pub(crate) fn step(
             let key = state.pop()?;
             let base = state.pop()?;
             let key = property::element_key(&base, &key, false)?;
-            let v = property::get(heap, state.diag.task, &base, &key)?;
-            state.push(v);
+            let read = property::read(heap, state.diag.task, &base, &key)?;
+            super::native::read_result(state, read, base)?;
         }
         Instr::PutElem => {
             // ToPropertyKey runs here, after the right-hand side; the value
@@ -1070,8 +1089,9 @@ pub(crate) fn step(
             let key = state.pop()?;
             let base = state.pop()?;
             let key = property::element_key(&base, &key, true)?;
-            property::put(heap, state.diag.task, &base, &key, v.clone(), code.strict)?;
-            state.push(v);
+            let setter =
+                property::prepare_put(heap, state.diag.task, &base, &key, v.clone(), code.strict)?;
+            super::native::write_result(state, setter, base, v)?;
         }
         Instr::Dup2 => {
             let ops = state.operands();
@@ -1122,13 +1142,7 @@ pub(crate) fn step(
             state.push(object);
         }
         Instr::Instanceof => {
-            // Both operands stay on the stack (reachable) while `prototype`
-            // is read, which may allocate (`prototype::instance_of`).
-            let [v, f] = top_operands(state, 2)? else {
-                return Err(Fault::Internal("operand stack underflow"));
-            };
-            let result = prototype::instance_of(heap, state.diag.task, v, f)?;
-            state.replace(2, Value::Bool(result))?;
+            native::start_instanceof(state, heap)?;
         }
         Instr::Delete => {
             let key = state.pop()?;
@@ -1511,6 +1525,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         // Property storage grows outside the object table: no heap object
         // is allocated, so no poll (`crate::vm::property`).
         | Instr::DefineField(_)
+        | Instr::DefineGetter(_)
+        | Instr::DefineSetter(_)
         | Instr::AppendElement
         | Instr::AppendHole
         // Copy or convert operands only (clj-quickjs-76).

@@ -70,11 +70,10 @@ use crate::collections::object_name;
 use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::object::OrdinaryObject;
-use crate::value::{JsString, Value};
+use crate::value::Value;
 use crate::vm::dispatch::{self, Fault};
 use crate::vm::exception::ErrorObject;
 use crate::vm::function;
-use crate::vm::property;
 
 /// The failure of reading another task's object.
 fn foreign(owner: Option<TaskId>, caller: TaskId) -> Fault {
@@ -366,12 +365,13 @@ pub(crate) fn set_literal_proto(
 /// continues at `Function.prototype`) apply. Chains are acyclic
 /// ([`set_prototype_of`] checks), so it ends. Reading `prototype` may allocate a function's lazy
 /// prototype object; the caller keeps `v` and `target` reachable.
-pub(crate) fn instance_of(
+/// Validate and unwrap the callable before reading its prototype. A
+/// primitive left operand returns false without running a getter.
+pub(crate) fn instance_target(
     heap: &Heap,
-    task: TaskId,
     v: &Value,
     target: &Value,
-) -> Result<bool, Fault> {
+) -> Result<Option<Value>, Fault> {
     let mut target = target.clone();
     while let Ok(dispatch::Callee::Bound(bound)) = dispatch::callee(heap, &target) {
         target = bound.callee;
@@ -386,11 +386,19 @@ pub(crate) fn instance_of(
         Err(Fault::NotCallable(_)) => return Err(invalid()),
         Err(fault) => return Err(fault),
     }
+    Ok(matches!(v, Value::Object(_)).then(|| target.clone()))
+}
+
+pub(crate) fn instance_of_prototype(
+    heap: &Heap,
+    task: TaskId,
+    v: &Value,
+    prototype: &Value,
+) -> Result<bool, Fault> {
     let Value::Object(id) = *v else {
         return Ok(false);
     };
-    let prototype = property::get_field(heap, task, target, &JsString::from("prototype"))?;
-    let Value::Object(prototype) = prototype else {
+    let Value::Object(prototype) = *prototype else {
         return Err(Fault::TypeError(
             "operand 'prototype' property is not an object".to_string(),
         ));

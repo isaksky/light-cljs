@@ -233,6 +233,7 @@ impl Trace for BoundFunction {
 }
 
 /// Bind snapshots the target's own length (or zero) and its current name.
+#[cfg(test)]
 pub(crate) fn bind(
     heap: &Heap,
     task: TaskId,
@@ -246,15 +247,29 @@ pub(crate) fn bind(
     let length_key = Key::Name(JsString::from("length"));
     let length = crate::vm::property::get_own_property(heap, task, id, &length_key)?
         .map_or(Value::Undefined, |p| p.value);
+    let name = crate::vm::property::get_field(heap, task, target, &JsString::from("name"))?;
+    bind_with_metadata(heap, task, target, args, &length, &name)
+}
+
+/// Allocate the immutable bound-function metadata after the resumable
+/// length/name reads have completed.
+pub(crate) fn bind_with_metadata(
+    heap: &Heap,
+    task: TaskId,
+    target: &Value,
+    args: &[Value],
+    length: &Value,
+    name: &Value,
+) -> Result<Value, Fault> {
     let length = match length {
         Value::Number(n) if !n.is_nan() => {
             (n.trunc() - args.len().saturating_sub(1) as f64).max(0.0)
         }
         _ => 0.0,
     };
-    let name = match crate::vm::property::get_field(heap, task, target, &JsString::from("name"))? {
+    let name = match name {
         Value::String(name) => JsString::from("bound ")
-            .concat(&name)
+            .concat(name)
             .ok_or_else(exhausted)?,
         _ => JsString::from("bound "),
     };
@@ -402,6 +417,7 @@ fn initial_metadata(
         _ => None,
     };
     Ok(value.map(|value| Property {
+        accessor: None,
         value,
         flags: PropertyFlags::FUNCTION_INFO,
     }))
@@ -511,6 +527,15 @@ fn record_own(
     record: ObjectId,
     name: &str,
 ) -> Result<Option<Value>, Fault> {
+    record_property(heap, task, record, name).map(|p| p.map(|p| p.value))
+}
+
+fn record_property(
+    heap: &Heap,
+    task: TaskId,
+    record: ObjectId,
+    name: &str,
+) -> Result<Option<Property>, Fault> {
     let Some(key) = heap.keys().lookup(&JsString::from(name)) else {
         return Ok(None);
     };
@@ -520,7 +545,7 @@ fn record_own(
                 owner: Some(owner),
                 caller: task,
             }),
-            _ => Ok(o.get_own(key).map(|p| p.value.clone())),
+            _ => Ok(o.get_own(key).cloned()),
         },
         _ => Err(Fault::Internal(
             "a function's property record is not an object",
@@ -581,9 +606,15 @@ fn read_or_probe(
     }
     if let Some(name) = special(key) {
         if let Some(record) = info.record
-            && let Some(value) = record_own(heap, task, record, name)?
+            && let Some(property) = record_property(heap, task, record, name)?
         {
-            return Ok(FunctionRead::Found(value));
+            // The record may hold an accessor. Let the ordinary property
+            // walk inspect its kind and retain the original function receiver.
+            return Ok(if property.accessor.is_some() {
+                FunctionRead::Continue(record)
+            } else {
+                FunctionRead::Found(property.value)
+            });
         }
         if name == "prototype" {
             if info.constructor {

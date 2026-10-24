@@ -23,10 +23,8 @@
 //!   more than [`INDEX_THRESHOLD`] properties. A redefinition keeps the
 //!   position of the first definition; `delete` (clj-quickjs-124,
 //!   [`OrdinaryObject::delete`]) removes the entry, so a property defined
-//!   again comes last. Each property is a data property
-//!   (a [`Value`] and its `writable` / `enumerable` / `configurable`
-//!   [`PropertyFlags`]); accessor properties (clj-quickjs-120) replace the
-//!   value with a getter/setter pair in the same entry. Assignment and
+//!   again comes last. Each property holds a data value or an accessor
+//!   getter/setter pair, with [`PropertyFlags`]. Assignment and
 //!   literals create properties with all three attributes;
 //!   [`OrdinaryObject::define_own_property`] (`Object.defineProperty`,
 //!   clj-quickjs-119) creates and validates any combination.
@@ -186,6 +184,8 @@ impl PropertyFlags {
 pub(crate) struct Property {
     pub(crate) value: Value,
     pub(crate) flags: PropertyFlags,
+    /// Present for an accessor; `value` is then undefined and writable is false.
+    pub(crate) accessor: Option<(Value, Value)>,
 }
 
 /// Objects with more own properties than this get a key index; smaller ones
@@ -194,7 +194,7 @@ pub(crate) struct Property {
 pub(crate) const INDEX_THRESHOLD: usize = 8;
 
 /// What [`OrdinaryObject::set`] did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SetOutcome {
     /// An own writable property was updated, or a new one was added.
     Done,
@@ -207,6 +207,8 @@ pub(crate) enum SetOutcome {
     /// write, otherwise [`OrdinaryObject::add`] adds an own property; see
     /// `crate::vm::property`).
     Inherited,
+    /// Call this setter with the original receiver, outside the object lock.
+    Setter(Value),
 }
 
 /// The internal data of a Number or String wrapper (clj-quickjs-72).
@@ -310,8 +312,8 @@ impl OrdinaryObject {
     /// SetIntegrityLevel(frozen) (`Object.freeze`, clj-quickjs-122; QuickJS
     /// `js_object_seal` with its freeze flag): not extensible, and every own
     /// data property non-configurable and non-writable (`enumerable`
-    /// kept). Accessor properties (clj-quickjs-120) will become only
-    /// non-configurable.
+    /// kept). Accessors become only non-configurable; their unused
+    /// writable flag is always false, and their setter stays callable.
     pub(crate) fn freeze(&mut self) {
         self.extensible = false;
         for (_, property) in &mut self.entries {
@@ -389,7 +391,11 @@ impl OrdinaryObject {
         value: Value,
         flags: PropertyFlags,
     ) -> bool {
-        let property = Property { value, flags };
+        let property = Property {
+            value,
+            flags,
+            accessor: None,
+        };
         match self.position(key) {
             Some(i) => self.entries[i].1 = property,
             None if self.extensible => self.push(key, property),
@@ -406,6 +412,9 @@ impl OrdinaryObject {
         match self.position(key) {
             Some(i) => {
                 let property = &mut self.entries[i].1;
+                if let Some((_, setter)) = &property.accessor {
+                    return SetOutcome::Setter(setter.clone());
+                }
                 if !property.flags.writable {
                     return SetOutcome::ReadOnly;
                 }
@@ -416,6 +425,7 @@ impl OrdinaryObject {
             None if !self.extensible => SetOutcome::NotExtensible,
             None => {
                 let property = Property {
+                    accessor: None,
                     value,
                     flags: PropertyFlags::DATA,
                 };
@@ -435,6 +445,7 @@ impl OrdinaryObject {
         }
         debug_assert!(self.position(key).is_none(), "add of an own property");
         let property = Property {
+            accessor: None,
             value,
             flags: PropertyFlags::DATA,
         };
@@ -494,34 +505,24 @@ impl OrdinaryObject {
     }
 }
 
-/// ValidateAndApplyPropertyDescriptor for data properties (clj-quickjs-119),
-/// without the extensibility check, which the caller makes: the property
-/// `desc` makes of `current` (absent fields kept) or, for `None`, creates
-/// (absent fields `undefined`/false), or why not. A non-configurable
-/// `current` rejects becoming configurable, a change of `enumerable`, an
-/// accessor, and, when it is also read-only, becoming writable or a value
-/// that is not SameValue. An accessor descriptor otherwise is
-/// [`DefineOutcome::Accessor`] (clj-quickjs-120). Arrays use it for their
-/// elements (`crate::object::array`).
+/// ValidateAndApplyPropertyDescriptor, for data and accessor properties.
+/// Absent fields preserve the current property; a kind change resets the
+/// kind-specific fields. The caller checks extensibility.
 pub(crate) fn validate_and_apply(
     current: Option<&Property>,
     desc: &PropertyDescriptor,
 ) -> Result<Property, DefineOutcome> {
-    let Some(current) = current else {
-        if desc.is_accessor() {
-            return Err(DefineOutcome::Accessor);
-        }
-        return Ok(Property {
-            value: desc.value.clone().unwrap_or(Value::Undefined),
-            flags: PropertyFlags {
-                writable: desc.writable.unwrap_or(false),
-                enumerable: desc.enumerable.unwrap_or(false),
-                configurable: desc.configurable.unwrap_or(false),
-            },
-        });
+    let empty = Property {
+        value: Value::Undefined,
+        accessor: desc
+            .is_accessor()
+            .then_some((Value::Undefined, Value::Undefined)),
+        flags: PropertyFlags::FIXED,
     };
+    let is_new = current.is_none();
+    let current = current.unwrap_or(&empty);
     let flags = current.flags;
-    if !flags.configurable {
+    if !is_new && !flags.configurable {
         if desc.configurable == Some(true) {
             return Err(DefineOutcome::Rejected("it is not configurable"));
         }
@@ -530,12 +531,22 @@ pub(crate) fn validate_and_apply(
                 "it is not configurable, so its enumerable attribute cannot change",
             ));
         }
-        if desc.is_accessor() {
+        if (desc.is_accessor() && current.accessor.is_none())
+            || (desc.is_data() && current.accessor.is_some())
+        {
             return Err(DefineOutcome::Rejected(
-                "it is a non-configurable data property, so it cannot become an accessor",
+                "it is not configurable, so its property kind cannot change",
             ));
         }
-        if !flags.writable {
+        if let Some((get, set)) = &current.accessor {
+            if desc.get.as_ref().is_some_and(|v| !same_value(v, get))
+                || desc.set.as_ref().is_some_and(|v| !same_value(v, set))
+            {
+                return Err(DefineOutcome::Rejected(
+                    "it is not configurable, so its accessors cannot change",
+                ));
+            }
+        } else if !flags.writable {
             if desc.writable == Some(true) {
                 return Err(DefineOutcome::Rejected(
                     "it is neither writable nor configurable, so it cannot become writable",
@@ -551,16 +562,40 @@ pub(crate) fn validate_and_apply(
                 ));
             }
         }
-    } else if desc.is_accessor() {
-        return Err(DefineOutcome::Accessor);
     }
+    let accessor = if desc.is_accessor() {
+        let (get, set) = current
+            .accessor
+            .clone()
+            .unwrap_or((Value::Undefined, Value::Undefined));
+        Some((
+            desc.get.clone().unwrap_or(get),
+            desc.set.clone().unwrap_or(set),
+        ))
+    } else if desc.is_data() {
+        None
+    } else {
+        current.accessor.clone()
+    };
+    let keep_data = current.accessor.is_none() && accessor.is_none();
     Ok(Property {
-        value: desc.value.clone().unwrap_or_else(|| current.value.clone()),
+        value: if accessor.is_some() {
+            Value::Undefined
+        } else {
+            desc.value.clone().unwrap_or_else(|| {
+                if keep_data {
+                    current.value.clone()
+                } else {
+                    Value::Undefined
+                }
+            })
+        },
         flags: PropertyFlags {
-            writable: desc.writable.unwrap_or(flags.writable),
+            writable: accessor.is_none() && desc.writable.unwrap_or(keep_data && flags.writable),
             enumerable: desc.enumerable.unwrap_or(flags.enumerable),
             configurable: desc.configurable.unwrap_or(flags.configurable),
         },
+        accessor,
     })
 }
 
@@ -601,10 +636,6 @@ pub(crate) enum DefineOutcome {
     /// stay unchanged; ArraySetLength may already have removed higher
     /// elements before reaching a non-configurable one.
     Rejected(&'static str),
-    /// The define would create an accessor property, or turn a
-    /// configurable data property into one (clj-quickjs-120). Nothing
-    /// changed.
-    Accessor,
 }
 
 /// What a `[[Delete]]` of an own property did ([`OrdinaryObject::delete`],
@@ -626,6 +657,10 @@ impl Trace for OrdinaryObject {
         // PrimitiveData contains only f64 / JsString, with no heap edges.
         for (_, property) in &self.entries {
             property.value.trace(visit);
+            if let Some((get, set)) = &property.accessor {
+                get.trace(visit);
+                set.trace(visit);
+            }
         }
         if let Some(prototype) = self.prototype {
             visit(prototype);

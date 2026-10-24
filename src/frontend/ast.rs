@@ -357,6 +357,9 @@ pub enum FunctionKind {
     /// A concise object-literal method, with its own `this` and arguments,
     /// no constructor capability, and an immutable home object.
     Method,
+    /// An object-literal accessor, sharing method home-object semantics.
+    Getter,
+    Setter,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -659,7 +662,7 @@ impl PropertyDef {
 
     /// A concise method definition rather than a function-valued property.
     pub fn is_method(&self) -> bool {
-        matches!(&self.value.kind, ExprKind::Function(f) if f.kind == FunctionKind::Method)
+        matches!(&self.value.kind, ExprKind::Function(f) if matches!(f.kind, FunctionKind::Method | FunctionKind::Getter | FunctionKind::Setter))
     }
 }
 

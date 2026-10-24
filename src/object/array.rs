@@ -109,6 +109,8 @@ pub(crate) struct ArrayObject {
     /// configurable, or [`FROZEN_ELEMENT`] once frozen), from
     /// `Object.defineProperty` (clj-quickjs-119).
     attributes: BTreeMap<u32, PropertyFlags>,
+    /// Accessor elements keep an undefined presence slot in dense/sparse storage.
+    accessors: BTreeMap<u32, (Value, Value)>,
     /// The `writable` attribute of `length` (`Object.defineProperty`).
     length_writable: bool,
     /// Set by `Object.freeze` (clj-quickjs-122): every element is then
@@ -135,6 +137,7 @@ impl ArrayObject {
             sparse: BTreeMap::new(),
             length: 0,
             attributes: BTreeMap::new(),
+            accessors: BTreeMap::new(),
             length_writable: true,
             frozen: false,
         }
@@ -208,6 +211,9 @@ impl ArrayObject {
     /// extensible array with a null prototype, extending `length`.
     pub(crate) fn set(&mut self, index: u32, value: Value) -> SetOutcome {
         debug_assert!(index <= MAX_INDEX);
+        if let Some((_, setter)) = self.accessors.get(&index) {
+            return SetOutcome::Setter(setter.clone());
+        }
         if self.get(index).is_none() {
             if self.object.prototype().is_some() {
                 return SetOutcome::Inherited;
@@ -288,6 +294,7 @@ impl ArrayObject {
     /// The element `index` as a property (value and attributes), if present.
     pub(crate) fn element(&self, index: u32) -> Option<Property> {
         self.get(index).map(|value| Property {
+            accessor: self.accessors.get(&index).cloned(),
             value: value.clone(),
             flags: self.element_flags(index),
         })
@@ -320,6 +327,7 @@ impl ArrayObject {
             }
         }
         self.attributes.remove(&index);
+        self.accessors.remove(&index);
         DeleteOutcome::Deleted
     }
 
@@ -327,6 +335,7 @@ impl ArrayObject {
     /// enumerable, not configurable.
     pub(crate) fn length_property(&self) -> Property {
         Property {
+            accessor: None,
             value: Value::Number(f64::from(self.length)),
             flags: PropertyFlags {
                 writable: self.length_writable,
@@ -366,6 +375,11 @@ impl ArrayObject {
             Err(outcome) => return outcome,
         };
         self.store(index, property.value);
+        if let Some(accessor) = property.accessor {
+            self.accessors.insert(index, accessor);
+        } else {
+            self.accessors.remove(&index);
+        }
         if property.flags == self.default_flags() {
             self.attributes.remove(&index);
         } else {
@@ -457,6 +471,10 @@ impl Trace for ArrayObject {
             value.trace(visit);
         }
         self.object.trace(visit);
+        for (get, set) in self.accessors.values() {
+            get.trace(visit);
+            set.trace(visit);
+        }
     }
 }
 

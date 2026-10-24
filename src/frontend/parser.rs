@@ -1755,21 +1755,49 @@ impl<'a> Parser<'a> {
     /// PropertyDefinition: PropertyName `:` AssignmentExpression, or a
     /// shorthand IdentifierReference. A PropertyName is an IdentifierName
     /// (reserved words included), a string literal or a numeric literal.
-    /// Concise methods are functions with a home object. Computed names,
-    /// spread and getters/setters are rejected
-    /// explicitly. A `__proto__: value` (identifier or string name, not a
+    /// Concise methods and accessors are functions with a home object.
+    /// Computed names and spread are rejected explicitly.
+    /// A `__proto__: value` (identifier or string name, not a
     /// shorthand) sets the prototype (clj-quickjs-121); a second one in the
     /// same literal (`proto_seen`) is an early error.
     fn parse_property_definition(&mut self, proto_seen: &mut bool) -> PResult<PropertyDef> {
         let span = self.tok.span;
         let next = self.peek_next();
+        let accessor = match &self.tok.kind {
+            TokenKind::Identifier(word)
+                if (word == "get" || word == "set")
+                    && next.as_ref().is_some_and(|t| {
+                        matches!(
+                            t.kind,
+                            TokenKind::Identifier(_)
+                                | TokenKind::Keyword(_)
+                                | TokenKind::String(_)
+                                | TokenKind::Number(_)
+                        )
+                    }) =>
+            {
+                Some(if word == "get" {
+                    FunctionKind::Getter
+                } else {
+                    FunctionKind::Setter
+                })
+            }
+            _ => None,
+        };
+        if accessor.is_some() {
+            self.lexer.expect_property_name();
+            self.advance()?;
+        }
+        let name_span = self.tok.span;
         let ends_shorthand = next
             .as_ref()
             .is_some_and(|t| matches!(t.kind, TokenKind::Punct(Punct::Comma | Punct::RBrace)));
-        if let Some(error) = self.property_definition_error(next.as_ref(), ends_shorthand) {
+        if accessor.is_none()
+            && let Some(error) = self.property_definition_error(next.as_ref(), ends_shorthand)
+        {
             return Err(error);
         }
-        if ends_shorthand {
+        if accessor.is_none() && ends_shorthand {
             // `{x}` is `{x: x}`: an identifier reference, with the same rules
             // as anywhere else (`undefined`, `eval`, ...).
             let TokenKind::Identifier(name) = &self.tok.kind else {
@@ -1804,17 +1832,31 @@ impl<'a> Parser<'a> {
         };
         self.advance()?;
         if self.is_punct(Punct::LParen) {
-            let function = self.parse_object_method(span.start)?;
+            let mut function = self.parse_object_method(span.start)?;
+            if let Some(kind) = accessor {
+                let arity = usize::from(kind == FunctionKind::Setter);
+                if function.params.len() != arity {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        span,
+                        "a getter takes no parameters and a setter takes exactly one",
+                    ));
+                }
+                function.kind = kind;
+            }
             let value = self.expr(
                 ExprKind::Function(Box::new(function)),
                 self.span_from(span.start),
             )?;
             return Ok(PropertyDef {
                 name,
-                name_span: span,
+                name_span,
                 value,
                 shorthand: false,
             });
+        }
+        if accessor.is_some() {
+            return Err(self.unexpected("`(` after an accessor name"));
         }
         if !self.is_punct(Punct::Colon) {
             return Err(self.unexpected("`:` after the property name"));
@@ -1903,11 +1945,6 @@ impl<'a> Parser<'a> {
                 Some(self.unsupported(span, "spread properties are"))
             }
             TokenKind::Punct(Punct::Star) => Some(self.unsupported(span, "generator methods are")),
-            TokenKind::Identifier(word)
-                if (word == "get" || word == "set") && next.is_some_and(starts_name) =>
-            {
-                Some(self.unsupported(span, "getters and setters are"))
-            }
             TokenKind::Identifier(word)
                 if word == "async" && next.is_some_and(|t| !t.newline_before && starts_name(t)) =>
             {

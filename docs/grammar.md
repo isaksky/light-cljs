@@ -27,7 +27,7 @@ calls `o.f()` pass their base as the receiver of a built-in function, and
 the built-in global `Object` with `Object.prototype` and `Object.is`
 exists (clj-quickjs-117; see "Built-in globals" under "Execution"), with
 `Object.defineProperty` and `Object.getOwnPropertyDescriptor` for data
-property attributes (clj-quickjs-119), and with `Object.getPrototypeOf`,
+and accessor properties (clj-quickjs-119/-120), and with `Object.getPrototypeOf`,
 `Object.setPrototypeOf`, `Object.create`, `o.__proto__` and a literal's
 `__proto__: value` for prototypes (clj-quickjs-121), with
 `Object.preventExtensions`, `Object.isExtensible`, `Object.freeze` and
@@ -185,6 +185,8 @@ TemplateLiteral       = NoSubstitutionTemplate
 ObjectLiteral         = "{" [ PropertyDefinition { "," PropertyDefinition } [ "," ] ] "}"
 PropertyDefinition    = PropertyName ":" AssignmentExpression | Identifier
                       | PropertyName FormalParameters FunctionBody
+                      | "get" PropertyName "(" ")" FunctionBody
+                      | "set" PropertyName "(" BindingIdentifier [ "=" AssignmentExpression ] ")" FunctionBody
 PropertyName          = IdentifierName | String | Number
 ArrayLiteral          = "[" { [ AssignmentExpression ] "," } [ AssignmentExpression ] "]"
                         (* an omitted element is a hole; see the notes *)
@@ -392,7 +394,7 @@ Every form below is rejected where it starts. Error kinds:
 | `async` functions and arrows, `await`, generators (`function*`) | Unsupported |
 | rest parameters, destructuring (including a destructuring catch parameter or arrow parameter) | Unsupported |
 | optional chaining `?.`, spread `...` (in an array literal, a call or an object literal), an array literal as an assignment target (`[a] = v`) | Unsupported |
-| in object literals: computed keys `{[k]: v}` (clj-quickjs-233), getters and setters, `async` and generator methods | Unsupported |
+| in object literals: computed keys `{[k]: v}` (clj-quickjs-233), `async` and generator methods | Unsupported |
 | tagged templates (`` f`x` ``, clj-quickjs-58), regular expression literals, BigInt, numeric separators | Unsupported |
 | `??`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
 | `delete` of an identifier reference, possibly parenthesized, including `undefined`/`NaN`/`Infinity` (`delete x`, `delete (x)`), in sloppy code (clj-quickjs-105); `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for `super` and optional chaining | Unsupported |
@@ -467,24 +469,25 @@ checks left to later stages:
   root-to-leaf path, counted by each node's `height`), which also catches
   finished subtrees wrapped again, such as `(a.b.b).b.b`; later recursive
   passes can rely on that bound.
-- **Objects have only data properties** (clj-quickjs-114). Getters,
-  setters and computed keys in literals are rejected explicitly
-  (their pellets: -233, -120); concise methods define data properties
+- **Objects have data and accessor properties** (clj-quickjs-114/-120).
+  Literal getters and setters use identifier, string or numeric names;
+  computed keys in literals remain rejected (clj-quickjs-233).
+  Concise methods define data properties
   (clj-quickjs-126); `++`/`--` (clj-quickjs-76), compound
   assignment (clj-quickjs-260) and `delete` (clj-quickjs-124) on
   properties execute.
   An object literal inherits from `Object.prototype` (clj-quickjs-117)
   unless it has a `__proto__: v` (clj-quickjs-121);
   an embedder-made object (`Scope::new_object`) has a null prototype.
-  The one accessor, `Object.prototype.__proto__` (clj-quickjs-121), is
+  The built-in accessor `Object.prototype.__proto__` (clj-quickjs-121) is
   applied by the property walk rather than stored, so
   `Object.getOwnPropertyDescriptor(Object.prototype, "__proto__")` fails
   with `UnsupportedOperand` (clj-quickjs-261).
   Their attributes (`writable`, `enumerable`, `configurable`) are set
   with `Object.defineProperty` and read with
-  `Object.getOwnPropertyDescriptor` (clj-quickjs-119); a descriptor with
-  `get`/`set` fails with `UnsupportedOperand` until accessors exist
-  (clj-quickjs-120). `Object.keys` lists only enumerable properties
+  `Object.getOwnPropertyDescriptor` (clj-quickjs-119); accessor descriptors
+  use `get`/`set` instead of `value`/`writable` (clj-quickjs-120).
+  `Object.keys` lists only enumerable properties
   (clj-quickjs-123); `for`-`in` is clj-quickjs-85. `Object.getOwnPropertyNames`
   of `Object.prototype` (its unstored `__proto__`, clj-quickjs-261) fails with
   `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist yet.
@@ -554,7 +557,8 @@ checks left to later stages:
   immutable and reports itself non-extensible and frozen. Vectors, maps
   and the runtime's other values without JavaScript properties are
   frozen. `Object.seal`/`isSealed` and `Reflect.preventExtensions` are
-  not provided; there are no accessors to freeze yet (clj-quickjs-120).
+  not provided. Freezing an accessor makes it non-configurable and keeps
+  its getter and setter; the setter may still run (clj-quickjs-120).
 - **Built-in globals cannot be assigned** until the global object exists
   (clj-quickjs-104): `Object = x` (also compound and `++`/`--`) is a
   compile-time `Unsupported` error. A lexical binding named `Object`
@@ -864,13 +868,13 @@ Executed, with JavaScript semantics:
 | `typeof x` (clj-quickjs-69) | evaluates the operand, then gives its type name as a string (ECMAScript TypeofOperator, QuickJS `js_operator_typeof`): `"undefined"` for `undefined`, `"object"` for `null`, `"boolean"`, `"number"`, `"string"`; `"function"` for a function object (function declarations and expressions, arrow functions, closures) and a built-in function (`Object`, `Object.is`, ...; clj-quickjs-117), the callable values; `"object"` for every other object: persistent vectors, maps and occurrences, transient builders, atoms, error objects caught by `catch`, plain objects and arrays. An operand that is a name with no binding, possibly parenthesized (`typeof nope`, `typeof (nope)`), gives `"undefined"` instead of a ReferenceError: with no global object the compiler knows this statically and emits `undefined`; any other operand (`typeof (0, nope)`, `typeof nope()`) is evaluated as usual. A binding in its temporal dead zone is still a ReferenceError, as a plain read is. `typeof __rt` is a `ReservedWord` compile error, as any other non-call use. Lowered to the `typeof` opcode (`0x4E`), which allocates nothing on the heap and calls no JavaScript |
 | `void x` (clj-quickjs-133) | evaluates the operand (its effects and failures happen: `void f()` calls `f`, `void nope` is a ReferenceError, unlike `typeof nope`), discards its value and gives `undefined`. A prefix operator with the precedence of `!`, so `void a ** 2` is `Invalid` at the `**`. No new opcode: the operand, then `pop` and `undefined` (QuickJS `js_parse_unary`, `TOK_VOID`: `OP_drop`, `OP_undefined`) |
 | `delete o.p`, `delete o[k]` (clj-quickjs-124) | evaluates `o`, then `k`; an `undefined`/`null` `o` is a catchable `TypeError` ("cannot delete property 'p' of null") before `k` is converted (ToPropertyKey uses hint string for an object key, as for `o[k]`). Then removes `o`'s own property (ECMAScript `[[Delete]]`, QuickJS `OP_delete`/`delete_property`; inherited properties are untouched) and gives `true` if `o` no longer has it: an absent property is `true`; a configurable one is removed, the others keeping their creation order (so it comes last when added again), also from a non-extensible object; an array element becomes a hole, `length` unchanged. A non-configurable property (`defineProperty` without `configurable: true`, frozen objects, an array's `length`, a constructor's `prototype`) stays and is a `TypeError` ("cannot delete non-configurable property 'k'") in strict code and `false` in sloppy code. A string base acts as its wrapper object: its indices below the length and its `length` are non-configurable, any other key `true`; a number or boolean base is `true`. A realm intrinsic or built-in function (`Object.prototype.toString`, `Object.keys`) that has the property fails with a `TypeError` in both modes (shared and immutable); another task's object (or an embedder-made one) is `ForeignObject`; a function's own properties are in its property record (deleting initial `length`/`name` creates the record first, clj-quickjs-101); an error object is `UnsupportedOperand`; runtime values without JavaScript properties (vectors, maps) give `true`. Run-time failures are reported at the `delete`. Any other operand (`delete 1`, `delete f()`) is evaluated and gives `true`. A prefix operator with the precedence of `!`. Lowered to the base, the key (a string constant for `o.p`) and the `delete` opcode (`0x61`) |
-| `v instanceof F` (clj-quickjs-75) | evaluates `v`, then `F`, then the `instanceof` opcode (`0x60`) at the operator token (ECMAScript InstanceofOperator and OrdinaryHasInstance; QuickJS `JS_IsInstanceOf`, `JS_OrdinaryIsInstanceOf`): `F` must be an object and callable (a function, arrow or built-in function), else a catchable TypeError "invalid 'instanceof' right operand" (`({}) instanceof {}`, `instanceof 1`, a vector); a primitive `v` gives `false` without reading `F.prototype`; otherwise `F.prototype` (a function's lazy prototype object, created on first read) must be an object, else a catchable TypeError "operand 'prototype' property is not an object" (an arrow function, a built-in method such as `Object.is`, which inherits no `prototype` from `Function.prototype` or `Object.prototype`, or after `F.prototype = 1`), and the result is whether that object is on `v`'s prototype chain, by identity, as the chain is when the operator runs (`Object.create`, `Object.setPrototypeOf` and `G.prototype = new F()` chains count; `Object.create(null)` is an instance of nothing). Relational precedence, left-associative. A function's chain runs through `Function.prototype` (clj-quickjs-102: `F instanceof Function && F instanceof Object`); an error object on the left (a caught error) fails with `UnsupportedOperand` until `Error.prototype` (clj-quickjs-230) exists; `String` and the Error constructors are not globals yet (clj-quickjs-72). `Symbol.hasInstance` (no symbols yet) and bound functions (clj-quickjs-103) are not consulted. Runs no JavaScript |
+| `v instanceof F` (clj-quickjs-75) | evaluates `v`, then `F`, then the `instanceof` opcode (`0x60`) at the operator token (ECMAScript InstanceofOperator and OrdinaryHasInstance; QuickJS `JS_IsInstanceOf`, `JS_OrdinaryIsInstanceOf`): `F` must be an object and callable (a function, arrow or built-in function), else a catchable TypeError "invalid 'instanceof' right operand" (`({}) instanceof {}`, `instanceof 1`, a vector); a primitive `v` gives `false` without reading `F.prototype`; otherwise `F.prototype` (a function's lazy prototype object, created on first read) must be an object, else a catchable TypeError "operand 'prototype' property is not an object" (an arrow function, a built-in method such as `Object.is`, which inherits no `prototype` from `Function.prototype` or `Object.prototype`, or after `F.prototype = 1`), and the result is whether that object is on `v`'s prototype chain, by identity, as the chain is when the operator runs (`Object.create`, `Object.setPrototypeOf` and `G.prototype = new F()` chains count; `Object.create(null)` is an instance of nothing). Relational precedence, left-associative. A function's chain runs through `Function.prototype` (clj-quickjs-102: `F instanceof Function && F instanceof Object`); an error object on the left (a caught error) fails with `UnsupportedOperand` until `Error.prototype` (clj-quickjs-230) exists; `String` and the Error constructors are not globals yet (clj-quickjs-72). `Symbol.hasInstance` (no symbols yet) is not consulted. Bound functions delegate to their targets; a `prototype` accessor runs resumably (clj-quickjs-120) |
 | `k in o` (clj-quickjs-74) | evaluates `k`, then `o`, then the `in` opcode (`0x61`) at the operator token (ECMAScript `in` and HasProperty; QuickJS `js_operator_in`, `OP_in`): an `o` that is not an object is a catchable TypeError "cannot use 'in' operator to search for 'k' in o" (`'x' in 1`, `'x' in null`, `'length' in 'abc'`), checked before `k` is converted; then ToPropertyKey(`k`) as for `o[k]` (`1 in {1: 0}` and `'1' in {1: 0}` are the same key) and the result is whether `o` or an object on its prototype chain has the property, whatever its value (`'x' in {x: undefined}` and `'toString' in {}` are true; `Object.create(null)` has nothing inherited; `'__proto__' in {}` is true through `Object.prototype`'s accessor, which is not run). Arrays have their elements (not holes) and `length`; a function has its own properties, its lazy `prototype` (reported without being created, so the function stays publishable) and those of `Function.prototype` (`'call' in f`, clj-quickjs-102) and `Object.prototype`. Persistent vectors, maps, occurrences, builders, atoms and cells have no JavaScript properties: `false`. Relational precedence, left-associative. A name `Function.prototype` does not have yet (`'bind' in Object`, `'toString' in f`, clj-quickjs-103 and later), and an error object's properties (clj-quickjs-230) fail with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist. Object key conversion may call JavaScript |
 | `!`, `&&`, `\|\|`, `? :`, `if`, `while`, `do`-`while`, `for` | ToBoolean (falsy: `0`, `-0`, `NaN`, `null`, `undefined`, `false`, `""`); `&&`/`\|\|` short-circuit and return an operand |
 | a directive (`"use strict";`, clj-quickjs-95) | an ordinary string expression statement: evaluates to the string, which becomes the completion value of a script; its only other effect is the strictness recorded at compile time ("Directive prologues and strictness") |
 | `x = v` | evaluates `v`, then stores; the expression's value is `v` |
 | `{a: 1, "b": 2, 3: 4, c}` object literals (clj-quickjs-114) | a new ordinary object owned by the running task (`docs/architecture.md`, "Ordinary objects"), inheriting from `Object.prototype` (clj-quickjs-117; lowered to `new_object_literal`): the values are evaluated left to right and each defines a writable, enumerable, configurable data property in creation order; a key is an identifier name (reserved words included), a string, or a number's ToString (`1.50` is `"1.5"`, `0x10` is `"16"`); a shorthand `{c}` is `{c: c}`; a duplicate key keeps its first position and its last value. Two evaluations are distinct objects (`({}) !== ({})`); `typeof` is `"object"` |
-| `{m(a) { return a; }}` concise methods (clj-quickjs-126) | identifier, reserved-word, string and numeric keys define writable, enumerable, configurable data properties. `get()`, `set()`, `async()` and `static()` are ordinary method names. Each method inherits the surrounding strictness (or becomes strict through its own `"use strict"` directive, clj-quickjs-266), has its own `this` and unmapped `arguments`, and supports default parameters and closures. Its `name` is the key's string value, its `length` counts parameters before the first default, and it has no own `prototype` and cannot be constructed (`new o.m()` throws TypeError). It records the literal as an immutable `[[HomeObject]]`, traced by GC and followed by publication: methods cannot publish while their home object is task-owned. `__proto__() {}` defines a method without setting the prototype. `super`, accessors, computed keys, async and generator methods remain deferred. |
+| `{m(a) { return a; }}` concise methods (clj-quickjs-126) | identifier, reserved-word, string and numeric keys define writable, enumerable, configurable data properties. `get()`, `set()`, `async()` and `static()` are ordinary method names. Each method inherits the surrounding strictness (or becomes strict through its own `"use strict"` directive, clj-quickjs-266), has its own `this` and unmapped `arguments`, and supports default parameters and closures. Its `name` is the key's string value, its `length` counts parameters before the first default, and it has no own `prototype` and cannot be constructed (`new o.m()` throws TypeError). It records the literal as an immutable `[[HomeObject]]`, traced by GC and followed by publication: methods cannot publish while their home object is task-owned. `__proto__() {}` defines a method without setting the prototype. `super`, computed keys, async and generator methods remain deferred. |
 | `{__proto__: p, "__proto__": p}` in object literals (clj-quickjs-121) | a non-shorthand `__proto__` key, written as a name or a string, defines no property: its value, evaluated in its place among the others, becomes the literal's prototype if it is an object or `null` and is ignored otherwise (lowered to `set_proto` after the value; QuickJS `OP_set_proto`); a second one in the same literal is an early `Invalid` SyntaxError. A shorthand `{__proto__}` and a computed key define an ordinary own property |
 | `o.name` (clj-quickjs-114) | evaluates `o`; an ordinary object gives its own property, else the first one along its prototype chain (`Object.prototype` for literals, clj-quickjs-117), else `undefined`; a built-in function gives its own property, else the one it inherits from `Function.prototype` (clj-quickjs-102: `call`, `apply`, `constructor`) and then `Object.prototype`, and fails with `UnsupportedOperand` for a standard `Function.prototype` name that does not exist yet (`bind`, `toString`, `arguments`, `caller`); persistent vectors, maps and occurrences, builders and atoms have no JavaScript properties (`undefined`); `undefined`/`null` throw a catchable `TypeError` ("cannot read property 'x' of undefined") at the member expression; a function object (clj-quickjs-125, `docs/architecture.md`, "Function own properties") gives its own property, else `prototype` of a `function` declaration or expression: an object created on first read (owned by the task, inheriting from `Object.prototype`, with `constructor` the function) and the same object afterwards (an arrow has none: `undefined`); `length` and `name` are initial own metadata (clj-quickjs-101); a missing `Function.prototype` name (`bind`, `toString`, `arguments`, `caller`) fail with `UnsupportedOperand`, any other name continues at `Function.prototype` (`f.call`, `f.apply`, `f.constructor === Function`, clj-quickjs-102) and then `Object.prototype`; a published function's `prototype` cannot be created (`UnsupportedOperand`); a number or string reads through `Number.prototype` / `String.prototype` (clj-quickjs-73, see `(1).toString()` below); a string's own `length` and code-unit indices are read before its prototype (clj-quickjs-142); caught error objects and booleans fail with `UnsupportedOperand` until their properties exist (clj-quickjs-230, -39); an object owned by another task fails with `ForeignObject` |
 | `o.name = v` (clj-quickjs-114) | evaluates `o`, then `v`, then writes: an ordinary object's own writable property is updated; otherwise, unless the first object along its prototype chain with the property has it read-only, a new own data property is added (writable, enumerable, configurable), so `o.toString = f` shadows the inherited method; a built-in object (`Object.prototype`, `Object`, ...) throws a catchable `TypeError` ("built-in objects are shared by all tasks and immutable", clj-quickjs-117); a function object gets the property in its task-owned property record (clj-quickjs-125), so it can no longer be published; a function that was published is shared and immutable (a catchable `TypeError`), one created by another task fails with `ForeignObject`; initial `length` and `name` reject writes as read-only, and a missing `Function.prototype` name fails with `UnsupportedOperand` unless the function has it as its own; a value without JavaScript properties (vectors, maps, builders, ...) or an `undefined`/`null` base throws a catchable `TypeError` ("cannot set property 'x' of null") at the member expression, after `v` ran; a number, string or boolean base (clj-quickjs-73) takes no property: a catchable `TypeError` ("cannot create property 'x' on a number", "cannot assign to read-only property '0' of a string") in strict code, nothing in sloppy code, and `__proto__` runs the setter, which ignores a primitive; the other bases fail as for a read. An own or inherited read-only property (`Object.defineProperty`, clj-quickjs-119) and a non-extensible receiver reject the write: a catchable `TypeError` ("cannot assign to read-only property 'k'") in strict code, nothing in sloppy code. The expression's value is `v` |
@@ -904,7 +908,7 @@ Executed, with JavaScript semantics:
 | `Object(v)`, `Object()` (clj-quickjs-117) | `undefined`, `null` or no argument: a new ordinary object inheriting from `Object.prototype`; an object (any heap value): `v` itself; a number, string or boolean: `UnsupportedOperand` (wrapper objects, clj-quickjs-72). `Object.length` is 1, `Object.prototype.constructor === Object` |
 | `Object.is(a, b)` (clj-quickjs-117) | SameValue: like `===` except `Object.is(NaN, NaN)` and `!Object.is(0, -0)` |
 | `Object.prototype.toString()`, `.valueOf()` (clj-quickjs-117) | inherited by every literal: `toString` gives `"[object Object]"` for an ordinary object and the runtime's other non-function heap values, `"[object Function]"` for a function, `"[object Undefined]"`/`"[object Null]"` for those receivers (a plain call); `valueOf` gives the receiver itself, and throws a catchable `TypeError` for `undefined`/`null`; primitive receivers and error objects fail with `UnsupportedOperand` (clj-quickjs-72/-73, -230) |
-| `Object.defineProperty(o, k, d)` (clj-quickjs-119) | `o` must be an object (else a catchable `TypeError`); `k` goes through ToPropertyKey as in `o[k]`; `d` must be an object whose `enumerable`, `configurable`, `value`, `writable`, `get`, `set` are read in that order, inherited ones included, and a field present with the value `undefined` counts (ToPropertyDescriptor). A `get`/`set` that is not a function or `undefined`, or one together with `value`/`writable`, is a `TypeError`. A new property takes the given fields, absent ones `undefined`/false (`{value: 1}` is read-only, non-enumerable and non-configurable); an existing one keeps the absent fields. A non-configurable property rejects becoming configurable, a change of `enumerable`, and, when it is also read-only, becoming writable or a value that is not SameValue (`NaN` matches `NaN`, `0` does not match `-0`): a catchable `TypeError` ("cannot define property 'k': ..."), nothing changed. On an array (clj-quickjs-118) an index key defines an element with the same rules (a new index extends `length`; one at or beyond a read-only `length` is a `TypeError`), and `length` (writable, non-enumerable, non-configurable) can be made read-only, after which writes of `length` and of new indices at or beyond it are rejected like other read-only properties; a define that changes `length` follows ArraySetLength (clj-quickjs-154, see "Array length changes" below). Returns `o`. A built-in object as `o` is a `TypeError` (immutable); a value without JavaScript properties (vectors, maps, ...) is not extensible (`TypeError`); a function, error object or a descriptor with `get`/`set` (accessors, clj-quickjs-120) fails with `UnsupportedOperand`; another task's object with `ForeignObject` |
+| `Object.defineProperty(o, k, d)` (clj-quickjs-119) | `o` must be an object (else a catchable `TypeError`); `k` goes through ToPropertyKey as in `o[k]`; `d` must be an object whose `enumerable`, `configurable`, `value`, `writable`, `get`, `set` are read in that order, inherited ones included, and a field present with the value `undefined` counts (ToPropertyDescriptor). A `get`/`set` that is not a function or `undefined`, or one together with `value`/`writable`, is a `TypeError`. A new property takes the given fields, absent ones `undefined`/false (`{value: 1}` is read-only, non-enumerable and non-configurable); an existing one keeps the absent fields. A non-configurable property rejects becoming configurable, a change of `enumerable`, and, when it is also read-only, becoming writable or a value that is not SameValue (`NaN` matches `NaN`, `0` does not match `-0`): a catchable `TypeError` ("cannot define property 'k': ..."), nothing changed. On an array (clj-quickjs-118) an index key defines an element with the same rules (a new index extends `length`; one at or beyond a read-only `length` is a `TypeError`), and `length` (writable, non-enumerable, non-configurable) can be made read-only, after which writes of `length` and of new indices at or beyond it are rejected like other read-only properties; a define that changes `length` follows ArraySetLength (clj-quickjs-154, see "Array length changes" below). Returns `o`. A built-in object as `o` is a `TypeError` (immutable); a value without JavaScript properties (vectors, maps, ...) is not extensible (`TypeError`); an error object fails with `UnsupportedOperand`; another task's object with `ForeignObject` |
 | `Object.getOwnPropertyDescriptor(o, k)` (clj-quickjs-119) | `undefined` if `o` has no own property `k` (inherited ones do not count), else a new object inheriting from `Object.prototype` with `value`, `writable`, `enumerable`, `configurable` in that order; works on built-in objects (`Object.getOwnPropertyDescriptor(Object, "length")` is `{value: 1, writable: false, enumerable: false, configurable: true}`); an array reports its elements and its `length` with their current attributes; it gives `undefined` for vectors, maps and other values without JavaScript properties. `undefined`/`null` `o` throw a catchable `TypeError`; a number, string or boolean `o` reports its wrapper's own property without allocating a wrapper (string indices and `length`, clj-quickjs-142; none for numbers or booleans); an error object fails with `UnsupportedOperand` |
 | `Object.getPrototypeOf(v)` (clj-quickjs-121) | the prototype of `v` (`docs/architecture.md`, "Prototype reflection"): `Object.prototype` for literals, `Object()` results and descriptor objects, `Array.prototype` for arrays (whose prototype is `Object.prototype`, whose prototype is `null`), whatever `Object.create`, `Object.setPrototypeOf` or `__proto__` set, and `null` for vectors, maps and other values without JavaScript properties. `Function.prototype` for functions, arrows and built-in functions, and `Object.prototype` for `Function.prototype` (clj-quickjs-102). `undefined`/`null` (or no argument) throw a catchable `TypeError`; a number, string or boolean (wrapper objects, clj-quickjs-72) or an error object (clj-quickjs-230) fail with `UnsupportedOperand` |
 | `Object.setPrototypeOf(o, proto)` (clj-quickjs-121) | sets the prototype of the object or array `o` to `proto` and returns `o`; a number, string or boolean `o` is returned unchanged. A `TypeError` (catchable, nothing changed) for an `undefined`/`null` `o`, a `proto` that is neither an object nor `null`, a `proto` whose chain leads back to `o` (a cycle), a built-in object (shared and immutable) and a value without JavaScript properties or a non-extensible object; setting the prototype `o` already has always succeeds (`Object.setPrototypeOf(Object.prototype, null)`, `Object.setPrototypeOf(f, Function.prototype)`). Changing a function's prototype, and an error object, fail with `UnsupportedOperand`; another task's object (as `o` or anywhere on `proto`'s chain) with `ForeignObject` |
@@ -1343,9 +1347,64 @@ Gaps specific to execution:
   function with a property record (or a read `prototype`) cannot be
   published, and a published function cannot get any (`TypeError`) or
   create its `prototype` (`UnsupportedOperand`), so `new` on it fails too. No
-  rest parameters, getters or generators. Arrows capture their enclosing
+  rest parameters or generators. Arrows capture their enclosing
   non-arrow function's receiver; script-level `this` remains rejected (see
   "Explicit gaps").
+
+### Accessor execution (clj-quickjs-120)
+
+`{get z() { return this.x; }, set z(v) { this.x = v; }}` creates an
+enumerable, configurable accessor. Getters take zero parameters and setters
+exactly one (which may have a default). Both own `this` and `arguments`,
+inherit surrounding strictness (clj-quickjs-266), have a home object, cannot be constructed, have
+no own `prototype`, and have names `"get z"` / `"set z"`. Identifier,
+reserved-word, string and numeric names work. `get` and `set` remain ordinary
+keys in `{get: 1}`, `{get, set}` and `{get() {}, set() {}}`.
+
+A later getter or setter preserves the other half of an accessor. A data
+definition replaces both halves; an accessor after a data definition starts
+with its other half undefined. `__proto__` accessor definitions create
+properties without setting the object's prototype.
+
+Reads call a present getter with the original receiver; absent getters
+return undefined. Writes call a present setter with that receiver and the
+assigned value, then return the assigned value. Inheritance preserves the
+receiver. A missing setter rejects the write (TypeError in strict code,
+ignored in sloppy code). Callback exceptions propagate normally.
+
+`Object.defineProperty` supports accessor descriptors and data/accessor
+conversions of configurable properties. Non-configurable properties cannot
+change kind or accessor identities (SameValue). Partial and generic updates
+preserve absent fields. ToPropertyDescriptor reads fields in specification
+order and runs each field getter resumably. Object keys use resumable
+ToPrimitive with string hint. `Object.getOwnPropertyDescriptor` returns
+`get`, `set`, `enumerable`, `configurable` for accessors. Reflection, `in`,
+key enumeration and `delete` do not invoke getters. Freeze preserves
+accessors and removes configurability. Array indices support the same
+descriptors, including length growth and deletion during length shrinkage.
+
+Accessor calls in ordinary reads/writes, conversion-method lookup,
+descriptor fields, `instanceof`, `bind` metadata, `apply` argument lists
+and `push` length/index operations can yield, wait and migrate. `apply`
+and `push` also convert object-valued lengths resumably. All pending values
+are traced and cancellation discards the continuations. Computed literal
+keys, `super`, async and generator accessors remain unsupported; reflection
+on the unstored `Object.prototype.__proto__` remains clj-quickjs-261.
+
+```js accept
+let o = {get z() { return this.x; }, set z(v) { this.x = v; }};
+o.z = 7; o.z === 7;
+let d = Object.getOwnPropertyDescriptor(o, "z"); d.get.name === "get z";
+({get: 1, set: 2, get a() { return this.get; }}).a === 1;
+```
+
+```js reject Invalid 1:3
+({get a(x) {}});
+```
+
+```js reject Invalid 1:3
+({set a() {}});
+```
 
 ## Reserved intrinsic binding
 
@@ -1744,7 +1803,7 @@ const f = () => this;
 ({[key]: 1});
 ```
 
-```js reject Unsupported 1:3
+```js accept
 ({get x() { return 1; }});
 ```
 

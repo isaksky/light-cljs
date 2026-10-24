@@ -1878,20 +1878,17 @@ OrdinaryDefineOwnProperty with ValidateAndApplyPropertyDescriptor for data
 properties: creation defaults absent fields to `undefined`/false, an update
 keeps absent fields and the entry's position, and a non-configurable
 property rejects every change except `writable` true to false and
-SameValue rewrites. It reports `Rejected(reason)` or `Accessor` (a define
-that needs accessor properties, clj-quickjs-120) and changes nothing in
-either case. `Object.defineProperty` and `Object.getOwnPropertyDescriptor`
-are `Builtin` variants appended to the realm's `Object`; they run inside
-their call instruction like every built-in so far.
+SameValue rewrites. Rejections report `Rejected(reason)` and change nothing.
+clj-quickjs-120 adds accessor descriptors and resumable field reads; see
+"Accessor properties" below. The two built-ins are appended to the realm's
+`Object`.
 
 - **Descriptor reads are `[[Get]]`s.** ToPropertyDescriptor reads the six
-  fields through `property::find_field`, the prototype-chain read that
+  fields through `property::read`, the prototype-chain read that
   tells an absent field from one holding `undefined`, so inherited fields
-  count. No field read can run JavaScript until accessors exist; when
-  they do (clj-quickjs-120), these built-ins must become resumable natives
-  (`crate::vm::native`) so a getter runs as an ordinary VM frame across
-  which the task may yield, wait or migrate. The decision point is the
-  `Builtin` dispatch, as "Realm intrinsics" describes.
+  count. Accessor fields run through a resumable native cursor
+  (clj-quickjs-120), with getters in ordinary VM frames that may yield,
+  wait or migrate. The decision point is the built-in dispatch.
 - **Writes and modes.** `PutField` passes the running code's
   `Code::strict` (clj-quickjs-95) to `put_field`: a write that `[[Set]]`
   rejects (an own or inherited read-only property, a non-extensible
@@ -1934,9 +1931,8 @@ their call instruction like every built-in so far.
   ArraySetLength (clj-quickjs-154). Writes consult both: a read-only element is a
   read-only property for `[[Set]]` (own or inherited), and a read-only
   `length` rejects new elements at or beyond it and `a.length = v`.
-- clj-quickjs-120 turns the property value into a data/accessor enum and
-  replaces the `Accessor` outcome with real accessor definitions;
-  `getOwnPropertyDescriptor` then reports `get`/`set` instead of
+- clj-quickjs-120 adds getter/setter slots and real accessor definitions;
+  `getOwnPropertyDescriptor` reports `get`/`set` instead of
   `value`/`writable`.
 - `enumerable` is stored and reported; `Object.keys` enumerates with it
   (clj-quickjs-123), and `for`-`in` (clj-quickjs-85) will.
@@ -3644,3 +3640,71 @@ MAX_STRING_LEN so long significands/fractions cannot cancel away an
 otherwise saturated exponent. Parser allocation and finalization are
 bounded; bulk primitive coercion of a string radix retains the existing
 StringToNumber limitation tracked by clj-quickjs-265.
+
+## Accessor properties (clj-quickjs-120)
+
+`Property` keeps the existing data value and flags and adds an optional
+getter/setter pair. A present pair identifies an accessor: its unused data
+value is undefined and writable flag false. This preserves existing data
+storage and makes both callable edges explicit to the collector. Generic
+and partial descriptors retain omitted fields; a configurable kind change
+resets the kind-specific fields; non-configurable accessor identities use
+SameValue. Freeze only removes accessor configurability. Arrays retain an
+undefined presence slot in dense/sparse storage and keep accessor pairs in
+a sorted side map, alongside their existing exceptional attributes. Every
+pair is traced, and index deletion/truncation removes it.
+
+The parser distinguishes contextual `get`/`set` from ordinary data keys,
+shorthands and methods. Getter/Setter function kinds reuse the `Method`
+closure instruction, strictness, home-object edge, own this/arguments and
+non-constructor capability. The appended `DefineGetter`/`DefineSetter`
+instructions (`0x67`/`0x68`, name operands, object/function → object) merge
+the matching half of a configurable accessor. `DefineField` still replaces
+the whole property. Names are inferred with `get ` / `set ` prefixes.
+
+`property::read` returns a value or a getter request; `prepare_put` either
+applies a data write or returns a setter request. Both release every heap
+lock before returning. The dispatch loop installs a traced `PropertyCall`
+native continuation, retaining the original receiver, callback and (for a
+setter) assignment value. Its step returns `Action::Call`; the existing
+trampoline uses `dispatch::resolve` and `builtin::forward` to enter ordinary
+VM frames, including bound and built-in accessors. Getter returns complete
+the property read; setter returns are discarded in favor of the assignment
+value. Nothing recursively enters the interpreter or retains a Rust stack.
+The native frame records the property operation's instruction position;
+exceptions unwind through it to ordinary catch/finally handlers. Dependency
+waits, budget yields and migration retain ordinary task state. Cancellation
+uses the existing native discard path.
+
+ToPropertyDescriptor is now a native cursor (`descriptor::DefineProperty`)
+that retains target, attributes and accumulated fields. Each field is probed
+and read only when reached, in enumerable/configurable/value/writable/get/set
+order. Getter results are validated and stored before advancing; a wait
+never replays earlier fields. `getOwnPropertyDescriptor`, keys, for-in,
+`delete`, `in` and integrity checks inspect property metadata without calling
+accessors. Function metadata reads continue through their property record
+so an accessor there receives the original function as this.
+
+OrdinaryToPrimitive distinguishes a getter for a conversion method from the
+method call itself. `instanceof` retains its callable and left operand while
+reading prototype; a primitive left operand still returns false before that
+read. `bind` reads length/name in order, and `apply` and `push` retain their
+array-like cursor across length/index callbacks. `apply` stops synchronous
+forwarding before list expansion, then asks the trampoline for the final
+call. All these continuations trace their receivers, arguments and partial
+results and share the native stack/depth limits. `apply`/`push` ToLength uses
+the same conversion continuation for object-valued lengths. Ordinary
+constructors keep their non-configurable data prototype property; its read
+cannot encounter a user accessor in the current object model.
+
+No new heap kind, sharing category or dependency is introduced. Ordinary
+objects/arrays remain task-owned, and accessor functions retain their home
+object, preventing publication exactly as concise methods do. The unstored
+built-in `Object.prototype.__proto__` hook remains for clj-quickjs-261.
+
+Verification: frontend accessor AST/error cases; source descriptor validation,
+inheritance, integrity, enumeration, function metadata and native-call cases;
+`tests/need.rs::getter_waits_on_dependency_and_resumes` forces collection at
+every one-instruction yield and while parked, then migrates the resumed run.
+Cancellation and dependency failure exercise unwind; GC tests cover accessor
+slots and home-object cycles.

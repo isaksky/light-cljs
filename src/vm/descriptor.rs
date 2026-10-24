@@ -7,9 +7,9 @@
 //!
 //! # Conversions
 //!
-//! * **ToPropertyKey** of the key argument: `crate::vm::property::to_property_key`
-//!   (the ToString of a primitive, `1` and `"1"` name one property); an object
-//!   needs ToPrimitive (clj-quickjs-70) and fails with `UnsupportedOperand`.
+//! * **ToPropertyKey** of the key argument: resumable ToPrimitive with
+//!   string hint for objects, then `crate::vm::property::to_property_key`
+//!   (the ToString of a primitive, `1` and `"1"` name one property).
 //!   Symbols do not exist yet (clj-quickjs-127).
 //! * **ToPropertyDescriptor** of the attributes argument: a non-object is a
 //!   TypeError; otherwise the fields `enumerable`, `configurable`, `value`,
@@ -18,21 +18,22 @@
 //!   field present with the value `undefined` is present. The booleans
 //!   take ToBoolean. A `get` or `set` that is neither `undefined` nor
 //!   callable is a TypeError, and so is a descriptor with both `get`/`set`
-//!   and `value`/`writable`. No field read runs JavaScript today; once
-//!   accessors exist (clj-quickjs-120) a read may run a getter, and these
-//!   built-ins then become resumable natives (`crate::vm::native`) so the
-//!   getter is an ordinary VM frame.
-//! * **FromPropertyDescriptor** of a data property: a fresh ordinary object
+//!   and `value`/`writable`. `DefineProperty` retains the descriptor cursor
+//!   and accumulated fields in a traced native frame; each getter runs as
+//!   an ordinary VM callback and fields are never replayed across waits.
+//! * **FromPropertyDescriptor**: a fresh ordinary object
 //!   owned by the running task, with prototype `Object.prototype` and the
 //!   own properties `value`, `writable`, `enumerable`, `configurable`, in
-//!   that order, each writable, enumerable and configurable.
+//!   that order (or `get`, `set`, `enumerable`, `configurable` for an
+//!   accessor), each writable, enumerable and configurable.
 //!
-//! Both built-ins run to completion inside their call instruction
-//! (`crate::vm::builtin`, "Calls"): their operands stay on the operand
-//! stack, and `getOwnPropertyDescriptor` allocates its result last, with
-//! every property value already in the object being allocated.
+//! Object-valued keys use resumable ToPrimitive first. Descriptor
+//! reflection allocates its result last, with every property value
+//! already in the object being allocated; it never invokes the accessor
+//! being reflected.
 
 use crate::heap::{Heap, HeapObject};
+use crate::heap::{ObjectId, gc::Trace};
 use crate::ids::TaskId;
 use crate::object::{OrdinaryObject, Property, PropertyDescriptor, PropertyFlags};
 use crate::realm;
@@ -42,6 +43,7 @@ use crate::vm::property::{self, Key};
 
 /// `Object.defineProperty(target, key, attributes)`: define the property
 /// and return `target`.
+#[cfg(test)]
 pub(crate) fn define_property(heap: &Heap, task: TaskId, args: &[Value]) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     let target = arg(0);
@@ -89,6 +91,7 @@ pub(crate) fn get_own_property_descriptor(
 }
 
 /// ToPropertyDescriptor (module docs, "Conversions").
+#[cfg(test)]
 fn to_property_descriptor(
     heap: &Heap,
     task: TaskId,
@@ -142,12 +145,17 @@ fn from_property_descriptor(heap: &Heap, task: TaskId, property: Property) -> Re
         .object_prototype;
     let mut object = OrdinaryObject::with_prototype(task, prototype);
     let flags = property.flags;
-    let fields = [
-        ("value", property.value),
-        ("writable", Value::Bool(flags.writable)),
+    let mut fields = match property.accessor {
+        Some((get, set)) => vec![("get", get), ("set", set)],
+        None => vec![
+            ("value", property.value),
+            ("writable", Value::Bool(flags.writable)),
+        ],
+    };
+    fields.extend([
         ("enumerable", Value::Bool(flags.enumerable)),
         ("configurable", Value::Bool(flags.configurable)),
-    ];
+    ]);
     for (name, value) in fields {
         let key = heap
             .keys()
@@ -160,6 +168,127 @@ fn from_property_descriptor(heap: &Heap, task: TaskId, property: Property) -> Re
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
         .ok_or_else(exhausted)
+}
+
+/// ToPropertyDescriptor's field cursor and accumulated values survive each
+/// getter call. No field is re-read on resumption.
+#[derive(Debug)]
+pub(crate) struct DefineProperty {
+    target: Value,
+    key: Key,
+    attributes: Value,
+    desc: PropertyDescriptor,
+    next: usize,
+}
+
+pub(crate) enum DefineStep {
+    Getter { callee: Value, this: Value },
+    Done(Value),
+}
+
+impl Trace for DefineProperty {
+    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        self.target.trace(visit);
+        self.attributes.trace(visit);
+        for v in [&self.desc.value, &self.desc.get, &self.desc.set]
+            .into_iter()
+            .flatten()
+        {
+            v.trace(visit);
+        }
+    }
+}
+
+impl DefineProperty {
+    pub(crate) fn new(args: &[Value]) -> Result<Self, Fault> {
+        let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
+        let target = arg(0);
+        if !matches!(target, Value::Object(_)) {
+            return Err(Fault::TypeError(
+                "Object.defineProperty target must be an object".into(),
+            ));
+        }
+        let key = property::to_property_key(&arg(1))?;
+        let attributes = arg(2);
+        if !matches!(attributes, Value::Object(_)) {
+            return Err(Fault::TypeError(
+                "a property descriptor must be an object".into(),
+            ));
+        }
+        Ok(Self {
+            target,
+            key,
+            attributes,
+            desc: PropertyDescriptor::default(),
+            next: 0,
+        })
+    }
+
+    fn field(&mut self, heap: &Heap, value: Value) -> Result<(), Fault> {
+        match self.next {
+            0 => self.desc.enumerable = Some(value.truthy()),
+            1 => self.desc.configurable = Some(value.truthy()),
+            2 => self.desc.value = Some(value),
+            3 => self.desc.writable = Some(value.truthy()),
+            4 | 5 => {
+                if value != Value::Undefined && dispatch::callee(heap, &value).is_err() {
+                    return Err(Fault::TypeError(
+                        "property descriptor get/set must be callable or undefined".into(),
+                    ));
+                }
+                if self.next == 4 {
+                    self.desc.get = Some(value);
+                } else {
+                    self.desc.set = Some(value);
+                }
+            }
+            _ => return Err(Fault::Internal("descriptor field cursor out of range")),
+        }
+        self.next += 1;
+        Ok(())
+    }
+
+    pub(crate) fn step(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        result: Option<Value>,
+    ) -> Result<DefineStep, Fault> {
+        if let Some(value) = result {
+            self.field(heap, value)?;
+        }
+        let names = [
+            "enumerable",
+            "configurable",
+            "value",
+            "writable",
+            "get",
+            "set",
+        ];
+        while self.next < names.len() {
+            let key = Key::Name(JsString::from(names[self.next]));
+            match property::read(heap, task, &self.attributes, &key)? {
+                None => self.next += 1,
+                Some(property::Read::Value(value)) => self.field(heap, value)?,
+                Some(property::Read::Getter(callee)) => {
+                    return Ok(DefineStep::Getter {
+                        callee,
+                        this: self.attributes.clone(),
+                    });
+                }
+            }
+        }
+        if self.desc.is_accessor() && self.desc.is_data() {
+            return Err(Fault::TypeError(
+                "a property descriptor cannot have both get/set and value/writable".into(),
+            ));
+        }
+        let Value::Object(id) = self.target else {
+            unreachable!()
+        };
+        property::define_own_property(heap, task, id, &self.key, &self.desc)?;
+        Ok(DefineStep::Done(self.target.clone()))
+    }
 }
 
 #[cfg(test)]

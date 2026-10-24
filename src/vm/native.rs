@@ -16,7 +16,8 @@
 //!   dependencies, so the task may yield, suspend, be collected around and
 //!   migrate to another thread in the middle of one. They include `Reduce`
 //!   (`__rt.reduce`), `NeedAll` (`__rt.needAll`) and object operand
-//!   conversion (`start_conversion`). Their instruction only
+//!   conversion (`start_conversion`), accessor calls, descriptor reads,
+//!   apply/push and bind metadata. Their starting operation only
 //!   validates and pops its operands into a [`NativeFrame`] pushed on the
 //!   task's VM state; the loop then drives that frame one *step* at a time.
 //!
@@ -222,7 +223,7 @@ use crate::heap::{Heap, ObjectId};
 use crate::host::Host;
 use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::value::{JsString, Value};
-use crate::vm::property;
+use crate::vm::{descriptor, property, prototype};
 
 /// What a native frame is waiting for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,6 +263,13 @@ enum Failure {
 enum Action {
     /// Keep this native frame runnable for another budgeted step.
     Continue,
+
+    ToNumber(Value),
+    /// Replace a completed conversion with the remaining built-in work.
+    Builtin {
+        which: builtin::Builtin,
+        args: Vec<Value>,
+    },
     /// Call `callee` with these arguments in a new VM frame.
     Call {
         callee: Value,
@@ -270,7 +278,10 @@ enum Action {
     },
     /// Run the original instruction with its converted operands. This is
     /// one leaf instruction, never interpreter re-entry.
-    Resume { instr: Instr, operands: Vec<Value> },
+    Resume {
+        instr: Instr,
+        operands: Vec<Value>,
+    },
     /// Read a dependency in the task's world, suspending if it is pending.
     Need {
         dependency: DependencyId,
@@ -295,6 +306,7 @@ enum Hint {
 /// What to finish after OrdinaryToPrimitive has converted its operands.
 #[derive(Clone, Copy, Debug)]
 enum ConvertTarget {
+    NumberValue,
     Instruction(Instr),
     PrimitiveConstructor {
         which: builtin::Builtin,
@@ -310,11 +322,48 @@ enum ConvertTarget {
     NumberParse {
         integer: bool,
     },
+    PropertyBuiltin {
+        which: builtin::Builtin,
+    },
 }
 
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    Bind {
+        target: Value,
+        args: Vec<Value>,
+        length: Value,
+        stage: u8,
+    },
+    Apply {
+        callee: Value,
+        this: Value,
+        list: Value,
+        args: Vec<Value>,
+        len: Option<usize>,
+        max_args: usize,
+        called: bool,
+    },
+    Push {
+        this: Value,
+        args: Vec<Value>,
+        len: Option<u64>,
+        next: usize,
+        finishing: bool,
+    },
+    Instanceof {
+        value: Value,
+        target: Value,
+    },
+    DefineProperty(descriptor::DefineProperty),
+    /// One property callback; a setter discards its return value and
+    /// completes with the assignment's original right-hand side.
+    PropertyCall {
+        callee: Value,
+        this: Value,
+        assigned: Option<Value>,
+    },
     /// `reduce(f, init, vec)`: `acc = f(acc, x)` for each element `x` of
     /// `vec` in order, starting from `init`.
     Reduce {
@@ -347,6 +396,7 @@ enum NativeState {
         end: usize,
         hint: Hint,
         method: usize,
+        method_get: bool,
     },
     StringSearch(crate::value::string::StringSearch),
     StringBuild(crate::value::string::StringBuild),
@@ -388,6 +438,55 @@ impl Trace for NativeFrame {
             NativeState::StringSearch(_)
             | NativeState::StringBuild(_)
             | NativeState::NumberParse(_) => {} // No heap edges.
+
+            NativeState::PropertyCall {
+                callee,
+                this,
+                assigned,
+            } => {
+                callee.trace(visit);
+                this.trace(visit);
+                if let Some(value) = assigned {
+                    value.trace(visit);
+                }
+            }
+            NativeState::DefineProperty(desc) => desc.trace(visit),
+            NativeState::Instanceof { value, target } => {
+                value.trace(visit);
+                target.trace(visit);
+            }
+            NativeState::Apply {
+                callee,
+                this,
+                list,
+                args,
+                ..
+            } => {
+                callee.trace(visit);
+                this.trace(visit);
+                list.trace(visit);
+                for v in args {
+                    v.trace(visit);
+                }
+            }
+            NativeState::Push { this, args, .. } => {
+                this.trace(visit);
+                for v in args {
+                    v.trace(visit);
+                }
+            }
+            NativeState::Bind {
+                target,
+                args,
+                length,
+                ..
+            } => {
+                target.trace(visit);
+                length.trace(visit);
+                for v in args {
+                    v.trace(visit);
+                }
+            }
         }
     }
 }
@@ -412,7 +511,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | DefineField(_) | GetBuiltinGlobal(_) | CallMethod(_) | NewObjectLiteral | ToString
         | GetThis | NewArray | AppendElement | AppendHole | GetElem | PutElem | Dup2
         | ToPropertyKey | Construct(_) | SetProto | Instanceof | Delete | In | ForInStart
-        | ForInNext | NewArguments | Method(..) => false,
+        | ForInNext | NewArguments | Method(..) | DefineGetter(_) | DefineSetter(_) => false,
     }
 }
 
@@ -498,6 +597,7 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
             end,
             hint,
             method: 0,
+            method_get: false,
         },
     });
     Ok(true)
@@ -506,7 +606,7 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
 /// Built-in object operands use the same resumable method lookup and callback
 /// protocol as coercing instructions. Forwarding is resolved before entry;
 /// only operands needed after argument evaluation are retained in the frame.
-pub(crate) fn start_builtin_conversion(
+pub(crate) fn start_builtin(
     state: &mut VmState,
     which: builtin::Builtin,
     this: &Value,
@@ -515,6 +615,61 @@ pub(crate) fn start_builtin_conversion(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if !construct {
+        let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
+        let native = match which {
+            Builtin::FunctionPrototypeApply | Builtin::ReflectApply => {
+                let (callee, receiver, list) = if which == Builtin::ReflectApply {
+                    (arg(0), arg(1), arg(2))
+                } else {
+                    (this.clone(), arg(0), arg(1))
+                };
+                Some(NativeState::Apply {
+                    callee,
+                    this: receiver,
+                    len: if which == Builtin::FunctionPrototypeApply
+                        && matches!(list, Value::Undefined | Value::Null)
+                    {
+                        Some(0)
+                    } else {
+                        None
+                    },
+                    list,
+                    args: vec![],
+                    max_args: state.forward_limits(state.stack_len() - popped).0,
+                    called: false,
+                })
+            }
+            Builtin::ArrayPrototypePush => Some(NativeState::Push {
+                this: this.clone(),
+                args: args.to_vec(),
+                len: None,
+                next: 0,
+                finishing: false,
+            }),
+            Builtin::FunctionPrototypeBind => Some(NativeState::Bind {
+                target: this.clone(),
+                args: args.to_vec(),
+                length: Value::Undefined,
+                stage: 0,
+            }),
+            _ => None,
+        };
+        if let Some(native) = native {
+            state.truncate_operands(state.stack_len() - popped)?;
+            push_native(state, native)?;
+            return Ok(true);
+        }
+    }
+    if which == Builtin::ObjectDefineProperty
+        && !construct
+        && !matches!(args.get(1), Some(Value::Object(_)))
+    {
+        let desc = descriptor::DefineProperty::new(args)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::DefineProperty(desc))?;
+        return Ok(true);
+    }
     let (target, operands, hint) = match which {
         Builtin::GlobalIsNaN | Builtin::GlobalIsFinite if !construct => {
             let Some(value @ Value::Object(_)) = args.first() else {
@@ -550,6 +705,29 @@ pub(crate) fn start_builtin_conversion(
                 } else {
                     Hint::Number
                 },
+            )
+        }
+        Builtin::ObjectDefineProperty | Builtin::ObjectGetOwnPropertyDescriptor
+            if !construct && matches!(args.get(1), Some(Value::Object(_))) =>
+        {
+            if which == Builtin::ObjectGetOwnPropertyDescriptor
+                && matches!(args.first(), None | Some(Value::Null | Value::Undefined))
+            {
+                return Err(Fault::TypeError(
+                    "cannot convert null or undefined to object".into(),
+                ));
+            }
+            if which == Builtin::ObjectDefineProperty
+                && !matches!(args.first(), Some(Value::Object(_)))
+            {
+                return Err(Fault::TypeError(
+                    "Object.defineProperty target must be an object".into(),
+                ));
+            }
+            (
+                ConvertTarget::PropertyBuiltin { which },
+                args.to_vec(),
+                Hint::String,
             )
         }
         Builtin::StringPrototypeCharAt
@@ -653,7 +831,11 @@ pub(crate) fn start_builtin_conversion(
             "maximum native call depth of {limit} frames exceeded"
         )));
     }
-    let end = operands.len();
+    let (first, end) = if matches!(target, ConvertTarget::PropertyBuiltin { .. }) {
+        (1, 2)
+    } else {
+        (0, operands.len())
+    };
     let pc = running(state).unwrap_or_else(|| state.top().pc.saturating_sub(1));
     state.truncate_operands(state.stack_len() - popped)?;
     assert_no_borrow("starting a built-in conversion frame (growing native storage)");
@@ -665,10 +847,11 @@ pub(crate) fn start_builtin_conversion(
         state: NativeState::Convert {
             target,
             operands,
-            next: 0,
+            next: first,
             end,
             hint,
             method: 0,
+            method_get: false,
         },
     });
     Ok(true)
@@ -758,6 +941,8 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             }
             Action::Continue
             | Action::Call { .. }
+            | Action::ToNumber(_)
+            | Action::Builtin { .. }
             | Action::Need { .. }
             | Action::Return(_)
             | Action::Resume { .. } => {
@@ -822,6 +1007,30 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     };
     state.truncate_operands(base)?;
     match action {
+        Action::ToNumber(value) => {
+            set_awaiting(state, Awaiting::CallResult)?;
+            push_native(
+                state,
+                NativeState::Convert {
+                    target: ConvertTarget::NumberValue,
+                    operands: vec![value],
+                    next: 0,
+                    end: 1,
+                    hint: Hint::Number,
+                    method: 0,
+                    method_get: false,
+                },
+            )?;
+            Ok(Flow::Next)
+        }
+        Action::Builtin { which, args } => {
+            state.natives.pop();
+            if !start_builtin(state, which, &Value::Undefined, &args, false, 0)? {
+                let result = builtin::call(heap, state.diag.task, which, &Value::Undefined, &args)?;
+                state.push(result);
+            }
+            Ok(Flow::Next)
+        }
         Action::Call { callee, this, args } => {
             // A forwarding built-in callback (`Reflect.apply`) is followed
             // to the call it makes (`dispatch::resolve`).
@@ -833,7 +1042,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
                 (Callee::Code(id, code), call) => (id, code, call),
                 (Callee::Builtin(which), call) => {
                     set_awaiting(state, Awaiting::CallResult)?;
-                    if start_builtin_conversion(state, which, &call.this, &call.args, false, 0)? {
+                    if start_builtin(state, which, &call.this, &call.args, false, 0)? {
                         return Ok(Flow::Next);
                     }
                     // Runs to completion (`crate::vm::builtin`); no safepoint
@@ -882,11 +1091,383 @@ fn set_awaiting(state: &mut VmState, awaiting: Awaiting) -> Result<(), Fault> {
     Ok(())
 }
 
+fn push_native(state: &mut VmState, native: NativeState) -> Result<(), Fault> {
+    let limit = state.forward_limits(state.stack_len()).1;
+    if state.natives.len() >= limit {
+        return Err(Fault::StackOverflow(format!(
+            "maximum native call depth of {limit} frames exceeded"
+        )));
+    }
+    let pc = running(state).unwrap_or_else(|| state.top().pc.saturating_sub(1));
+    assert_no_borrow("starting a property continuation");
+    state.natives.push(NativeFrame {
+        depth: state.depth(),
+        base: state.stack_len(),
+        pc,
+        awaiting: Awaiting::Nothing,
+        state: native,
+    });
+    Ok(())
+}
+
+fn index_key(index: u64) -> property::Key {
+    if index < u64::from(u32::MAX) {
+        property::Key::Index(index as u32)
+    } else {
+        property::Key::Name(JsString::from(index.to_string().as_str()))
+    }
+}
+
+fn to_length(value: &Value) -> Result<u64, Fault> {
+    let number = dispatch::to_number(value)?;
+    Ok(if number.is_nan() || number <= 0.0 {
+        0
+    } else {
+        number.trunc().min(((1_u64 << 53) - 1) as f64) as u64
+    })
+}
+
+pub(crate) fn read_result(
+    state: &mut VmState,
+    read: Option<property::Read>,
+    this: Value,
+) -> Result<(), Fault> {
+    match read.unwrap_or(property::Read::Value(Value::Undefined)) {
+        property::Read::Value(value) => state.push(value),
+        property::Read::Getter(callee) => {
+            return push_native(
+                state,
+                NativeState::PropertyCall {
+                    callee,
+                    this,
+                    assigned: None,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn write_result(
+    state: &mut VmState,
+    setter: Option<Value>,
+    this: Value,
+    assigned: Value,
+) -> Result<(), Fault> {
+    match setter {
+        Some(callee) => push_native(
+            state,
+            NativeState::PropertyCall {
+                callee,
+                this,
+                assigned: Some(assigned),
+            },
+        ),
+        None => {
+            state.push(assigned);
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn start_instanceof(state: &mut VmState, heap: &Heap) -> Result<(), Fault> {
+    let [value, target] = operands::<2>(state)?;
+    let target = prototype::instance_target(heap, &value, &target)?;
+    state.pop()?;
+    state.pop()?;
+    match target {
+        Some(target) => push_native(state, NativeState::Instanceof { value, target }),
+        None => {
+            state.push(Value::Bool(false));
+            Ok(())
+        }
+    }
+}
+
 impl NativeState {
     /// One step: consume `input`, return the next action. Anything allocated
     /// is stored in `self` (a root) before returning.
     fn step(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Action, Fault> {
         match self {
+            NativeState::Bind {
+                target,
+                args,
+                length,
+                stage,
+            } => {
+                if *stage == 0 {
+                    dispatch::callee(heap, target)?;
+                    let Value::Object(id) = target else {
+                        unreachable!()
+                    };
+                    *stage = 1;
+                    let key = property::Key::Name(JsString::from("length"));
+                    if property::get_own_property(heap, task, *id, &key)?.is_some() {
+                        match property::read(heap, task, target, &key)? {
+                            Some(property::Read::Getter(callee)) => {
+                                return Ok(Action::Call {
+                                    callee,
+                                    this: target.clone(),
+                                    args: vec![],
+                                });
+                            }
+                            Some(property::Read::Value(v)) => *length = v,
+                            None => {}
+                        }
+                    }
+                } else if *stage == 1 {
+                    let Input::CallResult(v) = input else {
+                        return Err(Fault::Internal("bind expected length"));
+                    };
+                    *length = v;
+                } else {
+                    let Input::CallResult(name) = input else {
+                        return Err(Fault::Internal("bind expected name"));
+                    };
+                    return super::function::bind_with_metadata(
+                        heap, task, target, args, length, &name,
+                    )
+                    .map(Action::Return);
+                }
+                *stage = 2;
+                let name = match property::read(
+                    heap,
+                    task,
+                    target,
+                    &property::Key::Name(JsString::from("name")),
+                )? {
+                    Some(property::Read::Getter(callee)) => {
+                        return Ok(Action::Call {
+                            callee,
+                            this: target.clone(),
+                            args: vec![],
+                        });
+                    }
+                    Some(property::Read::Value(v)) => v,
+                    None => Value::Undefined,
+                };
+                super::function::bind_with_metadata(heap, task, target, args, length, &name)
+                    .map(Action::Return)
+            }
+            NativeState::Apply {
+                callee,
+                this,
+                list,
+                args,
+                len,
+                max_args,
+                called,
+            } => {
+                if *called {
+                    let Input::CallResult(v) = input else {
+                        return Err(Fault::Internal("apply expected a call result"));
+                    };
+                    return Ok(Action::Return(v));
+                }
+                dispatch::callee(heap, callee)?;
+                if len.is_none() {
+                    if !matches!(list, Value::Object(_)) {
+                        return Err(Fault::TypeError(
+                            "an argument list must be an object".into(),
+                        ));
+                    }
+                    let value = match input {
+                        Input::Start => match property::read(
+                            heap,
+                            task,
+                            list,
+                            &property::Key::Name(JsString::from("length")),
+                        )? {
+                            Some(property::Read::Getter(callee)) => {
+                                return Ok(Action::Call {
+                                    callee,
+                                    this: list.clone(),
+                                    args: vec![],
+                                });
+                            }
+                            Some(property::Read::Value(v)) => v,
+                            None => Value::Undefined,
+                        },
+                        Input::CallResult(v) => v,
+                        Input::Dependency(_) => {
+                            return Err(Fault::Internal("apply received dependency"));
+                        }
+                    };
+                    if matches!(value, Value::Object(_)) {
+                        return Ok(Action::ToNumber(value));
+                    }
+                    let length = to_length(&value)?;
+                    if length > *max_args as u64 {
+                        return Err(Fault::StackOverflow(format!(
+                            "too many arguments: an argument list of length {length} exceeds the limit of {max_args}"
+                        )));
+                    }
+                    *len = Some(length as usize);
+                } else if let Input::CallResult(v) = input {
+                    args.push(v);
+                }
+                while args.len() < len.unwrap() {
+                    match property::read(heap, task, list, &index_key(args.len() as u64))? {
+                        Some(property::Read::Getter(callee)) => {
+                            return Ok(Action::Call {
+                                callee,
+                                this: list.clone(),
+                                args: vec![],
+                            });
+                        }
+                        Some(property::Read::Value(v)) => args.push(v),
+                        None => args.push(Value::Undefined),
+                    }
+                }
+                *called = true;
+                Ok(Action::Call {
+                    callee: callee.clone(),
+                    this: this.clone(),
+                    args: args.clone(),
+                })
+            }
+            NativeState::Push {
+                this,
+                args,
+                len,
+                next,
+                finishing,
+            } => {
+                if *finishing {
+                    return Ok(Action::Return(Value::Number(
+                        (len.unwrap() + args.len() as u64) as f64,
+                    )));
+                }
+                if len.is_none() {
+                    if !matches!(this, Value::Object(_)) {
+                        return Err(match this {
+                            Value::Undefined | Value::Null => Fault::TypeError(format!("cannot convert {} to object", this.type_name())),
+                            _ => Fault::Unsupported("Array.prototype.push on a primitive needs a wrapper object, which is not supported".into()),
+                        });
+                    }
+                    let value = match input {
+                        Input::Start => match property::read(
+                            heap,
+                            task,
+                            this,
+                            &property::Key::Name(JsString::from("length")),
+                        )? {
+                            Some(property::Read::Getter(callee)) => {
+                                return Ok(Action::Call {
+                                    callee,
+                                    this: this.clone(),
+                                    args: vec![],
+                                });
+                            }
+                            Some(property::Read::Value(v)) => v,
+                            None => Value::Undefined,
+                        },
+                        Input::CallResult(v) => v,
+                        Input::Dependency(_) => {
+                            return Err(Fault::Internal("push received dependency"));
+                        }
+                    };
+                    if matches!(value, Value::Object(_)) {
+                        return Ok(Action::ToNumber(value));
+                    }
+                    let length = to_length(&value)?;
+                    if args.len() as u64 > ((1 << 53) - 1) - length {
+                        return Err(Fault::TypeError(
+                            "array-like length exceeds 2^53 - 1".into(),
+                        ));
+                    }
+                    *len = Some(length);
+                }
+                while *next < args.len() {
+                    let key = index_key(len.unwrap() + *next as u64);
+                    let item = args[*next].clone();
+                    let setter = property::prepare_put(heap, task, this, &key, item.clone(), true)?;
+                    *next += 1;
+                    if let Some(callee) = setter {
+                        return Ok(Action::Call {
+                            callee,
+                            this: this.clone(),
+                            args: vec![item],
+                        });
+                    }
+                }
+                let length = Value::Number((len.unwrap() + args.len() as u64) as f64);
+                let setter = property::prepare_put(
+                    heap,
+                    task,
+                    this,
+                    &property::Key::Name(JsString::from("length")),
+                    length.clone(),
+                    true,
+                )?;
+                *finishing = true;
+                match setter {
+                    Some(callee) => Ok(Action::Call {
+                        callee,
+                        this: this.clone(),
+                        args: vec![length],
+                    }),
+                    None => Ok(Action::Return(length)),
+                }
+            }
+            NativeState::Instanceof { value, target } => {
+                let proto = match input {
+                    Input::Start => match property::read(
+                        heap,
+                        task,
+                        target,
+                        &property::Key::Name(JsString::from("prototype")),
+                    )? {
+                        Some(property::Read::Getter(callee)) => {
+                            return Ok(Action::Call {
+                                callee,
+                                this: target.clone(),
+                                args: vec![],
+                            });
+                        }
+                        Some(property::Read::Value(v)) => v,
+                        None => Value::Undefined,
+                    },
+                    Input::CallResult(v) => v,
+                    Input::Dependency(_) => {
+                        return Err(Fault::Internal("instanceof received a dependency"));
+                    }
+                };
+                prototype::instance_of_prototype(heap, task, value, &proto)
+                    .map(|v| Action::Return(Value::Bool(v)))
+            }
+            NativeState::DefineProperty(desc) => {
+                let result = match input {
+                    Input::Start => None,
+                    Input::CallResult(v) => Some(v),
+                    Input::Dependency(_) => {
+                        return Err(Fault::Internal("descriptor received a dependency"));
+                    }
+                };
+                match desc.step(heap, task, result)? {
+                    descriptor::DefineStep::Getter { callee, this } => Ok(Action::Call {
+                        callee,
+                        this,
+                        args: vec![],
+                    }),
+                    descriptor::DefineStep::Done(v) => Ok(Action::Return(v)),
+                }
+            }
+            NativeState::PropertyCall {
+                callee,
+                this,
+                assigned,
+            } => match input {
+                Input::Start => Ok(Action::Call {
+                    callee: callee.clone(),
+                    this: this.clone(),
+                    args: assigned.iter().cloned().collect(),
+                }),
+                Input::CallResult(v) => Ok(Action::Return(assigned.clone().unwrap_or(v))),
+                Input::Dependency(_) => {
+                    Err(Fault::Internal("property callback received a dependency"))
+                }
+            },
             NativeState::Reduce {
                 f,
                 vec,
@@ -953,11 +1534,21 @@ impl NativeState {
                 end,
                 hint,
                 method,
+                method_get,
             } => {
                 match input {
                     Input::Start => {}
                     Input::CallResult(v) => {
-                        if !matches!(v, Value::Object(_)) {
+                        if *method_get {
+                            *method_get = false;
+                            if dispatch::callee(heap, &v).is_ok() {
+                                return Ok(Action::Call {
+                                    callee: v,
+                                    this: operands[*next].clone(),
+                                    args: vec![],
+                                });
+                            }
+                        } else if !matches!(v, Value::Object(_)) {
                             operands[*next] = v;
                             *method = 0;
                         }
@@ -1025,7 +1616,18 @@ impl NativeState {
                         *method += 1;
                         // Lookup the second method only after the first has
                         // returned an object: its callback may change it.
-                        let callee = property::conversion_method(heap, task, receiver, &name)?;
+                        let callee = match property::conversion_method(heap, task, receiver, &name)?
+                        {
+                            property::Read::Value(v) => v,
+                            property::Read::Getter(callee) => {
+                                *method_get = true;
+                                return Ok(Action::Call {
+                                    callee,
+                                    this: receiver.clone(),
+                                    args: vec![],
+                                });
+                            }
+                        };
                         match dispatch::callee(heap, &callee) {
                             Ok(_) => {
                                 return Ok(Action::Call {
@@ -1059,6 +1661,13 @@ impl NativeState {
                         ));
                         Ok(Action::Continue)
                     }
+                    ConvertTarget::NumberValue => {
+                        dispatch::to_number(&operands[0]).map(|n| Action::Return(Value::Number(n)))
+                    }
+                    ConvertTarget::PropertyBuiltin { which } => Ok(Action::Builtin {
+                        which,
+                        args: operands.clone(),
+                    }),
                     ConvertTarget::Instruction(instr) => Ok(Action::Resume {
                         instr,
                         operands: operands.clone(),
@@ -1131,6 +1740,12 @@ impl NativeState {
         match (self, failure) {
             (
                 NativeState::Reduce { .. }
+                | NativeState::PropertyCall { .. }
+                | NativeState::DefineProperty(_)
+                | NativeState::Instanceof { .. }
+                | NativeState::Apply { .. }
+                | NativeState::Push { .. }
+                | NativeState::Bind { .. }
                 | NativeState::NeedAll { .. }
                 | NativeState::Convert { .. }
                 | NativeState::StringSearch(_)
@@ -1219,6 +1834,7 @@ mod tests {
             .unwrap(),
         );
         let pending = |concat_len| NativeState::Convert {
+            method_get: false,
             target: ConvertTarget::StringBuiltin {
                 which: builtin::Builtin::StringPrototypeConcat,
                 access: true,

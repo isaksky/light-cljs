@@ -1700,7 +1700,7 @@ Supported (`cargo test --lib frontend::tests::object_literals`,
 Deferred:
 
 - (`Object.prototype` and method calls: clj-quickjs-117, below.)
-  Getters/setters and computed keys in literals (clj-quickjs-233;
+  Computed keys in literals (clj-quickjs-233;
   `o[k]` is clj-quickjs-115, below; `delete` is clj-quickjs-124, below),
   `__proto__` (property `++`/`--` and compound assignment: clj-quickjs-76,
   -260, above); properties of error objects and
@@ -2062,7 +2062,7 @@ Deferred:
   and freezing a function makes it unpublishable (it gets a property record).
 - `Object.seal`,
   `Object.isSealed` and `Reflect`'s extensibility functions are not provided; error objects fail with `UnsupportedOperand`
-  (clj-quickjs-230); accessor properties are clj-quickjs-120.
+  (clj-quickjs-230).
 
 ### `Object.keys` and `Object.getOwnPropertyNames` (clj-quickjs-123)
 
@@ -2332,7 +2332,7 @@ Supported (`cargo test --test js_functions function_length_and_name`,
   0/empty-string fallback. Published functions are immutable and report
   non-configurable metadata descriptors without attaching a record.
 
-Deferred: rest and destructuring parameters, method shorthand, and accessors;
+Deferred: rest and destructuring parameters;
 their syntax remains rejected. See `docs/architecture.md`, "Function own properties".
 
 ### `Array.prototype.push` (clj-quickjs-155)
@@ -2346,8 +2346,8 @@ reject invalid writes; another task's array fails with `ForeignObject`.
 The `Array` global exposes the existing constructor stub and its prototype;
 `Array.prototype.push.length` is 1.
 
-Deferred: primitive receiver wrappers and object-valued length conversion
-fail explicitly; array construction and other array methods retain their
+Deferred: primitive receiver wrappers fail explicitly; array construction
+and other array methods retain their
 existing gaps. The for-in adaptation clj-quickjs-264 also needs array
 string conversion and stays deferred.
 
@@ -2458,7 +2458,7 @@ name from the key, and own `this` and unmapped `arguments`. They are strict in
 this subset, have no own `prototype`, and `new o.m()` throws TypeError.
 An immutable home-object reference retains the defining literal and prevents
 publication of the method through its task-owned home object. GC traces and
-reclaims method/literal cycles. Computed keys, accessors, async/generator
+reclaims method/literal cycles. Computed keys, async/generator
 methods and `super` remain deferred.
 
 Checks: `cargo test --lib frontend::tests::object_literal_methods -- --exact`,
@@ -2474,3 +2474,27 @@ longest valid prefix, preserve signed zero and round to binary64. Object
 coercion is resumable; long scans charge the instruction budget. Global
 object properties remain deferred to clj-quickjs-104. Run the parsing cases
 with `cargo test --test js_source parse_`.
+
+### Accessor properties (clj-quickjs-120)
+
+Supported: literal `get z() {}` / `set z(v) {}`, identifier/string/numeric
+keys, merged getter/setter definitions, inferred `get z`/`set z` names,
+non-constructor functions with home objects, and accessor descriptors in
+`Object.defineProperty` / `Object.getOwnPropertyDescriptor`. Reads and writes
+preserve the original receiver through inheritance. Missing setters follow
+strict/sloppy assignment rules. Freeze preserves setters; keys, for-in,
+`in`, reflection and delete inspect descriptors without invoking getters.
+Array indices and function properties accept accessors too.
+
+Getters/setters, descriptor-field reads, conversion-method lookup,
+`instanceof` prototype reads, bind metadata, apply argument lists and push
+length/index operations run through traced native continuations and ordinary
+VM frames. They can yield, wait, migrate and unwind on cancellation; apply
+and push also support object-valued lengths through resumable ToPrimitive.
+Computed literal keys, super, async/generator methods and the stored built-in
+`Object.prototype.__proto__` accessor (clj-quickjs-261) remain deferred.
+
+Checks: `cargo test --lib frontend::tests::accessor_literals -- --exact`,
+`cargo test --test js_source accessor`, `cargo test --test need getter_waits_on_dependency_and_resumes -- --exact`,
+`cargo test --test need accessor_cancellation_and_dependency_failure_unwind -- --exact`,
+`cargo test --test gc_roots accessor`, `cargo test --test publication accessor`.

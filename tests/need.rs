@@ -30,6 +30,95 @@ const NUMBER: (DependencyId, ResultKind) = (DependencyId::new(5), ResultKind::ne
 /// `__rt.need(6, 2)`: a callable.
 const CALLABLE: (DependencyId, ResultKind) = (DependencyId::new(6), ResultKind::new(2));
 
+#[test]
+fn getter_waits_on_dependency_and_resumes() {
+    // Synthetic fixtures, not light-cljs output. Each row exercises a
+    // different property continuation with the same wait/migration/GC path.
+    for src in [
+        "let o = {get z() { return __rt.need(5, 3) + this.x; }, x: 2}; __rt.effect(1, 3) + o.z + 1",
+        "let o = {set z(v) { this.x = __rt.need(5, 3) + v; }}; let before = __rt.effect(1, 3); let assigned = (o.z = 2); before + o.x + assigned - 1",
+        "let o = {}; let d = {get value() { return __rt.need(5, 3) + 2; }}; let before = __rt.effect(1, 3); Object.defineProperty(o, 'z', d); before + o.z + 1",
+        "let o = {get valueOf() { let n = __rt.need(5, 3); return () => n + 2; }}; __rt.effect(1, 3) + (+o) + 1",
+        "let args = {get length() { return 1; }, get 0() { return __rt.need(5, 3) + 2; }}; __rt.effect(1, 3) + Reflect.apply(x => x, null, args) + 1",
+        "let a = {length: 0, set 0(v) { this.x = __rt.need(5, 3) + v; }}; let before = __rt.effect(1, 3); Array.prototype.push.call(a, 2); before + a.x + 1",
+        "let f = () => 0; Object.defineProperty(f, 'name', {get: function() { return 'x' + __rt.need(5, 3); }}); let before = __rt.effect(1, 3); let b = f.bind(null); before + (b.name === 'bound x7' ? 10 : 0)",
+        "let p = {}; let f = () => 0; Object.defineProperty(f, 'prototype', {get: function() { __rt.need(5, 3); return p; }}); let o = Object.create(p); __rt.effect(1, 3) + (o instanceof f ? 10 : 0)",
+    ] {
+        let rt = Runtime::new();
+        let exe = compile_script("accessor-wait", src).unwrap();
+        let task = rt.spawn(&exe, &[]).unwrap();
+        let mut host = Recorder::default();
+        let expected = key(&rt, NUMBER);
+        let mut yielded = 0;
+        loop {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    yielded += 1;
+                    assert!(yielded < 1000);
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected);
+                    break;
+                }
+            }
+        }
+        assert_eq!(host.effects, [3.0]);
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+        rt.collect().unwrap();
+        let (result, host) = thread::spawn(move || (number(run(&resumed, &mut host)), host))
+            .join()
+            .unwrap();
+        assert_eq!(result, 113.0, "{src}");
+        assert_eq!(host.effects, [3.0], "no replay: {src}");
+        assert_eq!(task.dependency_log().edges(), &[expected]);
+    }
+}
+
+#[test]
+fn accessor_cancellation_and_dependency_failure_unwind() {
+    let rt = Runtime::new();
+    let exe = compile_script(
+        "cancel-accessor",
+        "let o = {get z() { try { return __rt.need(5, 3); } finally { __rt.effect(2, 9); } }}; o.z",
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    let expected = key(&rt, NUMBER);
+    assert_eq!(waiting(run(&task, &mut host)), expected);
+    let request = one_request(&task, expected);
+    let Cancel::Runnable(cancelled) = task.cancel() else {
+        panic!("runnable cancellation")
+    };
+    assert!(matches!(run(&cancelled, &mut host), RunOutcome::Cancelled));
+    assert_eq!(host.reports, [9.0]);
+    rt.collect().unwrap();
+    assert!(
+        publish_number(&rt, &request, 7.0)
+            .into_runnable()
+            .is_empty()
+    );
+
+    let rt = Runtime::new();
+    let exe = compile_script("failed-accessor", "let o = {get z() { return __rt.need(5, 3); }}; let caught = 0; try { o.z; } catch(e) { caught = 17; } caught").unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    assert_eq!(waiting(task.run().unwrap()), key(&rt, NUMBER));
+    let request = one_request(&task, key(&rt, NUMBER));
+    let error = rt.root(Primitive::Number(42.0));
+    let wakeups = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            Completion::Failed(&error),
+        )
+        .unwrap();
+    rt.collect().unwrap();
+    assert_eq!(number(only_runnable(wakeups).run().unwrap()), 17.0);
+}
+
 fn key(rt: &Runtime, (def, kind): (DependencyId, ResultKind)) -> DependencyKey {
     DependencyKey::new(rt.world(), def, kind)
 }

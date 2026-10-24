@@ -121,3 +121,17 @@ The full QuickJS copyright and MIT permission notice is retained on
 Other cases are synthetic fixtures, not light-cljs output. `js_parseInt`,
 `js_parseFloat` and `js_atof` in `research/quickjs/quickjs.c` at that revision
 were consulted for semantics. The Rust scanners were written afresh.
+
+## Accessor properties (clj-quickjs-120)
+
+`tests/js_source.rs::accessor_properties` adapts accessor read/write groups
+from `research/quickjs/tests/test_builtin.js::test` and contextual get/set
+keys from `research/quickjs/tests/test_language.js::test_object_literal`,
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The full QuickJS copyright/MIT permission notice on
+`string_code_unit_access` in that file applies to these adapted cases too
+(`research/quickjs/LICENSE`). Other new fixtures are synthetic and written
+for this runtime, not light-cljs output. `JS_GetPropertyInternal`,
+`JS_SetPropertyInternal`, `js_parse_object_literal`, `js_parse_property_name`
+and `js_get_function_name` in `research/quickjs/quickjs.c` at that revision
+serve as semantic references; no upstream C implementation was copied.
