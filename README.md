@@ -2805,7 +2805,7 @@ licensing and the informational release-size measurement are recorded in
 No binary-size cap applies at this stage. Regeneration uses the existing
 [offline exporter](scripts/quickjs-data/README.md#checked-in-intl-modules), with
 pinned hashes and provenance; normal builds require no generator or network.
-Decimal `Intl.NumberFormat` and `Intl.PluralRules`, including their
+Decimal/percent/currency `Intl.NumberFormat` and `Intl.PluralRules`, including their
 `supportedLocalesOf` methods, use the test locales above
 (clj-quickjs-213, clj-quickjs-212).
 Deferred: other Intl formatting service constructors, general resumable
@@ -3145,7 +3145,7 @@ shared Number::toString output. BigInts and decimal strings retain their digits.
 Options and argument coercions can wait, yield, collect and migrate. The host
 supplies the default locale once per constructor; absent a host it is en-US.
 
-Deferred: percent/currency styles (clj-quickjs-214), other styles and notations
+Deferred: unit style and nonstandard notations
 (explicit RangeError), parts/range methods, ChainNumberFormat's legacy
 fallback receiver, and general Object.prototype.toString tag consumption.
 Both localeMatcher values currently use lookup over the policy's test locales.
@@ -3218,3 +3218,18 @@ Without u, p/P remain Annex B identity escapes. Unknown names throw SyntaxError.
 Deferred: Script/Script_Extensions (including sc/scx) throw SyntaxError; v sets
 and string properties remain unsupported. Run:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_property_escapes -- --exact --test-threads=3`.
+
+### Percent and currency NumberFormat (clj-quickjs-214)
+
+Supported: `style: 'percent'` scales exact decimal values by 100 and defaults to
+zero fraction digits. `style: 'currency'` requires a three-letter ASCII currency
+code (normalized to uppercase); missing codes throw TypeError, malformed codes
+throw RangeError. Fraction defaults use the pinned QuickJS minor units (EUR 2,
+JPY 0; its CLF default is 3). `currencyDisplay` accepts symbol/narrowSymbol/code/name
+and `currencySign` accepts standard/accounting. `resolvedOptions` reports all
+currency settings only for currency style. Locale patterns preserve spaces and
+bidi marks. Unknown valid codes display themselves. Following the output policy,
+name and narrowSymbol use the snapshot's regular symbol, code uses the literal
+code without extra spacing, and NaN/infinity have no style affixes.
+Deferred: unit style (RangeError), distinct narrow symbols and translated
+currency names beyond the pinned QuickJS behavior.

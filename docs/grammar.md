@@ -456,11 +456,11 @@ are still covered by the computed-key rejection below.
 ## Explicit gaps
 
 `Intl` provides locale identifiers and likely-subtag maximize/minimize
-(clj-quickjs-209/-210/-211), plus decimal `NumberFormat` with bound `format`,
+(clj-quickjs-209/-210/-211), plus decimal/percent/currency `NumberFormat` with bound `format`,
 `resolvedOptions` and `supportedLocalesOf` over the policy's test locales
 (clj-quickjs-213). Other formatting service constructors and their
 `supportedLocalesOf`, Locale information methods, and NumberFormat's
-non-decimal styles and parts/range methods remain deferred.
+unit style and parts/range methods remain deferred.
 
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
@@ -877,7 +877,7 @@ delete a[o];
 non-enumerable, configurable `Symbol.toStringTag` of `Intl` (clj-quickjs-209).
 `Object.prototype.toString.call(Intl)` produces `[object Intl]`; both `Intl()`
 and `new Intl()` throw catchable TypeErrors. The namespace follows shared
-intrinsic mutation restrictions. Decimal `Intl.NumberFormat` and
+intrinsic mutation restrictions. Decimal/percent/currency `Intl.NumberFormat` and
 `Intl.PluralRules` are installed;
 other formatting service constructors remain deferred.
 
@@ -3912,7 +3912,7 @@ digits (0..100), significant digits (1..21), and all nine rounding modes
 (default halfExpand); default fraction bounds are 0..3. Invalid listed options
 throw catchable RangeErrors; invalid receivers and Symbol numbers throw TypeError.
 
-Explicit gaps: percent/currency (clj-quickjs-214), other styles and nonstandard
+Explicit gaps: unit style and nonstandard
 notations throw RangeError. Numbering-system options and nu extensions use the pinned QuickJS digit mappings;
 unknown well-formed systems fall back to the selected system. Both matchers use lookup over the policy's test locales.
 Parts/range methods, ChainNumberFormat legacy receivers and general
@@ -4044,3 +4044,25 @@ SyntaxError. The v flag and Unicode string properties remain deferred.
 /\p{Lowercase}/u.test('\u{1D41A}');
 /[\p{Nd}x]/u.test('x') && /\P{Lower}/iu.test('a');
 ```
+
+### Percent and currency NumberFormat (clj-quickjs-214)
+
+Execution: NumberFormat additionally accepts percent and currency styles.
+Percent adjusts the decimal exponent before rounding (including BigInt/string
+inputs), with default fraction bounds 0..0. Currency defaults follow the pinned
+QuickJS minor-unit rules (EUR 2..2, JPY 0..0, CLF 3..3); explicit fraction or
+significant-digit options still apply. `currency` must contain exactly three
+ASCII letters and is uppercased, including unknown codes. A missing currency
+for currency style throws TypeError; malformed codes and invalid display/sign
+options throw RangeError, even when supplied with decimal or percent style.
+`currencyDisplay` is symbol (default), narrowSymbol, code or name;
+`currencySign` is standard (default) or accounting. Currency settings appear in
+`resolvedOptions` only for currency style. All new getters and ToString calls
+use resumable native continuations, before notation and digit options.
+
+Patterns and symbols come from the test-locale snapshot, including nonbreaking
+spaces and Arabic bidi marks. The QuickJS output policy retains four-digit
+Spanish grouping; narrowSymbol and name both use the regular currency symbol,
+code inserts the literal code without added spacing, and nonfinite values have
+no percent/currency affix. Explicit gaps: unit style throws RangeError; distinct
+narrow symbols and translated currency names beyond QuickJS remain deferred.

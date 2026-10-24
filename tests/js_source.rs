@@ -17954,13 +17954,13 @@ fn intl_number_format_options_and_rounding() {
         "numberingSystem:'bad!'",
         "useGrouping:'never'",
         "useGrouping:1",
-        "style:'currency'",
-        "style:'percent'",
+        "style:'unit'",
     ] {
         let source = format!("new Intl.NumberFormat('en',{{{option}}})");
         assert_eq!(failure(&source).kind(), VmErrorKind::RangeError, "{source}");
     }
     for source in [
+        "new Intl.NumberFormat('en',{style:'currency'})",
         "new Intl.NumberFormat('en',null)",
         "Intl.NumberFormat.prototype.resolvedOptions.call({})",
         "Object.getOwnPropertyDescriptor(Intl.NumberFormat.prototype,'format').get.call({})",
@@ -18600,4 +18600,144 @@ fn intl_plural_rules_rounding_modes() {
         ),
         ValueView::Bool(true)
     );
+}
+
+/// Synthetic fixtures, not light-cljs output. Locale rows adapt QuickJS's
+/// tests/test_intl.js::test_numberFormat (7d1c13c5d8f8).
+/// MIT license: see the full QuickJS copyright and permission
+/// notice above intl_number_format_decimal and src/intl/data/QUICKJS-LICENSE.
+#[test]
+fn intl_number_format_percent_and_currency() {
+    // Policy clj-quickjs-209 selects QuickJS's four-digit Spanish grouping.
+    for (locale, style, number, expected) in [
+        ("en", "percent", "0.5", "50%"),
+        ("en", "currency", "1234.56", "€1,234.56"),
+        ("de", "percent", "0.5", "50\u{a0}%"),
+        ("de", "currency", "1234.56", "1.234,56\u{a0}€"),
+        ("fr", "percent", "0.5", "50\u{a0}%"),
+        ("fr", "currency", "1234.56", "1\u{202f}234,56\u{a0}€"),
+        ("es", "currency", "1234.56", "1.234,56\u{a0}€"),
+        ("ar", "percent", "0.5", "50\u{200e}%\u{200e}"),
+        ("ar", "currency", "1234.56", "\u{200f}1,234.56\u{a0}€"),
+        ("ru", "currency", "1234.56", "1\u{a0}234,56\u{a0}€"),
+        ("pt-BR", "currency", "1234.56", "€\u{a0}1.234,56"),
+        ("ja", "currency", "1234.5", "€1,234.50"),
+    ] {
+        let source = format!(
+            "new Intl.NumberFormat('{locale}',{{style:'{style}',currency:'EUR'}}).format({number}) === '{expected}'"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        "new Intl.NumberFormat('ja',{style:'currency',currency:'JPY'}).format(1234.5) === '￥1,235'",
+        "let o=new Intl.NumberFormat('en',{style:'currency',currency:'eur'}).resolvedOptions(); o.style === 'currency' && o.currency === 'EUR' && o.currencyDisplay === 'symbol' && o.currencySign === 'standard' && o.minimumFractionDigits === 2 && o.maximumFractionDigits === 2",
+        "let caught=false; try {new Intl.NumberFormat('en',{style:'currency'});} catch(e){caught=e instanceof TypeError;} caught",
+        "let caught=false; try {new Intl.NumberFormat('en',{style:'currency',currency:'EU'});} catch(e){caught=e instanceof RangeError;} caught",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Snapshot compatibility includes
+/// symbol/name aliases, nonfinite values without affixes, and CLF=3 digits.
+#[test]
+fn intl_number_format_currency_options_and_percent_scaling() {
+    for source in [
+        "let f=new Intl.NumberFormat('en',{style:'percent'}).format; f('0.005') === '1%' && f('0.0049') === '0%' && f(-0) === '-0%' && f(0) === '0%' && f(12n) === '1,200%' && f('12345678901234567890.12') === '1,234,567,890,123,456,789,012%'",
+        "new Intl.NumberFormat('en',{style:'percent',maximumFractionDigits:2}).format('0.012345') === '1.23%'",
+        "new Intl.NumberFormat('en',{style:'percent',minimumSignificantDigits:3,maximumSignificantDigits:3}).format('0.012345') === '1.23%'",
+        "let n=new Intl.NumberFormat('en',{style:'percent'}); let o=n.resolvedOptions(); o.style === 'percent' && o.minimumFractionDigits === 0 && o.maximumFractionDigits === 0 && o.currency === undefined && o.currencyDisplay === undefined && o.currencySign === undefined",
+        "let n=new Intl.NumberFormat('en',{style:'currency',currency:'USD',currencySign:'accounting'}); n.format(-1234.5) === '($1,234.50)' && n.format(-0) === '($0.00)' && n.format(0) === '$0.00' && n.resolvedOptions().currencySign === 'accounting'",
+        "new Intl.NumberFormat('de',{style:'currency',currency:'EUR',currencySign:'accounting'}).format(-1) === '-1,00\u{00a0}€'",
+        "new Intl.NumberFormat('ar',{style:'currency',currency:'EUR'}).format(-1) === '\u{200f}-1.00\u{00a0}€'",
+        "new Intl.NumberFormat('ar',{style:'currency',currency:'EUR',currencySign:'accounting'}).format(-1) === '(\u{061c}1.00€)'",
+        "new Intl.NumberFormat('ar',{style:'percent'}).format(-0.5) === '\u{200e}-50\u{200e}%\u{200e}'",
+        "new Intl.NumberFormat('tr',{style:'percent'}).format(-0.5) === '-%50'",
+        "let n=new Intl.NumberFormat('en',{style:'currency',currency:'EUR',currencyDisplay:'code'}); n.format(1) === 'EUR1.00' && n.resolvedOptions().currencyDisplay === 'code'",
+        "let n=new Intl.NumberFormat('en',{style:'currency',currency:'CAD',currencyDisplay:'narrowSymbol'}); n.format(1) === 'CA$1.00' && n.resolvedOptions().currencyDisplay === 'narrowSymbol'",
+        "let n=new Intl.NumberFormat('en',{style:'currency',currency:'EUR',currencyDisplay:'name'}); n.format(1) === '€1.00' && n.resolvedOptions().currencyDisplay === 'name'",
+        "new Intl.NumberFormat('en',{style:'currency',currency:'xyz'}).format(1) === 'XYZ1.00'",
+        "new Intl.NumberFormat('en',{style:'currency',currency:'KWD'}).format(1.2345) === 'KWD1.235'",
+        "new Intl.NumberFormat('en',{style:'currency',currency:'CLF'}).resolvedOptions().maximumFractionDigits === 3",
+        "new Intl.NumberFormat('en',{style:'currency',currency:'EUR',maximumFractionDigits:0}).format(1.5) === '€2'",
+        "new Intl.NumberFormat('en',{style:'currency',currency:'JPY',minimumFractionDigits:2}).format(1.5) === '¥1.50'",
+        "new Intl.NumberFormat('en',{style:'currency',currency:'EUR',minimumSignificantDigits:3,maximumSignificantDigits:3}).format(1234.5) === '€1,230'",
+        "new Intl.NumberFormat('en',{style:'currency',currency:'EUR',numberingSystem:'fullwide'}).format(1234.5) === '€１,２３４.５０'",
+        "let f=new Intl.NumberFormat('en',{style:'currency',currency:'EUR',currencySign:'accounting'}).format; f(NaN) === 'NaN' && f(Infinity) === '∞' && f(-Infinity) === '-∞'",
+        "let f=new Intl.NumberFormat('en',{style:'percent'}).format; f(NaN) === 'NaN' && f(Infinity) === '∞'",
+        "let o=new Intl.NumberFormat('en',{style:'decimal',currency:'eur',currencyDisplay:'code',currencySign:'accounting'}).resolvedOptions(); o.currency === undefined && o.currencyDisplay === undefined && o.currencySign === undefined",
+        "let log=''; let caught=false; try {new Intl.NumberFormat('en',{style:'currency',get currencyDisplay(){log+='d';return 'symbol';},get currencySign(){log+='s';return 'standard';},get notation(){log+='n';return 'standard';}});} catch(e){caught=e instanceof TypeError;} caught && log === 'ds'",
+        "let log=''; let caught=false; try {new Intl.NumberFormat('en',{currency:'EU',get currencyDisplay(){log+='d';return 'symbol';}});} catch(e){caught=e instanceof RangeError;} caught && log === ''",
+        "let caught=false; try {new Intl.NumberFormat('en',{style:'unit'});} catch(e){caught=e instanceof RangeError;} caught",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for option in [
+        "currency:'EU'",
+        "currency:'E1R'",
+        "currency:'€UR'",
+        "currency:'EUR\\0'",
+        "currencyDisplay:'unknown'",
+        "currencySign:'unknown'",
+    ] {
+        let source = format!("new Intl.NumberFormat('en',{{{option}}})");
+        assert_eq!(failure(&source).kind(), VmErrorKind::RangeError, "{source}");
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. New string options and their
+/// conversions suspend independently, keeping exact getter order across GC.
+#[test]
+fn intl_number_format_currency_callbacks_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let source = r#"
+        let log='';
+        let n=new Intl.NumberFormat('en',{
+            get style(){log+='s';__rt.need(1,1);return {toString(){log+='S';__rt.need(2,1);return 'currency';}};},
+            get currency(){log+='c';__rt.need(3,1);return {toString(){log+='C';__rt.need(4,1);return 'eur';}};},
+            get currencyDisplay(){log+='d';__rt.need(5,1);return {toString(){log+='D';__rt.need(6,1);return 'code';}};},
+            get currencySign(){log+='a';__rt.need(7,1);return {toString(){log+='A';__rt.need(8,1);return 'accounting';}};}
+        });
+        let f=n.format; n=null;
+        let text=f({valueOf(){log+='n';__rt.need(9,1);return -12n;}});
+        text === '(EUR12.00)' && log === 'sScCdDaAn'
+    "#;
+    let mut task = rt.spawn(&exe(source), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..3000 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task
+                .run_with(Budget::instructions(1), &mut NoEffects)
+                .unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 9);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 9);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("currency option continuation did not finish");
 }

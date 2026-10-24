@@ -734,3 +734,16 @@ regeneration are shared with folding/identifiers in
 The independently pinned Unicode 17.0.0 UCD files are covered by
 `docs/UNICODE-LICENSE`. ECMAScript property spellings follow
 https://tc39.es/ecma262/multipage/text-processing.html#table-binary-unicode-properties.
+
+## Percent and currency NumberFormat (clj-quickjs-214)
+
+Semantic references: `research/quickjs/intl/numberformat.c` (constructor option
+order, fraction defaults, percent scaling and pattern substitution),
+`research/quickjs/intl/intl.c` (`js_intl_get_currency_digits` and
+`js_intl_get_currency_symbol`), and percent/currency examples from
+`research/quickjs/tests/test_intl.js::test_numberFormat`, all at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+Implementation is written afresh over the already attributed locale, pattern
+and currency pools. The integration examples adapt upstream expectations and
+refer to the full QuickJS copyright/permission notice beside the decimal tests
+and `src/intl/data/QUICKJS-LICENSE`. No new dataset or C runtime is used.

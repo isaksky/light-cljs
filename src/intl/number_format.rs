@@ -1,4 +1,4 @@
-//! Decimal NumberFormat slots and exact decimal arithmetic. Numbers enter via
+//! NumberFormat slots and exact decimal arithmetic. Numbers enter via
 //! the shared Number::toString helper, as QuickJS's Intl mathematical values do.
 use super::{LocaleData, data::numbers, table_string};
 use crate::heap::{Heap, HeapObject};
@@ -18,6 +18,10 @@ pub(crate) struct NumberFormat {
     pub significant: Option<(usize, usize)>,
     pub rounding: &'static str,
     pub numbering: &'static str,
+    pub style: &'static str,
+    pub currency: Option<String>,
+    pub currency_display: &'static str,
+    pub currency_sign: &'static str,
 }
 impl NumberFormat {
     pub fn new(locale: String, data: &'static LocaleData) -> Self {
@@ -35,6 +39,10 @@ impl NumberFormat {
             significant: None,
             rounding: "halfExpand",
             numbering,
+            style: "decimal",
+            currency: None,
+            currency_display: "symbol",
+            currency_sign: "standard",
         }
     }
     pub fn format(&self, value: &Value) -> Result<Value, Fault> {
@@ -67,6 +75,11 @@ impl NumberFormat {
                     ))));
                 }
                 Some(mut n) => {
+                    // Scale the mathematical decimal value, including BigInts,
+                    // before rounding. Zero must keep its canonical point.
+                    if self.style == "percent" && n.digits != [b'0'] {
+                        n.point += 2;
+                    }
                     let (places, minimum) = if let Some((min, max)) = self.significant {
                         (max as i32 - n.point, (min as i32 - n.point).max(0) as usize)
                     } else {
@@ -118,13 +131,52 @@ impl NumberFormat {
                 }
             }
         };
-        let result = if negative {
+        // QuickJS handles nonfinite values before applying style patterns.
+        let result = if unsigned == "Infinity" && negative {
             format!(
                 "{}{body}",
                 symbol(numbers::minusSign_tab, self.data.symbols.minusSign_idx)
             )
-        } else {
+        } else if unsigned == "Infinity" {
             body
+        } else {
+            let p = &self.data.patterns;
+            let (positive, minus) = match (self.style, self.currency_sign) {
+                ("percent", _) => (p.pct_pos, p.pct_neg),
+                ("currency", "accounting") => (p.acc_pos, p.acc_neg),
+                ("currency", _) => (p.cur_pos, p.cur_neg),
+                _ => (p.dec_pos, p.dec_neg),
+            };
+            let pattern = symbol(
+                numbers::pattern_tab,
+                if negative { minus } else { positive },
+            );
+            let currency = self.currency.as_deref().unwrap_or("");
+            let currency = if self.style != "currency" || self.currency_display == "code" {
+                currency
+            } else {
+                currency_symbol(self.data, currency).unwrap_or(currency)
+            };
+            // Tokens come only from the pinned patterns. Append replacements
+            // once, so user currency text cannot be interpreted as a pattern.
+            let mut result = String::new();
+            let mut rest = pattern;
+            while let Some(start) = rest.find('{') {
+                result.push_str(&rest[..start]);
+                let (token, tail) = rest[start..].split_once('}').expect("pinned pattern token");
+                result.push_str(match token {
+                    "{number" => &body,
+                    "{minusSign" => symbol(numbers::minusSign_tab, self.data.symbols.minusSign_idx),
+                    "{percentSign" => {
+                        symbol(numbers::percentSign_tab, self.data.symbols.percentSign_idx)
+                    }
+                    "{currency" => currency,
+                    _ => unreachable!("pinned number pattern"),
+                });
+                rest = tail;
+            }
+            result.push_str(rest);
+            result
         };
         let index = numbers::intl_all_numbering_systems
             .iter()
@@ -161,12 +213,28 @@ impl NumberFormat {
                 "numberingSystem",
                 Value::String(JsString::from(self.numbering)),
             ),
-            ("style", Value::String(JsString::from("decimal"))),
-            (
-                "minimumIntegerDigits",
-                Value::Number(self.min_integer as f64),
-            ),
+            ("style", Value::String(JsString::from(self.style))),
         ];
+        if self.style == "currency" {
+            fields.extend([
+                (
+                    "currency",
+                    Value::String(JsString::from(self.currency.as_deref().unwrap())),
+                ),
+                (
+                    "currencyDisplay",
+                    Value::String(JsString::from(self.currency_display)),
+                ),
+                (
+                    "currencySign",
+                    Value::String(JsString::from(self.currency_sign)),
+                ),
+            ]);
+        }
+        fields.push((
+            "minimumIntegerDigits",
+            Value::Number(self.min_integer as f64),
+        ));
         // The pinned QuickJS snapshot reports fraction bounds even when
         // significant-digit rounding takes precedence.
         fields.extend([
@@ -203,6 +271,45 @@ impl NumberFormat {
         ]);
         super::service::resolved_options(heap, task, fields)
     }
+}
+
+/// Minor units follow the pinned QuickJS snapshot (including its CLF=3).
+pub(crate) fn currency_digits(code: &str) -> usize {
+    match code {
+        "JPY" | "KRW" | "VND" | "ISK" | "CLP" | "KMF" | "GNF" | "PYG" | "RWF" => 0,
+        "CLF" | "BHD" | "JOD" | "KWD" | "OMR" | "TND" => 3,
+        _ => 2,
+    }
+}
+
+/// Decode the snapshot's unsigned LEB128 indices with checked bounds. There
+/// are two variable-length indices per currency record, not two bytes.
+fn currency_index(bytes: &mut &[u8]) -> Option<usize> {
+    let mut value = 0u32;
+    for shift in (0..=28).step_by(7) {
+        let (&byte, tail) = bytes.split_first()?;
+        *bytes = tail;
+        if shift == 28 && byte > 15 {
+            return None;
+        }
+        value |= u32::from(byte & 127) << shift;
+        if byte & 128 == 0 {
+            return usize::try_from(value).ok();
+        }
+    }
+    None
+}
+
+fn currency_symbol(data: &LocaleData, code: &str) -> Option<&'static str> {
+    let mut bytes = numbers::locale_currency_data.get(data.currency_offset as usize..)?;
+    for _ in 0..data.num_currencies {
+        let code_index = currency_index(&mut bytes)?;
+        let symbol_index = currency_index(&mut bytes)?;
+        if table_string(numbers::currency_code_tab, code_index)? == code {
+            return table_string(numbers::currency_sym_tab, symbol_index);
+        }
+    }
+    None
 }
 
 pub(crate) fn numbering_system(name: &str) -> Option<&'static str> {
@@ -434,5 +541,47 @@ impl Decimal {
                 digits[self.point as usize..].into(),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn currency_indices_and_snapshot_records() {
+        for (bytes, expected) in [
+            (&[0][..], Some(0)),
+            (&[127][..], Some(127)),
+            (&[128, 1][..], Some(128)),
+            (&[255, 255, 255, 255, 15][..], Some(u32::MAX as usize)),
+            (&[][..], None),
+            (&[128][..], None),
+            (&[255, 255, 255, 255, 16][..], None),
+            (&[128, 128, 128, 128, 128, 0][..], None),
+        ] {
+            let mut input = bytes;
+            assert_eq!(currency_index(&mut input), expected);
+        }
+        // Validate every selected locale's complete variable-length record,
+        // including indices greater than 127, against the shared string pools.
+        let mut multibyte = false;
+        for data in super::super::data::locale::locale_data_table {
+            let mut bytes = &numbers::locale_currency_data[data.currency_offset as usize..];
+            for _ in 0..data.num_currencies {
+                let code = currency_index(&mut bytes).unwrap();
+                let symbol = currency_index(&mut bytes).unwrap();
+                multibyte |= code > 127 || symbol > 127;
+                let code = table_string(numbers::currency_code_tab, code).unwrap();
+                let symbol = table_string(numbers::currency_sym_tab, symbol).unwrap();
+                assert_eq!(currency_symbol(data, code), Some(symbol), "{code}");
+            }
+            assert_eq!(currency_symbol(data, "XYZ"), None);
+        }
+        assert!(multibyte);
+        assert_eq!(
+            currency_symbol(super::super::lookup("ja").unwrap(), "JPY"),
+            Some("￥")
+        );
     }
 }

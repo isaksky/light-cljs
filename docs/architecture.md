@@ -4650,12 +4650,12 @@ silently substitutes another language. `resolve` tries the requested list,
 then the host default, then `en-US`/`en` as the final root. Tag validation,
 canonicalization, service availability and ECMA-402 option/extension resolution
 are layered above this data lookup API: Locale/getCanonicalLocales provide
-language-tag handling, and decimal NumberFormat provides service resolution,
+language-tag handling, and NumberFormat provides service resolution,
 including `supportedLocalesOf`. Other formatting services remain deferred.
 
 | Service/input | Snapshot coverage and policy |
 | --- | --- |
-| Numbers, currency symbols, compact patterns; date/time names and patterns | The fourteen records above and shared pools provide data for every advertised locale through its recorded parent. Decimal JS NumberFormat and its supportedLocalesOf consume the number data; other formatting services, currency/compact formatting and date/time formatting remain deferred. |
+| Numbers, currency symbols, compact patterns; date/time names and patterns | The fourteen records above and shared pools provide data for every advertised locale through its recorded parent. Decimal/percent/currency JS NumberFormat and its supportedLocalesOf consume the number data; other formatting services, compact formatting and date/time formatting remain deferred. |
 | Likely subtags | All 7,788 entries retained as supplemental lookup data, not an expanded advertised locale set; Locale maximize/minimize consumes them (clj-quickjs-211). |
 | Calendar/hour preferences, week data, script directions | Snapshot-wide supplemental tables retained for later Locale/date consumers. |
 | Display names | Exactly `en` and `fr` data; other requested languages must be reported unsupported by that service, then resolve through its available default/root (`en`). They must not claim translated names for the whole numbers/date locale set. |
@@ -5645,9 +5645,9 @@ trimmed with the shared StrWhiteSpace predicate, and malformed mantissas or
 exponents produce localized NaN before the resource checks or coefficient
 allocation. No dependencies or OS locale access.
 
-Percent/currency styles and nonstandard notations,
+Unit style and nonstandard notations,
 formatToParts/ranges, and legacy ChainNumberFormat receivers remain deferred.
-Non-decimal styles and nonstandard notations throw RangeError. General
+Unit style and nonstandard notations throw RangeError. General
 Object.prototype.toString tag consumption remains the existing explicit gap.
 
 ## Date non-locale string formatting (clj-quickjs-183)
@@ -5865,3 +5865,32 @@ The optional UCD verification in `scripts/quickjs-data/verify.sh` compares every
 installed Rust property, complement and iu image against the full-domain
 reference, checks every alias, proves corruption detection and repeats the
 expansion byte-for-byte. Ordinary Cargo builds need only checked-in Rust data.
+
+## Percent and currency NumberFormat (clj-quickjs-214)
+
+The existing immutable NumberFormat record also stores style, normalized
+currency code, display and sign options. Construction uses the shared Intl
+option reader/converter and allowed-string validator; all new getters and
+ToString conversions resume through explicit native stages. Currency presence
+is checked after display/sign options and before notation; malformed codes
+fail before reading later options. Default fraction bounds are adjusted against
+an explicitly supplied opposite bound, using the snapshot's minor-unit rules
+(including QuickJS's CLF=3 rather than modern ISO's 4).
+
+Finite percent values shift the exact decimal point by two before rounding;
+zero keeps its canonical coefficient. Finite outputs substitute tokens in the
+snapshot's decimal/percent/currency/accounting patterns exactly once, preserving
+all literal spaces, parentheses and bidi marks. A bounds-checked unsigned
+LEB128 reader consumes each locale's currency code/symbol index pairs from the
+existing generated pools. Absent symbols fall back to the normalized code.
+No generated representation, provenance, locale coverage, heap kind or tracing
+rule changes. The record owns only Rust strings and static data references;
+its existing task ownership and bound-function tracing rules continue to apply.
+
+QuickJS compatibility deliberately means narrowSymbol/name select the same
+symbol as symbol, literal currency codes receive no additional spacing, and
+NaN/infinity bypass style patterns. Unit style remains an explicit RangeError.
+Consumer tests validate every selected locale currency record, decoder bounds,
+locale acceptance strings, minor units, accounting/display options, percent
+scaling and resumable callbacks across collection and migration. No generator,
+OS locale access or dependency is added.

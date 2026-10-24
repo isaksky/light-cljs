@@ -9,6 +9,9 @@ const OPTIONS: &[&str] = &[
     "localeMatcher",
     "numberingSystem",
     "style",
+    "currency",
+    "currencyDisplay",
+    "currencySign",
     "notation",
     "minimumIntegerDigits",
     "minimumFractionDigits",
@@ -18,6 +21,16 @@ const OPTIONS: &[&str] = &[
     "roundingMode",
     "useGrouping",
 ];
+fn digit_option(name: &str) -> bool {
+    matches!(
+        name,
+        "minimumIntegerDigits"
+            | "minimumFractionDigits"
+            | "maximumFractionDigits"
+            | "minimumSignificantDigits"
+            | "maximumSignificantDigits"
+    )
+}
 #[derive(Debug)]
 enum Stage {
     List,
@@ -121,7 +134,7 @@ impl State {
         self.stage = Stage::Converted;
         match super::intl_service::convert(
             value,
-            if (4..=8).contains(&self.option) {
+            if digit_option(name) {
                 super::intl_service::OptionKind::Number
             } else {
                 super::intl_service::OptionKind::String
@@ -134,21 +147,21 @@ impl State {
     fn apply(&mut self, value: Value) -> Result<Action, Fault> {
         let name = OPTIONS[self.option];
         let invalid = || Fault::RangeError(format!("unsupported or invalid NumberFormat {name}"));
-        if (4..=8).contains(&self.option) {
-            let (min, max) = if self.option == 4 {
+        if digit_option(name) {
+            let (min, max) = if name == "minimumIntegerDigits" {
                 (1.0, 21.0)
-            } else if self.option <= 6 {
+            } else if name.ends_with("FractionDigits") {
                 (0.0, 100.0)
             } else {
                 (1.0, 21.0)
             };
             let n = service::number_option(&value, min as usize, max as usize)?;
-            match self.option {
-                4 => self.slots.as_mut().unwrap().min_integer = n,
-                5 => self.min_fraction = Some(n),
-                6 => self.max_fraction = Some(n),
-                7 => self.min_significant = Some(n),
-                8 => self.max_significant = Some(n),
+            match name {
+                "minimumIntegerDigits" => self.slots.as_mut().unwrap().min_integer = n,
+                "minimumFractionDigits" => self.min_fraction = Some(n),
+                "maximumFractionDigits" => self.max_fraction = Some(n),
+                "minimumSignificantDigits" => self.min_significant = Some(n),
+                "maximumSignificantDigits" => self.max_significant = Some(n),
                 _ => unreachable!(),
             }
         } else {
@@ -167,7 +180,24 @@ impl State {
                         slots.numbering = system;
                     }
                 }
-                "style" if text == "decimal" => {}
+                "style" => {
+                    self.slots.as_mut().unwrap().style =
+                        service::string_option(&value, &["decimal", "percent", "currency"])?
+                }
+                "currency" => {
+                    if text.len() != 3 || !text.bytes().all(|c| c.is_ascii_alphabetic()) {
+                        return Err(Fault::RangeError("invalid currency code".into()));
+                    }
+                    self.slots.as_mut().unwrap().currency = Some(text.to_ascii_uppercase());
+                }
+                "currencyDisplay" => {
+                    self.slots.as_mut().unwrap().currency_display =
+                        service::string_option(&value, &["symbol", "narrowSymbol", "code", "name"])?
+                }
+                "currencySign" => {
+                    self.slots.as_mut().unwrap().currency_sign =
+                        service::string_option(&value, &["standard", "accounting"])?
+                }
                 "notation" if text == "standard" => {}
                 "roundingMode" => {
                     self.slots.as_mut().unwrap().rounding = [
@@ -247,7 +277,13 @@ impl State {
             Stage::Read => {
                 // SetNumberFormatDigitOptions rejects inconsistent significant
                 // bounds before observing roundingMode or useGrouping.
-                if self.option == 9
+                if OPTIONS.get(self.option) == Some(&"notation") {
+                    let slots = self.slots.as_ref().unwrap();
+                    if slots.style == "currency" && slots.currency.is_none() {
+                        return Err(Fault::TypeError("currency option is required".into()));
+                    }
+                }
+                if OPTIONS.get(self.option) == Some(&"roundingMode")
                     && (self.min_significant.is_some() || self.max_significant.is_some())
                 {
                     let min = self.min_significant.unwrap_or(1);
@@ -282,8 +318,21 @@ impl State {
                         .map(Action::Return);
                 }
                 let slots = self.slots.as_mut().unwrap();
-                slots.min_fraction = self.min_fraction.unwrap_or(0);
-                slots.max_fraction = self.max_fraction.unwrap_or(3.max(slots.min_fraction));
+                let (default_min, default_max) = match slots.style {
+                    "currency" => {
+                        let digits =
+                            number_format::currency_digits(slots.currency.as_deref().unwrap());
+                        (digits, digits)
+                    }
+                    "percent" => (0, 0),
+                    _ => (0, 3),
+                };
+                slots.min_fraction = self
+                    .min_fraction
+                    .unwrap_or_else(|| default_min.min(self.max_fraction.unwrap_or(default_max)));
+                slots.max_fraction = self
+                    .max_fraction
+                    .unwrap_or(default_max.max(slots.min_fraction));
                 if slots.min_fraction > slots.max_fraction {
                     return Err(Fault::RangeError("fraction digit bounds".into()));
                 }
