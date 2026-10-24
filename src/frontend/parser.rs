@@ -2575,9 +2575,19 @@ impl<'a> Parser<'a> {
         // Cover-grammar lookahead uses the previous token to choose the
         // regexp goal. The real parser chooses by its grammar production.
         let mut operand = true;
+        let mut statement = false;
         let mut after_dot = false;
+        let mut after_arrow = false;
         let mut control_head = false;
+        // A function declaration ends a statement; a function expression
+        // ends an operand. Carry that distinction through its parameters.
+        let mut function_head = None;
+        let mut function_body = None;
         let mut parens = Vec::new();
+        // Whether each brace ends a statement, whether it contains
+        // statements, and the parenthesis depth at which it was opened.
+        let mut braces = Vec::new();
+        let mut conditionals = Vec::new();
         while open > 0 {
             let mut token = lexer.next_token().ok()?;
             if operand
@@ -2588,12 +2598,19 @@ impl<'a> Parser<'a> {
             {
                 token = lexer.rescan_regexp(&token).ok()?;
             }
+            let was_operand = operand;
+            let was_statement = statement;
+            let pending_body = function_body.take();
             let closes_control = match token.kind {
                 TokenKind::Punct(Punct::LParen) => {
-                    parens.push(control_head);
+                    parens.push((control_head, function_head.take()));
                     false
                 }
-                TokenKind::Punct(Punct::RParen) => parens.pop().unwrap_or(false),
+                TokenKind::Punct(Punct::RParen) => {
+                    let (control, function) = parens.pop().unwrap_or((false, None));
+                    function_body = function;
+                    control
+                }
                 _ => false,
             };
             operand = match &token.kind {
@@ -2617,6 +2634,45 @@ impl<'a> Parser<'a> {
                 _ => true,
             };
             operand |= closes_control;
+            statement = closes_control;
+            match token.kind {
+                TokenKind::Punct(Punct::LBrace) => {
+                    let ends_statement = pending_body.unwrap_or(was_statement);
+                    let body =
+                        pending_body.is_some() || was_statement || !was_operand || after_arrow;
+                    braces.push((ends_statement, body, parens.len()));
+                    statement = body;
+                }
+                TokenKind::Punct(Punct::RBrace) => {
+                    let (ends_statement, _, _) = braces.pop()?;
+                    operand = ends_statement;
+                    statement = ends_statement;
+                }
+                TokenKind::Punct(Punct::Semicolon) => {
+                    statement = braces
+                        .last()
+                        .is_some_and(|&(_, body, depth)| body && depth == parens.len());
+                }
+                TokenKind::Punct(Punct::Question) => conditionals.push(open),
+                TokenKind::Punct(Punct::Colon) => {
+                    if conditionals.last() == Some(&open) {
+                        conditionals.pop();
+                    } else {
+                        // A label or switch clause in a statement body;
+                        // object property values remain expressions.
+                        statement = braces.last().is_some_and(|&(_, body, _)| body);
+                    }
+                }
+                TokenKind::Keyword(
+                    Keyword::Else | Keyword::Do | Keyword::Try | Keyword::Finally | Keyword::Catch,
+                ) if !after_dot => {
+                    statement = true;
+                }
+                TokenKind::Keyword(Keyword::Function) if !after_dot => {
+                    function_head = Some(was_statement);
+                }
+                _ => {}
+            }
             control_head = !after_dot
                 && matches!(
                     token.kind,
@@ -2630,6 +2686,7 @@ impl<'a> Parser<'a> {
                     )
                 );
             after_dot = token.kind == TokenKind::Punct(Punct::Dot);
+            after_arrow = token.kind == TokenKind::Punct(Punct::Arrow);
             match token.kind {
                 TokenKind::Punct(Punct::LBrace) => {
                     open += 1;
