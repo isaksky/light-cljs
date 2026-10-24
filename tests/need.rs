@@ -88,6 +88,59 @@ fn iterator_next_waits_on_dependency() {
 }
 
 #[test]
+fn spread_builtin_calls_wait_and_resume() {
+    // Synthetic fixtures, not light-cljs output. The wait occurs after
+    // packed argument expansion, inside the built-in's native continuation.
+    for source in [
+        "let obj = {valueOf() { __rt.effect(1, 1); return __rt.need(5, 3); }}; Number(...[obj])",
+        "let obj = {valueOf() { __rt.effect(1, 1); return __rt.need(5, 3); }}; new Number(...[obj]).valueOf()",
+        "let receiver = {get length() { __rt.effect(1, 1); return __rt.need(5, 3); }, set length(n) { this.n = n; }}; Array.prototype.push.call(...[receiver, {n: 7}]); receiver[7].n + receiver.n - 8",
+    ] {
+        let rt = Runtime::new();
+        let task = rt
+            .spawn(&compile_script("spread-builtin-wait", source).unwrap(), &[])
+            .unwrap();
+        let expected = key(&rt, NUMBER);
+        let mut host = Recorder::default();
+        for steps in 0..2000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected);
+                    break;
+                }
+            }
+            assert!(steps < 1999);
+        }
+        assert_eq!(host.effects, [1.0]);
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+        let (result, host) = thread::spawn(move || {
+            for steps in 0..2000 {
+                match resumed
+                    .run_with(Budget::instructions(1), &mut host)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    outcome => return (number(outcome), host),
+                }
+                assert!(steps < 1999);
+            }
+            unreachable!()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(result, 7.0, "{source}");
+        assert_eq!(host.effects, [1.0], "callbacks must not replay: {source}");
+    }
+}
+
+#[test]
 fn getter_waits_on_dependency_and_resumes() {
     // Synthetic fixtures, not light-cljs output. Each row exercises a
     // different property continuation with the same wait/migration/GC path.

@@ -4328,6 +4328,15 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         ("array literals", |n| {
             format!("x = {}1{};", "[".repeat(n), "]".repeat(n))
         }),
+        ("array spread", |n| {
+            format!("x = {}[]{};", "[...".repeat(n), "]".repeat(n))
+        }),
+        ("call spread", |n| {
+            format!("x = {}[]{};", "f(...".repeat(n), ")".repeat(n))
+        }),
+        ("constructor spread", |n| {
+            format!("x = {}[]{};", "new F(...".repeat(n), ")".repeat(n))
+        }),
         ("array elements", |n| {
             format!("x = {}1{};", "[1, , a[0] = ".repeat(n), ", 2]".repeat(n))
         }),
