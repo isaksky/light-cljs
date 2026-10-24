@@ -3088,19 +3088,27 @@ pub(crate) fn execute(
 // Keep module-only temporaries off the interpreter's stack frame. Eval and
 // native callbacks also run on 64 KiB workers; scripts never enter this helper.
 #[inline(never)]
-fn module_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
+fn module_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Box<VmError>> {
     // No safepoint may run while the cells are moved out of traced VM state.
     let mut linker = state.module_link.take().expect("module continuation");
     let action = linker.step(heap, state.diag.task);
     state.module_link = Some(linker);
-    match action? {
+    let diagnose = |state: &VmState, fault| {
+        let pc = state.top().pc;
+        let (kind, message) = fault_error(fault, &state.top().code, pc);
+        Box::new(state.failure(kind, message, pc))
+    };
+    match action.map_err(|fault| diagnose(state, fault))? {
         crate::module::LinkAction::Continue => Ok(Flow::Next),
+        crate::module::LinkAction::Failed(error) => Err(error),
         crate::module::LinkAction::Complete => {
             state.module_link = None;
             Ok(Flow::Complete(Value::Undefined))
         }
         crate::module::LinkAction::Run(code, args) => {
-            state.start_module(&code, &args)?;
+            if let Err(fault) = state.start_module(&code, &args) {
+                return Err(diagnose(state, fault));
+            }
             Ok(Flow::FrameChanged)
         }
     }
@@ -3129,11 +3137,7 @@ pub(crate) fn execute_module_budgeted(
             Ok(Flow::Next) => {}
             Ok(Flow::FrameChanged) => return Exit::ModuleFrame,
             Ok(Flow::Complete(value)) => return Exit::Return(value),
-            Err(fault) => {
-                let pc = state.top().pc;
-                let (kind, message) = fault_error(fault, &state.top().code, pc);
-                return Exit::Fail(state.failure(kind, message, pc));
-            }
+            Err(error) => return Exit::Fail(*error),
             _ => unreachable!("module linking does not execute instructions"),
         }
     }

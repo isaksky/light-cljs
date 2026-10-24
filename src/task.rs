@@ -1474,6 +1474,9 @@ impl RunGuard<'_> {
             match exit {
                 Exit::Return(value) => RunOutcome::Complete(Rooted::new(&task.heap, value)),
                 Exit::Fail(error) => {
+                    if let Some(link) = self.vm().and_then(|vm| vm.module_link.as_mut()) {
+                        link.record_failure(&error);
+                    }
                     task.jobs.boundary();
                     RunOutcome::Failed(error)
                 }

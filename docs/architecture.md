@@ -7640,8 +7640,8 @@ an explicit immutable code/syntax storage boundary, not a JavaScript heap object
 Default function and class declarations are distinguished from expressions in the body;
 anonymous defaults use ECMA-262's inaccessible `*default*` binding name.
 
-The pre-run loader below associates records with world/version. Acyclic graphs
-link and execute with separate instances per task (see "Acyclic module execution").
+The pre-run loader below associates records with world/version. Cyclic and acyclic graphs
+link and execute with separate instances per task (see "Module execution").
 Static requests do not create dependency edges. This parser neither fetches
 sources nor starts tasks; it imposes no filesystem resolution policy and does
 not accept top-level await.
@@ -7749,9 +7749,9 @@ to the existing entry key rather than fetching a second record. Resolved keys
 are retained in each node in the record's request order, including distinct
 specifier spellings that alias one key. Each key is fetched/parsed once per
 world in a loader, including across entry graphs. Host resolution may repeat
-on cache hits. Graph iteration preserves discovery order. Acyclic JavaScript
-linking and evaluation are described below; namespace objects and cyclic
-binding initialization remain deferred.
+on cache hits. Graph iteration preserves discovery order. JavaScript linking
+and evaluation, including cycles, are described below; namespace objects
+remain deferred.
 
 Verification: `tests/js_modules.rs` uses the existing licensed parse fixtures
 for the three-module cyclic graph and the hello-module JavaScript imports,
@@ -7913,19 +7913,23 @@ now present, but its constructor/options/compound-unit behavior remain a gap;
 this pellet enables only the duration consumer. Locale coverage and the host
 default-locale leaf remain the shared Intl policy.
 
-### Acyclic module execution (clj-quickjs-253)
+### Module execution (clj-quickjs-253/255)
 
 `Runtime::spawn_module(&graph)` lowers each immutable record independently,
 then starts an entry task in the graph's world. A task-owned continuation
-computes source-order DFS post-order, resolves named imports through
+computes source-order DFS post-order and strongly connected components,
+resolves named imports through
 local/indirect export entries, and checks every link before any body runs.
 Each graph edge, export-table entry, binding allocation or phase transition
-consumes one budget step. Star exports retain a name cursor and are resolved
-bottom-up over the DAG, excluding default. Explicit exports override stars;
+consumes one budget step. Exported names propagate over reverse star edges
+until stable, excluding default. ResolveExport then uses a saved pair set
+and explicit frames; repeated (module, export name) pairs return no resolution
+to the caller, allowing other star paths to find a binding. Only completed
+dependency SCCs supply cached resolutions. Explicit exports override stars;
 two star paths resolving to distinct origin bindings are ambiguous, while
 two paths to one binding stay unambiguous. Explicit indirect exports are
 validated even when unused. Missing exports fail the task with SyntaxError
-naming the export and module. Cycles, namespace imports, JSON instances and
+naming the export and module. Namespace imports, JSON instances and
 default-export declarations fail explicitly for now.
 
 The continuation allocates ordinary task-owned binding cells for all module
@@ -7948,16 +7952,41 @@ snapshots unavailable during a concurrent run. There is no new heap kind, lock
 or host fetch during a run. Budgets, need waits, GC and
 migration preserve the exact continuation, including graph traversal, star
 resolution, allocation and instantiation; no earlier module effect is replayed.
-Bodies run once in post-order; a throw
-stops the driver, failing its task before later bodies run. Completion is
+Bodies run once in source-request DFS post-order. Linking and evaluation
+each use an explicit Tarjan walk (`src/module/dfs.rs`): discovery and ancestor
+indices, call frames and an active SCC stack live in the continuation. A
+back edge never re-enters a module; SCC members complete together, one member
+per budget step. All module functions are instantiated before any body, so
+mutually recursive functions work while cross-cycle let/const reads still
+throw ReferenceError until initialized. Self-imports use the same live cells.
+A throw stops the driver and records its original diagnostic for every
+active SCC, including members whose bodies have already returned. Completed
+dependency SCCs stay successful; selecting another member in the same
+instance map returns the saved failure. Completion is
 undefined. A finished task cannot be run again; a fresh spawn creates fresh
 instances, including after failure. Imports create no dependency-log edges.
+There is no public operation to select a second entry in a live instance map;
+that cached-failure invariant is exercised by a module-driver unit test.
+The namespace import variant of test_cyclic_import still fails explicitly
+until clj-quickjs-254 lands; named imports of its re-exported function already
+compute 4. The export tables remain fully resolved before import argument
+construction, preserving the namespace builder's hook into resolved cells.
 
 The task driver selects linking steps or the ordinary interpreter, returning
 from the linking driver before entering a module frame. First-use global,
 closure and object/arguments allocation use small opcode handlers, keeping
 realm initialization within a 64 KiB worker stack. The module wait/migration
 test also performs direct eval and forced GC on workers of that size.
+Cycle tests additionally suspend on need, collect and migrate between single
+instruction slices. A 10,000-module linear graph links and evaluates on a
+64 KiB worker stack. Tests also cover circular indirect exports failing
+before effects, star exports through cycles, shared leaves and once-only
+evaluation order.
+
+Semantic authority: ECMA-262
+[InnerModuleLinking](https://tc39.es/ecma262/multipage/ecmascript-language-scripts-and-modules.html#sec-innermodulelinking),
+[InnerModuleEvaluation](https://tc39.es/ecma262/multipage/ecmascript-language-scripts-and-modules.html#sec-innermoduleevaluation)
+and [ResolveExport](https://tc39.es/ecma262/multipage/ecmascript-language-scripts-and-modules.html#sec-resolveexport).
 
 QuickJS references and provenance: `research/quickjs/quickjs.c` functions
 `js_create_module_function`, `js_resolve_export`, `js_inner_module_linking`,

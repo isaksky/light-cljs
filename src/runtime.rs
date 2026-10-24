@@ -135,7 +135,7 @@ impl Runtime {
         self.spawn_in(self.0.world, executable, args)
     }
 
-    /// Lower each record, then spawn a loaded acyclic module graph in its
+    /// Lower each record, then spawn a loaded module graph in its
     /// world. Graph traversal and export resolution consume the run budget.
     /// Module cells and
     /// closures are instantiated independently in this task; no host fetch

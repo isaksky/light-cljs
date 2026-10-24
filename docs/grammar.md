@@ -544,7 +544,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 
 Static module requests can be resolved and loaded through `module::ModuleLoader`
 (clj-quickjs-252), then evaluated with `Runtime::spawn_module`
-(clj-quickjs-253). The CLI remains script-only.
+(clj-quickjs-253/255), including cycles. The CLI remains script-only.
 
 ## Explicit gaps
 
@@ -565,9 +565,9 @@ adaptations in non-strict mode (clj-quickjs-232). The shell's `__loadScript`
 global is absent; the upstream attempt to call it catches its ReferenceError.
 
 Module source parses into static records (see "Modules"). The embedding API
-loads complete static graphs, including cycles, before task execution. Acyclic
-graphs link and evaluate with live imports and re-exports (clj-quickjs-253).
-Namespaces, cyclic binding initialization, default-export declarations and JSON
+loads complete static graphs before task execution. Cyclic and acyclic
+graphs link and evaluate with live imports and re-exports (clj-quickjs-253/255).
+Namespaces, default-export declarations and JSON
 module instances remain deferred; the CLI and `compile_script` take scripts only.
 
 Super properties and class fields remain deferred (clj-quickjs-138/139).
@@ -1050,8 +1050,8 @@ iteration values require no disposer.
 
 `parse_module` only parses and checks module static semantics. It produces no
 executable and performs no host work. After loading, `Runtime::spawn_module`
-links and evaluates an acyclic graph with strict module environments and
-undefined completion (see "Acyclic module execution").
+links and evaluates a graph, including cycles, with strict module environments and
+undefined completion (see "Module execution").
 `module::ModuleLoader` separately resolves and fetches a static graph through
 an embedder-supplied `ModuleHost`, parsing JavaScript and carrying `.json`
 sources without evaluation. It creates no task or dependency edge. See
@@ -5797,10 +5797,10 @@ are unsupported. Unit spellings follow the pinned QuickJS finite table, with
 its literal unit-identifier fallback where patterns are absent; this is not
 complete CLDR coverage. NumberFormat style unit still throws RangeError.
 
-### Acyclic module execution (clj-quickjs-253)
+### Module execution (clj-quickjs-253/255)
 
-After pre-run loading, `Runtime::spawn_module(&graph)` links and evaluates an
-acyclic JavaScript graph in the graph's world. Named imports, side-effect
+After pre-run loading, `Runtime::spawn_module(&graph)` links and evaluates a
+JavaScript graph, including cyclic imports, in the graph's world. Named imports, side-effect
 imports, exported declarations, export lists, `export {x} from` and `export *`
 execute. Star exports exclude default, explicit exports take precedence, and
 distinct origins for one star-exported name produce an ambiguity SyntaxError
@@ -5816,6 +5816,25 @@ The task completes with undefined. Module this is undefined and top-level
 bindings do not become global-object properties. Effects, budget yields,
 need waits, collection and migration use the ordinary VM continuation rules.
 
+Cyclic graphs use saved DFS discovery/ancestor indices and an SCC stack for
+linking and evaluation. A module on the stack is not entered again; all
+functions are hoisted before any body, and let/const reads across a cycle
+throw ReferenceError until initialization. Each body runs once in DFS order,
+including shared dependencies and self-imports. A failed body records the
+same failure for its active component; completed dependency components stay
+successful. Genuine circular export resolution is a SyntaxError naming the
+export and module. Star resolution can traverse cycles, skips repeated
+module/name pairs and still searches other paths for a valid origin.
+
+Synthetic self-import fixture, not light-cljs output (host resolves this
+source to self.js); it emits 4:
+
+```js module-accept
+import {g as importedG} from './self.js';
+export function g(x) { return x + 1; }
+__rt.effect(0, 2 * importedG(1));
+```
+
 Synthetic fixture, not light-cljs output (host supplies counter.js):
 
 ```js module-accept
@@ -5824,10 +5843,10 @@ inc(); inc();
 __rt.effect(0, n);
 ```
 
-Explicit execution gaps: cycles, namespace imports, JSON instances and
+Explicit execution gaps: namespace imports, JSON instances and
 `export default` declarations fail before bodies execute. Top-level await,
 dynamic import, import.meta and attributes remain unsupported. The CLI stays
-script-only; loading continues to accept cyclic graphs for future execution.
+script-only.
 
 ### SuppressedError (clj-quickjs-234)
 

@@ -5,7 +5,9 @@
 //! no heap, takes no runtime locks and creates no dependency cells or edges.
 //! Linking/evaluation runs separately in a spawned entry task.
 
+mod dfs;
 mod link;
+mod resolve;
 pub(crate) use link::{Action as LinkAction, Linker};
 
 /// Current phase of a live module entry task, for scheduler diagnostics.
