@@ -1002,6 +1002,10 @@ Until clj-quickjs-101 supplies general metadata, binding an ordinary function
 uses its code's parameter count and diagnostic name, with any explicitly
 defined own `length`/`name` taking precedence. Default-parameter arity and
 inferred/anonymous names therefore retain that pellet's metadata gap.
+Rejected assignments to an untouched bound function's read-only metadata
+throw in strict code and do nothing in sloppy code without preventing
+publication. Publishing implicitly freezes the bound function, and its
+metadata descriptors then report non-configurable properties.
 
 A body `let`/`const` cannot repeat a parameter, with or without defaults:
 

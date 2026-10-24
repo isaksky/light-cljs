@@ -3186,6 +3186,11 @@ a publication walk; installing a record and marking shareable exclude each
 other under the object-table lock. General ordinary-function metadata and
 `new.target` syntax remain with clj-quickjs-101 and clj-quickjs-99.
 
+Rejected assignments to the initial read-only metadata follow strict/sloppy
+`[[Set]]` rules without attaching a record. Publication implicitly freezes
+the bound function; reflected metadata descriptors then become
+non-configurable, matching its reported frozen integrity level.
+
 Semantic references, independently implemented rather than copied:
 `research/quickjs/quickjs.c`, `js_function_bind`, `js_call_bound_function`,
 `JS_OrdinaryIsInstanceOf`, and `research/quickjs/tests/test_builtin.js`,

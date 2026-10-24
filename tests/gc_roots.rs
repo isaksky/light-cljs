@@ -377,10 +377,11 @@ fn function_properties(rt: &Runtime) -> Held {
 }
 
 /// Each bound operand is the only path to an object: target closure,
-/// bound receiver, and bound argument. The immutable metadata is traced too.
+/// bound receiver, bound argument, and own-property record. The immutable
+/// metadata is traced too.
 fn bound_function(rt: &Runtime) -> Held {
     let maker = compile(
-        "function make(o) { const receiver = {}; const arg = {}; const target = function target(a) { return __rt.vector(o, this, a); }; return __rt.vector(target.bind(receiver, arg), target, receiver, arg); }",
+        "function make(o) { const receiver = {}; const arg = {}; const property = {}; const target = function target(a) { return __rt.vector(o, this, a); }; const bound = target.bind(receiver, arg); bound.x = property; return __rt.vector(bound, target, receiver, arg, property); }",
     );
     let object = rt.scope(|s| {
         let o = s.new_object();
@@ -392,7 +393,7 @@ fn bound_function(rt: &Runtime) -> Held {
     let (bound, mut weak) = rt.scope(|s| {
         let result = s.local(&result).unwrap();
         let bound = s.nth(result, 0).unwrap();
-        let weak = (1..4)
+        let weak = (1..5)
             .map(|i| {
                 let value = s.nth(result, i).unwrap();
                 s.downgrade(value)

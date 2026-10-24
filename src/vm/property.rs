@@ -750,7 +750,12 @@ pub(crate) fn put(
             Stored::NeedsName => interned = Some(intern(heap, &key.to_name())?),
             Stored::Inherited(prototype) => break prototype,
             Stored::Rejected(fault) => return rejected(fault),
-            Stored::Function => id = function::write_target(heap, task, id, key)?,
+            Stored::Function => {
+                if function::rejects_metadata_write(heap, task, id, key)? {
+                    return rejected(read_only(key));
+                }
+                id = function::write_target(heap, task, id, key)?;
+            }
         }
     };
     // An index name that was never interned is on no ordinary object of
@@ -1152,6 +1157,13 @@ pub(crate) fn get_own_property(
     target: ObjectId,
     key: &Key,
 ) -> Result<Option<Property>, Fault> {
+    // Publication implicitly freezes a bound function without attaching a
+    // task-owned record. Reflect that state in its metadata descriptors.
+    let frozen_bound = heap
+        .read_shareable(target, |o, known| {
+            known && matches!(o, HeapObject::BoundFunction(_))
+        })
+        .unwrap_or(false);
     let target = match is_function(heap, target) {
         true => match function::own_store(heap, task, target, key)? {
             Some(record) => record,
@@ -1168,7 +1180,14 @@ pub(crate) fn get_own_property(
                 .to_string(),
         ));
     }
-    let named = |o: &OrdinaryObject| k.and_then(|k| o.get_own(k)).cloned();
+    let named = |o: &OrdinaryObject| {
+        k.and_then(|k| o.get_own(k)).cloned().map(|mut p| {
+            if frozen_bound {
+                p.flags.configurable = false;
+            }
+            p
+        })
+    };
     heap.read(target, |object| match visit(object, task)? {
         Visit::Store(o) => Ok(named(o)),
         Visit::Array(a) => Ok(match key {

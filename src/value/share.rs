@@ -948,56 +948,69 @@ mod tests {
     #[test]
     fn a_function_gaining_properties_during_a_check_is_not_cached() {
         use crate::vm::function::FunctionObject;
-        let heap = Arc::new(Heap::default());
-        let _scope = Scope::new(&heap);
-        let code = crate::frontend::compile_script("f", "1").unwrap().0;
-        let function = |heap: &Heap| {
-            let f = FunctionObject::new(Arc::clone(&code), Box::new([]), OWNER);
-            Value::Object(heap.alloc(HeapObject::Function(f)).unwrap())
-        };
-        let f = function(&heap);
-        assert!(!known(&heap, &f), "never known at allocation");
-        let holder = coll::new_vector(&heap, std::slice::from_ref(&f)).unwrap();
-        assert!(!known(&heap, &holder));
+        for bound in [false, true] {
+            let heap = Arc::new(Heap::default());
+            let _scope = Scope::new(&heap);
+            let code = crate::frontend::compile_script("f", "1").unwrap().0;
+            let function = |heap: &Heap| {
+                let f = FunctionObject::new(Arc::clone(&code), Box::new([]), OWNER);
+                let f = Value::Object(heap.alloc(HeapObject::Function(f)).unwrap());
+                if bound {
+                    crate::vm::function::bind(heap, OWNER, &f, &[])
+                        .ok()
+                        .expect("bound function")
+                } else {
+                    f
+                }
+            };
+            let f = function(&heap);
+            assert!(!known(&heap, &f), "never known at allocation");
+            let holder = coll::new_vector(&heap, std::slice::from_ref(&f)).unwrap();
+            assert!(!known(&heap, &holder));
 
-        // The walk reads `f` without a record ...
-        let proven = walk(&heap, id(&holder), &mut 0).unwrap();
-        assert_eq!(proven.len(), 2);
-        // ... then its owner attaches one ...
-        let record = plain(&heap);
-        let attached = heap.with_object_mut_known(id(&f), |o, known| match o {
-            HeapObject::Function(func) if !known => {
-                func.properties = Some(id(&record));
-                true
-            }
-            _ => false,
-        });
-        assert_eq!(attached, Some(true));
-        // ... so the walk's result is not marked, and the check rejects.
-        let gained = |o: &HeapObject| match o {
-            HeapObject::Function(f) => f.properties.is_some(),
-            HeapObject::BoundFunction(f) => f.properties.is_some(),
-            _ => false,
-        };
-        assert!(!heap.mark_shareable_unless(&proven, gained));
-        assert!(!known(&heap, &f) && !known(&heap, &holder));
-        let (path, found) = match check(&heap, &holder) {
-            Err(PublishError::NotShareable { path, found, .. }) => (path, found),
-            other => panic!("{other:?}"),
-        };
-        assert_eq!(
-            path.steps(),
-            [PathStep::Index(0), PathStep::FunctionProperties]
-        );
-        assert_eq!(path.to_string(), "value[0].properties");
-        assert_eq!(found, "object");
+            // The walk reads `f` without a record ...
+            let proven = walk(&heap, id(&holder), &mut 0).unwrap();
+            assert_eq!(proven.len(), if bound { 4 } else { 2 });
+            // ... then its owner attaches one ...
+            let record = plain(&heap);
+            let attached = heap.with_object_mut_known(id(&f), |o, known| match o {
+                HeapObject::Function(func) if !known => {
+                    func.properties = Some(id(&record));
+                    true
+                }
+                HeapObject::BoundFunction(func) if !known => {
+                    func.properties = Some(id(&record));
+                    true
+                }
+                _ => false,
+            });
+            assert_eq!(attached, Some(true));
+            // ... so the walk's result is not marked, and the check rejects.
+            let gained = |o: &HeapObject| match o {
+                HeapObject::Function(f) => f.properties.is_some(),
+                HeapObject::BoundFunction(f) => f.properties.is_some(),
+                _ => false,
+            };
+            assert!(!heap.mark_shareable_unless(&proven, gained));
+            assert!(!known(&heap, &f) && !known(&heap, &holder));
+            let (path, found) = match check(&heap, &holder) {
+                Err(PublishError::NotShareable { path, found, .. }) => (path, found),
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(
+                path.steps(),
+                [PathStep::Index(0), PathStep::FunctionProperties]
+            );
+            assert_eq!(path.to_string(), "value[0].properties");
+            assert_eq!(found, "object");
 
-        // A function proved shareable is known, and a record is refused.
-        let g = function(&heap);
-        assert_eq!(check(&heap, &g), Ok(()));
-        assert!(known(&heap, &g));
-        let refused = heap.with_object_mut_known(id(&g), |_, known| known);
-        assert_eq!(refused, Some(true));
+            // A function proved shareable is known, and a record is refused.
+            let g = function(&heap);
+            assert_eq!(check(&heap, &g), Ok(()));
+            assert!(known(&heap, &g));
+            let refused = heap.with_object_mut_known(id(&g), |_, known| known);
+            assert_eq!(refused, Some(true));
+        }
     }
 
     #[test]

@@ -395,6 +395,9 @@ pub(crate) fn delete_target(
         && info.record.is_none()
         && matches!(key, Key::Name(name) if record_own(heap, task, defaults, &name.to_string())?.is_some())
     {
+        if info.shared {
+            return Ok(FunctionDelete::NonConfigurable);
+        }
         let record = writable_record(heap, task, function, &info, &Change::Write(key))?;
         return Ok(FunctionDelete::Record(record));
     }
@@ -561,6 +564,31 @@ pub(crate) fn write_target(
     key: &Key,
 ) -> Result<ObjectId, Fault> {
     change_target(heap, task, function, key, &FUNCTION_PROTOTYPE_NAMES)
+}
+
+/// An untouched bound function's metadata rejects assignment without
+/// changing its representation or publication eligibility. The caller
+/// applies the ordinary strict/sloppy [[Set]] rejection rule.
+pub(crate) fn rejects_metadata_write(
+    heap: &Heap,
+    task: TaskId,
+    function: ObjectId,
+    key: &Key,
+) -> Result<bool, Fault> {
+    let info = info(heap, function)?;
+    if info.defaults.is_some()
+        && info.record.is_none()
+        && matches!(special(key), Some("length" | "name"))
+    {
+        if !info.shared && info.owner != task {
+            return Err(Fault::ForeignObject {
+                owner: Some(info.owner),
+                caller: task,
+            });
+        }
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// The function's part of `Object.defineProperty` (clj-quickjs-119): the
@@ -859,9 +887,24 @@ mod tests {
         heap.alloc(HeapObject::Function(f)).unwrap()
     }
 
+    fn callable(heap: &Heap, source: &str, bound: bool) -> ObjectId {
+        let f = function(heap, source);
+        if !bound {
+            return f;
+        }
+        let Value::Object(f) = bind(heap, OWNER, &Value::Object(f), &[])
+            .ok()
+            .expect("bound function")
+        else {
+            panic!()
+        };
+        f
+    }
+
     fn record(heap: &Heap, f: ObjectId) -> Option<ObjectId> {
         heap.read(f, |o| match o {
             HeapObject::Function(f) => f.properties,
+            HeapObject::BoundFunction(f) => f.properties,
             _ => None,
         })
         .unwrap()
@@ -873,29 +916,31 @@ mod tests {
     /// refuses, so nothing mutable ends up under a cached shareable value.
     #[test]
     fn publication_wins_before_record_attachment() {
-        let heap = Arc::new(Heap::default());
-        let _scope = Scope::new(&heap);
-        let f = function(&heap, "function f() {}");
-        let stale = info(&heap, f).ok().expect("a live function");
-        assert!(!stale.shared && stale.record.is_none());
+        for bound in [false, true] {
+            let heap = Arc::new(Heap::default());
+            let _scope = Scope::new(&heap);
+            let f = callable(&heap, "function f() {}", bound);
+            let stale = info(&heap, f).ok().expect("a live function");
+            assert!(!stale.shared && stale.record.is_none());
 
-        let holder = crate::collections::new_vector(&heap, &[Value::Object(f)]).unwrap();
-        assert_eq!(share::check(&heap, &holder), Ok(()));
-        assert_eq!(heap.known_shareable(f), Some(true));
+            let holder = crate::collections::new_vector(&heap, &[Value::Object(f)]).unwrap();
+            assert_eq!(share::check(&heap, &holder), Ok(()));
+            assert_eq!(heap.known_shareable(f), Some(true));
 
-        let key = Key::Name(JsString::from("x"));
-        match writable_record(&heap, OWNER, f, &stale, &Change::Write(&key)) {
-            Err(Fault::TypeError(m)) => assert!(m.contains("published function"), "{m}"),
-            _ => panic!("expected the published-function TypeError"),
+            let key = Key::Name(JsString::from("x"));
+            match writable_record(&heap, OWNER, f, &stale, &Change::Write(&key)) {
+                Err(Fault::TypeError(m)) => assert!(m.contains("published function"), "{m}"),
+                _ => panic!("expected the published-function TypeError"),
+            }
+            match writable_record(&heap, OWNER, f, &stale, &Change::CreatePrototype) {
+                Err(Fault::Unsupported(m)) => assert!(m.contains("published function"), "{m}"),
+                _ => panic!("expected UnsupportedOperand"),
+            }
+            assert_eq!(record(&heap, f), None, "nothing attached");
+            // The cached verdicts still hold: republishing walks nothing new.
+            assert_eq!(share::check(&heap, &holder), Ok(()));
+            assert_eq!(heap.known_shareable(f), Some(true));
         }
-        match writable_record(&heap, OWNER, f, &stale, &Change::CreatePrototype) {
-            Err(Fault::Unsupported(m)) => assert!(m.contains("published function"), "{m}"),
-            _ => panic!("expected UnsupportedOperand"),
-        }
-        assert_eq!(record(&heap, f), None, "nothing attached");
-        // The cached verdicts still hold: republishing walks nothing new.
-        assert_eq!(share::check(&heap, &holder), Ok(()));
-        assert_eq!(heap.known_shareable(f), Some(true));
     }
 
     /// Publication wins the race against `Object.freeze` /
@@ -905,39 +950,42 @@ mod tests {
     /// (`Shared`) instead of failing; nothing is attached.
     #[test]
     fn publication_wins_before_integrity_change() {
-        let heap = Arc::new(Heap::default());
-        let _scope = Scope::new(&heap);
-        let f = function(&heap, "function f() {}");
-        let stale = info(&heap, f).ok().expect("a live function");
-        assert!(!stale.shared && stale.record.is_none());
+        for bound in [false, true] {
+            let heap = Arc::new(Heap::default());
+            let _scope = Scope::new(&heap);
+            let f = callable(&heap, "function f() {}", bound);
+            let stale = info(&heap, f).ok().expect("a live function");
+            assert!(!stale.shared && stale.record.is_none());
 
-        let holder = crate::collections::new_vector(&heap, &[Value::Object(f)]).unwrap();
-        assert_eq!(share::check(&heap, &holder), Ok(()));
-        assert!(matches!(
-            integrity_target_from(&heap, OWNER, f, &stale),
-            Ok(IntegrityStore::Shared)
-        ));
-        assert!(matches!(
-            integrity_store(&heap, f),
-            Ok(IntegrityStore::Shared)
-        ));
-        assert_eq!(record(&heap, f), None, "nothing attached");
-        assert_eq!(share::check(&heap, &holder), Ok(()));
-        assert_eq!(heap.known_shareable(f), Some(true));
+            let holder = crate::collections::new_vector(&heap, &[Value::Object(f)]).unwrap();
+            assert_eq!(share::check(&heap, &holder), Ok(()));
+            assert!(matches!(
+                integrity_target_from(&heap, OWNER, f, &stale),
+                Ok(IntegrityStore::Shared)
+            ));
+            assert!(matches!(
+                integrity_store(&heap, f),
+                Ok(IntegrityStore::Shared)
+            ));
+            assert_eq!(record(&heap, f), None, "nothing attached");
+            assert_eq!(share::check(&heap, &holder), Ok(()));
+            assert_eq!(heap.known_shareable(f), Some(true));
 
-        // Without the race the owner gets a record with the prototype.
-        let g = function(&heap, "function g() {}");
-        let fresh = info(&heap, g).ok().expect("a live function");
-        let Ok(IntegrityStore::Record(r)) = integrity_target_from(&heap, OWNER, g, &fresh) else {
-            panic!("expected the property record");
-        };
-        assert_eq!(record(&heap, g), Some(r));
-        assert!(
-            record_own(&heap, OWNER, r, "prototype")
-                .ok()
-                .flatten()
-                .is_some()
-        );
+            // Without the race the owner gets a record with the prototype.
+            let g = callable(&heap, "function g() {}", bound);
+            let fresh = info(&heap, g).ok().expect("a live function");
+            let Ok(IntegrityStore::Record(r)) = integrity_target_from(&heap, OWNER, g, &fresh)
+            else {
+                panic!("expected the property record");
+            };
+            assert_eq!(record(&heap, g), Some(r));
+            assert!(
+                record_own(&heap, OWNER, r, if bound { "length" } else { "prototype" })
+                    .ok()
+                    .flatten()
+                    .is_some()
+            );
+        }
     }
 
     /// The lazy `prototype` through the production read path: one object,

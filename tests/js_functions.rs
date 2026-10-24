@@ -118,6 +118,45 @@ fn bound_functions() {
 }
 
 #[test]
+fn published_bound_function_metadata_is_frozen() {
+    let rt = Runtime::new();
+    let RunOutcome::Complete(bound) = rt
+        .spawn(&exe("(function f(a,b) {}).bind(null,1);"), &[])
+        .unwrap()
+        .run()
+        .unwrap()
+    else {
+        panic!()
+    };
+    rt.publish(&bound).unwrap();
+    let verify=compile_function("function verify(g) { const a=Object.getOwnPropertyDescriptor(g,'length'); const b=Object.getOwnPropertyDescriptor(g,'name'); const before=!a.writable && !a.enumerable && !a.configurable && a.value===1 && !b.writable && !b.enumerable && !b.configurable && b.value==='bound f'; Object.freeze(g); const c=Object.getOwnPropertyDescriptor(g,'length'); const d=Object.getOwnPropertyDescriptor(g,'name'); return before && !c.configurable && !d.configurable && Object.isFrozen(g) && !Object.isExtensible(g); }").unwrap();
+    let RunOutcome::Complete(v) = rt.spawn(&verify, &[&bound]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    assert_eq!(v.view(), ValueView::Bool(true));
+}
+
+#[test]
+fn bound_rejected_metadata_writes_remain_publishable() {
+    for mode in [ScriptOptions::STRICT, ScriptOptions::SLOPPY] {
+        for property in ["length", "name"] {
+            let rt = Runtime::new();
+            let source = format!(
+                "const g=(function f(a) {{}}).bind(); let caught=false; try {{ g.{property}=7; }} catch(e) {{ caught=true; }} if (caught !== {}) throw 1; g;",
+                mode.strict
+            );
+            let program = compile_script_with("metadata", &source, mode).unwrap();
+            let RunOutcome::Complete(bound) = rt.spawn(&program, &[]).unwrap().run().unwrap()
+            else {
+                panic!()
+            };
+            rt.publish(&bound)
+                .unwrap_or_else(|e| panic!("{source}: {e}"));
+        }
+    }
+}
+
+#[test]
 fn bound_function_properties_and_native_callbacks() {
     for src in [
         "function f(a,b) {} const g=f.bind(null,1,2,3); const d=Object.getOwnPropertyDescriptor(g,'length'); g.length===0 && !d.writable && !d.enumerable && d.configurable && Object.getOwnPropertyNames(g)[0]==='length' && Object.getOwnPropertyNames(g)[1]==='name';",
