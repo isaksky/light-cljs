@@ -64,7 +64,18 @@ impl State {
             }
             return Ok(Action::Continue);
         }
-        crate::frontend::compile_eval("<eval>", &self.source)
+        // The frontend's weighted nesting bound is proven for a 2 MiB stack.
+        // VM workers may have only 64 KiB. Keep the entire heap-independent
+        // compilation (including AST teardown on errors) on a bounded helper
+        // stack; no JavaScript or task continuation runs on this thread.
+        let source = std::mem::take(&mut self.source);
+        std::thread::Builder::new()
+            .name("eval-compiler".into())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || crate::frontend::compile_eval("<eval>", &source))
+            .map_err(|_| Fault::OutOfMemory("eval compiler thread"))?
+            .join()
+            .map_err(|_| Fault::Internal("eval compiler panicked"))?
             .map(Action::Eval)
             .map_err(|error| Fault::SyntaxError(format!("<eval>:{error}")))
     }

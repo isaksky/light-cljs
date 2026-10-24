@@ -380,6 +380,70 @@ fn indirect_eval() {
     assert_eq!(error.diagnostic().source.unwrap().line, 2);
 }
 
+/// Synthetic fixtures, not light-cljs output. Compile callers and initialize
+/// intrinsics on the host, then compile eval source on 64 KiB VM workers.
+#[test]
+fn indirect_eval_on_small_worker_stacks() {
+    let mut sources = vec![
+        "1 + 1".to_string(),
+        "(0, eval)('2')".to_string(),
+        "try { (0, eval)('1 +'); } catch(e) { if (!(e instanceof SyntaxError)) throw e; } 2"
+            .to_string(),
+    ];
+    // Find the actual parser boundary; exercise successful and rejected
+    // nesting, including cleanup of partially parsed trees.
+    for nested in [
+        |n| format!("{}2{}", "(".repeat(n), ")".repeat(n)),
+        |n| format!("{}2{}", "{".repeat(n), "}".repeat(n)),
+    ] {
+        let n = (1..=clj_quickjs::frontend::MAX_NESTING)
+            .find(|&n| compile_script("probe", &nested(n)).is_err())
+            .unwrap();
+        sources.push(nested(n - 1));
+        sources.push(format!(
+            "try {{ (0, eval)('{}'); throw 0; }} catch(e) {{ if (!(e instanceof SyntaxError)) throw e; }} 2",
+            nested(n)
+        ));
+    }
+    for source in sources {
+        let rt = Runtime::new();
+        assert!(matches!(
+            rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap(),
+            RunOutcome::Complete(_)
+        ));
+        let text = rt.root(Primitive::String(source.as_str().into()));
+        let caller =
+            compile_function("function caller(source) { return (0, eval)(source); }").unwrap();
+        let mut task = rt.spawn(&caller, &[&text]).unwrap();
+        let mut complete = false;
+        for _ in 0..2000 {
+            let (next, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task
+                        .run_with(Budget::instructions(1), &mut NoEffects)
+                        .unwrap();
+                    (task, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Number(2.0), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(complete, "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Eval runs in ordinary task
 /// frames, including when nested, called through natives, or fed a rope.
 #[test]

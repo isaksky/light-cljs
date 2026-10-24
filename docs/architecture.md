@@ -6858,6 +6858,12 @@ Rope flattening and UTF-16 decoding yield between bounded chunks. Input is
 capped at 16,384 UTF-16 units because the existing parser/lowerer/validator is
 synchronous; no heap read closure, heap mutation lock or waiter lock spans
 compilation. The separate `frontend::compile_eval` entry point parses an
+initially sloppy script on a temporary 2 MiB compiler thread, including AST
+cleanup on failure. This is the frontend's tested stack bound; VM workers
+can use 64 KiB stacks. The helper receives source text only and runs no
+JavaScript or heap operations. Global lookup, calls and eval native steps
+avoid the large general dispatch frames before using deeper helpers.
+The compiler parses an
 initially sloppy script and lets directives select strictness. It uses script
 completion lowering while keeping strict eval declarations local. The result
 is the usual shared immutable `Executable`; a trampoline action releases the

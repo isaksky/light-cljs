@@ -1031,6 +1031,8 @@ type InstructionStep = fn(&mut VmState, &Code, &Heap, &mut dyn Host, Instr) -> R
 /// resumes. Large descriptor/conversion paths must fit 64 KiB workers.
 fn instruction_step(instr: Instr) -> InstructionStep {
     match instr {
+        Instr::Call(_) | Instr::CallMethod(_) | Instr::CallSpread | Instr::CallMethodSpread | Instr::ConstructSpread => call_step,
+        Instr::GetGlobalObject | Instr::GetGlobal(_) | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_) | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) => global_step,
         Instr::RequireCoercible
         | Instr::OwnKeys
         | Instr::IsEnumerable
@@ -2173,6 +2175,34 @@ fn step_instruction(
             state.push(this);
         }
         Instr::CheckDirectEval => return check_direct_eval(state, heap),
+        Instr::GetGlobalObject
+        | Instr::GetGlobal(_)
+        | Instr::GetGlobalOrUndefined(_)
+        | Instr::PutGlobal(_)
+        | Instr::DeclareGlobalVar(_)
+        | Instr::DeclareGlobalFunction(_) => return global_step(state, code, heap, host, instr),
+        Instr::GetBuiltinGlobal(i) => {
+            // Validation checked the operand. Builds the realm on first use
+            // (a poll point); its objects are roots from then on.
+            let global = Global::from_u16(i).ok_or(Fault::Internal("unknown built-in global"))?;
+            let intrinsics =
+                realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            state.push(intrinsics.global(global));
+        }
+    }
+    Ok(Flow::Next)
+}
+
+/// Global environment operations can perform property lookup and allocate
+/// their object. Keep those stacks outside the general opcode dispatcher.
+fn global_step(
+    state: &mut VmState,
+    code: &Code,
+    heap: &Heap,
+    _: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
+    match instr {
         Instr::GetGlobalObject => {
             let global = global_object(state, heap)?;
             state.push(global);
@@ -2224,14 +2254,7 @@ fn step_instruction(
                 matches!(instr, Instr::DeclareGlobalFunction(_)),
             );
         }
-        Instr::GetBuiltinGlobal(i) => {
-            // Validation checked the operand. Builds the realm on first use
-            // (a poll point); its objects are roots from then on.
-            let global = Global::from_u16(i).ok_or(Fault::Internal("unknown built-in global"))?;
-            let intrinsics =
-                realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
-            state.push(intrinsics.global(global));
-        }
+        _ => return Err(Fault::Internal("non-global instruction on global path")),
     }
     Ok(Flow::Next)
 }
@@ -2489,6 +2512,24 @@ pub(crate) fn execute_budgeted(
             }
             Some(exit) => return exit,
         }
+    }
+}
+
+/// Keep native-call stacks independent of the large leaf opcode dispatcher.
+fn call_step(
+    state: &mut VmState,
+    _: &Code,
+    heap: &Heap,
+    _: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
+    match instr {
+        Instr::Call(argc) => call(state, heap, argc, false),
+        Instr::CallMethod(argc) => call(state, heap, argc, true),
+        Instr::CallSpread | Instr::CallMethodSpread | Instr::ConstructSpread => {
+            call_spread(state, heap, instr)
+        }
+        _ => Err(Fault::Internal("non-call instruction on call path")),
     }
 }
 

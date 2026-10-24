@@ -1126,6 +1126,20 @@ pub(crate) fn start_builtin(
         push_native(state, NativeState::Eval(Box::new(native)))?;
         return Ok(true);
     }
+    start_builtin_slow(heap, state, which, this, args, construct, popped)
+}
+
+#[inline(never)]
+fn start_builtin_slow(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    construct: bool,
+    popped: usize,
+) -> Result<bool, Fault> {
+    use builtin::Builtin;
     if which == Builtin::GeneratorNext {
         let id = super::generator::receiver(heap, state.diag.task, this)?;
         let value = args.first().cloned().unwrap_or(Value::Undefined);
@@ -2104,9 +2118,17 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     frame.awaiting = Awaiting::Nothing;
     let action = {
         let _borrow = scoped_borrow();
-        frame
-            .state
-            .step(heap, state.diag.task, &state.jobs, input, host)?
+        // Eval's recursive compiler uses a separate bounded stack. Avoid
+        // entering the large general native dispatcher on small VM workers.
+        if let NativeState::Eval(eval) = &mut frame.state {
+            eval.step()?
+        } else if let NativeState::Instanceof { value, target } = &frame.state {
+            step_instanceof(heap, state.diag.task, value, target, input)?
+        } else {
+            frame
+                .state
+                .step(heap, state.diag.task, &state.jobs, input, host)?
+        }
     };
     state.pop_native_catch(native_index);
     state.truncate_operands(base)?;
@@ -2430,6 +2452,37 @@ fn bigint_comparison(instr: Instr, operands: &[Value]) -> Option<NativeState> {
         index,
         wrap: None,
     })
+}
+
+fn step_instanceof(
+    heap: &Heap,
+    task: TaskId,
+    value: &Value,
+    target: &Value,
+    input: Input,
+) -> Result<Action, Fault> {
+    let proto = match input {
+        Input::Start => match property::read(
+            heap,
+            task,
+            target,
+            &property::Key::Name(JsString::from("prototype")),
+        )? {
+            Some(property::Read::Getter(callee)) => {
+                return Ok(Action::Call {
+                    callee,
+                    this: target.clone(),
+                    args: vec![],
+                });
+            }
+            Some(property::Read::Value(v)) => v,
+            None => Value::Undefined,
+        },
+        Input::CallResult(v) => v,
+        Input::Dependency(_) => return Err(Fault::Internal("instanceof received a dependency")),
+    };
+    prototype::instance_of_prototype(heap, task, value, &proto)
+        .map(|yes| Action::Return(Value::Bool(yes)))
 }
 
 impl NativeState {
@@ -2845,30 +2898,7 @@ impl NativeState {
                 })
             }
             NativeState::Instanceof { value, target } => {
-                let proto = match input {
-                    Input::Start => match property::read(
-                        heap,
-                        task,
-                        target,
-                        &property::Key::Name(JsString::from("prototype")),
-                    )? {
-                        Some(property::Read::Getter(callee)) => {
-                            return Ok(Action::Call {
-                                callee,
-                                this: target.clone(),
-                                args: vec![],
-                            });
-                        }
-                        Some(property::Read::Value(v)) => v,
-                        None => Value::Undefined,
-                    },
-                    Input::CallResult(v) => v,
-                    Input::Dependency(_) => {
-                        return Err(Fault::Internal("instanceof received a dependency"));
-                    }
-                };
-                prototype::instance_of_prototype(heap, task, value, &proto)
-                    .map(|v| Action::Return(Value::Bool(v)))
+                step_instanceof(heap, task, value, target, input)
             }
             NativeState::DefineProperty(desc) => {
                 let result = match input {
