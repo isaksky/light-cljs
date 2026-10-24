@@ -268,6 +268,21 @@ impl VmState {
         1 + self.calls.len()
     }
 
+    /// The bounds of resolving a forwarding built-in's call in one
+    /// instruction (`crate::vm::dispatch::resolve`): how many arguments
+    /// fit in the value stack above `base`, the value-stack length once the
+    /// forwarding call's own operands are gone (they are replaced), after
+    /// the callee slot; and how many forwarding hops are allowed (the
+    /// call-depth limit: each hop stands for a native frame).
+    pub(crate) fn forward_limits(&self, base: usize) -> (usize, usize) {
+        (
+            self.limits
+                .max_stack_values
+                .saturating_sub(base.saturating_add(1)),
+            self.limits.max_call_depth.max(1),
+        )
+    }
+
     /// Push an operand onto the running frame.
     pub(crate) fn push(&mut self, v: Value) {
         native::assert_no_borrow("pushing a value (growing the value stack)");

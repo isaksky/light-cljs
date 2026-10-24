@@ -18,7 +18,11 @@
 //! `CallMethod` is `Call` with the receiver below the callee. A built-in
 //! function callee (`crate::vm::builtin`, clj-quickjs-117) pushes no frame:
 //! it runs to completion inside the instruction and its result replaces
-//! the operands.
+//! the operands. A forwarding built-in (`Function.prototype.call`, `apply`,
+//! `Reflect.apply`, clj-quickjs-102) is a tail call instead ([`resolve`]):
+//! the call it makes replaces its operands in the same instruction and
+//! enters the target's frame (or runs a target built-in), so it too
+//! consumes no Rust stack and leaves nothing behind across a wait.
 //!
 //! The loop never panics on its inputs: validation rules out bad indices and
 //! stack underflow, and the loop still re-checks them, failing the task with
@@ -235,7 +239,7 @@ fn exponentiate(x: f64, y: f64) -> f64 {
 /// or 1 for booleans, and StringToNumber ([`string_to_number`]) for a
 /// string. Objects need ToPrimitive, which is deferred, so they are rejected
 /// explicitly.
-fn to_number(v: &Value) -> Result<f64, Fault> {
+pub(crate) fn to_number(v: &Value) -> Result<f64, Fault> {
     match v {
         Value::Undefined => Ok(f64::NAN),
         Value::Null => Ok(0.0),
@@ -443,6 +447,7 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
     let [f, args @ ..] = rest else {
         return Err(Fault::Internal("operand stack underflow"));
     };
+    let popped = argc + 1 + usize::from(method);
     match callee(heap, f)? {
         Callee::Code(id, code) => {
             if method {
@@ -452,11 +457,63 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
             Ok(Flow::FrameChanged)
         }
         Callee::Builtin(which) => {
-            let result = builtin::call(heap, task, which, &this, args)?;
-            state.replace(argc + 1 + usize::from(method), result)?;
-            Ok(Flow::Next)
+            let (max_args, max_hops) = state.forward_limits(state.stack_len() - popped);
+            let Some(forward) = builtin::forward(heap, task, which, &this, args, max_args)? else {
+                let result = builtin::call(heap, task, which, &this, args)?;
+                state.replace(popped, result)?;
+                return Ok(Flow::Next);
+            };
+            // The forwarded call replaces this one's operands (a tail
+            // call): its values are in Rust locals only within this
+            // instruction, where no safepoint falls.
+            match resolve(heap, task, forward, max_args, max_hops)? {
+                (Callee::Code(id, code), forward) => {
+                    let keep = state.stack_len() - popped;
+                    state.truncate_operands(keep)?;
+                    let argc = forward.args.len();
+                    state.push(forward.callee);
+                    forward.args.into_iter().for_each(|a| state.push(a));
+                    state.enter(code, id, forward.this, argc)?;
+                    Ok(Flow::FrameChanged)
+                }
+                (Callee::Builtin(which), forward) => {
+                    let result = builtin::call(heap, task, which, &forward.this, &forward.args)?;
+                    state.replace(popped, result)?;
+                    Ok(Flow::Next)
+                }
+            }
         }
     }
+}
+
+/// The call a forwarding built-in makes (`crate::vm::builtin`, "Forwarding
+/// built-ins"), followed through further forwarding built-ins
+/// (`f.call.call(g, 1)`) to what finally runs: a function object, entered
+/// as a VM frame by the caller, or a built-in that runs to completion.
+/// Each hop is bounded by `max_hops` (a cycle through an array that holds
+/// itself would otherwise never end) and fails with `StackOverflow`, as
+/// the nested native frames it stands for would.
+pub(crate) fn resolve(
+    heap: &Heap,
+    task: TaskId,
+    mut forward: builtin::Forward,
+    max_args: usize,
+    max_hops: usize,
+) -> Result<(Callee, builtin::Forward), Fault> {
+    for _ in 0..max_hops {
+        match callee(heap, &forward.callee)? {
+            Callee::Builtin(which) => {
+                match builtin::forward(heap, task, which, &forward.this, &forward.args, max_args)? {
+                    Some(next) => forward = next,
+                    None => return Ok((Callee::Builtin(which), forward)),
+                }
+            }
+            code => return Ok((code, forward)),
+        }
+    }
+    Err(Fault::StackOverflow(format!(
+        "maximum call depth of {max_hops} frames exceeded by forwarding calls"
+    )))
 }
 
 /// `Construct argc` (clj-quickjs-71; ECMAScript EvaluateNew steps 7-8,

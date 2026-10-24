@@ -17,10 +17,10 @@
 //! | array owned by the running task | an index: the element, else (a hole) the prototype chain; `length`; any other name as an ordinary object | an index: update the element, or (after the prototype-chain check) add it, extending `length`; `length`: `UnsupportedOperand` (clj-quickjs-39); any other name as an ordinary object |
 //! | ordinary object created by the embedder (no owner) | as above | `ForeignObject` failure |
 //! | ordinary object or array owned by another task | `ForeignObject` failure | `ForeignObject` failure |
-//! | realm intrinsic `Object.prototype`, `Array.prototype` (`crate::realm`) | as above, from every task | catchable `TypeError`: built-in objects are shared and immutable |
-//! | built-in function (`Object`, `Object.is`, ...; `crate::vm::builtin`) | own property; any other name `UnsupportedOperand` (inherited from `Function.prototype`, clj-quickjs-102) | catchable `TypeError`, as above |
+//! | realm intrinsic `Object.prototype`, `Array.prototype`, `Reflect` (`crate::realm`) | as above, from every task | catchable `TypeError`: built-in objects are shared and immutable |
+//! | built-in function (`Object`, `Object.is`, ...; `crate::vm::builtin`) | own property, else the chain from `Function.prototype` (clj-quickjs-102); a standard name `Function.prototype` lacks so far (`bind`, `toString`, ...) `UnsupportedOperand` | catchable `TypeError`, as above |
 //! | persistent vector, map, occurrence; builder, atom, binding cell; native payload other than an error object | `undefined` (no JavaScript properties) | catchable `TypeError` |
-//! | function object (`crate::vm::function`, clj-quickjs-125) | its property record, after the lazy `prototype`; a name `Function.prototype` will own `UnsupportedOperand`; any other name continues at `Object.prototype` | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
+//! | function object (`crate::vm::function`, clj-quickjs-125) | its property record, after the lazy `prototype`; `length`, `name` and the names `Function.prototype` lacks so far `UnsupportedOperand`; any other name continues at `Function.prototype` (clj-quickjs-102) | the creating task writes its property record (`ForeignObject` for another task); a published function: catchable `TypeError` |
 //! | error object (a caught run-time error) | `UnsupportedOperand` (`message`/`name` are clj-quickjs-230) | `UnsupportedOperand` |
 //! | `undefined`, `null` | catchable `TypeError` | catchable `TypeError` |
 //! | number, string (clj-quickjs-73) | `Number.prototype` / `String.prototype` and its chain, without a wrapper (see "Primitive bases"); a string's `length` and indices below it: `UnsupportedOperand` (clj-quickjs-142) | `TypeError` in strict code, nothing in sloppy code; `__proto__` does nothing |
@@ -355,11 +355,13 @@ fn not_extensible(key: &Key) -> Fault {
     ))
 }
 
-/// A built-in function has no property `key` of its own: it would inherit
-/// it from `Function.prototype`, which does not exist yet.
+/// A lookup reached `Function.prototype` without finding `key`, one of its
+/// standard properties that does not exist yet
+/// (`crate::vm::function::lacks_inherited`): an explicit gap instead of
+/// continuing at `Object.prototype`.
 fn function_prototype_miss(key: &Key, access: Access) -> Fault {
     Fault::Unsupported(format!(
-        "cannot {} property '{key}' of a built-in function: properties inherited from Function.prototype are not supported",
+        "cannot {} property '{key}' inherited from Function.prototype: it is not supported yet",
         access.verb()
     ))
 }
@@ -376,24 +378,23 @@ fn check_write(object: &OrdinaryObject, task: TaskId) -> Result<(), Fault> {
 enum Visit<'a> {
     /// An ordinary object, or a built-in function's property store, that
     /// the running task may read.
-    Store(&'a OrdinaryObject, bool),
+    Store(&'a OrdinaryObject),
     /// An array the running task may read.
     Array(&'a ArrayObject),
     /// A kind without an ordinary property store.
     Other(&'a HeapObject),
 }
 
-/// Classify `object` for a read by `task` (owner check included). The flag
-/// is true for a built-in function.
+/// Classify `object` for a read by `task` (owner check included).
 fn visit<'a>(object: &'a HeapObject, task: TaskId) -> Result<Visit<'a>, Fault> {
     let readable = |o: &OrdinaryObject| match o.owner() {
         Some(owner) if owner != task => Err(foreign(Some(owner), task)),
         _ => Ok(()),
     };
     match object {
-        HeapObject::Plain(o) => readable(o).map(|()| Visit::Store(o, false)),
+        HeapObject::Plain(o) => readable(o).map(|()| Visit::Store(o)),
         HeapObject::Array(a) => readable(a.object()).map(|()| Visit::Array(a)),
-        HeapObject::Builtin(f) => Ok(Visit::Store(&f.properties, true)),
+        HeapObject::Builtin(f) => Ok(Visit::Store(&f.properties)),
         other => Ok(Visit::Other(other)),
     }
 }
@@ -416,20 +417,15 @@ enum Lookup {
     Function,
 }
 
-/// The own named property of the store `o` (a built-in function's when
-/// `builtin`), or where to continue.
-fn read_store(
-    o: &OrdinaryObject,
-    builtin: bool,
-    key: &Key,
-    interned: Interned,
-) -> Result<Lookup, Fault> {
+/// The own named property of the store `o`, or where to continue.
+/// (`Function.prototype`, the one store whose misses can fail, is an
+/// intrinsic and always read through its view.)
+fn read_store(o: &OrdinaryObject, interned: Interned) -> Result<Lookup, Fault> {
     let Some(k) = interned else {
         return Ok(Lookup::NeedsName);
     };
     match k.and_then(|k| o.get_own(k)) {
         Some(property) => Ok(Lookup::Found(property.value.clone())),
-        None if builtin => Err(function_prototype_miss(key, Access::Read)),
         None => Ok(Lookup::Next(o.prototype())),
     }
 }
@@ -547,7 +543,9 @@ fn lookup(
             }
             match k.and_then(|k| view.get_own(k)) {
                 Some(property) => return Ok(Some(property.value.clone())),
-                None if view.builtin => return Err(function_prototype_miss(key, Access::Read)),
+                None if view.function_prototype && function::lacks_inherited(key) => {
+                    return Err(function_prototype_miss(key, Access::Read));
+                }
                 None => match view.prototype {
                     Some(prototype) => {
                         id = prototype;
@@ -559,14 +557,14 @@ fn lookup(
         }
         let step = heap
             .read(id, |object| match visit(object, task)? {
-                Visit::Store(o, builtin) => read_store(o, builtin, key, interned),
+                Visit::Store(o) => read_store(o, interned),
                 Visit::Array(a) => match key {
                     Key::Index(index) => Ok(match a.get(*index) {
                         Some(value) => Lookup::Found(value.clone()),
                         None => Lookup::Next(a.object().prototype()),
                     }),
                     _ if key.is_length() => Ok(Lookup::Found(Value::Number(f64::from(a.length())))),
-                    Key::Name(_) => read_store(a.object(), false, key, interned),
+                    Key::Name(_) => read_store(a.object(), interned),
                 },
                 Visit::Other(HeapObject::Function(_)) => Ok(Lookup::Function),
                 Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
@@ -863,7 +861,9 @@ fn check_inherited(
             match k.and_then(|k| view.get_own(k)) {
                 Some(property) if !property.flags.writable => return Err(read_only(key)),
                 Some(_) => return Ok(Chain::Add),
-                None if view.builtin => return Err(function_prototype_miss(key, Access::Write)),
+                None if view.function_prototype && function::lacks_inherited(key) => {
+                    return Err(function_prototype_miss(key, Access::Write));
+                }
                 None => match view.prototype {
                     Some(prototype) => {
                         id = prototype;
@@ -873,15 +873,14 @@ fn check_inherited(
                 },
             }
         }
-        let in_store = |o: &OrdinaryObject, builtin: bool| match k.and_then(|k| o.get_own(k)) {
+        let in_store = |o: &OrdinaryObject| match k.and_then(|k| o.get_own(k)) {
             Some(property) if !property.flags.writable => Err(read_only(key)),
             Some(_) => Ok(Walk::Next(None)),
-            None if builtin => Err(function_prototype_miss(key, Access::Write)),
             None => Ok(Walk::Next(o.prototype())),
         };
         let next = heap
             .read(id, |object| match visit(object, task)? {
-                Visit::Store(o, builtin) => in_store(o, builtin),
+                Visit::Store(o) => in_store(o),
                 Visit::Array(a) => match key {
                     Key::Index(index) => match a.element(*index) {
                         Some(element) if !element.flags.writable => Err(read_only(key)),
@@ -890,7 +889,7 @@ fn check_inherited(
                     },
                     _ if key.is_length() && !a.length_writable() => Err(read_only(key)),
                     _ if key.is_length() => Ok(Walk::Next(None)),
-                    _ => in_store(a.object(), false),
+                    _ => in_store(a.object()),
                 },
                 // A function as a prototype (`Object.create(f)`,
                 // clj-quickjs-121): its own properties are in its record
@@ -959,7 +958,7 @@ fn reaches_proto_accessor(
         };
         let step = heap
             .read(id, |object| match visit(object, task)? {
-                Visit::Store(o, _) => Ok(own_or_next(o)),
+                Visit::Store(o) => Ok(own_or_next(o)),
                 Visit::Array(a) => Ok(own_or_next(a.object())),
                 Visit::Other(HeapObject::Function(_)) => Ok(Walk::Function),
                 Visit::Other(_) => Ok(Walk::Next(None)),
@@ -1146,7 +1145,7 @@ pub(crate) fn get_own_property(
     }
     let named = |o: &OrdinaryObject| k.and_then(|k| o.get_own(k)).cloned();
     heap.read(target, |object| match visit(object, task)? {
-        Visit::Store(o, _) => Ok(named(o)),
+        Visit::Store(o) => Ok(named(o)),
         Visit::Array(a) => Ok(match key {
             Key::Index(index) => a.element(*index),
             _ if key.is_length() => Some(a.length_property()),
@@ -1377,7 +1376,8 @@ mod tests {
                     read(&prototype, "missing").is_ok_and(|v| v == Value::Undefined),
                     read(&object, "length").is_ok_and(|v| v == Value::Number(1.0)),
                     read(&object, "prototype").is_ok_and(|v| v.same_object(&prototype)),
-                    matches!(read(&object, "call"), Err(Fault::Unsupported(_))),
+                    read(&object, "call").is_ok_and(|v| matches!(v, Value::Object(_))),
+                    matches!(read(&object, "bind"), Err(Fault::Unsupported(_))),
                     check_inherited(
                         &heap,
                         task,

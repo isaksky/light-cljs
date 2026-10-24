@@ -42,7 +42,9 @@
 //!   operand area and the loop resumes the native with `CallResult`. A
 //!   built-in function callee (`crate::vm::builtin`, clj-quickjs-117) runs
 //!   to completion instead and its result is delivered the same way, with
-//!   `this` undefined.
+//!   `this` undefined; a forwarding built-in (`Reflect.apply`,
+//!   clj-quickjs-102) is first followed to the call it makes
+//!   (`crate::vm::dispatch::resolve`), whose frame then delivers the result.
 //! * `Need { dependency, kind }`: demand result `kind` of `dependency` in
 //!   the task's world. The loop leaves with `Exit::Need`, like a `Need`
 //!   instruction, and the run guard performs the dependency protocol
@@ -498,24 +500,32 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap) -> Result<Flow, Fault> {
     state.truncate_operands(base)?;
     match action {
         Action::Call { callee, args } => {
-            let (id, code) = match dispatch::callee(heap, &callee)? {
-                Callee::Code(id, code) => (id, code),
-                Callee::Builtin(which) => {
+            // A forwarding built-in callback (`Reflect.apply`) is followed
+            // to the call it makes (`dispatch::resolve`).
+            let (max_args, max_hops) = state.forward_limits(state.stack_len());
+            let call = builtin::Forward {
+                callee,
+                this: Value::Undefined,
+                args: args.to_vec(),
+            };
+            let task = state.diag.task;
+            let (id, code, call) = match dispatch::resolve(heap, task, call, max_args, max_hops)? {
+                (Callee::Code(id, code), call) => (id, code, call),
+                (Callee::Builtin(which), call) => {
                     // Runs to completion (`crate::vm::builtin`); no safepoint
                     // falls between here and the push that roots its result.
                     // The next step receives it like a callback's return.
-                    let result =
-                        builtin::call(heap, state.diag.task, which, &Value::Undefined, &args)?;
+                    let result = builtin::call(heap, task, which, &call.this, &call.args)?;
                     set_awaiting(state, Awaiting::CallResult)?;
                     state.push(result);
                     return Ok(Flow::Next);
                 }
             };
             set_awaiting(state, Awaiting::CallResult)?;
-            state.push(callee);
-            let argc = args.len();
-            args.into_iter().for_each(|a| state.push(a));
-            state.enter(code, id, Value::Undefined, argc)?;
+            state.push(call.callee);
+            let argc = call.args.len();
+            call.args.into_iter().for_each(|a| state.push(a));
+            state.enter(code, id, call.this, argc)?;
             Ok(Flow::FrameChanged)
         }
         Action::Need { dependency, kind } => {

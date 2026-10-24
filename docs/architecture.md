@@ -1707,12 +1707,18 @@ moment (a leaf lock, never taken by the collector).
   constructors (clj-quickjs-230) are added to `realm::build` as intrinsic
   ordinary objects and `Builtin` functions, their constructors to `Global`
   (append-only, the operand values are part of the instruction format), and
-  their methods as `Builtin` variants. Function objects, which are
-  persistent, then get `Function.prototype` as an implicit prototype read
-  through the realm; built-in functions get it as their `[[Prototype]]`.
-  Until it exists, reading a property a built-in function does not have
-  itself fails with `UnsupportedOperand` instead of reading `undefined`.
-- The realm's objects (nineteen since clj-quickjs-123, twenty-seven since clj-quickjs-73) and its interned names live as long as the
+  their methods as `Builtin` variants. `Function.prototype`
+  (clj-quickjs-102) is itself a built-in function (callable, returning
+  `undefined`) inheriting from `Object.prototype`; built-in functions get
+  it as their `[[Prototype]]` and function objects, which are persistent,
+  as an implicit prototype read through the realm (their property records
+  inherit from it). Its standard names that do not exist yet (`bind`,
+  `toString`, `arguments`, `caller`) fail with `UnsupportedOperand` when a
+  lookup reaches it without finding them, instead of reading
+  `Object.prototype`'s or `undefined`. `Function` is a stub constructor
+  (failing when called, clj-quickjs-111) and `Reflect` an intrinsic
+  ordinary object with `apply`.
+- The realm's objects (twenty-seven since clj-quickjs-73, thirty-three since clj-quickjs-102) and its interned names live as long as the
   runtime: the first object literal adds them to the heap counts.
 - Embedder-made objects keep a null prototype (`Scope::new_object`); an
   object that should inherit from `Object.prototype` is made by a task (a
@@ -1956,11 +1962,11 @@ task-owned when it is first written.
 - A `FunctionObject` records its creating task (`owner`) and an optional
   **property record**: an ordinary object (`HeapObject::Plain`) owned by
   that task, never itself a JavaScript value, whose `[[Prototype]]` is
-  `Object.prototype` (standing in for `Function.prototype`). It is
+  `Function.prototype` (`Object.prototype` until clj-quickjs-102). It is
   allocated and attached by the first write of a property or the first
   observation of the lazy `prototype`, and never replaced. Every property
   operation on the function is the ordinary-object operation on the record
-  (reads continue at `Object.prototype` when there is none), so attributes,
+  (reads continue at `Function.prototype` when there is none), so attributes,
   extensibility, the owner check (`ForeignObject` for another task) and the
   prototype-chain write check come from `crate::object` unchanged, and the
   later define, delete and enumeration pellets inherit them.
@@ -1999,13 +2005,13 @@ task-owned when it is first written.
   derived from immutable code metadata and answered before the record
   (configurable, so a later `delete f.length` or redefinition writes a
   shadowing entry, or a deletion marker, into the record); until then they
-  fail explicitly. `Function.prototype` (clj-quickjs-102) becomes a realm
-  intrinsic and replaces `Object.prototype` as the record's prototype and as
-  where a record-less function's reads continue; until then the names it
-  will own (`call`, `apply`, `bind`, `toString`, `constructor`,
-  `arguments`, `caller`, `length`, `name`) fail with `UnsupportedOperand`
-  unless the function has its own, and every other name continues at
-  `Object.prototype`. Class statics (`static m() {}`) and `F.prototype.m =
+  fail explicitly. `Function.prototype` (clj-quickjs-102) is a realm
+  intrinsic: it is the record's prototype and where a record-less
+  function's reads continue (`f.call`, `f.apply`, `f.constructor`). The
+  names it does not have yet (`bind`, `toString`, `arguments`, `caller`)
+  and `length`/`name` fail with `UnsupportedOperand` unless the function
+  has its own (`function::FUNCTION_PROTOTYPE_NAMES`), and every other name
+  continues at `Function.prototype` and then `Object.prototype`. Class statics (`static m() {}`) and `F.prototype.m =
   ...` are record writes, so a class or constructor that has been set up is
   task-owned, like the objects it creates. Bound functions (clj-quickjs-103)
   can use the same record. Built-in functions keep their immutable
@@ -2098,16 +2104,19 @@ so they run inside their call instruction.
   intrinsics).
 - **Other kinds.** Values without JavaScript properties (vectors, maps,
   builders, ...) report a `null` prototype and are not extensible, so
-  setting anything else is a `TypeError`. Functions, built-in functions and
-  error objects would report `Function.prototype` / `Error.prototype`,
-  which do not exist (clj-quickjs-102, -230): both directions fail with
-  `UnsupportedOperand` rather than answer `null` (or `Object.prototype`,
-  which a function's property record stands on, "Function own
-  properties"). A function used as a prototype
+  setting anything else is a `TypeError`. Functions and built-in
+  functions report `Function.prototype` (clj-quickjs-102); a built-in
+  function's cannot change (an intrinsic: `TypeError`) and neither can a
+  function's yet (`UnsupportedOperand`: its property record would have to
+  take the new prototype, and the cycle walk would have to follow
+  functions). Error objects would report `Error.prototype`, which does
+  not exist (clj-quickjs-230): both directions fail with
+  `UnsupportedOperand` rather than answer `null`. A function used as a prototype
   (`Object.create(function () {})`) lends its own properties, read and
   write-checked through its record (`function::read`, `own_store`),
-  with their attributes; the names `Function.prototype` will own fail
-  explicitly through the chain as on the function itself. The `__proto__`
+  with their attributes; the names `Function.prototype` lacks fail
+  explicitly through the chain as on the function itself, and
+  `Function.prototype`'s own (`call`, `apply`) are inherited. The `__proto__`
   setter always receives the original base, not the record a function's
   write is redirected to.
 - **`Object.prototype.__proto__` without stored accessors.** Accessor
@@ -2153,9 +2162,9 @@ so they run inside their call instruction.
   `set_prototype_of` already rejects a non-extensible target.
 - `Object.create`'s second argument (`Object.defineProperties`) fails with
   `UnsupportedOperand`; it needs own enumerable keys (clj-quickjs-123).
-- `Function.prototype` (clj-quickjs-102) will give functions a prototype
-  to report and change; the cycle walk must then follow functions (and
-  their records) whose prototype can change.
+- `Function.prototype` (clj-quickjs-102) gives functions a prototype to
+  report; changing it is left: the cycle walk must then follow functions
+  (and their records) whose prototype can change.
 
 ## Extensibility and freezing (clj-quickjs-122)
 
@@ -2316,15 +2325,14 @@ Contract: `src/vm/prototype.rs` (`instance_of`), `src/vm/instr.rs`
 `@@hasInstance` lookup (no symbols yet), then OrdinaryHasInstance without
 bound functions (clj-quickjs-103): the right operand must be a callable
 object, a primitive left operand is `false`, `F.prototype` is read with
-the ordinary property walk (for a built-in function, its own properties
-only: the walk would refuse to continue at the missing
-`Function.prototype`, but neither it nor `Object.prototype` has a
-`prototype` and both are immutable, so a miss is `undefined`) and must be
-an object, and the chain is walked
+the ordinary property walk (a built-in method such as `Object.is`
+inherits no `prototype` from `Function.prototype` or `Object.prototype`,
+so it is `undefined`) and must be an object, and the chain is walked
 with `[[GetPrototypeOf]]` (`prototype::get_prototype_of`), so its owner
-rules and its explicit `UnsupportedOperand` for functions and error
-objects apply unchanged and the walk follows clj-quickjs-102 and -230 when
-they give those kinds prototypes. The walk only reads; chains are acyclic,
+rules apply, a function's chain runs through `Function.prototype`
+(clj-quickjs-102: `f instanceof Function`, `f instanceof Object`), and an
+error object fails with `UnsupportedOperand` until clj-quickjs-230 gives
+it a prototype. The walk only reads; chains are acyclic,
 so it ends. Reading `prototype` may create a function's lazy prototype
 object (and build the realm), so the opcode is a poll point and keeps
 both operands on the operand stack, traced, until it has the answer. It
@@ -2412,7 +2420,8 @@ walk of `property::find` with one difference: reaching
 getter (whose `[[GetPrototypeOf]]` of the receiver would otherwise fail
 on a function). Sharing the walk keeps one set of owner and kind rules for
 reads, so the kinds without JavaScript properties answer false and error
-objects and `Function.prototype` names stay explicit `UnsupportedOperand`.
+objects and the names `Function.prototype` lacks so far stay explicit
+`UnsupportedOperand` (its `call` and `apply` are found, clj-quickjs-102).
 A constructor's lazy `prototype` is reported present without being
 created (`function::probe`; QuickJS `JS_HasProperty` leaves autoinit
 properties alone), so asking attaches no task-owned state and works on a
@@ -2481,6 +2490,33 @@ prototypes before they are reached. Details: `src/vm/keys.rs`, "Prototype
 chain".
 Deferred: property targets (clj-quickjs-87), the non-strict
 `for (var k = 1 in o)` (clj-quickjs-90), Proxy traps (clj-quickjs-91).
+## Forwarding calls: `call`, `apply`, `Reflect.apply` (clj-quickjs-102)
+
+Contract: `src/vm/builtin.rs` ("Forwarding built-ins", `forward`) and
+`src/vm/dispatch.rs` (`resolve`).
+
+**Decision: a tail call, not a native frame.** `Function.prototype.call`,
+`Function.prototype.apply` and `Reflect.apply` return their target's
+result unchanged, so nothing is left to do after the target returns. The
+`Call`/`CallMethod` instruction (or a resumable native's callback step)
+computes the forwarded call (target, receiver, argument list; building
+the list reads properties but runs no JavaScript), replaces the
+forwarding call's operands with it and enters the target's task-owned
+frame exactly as a direct call, or runs a non-forwarding built-in to
+completion. Chains of forwarding built-ins are followed in the same
+instruction, bounded by the call-depth limit (`StackOverflow`).
+
+- Considered: a resumable native frame per forwarding call
+  (`crate::vm::native`, the `__rt.reduce` pattern). It would work, but it
+  adds a task-owned frame, a step and an operand area for no state, and
+  a failure would unwind through it for nothing. The tail call keeps the
+  invariant that matters (no Rust frame, the callee may yield, wait,
+  be collected around and migrate) with less state.
+- Consequences: the forwarding call does not appear in a failure's call
+  chain (the call site is the `.call(` instruction); its `this` is the
+  receiver passed, so a sloppy callee's substitution (global object,
+  wrappers) stays the explicit gap of `this`. A later forwarding built-in
+  (`bind`'s bound function, clj-quickjs-103) follows the same path.
 
 ## Primitive bases (clj-quickjs-73)
 
@@ -3079,3 +3115,16 @@ and Charlie Gordon) and is listed here with its source path and revision:
   `js_thisNumberValue`, `js_number_valueOf`, `js_number_toString` and
   `js_thisStringValue` were consulted only, for semantics. No code was
   copied.
+- `tests/js_functions.rs` `call_apply_and_reflect_apply` (clj-quickjs-102):
+  the `my_func.call(null, 1, 2)`, `my_func.apply(null, [1, 2])`,
+  `(function () { return 1; }).apply(null, undefined)` and
+  `assert_throws(TypeError, ... Reflect.apply(..., null, undefined))` rows
+  of `test_function` (line 83) with its helper `my_func` (line 78) in
+  `research/quickjs/tests/test_builtin.js`, revision 7d1c13c5d8f8.
+  Modified: the asserts are Rust assertions and `assert_throws` is a
+  `try`/`catch`; the `new Function` and `bind` rows wait for
+  clj-quickjs-111 and -103. The test carries the full notice.
+  `research/quickjs/quickjs.c` `js_function_proto`, `js_function_call`,
+  `js_function_apply`, `build_arg_list` and `js_reflect_apply` were
+  consulted only, for semantics (call and apply are tail calls here, not
+  C-stack calls). No code was copied.

@@ -4,10 +4,13 @@
 //! one adapted QuickJS test (`quickjs_closure.js`, with its notice) and
 //! inline snippets.
 
-use clj_quickjs::frontend::{SyntaxErrorKind, compile_function, compile_script};
+use clj_quickjs::frontend::{
+    ScriptOptions, SyntaxErrorKind, compile_function, compile_script, compile_script_with,
+};
 use clj_quickjs::{
-    Budget, CollectionError, Executable, Host, HostCall, Opcode, Primitive, PublishError,
-    RunOutcome, Runtime, ValueView, VmError, VmErrorKind,
+    Budget, CollectionError, Completion, DependencyId, DependencyKey, Executable, Host, HostCall,
+    Opcode, Primitive, PublishError, ResultKind, RunOutcome, Runtime, ValueView, VmError,
+    VmErrorKind, VmLimits,
 };
 
 /// Host operation 7 returns its argument plus 1000 and records the call.
@@ -1172,4 +1175,314 @@ fn default_parameters_resume_across_yields_collection_and_threads() {
     assert_eq!(result, ValueView::Number(3000931002.0));
     assert_eq!(host.calls, [2.0]);
     assert!(yields > 50, "only {yields} yields");
+}
+
+/// `Function.prototype.call` / `apply` and `Reflect.apply`
+/// (clj-quickjs-102). The first four rows are adapted from `test_function`
+/// (line 83) of `research/quickjs/tests/test_builtin.js`, revision
+/// 7d1c13c5d8f8, with its helper `my_func` (line 78); `assert_throws` is
+/// a `try`/`catch` here. See `docs/architecture.md`, "QuickJS references
+/// and provenance".
+///
+/// QuickJS is Copyright (c) 2017-2021 Fabrice Bellard and Charlie Gordon,
+/// released under the MIT license: Permission is hereby granted, free of
+/// charge, to any person obtaining a copy of this software and associated
+/// documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy,
+/// modify, merge, publish, distribute, sublicense, and/or sell copies of
+/// the Software, and to permit persons to whom the Software is furnished
+/// to do so, subject to the following conditions: The above copyright
+/// notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+/// WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+/// LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+/// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+/// HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+/// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+/// CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+/// SOFTWARE.
+#[test]
+fn call_apply_and_reflect_apply() {
+    let truth = |src: &str| assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    // test_builtin.js `test_function`.
+    let my_func = "function my_func(a, b) { return a + b; } ";
+    truth(&format!("{my_func} my_func.call(null, 1, 2) === 3"));
+    truth(&format!("{my_func} my_func.apply(null, [1, 2]) === 3"));
+    truth("(function () { return 1; }).apply(null, undefined) === 1");
+    truth(
+        "let r = 0; try { Reflect.apply(function () { return 1; }, null, undefined); } \
+         catch (e) { r = 1; } r === 1",
+    );
+
+    // `this` of a strict callee is the receiver passed, unchanged.
+    let f = "function f() { return this; } ";
+    assert_eq!(num(&format!("{f} f.call(7)")), 7.0);
+    assert_eq!(num(&format!("{f} f.apply(8)")), 8.0);
+    assert_eq!(eval(&format!("{f} f.call()")), ValueView::Undefined);
+    assert_eq!(num(&format!("{f} Reflect.apply(f, 9, [])")), 9.0);
+    // Arguments, from an array, an array-like object (holes read through
+    // the prototype chain) and `call`'s rest; extra ones are ignored.
+    let g = "function g(a, b, c) { return this * 1000 + a * 100 + b * 10 + c; } ";
+    assert_eq!(num(&format!("{g} g.call(1, 2, 3, 4, 5)")), 1234.0);
+    assert_eq!(num(&format!("{g} g.apply(1, [2, 3, 4])")), 1234.0);
+    assert_eq!(
+        num(&format!(
+            "{g} g.apply(1, {{length: 3, 0: 2, 1: 3, 2: 4, 3: 9}})"
+        )),
+        1234.0
+    );
+    assert_eq!(
+        num(&format!(
+            "{g} let p = {{2: 4}}; let o = Object.create(p); o[0] = 2; o[1] = 3; o.length = '3'; \
+             Reflect.apply(g, 1, o)"
+        )),
+        1234.0
+    );
+    // `length` 2.9 is 2 arguments; a missing one is `undefined`.
+    truth(
+        "Reflect.apply(function (a, b, c) { return c === undefined && a + b === 5; }, 1, \
+         {length: 2.9, 0: 2, 1: 3, 2: 4})",
+    );
+    // `call` and `apply` through each other, and through `Reflect.apply`.
+    assert_eq!(num(&format!("{g} g.call.call(g, 1, 2, 3, 4)")), 1234.0);
+    assert_eq!(num(&format!("{g} g.apply.call(g, 1, [2, 3, 4])")), 1234.0);
+    assert_eq!(
+        num(&format!(
+            "{g} Reflect.apply(Function.prototype.call, g, [1, 2, 3, 4])"
+        )),
+        1234.0
+    );
+    // A built-in target runs to completion.
+    truth("Object.is.call(null, 1, 1) && !Reflect.apply(Object.is, null, [1, 2])");
+    truth("Object.prototype.toString.call([]) === '[object Array]'");
+    // Function.prototype is the prototype of every function, is itself
+    // callable and has `call` and `apply`.
+    truth(
+        "function h() {} Object.getPrototypeOf(h) === Function.prototype && \
+         Object.getPrototypeOf(Object.is) === Function.prototype && \
+         Object.getPrototypeOf(Function.prototype) === Object.prototype && \
+         Function.prototype() === undefined && typeof Function.prototype === 'function' && \
+         h.call === Function.prototype.call && Object.is.apply === h.apply && \
+         Function.prototype.call.length === 1 && Function.prototype.apply.length === 2 && \
+         Reflect.apply.length === 3 && Function.prototype.call.name === 'call' && \
+         h instanceof Function && h instanceof Object && Object.is instanceof Function && \
+         h.constructor === Function && Function.prototype.constructor === Function",
+    );
+
+    // The `docs/grammar.md` example lines, each true.
+    for src in [
+        "function add(a, b) { return a + b; } add.call(null, 1, 2) === 3 && add.apply(null, [1, 2]) === 3 && Reflect.apply(add, null, [1, 2]) === 3;",
+        "function self() { return this; } self.call(7) === 7 && self.apply(8) === 8 && self.call() === undefined && Object.getPrototypeOf(self) === Function.prototype;",
+        "let r = false; try { Reflect.apply(function () {}, null, undefined); } catch (e) { r = true; } r;",
+    ] {
+        truth(src);
+    }
+
+    // Failures: catchable TypeErrors.
+    for src in [
+        "Reflect.apply(f, null, undefined)",
+        "f.apply(null, 1)",
+        "Function.prototype.call.call(1)",
+        "Function.prototype.apply.call({}, null, [])",
+        "Reflect.apply(1, null, [])",
+        "const c = f.call; c(1)",
+    ] {
+        assert_eq!(
+            num(&format!(
+                "{f} let r = 0; try {{ {src}; }} catch (e) {{ r = 1; }} r"
+            )),
+            1.0,
+            "{src}"
+        );
+        assert_eq!(
+            failure(&format!("{f} {src};")).kind(),
+            VmErrorKind::TypeError
+        );
+    }
+    // A forwarding cycle through an array holding itself ends as a
+    // (catchable) stack overflow instead of looping inside one instruction.
+    assert_eq!(
+        failure(
+            "const ap = Function.prototype.apply; const a = [ap, 0]; a[1] = a; ap.apply(ap, a);"
+        )
+        .kind(),
+        VmErrorKind::StackOverflow
+    );
+    // A forwarding built-in as a native's callback runs with `this`
+    // undefined, like any callback: `call` of `undefined` is a TypeError.
+    assert_eq!(
+        failure("__rt.reduce(Function.prototype.call, 0, __rt.vector(1));").kind(),
+        VmErrorKind::TypeError
+    );
+    // The Function constructor is a stub (clj-quickjs-111).
+    assert_eq!(
+        failure("Function('return 1');").kind(),
+        VmErrorKind::UnsupportedOperand
+    );
+    assert_eq!(
+        failure("new Function('return 1');").kind(),
+        VmErrorKind::TypeError
+    );
+    // A sloppy callee's `this` substitution (global object, wrappers) is a
+    // documented gap: the explicit failure of `this` in sloppy code.
+    let sloppy = compile_script_with(
+        "sloppy",
+        "function s() { return this; } s.call(7);",
+        ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    let rt = Runtime::new();
+    let task = rt.spawn(&sloppy, &[]).unwrap();
+    match task.run().unwrap() {
+        RunOutcome::Failed(e) => assert_eq!(e.kind(), VmErrorKind::UnsupportedOperand),
+        other => panic!("{other:?}"),
+    }
+
+    // A callee reached through `.call` that loops runs to completion under
+    // a tiny budget, yielding and collecting between slices, each slice on
+    // a new thread: it runs in a task-owned VM frame, not a Rust frame.
+    let src = "\
+               function loop(n) { let s = 0; for (let i = 0; i < n; i++) { s = s + this.k + i; } return s; } \
+               const o = {k: 1}; \
+               loop.call(o, 40) + loop.apply(o, [10]) * 10000 + Reflect.apply(loop, o, [5]) * 100000000";
+    let rt = Runtime::new();
+    let task = rt.spawn(&exe(src), &[]).unwrap();
+    let mut yields = 0;
+    let result = loop {
+        let outcome = std::thread::scope(|s| {
+            s.spawn(|| task.run_with(Budget::instructions(5), &mut PlusThousand::default()))
+                .join()
+                .unwrap()
+        })
+        .unwrap();
+        match outcome {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("{other:?}"),
+        }
+    };
+    // 40 + 780, 10 + 45, 5 + 10.
+    assert_eq!(
+        result,
+        ValueView::Number(820.0 + 550_000.0 + 1_500_000_000.0)
+    );
+    assert!(yields > 50, "only {yields} yields");
+}
+
+/// `apply` and `Reflect.apply` with a `null` list or an array-like whose
+/// `length` is missing, negative or NaN call with no arguments
+/// (clj-quickjs-102, CreateListFromArrayLike / ToLength); `Reflect.apply`
+/// with a `null` list is a catchable TypeError.
+#[test]
+fn apply_null_lists_and_zero_lengths() {
+    let none = "function none(a) { return a === undefined; } ";
+    for list in [
+        "null",
+        "{0: 9}",
+        "{length: -1, 0: 9}",
+        "{length: NaN, 0: 9}",
+        "{length: 'x', 0: 9}",
+        "{length: undefined, 0: 9}",
+    ] {
+        let src =
+            format!("{none} none.apply(null, {list}) && Reflect.apply(none, null, {list} || {{}})");
+        assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        if list != "null" {
+            let src = format!("{none} Reflect.apply(none, null, {list})");
+            assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
+        }
+    }
+    assert_eq!(
+        num(&format!(
+            "{none} let r = 0; try {{ Reflect.apply(none, null, null); }} catch (e) {{ r = 1; }} r"
+        )),
+        1.0
+    );
+    assert_eq!(
+        failure(&format!("{none} Reflect.apply(none, null, null);")).kind(),
+        VmErrorKind::TypeError
+    );
+}
+
+/// The forwarded call replaces the forwarding call's operands, so its
+/// argument room is counted from the replacement base, not from the top
+/// of the forwarding call's operands (clj-quickjs-102): a two-element
+/// list fits a value-stack limit of five, the frame's own operand peak,
+/// and a list longer than the room left is a catchable `StackOverflow`.
+#[test]
+fn forwarded_calls_reuse_operand_capacity() {
+    let run = |src: &str, limit: usize| {
+        let rt = Runtime::with_limits(VmLimits {
+            max_call_depth: 100,
+            max_stack_values: limit,
+        });
+        let exe = compile_function(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        rt.spawn(&exe, &[]).unwrap().run().unwrap()
+    };
+    for src in [
+        "function main() { return Object.is.apply(null, [1, 1]); }",
+        "function main() { return Reflect.apply(Object.is, null, [1, 1]); }",
+    ] {
+        match run(src, 5) {
+            RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true), "{src}"),
+            other => panic!("{src}: {other:?}"),
+        }
+    }
+    let long = "function main() { return Object.is.apply(null, [1, 1, 1, 1, 1, 1, 1, 1]); }";
+    match run(long, 8) {
+        RunOutcome::Failed(e) => assert_eq!(e.kind(), VmErrorKind::StackOverflow),
+        other => panic!("{other:?}"),
+    }
+    match run(long, 9) {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true)),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A callee reached through `call`, `apply` and `Reflect.apply`
+/// (clj-quickjs-102) waits for a dependency inside the forwarded frame: the
+/// task suspends with no Rust frame for the forwarding built-ins, survives
+/// a collection, and resumes on another thread exactly at the `need`.
+#[test]
+fn forwarded_calls_wait_and_resume_on_another_thread() {
+    let src = "function get(k) { return __rt.need(5, 3) * this.m + k; } \
+               const o = {m: 10}; \
+               get.call(o, 1) + Reflect.apply(get, o, [2]) * 1000 + get.apply(o, [3]) * 1000000";
+    let rt = Runtime::new();
+    let mut task = rt.spawn(&exe(src), &[]).unwrap();
+    let expected = DependencyKey::new(rt.world(), DependencyId::new(5), ResultKind::new(3));
+    let mut waits = 0;
+    let result = loop {
+        let outcome = std::thread::scope(|s| {
+            s.spawn(|| task.run_with(Budget::UNLIMITED, &mut PlusThousand::default()))
+                .join()
+                .unwrap()
+        })
+        .unwrap();
+        match outcome {
+            RunOutcome::Waiting(key) => {
+                assert_eq!(key, expected);
+                waits += 1;
+                rt.collect().unwrap();
+                let mut requests = task.take_producer_requests();
+                if let Some(request) = requests.pop() {
+                    let value = rt.root(Primitive::Number(4.0));
+                    let wakeups = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap();
+                    let mut runnable = wakeups.into_runnable();
+                    assert_eq!(runnable.len(), 1);
+                    task = runnable.pop().unwrap();
+                }
+            }
+            RunOutcome::Complete(v) => break v.view(),
+            other => panic!("{other:?}"),
+        }
+    };
+    // The dependency is ready after the first wait: 41, 42, 43.
+    assert_eq!(waits, 1);
+    assert_eq!(result, ValueView::Number(41.0 + 42_000.0 + 43_000_000.0));
 }

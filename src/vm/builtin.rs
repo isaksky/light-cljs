@@ -2,8 +2,9 @@
 //! (`crate::realm`) whose behaviour is Rust code, after QuickJS's
 //! `JS_CFUNC_DEF` functions (`research/quickjs/quickjs.c`, revision
 //! 7d1c13c5d8f8: `js_object_constructor`, `js_object_is`,
-//! `js_object_toString`, `js_object_valueOf`); written fresh over this
-//! runtime's values.
+//! `js_object_toString`, `js_object_valueOf`; `js_function_proto`,
+//! `js_function_call`, `js_function_apply`, `js_reflect_apply`,
+//! `build_arg_list`); written fresh over this runtime's values.
 //!
 //! # The heap kind
 //!
@@ -22,10 +23,13 @@
 //! back into JavaScript, such as `__rt.reduce`). Its [`Trace`] reports its
 //! property values; the root inventory lists it under the realm intrinsics.
 //!
-//! Its `[[Prototype]]` is null until `Function.prototype` exists
-//! (clj-quickjs-102); reading a property a built-in function does not have
-//! itself therefore fails with `UnsupportedOperand` instead of answering
-//! `undefined` for what will be an inherited method (`crate::vm::property`).
+//! Its `[[Prototype]]` is `Function.prototype` (clj-quickjs-102), itself a
+//! built-in function ([`Builtin::FunctionPrototype`]) whose prototype is
+//! `Object.prototype`, so `Object.call` and `Object.is.apply` are
+//! inherited. A lookup that reaches `Function.prototype` without finding a
+//! standard name it lacks so far (`bind`, `toString`, ...;
+//! `crate::vm::function::lacks_inherited`) fails with `UnsupportedOperand`
+//! instead of answering from `Object.prototype` (`crate::vm::property`).
 //!
 //! # Calls
 //!
@@ -42,6 +46,26 @@
 //! The receiver is the base of a method call (`CallMethod`), `undefined`
 //! for a plain call (strict mode).
 //!
+//! # Forwarding built-ins (clj-quickjs-102)
+//!
+//! `Function.prototype.call`, `Function.prototype.apply` and
+//! `Reflect.apply` do nothing but call another function with a receiver
+//! and arguments they compute, and return its result unchanged. They are
+//! therefore not run by [`call`]: [`forward`] computes the call they make
+//! (validating the target and building the argument list, which reads
+//! properties but runs no JavaScript), and the caller makes that call *in
+//! place of* theirs (`crate::vm::dispatch::resolve`, a tail call): the
+//! `Call`/`CallMethod` instruction (or a native's callback step) replaces
+//! the forwarding call's operands with the target's and enters a new
+//! task-owned VM frame for a function object exactly as a direct call
+//! does, or runs a non-forwarding built-in to completion. No native frame
+//! is needed, since nothing remains to do after the target returns, and no
+//! Rust frame stands for the forwarding built-in, so the callee may yield,
+//! wait, be collected around and migrate like any callee. A forwarding
+//! target (`f.call.call(g)`) is followed in the same instruction, at most
+//! the task's call-depth limit of hops (`StackOverflow` past it: `apply`
+//! through an array that holds itself would otherwise never end).
+//!
 //! | Built-in | Result |
 //! |----------|--------|
 //! | `Object(v)` | `undefined`/`null`/absent: a new ordinary object owned by the running task, with prototype `Object.prototype`; an object: `v` itself; a boolean, number or string: `UnsupportedOperand` (wrapper objects are clj-quickjs-72) |
@@ -52,7 +76,7 @@
 //! | `Array(...)` (clj-quickjs-118; reachable as `[].constructor`) | `UnsupportedOperand` until the Array constructor exists (clj-quickjs-39) |
 //! | `Object.defineProperty(o, k, attributes)` | define or update the own data property `k` of `o` from the descriptor and return `o` (`crate::vm::descriptor`, clj-quickjs-119); a non-object `o` or descriptor, a descriptor with both `get`/`set` and `value`/`writable`, a define a non-configurable property forbids, a built-in object as `o`: catchable `TypeError`; an accessor descriptor: `UnsupportedOperand` (clj-quickjs-120) |
 //! | `Object.getOwnPropertyDescriptor(o, k)` | `undefined` if `o` has no own property `k`, else a fresh object `{value, writable, enumerable, configurable}` (clj-quickjs-119); `undefined`/`null` `o`: catchable `TypeError`; a primitive `o`: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
-//! | `Object.getPrototypeOf(v)` (clj-quickjs-121) | the `[[Prototype]]` of `v` (`crate::vm::prototype`), `null` at the end of a chain; `undefined`/`null` `v`: catchable `TypeError`; a primitive, a function, a built-in function or an error object: `UnsupportedOperand` (wrapper objects, `Function.prototype` and `Error.prototype` do not exist yet) |
+//! | `Object.getPrototypeOf(v)` (clj-quickjs-121) | the `[[Prototype]]` of `v` (`crate::vm::prototype`), `null` at the end of a chain; `Function.prototype` for a function or built-in function (clj-quickjs-102); `undefined`/`null` `v`: catchable `TypeError`; a primitive or an error object: `UnsupportedOperand` (wrapper objects and `Error.prototype` do not exist yet) |
 //! | `Object.setPrototypeOf(o, proto)` (clj-quickjs-121) | set the `[[Prototype]]` of the object `o` and return `o`; a primitive `o` is returned unchanged; `undefined`/`null` `o`, a `proto` that is neither an object nor `null`, a cycle, a built-in or non-extensible `o`: catchable `TypeError` |
 //! | `Object.create(proto)` (clj-quickjs-121) | a new ordinary object owned by the running task with prototype `proto` (an object or `null`, else a catchable `TypeError`); a second argument other than `undefined`: `UnsupportedOperand` (`Object.defineProperties`) |
 //! | `Object.preventExtensions(v)`, `Object.freeze(v)` (clj-quickjs-122) | make `v` non-extensible / frozen and return it (`crate::vm::integrity` has the table per kind); a primitive is returned unchanged; a built-in object: catchable `TypeError` (immutable); another task's object: `ForeignObject` |
@@ -61,6 +85,11 @@
 //! | `Number.prototype.toString(radix)`, `.valueOf()` (clj-quickjs-73) | thisNumberValue: a number receiver (a method call on a number primitive passes the number itself, no wrapper is allocated) or `Number.prototype` (`+0`); `toString` gives its Number::toString (`crate::value::string::number_to_string`), with `radix` absent, `undefined` or 10; another radix: `UnsupportedOperand` (clj-quickjs-39); any other receiver: catchable `TypeError` |
 //! | `String.prototype.toString()`, `.valueOf()` (clj-quickjs-73) | thisStringValue: a string receiver or `String.prototype` (`""`); any other receiver: catchable `TypeError` |
 //! | `Number(...)`, `String(...)` (clj-quickjs-73; global names that carry the prototypes) | `UnsupportedOperand` until the constructors exist (clj-quickjs-72) |
+//! | `Function.prototype(...)` (clj-quickjs-102) | `undefined`, whatever the receiver and arguments |
+//! | `Function(...)` (clj-quickjs-102; `Function.prototype.constructor`) | `UnsupportedOperand` until the Function constructor exists (clj-quickjs-111) |
+//! | `f.call(t, ...args)` (clj-quickjs-102) | forwards (above): calls the receiver `f` with `this` `t` and `args`; a receiver that is not callable: catchable `TypeError` |
+//! | `f.apply(t, list)` (clj-quickjs-102) | forwards: calls `f` with `this` `t` and no arguments for an `undefined`/`null` `list`, else CreateListFromArrayLike(`list`): `length` through ToLength, then `list[0 .. length]`; a non-callable `f` or a primitive `list`: catchable `TypeError`; an object `length`: `UnsupportedOperand` (ToPrimitive); a list longer than the value-stack room left: `StackOverflow` (QuickJS: a RangeError) |
+//! | `Reflect.apply(f, t, list)` (clj-quickjs-102) | forwards: `f.apply(t, list)` without reading `f.apply`, except that `list` must be an object (`undefined` is a catchable `TypeError`) |
 
 use crate::atom::same_value;
 use crate::heap::gc::Trace;
@@ -75,6 +104,7 @@ use crate::vm::dispatch::Fault;
 use crate::vm::exception::ErrorObject;
 use crate::vm::integrity;
 use crate::vm::keys::{self, KeyFilter};
+use crate::vm::property;
 use crate::vm::prototype;
 
 /// Which built-in function: the Rust code a [`BuiltinFunction`] runs.
@@ -146,6 +176,22 @@ pub(crate) enum Builtin {
     /// `String.prototype.valueOf` (clj-quickjs-73; the same function body
     /// as `toString`).
     StringPrototypeValueOf,
+    /// `Function.prototype` itself (clj-quickjs-102): callable, accepts any
+    /// arguments and returns `undefined` (ECMAScript §20.2.3).
+    FunctionPrototype,
+    /// `Function.prototype.call` (QuickJS `js_function_call`;
+    /// clj-quickjs-102): a forwarding built-in ([`forward`]).
+    FunctionPrototypeCall,
+    /// `Function.prototype.apply` (QuickJS `js_function_apply`;
+    /// clj-quickjs-102): a forwarding built-in.
+    FunctionPrototypeApply,
+    /// `Reflect.apply` (QuickJS `js_reflect_apply`; clj-quickjs-102): a
+    /// forwarding built-in.
+    ReflectApply,
+    /// `Function` (clj-quickjs-102): the global name and
+    /// `Function.prototype.constructor`; fails when called until the
+    /// Function constructor exists (clj-quickjs-111).
+    Function,
 }
 
 impl Builtin {
@@ -173,6 +219,10 @@ impl Builtin {
             Builtin::String => "String",
             Builtin::NumberPrototypeToString | Builtin::StringPrototypeToString => "toString",
             Builtin::NumberPrototypeValueOf | Builtin::StringPrototypeValueOf => "valueOf",
+            Builtin::FunctionPrototype => "",
+            Builtin::FunctionPrototypeCall => "call",
+            Builtin::FunctionPrototypeApply | Builtin::ReflectApply => "apply",
+            Builtin::Function => "Function",
         }
     }
 
@@ -197,6 +247,10 @@ impl Builtin {
             Builtin::NumberPrototypeValueOf
             | Builtin::StringPrototypeToString
             | Builtin::StringPrototypeValueOf => 0,
+            Builtin::FunctionPrototype => 0,
+            Builtin::FunctionPrototypeCall | Builtin::Function => 1,
+            Builtin::FunctionPrototypeApply => 2,
+            Builtin::ReflectApply => 3,
         }
     }
 }
@@ -271,6 +325,16 @@ pub(crate) fn call(
         Builtin::ObjectIsFrozen => integrity::is_frozen(heap, task, &arg(0)),
         Builtin::ObjectKeys => keys::object_keys(heap, task, args, KeyFilter::Enumerable),
         Builtin::ObjectGetOwnPropertyNames => keys::object_keys(heap, task, args, KeyFilter::All),
+        Builtin::FunctionPrototype => Ok(Value::Undefined),
+        Builtin::Function => Err(Fault::Unsupported(
+            "the Function constructor is not supported".to_string(),
+        )),
+        // Every call site resolves these with `forward` first.
+        Builtin::FunctionPrototypeCall
+        | Builtin::FunctionPrototypeApply
+        | Builtin::ReflectApply => {
+            Err(Fault::Internal("a forwarding built-in was called directly"))
+        }
         Builtin::Number | Builtin::String => Err(Fault::Unsupported(format!(
             "calling the {} constructor is not supported",
             which.name()
@@ -345,6 +409,107 @@ fn describe_receiver(v: &Value) -> &'static str {
         Value::String(_) => "a string",
         Value::Object(_) => "an object",
     }
+}
+
+/// The call a forwarding built-in (`Function.prototype.call`,
+/// `Function.prototype.apply`, `Reflect.apply`) makes in its place (module
+/// docs, "Forwarding built-ins").
+#[derive(Debug)]
+pub(crate) struct Forward {
+    pub(crate) callee: Value,
+    pub(crate) this: Value,
+    pub(crate) args: Vec<Value>,
+}
+
+/// If `which` forwards, the call it makes when called with receiver `this`
+/// and arguments `args`: `None` for every other built-in. The target is
+/// checked to be callable before an argument list is read (ECMAScript
+/// order). At most `max_args` arguments are accepted from an array-like;
+/// a longer one fails with `StackOverflow` (QuickJS: "too many
+/// arguments", a RangeError) before anything is read past its `length`.
+pub(crate) fn forward(
+    heap: &Heap,
+    task: TaskId,
+    which: Builtin,
+    this: &Value,
+    args: &[Value],
+    max_args: usize,
+) -> Result<Option<Forward>, Fault> {
+    let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
+    let (callee, this, args) = match which {
+        // `call(thisArg, ...args)`.
+        Builtin::FunctionPrototypeCall => {
+            callable(heap, this)?;
+            (this.clone(), arg(0), args.get(1..).unwrap_or(&[]).to_vec())
+        }
+        // `apply(thisArg, argArray)`: no arguments for `undefined`/`null`.
+        Builtin::FunctionPrototypeApply => {
+            callable(heap, this)?;
+            let list = match arg(1) {
+                Value::Undefined | Value::Null => Vec::new(),
+                array => list_from_array_like(heap, task, &array, max_args)?,
+            };
+            (this.clone(), arg(0), list)
+        }
+        // `Reflect.apply(target, thisArgument, argumentsList)`.
+        Builtin::ReflectApply => {
+            let target = arg(0);
+            callable(heap, &target)?;
+            let list = list_from_array_like(heap, task, &arg(2), max_args)?;
+            (target, arg(1), list)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(Forward { callee, this, args }))
+}
+
+/// IsCallable, failing with the `… is not a function` TypeError.
+fn callable(heap: &Heap, v: &Value) -> Result<(), Fault> {
+    crate::vm::dispatch::callee(heap, v).map(drop)
+}
+
+/// CreateListFromArrayLike (ECMAScript §7.3.18; QuickJS `build_arg_list`):
+/// `TypeError` for a non-object; otherwise ToLength of its `length`, then
+/// its elements `0 .. length` read with `[[Get]]` (a hole reads through the
+/// prototype chain). ToLength of an object needs ToPrimitive and fails
+/// with `UnsupportedOperand`.
+fn list_from_array_like(
+    heap: &Heap,
+    task: TaskId,
+    array: &Value,
+    max_args: usize,
+) -> Result<Vec<Value>, Fault> {
+    if !matches!(array, Value::Object(_)) {
+        return Err(Fault::TypeError(format!(
+            "an argument list must be an object, got {}",
+            array.type_name()
+        )));
+    }
+    let length = property::get_field(heap, task, array, &JsString::from("length"))?;
+    let length = crate::vm::dispatch::to_number(&length)?;
+    // ToLength: NaN and negatives are 0, the rest truncated (and at most
+    // 2^53 - 1, far above any accepted count).
+    let length = if length.is_nan() || length <= 0.0 {
+        0.0
+    } else {
+        length.trunc()
+    };
+    if length > max_args as f64 {
+        return Err(Fault::StackOverflow(format!(
+            "too many arguments: an argument list of length {length} exceeds the limit of {max_args}"
+        )));
+    }
+    // `length <= max_args`, a `usize`, and an integer: the cast is exact.
+    let length = length as usize;
+    let mut list = Vec::with_capacity(length);
+    for index in 0..length {
+        let key = match u32::try_from(index) {
+            Ok(index) if index != u32::MAX => property::Key::Index(index),
+            _ => property::Key::Name(JsString::from(index.to_string().as_str())),
+        };
+        list.push(property::get(heap, task, array, &key)?);
+    }
+    Ok(list)
 }
 
 /// A new ordinary object owned by `task` whose prototype is

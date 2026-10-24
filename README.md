@@ -1851,8 +1851,7 @@ Deferred:
   `docs/grammar.md`, "Explicit gaps"); assigning `Object` is a compile-time
   `Unsupported` error until the global object (clj-quickjs-104).
 - (`this` inside JavaScript functions: clj-quickjs-116, below.) `new Object()`
-  (built-in constructors; `new` on ordinary functions is clj-quickjs-71), `Function.prototype` (built-in functions' inherited
-  properties fail with `UnsupportedOperand`, clj-quickjs-102), wrapper
+  (built-in constructors; `new` on ordinary functions is clj-quickjs-71), wrapper
   objects for `Object(1)` and primitive receivers (clj-quickjs-72),
   `Object.getPrototypeOf` and the other reflection functions.
 
@@ -1892,8 +1891,8 @@ Deferred:
 
 - `this` at the script top level (the global object, clj-quickjs-104) and
   an arrow's lexical `this` (clj-quickjs-98): `Unsupported` compile errors.
-- `call`/`apply` (clj-quickjs-102). (`new`: clj-quickjs-71; `o[k]()` passes `o`
-  as `this` since clj-quickjs-118.)
+- `bind` (clj-quickjs-103). (`new`: clj-quickjs-71; `o[k]()` passes `o`
+  as `this` since clj-quickjs-118; `call`/`apply` since clj-quickjs-102.)
 - Sloppy-mode `this` substitution: in sloppy code `this` with an
   `undefined`, `null` or primitive receiver fails with
   `UnsupportedOperand` (the global object is clj-quickjs-104, wrappers
@@ -1970,9 +1969,9 @@ Supported (`cargo test --test js_source function_own_properties`,
 - `f.x = v` / `f.x` on function objects; `F.prototype` of a `function`
   declaration or expression, created on first use (an ordinary object
   with `constructor` = `F`, the same object on every read, writable);
-  arrows have no `prototype`. A name a function lacks that is not one of
-  `Function.prototype`'s continues at `Object.prototype` (`f.y` is
-  `undefined`).
+  arrows have no `prototype`. A name a function lacks continues at
+  `Function.prototype` (`f.call`, `f.apply`, clj-quickjs-102) and then
+  `Object.prototype` (`f.y` is `undefined`).
 - Representation (decision record in `docs/architecture.md`, "Function
   own properties"): a task-owned property record attached to the
   persistent function on its first property write or `prototype` read. An
@@ -1982,12 +1981,12 @@ Supported (`cargo test --test js_source function_own_properties`,
 
 Deferred:
 
-- `length`/`name` (clj-quickjs-101) and `Function.prototype` with
-  `call`/`apply`/`bind`/`toString` (clj-quickjs-102/-103): those names fail
+- `length`/`name` (clj-quickjs-101) and `Function.prototype`'s
+  `bind`/`toString` (clj-quickjs-103 and later): those names fail
   with `UnsupportedOperand`, also in `Object.defineProperty` /
   `getOwnPropertyDescriptor` (which otherwise work on functions, through
-  the record). `Object.getPrototypeOf(f)` and `Object.setPrototypeOf(f, p)` fail with
-  `UnsupportedOperand` until `Function.prototype` exists (clj-quickjs-121, -102). Creating the `prototype` of a
+  the record). `Object.setPrototypeOf(f, p)` with a `p` other than
+  `Function.prototype` fails with `UnsupportedOperand`. Creating the `prototype` of a
   published function fails with `UnsupportedOperand`.
 
 ### `new` on ordinary function constructors (clj-quickjs-71)
@@ -2048,8 +2047,8 @@ Deferred:
 - `Object.prototype.__proto__` is applied by the property walk, not stored:
   `Object.getOwnPropertyDescriptor(Object.prototype, "__proto__")` fails with
   `UnsupportedOperand` until it becomes a stored accessor (clj-quickjs-120, then clj-quickjs-261);
-  so do the prototypes of primitives (wrappers, clj-quickjs-72), functions and built-in
-  functions (`Function.prototype`, clj-quickjs-102) and error objects (clj-quickjs-230), and
+  so do the prototypes of primitives (wrappers, clj-quickjs-72) and error objects
+  (clj-quickjs-230), changing a function's prototype, and
   `Object.create`'s second argument (`Object.defineProperties`). Extensibility (clj-quickjs-122) and
   `Object.getOwnPropertyNames` (clj-quickjs-123) have their own sections below.
 
@@ -2077,7 +2076,7 @@ Deferred:
 - Freezing does not change ownership: a frozen object stays task-owned and cannot be published,
   and freezing a function makes it unpublishable (it gets a property record).
 - `Object.seal`,
-  `Object.isSealed` and `Reflect` are not provided; error objects fail with `UnsupportedOperand`
+  `Object.isSealed` and `Reflect`'s extensibility functions are not provided; error objects fail with `UnsupportedOperand`
   (clj-quickjs-230); accessor properties are clj-quickjs-120.
 
 ### `Object.keys` and `Object.getOwnPropertyNames` (clj-quickjs-123)
@@ -2115,9 +2114,9 @@ Supported (`cargo test --test js_source instanceof_operator`,
 
 Deferred:
 
-- A function or error object as `v` fails with
-  `UnsupportedOperand` until `Function.prototype` (clj-quickjs-102) and `Error.prototype`
-  (clj-quickjs-230) exist; `String` and the Error constructors are not globals yet
+- An error object as `v` fails with `UnsupportedOperand` until `Error.prototype`
+  (clj-quickjs-230) exists (functions inherit from `Function.prototype` since
+  clj-quickjs-102: `f instanceof Function`); `String` and the Error constructors are not globals yet
   (clj-quickjs-72, the upstream corpus pellets). `Symbol.hasInstance` (symbols) and bound
   functions (clj-quickjs-103) are not consulted.
 
@@ -2162,8 +2161,8 @@ Supported (`cargo test --test js_source in_operator`,
 
 Deferred:
 
-- An object key needs ToPrimitive (clj-quickjs-70); names a function would inherit from
-  `Function.prototype` (clj-quickjs-102) and error objects' properties (clj-quickjs-230) fail
+- An object key needs ToPrimitive (clj-quickjs-70); names `Function.prototype` does not have yet
+  (`bind`, `toString`; `call`/`apply` are found since clj-quickjs-102) and error objects' properties (clj-quickjs-230) fail
   with `UnsupportedOperand`; symbol keys (clj-quickjs-127) do not exist.
 
 ### `for`-`in` over own properties (clj-quickjs-85)
@@ -2268,3 +2267,27 @@ Deferred:
   `length` and indices (clj-quickjs-142), boolean bases (`Boolean.prototype`), radixes other
   than 10 and the other `Number.prototype` / `String.prototype` methods (clj-quickjs-39) fail
   with `UnsupportedOperand` (an absent method reads `undefined`).
+
+### `Function.prototype`, `call`, `apply` and `Reflect.apply` (clj-quickjs-102)
+
+Supported (`cargo test --test js_functions call_apply_and_reflect_apply`,
+`cargo test --test js_functions forwarded_calls_wait_and_resume_on_another_thread`; decision
+record in `docs/architecture.md`, "Forwarding calls"):
+
+- `Function.prototype`, a realm intrinsic: callable (returns `undefined`), the prototype of every
+  function, arrow and built-in function (`Object.getPrototypeOf(f) === Function.prototype`,
+  `f instanceof Function`), inheriting from `Object.prototype`; its `constructor` is the new
+  built-in global `Function`.
+- `f.call(t, ...args)`, `f.apply(t, list)` and `Reflect.apply(f, t, list)` (the new built-in
+  global `Reflect`): call `f` with `this` `t`; `apply` takes no arguments for an
+  `undefined`/`null` list and otherwise reads an array or array-like object
+  (CreateListFromArrayLike). They are tail calls: the target runs in a task-owned frame that
+  may yield, wait, be collected around and migrate. A non-callable target and a primitive list
+  (any non-object list for `Reflect.apply`) are catchable `TypeError`s.
+
+Deferred:
+
+- `Function(...)`/`new Function` (clj-quickjs-111: `UnsupportedOperand`/`TypeError`), `bind`
+  (clj-quickjs-103), `toString`, `arguments`/`caller` (their names fail with
+  `UnsupportedOperand`), the other `Reflect` functions, changing a function's prototype, and the
+  sloppy-mode `this` substitution of a callee (an explicit `UnsupportedOperand`, as for `this`).

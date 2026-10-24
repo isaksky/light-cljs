@@ -5389,6 +5389,10 @@ fn instanceof_operator() {
         "!(Object.create(null) instanceof Object)",
         // Arrays and the realm's Array constructor.
         "const A = [].constructor; [] instanceof A && [] instanceof Object && !(({}) instanceof A)",
+        // Functions inherit from Function.prototype (clj-quickjs-102).
+        "F instanceof Function && F instanceof Object && (() => 1) instanceof Function",
+        "Object instanceof Function && Object.is instanceof Object && !(new F() instanceof Function)",
+        "!(Object.create(F) instanceof F) && Object.create(F) instanceof Function",
         // The chain is read when the operator runs, by identity.
         "const o = new F(); F.prototype = {}; !(o instanceof F) && new F() instanceof F",
         "const p = {}; function H() {} H.prototype = p; Object.create(p) instanceof H",
@@ -5464,19 +5468,15 @@ fn instanceof_operator() {
         failure_at("function F() {} F.prototype = 1; new Object() instanceof F").0,
         VmErrorKind::TypeError
     );
-    // A function or error object on the chain needs Function.prototype
-    // (clj-quickjs-102) or Error.prototype (clj-quickjs-230): an explicit
-    // UnsupportedOperand, as for Object.getPrototypeOf.
-    for src in [
-        "function F() {} F instanceof Object",
-        "let e; try { nope; } catch (x) { e = x; } e instanceof Object",
-    ] {
-        assert_eq!(
-            failure(src).kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}"
-        );
-    }
+    // An error object on the chain needs Error.prototype
+    // (clj-quickjs-230): an explicit UnsupportedOperand, as for
+    // Object.getPrototypeOf.
+    let src = "let e; try { nope; } catch (x) { e = x; } e instanceof Object";
+    assert_eq!(
+        failure(src).kind(),
+        VmErrorKind::UnsupportedOperand,
+        "{src}"
+    );
     // `instanceof` compiles to the `instanceof` opcode.
     assert!(opcodes(&exe(&format!("{f} new F() instanceof F"))).contains(&Opcode::Instanceof));
     // The `docs/grammar.md` example lines, each true.
@@ -5600,13 +5600,21 @@ fn in_operator() {
         let at = src.rfind(" in ").unwrap() as u32 + 2;
         assert_eq!((line, column), (2, at), "{src}");
     }
+    // Functions and built-in functions inherit from Function.prototype
+    // (clj-quickjs-102).
+    for src in [
+        "!('x' in Object) && 'call' in Object && 'apply' in Object.is",
+        "function f() {} 'call' in f && 'constructor' in f && 'valueOf' in f && !('x' in f)",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
     // Not supported yet, explicitly: an object key needs ToPrimitive
-    // (clj-quickjs-70); a name a built-in function would inherit from
-    // Function.prototype (clj-quickjs-102); an error object's properties
+    // (clj-quickjs-70); a name Function.prototype does not have yet
+    // (clj-quickjs-103 and later); an error object's properties
     // (clj-quickjs-230).
     for src in [
         "({}) in {}",
-        "'x' in Object",
+        "'bind' in Object",
         "function f() {} 'toString' in f",
         "let e; try { nope; } catch (x) { e = x; } 'message' in e",
     ] {
@@ -5771,7 +5779,7 @@ fn property_access_on_values_that_are_not_ordinary_objects() {
         )
     );
     for (src, needle) in [
-        ("let f = function () {};\nf.call;", "of a function"),
+        ("let f = function () {};\nf.bind;", "of a function"),
         ("let f = function () {};\nf.length = 1;", "of a function"),
         ("let s = 'a';\ns.length;", "of a string"),
         ("let b = true;\nb.x;", "of a boolean"),
@@ -5990,15 +5998,15 @@ fn object_intrinsics_reject_what_they_do_not_support() {
         ),
         "caught"
     );
-    // Wrapper objects (clj-quickjs-72), Function.prototype
+    // Wrapper objects (clj-quickjs-72), missing Function.prototype methods
     // (clj-quickjs-102) and the error tag (clj-quickjs-230).
     for (src, needle) in [
         ("Object(1)", "wrapper object"),
         ("Object('s')", "wrapper object"),
         ("Object(true)", "wrapper object"),
-        ("Object.call", "Function.prototype"),
+        ("Object.bind", "Function.prototype"),
         ("Object.is.toString()", "Function.prototype"),
-        ("Object.prototype.toString.call", "Function.prototype"),
+        ("Object.prototype.toString.bind", "Function.prototype"),
     ] {
         let (kind, message, ..) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
@@ -6231,20 +6239,31 @@ fn function_own_properties() {
     assert_eq!(result, ValueView::Number(2225.0));
     assert!(yields > 10, "only {yields} yields");
 
-    // Function.prototype (clj-quickjs-102) and `length`/`name`
-    // (clj-quickjs-101) do not exist yet: their names fail explicitly, not
-    // with a wrong `undefined`, and the failure is not catchable.
+    // `call`, `apply` and `constructor` are inherited from
+    // Function.prototype (clj-quickjs-102).
     for src in [
-        "let f = function () {};\nf.call;",
-        "let f = function () {};\nf.apply;",
+        "let f = function () {}; f.call === Function.prototype.call && \
+         f.apply === Function.prototype.apply && f.constructor === Function",
+        "let f = () => 1; f.call === Function.prototype.call",
+    ] {
+        assert_eq!(eval(src), t, "{src}");
+    }
+    // Function.prototype's other methods (clj-quickjs-103 and later) and
+    // `length`/`name` (clj-quickjs-101) do not exist yet: their names fail
+    // explicitly, not with a wrong `undefined`, and the failure is not
+    // catchable.
+    for src in [
         "let f = function () {};\nf.bind;",
         "let f = function () {};\nf.toString();",
         "let f = function () {};\nf.length;",
         "let f = function f() {};\nf.name;",
-        "let f = function () {};\nf.constructor;",
+        "let f = function () {};\nf.caller;",
         "let f = function () {};\nf.length = 1;",
-        "let f = () => 1;\nf.call;",
-        "let r; try {\n(function () {}).call; } catch (e) { r = 1; } r",
+        "let f = () => 1;\nf.bind;",
+        "let r; try {\n(function () {}).bind; } catch (e) { r = 1; } r",
+        "let g = Object.is;\ng.bind;",
+        "let p = Function.prototype;\np.bind;",
+        "let o = Object.create(function () {});\no.toString;",
     ] {
         let (kind, message, line, _) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
@@ -6298,11 +6317,9 @@ fn function_own_properties() {
             "{src}: {message}"
         );
     }
-    // `Object.getPrototypeOf` and `Function` (clj-quickjs-121, -102) fail
-    // explicitly until they land.
+    // A function's prototype is Function.prototype (clj-quickjs-102).
     let src = "let f = function f() {}; Object.getPrototypeOf(f) === Function.prototype";
-    let e = failure(src);
-    assert_eq!(e.kind(), VmErrorKind::UnsupportedOperand, "{src}: {e}");
+    assert_eq!(eval(src), t, "{src}");
 }
 
 /// Array literals and array objects (clj-quickjs-118): elisions are holes
@@ -7191,7 +7208,23 @@ fn prototype_reflection() {
         VmErrorKind::TypeError,
         "undefined",
     );
-    // Wrappers, Function.prototype and Error.prototype do not exist yet.
+    // Functions and built-in functions inherit from Function.prototype
+    // (clj-quickjs-102), which inherits from Object.prototype.
+    truth("Object.getPrototypeOf(function () {}) === Function.prototype");
+    truth("Object.getPrototypeOf(() => 1) === Function.prototype");
+    truth(
+        "Object.getPrototypeOf(Object) === Function.prototype && \
+         Object.getPrototypeOf(Function.prototype) === Object.prototype",
+    );
+    // A function keeps its prototype: setting the one it has is a no-op,
+    // changing it is not supported yet.
+    truth("let f = () => 1; Object.setPrototypeOf(f, Function.prototype) === f");
+    fails(
+        "Object.setPrototypeOf(() => 1, null)",
+        VmErrorKind::UnsupportedOperand,
+        "prototype of a function",
+    );
+    // Wrappers and Error.prototype do not exist yet.
     fails(
         "Object.getPrototypeOf(1)",
         VmErrorKind::UnsupportedOperand,
@@ -7201,16 +7234,6 @@ fn prototype_reflection() {
         "Object.getPrototypeOf('s')",
         VmErrorKind::UnsupportedOperand,
         "wrapper",
-    );
-    fails(
-        "Object.getPrototypeOf(function () {})",
-        VmErrorKind::UnsupportedOperand,
-        "Function.prototype",
-    );
-    fails(
-        "Object.getPrototypeOf(Object)",
-        VmErrorKind::UnsupportedOperand,
-        "Function.prototype",
     );
     fails(
         "let e = null; try { null.x; } catch (x) { e = x; } Object.getPrototypeOf(e)",
@@ -7286,8 +7309,9 @@ fn prototype_reflection() {
         VmErrorKind::TypeError,
         "read-only property 'prototype'",
     );
+    truth("Object.create(function () {}).call === Function.prototype.call");
     fails(
-        "Object.create(function () {}).call",
+        "Object.create(function () {}).bind",
         VmErrorKind::UnsupportedOperand,
         "Function.prototype",
     );
@@ -7296,16 +7320,14 @@ fn prototype_reflection() {
         VmErrorKind::UnsupportedOperand,
         "Function.prototype",
     );
-    // A function's own `__proto__` is its [[Prototype]], Function.prototype.
-    fails(
-        "let f = function () {}; f.__proto__",
-        VmErrorKind::UnsupportedOperand,
-        "Function.prototype",
-    );
+    // A function's `__proto__` is its [[Prototype]], Function.prototype
+    // (clj-quickjs-102); changing it is not supported yet.
+    truth("let f = function () {}; f.__proto__ === Function.prototype");
+    truth("Object.is.__proto__ === Function.prototype");
     fails(
         "let f = function () {}; f.__proto__ = {};",
         VmErrorKind::UnsupportedOperand,
-        "Function.prototype",
+        "prototype of a function",
     );
 
     // setPrototypeOf.
@@ -7361,9 +7383,10 @@ fn prototype_reflection() {
     );
     fails(
         "Object.setPrototypeOf(Object, null)",
-        VmErrorKind::UnsupportedOperand,
-        "Function.prototype",
+        VmErrorKind::TypeError,
+        "built-in",
     );
+    truth("Object.setPrototypeOf(Object, Function.prototype) === Object");
     // A value without JavaScript properties is not extensible.
     fails(
         "Object.setPrototypeOf(__rt.vector(1), {})",
@@ -7374,7 +7397,7 @@ fn prototype_reflection() {
     fails(
         "Object.setPrototypeOf(function () {}, null)",
         VmErrorKind::UnsupportedOperand,
-        "Function.prototype",
+        "prototype of a function",
     );
 
     // The `__proto__` accessor of Object.prototype.

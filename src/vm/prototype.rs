@@ -12,8 +12,8 @@
 //! | Value | Prototype |
 //! |-------|-----------|
 //! | ordinary object, array | its `[[Prototype]]` (another task's object: `ForeignObject`) |
-//! | realm intrinsic (`Object.prototype`, `Array.prototype`) | its fixed prototype (`null`, `Object.prototype`) |
-//! | built-in function, function object | `UnsupportedOperand`: it is `Function.prototype` (clj-quickjs-102) |
+//! | realm intrinsic (`Object.prototype`, `Array.prototype`, `Function.prototype`, built-in functions, `Reflect`) | its fixed prototype (`null`; `Object.prototype`; `Function.prototype` for a built-in function) |
+//! | function object | `Function.prototype` (clj-quickjs-102), fixed |
 //! | error object | `UnsupportedOperand`: it is `Error.prototype` (clj-quickjs-230) |
 //! | persistent vector, map, occurrence; builder, atom, binding cell; other native payloads | `null` (they behave as objects without properties, `crate::vm::property`) |
 //!
@@ -23,14 +23,15 @@
 //! nothing, whatever the object. Otherwise only an ordinary object or array
 //! owned by the running task changes: a realm intrinsic or built-in function
 //! is a `TypeError` (shared and immutable, as for its properties), another
-//! task's or the embedder's object is `ForeignObject`, a function or error
-//! object is `UnsupportedOperand` (above), and the other kinds are not
-//! extensible (`TypeError`). A non-extensible object (clj-quickjs-122) is a
+//! task's or the embedder's object is `ForeignObject`, a function (whose
+//! prototype cannot be changed yet) or an error object (above) is
+//! `UnsupportedOperand`, and the other kinds are not extensible
+//! (`TypeError`). A non-extensible object (clj-quickjs-122) is a
 //! `TypeError`. A new prototype whose chain leads back to the object is a
 //! `TypeError` (a cycle): the walk follows ordinary objects and arrays and
 //! stops at any other kind, whose prototype is fixed and can never lead back
 //! to a task's ordinary object (an intrinsic's chain holds only intrinsics;
-//! a function's will be `Function.prototype`).
+//! a function's is `Function.prototype`).
 //!
 //! # Ownership of prototype links
 //!
@@ -72,6 +73,7 @@ use crate::object::OrdinaryObject;
 use crate::value::{JsString, Value};
 use crate::vm::dispatch::{self, Fault};
 use crate::vm::exception::ErrorObject;
+use crate::vm::function;
 use crate::vm::property;
 
 /// The failure of reading another task's object.
@@ -107,20 +109,26 @@ pub(crate) fn get_prototype_of(
         )))
     };
     if let Some(view) = heap.realm().get().and_then(|r| r.view(id)) {
-        if view.builtin {
-            return unsupported("a built-in function", "Function.prototype");
-        }
         return Ok(view.prototype);
     }
-    heap.read(id, |object| match object {
-        HeapObject::Plain(o) => readable(o, task).map(|()| o.prototype()),
-        HeapObject::Array(a) => readable(a.object(), task).map(|()| a.object().prototype()),
-        HeapObject::Builtin(_) => unsupported("a built-in function", "Function.prototype"),
-        HeapObject::Function(_) => unsupported("a function", "Function.prototype"),
-        other if is_error_object(other) => unsupported("an error object", "Error.prototype"),
-        _ => Ok(None),
-    })
-    .unwrap_or(Err(Fault::Internal("prototype target was reclaimed")))
+    let function = heap
+        .read(id, |object| match object {
+            HeapObject::Plain(o) => readable(o, task).map(|()| Some(o.prototype())),
+            HeapObject::Array(a) => {
+                readable(a.object(), task).map(|()| Some(a.object().prototype()))
+            }
+            // Fixed: `Function.prototype` (clj-quickjs-102), read below,
+            // outside the object lock, since it may build the realm.
+            HeapObject::Function(_) => Ok(None),
+            HeapObject::Builtin(f) => Ok(Some(f.properties.prototype())),
+            other if is_error_object(other) => unsupported("an error object", "Error.prototype"),
+            _ => Ok(Some(None)),
+        })
+        .unwrap_or(Err(Fault::Internal("prototype target was reclaimed")))?;
+    match function {
+        Some(prototype) => Ok(prototype),
+        None => function::function_prototype(heap).map(Some),
+    }
 }
 
 /// `[[SetPrototypeOf]]` of the object `id` to `proto` for the running task
@@ -157,7 +165,12 @@ pub(crate) fn set_prototype_of(
         HeapObject::Plain(o) => writable(o),
         HeapObject::Array(a) => writable(a.object()),
         HeapObject::Builtin(_) => immutable(),
-        // Function and error objects failed in `get_prototype_of`.
+        // A function's prototype lives in its property record, which
+        // stands for it; changing it is not supported yet.
+        HeapObject::Function(_) => Err(Fault::Unsupported(
+            "changing the prototype of a function is not supported".to_string(),
+        )),
+        // Error objects failed in `get_prototype_of`.
         other => Err(Fault::TypeError(format!(
             "cannot set the prototype of a {}: it is not extensible",
             object_name(other)
@@ -349,9 +362,9 @@ pub(crate) fn set_literal_proto(
 ///
 /// The walk only reads: each step is `[[GetPrototypeOf]]`
 /// ([`get_prototype_of`]), so its owner rules and its unsupported kinds
-/// (a function or error object on the chain needs `Function.prototype` or
-/// `Error.prototype`) apply. Chains are acyclic ([`set_prototype_of`]
-/// checks), so it ends. Reading `prototype` may allocate a function's lazy
+/// (an error object on the chain needs `Error.prototype`; a function
+/// continues at `Function.prototype`) apply. Chains are acyclic
+/// ([`set_prototype_of`] checks), so it ends. Reading `prototype` may allocate a function's lazy
 /// prototype object; the caller keeps `v` and `target` reachable.
 pub(crate) fn instance_of(
     heap: &Heap,
@@ -363,28 +376,15 @@ pub(crate) fn instance_of(
     if !matches!(target, Value::Object(_)) {
         return Err(invalid());
     }
-    let builtin = match dispatch::callee(heap, target) {
-        Ok(dispatch::Callee::Builtin(_)) => true,
-        Ok(dispatch::Callee::Code(..)) => false,
+    match dispatch::callee(heap, target) {
+        Ok(_) => {}
         Err(Fault::NotCallable(_)) => return Err(invalid()),
         Err(fault) => return Err(fault),
-    };
+    }
     let Value::Object(id) = *v else {
         return Ok(false);
     };
-    let name = JsString::from("prototype");
-    let prototype = match *target {
-        // A built-in function without an own `prototype` (`Object.is`)
-        // would continue at `Function.prototype`, which the general walk
-        // refuses (`UnsupportedOperand`). Neither `Function.prototype` nor
-        // `Object.prototype` has a `prototype` property and both are
-        // immutable intrinsics, so the answer is `undefined`.
-        Value::Object(f) if builtin => {
-            property::get_own_property(heap, task, f, &property::Key::from_name(&name))?
-                .map_or(Value::Undefined, |p| p.value)
-        }
-        _ => property::get_field(heap, task, target, &name)?,
-    };
+    let prototype = property::get_field(heap, task, target, &JsString::from("prototype"))?;
     let Value::Object(prototype) = prototype else {
         return Err(Fault::TypeError(
             "operand 'prototype' property is not an object".to_string(),

@@ -39,6 +39,14 @@
 //! | `Number.prototype`, `String.prototype` (clj-quickjs-73) | ordinary objects, prototype `Object.prototype`; where a property read on a number or string primitive starts ([`Intrinsics::primitive_prototype`]) | `constructor` (`Number` / `String`), `toString`, `valueOf`; `String.prototype` also `length` (0, not writable, enumerable or configurable) |
 //! | `Number.prototype.toString`, `.valueOf`; `String.prototype.toString`, `.valueOf` | built-in functions | `length` (1 for `Number.prototype.toString`, else 0), `name` |
 //! | `Number`, `String` (global names; fail when called until clj-quickjs-72) | built-in functions ([`Builtin::Number`], [`Builtin::String`]) | `length` (1), `name`, `prototype` |
+//! | `Function.prototype` (clj-quickjs-102) | built-in function ([`Builtin::FunctionPrototype`]), prototype `Object.prototype` | `length` (0), `name` (`""`), `constructor` (`Function`), `call`, `apply`; `bind`, `toString`, `arguments` and `caller` are missing and their lookup fails (`crate::vm::function::lacks_inherited`) |
+//! | `Function.prototype.call`, `Function.prototype.apply` | built-in functions | `length` (1, 2), `name` |
+//! | `Function` (fails when called, clj-quickjs-111) | built-in function ([`Builtin::Function`]) | `length` (1), `name`, `prototype` (`Function.prototype`) |
+//! | `Reflect` (clj-quickjs-102) | ordinary object, prototype `Object.prototype` | `apply` |
+//! | `Reflect.apply` | built-in function | `length` (3), `name` |
+//!
+//! Every built-in function inherits from `Function.prototype`, which
+//! inherits from `Object.prototype` (clj-quickjs-102).
 //!
 //! Property attributes are the standard ones (ECMAScript §18): methods and
 //! `constructor` are writable, non-enumerable and configurable; `length` and
@@ -93,7 +101,7 @@
 //!
 //! [`Global`] lists the names a free identifier resolves to after every
 //! lexical scope and before the `ReferenceError` (`crate::frontend::lower`):
-//! `Object`, `Number` and `String` (clj-quickjs-73). The compiler emits `get_builtin_global i` for such a
+//! `Object`, `Number` and `String` (clj-quickjs-73), `Function` and `Reflect` (clj-quickjs-102). The compiler emits `get_builtin_global i` for such a
 //! name. When the global object exists (clj-quickjs-104) these become its
 //! properties; until then assigning one is a compile-time `Unsupported`
 //! error.
@@ -119,11 +127,22 @@ pub(crate) enum Global {
     /// `String`, the String constructor (clj-quickjs-73: it carries
     /// `String.prototype` and fails when called until clj-quickjs-72).
     String = 2,
+    /// `Function` (clj-quickjs-102): a stub constructor that fails when
+    /// called (clj-quickjs-111), reachable for `Function.prototype`.
+    Function = 3,
+    /// `Reflect` (clj-quickjs-102): an ordinary object with `apply`.
+    Reflect = 4,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 3] = [Global::Object, Global::Number, Global::String];
+    const ALL: [Global; 5] = [
+        Global::Object,
+        Global::Number,
+        Global::String,
+        Global::Function,
+        Global::Reflect,
+    ];
 
     /// The JavaScript name.
     pub(crate) fn name(self) -> &'static str {
@@ -131,6 +150,8 @@ impl Global {
             Global::Object => "Object",
             Global::Number => "Number",
             Global::String => "String",
+            Global::Function => "Function",
+            Global::Reflect => "Reflect",
         }
     }
 
@@ -154,6 +175,13 @@ pub(crate) struct Intrinsics {
     pub(crate) object: ObjectId,
     /// `Array.prototype`, the prototype of every array (clj-quickjs-118).
     pub(crate) array_prototype: ObjectId,
+    /// `Function.prototype`, the prototype of every function object and
+    /// built-in function (clj-quickjs-102).
+    pub(crate) function_prototype: ObjectId,
+    /// The `Function` stub constructor (clj-quickjs-102).
+    function: ObjectId,
+    /// The `Reflect` object (clj-quickjs-102).
+    reflect: ObjectId,
     /// Every intrinsic object (the collector's roots).
     all: Vec<ObjectId>,
     /// A copy of every intrinsic's own properties and prototype, taken once
@@ -181,8 +209,13 @@ pub(crate) struct Intrinsics {
 #[derive(Debug)]
 pub(crate) struct IntrinsicView {
     id: ObjectId,
-    /// A built-in function rather than `Object.prototype`: it has only its
-    /// own properties (`Function.prototype` does not exist yet).
+    /// `Function.prototype`, which lacks some of its standard properties
+    /// (`bind`, `toString`, ...): a lookup that reaches it without finding
+    /// one of those fails instead of continuing at `Object.prototype`
+    /// ([`crate::vm::function::lacks_inherited`]).
+    pub(crate) function_prototype: bool,
+    /// A built-in function (`Function.prototype` included): the for-in
+    /// walk ends at it (`crate::vm::keys`).
     pub(crate) builtin: bool,
     pub(crate) prototype: Option<ObjectId>,
     properties: Vec<(PropertyKey, Property)>,
@@ -245,6 +278,8 @@ impl Intrinsics {
             Global::Object => Value::Object(self.object),
             Global::Number => Value::Object(self.number),
             Global::String => Value::Object(self.string),
+            Global::Function => Value::Object(self.function),
+            Global::Reflect => Value::Object(self.reflect),
         }
     }
 }
@@ -302,45 +337,36 @@ pub(crate) fn intrinsics(heap: &Heap) -> Option<&Intrinsics> {
 }
 
 /// Allocate and connect the intrinsics (module docs, table).
+///
+/// The order follows the prototype edges: `Object.prototype` first (its
+/// methods are added once they exist), then `Function.prototype`, the
+/// prototype of every built-in function created after it.
 fn build(heap: &Heap) -> Option<Intrinsics> {
-    let mut all = Vec::new();
-    let to_string = builtin(heap, &mut all, Builtin::ObjectPrototypeToString, &[])?;
-    let value_of = builtin(heap, &mut all, Builtin::ObjectPrototypeValueOf, &[])?;
-    let is = builtin(heap, &mut all, Builtin::ObjectIs, &[])?;
-    let define_property = builtin(heap, &mut all, Builtin::ObjectDefineProperty, &[])?;
-    let get_own_property_descriptor =
-        builtin(heap, &mut all, Builtin::ObjectGetOwnPropertyDescriptor, &[])?;
-    let get_prototype_of = builtin(heap, &mut all, Builtin::ObjectGetPrototypeOf, &[])?;
-    let set_prototype_of = builtin(heap, &mut all, Builtin::ObjectSetPrototypeOf, &[])?;
-    let create = builtin(heap, &mut all, Builtin::ObjectCreate, &[])?;
-    let prevent_extensions = builtin(heap, &mut all, Builtin::ObjectPreventExtensions, &[])?;
-    let is_extensible = builtin(heap, &mut all, Builtin::ObjectIsExtensible, &[])?;
-    let freeze = builtin(heap, &mut all, Builtin::ObjectFreeze, &[])?;
-    let is_frozen = builtin(heap, &mut all, Builtin::ObjectIsFrozen, &[])?;
-    let keys = builtin(heap, &mut all, Builtin::ObjectKeys, &[])?;
-    let get_own_property_names = builtin(heap, &mut all, Builtin::ObjectGetOwnPropertyNames, &[])?;
+    let mut b = Build {
+        heap,
+        all: Vec::new(),
+        function_prototype: None,
+    };
+    let object_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(None)))?;
+    b.all.push(object_prototype);
+    let function_prototype = b.builtin(Some(object_prototype), Builtin::FunctionPrototype, &[])?;
+    b.function_prototype = Some(function_prototype);
 
-    let mut prototype = OrdinaryObject::intrinsic(None);
-    define(
-        heap,
-        &mut prototype,
-        "toString",
-        to_string,
-        PropertyFlags::METHOD,
-    )?;
-    define(
-        heap,
-        &mut prototype,
-        "valueOf",
-        value_of,
-        PropertyFlags::METHOD,
-    )?;
-    let object_prototype = heap.alloc(HeapObject::Plain(prototype))?;
-    all.push(object_prototype);
-
-    let object = builtin(
-        heap,
-        &mut all,
+    let to_string = b.function(Builtin::ObjectPrototypeToString, &[])?;
+    let value_of = b.function(Builtin::ObjectPrototypeValueOf, &[])?;
+    let is = b.function(Builtin::ObjectIs, &[])?;
+    let define_property = b.function(Builtin::ObjectDefineProperty, &[])?;
+    let get_own_property_descriptor = b.function(Builtin::ObjectGetOwnPropertyDescriptor, &[])?;
+    let get_prototype_of = b.function(Builtin::ObjectGetPrototypeOf, &[])?;
+    let set_prototype_of = b.function(Builtin::ObjectSetPrototypeOf, &[])?;
+    let create = b.function(Builtin::ObjectCreate, &[])?;
+    let prevent_extensions = b.function(Builtin::ObjectPreventExtensions, &[])?;
+    let is_extensible = b.function(Builtin::ObjectIsExtensible, &[])?;
+    let freeze = b.function(Builtin::ObjectFreeze, &[])?;
+    let is_frozen = b.function(Builtin::ObjectIsFrozen, &[])?;
+    let keys = b.function(Builtin::ObjectKeys, &[])?;
+    let get_own_property_names = b.function(Builtin::ObjectGetOwnPropertyNames, &[])?;
+    let object = b.function(
         Builtin::Object,
         &[
             ("prototype", object_prototype, PropertyFlags::FIXED),
@@ -370,19 +396,44 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             ),
         ],
     )?;
-    // The one cycle: `Object.prototype.constructor` is `Object`.
-    let key = heap.keys().intern(&JsString::from("constructor"))?;
-    let defined = heap.with_object_mut(object_prototype, |o| match o {
-        HeapObject::Plain(o) => o.define_with(key, Value::Object(object), PropertyFlags::METHOD),
-        _ => false,
-    });
-    if defined != Some(true) {
-        return None;
+    // `Object.prototype`'s properties; `constructor` is the cycle
+    // `Object.prototype.constructor === Object`.
+    for (name, value) in [
+        ("toString", to_string),
+        ("valueOf", value_of),
+        ("constructor", object),
+    ] {
+        b.add(object_prototype, name, value, PropertyFlags::METHOD)?;
     }
-    let array_prototype = array_prototype(heap, &mut all, object_prototype)?;
-    let (number_prototype, number) = primitive_prototype(
+
+    // `Function.prototype.call` and `apply`, and the `Function` stub
+    // (`Function.prototype.constructor`, clj-quickjs-102).
+    let call = b.function(Builtin::FunctionPrototypeCall, &[])?;
+    let apply = b.function(Builtin::FunctionPrototypeApply, &[])?;
+    let function = b.function(
+        Builtin::Function,
+        &[("prototype", function_prototype, PropertyFlags::FIXED)],
+    )?;
+    for (name, value) in [("call", call), ("apply", apply), ("constructor", function)] {
+        b.add(function_prototype, name, value, PropertyFlags::METHOD)?;
+    }
+
+    // `Reflect`: an ordinary object with `apply` (clj-quickjs-102).
+    let reflect_apply = b.function(Builtin::ReflectApply, &[])?;
+    let mut reflect = OrdinaryObject::intrinsic(Some(object_prototype));
+    define(
         heap,
-        &mut all,
+        &mut reflect,
+        "apply",
+        reflect_apply,
+        PropertyFlags::METHOD,
+    )?;
+    let reflect = heap.alloc(HeapObject::Plain(reflect))?;
+    b.all.push(reflect);
+
+    let array_prototype = array_prototype(&mut b, object_prototype)?;
+    let (number_prototype, number) = primitive_prototype(
+        &mut b,
         object_prototype,
         [
             Builtin::Number,
@@ -391,8 +442,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         ],
     )?;
     let (string_prototype, string) = primitive_prototype(
-        heap,
-        &mut all,
+        &mut b,
         object_prototype,
         [
             Builtin::String,
@@ -400,6 +450,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             Builtin::StringPrototypeValueOf,
         ],
     )?;
+    let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
         .iter()
@@ -412,6 +463,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
                 };
                 Some(IntrinsicView {
                     id,
+                    function_prototype: id == function_prototype,
                     builtin,
                     prototype: store.prototype(),
                     properties: store.properties().map(|(k, p)| (k, p.clone())).collect(),
@@ -425,6 +477,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         object_prototype,
         object,
         array_prototype,
+        function_prototype,
+        function,
+        reflect,
         all,
         views,
         proto_key,
@@ -446,13 +501,13 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 /// built-in function with `prototype` that fails when called until
 /// clj-quickjs-72.
 fn primitive_prototype(
-    heap: &Heap,
-    all: &mut Vec<ObjectId>,
+    b: &mut Build<'_>,
     object_prototype: ObjectId,
     [constructor, to_string, value_of]: [Builtin; 3],
 ) -> Option<(ObjectId, ObjectId)> {
-    let to_string_id = builtin(heap, all, to_string, &[])?;
-    let value_of = builtin(heap, all, value_of, &[])?;
+    let heap = b.heap;
+    let to_string_id = b.function(to_string, &[])?;
+    let value_of = b.function(value_of, &[])?;
     let mut prototype = OrdinaryObject::intrinsic(Some(object_prototype));
     if to_string == Builtin::StringPrototypeToString {
         let length = heap.keys().intern(&JsString::from("length"))?;
@@ -481,21 +536,10 @@ fn primitive_prototype(
         PropertyFlags::METHOD,
     )?;
     let id = heap.alloc(HeapObject::Plain(prototype))?;
-    all.push(id);
-    let constructor = builtin(
-        heap,
-        all,
-        constructor,
-        &[("prototype", id, PropertyFlags::FIXED)],
-    )?;
-    let key = heap.keys().intern(&JsString::from("constructor"))?;
-    let defined = heap.with_object_mut(id, |o| match o {
-        HeapObject::Plain(o) => {
-            o.define_with(key, Value::Object(constructor), PropertyFlags::METHOD)
-        }
-        _ => false,
-    });
-    (defined == Some(true)).then_some((id, constructor))
+    b.all.push(id);
+    let constructor = b.function(constructor, &[("prototype", id, PropertyFlags::FIXED)])?;
+    b.add(id, "constructor", constructor, PropertyFlags::METHOD)?;
+    Some((id, constructor))
 }
 
 /// `Array.prototype` (clj-quickjs-118): an intrinsic ordinary object
@@ -508,12 +552,9 @@ fn primitive_prototype(
 /// `constructor` is the `Array` constructor, which is not a global name
 /// yet and fails when called; it and the methods are clj-quickjs-39 and
 /// -153..-156.
-fn array_prototype(
-    heap: &Heap,
-    all: &mut Vec<ObjectId>,
-    object_prototype: ObjectId,
-) -> Option<ObjectId> {
-    let to_string = builtin(heap, all, Builtin::ArrayPrototypeToString, &[])?;
+fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<ObjectId> {
+    let heap = b.heap;
+    let to_string = b.function(Builtin::ArrayPrototypeToString, &[])?;
     let mut prototype = OrdinaryObject::intrinsic(Some(object_prototype));
     let length = heap.keys().intern(&JsString::from("length"))?;
     let length_flags = PropertyFlags {
@@ -532,22 +573,13 @@ fn array_prototype(
         PropertyFlags::METHOD,
     )?;
     let id = heap.alloc(HeapObject::Plain(prototype))?;
-    all.push(id);
+    b.all.push(id);
     // `Array.prototype.constructor` is the `Array` constructor, a stub
     // that fails when called until clj-quickjs-39 (so `[].constructor` is
     // not the inherited `Object`).
-    let array = builtin(
-        heap,
-        all,
-        Builtin::Array,
-        &[("prototype", id, PropertyFlags::FIXED)],
-    )?;
-    let key = heap.keys().intern(&JsString::from("constructor"))?;
-    let defined = heap.with_object_mut(id, |o| match o {
-        HeapObject::Plain(o) => o.define_with(key, Value::Object(array), PropertyFlags::METHOD),
-        _ => false,
-    });
-    (defined == Some(true)).then_some(id)
+    let array = b.function(Builtin::Array, &[("prototype", id, PropertyFlags::FIXED)])?;
+    b.add(id, "constructor", array, PropertyFlags::METHOD)?;
+    Some(id)
 }
 
 /// Define `name` on an intrinsic under construction.
@@ -564,33 +596,65 @@ fn define(
         .then_some(())
 }
 
-/// Allocate the built-in function `which` with its `length` and `name` and
-/// the further own properties `extra`.
-fn builtin(
-    heap: &Heap,
-    all: &mut Vec<ObjectId>,
-    which: Builtin,
-    extra: &[(&str, ObjectId, PropertyFlags)],
-) -> Option<ObjectId> {
-    // Its [[Prototype]] is Function.prototype once that exists (module docs
-    // of `crate::vm::builtin`).
-    let mut properties = OrdinaryObject::intrinsic(None);
-    let info = [
-        ("length", Value::Number(f64::from(which.length()))),
-        ("name", Value::String(JsString::from(which.name()))),
-    ];
-    for (name, value) in info {
-        let key = heap.keys().intern(&JsString::from(name))?;
-        properties
-            .define_with(key, value, PropertyFlags::FUNCTION_INFO)
-            .then_some(())?;
+/// The realm under construction.
+struct Build<'h> {
+    heap: &'h Heap,
+    /// Every intrinsic allocated so far.
+    all: Vec<ObjectId>,
+    /// `Function.prototype`, once allocated.
+    function_prototype: Option<ObjectId>,
+}
+
+impl Build<'_> {
+    /// A built-in function inheriting from `Function.prototype`.
+    fn function(
+        &mut self,
+        which: Builtin,
+        extra: &[(&str, ObjectId, PropertyFlags)],
+    ) -> Option<ObjectId> {
+        let prototype = self.function_prototype?;
+        self.builtin(Some(prototype), which, extra)
     }
-    for &(name, value, flags) in extra {
-        define(heap, &mut properties, name, value, flags)?;
+
+    /// Allocate the built-in function `which` with prototype `prototype`,
+    /// its `length` and `name` and the further own properties `extra`.
+    fn builtin(
+        &mut self,
+        prototype: Option<ObjectId>,
+        which: Builtin,
+        extra: &[(&str, ObjectId, PropertyFlags)],
+    ) -> Option<ObjectId> {
+        let heap = self.heap;
+        let mut properties = OrdinaryObject::intrinsic(prototype);
+        let info = [
+            ("length", Value::Number(f64::from(which.length()))),
+            ("name", Value::String(JsString::from(which.name()))),
+        ];
+        for (name, value) in info {
+            let key = heap.keys().intern(&JsString::from(name))?;
+            properties
+                .define_with(key, value, PropertyFlags::FUNCTION_INFO)
+                .then_some(())?;
+        }
+        for &(name, value, flags) in extra {
+            define(heap, &mut properties, name, value, flags)?;
+        }
+        let id = heap.alloc(HeapObject::Builtin(BuiltinFunction { which, properties }))?;
+        self.all.push(id);
+        Some(id)
     }
-    let id = heap.alloc(HeapObject::Builtin(BuiltinFunction { which, properties }))?;
-    all.push(id);
-    Some(id)
+
+    /// Define `name` on the allocated intrinsic `id` (an ordinary object
+    /// or a built-in function), for the edges that close a cycle.
+    fn add(&self, id: ObjectId, name: &str, value: ObjectId, flags: PropertyFlags) -> Option<()> {
+        let key = self.heap.keys().intern(&JsString::from(name))?;
+        let defined = self.heap.with_object_mut(id, |o| match o {
+            HeapObject::Plain(o) => o.define_with(key, Value::Object(value), flags),
+            HeapObject::Builtin(f) => f.properties.define_with(key, Value::Object(value), flags),
+            _ => false,
+        });
+        (defined == Some(true)).then_some(())
+    }
 }
 
 #[cfg(test)]
@@ -606,7 +670,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 27);
+        assert_eq!(first.all.len(), 33);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -614,11 +678,38 @@ mod tests {
         }
         assert_eq!(Global::from_name("Object"), Some(Global::Object));
         assert_eq!(Global::from_name("object"), None);
+        assert_eq!(Global::from_name("Function"), Some(Global::Function));
+        assert_eq!(Global::from_name("Reflect"), Some(Global::Reflect));
         assert_eq!(Global::from_u16(0), Some(Global::Object));
         assert_eq!(Global::from_name("Number"), Some(Global::Number));
         assert_eq!(Global::from_name("String"), Some(Global::String));
         assert_eq!(Global::from_u16(2), Some(Global::String));
-        assert_eq!(Global::from_u16(3), None);
+        assert_eq!(Global::from_u16(3), Some(Global::Function));
+        assert_eq!(Global::from_u16(4), Some(Global::Reflect));
+        assert_eq!(Global::from_u16(5), None);
+    }
+
+    /// Every built-in function inherits from `Function.prototype`, which
+    /// inherits from `Object.prototype` (clj-quickjs-102).
+    #[test]
+    fn built_in_functions_inherit_from_function_prototype() {
+        let heap = Heap::default();
+        let intrinsics = intrinsics(&heap).unwrap();
+        let fp = intrinsics.function_prototype;
+        for view in &intrinsics.views {
+            let builtin = heap
+                .read(view.id, |o| matches!(o, HeapObject::Builtin(_)))
+                .unwrap();
+            let expected = if view.id == fp {
+                Some(intrinsics.object_prototype)
+            } else if builtin {
+                Some(fp)
+            } else {
+                view.prototype
+            };
+            assert_eq!(view.prototype, expected, "{view:?}");
+            assert_eq!(view.function_prototype, view.id == fp);
+        }
     }
 
     #[test]

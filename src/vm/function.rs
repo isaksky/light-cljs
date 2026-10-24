@@ -88,8 +88,8 @@
 //! A function object's JavaScript own properties live in a separate
 //! **property record**: an ordinary object (`HeapObject::Plain`) owned by
 //! the task that created the function, never itself a JavaScript value,
-//! whose `[[Prototype]]` is `Object.prototype` (standing in for
-//! `Function.prototype`, see below). A function starts without one; the
+//! whose `[[Prototype]]` is the function's, `Function.prototype`
+//! (clj-quickjs-102; see below). A function starts without one; the
 //! record is created by the first write of a property (`f.x = 1`) or the
 //! first observation of a lazy `prototype`, and from then on
 //! [`FunctionObject::properties`] names it. Property operations on the
@@ -107,14 +107,15 @@
 //!   `constructor` that is the function; it is stored in the record, so
 //!   later reads give the same object. Arrow functions have no `prototype`.
 //! * **Inherited reads.** A function's `[[Prototype]]` is
-//!   `Function.prototype`, which does not exist yet (clj-quickjs-102). A
-//!   name `Function.prototype` will have as its own
-//!   ([`FUNCTION_PROTOTYPE_NAMES`]: `call`, `apply`, `bind`, `toString`,
-//!   `constructor`, ..., and `length` / `name`, which are also every
-//!   function's own properties, clj-quickjs-101) fails with
-//!   `UnsupportedOperand` unless the function has it as its own; any other
-//!   name continues at `Object.prototype`, where the chain continues after
-//!   `Function.prototype`, so `f.x` is `undefined` until assigned.
+//!   `Function.prototype` (clj-quickjs-102), a realm intrinsic, and cannot
+//!   be changed yet (`crate::vm::prototype`). A name of
+//!   [`FUNCTION_PROTOTYPE_NAMES`] (`length` / `name`, which are every
+//!   function's own properties, clj-quickjs-101, and the standard
+//!   `Function.prototype` methods that do not exist yet: `bind`,
+//!   `toString`, ...) fails with `UnsupportedOperand` unless the function
+//!   has it as its own; any other name continues at `Function.prototype`
+//!   (`call`, `apply`, `constructor`) and then `Object.prototype`, so `f.x`
+//!   is `undefined` until assigned.
 //! * **Ownership.** Only the creating task ([`FunctionObject::owner`])
 //!   writes a function's properties or creates its `prototype`; another
 //!   task gets `ForeignObject`, as for an ordinary object, and the record
@@ -184,22 +185,24 @@ impl Trace for FunctionObject {
     }
 }
 
-/// The own properties `Function.prototype` will have (ECMAScript §20.2.3,
-/// plus `length` and `name`, which every function also has as its own,
-/// clj-quickjs-101). Until they exist, reading or writing one on a function
-/// that lacks its own fails with `UnsupportedOperand` instead of answering
-/// from `Object.prototype` (module docs, "Inherited reads").
-pub(crate) const FUNCTION_PROTOTYPE_NAMES: [&str; 9] = [
-    "length",
-    "name",
-    "constructor",
-    "apply",
-    "bind",
-    "call",
-    "toString",
-    "arguments",
-    "caller",
-];
+/// The standard properties of `Function.prototype` (ECMAScript §20.2.3)
+/// that do not exist yet, plus `length` and `name`, which every function
+/// has as its own (clj-quickjs-101). Until they exist, reading or writing
+/// one on a function that lacks its own fails with `UnsupportedOperand`
+/// instead of answering from `Object.prototype` (module docs, "Inherited
+/// reads"); so does a lookup that reaches `Function.prototype` itself
+/// without finding one ([`lacks_inherited`]). `call`, `apply` and
+/// `constructor` are real properties of `Function.prototype`
+/// (clj-quickjs-102).
+pub(crate) const FUNCTION_PROTOTYPE_NAMES: [&str; 6] =
+    ["length", "name", "bind", "toString", "arguments", "caller"];
+
+/// True when `key` names a property `Function.prototype` should have but
+/// does not yet (see [`FUNCTION_PROTOTYPE_NAMES`]): a lookup that reaches
+/// `Function.prototype` without finding it fails (`crate::vm::property`).
+pub(crate) fn lacks_inherited(key: &Key) -> bool {
+    matches!(key, Key::Name(name) if FUNCTION_PROTOTYPE_NAMES.iter().any(|n| *name == **n))
+}
 
 /// The attributes of an ordinary function's `prototype`: writable, not
 /// enumerable, not configurable.
@@ -215,7 +218,7 @@ pub(crate) enum FunctionRead {
     /// The value of the property.
     Found(Value),
     /// Continue the ordinary read at this object: the function's record,
-    /// or `Object.prototype` for a function without one.
+    /// or `Function.prototype` for a function without one.
     Continue(ObjectId),
 }
 
@@ -308,6 +311,13 @@ fn exhausted() -> Fault {
 fn object_prototype(heap: &Heap) -> Result<ObjectId, Fault> {
     realm::intrinsics(heap)
         .map(|r| r.object_prototype)
+        .ok_or_else(exhausted)
+}
+
+/// `Function.prototype`, every function's `[[Prototype]]` (clj-quickjs-102).
+pub(crate) fn function_prototype(heap: &Heap) -> Result<ObjectId, Fault> {
+    realm::intrinsics(heap)
+        .map(|r| r.function_prototype)
         .ok_or_else(exhausted)
 }
 
@@ -417,7 +427,7 @@ fn read_or_probe(
     }
     match info.record {
         Some(record) => Ok(FunctionRead::Continue(record)),
-        None => object_prototype(heap).map(FunctionRead::Continue),
+        None => function_prototype(heap).map(FunctionRead::Continue),
     }
 }
 
@@ -631,7 +641,7 @@ fn writable_record(
     }
     // Allocated, then attached in the same instruction (no safepoint
     // between): reachable from the function, which the frame holds.
-    let fresh = OrdinaryObject::with_prototype(task, object_prototype(heap)?);
+    let fresh = OrdinaryObject::with_prototype(task, function_prototype(heap)?);
     let fresh = heap.alloc(HeapObject::Plain(fresh)).ok_or_else(exhausted)?;
     heap.with_object_mut_known(function, |object, known| match object {
         HeapObject::Function(f) => match f.properties {
