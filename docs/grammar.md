@@ -201,7 +201,10 @@ Unary                 = ( "!" | "-" | "+" | "~" | "typeof" | "void" | "delete" )
                       | "await" Unary   (* async bodies only *)
 Update                = ( "++" | "--" ) Unary
                       | Call [ [no LineTerminator here] ( "++" | "--" ) ]
-Call                  = ( Primary | New ) { Arguments | "." IdentifierName | "[" Expression "]" | TemplateLiteral }
+Call                  = ( Primary | New ) { Arguments | "." IdentifierName | "[" Expression "]" | TemplateLiteral | OptionalLink }
+OptionalLink          = "?." ( IdentifierName | "[" Expression "]" | Arguments )
+                        (* no TemplateLiteral after an OptionalLink in the same chain;
+                           parentheses end the chain; optional chains are not assignment targets *)
 New                   = "new" ( Primary | New ) { "." IdentifierName | "[" Expression "]" | TemplateLiteral } [ Arguments ]
                         (* the first Arguments belong to `new`: `new F()()` calls the result *)
 Arguments             = "(" [ SpreadElement { "," SpreadElement } [ "," ] ] ")"
@@ -484,11 +487,12 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | classes, `new.target` (clj-quickjs-99), `super`, `import`/`export`, dynamic `import` | Unsupported |
 | execution of parsed async generators | Unsupported at the function during compilation |
 | rest parameters, destructuring for-in/for-of heads | Unsupported |
-| optional chaining `?.`, object spread `...` (in an object literal) | Unsupported |
+| object spread `...` (in an object literal) | Unsupported |
+| an optional chain as an assignment/update target (`a?.b = 1`, `a?.b++`), a `new` callee (`new a?.b()`), or before a tagged template in the same chain | Invalid |
 | in object literals: computed shorthand `{[k]}` | UnexpectedToken |
 | numeric separators | Unsupported |
 | `??`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
-| `delete super.x` (clj-quickjs-138) and `delete a?.b` (clj-quickjs-134) wait for `super` and optional chaining | Unsupported |
+| `delete super.x` (clj-quickjs-138) waits for `super` | Unsupported |
 | `delete` of an identifier reference in strict code (`delete x`, ECMAScript 13.5.1.1), reported at the `delete` | Invalid |
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
 | a string or numeric key as a shorthand property (`{1}`) | UnexpectedToken |
@@ -509,6 +513,10 @@ member callee (`G`, `o.m`, `o[k]`), independently of its mutable `name` property
 Other callees use the value kind (`function` for an anonymous arrow), or the
 number itself. This keeps the pellet's source-label rule; QuickJS instead reads
 the rejected function's `name` property (`JS_ThrowTypeErrorNotAConstructor`).
+
+Optional chains support member/index access, calls (including spread arguments)
+and delete (clj-quickjs-134). They use the same object, call and delete behavior
+and limits as ordinary chains. `super` remains unsupported, including `super?.x`.
 
 Number `toFixed`, `toExponential` and `toPrecision` are supported
 (clj-quickjs-150/-151). Digit-count strings longer than 4096 UTF-16 units
@@ -948,6 +956,34 @@ delete a[o];
 ```
 
 ## Execution
+
+Optional links `a?.b`, `a?.[key]` and `a?.(args)` (clj-quickjs-134) test only
+for null and undefined. A nullish link skips the whole remaining member/call
+chain, including computed keys, arguments and spread iteration, and produces
+undefined. Parentheses end that short circuit: `null?.b.c` is undefined, while
+`(null?.b).c` throws TypeError. Member calls retain their receiver, including
+`a?.b()`, `a?.[key]()`, `o.m?.()` and `(a?.b)()`. A plain `f?.()` has undefined
+as its receiver. Delete produces true when short-circuited; otherwise it deletes
+the final property using ordinary strict/sloppy delete semantics. Getters, key
+conversion and calls retain the ordinary resumable execution behavior.
+
+```js accept
+null?.x;
+undefined?.[sideEffect()]?.(argument()).remaining;
+let a = {b() { return this; }};
+(a?.b)();
+a.b?.(...[]);
+delete a?.b;
+x?.5:1;
+```
+
+```js reject Invalid 1:1
+a?.b = 1;
+```
+
+```js reject Invalid 1:6
+new a?.b();
+```
 
 `Number.prototype.toExponential(fractionDigits)` and `toPrecision(precision)`
 (clj-quickjs-151) accept Number primitives and wrappers. Both round the exact
@@ -2285,7 +2321,7 @@ tag
 new tag`constructor`(1);
 ```
 
-```js reject Unsupported 1:2
+```js reject Invalid 1:5
 a?.b`c`;
 ```
 

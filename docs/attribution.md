@@ -12,6 +12,17 @@ was written afresh. The source-label diagnostic policy, documented in
 `grammar.md`, intentionally differs from QuickJS's function-name lookup.
 Other new test cases are synthetic fixtures, not light-cljs output.
 
+## Optional chaining (clj-quickjs-134)
+
+Semantic references: `optional_chain_test` and `js_parse_postfix_expr` in
+`research/quickjs/quickjs.c`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The delete and parenthesized
+receiver rows of `tests/js_source.rs::optional_chaining` adapt
+`tests/test_language.js::test_optional_chaining` at that revision. The full
+QuickJS copyright and MIT license notice is retained beside
+`object_literals_and_named_properties` in that test file. Remaining fixtures
+are synthetic, not light-cljs output. No QuickJS implementation code was copied.
+
 ## Generator and async syntax (clj-quickjs-54)
 
 `src/frontend/tests.rs::generator_and_async_syntax` adapts the two function

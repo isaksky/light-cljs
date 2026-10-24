@@ -9,9 +9,10 @@
 //! no QuickJS code is adapted.
 
 use super::ast::{
-    BinaryOp, CatchClause, Declarator, Expr, ExprKind, ForInHead, ForInit, Function, FunctionKind,
-    Ident, LexicalDecl, LexicalKind, LogicalOp, Pattern, PatternKind, PropertyDef, PropertyName,
-    Script, Stmt, StmtKind, SwitchCase, TemplateElement, UnaryOp, UpdateOp,
+    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Declarator, Expr, ExprKind, ForInHead,
+    ForInit, Function, FunctionKind, Ident, LexicalDecl, LexicalKind, LogicalOp, Pattern,
+    PatternKind, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase, TemplateElement,
+    UnaryOp, UpdateOp,
 };
 use super::intrinsics::RESERVED_BINDING;
 use super::lexer::{
@@ -2899,7 +2900,9 @@ impl<'a> Parser<'a> {
         };
         let mut expr = head?;
         loop {
-            if self.is_punct(Punct::LParen) {
+            if self.is_punct(Punct::OptionalChain) {
+                self.parse_optional_chain(&mut expr)?;
+            } else if self.is_punct(Punct::LParen) {
                 self.deeper(cost::CALL)?;
                 let op_span = self.tok.span;
                 let args = self.parse_arguments()?;
@@ -2941,6 +2944,85 @@ impl<'a> Parser<'a> {
         }
         self.depth = saved;
         Ok(expr)
+    }
+
+    #[inline(never)]
+    fn parse_optional_chain(&mut self, expr: &mut Expr) -> PResult<()> {
+        if is_reserved_binding(expr) {
+            return Err(self.error(
+                SyntaxErrorKind::ReservedWord,
+                self.tok.span,
+                "optional access to the reserved intrinsic binding is not allowed",
+            ));
+        }
+        // Move the base in this out-of-line helper so ordinary recursive
+        // call parsing does not reserve another Expr-sized stack temporary.
+        let base = std::mem::replace(expr, Expr::new(ExprKind::Undefined, expr.span));
+        let mut links = Vec::new();
+        loop {
+            let op_span = self.tok.span;
+            let optional = self.is_punct(Punct::OptionalChain);
+            if optional {
+                self.advance()?;
+            }
+            let kind = if self.is_punct(Punct::LParen) {
+                self.deeper(cost::CALL)?;
+                ChainLinkKind::Call(self.parse_arguments()?)
+            } else if self.is_punct(Punct::LBracket) {
+                self.deeper(cost::OPERATOR)?;
+                let link_depth = self.depth;
+                self.deeper(cost::PAREN)?;
+                self.advance()?;
+                let no_in = std::mem::replace(&mut self.no_in, false);
+                let index = self.parse_expression()?;
+                self.no_in = no_in;
+                self.expect_punct(Punct::RBracket)?;
+                self.depth = link_depth;
+                ChainLinkKind::Index(index)
+            } else if optional {
+                self.deeper(cost::OPERATOR)?;
+                let name = match &self.tok.kind {
+                    TokenKind::Identifier(name) => name.clone(),
+                    TokenKind::Keyword(k) => k.as_str().to_string(),
+                    _ => {
+                        return Err(self.error(
+                            SyntaxErrorKind::Invalid,
+                            self.tok.span,
+                            "expected a property name, index or call after `?.`",
+                        ));
+                    }
+                };
+                ChainLinkKind::Member(Ident {
+                    name,
+                    span: self.advance()?.span,
+                })
+            } else if self.is_punct(Punct::Dot) {
+                self.deeper(cost::OPERATOR)?;
+                ChainLinkKind::Member(self.parse_property_name()?)
+            } else if matches!(&self.tok.kind, TokenKind::Template(part) if part.head) {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    self.tok.span,
+                    "a tagged template cannot follow an optional chain",
+                ));
+            } else {
+                break;
+            };
+            links.push(ChainLink {
+                kind,
+                optional,
+                op_span,
+            });
+        }
+        let span = self.span_from(base.span.start);
+        *expr = self.expr(
+            ExprKind::OptionalChain {
+                base: Box::new(base),
+                links,
+            },
+            span,
+        )?;
+        Ok(())
     }
 
     /// `new` MemberExpression Arguments? (clj-quickjs-71; QuickJS
@@ -2985,6 +3067,13 @@ impl<'a> Parser<'a> {
             } else {
                 break;
             }
+        }
+        if self.is_punct(Punct::OptionalChain) {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                self.tok.span,
+                "an optional chain cannot be a `new` callee",
+            ));
         }
         let args = if self.is_punct(Punct::LParen) {
             self.parse_arguments()?
@@ -3040,9 +3129,8 @@ impl<'a> Parser<'a> {
                     "computed access to the reserved intrinsic binding `{RESERVED_BINDING}` is not allowed: name the intrinsic statically, as `{RESERVED_BINDING}.name(...)`"
                 ),
             )),
-            TokenKind::Punct(Punct::OptionalChain) => {
-                Err(self.unsupported(span, "optional chaining is"))
-            }
+            TokenKind::Punct(Punct::OptionalChain) => Err(self.error(
+                SyntaxErrorKind::Invalid, span, "an optional chain cannot be a `new` callee")),
             _ => Ok(()),
         }
     }
@@ -3425,7 +3513,10 @@ impl<'a> Parser<'a> {
                             | Keyword::With
                     )
                 );
-            after_dot = token.kind == TokenKind::Punct(Punct::Dot);
+            after_dot = matches!(
+                token.kind,
+                TokenKind::Punct(Punct::Dot | Punct::OptionalChain)
+            );
             after_arrow = token.kind == TokenKind::Punct(Punct::Arrow);
             // The real method parser requests IdentifierName after async
             // and *, including async *m. Keep escaped reserved-word names

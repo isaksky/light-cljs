@@ -474,7 +474,7 @@ impl<'a> Lexer<'a> {
                 }
             },
         };
-        self.after_dot = kind == TokenKind::Punct(Punct::Dot);
+        self.after_dot = matches!(kind, TokenKind::Punct(Punct::Dot | Punct::OptionalChain));
         Ok(Token {
             kind,
             span: Span::new(start, self.pos),

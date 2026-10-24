@@ -488,6 +488,17 @@ impl Expr {
                 .map(|a| a.height)
                 .fold(callee.height, usize::max),
             ExprKind::Member { object, .. } => object.height,
+            ExprKind::OptionalChain { base, links } => {
+                links.iter().fold(base.height, |height, link| {
+                    height.max(match &link.kind {
+                        ChainLinkKind::Member(_) => 0,
+                        ChainLinkKind::Index(index) => index.height,
+                        ChainLinkKind::Call(args) => {
+                            args.iter().map(|a| a.height).max().unwrap_or(0)
+                        }
+                    })
+                })
+            }
             ExprKind::Function(f) => f.height,
             ExprKind::Sequence { left, right } => left.height.max(right.height),
             ExprKind::Object(properties) => properties
@@ -744,6 +755,34 @@ pub enum ExprKind {
         pattern: String,
         flags: String,
     },
+    /// The first `?.` through the end of this unparenthesized chain.
+    OptionalChain {
+        base: Box<Expr>,
+        links: Vec<ChainLink>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChainLink {
+    pub kind: ChainLinkKind,
+    pub optional: bool,
+    pub op_span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChainLinkKind {
+    Member(Ident),
+    Index(Expr),
+    Call(Vec<Expr>),
+}
+
+impl Expr {
+    /// Whether evaluating this expression as a callee retains a receiver.
+    pub(crate) fn is_method_callee(&self) -> bool {
+        matches!(&self.kind, ExprKind::Member { .. } | ExprKind::Index { .. })
+            || matches!(&self.kind, ExprKind::OptionalChain { links, .. }
+                if links.last().is_some_and(|link| !matches!(link.kind, ChainLinkKind::Call(_))))
+    }
 }
 
 /// One text part of a template literal.

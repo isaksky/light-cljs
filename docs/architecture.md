@@ -5,6 +5,32 @@ are in [`design.md`](design.md); the supported/deferred list and exact commands
 are in the [README](../README.md). This note describes what exists and labels
 planned shapes as planned.
 
+## Optional chains (clj-quickjs-134)
+
+The frontend stores the first optional link and all remaining links in one
+`ExprKind::OptionalChain` with a base and a flat list of member, index and call
+links. Each link records whether it is optional and its operator-token span.
+Parentheses end that list; they preserve the chain node for reference-aware
+calls and delete. Chains are never assignment or update targets.
+
+Lowering walks links once and emits strict null/undefined tests followed by
+branches to the common chain exit. Short-circuit branches drop the live value
+and receiver and produce undefined, or true for delete. Keys and arguments
+are emitted after the guard. A member immediately used as a callee retains
+its base below the function; reference-mode lowering also does this for
+parenthesized member chains. Calls reuse `CallMethod`/`Call` and their spread
+variants. Delete lowers the final property as a reference without reading it.
+No new opcodes, heap kinds or native continuations are needed: getters, key
+conversion, spread iteration and calls use their existing resumable paths.
+Native iterator startup and steps bypass the unrelated built-in constructor
+and native-operation temporaries. This keeps optional calls with spread
+arguments within 64 KiB execution stacks after realm initialization, including
+dependency waits and migration.
+
+Semantic references: `optional_chain_test` and `js_parse_postfix_expr` in
+`research/quickjs/quickjs.c`, and `test_optional_chaining` in
+`research/quickjs/tests/test_language.js`, revision `7d1c13c5d8f8`.
+
 JavaScript source in the documented subset ([`grammar.md`](grammar.md)) is
 parsed and compiled to VM bytecode (`frontend::compile_script`,
 `frontend::compile_function`; see "Source compilation" below). Programs built

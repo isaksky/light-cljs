@@ -158,9 +158,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ast::{
-    BinaryOp, CatchClause, Declarator, Expr, ExprKind, ForInHead, ForInit, Function, FunctionKind,
-    Ident, LexicalDecl, LexicalKind, LogicalOp, Pattern, PatternKind, PropertyDef, PropertyName,
-    Script, Stmt, StmtKind, SwitchCase, TemplateElement, UnaryOp, UpdateOp,
+    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Declarator, Expr, ExprKind, ForInHead,
+    ForInit, Function, FunctionKind, Ident, LexicalDecl, LexicalKind, LogicalOp, Pattern,
+    PatternKind, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase, TemplateElement,
+    UnaryOp, UpdateOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
@@ -3385,6 +3386,9 @@ impl<'s> Lowerer<'s> {
     #[inline(never)]
     fn method_callee(&mut self, callee: &Expr) -> Result<(), SyntaxError> {
         match &callee.kind {
+            ExprKind::OptionalChain { base, links } => {
+                self.optional_chain(base, links, true, None, callee.span)?;
+            }
             ExprKind::Member {
                 object,
                 property,
@@ -3408,6 +3412,110 @@ impl<'s> Lowerer<'s> {
             }
             _ => return Err(self.internal(callee.span, "not a member callee")),
         }
+        Ok(())
+    }
+
+    /// One forward pass through the entire chain. Every optional link's
+    /// nullish branch discards its live value/receiver and bypasses all
+    /// remaining links, including their computed keys and arguments.
+    /// Reference mode retains the final member's receiver for `(a?.m)()`.
+    #[inline(never)]
+    fn optional_chain(
+        &mut self,
+        base: &Expr,
+        links: &[ChainLink],
+        reference: bool,
+        delete: Option<Span>,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        let end = self.out().label();
+        let mut method = matches!(links[0].kind, ChainLinkKind::Call(_)) && base.is_method_callee();
+        if method {
+            self.method_callee(base)?;
+        } else {
+            self.expr(base)?;
+        }
+        for (i, link) in links.iter().enumerate() {
+            let at = link.op_span;
+            let last = i + 1 == links.len();
+            if link.optional {
+                let check_null = self.out().label();
+                let short = self.out().label();
+                let next = self.out().label();
+                self.out().op(Opcode::Dup, at);
+                self.out().op(Opcode::Undefined, at);
+                self.out().op(Opcode::StrictEq, at);
+                self.out().branch(Opcode::JumpIfFalse, check_null, at);
+                self.out().branch(Opcode::Jump, short, at);
+                self.out().bind(check_null);
+                self.out().op(Opcode::Dup, at);
+                self.constant(Primitive::Null, at)?;
+                self.out().op(Opcode::StrictEq, at);
+                self.out().branch(Opcode::JumpIfFalse, next, at);
+                self.out().bind(short);
+                self.out().op(Opcode::Pop, at);
+                if method {
+                    self.out().op(Opcode::Pop, at);
+                }
+                if reference {
+                    self.out().op(Opcode::Undefined, at);
+                }
+                if delete.is_some() {
+                    self.constant(Primitive::Bool(true), at)?;
+                } else {
+                    self.out().op(Opcode::Undefined, at);
+                }
+                self.out().branch(Opcode::Jump, end, at);
+                self.out().bind(next);
+            }
+            match &link.kind {
+                ChainLinkKind::Call(args) => {
+                    self.call_arguments(args, method, span, at)?;
+                    method = false;
+                    if last && let Some(delete_at) = delete {
+                        self.out().op(Opcode::Pop, delete_at);
+                        self.constant(Primitive::Bool(true), delete_at)?;
+                    }
+                }
+                kind => {
+                    let deleting = last && delete.is_some();
+                    method = !deleting
+                        && (if last {
+                            reference
+                        } else {
+                            matches!(links[i + 1].kind, ChainLinkKind::Call(_))
+                        });
+                    if method {
+                        self.out().op(Opcode::Dup, at);
+                    }
+                    match kind {
+                        ChainLinkKind::Member(property) => {
+                            let name = self.name_index(&property.name, property.span)?;
+                            self.out().op_u16(
+                                if deleting {
+                                    Opcode::Const
+                                } else {
+                                    Opcode::GetField
+                                },
+                                name,
+                                at,
+                            );
+                        }
+                        ChainLinkKind::Index(index) => {
+                            self.expr(index)?;
+                            if !deleting {
+                                self.out().op(Opcode::GetElem, at);
+                            }
+                        }
+                        ChainLinkKind::Call(_) => unreachable!(),
+                    }
+                    if deleting {
+                        self.out().op(Opcode::Delete, delete.unwrap());
+                    }
+                }
+            }
+        }
+        self.out().bind(end);
         Ok(())
     }
 
@@ -3726,6 +3834,9 @@ impl<'s> Lowerer<'s> {
                 op_span,
             } => self.call(callee, args, span, *op_span),
             ExprKind::New { .. } => self.new_expr(e),
+            ExprKind::OptionalChain { base, links } => {
+                self.optional_chain(base, links, false, None, span)
+            }
             ExprKind::Member { .. } | ExprKind::Index { .. } => self.get_field(e),
             ExprKind::Object(properties) => self.object_literal(properties, span),
             ExprKind::AssignMember {
@@ -3837,6 +3948,9 @@ impl<'s> Lowerer<'s> {
     #[inline(never)]
     fn delete(&mut self, operand: &Expr, op_span: Span) -> Result<(), SyntaxError> {
         match &operand.kind {
+            ExprKind::OptionalChain { base, links } => {
+                return self.optional_chain(base, links, false, Some(op_span), operand.span);
+            }
             ExprKind::Member {
                 object, property, ..
             } => {
@@ -4054,25 +4168,13 @@ impl<'s> Lowerer<'s> {
                 "direct eval is not supported; use an indirect call",
             ));
         }
-        let mut method = false;
+        let method = callee.is_method_callee();
         if let ExprKind::Member {
             object, property, ..
         } = &callee.kind
+            && self.is_intrinsic_binding(object)
         {
-            if self.is_intrinsic_binding(object) {
-                return self.intrinsic(property, args, span, op_span);
-            }
-            method = true;
-        }
-        if let ExprKind::Index { .. } = callee.kind {
-            method = true;
-        }
-        if args.len() > MAX_COUNT {
-            return Err(self.error(
-                SyntaxErrorKind::TooLarge,
-                span,
-                "more than 65,535 call arguments",
-            ));
+            return self.intrinsic(property, args, span, op_span);
         }
         if method {
             self.method_callee(callee)?;
@@ -4081,6 +4183,24 @@ impl<'s> Lowerer<'s> {
             if matches!(&callee.kind, ExprKind::Identifier(name) if name == "eval") {
                 self.out().op(Opcode::CheckDirectEval, callee.span);
             }
+        }
+        self.call_arguments(args, method, span, op_span)
+    }
+
+    #[inline(never)]
+    fn call_arguments(
+        &mut self,
+        args: &[Expr],
+        method: bool,
+        span: Span,
+        op_span: Span,
+    ) -> Result<(), SyntaxError> {
+        if args.len() > MAX_COUNT {
+            return Err(self.error(
+                SyntaxErrorKind::TooLarge,
+                span,
+                "more than 65,535 call arguments",
+            ));
         }
         if args.iter().any(|a| matches!(a.kind, ExprKind::Spread(_))) {
             self.spread_arguments(args, span)?;
@@ -4250,7 +4370,7 @@ impl<'s> Lowerer<'s> {
                 "more than 65,535 template arguments",
             ));
         }
-        let method = matches!(tag.kind, ExprKind::Member { .. } | ExprKind::Index { .. });
+        let method = tag.is_method_callee();
         if method {
             self.method_callee(tag)?;
         } else {

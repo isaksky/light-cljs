@@ -114,6 +114,112 @@ fn constructor_kind_survives_code_round_trip() {
     assert_eq!(value.view(), ValueView::Bool(true));
 }
 
+/// Synthetic fixtures plus the delete/receiver rows adapted from QuickJS
+/// tests/test_language.js::test_optional_chaining, revision 7d1c13c5d8f8.
+/// The full QuickJS copyright/license notice on
+/// `object_literals_and_named_properties` below covers these adapted rows.
+/// These are not light-cljs output.
+#[test]
+fn optional_chaining() {
+    for source in [
+        "null?.x === undefined && undefined?.x === undefined",
+        "let n = 0; function f() { ++n; } undefined?.[f()]?.(f()).x[f()](f()); n === 0",
+        "let z = null; z?.b.c === undefined && z?.b['c'] === undefined",
+        "let z = null; let caught = false; try { (z?.b).c; } catch(e) { caught = e instanceof TypeError; } caught",
+        "let z = null; delete z?.b.c === true && delete z?.b['c'] === true",
+        "let a = {b: {c: 2}}; delete a?.b.c === true && a.b.c === undefined && JSON.stringify(a) === '{\"b\":{}}'",
+        "let a = {b: {c: 2}}; delete a?.b['c'] === true && a.b.c === undefined",
+        "let a = {b() { return this._b; }, _b: {c: 42}}; (a?.b)().c === 42 && (a?.['b'])().c === 42 && a?.b().c === 42 && a?.['b']().c === 42",
+        "let g = null; g?.() === undefined",
+        "let o = {v: 7, m() { return this.v; }}; o.m?.() === 7 && (o.m)?.() === 7 && o?.m?.() === 7",
+        "let n = 0; let o = {get m() { ++n; return null; }}; o?.m?.(++n).x === undefined && n === 1",
+        "let n = 0; let o = {get m() { ++n; return function() { return this.v; }; }, v: 9}; o?.m() === 9 && n === 1",
+        "let n = 0; let o = {m: null}; o.m?.(...[++n]).x[++n] === undefined && n === 0",
+        "let o = {v: 7, m(a, b) { return this.v + a + b; }}; o?.m(...[1, 2]) === 10 && o.m?.(...[1, 2]) === 10",
+        "let n = 0; function base() { ++n; return null; } delete base()?.[++n].x === true && n === 1",
+        "let o = {}; Object.defineProperty(o, 'x', {value: 1}); let caught = false; try { delete o?.x; } catch(e) { caught = e instanceof TypeError; } caught",
+        "let caught = false; try { ({b: null})?.b.c; } catch(e) { caught = e instanceof TypeError; } caught",
+        "let caught = false; try { (null?.m)(); } catch(e) { caught = e instanceof TypeError; } caught",
+        "let n = 0; function f() { ++n; } let caught = false; try { (null?.m)(f()); } catch(e) { caught = e instanceof TypeError; } caught && n === 1",
+        "let f = function() { 'use strict'; return this; }; f?.() === undefined",
+        "let o = {m() { return this; }}; (0, o?.m)?.() === undefined",
+        "let x = 1; function f() { let x = 2; return eval?.('x'); } f() === 1",
+        "eval?.('null?.x') === undefined",
+        "let o = {m() { return {v: 3, n() { return this.v; }}; }}; o?.m().n?.() === 3",
+        "let n = 0; let o = {get x() { ++n; }}; delete o?.x && n === 0",
+        "let n = 0; let key = {toString() { ++n; return 'x'; }}; null?.[key] === undefined && n === 0",
+        "let n = 0; let key = {toString() { ++n; return 'x'; }}; let o = {x: 1}; delete o?.[key] && n === 1 && o.x === undefined",
+        "let o = {b: {}}; (o?.b).c = 7; o.b.c === 7",
+        "let o = {v: 7, tag() { return this.v; }}; (o?.tag)`` === 7",
+        "let n = 0; let o = {m() { ++n; }}; delete o?.m() && n === 1",
+        "let n = 0; let o = {m: null}; delete o.m?.(++n) && n === 0",
+        "let n = 0; let caught = false; try { missing?.(++n); } catch(e) { caught = e instanceof ReferenceError; } caught && n === 0",
+        "0?.x === undefined && ''?.length === 0",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    assert_eq!(failure("false?.x").kind(), VmErrorKind::UnsupportedOperand);
+}
+
+/// Synthetic fixtures: each ordinary callback suspends on a dependency;
+/// operands and receivers survive collection and migration on 64 KiB stacks.
+#[test]
+fn optional_chaining_waits_collects_and_migrates() {
+    for source in [
+        "let n = 0; let o = {get m() { ++n; __rt.need(134, 1); return function(a) { __rt.need(134, 1); return this.v + a; }; }, v: 7}; o?.m?.(__rt.need(134, 1)) === 14 && n === 1",
+        "let key = {toString() { __rt.need(134, 1); return 'm'; }}; let o = {v: 7, m(a) { return this.v + a; }}; (o?.[key])?.(__rt.need(134, 1)) === 14",
+        "let key = {toString() { __rt.need(134, 1); return 'x'; }}; let o = {x: 7}; delete o?.[key] && o.x === undefined",
+        "let o = {v: 7, m(a) { __rt.need(134, 1); return this.v + a; }}; o?.m(...[__rt.need(134, 1)]) === 14",
+        "let o = {get m() { __rt.need(134, 1); return null; }}; o?.m?.(__rt.need(999, 1)).x === undefined",
+    ] {
+        let rt = Runtime::new();
+        // As in computed_properties_on_small_worker_stack, initialize the
+        // realm before executing JavaScript on a 64 KiB worker stack.
+        rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
+        let code = exe(source);
+        let mut task = rt.spawn(&code, &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..1000 {
+            let (next, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task
+                        .run_with(Budget::instructions(1), &mut NoEffects)
+                        .unwrap();
+                    (task, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1, "{source}");
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(7.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(complete && waits == 1, "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn computed_property_names() {

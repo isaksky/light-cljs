@@ -12,8 +12,8 @@
 //! `identifiers_are_not_normalized`).
 
 use super::ast::{
-    BinaryOp, Expr, ExprKind, Function, FunctionKind, LogicalOp, Pattern, PatternKind,
-    PropertyName, Script, Stmt, StmtKind, UnaryOp, UpdateOp,
+    BinaryOp, ChainLinkKind, Expr, ExprKind, Function, FunctionKind, LogicalOp, Pattern,
+    PatternKind, PropertyName, Script, Stmt, StmtKind, UnaryOp, UpdateOp,
 };
 use super::lexer::{Lexer, Punct, TokenKind};
 use super::{
@@ -23,8 +23,68 @@ use super::{
 
 // ----- S-expression rendering of the AST ------------------------------------
 
+#[test]
+fn optional_chaining() {
+    assert_eq!(ast("a?.b"), "(chain a (?. b))");
+    assert_eq!(ast("a?.[k]"), "(chain a (?.[] k))");
+    assert_eq!(ast("a?.(1)"), "(chain a (?.() 1))");
+    assert_eq!(ast("a?.b.c(d)"), "(chain a (?. b) (. c) (() d))");
+    assert_eq!(ast("(a?.b).c"), "(. (chain a (?. b)) c)");
+    assert_eq!(ast("x?.5:1"), "(? x 0.5 1)");
+    assert_eq!(ast(r"a?.\u0069f"), "(chain a (?. if))");
+    parse_script(r"(a = o?.\u0069f) => a").unwrap();
+    for source in [
+        "a?.b = 1",
+        "a?.b++",
+        "++a?.b",
+        "a?.b.c += 1",
+        "(a?.b) = 1",
+        "a?.b[0]++",
+        "[a?.b] = []",
+        "new a?.b()",
+        "new a.b?.()",
+        "a?.b``",
+        "a?.()``",
+        "a?.b().c``",
+    ] {
+        assert_eq!(
+            parse_script(source).unwrap_err().kind,
+            SyntaxErrorKind::Invalid,
+            "{source}"
+        );
+    }
+    for source in ["(a?.b)``", "new (a?.b)()", "new a()?.b"] {
+        parse_script(source).unwrap();
+    }
+}
+
 fn render_expr(e: &Expr) -> String {
     match &e.kind {
+        ExprKind::OptionalChain { base, links } => {
+            let mut out = format!("(chain {}", render_expr(base));
+            for link in links {
+                let optional = if link.optional { "?." } else { "" };
+                let text = match &link.kind {
+                    ChainLinkKind::Member(property) => format!(
+                        "({} {})",
+                        if link.optional { "?." } else { "." },
+                        property.name
+                    ),
+                    ChainLinkKind::Index(index) => format!("({optional}[] {})", render_expr(index)),
+                    ChainLinkKind::Call(args) => {
+                        let mut text = format!("({optional}()");
+                        for arg in args {
+                            text.push_str(&format!(" {}", render_expr(arg)));
+                        }
+                        text.push(')');
+                        text
+                    }
+                };
+                out.push_str(&format!(" {text}"));
+            }
+            out.push(')');
+            out
+        }
         ExprKind::AssignPattern { target, value } => {
             format!("(= {} {})", render_pattern(target), render_expr(value))
         }
@@ -3302,13 +3362,7 @@ fn tagged_template_syntax() {
     ] {
         parse_script(src).unwrap_or_else(|e| panic!("{src}: {e}"));
     }
-    rejects_with(
-        "a?.b`c`",
-        SyntaxErrorKind::Unsupported,
-        1,
-        2,
-        "optional chaining",
-    );
+    rejects_with("a?.b`c`", SyntaxErrorKind::Invalid, 1, 5, "optional chain");
 }
 
 // ----- negative: lexical ambiguity -------------------------------------------
@@ -3480,7 +3534,6 @@ fn rejects_lexically_ambiguous_input() {
     assert_eq!(ast("a**=b"), "(**= a b)");
     rejects_with("a&&=b", Unsupported, 1, 2, "&&=");
     rejects_with("a ?? b", Unsupported, 1, 3, "??");
-    rejects_with("a?.b", Unsupported, 1, 2, "optional chaining");
     // `a--b` is `a--` then `b`, with no operator between them. (HTML-like
     // comments are not comments here: `a <!-- b` is `a < !--b`, and `++`
     // after a line break begins the next statement; both parse, see
@@ -4559,6 +4612,15 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
             format!("x = {}1{};", "[1, , a[0] = ".repeat(n), ", 2]".repeat(n))
         }),
         ("index chains", |n| format!("x = a{};", "[0]".repeat(n))),
+        ("optional member chains", |n| {
+            format!("x = a{};", "?.b".repeat(n))
+        }),
+        ("optional call arguments", |n| {
+            format!("x = {}1{};", "a?.(".repeat(n), ")".repeat(n))
+        }),
+        ("optional index expressions", |n| {
+            format!("x = {}0{};", "a?.[".repeat(n), "]".repeat(n))
+        }),
         ("nested indexes", |n| {
             format!("x = {}0{};", "a[".repeat(n), "]".repeat(n))
         }),

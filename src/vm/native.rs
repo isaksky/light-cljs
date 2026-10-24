@@ -1145,9 +1145,28 @@ pub(crate) fn start_builtin(
         push_native(state, NativeState::Eval(Box::new(native)))?;
         return Ok(true);
     }
+    if !construct {
+        let iterator = match which {
+            Builtin::ArrayValues | Builtin::TypedArrayValues | Builtin::IteratorIdentity => {
+                return Ok(false);
+            }
+            Builtin::IteratorNext(kind) => {
+                Some(iterator::State::next(heap, state.diag.task, this, kind)?)
+            }
+            Builtin::StringIterator => Some(iterator::State::string(this.clone())?),
+            _ => None,
+        };
+        if let Some(iterator) = iterator {
+            state.truncate_operands(state.stack_len() - popped)?;
+            push_native(state, NativeState::Iterator(Box::new(iterator)))?;
+            return Ok(true);
+        }
+    }
     start_builtin_slow(heap, state, which, this, args, construct, popped)
 }
 
+// Iterator callbacks above must not reserve every unrelated constructor's
+// temporary storage while executing spread on a small worker stack.
 #[inline(never)]
 fn start_builtin_slow(
     heap: &Heap,
@@ -1358,12 +1377,6 @@ fn start_builtin_slow(
                 this.clone(),
                 args,
             )))),
-            Builtin::IteratorNext(kind) => Some(NativeState::Iterator(Box::new(
-                iterator::State::next(heap, state.diag.task, this, kind)?,
-            ))),
-            Builtin::StringIterator => Some(NativeState::Iterator(Box::new(
-                iterator::State::string(this.clone())?,
-            ))),
             Builtin::TypedArraySet | Builtin::TypedArrayFill => {
                 Some(NativeState::TypedArray(Box::new(
                     typed_array::TypedArray::method(heap, state.diag.task, which, this, args)?,
@@ -2572,10 +2585,13 @@ impl NativeState {
         input: Input,
         host: &mut dyn Host,
     ) -> Result<Action, Fault> {
-        if matches!(self, NativeState::Convert { .. }) {
-            self.step_conversion(heap, task, input, host)
-        } else {
-            self.step_other(heap, task, jobs, input, host)
+        match self {
+            NativeState::Convert { .. } => self.step_conversion(heap, task, input, host),
+            // Iterator protocol reads can descend through descriptor and
+            // conversion helpers. Keep the unrelated native arms' stack
+            // storage out of spread execution on 64 KiB workers.
+            NativeState::Iterator(iterator) => iterator.step(heap, task, input),
+            _ => self.step_other(heap, task, jobs, input, host),
         }
     }
 
@@ -2657,7 +2673,9 @@ impl NativeState {
                 }
             }
             NativeState::TypedArray(array) => array.step(heap, task, input),
-            NativeState::Iterator(iterator) => iterator.step(heap, task, input),
+            NativeState::Iterator(_) => {
+                unreachable!("iterator dispatched before other native arms")
+            }
             NativeState::ArrayFrom(from) => from.step(heap, task, input),
             NativeState::MathSumPrecise(sum) => sum.step(heap, task, input),
             NativeState::ArraySort(sort) => sort.step(heap, task, input),
