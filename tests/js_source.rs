@@ -24289,6 +24289,23 @@ fn intl_relative_time_format_host_and_ownership() {
 /// Synthetic fixture, not light-cljs output. Every accepted unit has both forms.
 #[test]
 fn intl_relative_time_format_all_units_and_locale_data() {
+    // Pin table selection independently of the shared format/parts path.
+    for (locale, value, expected) in [
+        ("pt-BR", 1, "em 1 dia"),
+        ("pt-BR", 2, "em 2 dias"),
+        ("pt-BR", -1, "há 1 dia"),
+        ("zh-Hant", 1, "1 天后"),
+        ("zh-Hant", 2, "2 天后"),
+        ("zh-Hant", -1, "1 天前"),
+        ("es", 1, "dentro de 1 día"),
+        ("es", 2, "dentro de 2 días"),
+        ("es", -1, "hace 1 día"),
+    ] {
+        let source = format!(
+            "new Intl.RelativeTimeFormat('{locale}').format({value},'day') === '{expected}'"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
     assert_eq!(
         eval(
             "let r=new Intl.RelativeTimeFormat('en'); let units=['second','minute','hour','day','week','month','quarter','year']; let ok=true; for(let i=0;i<units.length;i++){let unit=units[i]; ok=ok && r.format(1,unit) === 'in 1 '+unit && r.format(-2,unit+'s') === '2 '+unit+'s ago';} ok"

@@ -1126,7 +1126,7 @@ fn realm_intrinsics_retain() {
     // Symbol.prototype adds one prototype and four built-in functions (-129).
     // FinalizationRegistry adds one prototype and three built-in functions (-177).
     // ListFormat adds one prototype and five built-in functions (-220).
-     // RelativeTimeFormat adds one prototype and five built-in functions (-221).
+    // RelativeTimeFormat adds one prototype and five built-in functions (-221).
     assert_eq!(rt.heap_usage().objects.builtin, 252);
     assert_eq!(rt.heap_usage().objects.plain, 48);
     for _ in 0..2 {
