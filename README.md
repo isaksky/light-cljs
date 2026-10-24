@@ -2755,7 +2755,8 @@ survival. Embedders inspect `ValueView::BigInt` with `Rooted::bigint` or
 sign/magnitude access. Storage uses inline `i64` or immutable shared limbs,
 with a 1 Mbit cap and no new dependency. Mixed BigInt/Number arithmetic throws
 TypeError. Arithmetic and bitwise operators are supported below. JavaScript
-conversions remain deferred to clj-quickjs-201–204 and fail explicitly;
+ToString, Number conversion and width truncation remain deferred to
+clj-quickjs-202–204 and fail explicitly;
 JSON serialization throws TypeError.
 
 Validation: `cargo test --lib bigint -- --test-threads=3` and
@@ -2781,8 +2782,8 @@ Relational and loose equality operators compare BigInts with BigInts and
 Numbers by exact mathematical value, including fractions, NaN, infinities
 and values beyond 2^53. Booleans convert to Numbers; null/undefined never
 loosely equal a BigInt. Object conversion uses the existing resumable VM
-frames. BigInt/String comparisons explicitly return UnsupportedOperand until
-StringToBigInt (clj-quickjs-201) lands. Strict equality keeps numeric types
+frames. BigInt/String comparisons use exact StringToBigInt (clj-quickjs-201);
+invalid strings are unequal and unordered. Strict equality keeps numeric types
 distinct. Validation: `cargo test --test js_source bigint_ -- --test-threads=3`
 and `cargo test --lib value::bigint:: -- --test-threads=3`.
 
@@ -2984,3 +2985,19 @@ lookbehind, scoped i, Unicode/case folding, indices, Symbol.match recognition,
 and string regexp consumers. Eval is deferred; the raw NUL case uses the
 constructor and a raw-NUL literal. Run
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.
+
+### BigInt function and string conversion (clj-quickjs-201)
+
+Supported: `BigInt(value)` converts integral finite Numbers exactly, booleans,
+BigInts, and decimal or unsigned `0x`/`0o`/`0b` strings. It trims JavaScript
+whitespace; empty text is `0n`. Invalid text throws SyntaxError, fractional or
+non-finite Numbers throw RangeError, and null/undefined/symbols or `new BigInt`
+throw TypeError. `BigInt.prototype.constructor === BigInt`; BigInt primitives
+use that prototype for property lookup and `Object.getPrototypeOf`.
+Objects use resumable ToPrimitive with hint number. String comparison shares
+the parser. Scans and decimal limb work are budgeted, with a 1 Mbit cap and
+catchable RangeError for oversized valid input. Rope flattening may first take
+linear time. Prototype conversion methods and wrappers remain deferred.
+
+Validation: `CARGO_BUILD_JOBS=3 nix develop -c cargo test --test js_source bigint_ -- --test-threads=3`
+and `CARGO_BUILD_JOBS=3 nix develop -c cargo test --lib value::bigint:: -- --test-threads=3`.
