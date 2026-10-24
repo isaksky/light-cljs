@@ -147,6 +147,46 @@ fn promise_reaction_waits_and_resumes() {
 }
 
 #[test]
+fn thenable_then_waits_and_resumes() {
+    let rt = Runtime::new();
+    let task = function(
+        &rt,
+        r#"function body() {
+        let calls = 0;
+        Promise.resolve({then(resolve, reject) {
+            __rt.effect(0, ++calls);
+            resolve(__rt.need(247, 1)); resolve(99); reject(98); throw 97;
+        }}).then(x => __rt.effect(0, x));
+        Promise.resolve().then(() => __rt.effect(0, 2));
+        __rt.effect(0, 0); return 42;
+    }"#,
+        &[],
+    );
+    let mut host = Effects::default();
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    assert_eq!(host.0, [0., 1.].map(Primitive::Number));
+    rt.collect().unwrap();
+    satisfy(&rt, &task);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let resumed = task.clone();
+    let thread = std::thread::spawn(move || {
+        let outcome = resumed.run_with(Budget::UNLIMITED, &mut host).unwrap();
+        tx.send((outcome, host)).unwrap();
+    });
+    let (outcome, host) = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    thread.join().unwrap();
+    let RunOutcome::Complete(value) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert_eq!(value.view(), ValueView::Number(42.));
+    assert_eq!(host.0, [0., 1., 2., 8.].map(Primitive::Number));
+    assert_eq!(task.status(), clj_quickjs::TaskStatus::Finished);
+}
+
+#[test]
 fn pending_promise_reactions_are_traced() {
     let rt = Runtime::new();
     let object = rt.scope(|scope| scope.persist(scope.new_object()));
@@ -380,22 +420,33 @@ fn missing_fulfillment_handler_then_getter_waits_without_replay() {
 }
 
 #[test]
-fn thenable_adoption_fails_explicitly() {
-    for source in [
-        "Promise.resolve({then(resolve) { resolve(1); }});",
-        "new Promise(resolve => resolve({get then() { return function() {}; }}));",
-        "Promise.resolve(1).then(() => Promise.resolve(2));",
-        "let reads = 0; Promise.resolve({get then() { if (++reads === 2) return function() { __rt.effect(0, 99); }; }}).then();",
+fn thenable_adoption_replaces_explicit_gap() {
+    for (source, expected) in [
+        (
+            "Promise.resolve({then(resolve) { resolve(1); }}).then(x => __rt.effect(0, x));",
+            vec![1.],
+        ),
+        (
+            "new Promise(resolve => resolve({get then() { return function() { __rt.effect(0, 3); }; }}));",
+            vec![3.],
+        ),
+        (
+            "Promise.resolve(1).then(() => Promise.resolve(2)).then(x => __rt.effect(0, x));",
+            vec![2.],
+        ),
+        (
+            "let reads = 0; Promise.resolve({get then() { if (++reads === 2) return function() { __rt.effect(0, 99); }; }}).then();",
+            vec![99.],
+        ),
     ] {
-        let rt = Runtime::new();
-        let task = rt
-            .spawn(&compile_script("thenable.js", source).unwrap(), &[])
-            .unwrap();
-        let RunOutcome::Failed(error) = task.run().unwrap() else {
-            panic!("must fail explicitly")
-        };
-        assert_eq!(error.kind(), clj_quickjs::VmErrorKind::UnsupportedOperand);
-        assert!(error.message().contains("thenable adoption"));
+        let (_, effects) = run(source);
+        assert_eq!(
+            effects,
+            expected
+                .into_iter()
+                .map(Primitive::Number)
+                .collect::<Vec<_>>()
+        );
     }
 }
 
@@ -562,6 +613,66 @@ fn settled_promise_results_and_resolvers_are_traced() {
         assert!(!weak.is_live());
         assert_eq!(rt.heap_usage().objects.promise, 0);
     }
+}
+
+#[test]
+fn thenable_resolving_functions_are_traced() {
+    let rt = Runtime::new();
+    let object = rt.scope(|scope| scope.persist(scope.new_object()));
+    let weak = object.downgrade();
+    let maker = function(
+        &rt,
+        r#"function make(o) {
+        let saved;
+        Promise.resolve({then(resolve) { saved = resolve; resolve(o); }});
+        return () => saved;
+    }"#,
+        &[object],
+    );
+    let holder = finish(&maker);
+    drop(maker);
+    rt.collect().unwrap();
+    assert!(weak.is_live());
+    assert_eq!(rt.heap_usage().objects.promise_resolving, 1);
+    drop(holder);
+    rt.collect().unwrap();
+    assert!(!weak.is_live());
+    assert_eq!(rt.heap_usage().objects.promise_resolving, 0);
+    assert_eq!(rt.heap_usage().objects.promise, 0);
+}
+
+#[test]
+fn thenable_jobs_preserve_saved_then_across_budgeting_and_collection() {
+    let rt = Runtime::new();
+    let task = function(
+        &rt,
+        r#"function body() {
+        let calls = 0;
+        const value = {then(resolve, reject) {
+            __rt.effect(0, ++calls);
+            resolve({then(r) { r(8); }}); reject(99); throw 98;
+        }};
+        Promise.resolve(value).then(x => __rt.effect(0, x));
+        value.then = () => __rt.effect(0, 97);
+        return 42;
+    }"#,
+        &[],
+    );
+    let mut host = Effects::default();
+    for _ in 0..2000 {
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Number(42.));
+                assert_eq!(host.0, [1., 8.].map(Primitive::Number));
+                return;
+            }
+            outcome => panic!("{outcome:?}"),
+        }
+    }
+    panic!("thenable execution did not complete");
 }
 
 #[test]

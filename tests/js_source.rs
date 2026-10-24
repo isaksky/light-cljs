@@ -13,6 +13,78 @@ use clj_quickjs::{
     VmErrorKind,
 };
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn promise_thenable_adoption() {
+    #[derive(Default)]
+    struct Log(Vec<Primitive>);
+    impl Host for Log {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+    for (source, expected) in [
+        (
+            r#"
+            new Promise(r => r(Promise.resolve(1))).then(v => __rt.effect(0, v));
+            Promise.resolve().then(() => __rt.effect(0, 10))
+                .then(() => __rt.effect(0, 20)).then(() => __rt.effect(0, 30));
+            __rt.effect(0, 0);
+        "#,
+            vec![0., 10., 20., 1., 30.],
+        ),
+        (
+            r#"
+            let calls = 0; let reads = 0;
+            const value = {get then() { reads++; return function(res, rej) {
+                __rt.effect(0, ++calls); __rt.effect(0, this === value ? 2 : 99);
+                res(5); res(6); rej(7); throw 8;
+            }; }};
+            Promise.resolve(value).then(v => { __rt.effect(0, v); __rt.effect(0, reads); });
+            __rt.effect(0, calls);
+        "#,
+            vec![0., 1., 2., 5., 1.],
+        ),
+        (
+            r#"
+            new Promise(r => r({then(res) { res(5); }})).then(v => __rt.effect(0, v));
+            Promise.resolve({then() { throw 7; }}).catch(v => __rt.effect(0, v));
+            Promise.resolve({get then() { throw 9; }}).catch(v => __rt.effect(0, v));
+            new Promise(r => r(Promise.reject(11))).catch(v => __rt.effect(0, v));
+        "#,
+            vec![9., 5., 7., 11.],
+        ),
+        (
+            r#"
+            let late;
+            new Promise((r, j) => {
+                late = r;
+                r({then(res, rej) { late(99); res({then(r) { r(12); }}); rej(98); throw 97; }});
+                j(96); throw 95;
+            }).then(v => __rt.effect(0, v));
+            Promise.resolve(1).then(() => Promise.resolve(13)).then(v => __rt.effect(0, v));
+        "#,
+            vec![12., 13.],
+        ),
+    ] {
+        let rt = Runtime::new();
+        let task = rt
+            .spawn(&compile_script("thenable.js", source).unwrap(), &[])
+            .unwrap();
+        let mut log = Log::default();
+        let outcome = task.run_with(Budget::UNLIMITED, &mut log).unwrap();
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(
+            log.0,
+            expected
+                .into_iter()
+                .map(Primitive::Number)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 #[test]
 fn upstream_string_rope() {
     assert_eq!(

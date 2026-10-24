@@ -17,10 +17,22 @@ use crate::value::{JsString, Value, share};
 #[derive(Debug)]
 pub(crate) struct Promise {
     pub(crate) prototype: ObjectId,
-    resolved: bool,
     result: Option<Settlement>,
     reactions: Vec<Registration>,
     is_handled: bool,
+}
+
+/// A fresh resolve/reject pair shares this concurrent first-call guard.
+/// It only points to a shareable Promise, never to task-owned callbacks.
+#[derive(Debug)]
+pub(crate) struct Resolving {
+    promise: ObjectId,
+    resolved: bool,
+}
+impl Trace for Resolving {
+    fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
+        visit(self.promise);
+    }
 }
 
 /// An unpublishable result stays in an opaque owner-bound envelope, just as
@@ -87,7 +99,6 @@ fn new(heap: &Heap) -> Result<ObjectId, Fault> {
         heap,
         HeapObject::Promise(Promise {
             prototype,
-            resolved: false,
             result: None,
             reactions: vec![],
             is_handled: false,
@@ -124,12 +135,24 @@ fn function(heap: &Heap, which: Builtin) -> Result<Value, Fault> {
         HeapObject::Builtin(BuiltinFunction { which, properties }),
     )?))
 }
-fn claim(heap: &Heap, id: ObjectId) -> Result<bool, Fault> {
+fn resolving_functions(heap: &Heap, promise: ObjectId) -> Result<(ObjectId, Value, Value), Fault> {
+    let guard = alloc(
+        heap,
+        HeapObject::PromiseResolving(Resolving {
+            promise,
+            resolved: false,
+        }),
+    )?;
+    let resolve = function(heap, Builtin::PromiseResolver(guard, false))?;
+    let reject = function(heap, Builtin::PromiseResolver(guard, true))?;
+    Ok((guard, resolve, reject))
+}
+fn claim(heap: &Heap, id: ObjectId) -> Result<Option<ObjectId>, Fault> {
     heap.with_object_mut(id, |o| match o {
-        HeapObject::Promise(p) => {
+        HeapObject::PromiseResolving(p) => {
             let first = !p.resolved;
             p.resolved = true;
-            Ok(first)
+            Ok(first.then_some(p.promise))
         }
         _ => Err(Fault::Internal("promise changed kind")),
     })
@@ -148,7 +171,6 @@ fn settle(
     heap.with_object_mut(id, |o| match o {
         HeapObject::Promise(p) => {
             if p.result.is_none() {
-                p.resolved = true;
                 p.result = Some(Settlement {
                     rejected,
                     value,
@@ -188,7 +210,17 @@ pub(crate) enum PromiseState {
     },
     Constructor {
         promise: ObjectId,
+        guard: ObjectId,
         executor: Value,
+        resolve: Value,
+        reject: Value,
+        called: bool,
+    },
+    Thenable {
+        promise: ObjectId,
+        guard: ObjectId,
+        thenable: Value,
+        then: Value,
         resolve: Value,
         reject: Value,
         called: bool,
@@ -209,6 +241,7 @@ pub(crate) enum PromiseState {
     },
     Failed {
         promise: ObjectId,
+        guard: Option<ObjectId>,
         value: Value,
         constructor: bool,
     },
@@ -230,17 +263,47 @@ impl Trace for PromiseState {
             }
             Self::Constructor {
                 promise,
+                guard,
                 executor,
                 resolve,
                 reject,
                 ..
             } => {
                 visit(*promise);
+                visit(*guard);
                 executor.trace(visit);
                 resolve.trace(visit);
                 reject.trace(visit);
             }
-            Self::Resolve { promise, value, .. } | Self::Failed { promise, value, .. } => {
+            Self::Thenable {
+                promise,
+                guard,
+                thenable,
+                then,
+                resolve,
+                reject,
+                ..
+            } => {
+                visit(*promise);
+                visit(*guard);
+                thenable.trace(visit);
+                then.trace(visit);
+                resolve.trace(visit);
+                reject.trace(visit);
+            }
+            Self::Failed {
+                promise,
+                guard,
+                value,
+                ..
+            } => {
+                visit(*promise);
+                if let Some(guard) = guard {
+                    visit(*guard);
+                }
+                value.trace(visit);
+            }
+            Self::Resolve { promise, value, .. } => {
                 visit(*promise);
                 value.trace(visit);
             }
@@ -256,18 +319,23 @@ impl PromiseState {
     pub(crate) fn catches(&self) -> bool {
         matches!(
             self,
-            Self::Constructor { .. } | Self::Resolve { .. } | Self::Reaction { .. }
+            Self::Constructor { .. }
+                | Self::Resolve { .. }
+                | Self::Reaction { .. }
+                | Self::Thenable { .. }
         )
     }
     pub(crate) fn failed(&mut self, value: Value) {
-        let (promise, constructor) = match self {
-            Self::Constructor { promise, .. } => (*promise, true),
-            Self::Resolve { promise, .. } => (*promise, false),
-            Self::Reaction { reaction, .. } => (reaction.derived, false),
+        let (promise, guard, constructor) = match self {
+            Self::Constructor { promise, guard, .. } => (*promise, Some(*guard), true),
+            Self::Thenable { promise, guard, .. } => (*promise, Some(*guard), false),
+            Self::Resolve { promise, .. } => (*promise, None, false),
+            Self::Reaction { reaction, .. } => (reaction.derived, None, false),
             _ => unreachable!("non-catching promise native"),
         };
         *self = Self::Failed {
             promise,
+            guard,
             value,
             constructor,
         };
@@ -276,6 +344,7 @@ impl PromiseState {
         &mut self,
         heap: &Heap,
         task: TaskId,
+        inbox: &Weak<JobInbox>,
         input: Input,
     ) -> Result<Action, Fault> {
         match self {
@@ -324,6 +393,7 @@ impl PromiseState {
                 resolve,
                 reject,
                 called,
+                ..
             } => {
                 if !*called {
                     *called = true;
@@ -335,12 +405,31 @@ impl PromiseState {
                 }
                 Ok(Action::Return(Value::Object(*promise)))
             }
+            Self::Thenable {
+                thenable,
+                then,
+                resolve,
+                reject,
+                called,
+                ..
+            } => {
+                if !*called {
+                    *called = true;
+                    return Ok(Action::Call {
+                        callee: then.clone(),
+                        this: thenable.clone(),
+                        args: vec![resolve.clone(), reject.clone()],
+                    });
+                }
+                Ok(Action::Return(Value::Undefined))
+            }
             Self::Failed {
                 promise,
+                guard,
                 value,
                 constructor,
             } => {
-                if !*constructor || claim(heap, *promise)? {
+                if guard.is_none() || claim(heap, guard.unwrap())?.is_some() {
                     settle(heap, task, *promise, true, value.clone())?;
                 }
                 Ok(Action::Return(if *constructor {
@@ -361,7 +450,8 @@ impl PromiseState {
                         called: false,
                     };
                     return Ok(Action::Continue);
-                } else if *stage == 0 && matches!(value, Value::Object(_)) {
+                }
+                let then = if *stage == 0 && matches!(value, Value::Object(_)) {
                     *stage = 1;
                     match property::read(heap, task, value, &Key::Name(JsString::from("then")))? {
                         Some(Read::Getter(callee)) => {
@@ -371,21 +461,25 @@ impl PromiseState {
                                 args: vec![],
                             });
                         }
-                        Some(Read::Value(then)) if dispatch::callee(heap, &then).is_ok() => {
-                            return Err(Fault::Unsupported(
-                                "promise thenable adoption is not supported".into(),
-                            ));
-                        }
-                        _ => settle(heap, task, *promise, false, value.clone())?,
+                        Some(Read::Value(then)) => then,
+                        None => Value::Undefined,
                     }
+                } else if let Input::CallResult(then) = input {
+                    then
                 } else {
-                    if let Input::CallResult(then) = input
-                        && dispatch::callee(heap, &then).is_ok()
-                    {
-                        return Err(Fault::Unsupported(
-                            "promise thenable adoption is not supported".into(),
-                        ));
-                    }
+                    Value::Undefined
+                };
+                if dispatch::callee(heap, &then).is_ok() {
+                    let callable = function(heap, Builtin::PromiseResolveThenable(*promise))?;
+                    inbox
+                        .upgrade()
+                        .ok_or(Fault::Internal("promise task inbox gone"))?
+                        .push(Job {
+                            callable,
+                            args: vec![value.clone(), then],
+                        })
+                        .map_err(|_| Fault::Internal("promise task inbox closed"))?;
+                } else {
                     settle(heap, task, *promise, false, value.clone())?;
                 }
                 Ok(Action::Return(Value::Undefined))
@@ -508,7 +602,7 @@ pub(crate) fn start(
                 return Ok(Some(PromiseState::Return(arg(0))));
             }
             let promise = new(heap)?;
-            let resolve = function(heap, Builtin::PromiseResolver(promise, false))?;
+            let (_, resolve, _) = resolving_functions(heap, promise)?;
             PromiseState::Static {
                 promise,
                 resolve,
@@ -523,10 +617,10 @@ pub(crate) fn start(
             let executor = arg(0);
             dispatch::callee(heap, &executor)?;
             let promise = new(heap)?;
-            let resolve = function(heap, Builtin::PromiseResolver(promise, false))?;
-            let reject = function(heap, Builtin::PromiseResolver(promise, true))?;
+            let (guard, resolve, reject) = resolving_functions(heap, promise)?;
             PromiseState::Constructor {
                 promise,
+                guard,
                 executor,
                 resolve,
                 reject,
@@ -534,10 +628,10 @@ pub(crate) fn start(
             }
         }
         Builtin::Promise => return Err(Fault::TypeError("Promise requires new".into())),
-        Builtin::PromiseResolver(promise, reject) if !construct => {
-            if !claim(heap, promise)? {
+        Builtin::PromiseResolver(guard, reject) if !construct => {
+            let Some(promise) = claim(heap, guard)? else {
                 return Ok(None);
-            }
+            };
             if reject {
                 settle(heap, task, promise, true, arg(0))?;
                 return Ok(None);
@@ -546,6 +640,18 @@ pub(crate) fn start(
                 promise,
                 value: arg(0),
                 stage: 0,
+            }
+        }
+        Builtin::PromiseResolveThenable(promise) if !construct => {
+            let (guard, resolve, reject) = resolving_functions(heap, promise)?;
+            PromiseState::Thenable {
+                promise,
+                guard,
+                thenable: arg(0),
+                then: arg(1),
+                resolve,
+                reject,
+                called: false,
             }
         }
         Builtin::PromiseReaction(id) if !construct => {
@@ -590,7 +696,6 @@ pub(crate) fn leaf(
                 ));
             }
             let promise = new(heap)?;
-            claim(heap, promise)?;
             settle(heap, task, promise, true, arg(0))?;
             Ok(Value::Object(promise))
         }

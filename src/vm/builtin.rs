@@ -344,6 +344,8 @@ pub(crate) enum Builtin {
 
     DateToLocalString(u8),
     DateToUtcString,
+
+    PromiseResolveThenable(ObjectId),
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -438,7 +440,9 @@ impl Builtin {
             Builtin::PromiseReject => "reject",
             Builtin::PromiseThen => "then",
             Builtin::PromiseCatch => "catch",
-            Builtin::PromiseResolver(_, _) | Builtin::PromiseReaction(_) => "",
+            Builtin::PromiseResolver(_, _)
+            | Builtin::PromiseReaction(_)
+            | Builtin::PromiseResolveThenable(_) => "",
             Builtin::ArrayBuffer => "ArrayBuffer",
             Builtin::ArrayBufferByteLength => "get byteLength",
             Builtin::ArrayBufferDetached => "get detached",
@@ -585,7 +589,7 @@ impl Builtin {
             | Builtin::PromiseReject
             | Builtin::PromiseCatch
             | Builtin::PromiseResolver(_, _) => 1,
-            Builtin::PromiseReaction(_) => 0,
+            Builtin::PromiseReaction(_) | Builtin::PromiseResolveThenable(_) => 0,
             Builtin::ArrayBuffer => 1,
             Builtin::ArrayBufferByteLength
             | Builtin::ArrayBufferDetached
@@ -681,7 +685,9 @@ impl Trace for BuiltinFunction {
     fn trace(&self, visit: &mut dyn FnMut(ObjectId)) {
         self.properties.trace(visit);
         match self.which {
-            Builtin::PromiseResolver(id, _) | Builtin::PromiseReaction(id) => visit(id),
+            Builtin::PromiseResolver(id, _)
+            | Builtin::PromiseReaction(id)
+            | Builtin::PromiseResolveThenable(id) => visit(id),
             _ => {}
         }
     }
@@ -755,7 +761,10 @@ pub(crate) fn call(
         | Builtin::PromiseThen
         | Builtin::PromiseCatch
         | Builtin::PromiseResolver(_, _)
-        | Builtin::PromiseReaction(_) => Err(Fault::Internal("promise builtin requires VM state")),
+        | Builtin::PromiseReaction(_)
+        | Builtin::PromiseResolveThenable(_) => {
+            Err(Fault::Internal("promise builtin requires VM state"))
+        }
         Builtin::ArrayBuffer => Err(Fault::TypeError("ArrayBuffer requires new".into())),
         Builtin::ArrayBufferByteLength | Builtin::ArrayBufferDetached => {
             crate::object::array_buffer::inspect(
@@ -1645,7 +1654,8 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 | HeapObject::Builder(_)
                 | HeapObject::Cell(_)
                 | HeapObject::Atom(_)
-                | HeapObject::PromiseReaction(_) => Ok("Object"),
+                | HeapObject::PromiseReaction(_)
+                | HeapObject::PromiseResolving(_) => Ok("Object"),
                 HeapObject::Promise(_) => Ok("Promise"),
             })
             // The receiver is an operand of the running frame.

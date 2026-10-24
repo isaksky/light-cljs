@@ -61,6 +61,7 @@ pub struct ObjectCounts {
     pub typed_array: usize,
     pub promise: usize,
     pub promise_reaction: usize,
+    pub promise_resolving: usize,
 }
 
 impl ObjectCounts {
@@ -83,6 +84,7 @@ impl ObjectCounts {
             + self.typed_array
             + self.promise
             + self.promise_reaction
+            + self.promise_resolving
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -105,6 +107,7 @@ impl ObjectCounts {
             HeapObject::TypedArray(_) => &mut self.typed_array,
             HeapObject::Promise(_) => &mut self.promise,
             HeapObject::PromiseReaction(_) => &mut self.promise_reaction,
+            HeapObject::PromiseResolving(_) => &mut self.promise_resolving,
         };
         *n += 1;
     }

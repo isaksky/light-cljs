@@ -932,7 +932,8 @@ mod tests {
             | HeapObject::ArrayBuffer(_)
             | HeapObject::TypedArray(_)
             | HeapObject::Promise(_)
-            | HeapObject::PromiseReaction(_) => {
+            | HeapObject::PromiseReaction(_)
+            | HeapObject::PromiseResolving(_) => {
                 panic!("not a native object")
             }
         })

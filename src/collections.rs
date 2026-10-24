@@ -250,6 +250,7 @@ pub(crate) fn object_name(object: &HeapObject) -> &'static str {
     match object {
         HeapObject::Promise(_) => "Promise",
         HeapObject::PromiseReaction(_) => "promise reaction",
+        HeapObject::PromiseResolving(_) => "promise resolving functions",
         HeapObject::Plain(_) => "object",
         HeapObject::Native(_) => "native object",
         HeapObject::Vector(_) => PersistentKind::Vector.name(),

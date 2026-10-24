@@ -93,11 +93,12 @@ enum Holder {
     TypedArrayEdges,
     PromiseReactions,
     PromiseResults,
+    PromiseResolvingFunctions,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 33] = [
+const HOLDERS: [Holder; 34] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -131,6 +132,7 @@ const HOLDERS: [Holder; 33] = [
     Holder::TypedArrayEdges,
     Holder::PromiseReactions,
     Holder::PromiseResults,
+    Holder::PromiseResolvingFunctions,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -146,7 +148,7 @@ const CATEGORIES: [RootCategory; 6] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 17] = [
+const KINDS: [ObjectKind; 18] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -164,6 +166,7 @@ const KINDS: [ObjectKind; 17] = [
     ObjectKind::TypedArray,
     ObjectKind::Promise,
     ObjectKind::PromiseReaction,
+    ObjectKind::PromiseResolving,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -173,6 +176,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
         RootCategory::PersistentHandle => &[
             PromiseReactions,
             PromiseResults,
+            PromiseResolvingFunctions,
             PersistentHandle,
             TaskResult,
             AtomRetainedOld,
@@ -216,6 +220,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
     match kind {
         ObjectKind::Promise => &[PromiseReactions, PromiseResults],
         ObjectKind::PromiseReaction => &[PromiseReactions],
+        ObjectKind::PromiseResolving => &[PromiseResolvingFunctions],
         ObjectKind::PlainObject => &[
             PersistentHandle,
             ObjectProperty,
@@ -281,6 +286,10 @@ fn coverage(holder: Holder) -> Coverage {
         Holder::PromiseResults => Coverage {
             retains: (Promises, "settled_promise_results_and_resolvers_are_traced"),
             reclaims: (Promises, "settled_promise_results_and_resolvers_are_traced"),
+        },
+        Holder::PromiseResolvingFunctions => Coverage {
+            retains: (Promises, "thenable_resolving_functions_are_traced"),
+            reclaims: (Promises, "thenable_resolving_functions_are_traced"),
         },
         Holder::ArrayBufferProperty => public(
             "array_buffer_properties_retained_and_reclaimed",

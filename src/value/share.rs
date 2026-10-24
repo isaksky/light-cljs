@@ -9,7 +9,7 @@
 //! |----------|-------------|------------|
 //! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure; its own-property record is a separate ordinary object), built-in function, realm intrinsic ordinary object (`Object.prototype`, `crate::realm`), internal frozen template arrays; natives that declare it | when everything it references is shareable (transitively) |
 //! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, JavaScript Maps, ArrayBuffers and typed-array views, binding cells, natives that declare it | never |
-//! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
+//! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`), Promises and resolving-pair guards (`crate::vm::promise`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
 //! Primitives are always shareable, strings, symbols and BigInts included: a string
 //! (`crate::value::JsString`, clj-quickjs-65) is immutable `Arc` storage
@@ -42,6 +42,8 @@
 //! an unshareable result remains confined to its settling task, and foreign
 //! reactions reject rather than extracting it. Only checked results cross
 //! task boundaries; tracing an opaque envelope grants no foreign read access.
+//! Resolving-pair guards contain only a fixed Promise edge and a first-call
+//! flag claimed under the heap metadata lock; they never store user values.
 //!
 //! A function object is persistent: its code and captured values never change
 //! after allocation. A closure is therefore shareable exactly when its
@@ -201,7 +203,9 @@ pub(crate) enum Shareability {
 /// declare one (module docs, "What a later object kind must declare").
 pub(crate) fn classify(object: &HeapObject) -> Shareability {
     match object {
-        HeapObject::Promise(_) => Shareability::ConcurrentReference,
+        HeapObject::Promise(_) | HeapObject::PromiseResolving(_) => {
+            Shareability::ConcurrentReference
+        }
         HeapObject::PromiseReaction(_) => Shareability::TaskOwned,
         // Realm intrinsics never change after the realm is built
         // (`crate::realm`); every other ordinary object, including an
@@ -248,7 +252,8 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         | HeapObject::Atom(_)
         | HeapObject::Builtin(_)
         | HeapObject::Promise(_)
-        | HeapObject::PromiseReaction(_) => None,
+        | HeapObject::PromiseReaction(_)
+        | HeapObject::PromiseResolving(_) => None,
     }
 }
 

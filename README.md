@@ -3081,11 +3081,16 @@ shareable, first-call-wins resolve/reject functions. `Promise.resolve`,
 in FIFO jobs on the registering task after the current body/job. Handler
 returns and throws settle derived promises. Executors, handlers and `then`
 getters can yield, wait on dependencies, migrate and survive collection.
+Resolving with a Promise or callable thenable reads `then` once and adopts
+it through a FIFO job; the saved method runs asynchronously with fresh,
+first-call-wins resolving functions. Throwing getters/methods reject unless
+the resolving pair has already been called. Thenable methods can also wait,
+migrate and survive collection.
 Promises publish across tasks; settlement enqueues jobs without executing
 JavaScript or waking a dependency wait. Task-owned results remain confined
 to their settling task; foreign reactions reject with TypeError.
 
-Deferred: thenable adoption (explicit UnsupportedOperand), Promise subclass
+Deferred: Promise subclass
 capabilities/species, arbitrary own-property mutation on promises, async/await,
 combinators, finally and unhandled rejection reporting. Test with
 `cargo test --test promises -- --test-threads=3`.
@@ -3163,3 +3168,5 @@ Unicode 17.0.0 folding and identifier tables share verified, pinned generation;
 normal builds need only Rust. Plain `/a/i` remains a catchable SyntaxError.
 Property escapes, v sets, d indices and lookbehind remain deferred. Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_case_insensitive_unicode -- --exact --test-threads=3`.
+
+Thenable adoption: `cargo test --test js_source promise_thenable_adoption -- --exact`.

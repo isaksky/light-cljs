@@ -394,7 +394,8 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::ArrayBuffer(_)
                 | HeapObject::TypedArray(_)
                 | HeapObject::Promise(_)
-                | HeapObject::PromiseReaction(_) => "object",
+                | HeapObject::PromiseReaction(_)
+                | HeapObject::PromiseResolving(_) => "object",
             })
             // A frame keeps its operands alive; a stale id is reported.
             .ok_or(Fault::Internal("typeof operand was reclaimed"))?,

@@ -3666,7 +3666,7 @@ an executor's later throw. Self-resolution rejects with TypeError.
 `Promise.resolve(p)` preserves a Promise's identity; other values produce a
 new promise. `Promise.reject(value)` always produces a new rejected promise.
 `then` requires a Promise; non-callable handlers act as identity/thrower.
-Handler returns fulfill and throws reject the derived Promise. `catch` reads
+Handler returns resolve and throws reject the derived Promise. `catch` reads
 and calls `this.then(undefined, handler)`, including resumable getters.
 
 Reactions run as FIFO jobs on the task that registered them, after synchronous
@@ -3679,10 +3679,18 @@ a foreign reaction rejects its derived promise with TypeError instead of
 exposing that object. Promise prototypes and resolver properties are immutable
 under the existing shared-intrinsic policy.
 
+Resolving with an object reads `then` exactly once, including resumable
+getters. A throwing getter rejects; a non-callable `then` fulfills with the
+object. A callable `then` (including another Promise's method) is saved and
+called in a FIFO resolve-thenable job with the object as `this` and a fresh
+resolve/reject pair. The pair's first call wins, including over a later throw
+from `then`. Nested thenables are adopted by subsequent jobs. An already
+fulfilled Promise adopted by `new Promise(r => r(inner))` adds two jobs before
+the outer reaction: the adoption call and the inner forwarding reaction.
+Thenable calls can yield, wait, migrate and survive collection like reactions.
+
 Rejected forms: async/await and class syntax retain their existing explicit
-rejections. Resolving a callable thenable (including a different Promise)
-fails with UnsupportedOperand until adoption lands; getters are still read
-resumably and a throwing getter rejects. Explicit gaps: subclass capabilities,
+rejections. Explicit gaps: subclass capabilities,
 species, combinators, `finally`, arbitrary Promise own properties and unhandled
 rejection reporting are deferred. Only the intrinsic Promise constructor is
 accepted as `this` for static resolve/reject.
@@ -3701,6 +3709,14 @@ let n = 0; Promise.reject(1).catch(() => n++); n === 0;
 
 ```js accept
 let n = 0; try { new Promise(1); } catch (e) { n = e instanceof TypeError; } n;
+```
+
+Thenable adoption (clj-quickjs-247), synthetic fixture, not light-cljs output:
+
+```js accept
+let calls = 0; Promise.resolve({then(resolve) { calls++; resolve(5); }}); calls === 0;
+new Promise(resolve => resolve(Promise.resolve(1))).then(value => value + 1);
+Promise.resolve({get then() { throw 7; }}).catch(reason => reason);
 ```
 
 ### BigInt string formatting (clj-quickjs-202)

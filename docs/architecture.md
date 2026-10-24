@@ -5390,13 +5390,13 @@ No heap representation, native continuation or publication rule changes.
 ## Shareable Promise core (clj-quickjs-246)
 
 `HeapObject::Promise` is an explicit concurrent reference, never a dependency
-cell. It holds a fixed intrinsic prototype, an already-resolved flag, an
+cell. It holds a fixed intrinsic prototype, an
 optional fulfilled/rejected result, an `is_handled` bit and an ordered list of
 reaction registrations. These fields are inspected or changed only under the
 heap's short object-table metadata lock. There is no per-Promise Arc/Mutex,
 interpreter lock or JavaScript execution inside that lock. Resolving functions
-are immutable built-in function objects tracing the Promise identity; their
-shared first-call flag is the Promise's already-resolved bit. Claiming it
+are immutable built-in function objects tracing a `PromiseResolving` guard;
+the guard holds the Promise identity and the pair's shared first-call bit. Claiming it
 precedes observable `then` lookup, so reentry cannot resolve twice.
 
 A Promise can be published while pending or settled. Every settlement runs
@@ -5436,7 +5436,7 @@ yields, waits, collection and migration. No Rust callback stack survives.
 
 `Promise.resolve` preserves an intrinsic Promise argument's identity;
 `Promise.reject` creates a new Promise. Non-thenable results fulfill; callable
-thenables explicitly fail UnsupportedOperand until clj-quickjs-247. Promise
+thenables are adopted through resolve-thenable jobs (clj-quickjs-247). Promise
 subclass capabilities/species and mutable own properties are explicit gaps.
 Self-resolution and inaccessible foreign results reject with errors built by
 the intrinsic TypeError constructor, including its ordinary `stack` property.
@@ -5669,3 +5669,48 @@ All added expansion work and members share the existing compilation/search
 budgets. Table lookups have a fixed logarithmic bound. Plain i remains rejected
 with catchable SyntaxError, including scoped i outside Unicode mode; the
 canonicalize helper's false mode is identity and is not a legacy-i operation.
+
+## Promise thenable adoption (clj-quickjs-247)
+
+Resolve reads an object's `then` once on the resolving task. Getter calls
+use ordinary resumable frames and a Promise catch boundary: a thrown value
+rejects the Promise. Non-callable results fulfill with the object. Callable
+results enqueue a `PromiseResolveThenable` built-in job in that task's FIFO
+inbox, with the thenable and saved method as traced job arguments. Changing
+`then` afterward does not change the scheduled call. `Promise.resolve` on a
+non-Promise and normal reaction returns use this same resolving path.
+
+When the job starts it allocates a fresh `HeapObject::PromiseResolving`
+record and two immutable resolver built-ins tracing that record. The record
+is an explicit concurrent reference containing only a Promise edge and an
+already-resolved flag, inspected/claimed under the heap metadata lock. Its
+trace visits the Promise; publication stops at the concurrent boundary,
+whose only edge leads to another concurrent reference. Unlike storing one
+flag on the Promise, a new flag per pair permits nested adoption while
+keeping every older resolve/reject pair permanently inert after its first
+call. This also preserves cross-task resolver publication and racing claims.
+
+The job calls the saved method with the thenable receiver and fresh pair
+through `Action::Call`; no Rust stack or lock survives the call. Callback
+returns are ignored. Throws reject only if that fresh guard remains
+unclaimed, so resolving with another thenable and then throwing preserves
+the pending adoption. All nested calls, getters, finally handlers and
+`__rt.need` waits retain normal task-owned VM continuations. Jobs created
+by resolution run on the resolving task; reactions still run on their
+registering task. Dependency completion only publishes and wakes tasks.
+
+Root inventory: `thenable_resolving_functions_are_traced` retains an object
+result through a saved fresh resolver, its resolving guard and Promise,
+then reclaims that chain. `thenable_jobs_preserve_saved_then_across_budgeting_and_collection`
+collects at every single-instruction yield, covering queued arguments,
+active native frames, nested adoption and ignored late rejects/throws.
+`thenable_then_waits_and_resumes` collects during a method's dependency wait,
+migrates the task, and asserts exactly one outer settlement. The `js_source`
+case `promise_thenable_adoption` checks exact job order, once-only synchronous
+getter lookup, asynchronous method calls, receiver identity and rejection.
+
+QuickJS references and provenance: semantic reference only, no source or test
+text copied: `research/quickjs/quickjs.c`,
+`js_promise_resolve_function_call`, `js_promise_resolve_thenable_job` and
+`js_create_resolving_functions`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).

@@ -1045,6 +1045,7 @@ pub(crate) fn start_builtin(
             | Builtin::PromiseCatch
             | Builtin::PromiseResolver(_, _)
             | Builtin::PromiseReaction(_)
+            | Builtin::PromiseResolveThenable(_)
     ) {
         let native = super::promise::start(
             heap,
@@ -1813,7 +1814,9 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     frame.awaiting = Awaiting::Nothing;
     let action = {
         let _borrow = scoped_borrow();
-        frame.state.step(heap, state.diag.task, input, host)?
+        frame
+            .state
+            .step(heap, state.diag.task, &state.jobs, input, host)?
     };
     state.truncate_operands(base)?;
     match action {
@@ -2118,6 +2121,7 @@ impl NativeState {
         &mut self,
         heap: &Heap,
         task: TaskId,
+        jobs: &std::sync::Weak<crate::job::JobInbox>,
         input: Input,
         host: &mut dyn Host,
     ) -> Result<Action, Fault> {
@@ -2156,8 +2160,7 @@ impl NativeState {
             }
             NativeState::TypedArray(array) => array.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
-            NativeState::Promise(p) => p.step(heap, task, input),
-
+            NativeState::Promise(p) => p.step(heap, task, jobs, input),
             NativeState::NumberFormat(format) => format.step(heap, task, input),
             NativeState::StringRaw(raw) => {
                 if let Some(build) = raw.finish()? {
@@ -3363,13 +3366,13 @@ mod tests {
         };
         let limit = crate::value::string::MAX_STRING_LEN;
         assert!(
-            matches!(pending(limit - 1).step(&heap, task, Input::Start, &mut NoHost),
+            matches!(pending(limit - 1).step(&heap, task, &std::sync::Weak::new(), Input::Start, &mut NoHost),
             Err(Fault::RangeError(message)) if message == "string too long")
         );
         // The same continuation below the limit really does request the
         // later conversion callback, so the overflow assertion checks order.
         assert!(
-            matches!(pending(limit - 3).step(&heap, task, Input::Start, &mut NoHost),
+            matches!(pending(limit - 3).step(&heap, task, &std::sync::Weak::new(), Input::Start, &mut NoHost),
             Ok(Action::Call { this, .. }) if this == later)
         );
     }
