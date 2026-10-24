@@ -199,6 +199,132 @@ fn job_exception_fails_task() {
 }
 
 #[test]
+fn body_exception_discards_jobs() {
+    let (rt, task, jobs, mut host) = setup(
+        "function a(x) { __rt.effect(0, 1); } function b() { __rt.effect(0, 2); } __rt.effect(0, -1); throw 'body failed';",
+    );
+    let guard = task.try_begin_run().unwrap();
+    let object = task
+        .0
+        .heap
+        .alloc(crate::heap::HeapObject::Plain(
+            crate::object::OrdinaryObject::new(Some(task.id())),
+        ))
+        .unwrap();
+    let value = Rooted::new(&task.0.heap, Value::Object(object));
+    let weak = value.downgrade();
+    guard
+        .enqueue_job(jobs[0].callable_for_test(), vec![Value::Object(object)])
+        .unwrap();
+    jobs[1].enqueue(&[]).unwrap();
+    drop(value);
+    drop(guard);
+    rt.collect().unwrap();
+    assert!(weak.is_live());
+    let RunOutcome::Failed(error) = task.run_with(Budget::UNLIMITED, &mut host).unwrap() else {
+        panic!("body failure expected")
+    };
+    assert!(error.message.contains("body failed"), "{error:?}");
+    assert_eq!(host.0, [-1.0]);
+    assert_eq!(task.status(), TaskStatus::Finished);
+    assert_eq!(jobs[0].enqueue(&[]), Err(crate::job::JobError::Closed));
+    rt.collect().unwrap();
+    assert!(!weak.is_live());
+}
+
+#[test]
+fn job_activation_rejects_excess_stack_values() {
+    use crate::heap::HeapObject;
+    use crate::vm::builtin::{Builtin, BuiltinFunction};
+    use crate::vm::function::FunctionObject;
+
+    let body = crate::frontend::compile_function("function body() { return 42; }").unwrap();
+    let tail = crate::frontend::compile_function("function tail() { __rt.effect(0, 2); }").unwrap();
+    for (source, argc) in [
+        (Some("function job(x) { __rt.effect(0, 1); return x; }"), 16),
+        (
+            Some("function job() { __rt.effect(0, 1); return arguments[0]; }"),
+            16,
+        ),
+        (None, 16),
+    ] {
+        let code = source.map(|s| crate::frontend::compile_function(s).unwrap());
+        let required = code.as_ref().map_or(2 * (argc + 1), |code| {
+            usize::from(code.0.locals)
+                + code.0.max_stack
+                + if code.0.uses_arguments { argc } else { 0 }
+        });
+        for allowed in [false, true] {
+            let rt = Runtime::with_limits(crate::VmLimits {
+                max_stack_values: required - usize::from(!allowed),
+                ..crate::VmLimits::DEFAULT
+            });
+            let task = rt.spawn(&body, &[]).unwrap();
+            let guard = task.try_begin_run().unwrap();
+            let callable = match &code {
+                Some(code) => HeapObject::Function(FunctionObject::new(
+                    Arc::clone(&code.0),
+                    Box::new([]),
+                    task.id(),
+                )),
+                None => HeapObject::Builtin(BuiltinFunction {
+                    which: Builtin::MathAbs,
+                    properties: crate::object::OrdinaryObject::new(None),
+                }),
+            };
+            let callable = Value::Object(task.0.heap.alloc(callable).unwrap());
+            let sender = JobSender {
+                sender: guard.job_sender(callable.clone()),
+                _callable: Rooted::new(&task.0.heap, callable.clone()),
+            };
+            guard
+                .enqueue_job(callable, vec![Value::Number(7.0); argc])
+                .unwrap();
+            let tail = task
+                .0
+                .heap
+                .alloc(HeapObject::Function(FunctionObject::new(
+                    Arc::clone(&tail.0),
+                    Box::new([]),
+                    task.id(),
+                )))
+                .unwrap();
+            guard.enqueue_job(Value::Object(tail), vec![]).unwrap();
+            drop(guard);
+            let mut host = Effects::default();
+            let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+            if allowed {
+                assert_eq!(complete(outcome), ValueView::Number(42.0));
+                assert_eq!(
+                    host.0,
+                    if code.is_some() {
+                        vec![1.0, 2.0]
+                    } else {
+                        vec![2.0]
+                    }
+                );
+            } else {
+                let RunOutcome::Failed(error) = outcome else {
+                    panic!("oversized job must fail: {source:?}")
+                };
+                assert_eq!(error.kind, crate::VmErrorKind::StackOverflow);
+                assert_eq!(
+                    error.message,
+                    if code.is_some() {
+                        "job activation exceeds the stack limit"
+                    } else {
+                        "job arguments exceed the stack limit"
+                    }
+                );
+                assert!(host.0.is_empty());
+            }
+            assert_eq!(task.status(), TaskStatus::Finished);
+            assert_eq!(sender.enqueue(&[]), Err(crate::job::JobError::Closed));
+        }
+    }
+}
+
+#[test]
 fn job_boundary_hook_runs_between_jobs() {
     let (_rt, task, jobs, mut host) = setup(
         "function a() { __rt.effect(0, 1); } function b() { __rt.effect(0, 2); } __rt.effect(0, -1); 42;",
