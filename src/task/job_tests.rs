@@ -1026,15 +1026,15 @@ fn native_promise_await_uses_internal_reactions_without_then_lookup() {
     let (_rt, task, _jobs, mut host) = setup(
         r#"
         var p=Promise.resolve(5);
-        var trap={get then() { __rt.effect(0,99); throw 'then lookup'; }};
+        var trap={constructor: Promise, get then() { __rt.effect(0,99); throw 'then lookup'; }};
         __rt.effect(0,-1);
         (async () => await p)().then(x => __rt.effect(0,x), () => __rt.effect(0,98));
         42;
     "#,
     );
     // Promise own/prototype mutation is outside the public subset. Give this
-    // native promise a trap prototype internally to distinguish internal
-    // PerformPromiseThen from an observable then lookup/call.
+    // native promise a trap prototype whose constructor still matches Promise,
+    // to distinguish internal PerformPromiseThen from an observable then lookup.
     let mut guard = task.try_begin_run().unwrap();
     let global = guard.vm().unwrap().global_object.unwrap();
     let heap = &task.0.heap;
