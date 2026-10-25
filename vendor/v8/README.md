@@ -24,7 +24,7 @@ upstream V8 tools, a C/C++ toolchain and libclang for bindgen. On macOS install
 Xcode command-line tools and LLVM, then set `LIBCLANG_PATH` to LLVM's `lib`
 directory if bindgen cannot locate it. The initial source build takes from several
 minutes to hours under load, once per machine (see the cache below). Upstream downloads its matching
-Chromium clang/linker and Rust toolchains. `--no-default-features` avoids V8 and
+Chromium clang/linker and Rust toolchains. `--no-default-features --features quickjs` avoids V8 and
 uses the existing QuickJS macro backend. WebAssembly targets do not build V8.
 
 `upstream_build.rs` is the original build script with a public entry point,

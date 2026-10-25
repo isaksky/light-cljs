@@ -654,15 +654,24 @@ impl Task {
             std::sync::TryLockError::WouldBlock => RunError::AlreadyRunning,
             std::sync::TryLockError::Poisoned(_) => RunError::Poisoned,
         })?;
+        if self.status() == TaskStatus::Running {
+            return Err(RunError::AlreadyRunning);
+        }
         let TaskBody::Ready(vm) = &*body else {
             return Err(RunError::Finished);
         };
-        let Some(global) = vm.global_object else { return Ok(None) };
+        let Some(global) = vm.global_object else {
+            return Ok(None);
+        };
         let property = crate::vm::property::get_own_property(
-            &self.0.heap, self.0.id, global,
+            &self.0.heap,
+            self.0.id,
+            global,
             &crate::vm::property::Key::Name(crate::JsString::from(name)),
-        ).map_err(|_| RunError::Poisoned)?;
-        Ok(property.filter(|p| p.accessor.is_none())
+        )
+        .map_err(|_| RunError::Poisoned)?;
+        Ok(property
+            .filter(|p| p.accessor.is_none())
             .map(|p| Rooted::new(&self.0.heap, p.value)))
     }
 

@@ -7,7 +7,9 @@ pub(crate) type UnitService = Rc<dyn Fn(&dyn MacroEvaluator, u64) -> Result<Stri
 /// strings, so only a panic poisons the session.
 pub(crate) type StringService = Rc<dyn Fn(&str) -> String>;
 pub(crate) trait CompilerEvaluator: MacroEvaluator {
-    fn native_forms(&self) -> bool { false }
+    fn native_forms(&self) -> bool {
+        false
+    }
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError>;
     fn install_compiler_service(
         self: Rc<Self>,

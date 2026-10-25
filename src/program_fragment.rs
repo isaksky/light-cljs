@@ -1449,12 +1449,15 @@ mod tests {
             source_index: 0,
         });
         target.root = ExprId(target.exprs.len() - 1);
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        context.with(|ctx| {
-            let value: String = ctx.eval(crate::emit_js(&target)).unwrap();
-            assert_eq!(value, "1-body");
-        });
+        #[cfg(light_quickjs)]
+        {
+            let runtime = rquickjs::Runtime::new().unwrap();
+            let context = rquickjs::Context::full(&runtime).unwrap();
+            context.with(|ctx| {
+                let value: String = ctx.eval(crate::emit_js(&target)).unwrap();
+                assert_eq!(value, "1-body");
+            });
+        }
     }
 
     /// What [`append`] skips (the keyed tables a fragment still shares, the
@@ -1598,17 +1601,20 @@ mod tests {
         original.root = old_metadata;
         let mut copied = snapshot.clone();
         copied.root = new_metadata;
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        context.with(|ctx| {
-            let old: String = ctx
-                .eval(format!("JSON.stringify({})", crate::emit_js(&original)))
-                .unwrap();
-            let new: String = ctx
-                .eval(format!("JSON.stringify({})", crate::emit_js(&copied)))
-                .unwrap();
-            assert_eq!(old, new);
-        });
+        #[cfg(light_quickjs)]
+        {
+            let runtime = rquickjs::Runtime::new().unwrap();
+            let context = rquickjs::Context::full(&runtime).unwrap();
+            context.with(|ctx| {
+                let old: String = ctx
+                    .eval(format!("JSON.stringify({})", crate::emit_js(&original)))
+                    .unwrap();
+                let new: String = ctx
+                    .eval(format!("JSON.stringify({})", crate::emit_js(&copied)))
+                    .unwrap();
+                assert_eq!(old, new);
+            });
+        }
     }
 
     /// Each top-level definition is a deferred unit analyzed from a snapshot of
@@ -1681,16 +1687,20 @@ mod tests {
     /// A unit's references to snapshot metadata resolve to the metadata the
     /// target already holds, and its own code and literals are appended.
     #[test]
+    #[cfg(light_quickjs)]
     fn deferred_definitions_share_snapshot_metadata() {
         let program = analyze(
             "(def ^{:doc \"kept\"} x 1) (def k (case 1 1 2 3)) (def y (str (:doc (meta (var x))) \"-\" k)) y",
         );
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        context.with(|ctx| {
-            let value: String = ctx.eval(crate::emit_js(&program)).unwrap();
-            assert_eq!(value, "kept-2");
-        });
+        #[cfg(light_quickjs)]
+        {
+            let runtime = rquickjs::Runtime::new().unwrap();
+            let context = rquickjs::Context::full(&runtime).unwrap();
+            context.with(|ctx| {
+                let value: String = ctx.eval(crate::emit_js(&program)).unwrap();
+                assert_eq!(value, "kept-2");
+            });
+        }
     }
     #[test]
     fn deferred_prefix_allows_patched_initializers() {

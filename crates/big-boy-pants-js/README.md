@@ -116,7 +116,7 @@ performance result.
 
 Regenerate from this checkout using
 `bb crates/big-boy-pants-js/tools/generate-light-cljs.bb`. It builds the compiler
-with `--no-default-features` (QuickJS expands macros during generation), then
+with `--no-default-features --features quickjs` (QuickJS expands macros during generation), then
 compiles the checked `.cljs` sources. `tests/fixtures/light-cljs/generation.txt`
 records the compiler revision and command, `expected.tsv` supplies independent
 numeric expectations, and `LICENSE` retains the emitted runtime's MIT notice.

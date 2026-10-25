@@ -38,8 +38,7 @@ fn main() {
     );
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
-    // The embedded QuickJS, which Cargo.toml links on every target but wasm32
-    // (light-cljs-357).
+    // QuickJS is optional on native targets and absent on wasm32.
     if arch != "wasm32" && env::var_os("CARGO_FEATURE_QUICKJS").is_some() {
         println!("cargo::rustc-cfg=light_quickjs");
     }

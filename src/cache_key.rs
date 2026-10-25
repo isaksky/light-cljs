@@ -256,8 +256,11 @@ pub fn compiler_identity(host: &MacroHost) -> Digest {
         return fingerprint.finish();
     }
     #[cfg(feature = "bbp-macros")]
-    if (host.tables.native_macros || !cfg!(any(light_quickjs, light_v8))) && !host.tables.interactive {
+    if host.native_macro_backend() {
         fingerprint.text("big-boy-pants-js").text("native-forms-1");
+        for (name, source) in host.tables.native_helpers.iter() {
+            fingerprint.text(name).text(source);
+        }
         return fingerprint.finish();
     }
     #[cfg(light_v8)]
@@ -862,13 +865,28 @@ pub fn inputs_unchanged<'a>(
 mod tests {
     use super::*;
 
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_helpers_change_the_compiler_identity() {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let empty = compiler_identity(&host);
+        host.preload_native_helper("cljs.user/helper", "(fn [x] x)")
+            .unwrap();
+        let first = compiler_identity(&host);
+        assert_ne!(empty, first);
+        host.preload_native_helper("cljs.user/helper", "(fn [x] (list '+ x 1))")
+            .unwrap();
+        assert_ne!(first, compiler_identity(&host));
+    }
+
     #[test]
     fn the_macro_engine_is_part_of_the_compiler_identity() {
         let clean = MacroHost::new();
         let mut interactive = MacroHost::new();
         interactive.tables.interactive = true;
         let (v8, quickjs) = (compiler_identity(&clean), compiler_identity(&interactive));
-        if cfg!(light_v8) {
+        if cfg!(light_v8) || clean.native_macro_backend() {
             assert_ne!(v8, quickjs);
         } else {
             assert_eq!(v8, quickjs);

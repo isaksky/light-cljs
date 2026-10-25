@@ -229,7 +229,7 @@ with worker doubles for the fallbacks, wait out the deadline together.
   compile without a script host, an interactive session (`EvalSession`) and
   a compiler data reader report that instead of linking an engine;
   `form_bridge` keeps only its engine-neutral parts. Native builds, with V8
-  or QuickJS-only (`--no-default-features`), compile the same code as
+  or QuickJS-only (`--no-default-features --features quickjs`), compile the same code as
   before. The playground crate depends on light-cljs without V8 and drops
   the `rquickjs-sys` patch; the module links no C, so `build.bb` and CI no
   longer look for a wasm32 C compiler and archiver.

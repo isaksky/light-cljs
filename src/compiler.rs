@@ -2772,6 +2772,11 @@ fn analyze_entry(
     // adds them where it charges the unit, in unit order
     // (docs/compiler-concurrency.md, "As built (light-cljs-374)").
     let memory_limit = macros.evaluator_options.memory_limit;
+    if macros.native_macro_backend() && analysis.unit_slots.get() > 1 {
+        return Err(NamespaceCompileError::new(
+            "big-boy-pants-js: unsupported operation: native macro compilation requires --jobs 1",
+        ));
+    }
     if analysis.unit_slots.get() > 1
         && let Some(session) = macros.session_handle()
     {
@@ -3255,6 +3260,7 @@ fn analyze_entry(
             stats.install = Some(install_counts);
         }
         stats.macro_calls = macros.executed_expansions();
+        stats.native_macro_calls = macros.native_macro_calls();
         stats.peak_macro_nodes = macros.engine.generated_nodes.get();
         stats.trace = recording.and_then(crate::compile_trace::Recording::finish);
         if let Some(session) = macros.session_handle() {

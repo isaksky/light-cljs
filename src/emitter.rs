@@ -208,6 +208,23 @@ pub(crate) fn emit_deferred_unit(program: &Program) -> String {
     emit_unit_parts(program, true, Some(&mut registration))
 }
 
+/// Native input scalars carry occurrence identity. The emitter's truth helper
+/// must inspect their underlying value, preserving Clojure nil/false semantics.
+/// Only the emitter-owned first prelude is changed, never user JavaScript.
+#[cfg(feature = "bbp-macros")]
+pub(crate) fn emit_native_macro_unit(program: &Program, deferred: bool) -> String {
+    let source = if deferred {
+        emit_deferred_unit(program)
+    } else {
+        emit_js_unit(program)
+    };
+    source.replacen(
+        PRELUDE_TRUTH,
+        "  const truth = (value) => rt.core.truth(value);\n",
+        1,
+    )
+}
+
 /// The statements registering the namespaces of `tables` that `plan`
 /// names, in its order, with the range of each namespace's statement
 /// ([`crate::reader_registration`]).
@@ -7543,7 +7560,7 @@ fn hygienic_js(
 
 /// Interactive application roots live in the application heap, never the
 /// macro heap. The unit registers every namespace of the program.
-#[cfg(test)]
+#[cfg(all(test, light_quickjs))]
 pub(crate) fn emit_interactive_unit(program: &Program) -> String {
     emit_interactive(program, None, &[], false, 0, None).0
 }

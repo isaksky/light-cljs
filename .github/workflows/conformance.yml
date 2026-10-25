@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 
-# Native builds run macros in V8 by default and `--no-default-features` builds
+# Native builds run macros in V8 by default and `--no-default-features --features quickjs` builds
 # in QuickJS. fast-tests and quickjs-tests run strict Clippy and the full suite
 # with each backend; the playground job keeps the WebAssembly (QuickJS) build.
 #
@@ -142,8 +142,10 @@ jobs:
       # The macro suites (state, snapshots, redefinition, exceptions and
       # limits) run here with every macro in QuickJS. Tests whose expectations
       # differ by engine branch on cfg!(feature = "v8-macros").
-      - run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
-      - run: cargo nextest run --locked --profile ci --no-default-features
+      - run: cargo clippy --locked --all-targets --no-default-features --features quickjs -- -D warnings
+      - run: cargo nextest run --locked --profile ci --no-default-features --features quickjs
+      - name: Native form macros without legacy engines
+        run: cargo test --locked --no-default-features --features bbp-macros --test bbp_macros
 
   conformance:
     name: Pinned ClojureScript comparisons

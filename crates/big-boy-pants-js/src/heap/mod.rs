@@ -91,7 +91,7 @@ pub use gc::{
     ThreadRegistration,
 };
 use gc::{GcState, RootSource, SourceRegistry, Trace};
-pub use roots::{HandleError, Local, Rooted, Scope, WeakHandle};
+pub use roots::{HandleError, Local, ObjectIdentity, Rooted, Scope, WeakHandle};
 use roots::{RootTable, ScopeTable};
 pub use stats::{HeapUsage, ObjectCounts};
 

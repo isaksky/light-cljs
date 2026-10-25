@@ -82,8 +82,7 @@ cargo run --locked -p big-boy-pants-js
 
 Both packages use the root `Cargo.lock`, build profiles and `target/` directory.
 The playground and vendored engines remain outside the workspace. The workspace
-dependency declares the local engine path for integration; the compiler does
-not execute macros in it yet.
+dependency declares the local engine path used by the optional native macro backend.
 
 The default native build requires Rust 1.91+, babashka (`bb`), Git, curl, tar,
 Python 3, a C/C++ toolchain and libclang. The first build on a machine compiles a pinned V8
@@ -96,13 +95,19 @@ suite and for running emitted JavaScript outside the embedded evaluator.
 cargo build --release
 ```
 
-`cargo build --release --no-default-features` selects the QuickJS-only compiler
+`cargo build --release --no-default-features --features quickjs` selects the QuickJS-only compiler
 and needs Rust and a C compiler. WebAssembly builds embed no JavaScript engine:
 their embedder runs the macros (`host_evaluator::ScriptHost`, as the browser
 playground does). The native
 V8 backend runs the macros of clean compilations and the forms of `--eval` and
 `--repl` (whose macros stay in QuickJS); generated applications carry the same
 JavaScript runtime.
+
+The experimental native form macro backend uses
+`--no-default-features --features bbp-macros`; it embeds neither V8 nor QuickJS.
+See [native macro fixtures and supported operations](docs/native-macros.md).
+Plain `--no-default-features` embeds no engine. The default remains V8 with
+QuickJS for interactive macro sessions.
 
 ## Command-line usage
 
@@ -844,9 +849,9 @@ tests at a time, starts the slowest tests first and sets the slow-test timeout;
 the `ci` profile (`cargo nextest run --profile ci`) uses every CPU and reports
 every failure.
 
-Macros run in V8 in the default build and in QuickJS with `--no-default-features`,
+Macros run in V8 in the default build and in QuickJS with `--no-default-features --features quickjs`,
 so run the suite and strict Clippy both ways after changing the macro host,
-evaluators or compilation session: add `--no-default-features` to the commands
+evaluators or compilation session: add `--no-default-features --features quickjs` to the commands
 above. Tests whose expectations differ by engine branch on
 `cfg!(feature = "v8-macros")`. CI ([.github/workflows/conformance.yml](.github/workflows/conformance.yml))
 runs Clippy and the suite once per backend (`fast-tests` with V8, `quickjs-tests`

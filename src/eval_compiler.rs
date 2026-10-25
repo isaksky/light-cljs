@@ -54,7 +54,7 @@ pub(crate) struct InteractiveCompiler {
     build: crate::build_services::BuildGuard,
 }
 impl InteractiveCompiler {
-    #[cfg(test)]
+    #[cfg(all(test, light_quickjs))]
     pub(crate) fn new() -> Self {
         Self::with_host(MacroHost::new())
     }
@@ -1260,7 +1260,7 @@ impl InteractiveCompiler {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, light_quickjs))]
 mod tests {
     use super::*;
     fn run(

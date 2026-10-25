@@ -1,6 +1,6 @@
 //! First-party bootstrap compiled by the same Rust analyzer/emitter as applications.
 //! Only immutable bootstrap artifacts are cached; every compilation has a fresh JS heap.
-#[cfg(test)]
+#[cfg(all(test, light_quickjs))]
 use crate::evaluator::Evaluator;
 use crate::{
     MacroHost,
@@ -557,7 +557,11 @@ fn build_in(
     cache: bool,
 ) -> Result<Bootstrap, String> {
     if evaluator.native_forms() {
-        return Ok(Bootstrap { evaluator, functions: HashMap::new(), dropped: Default::default() });
+        return Ok(Bootstrap {
+            evaluator,
+            functions: HashMap::new(),
+            dropped: Default::default(),
+        });
     }
     let cached = if cache { UNITS.get() } else { None };
     // Compiling the units is the process's work, not the build's: the
@@ -653,7 +657,13 @@ impl MacroHost {
             .functions
             .get(name)
             .ok_or_else(|| {
-                format!("core macro {name} is not a compiler declaration or bootstrapped function")
+                if bootstrap.evaluator.native_forms() {
+                    format!("big-boy-pants-js: unsupported operation: bootstrap macro {name}")
+                } else {
+                    format!(
+                        "core macro {name} is not a compiler declaration or bootstrapped function"
+                    )
+                }
             })?
             .clone();
         let origin = ExpansionOrigin {
@@ -1029,6 +1039,12 @@ impl MacroHost {
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
         let environment_keys = source_environment_keys(&program).map(std::sync::Arc::from);
         let unit = crate::emitter::emit_deferred_unit(&program);
+        #[cfg(feature = "bbp-macros")]
+        let unit = if bootstrap.evaluator.native_forms() {
+            crate::emitter::emit_native_macro_unit(&program, true)
+        } else {
+            unit
+        };
         if let Some(session) = self.session_handle()
             && session.capturing()
         {
@@ -1474,6 +1490,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(light_quickjs)]
     fn unused_core_environment_keeps_conversion_limits_and_host_recovery() {
         let mut host = MacroHost::new();
         host.limits.generated_nodes = 200;
@@ -1606,6 +1623,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(light_quickjs)]
     fn asynchronous_bootstrap_cancellation_recovers_reused_host() {
         use std::time::Duration;
 
@@ -1725,6 +1743,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(light_quickjs)]
     fn regenerate_from_first_party_sources_and_collect_during_bootstrap() {
         let mut outputs = Vec::new();
         for collect in [false, true] {

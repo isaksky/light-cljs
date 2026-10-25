@@ -743,13 +743,16 @@ impl Taken {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(light_quickjs)]
     use crate::evaluator::Evaluator;
 
+    #[cfg(light_quickjs)]
     fn evaluate(engine: &Evaluator, source: &str) -> String {
         let value = engine.evaluate_unit(source).unwrap();
         engine.print(value).unwrap()
     }
 
+    #[cfg(light_quickjs)]
     fn gensym(engine: &Evaluator) -> String {
         sync_gensym_scope(engine).unwrap();
         evaluate(engine, "rt => rt.core.gensym(\"g\")")
@@ -760,6 +763,7 @@ mod tests {
     /// the counts of scopes that ended; entering the same scope again counts
     /// from one again.
     #[test]
+    #[cfg(light_quickjs)]
     fn completed_gensym_scopes_are_released() {
         let engine = Evaluator::new(Default::default()).unwrap();
         for _ in 0..3 {
@@ -786,6 +790,7 @@ mod tests {
     /// forgets the counts of scopes that ended, which the compile-time
     /// runtime forgets as well.
     #[test]
+    #[cfg(light_quickjs)]
     fn reader_gensyms_number_apart_in_each_scope() {
         let session = Evaluator::new(Default::default()).unwrap();
         let reader = Evaluator::new(Default::default()).unwrap();
@@ -827,6 +832,7 @@ mod tests {
     /// and while the compilation logs, both log here, in the order the
     /// names were returned, once (light-cljs-432).
     #[test]
+    #[cfg(light_quickjs)]
     fn native_and_runtime_gensyms_share_count_and_log() {
         let engine = Evaluator::new(Default::default()).unwrap();
         start_log();

@@ -73,11 +73,12 @@
 
 use std::cell::Cell;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use super::gc::{Access, MutatorToken, Trace};
-use super::{Heap, HeapObject};
+use super::{Heap, HeapObject, ObjectId};
 use crate::error::VmError;
 use crate::value::{JsString, Primitive, Value, ValueView};
 use crate::vm::exception::error_object;
@@ -198,6 +199,29 @@ impl fmt::Display for HandleError {
 }
 
 impl std::error::Error for HandleError {}
+
+/// Opaque identity for host side tables, distinct across heaps and allocation
+/// generations. This is not a root or a handle: it cannot access an object,
+/// and remains safe to compare after that object or runtime is destroyed.
+/// It never invokes JavaScript equality or hashing.
+#[derive(Clone, Debug)]
+pub struct ObjectIdentity {
+    // Keep the allocation address reserved even after the heap is destroyed.
+    heap: Weak<Heap>,
+    object: ObjectId,
+}
+impl PartialEq for ObjectIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.heap, &other.heap) && self.object == other.object
+    }
+}
+impl Eq for ObjectIdentity {}
+impl Hash for ObjectIdentity {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.heap.as_ptr().hash(state);
+        self.object.hash(state);
+    }
+}
 
 /// A persistent root: keeps one value alive until dropped. See the module docs.
 pub struct Rooted {
@@ -554,6 +578,19 @@ impl<'s> Scope<'s> {
     /// True only when both locals reference the same heap object.
     pub fn same_object(&self, a: Local<'s>, b: Local<'s>) -> bool {
         self.local_value(a).same_object(&self.local_value(b))
+    }
+
+    /// Heap-scoped identity for a host side table, or `None` for primitives.
+    /// The token cannot access or retain the object; keep a [`Rooted`] when
+    /// the corresponding table entry must keep its value alive.
+    pub fn object_identity(&self, value: Local<'s>) -> Option<ObjectIdentity> {
+        match self.local_value(value) {
+            Value::Object(object) => Some(ObjectIdentity {
+                heap: Arc::downgrade(self.heap),
+                object,
+            }),
+            _ => None,
+        }
     }
 
     /// JavaScript `===` between two locals.

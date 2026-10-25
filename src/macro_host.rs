@@ -385,6 +385,11 @@ fn take_encode_peak(
     evaluator: &dyn crate::evaluator::MacroEvaluator,
     cached: &std::cell::Cell<Option<crate::evaluator::ValueId>>,
 ) -> Option<usize> {
+    // Native forms have no descriptor encoder. Input and output nodes are
+    // accounted by the host, without adding a fictitious bridge export.
+    if evaluator.native_bridge_stats().is_some() {
+        return Some(0);
+    }
     use crate::compiler_data::{Datum, DatumKind};
     let read = |function| -> Result<Option<usize>, crate::evaluator::EvalError> {
         let value = evaluator.call(function, &[])?;
@@ -611,7 +616,10 @@ impl MacroEnvironment {
 /// refuses.
 #[derive(Clone, Default)]
 pub(crate) struct MacroTables {
+    #[cfg(feature = "bbp-macros")]
     pub(crate) native_macros: bool,
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) native_helpers: std::sync::Arc<Vec<(String, String)>>,
     data_readers: std::sync::Arc<DataReaderSources>,
     imports: crate::layered::Layered<String, Vec<MacroImport>>,
     renames: crate::layered::Layered<String, Vec<(String, String, String)>>,
@@ -648,6 +656,8 @@ pub(crate) struct MacroTables {
 /// thread.
 #[derive(Default)]
 pub(crate) struct EngineBinding {
+    native_macro_calls:
+        std::rc::Rc<std::cell::RefCell<Vec<crate::compile_stats::NativeBridgeCall>>>,
     /// The data-reader engine and the reader functions evaluated in it.
     data_readers: std::rc::Rc<std::cell::RefCell<DataReaderEngine>>,
     pub(crate) interactive_control: Option<crate::evaluator::ExecutionControl>,
@@ -733,6 +743,7 @@ impl EngineBinding {
     /// reaches weakly.
     pub(crate) fn frame(&self) -> Self {
         Self {
+            native_macro_calls: self.native_macro_calls.clone(),
             data_readers: self.data_readers.clone(),
             interactive_control: self.interactive_control.clone(),
             bootstrap: self.bootstrap.clone(),
@@ -896,8 +907,21 @@ impl MacroHost {
         crate::evaluator::EvalError,
     > {
         #[cfg(feature = "bbp-macros")]
-        if (self.tables.native_macros || !cfg!(any(light_quickjs, light_v8))) && !self.tables.interactive {
-            let evaluator = crate::bbp_evaluator::BbpEvaluator::new(self.evaluator_options.clone())?;
+        if self.native_macro_backend() {
+            let evaluator =
+                crate::bbp_evaluator::BbpEvaluator::new(self.evaluator_options.clone())?;
+            for (name, source) in self.tables.native_helpers.iter() {
+                let mut seed = MacroHost::new();
+                seed.tables.bootstrap_seed = true;
+                let syntax =
+                    crate::parse(source).map_err(|e| crate::evaluator::EvalError(e.to_string()))?;
+                let program = crate::analyze_with_macros(source, &syntax, &mut seed)
+                    .map_err(|e| crate::evaluator::EvalError(e.to_string()))?;
+                evaluator.preload(
+                    name,
+                    &crate::emitter::emit_native_macro_unit(&program, false),
+                )?;
+            }
             self.prepare_compiler_evaluator(&evaluator)?;
             return Ok(std::rc::Rc::new(evaluator));
         }
@@ -993,6 +1017,7 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
+        let native_before = evaluator.native_bridge_stats();
         if self.engine.expansions.get() >= self.limits.expansions {
             return Err("compiler macro expansion limit exceeded".into());
         }
@@ -1054,6 +1079,16 @@ impl MacroHost {
             EXPANDING.set(EXPANDING.get() - 1);
             expanded
         };
+        if let (Some(before), Some(after)) = (native_before, evaluator.native_bridge_stats()) {
+            self.engine.native_macro_calls.borrow_mut().push(
+                crate::compile_stats::NativeBridgeCall {
+                    imported: after.imported - before.imported,
+                    exported: after.exported - before.exported,
+                    reused: after.reused - before.reused,
+                    nanos: after.nanos - before.nanos,
+                },
+            );
+        }
         // What the conversions charged on the JavaScript side, which bounds
         // them by the same remaining budget.
         if measuring && expanded.is_ok() {
@@ -1105,6 +1140,22 @@ impl MacroHost {
     pub fn new() -> Self {
         Self::default()
     }
+    /// One entry per expansion executed by the native backend, in call order.
+    pub fn native_macro_calls(&self) -> Vec<crate::compile_stats::NativeBridgeCall> {
+        self.engine.native_macro_calls.borrow().clone()
+    }
+    pub(crate) fn native_macro_backend(&self) -> bool {
+        #[cfg(feature = "bbp-macros")]
+        {
+            (self.tables.native_macros || !cfg!(any(light_quickjs, light_v8)))
+                && !self.tables.interactive
+                && self.engine.script_host.is_none()
+        }
+        #[cfg(not(feature = "bbp-macros"))]
+        {
+            false
+        }
+    }
     /// Run the macros of clean compilations in `host`'s engine instead of
     /// the built-in one (light-cljs-307, a prototype for the browser
     /// playground; docs/browser-macros.md). Interactive sessions and data
@@ -1117,6 +1168,21 @@ impl MacroHost {
     #[cfg(feature = "bbp-macros")]
     pub fn use_native_macros(&mut self) {
         self.tables.native_macros = true;
+        self.engine.script_host = None;
+    }
+
+    /// Preload a self-contained ClojureScript helper expression in each fresh
+    /// native macro session, compiled by the normal analyzer and emitter.
+    /// Declare its qualified binding in source before calling it from a macro.
+    #[cfg(feature = "bbp-macros")]
+    pub fn preload_native_helper(&mut self, name: &str, source: &str) -> Result<(), String> {
+        name.rsplit_once('/')
+            .ok_or("helper name must be qualified")?;
+        crate::parse(source).map_err(|e| e.to_string())?;
+        self.use_native_macros();
+        std::sync::Arc::make_mut(&mut self.tables.native_helpers)
+            .push((name.to_owned(), source.to_owned()));
+        Ok(())
     }
     /// Control assertion emission for this host (enabled by default). Disabled
     /// assertions omit both condition and message, including function pre/post checks.
@@ -1894,6 +1960,7 @@ impl MacroHost {
             self.engine.session_ref = std::rc::Weak::new();
         }
         self.engine.expansions = Default::default();
+        self.engine.native_macro_calls = Default::default();
         self.engine.generated_nodes = Default::default();
         self.engine.work = Default::default();
         self.engine.reader_declared = Default::default();

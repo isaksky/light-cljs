@@ -16,6 +16,8 @@ mod artifact_capture;
 pub mod artifact_codec;
 mod artifact_install;
 pub mod artifact_store;
+#[cfg(feature = "bbp-macros")]
+pub mod bbp_evaluator;
 mod build_services;
 pub mod cache_key;
 pub mod cache_policy;
@@ -45,8 +47,6 @@ pub mod dev_session;
 pub mod emitter;
 pub mod eval_session;
 pub mod evaluator;
-#[cfg(feature = "bbp-macros")]
-pub mod bbp_evaluator;
 pub mod folding;
 pub mod generated_names;
 pub mod inference;

@@ -20,6 +20,15 @@ pub const REPORT_VERSION: u32 = 1;
 /// How many namespaces the report's table lists.
 pub const REPORT_NAMESPACES: usize = 20;
 
+/// Native form bridge work for one macro expansion, excluding JavaScript time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeBridgeCall {
+    pub imported: usize,
+    pub exported: usize,
+    pub reused: usize,
+    pub nanos: u128,
+}
+
 /// Wall time per phase of a compilation. The phases do not overlap; work a
 /// phase demands of another (such as a deferred unit a macro needs while a
 /// namespace's top level is analyzed) counts in the phase that demanded it.
@@ -111,6 +120,7 @@ pub struct DeferredUnitCounts {
 /// The numbers of one compilation; see the module documentation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompileStats {
+    pub native_macro_calls: Vec<NativeBridgeCall>,
     pub phases: PhaseTimes,
     /// From the start of the compilation to the end of its last recorded
     /// phase.
@@ -515,6 +525,12 @@ impl CompileStats {
         }
         line("namespaces", &self.namespaces.len());
         line("macro-calls", &self.macro_calls);
+        for (i, call) in self.native_macro_calls.iter().enumerate() {
+            line(&format!("macro.bridge.{i}.imported"), &call.imported);
+            line(&format!("macro.bridge.{i}.exported"), &call.exported);
+            line(&format!("macro.bridge.{i}.reused"), &call.reused);
+            line(&format!("macro.bridge.{i}.ns"), &call.nanos);
+        }
         line("macro-nodes.peak", &self.peak_macro_nodes);
         line("deferred-units.registered", &self.deferred_units.registered);
         line("deferred-units.analyzed", &self.deferred_units.analyzed);

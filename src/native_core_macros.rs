@@ -1833,6 +1833,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(light_quickjs)]
     fn expansions_outside_every_scope_are_left_to_the_engine() {
         // There `gensym` skips the names the engine decoded from the call.
         let mut host = MacroHost::new();

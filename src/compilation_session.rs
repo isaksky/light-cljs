@@ -3768,8 +3768,15 @@ mod worker_tests {
         let options = environment.evaluator_options().clone();
         #[cfg(light_v8)]
         return Rc::new(crate::v8_evaluator::V8Evaluator::new(options).unwrap());
-        #[cfg(not(light_v8))]
-        Rc::new(crate::evaluator::Evaluator::new(options).unwrap())
+        #[cfg(all(not(light_v8), light_quickjs))]
+        return Rc::new(crate::evaluator::Evaluator::new(options).unwrap());
+        #[cfg(all(not(any(light_v8, light_quickjs)), feature = "bbp-macros"))]
+        return Rc::new(crate::bbp_evaluator::BbpEvaluator::new(options).unwrap());
+        #[cfg(not(any(light_v8, light_quickjs, feature = "bbp-macros")))]
+        {
+            let _ = options;
+            panic!("no compile-time engine enabled")
+        }
     }
 
     /// The unit's prepared JavaScript as the main thread's session has it.

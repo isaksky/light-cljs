@@ -10,7 +10,7 @@
 (defn run [& args]
   (:out (apply process/shell {:dir (str root) :out :string :err :inherit
                              :extra-env {"CARGO_BUILD_JOBS" "3"}} args)))
-(run "cargo" "build" "--locked" "-p" "light-cljs" "--no-default-features")
+(run "cargo" "build" "--locked" "-p" "light-cljs" "--no-default-features" "--features" "quickjs")
 (def revision (str/trim (run "git" "rev-parse" "HEAD")))
 (def runtime (atom nil))
 (doseq [line (str/split-lines (slurp (str (fs/path fixtures "expected.tsv"))))]
@@ -32,6 +32,6 @@
 (spit (str (fs/path fixtures "generation.txt"))
       (str "Compiler revision: " revision "\n"
            "Command: bb crates/big-boy-pants-js/tools/generate-light-cljs.bb\n"
-           "Compiler: cargo build --locked -p light-cljs --no-default-features\n"
+           "Compiler: cargo build --locked -p light-cljs --no-default-features --features quickjs\n"
            "Each source: target/debug/light-cljs --compile <name>.cljs\n"
            "Output: exact emitted text with its common factory factored into runtime.js.\n"))

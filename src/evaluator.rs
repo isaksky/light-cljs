@@ -214,7 +214,7 @@ impl ExecutionControl {
         result
     }
     /// What is left of the current operation's poll budget.
-    #[cfg(test)]
+    #[cfg(all(test, light_quickjs))]
     pub(crate) fn remaining_polls(&self) -> u64 {
         self.0.remaining.load(Ordering::Relaxed)
     }
@@ -435,8 +435,8 @@ pub struct ValueId {
     pub(crate) index: u64,
 }
 
-/// A build without QuickJS (WebAssembly, light-cljs-357) embeds no engine:
-/// its embedder runs compiler macros through a
+/// A build without QuickJS cannot create this legacy evaluator. Compiler
+/// macros may use another selected backend or a
 /// [`crate::host_evaluator::ScriptHost`]. Every constructor fails, so no
 /// value of this type exists and the paths that would use one, such as
 /// interactive sessions and compiler data readers, report [`no_quickjs`].
@@ -446,7 +446,7 @@ pub enum Evaluator {}
 #[cfg(not(light_quickjs))]
 pub(crate) fn no_quickjs() -> EvalError {
     EvalError(
-        "this light-cljs build embeds no QuickJS: run compiler macros through a ScriptHost (MacroHost::set_script_host)"
+        "this light-cljs build embeds no QuickJS: run compiler macros through a ScriptHost (MacroHost::set_script_host) or another selected backend; this operation requires --features quickjs"
             .into(),
     )
 }
@@ -1387,6 +1387,10 @@ pub enum EnvironmentExtensions {
 pub type EnvironmentTracking = std::rc::Rc<std::cell::Cell<EnvironmentExtensions>>;
 /// Common macro operations at either an outer boundary or an active callback.
 pub trait MacroEvaluator {
+    /// Cumulative native bridge work; absent for descriptor-based engines.
+    fn native_bridge_stats(&self) -> Option<crate::compile_stats::NativeBridgeCall> {
+        None
+    }
     fn control(&self) -> ExecutionControl;
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError>;
     fn register_compiler_root(
@@ -2187,7 +2191,7 @@ impl<'js> rquickjs::IntoJs<'js> for BridgeOutput {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, light_quickjs))]
 mod active_tests {
     use super::*;
     use crate::compiler_data::DatumKind;
@@ -3234,38 +3238,6 @@ mod active_tests {
         });
     }
 
-    /// Exempt work spends neither the deadline nor the poll budget, and
-    /// the control goes on with what it had left.
-    #[test]
-    fn exempt_work_leaves_the_deadline_and_poll_budget_as_they_were() {
-        let control = ExecutionControl::new(&EvaluatorOptions {
-            timeout: Duration::from_secs(1),
-            poll_budget: 3,
-            ..Default::default()
-        })
-        .unwrap();
-        control.exempt(|| {
-            std::thread::sleep(Duration::from_millis(1200));
-            for _ in 0..10 {
-                control.poll().unwrap();
-            }
-        });
-        for _ in 0..3 {
-            control.poll().unwrap();
-        }
-        let error = control.poll().unwrap_err();
-        assert!(error.0.contains("poll budget exhausted"), "{error}");
-        let control = ExecutionControl::new(&EvaluatorOptions {
-            timeout: Duration::from_millis(1),
-            ..Default::default()
-        })
-        .unwrap();
-        control.exempt(|| std::thread::sleep(Duration::from_millis(5)));
-        std::thread::sleep(Duration::from_millis(5));
-        let error = control.poll().unwrap_err();
-        assert!(error.0.contains("deadline exceeded"), "{error}");
-    }
-
     #[test]
     fn backtracking_deadline_is_terminal_and_fresh_operations_recover() {
         let host = crate::MacroHost::new();
@@ -3464,9 +3436,8 @@ impl HostScope for QuickHost<'_, '_> {
 /// `--eval`, `--repl`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EvalEngine {
-    /// The embedded QuickJS heap, the only engine of a build without V8
-    /// (`--no-default-features`); a WebAssembly build has none, and its
-    /// sessions fail to start.
+    /// The embedded QuickJS heap (`--no-default-features --features quickjs`).
+    /// Sessions selecting it fail to start in builds without QuickJS.
     #[cfg_attr(not(light_v8), default)]
     QuickJs,
     /// A V8 isolate, the default where the build has V8.
@@ -3651,7 +3622,7 @@ impl SessionEvaluator for Evaluator {
 // Interrupted bridge imports must release every engine value exactly once.
 // Regression coverage for the double free in the engine's `Array.prototype.find`
 // cleanup that corrupted the heap during an interrupted form import.
-#[cfg(test)]
+#[cfg(all(test, light_quickjs))]
 mod bridge_interrupt_tests {
     use super::*;
     use crate::compiler_data::{DatumKind, Source};
@@ -3770,5 +3741,41 @@ mod bridge_interrupt_tests {
         }
         assert!(interrupts > 0, "no interrupt fired in {start}..{end}");
         eprintln!("sweep {start}..{end}: {interrupts} interrupts");
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+    /// Exempt work spends neither the deadline nor the poll budget, and
+    /// the control goes on with what it had left.
+    #[test]
+    fn exempt_work_leaves_the_deadline_and_poll_budget_as_they_were() {
+        let control = ExecutionControl::new(&EvaluatorOptions {
+            timeout: Duration::from_secs(1),
+            poll_budget: 3,
+            ..Default::default()
+        })
+        .unwrap();
+        control.exempt(|| {
+            std::thread::sleep(Duration::from_millis(1200));
+            for _ in 0..10 {
+                control.poll().unwrap();
+            }
+        });
+        for _ in 0..3 {
+            control.poll().unwrap();
+        }
+        let error = control.poll().unwrap_err();
+        assert!(error.0.contains("poll budget exhausted"), "{error}");
+        let control = ExecutionControl::new(&EvaluatorOptions {
+            timeout: Duration::from_millis(1),
+            ..Default::default()
+        })
+        .unwrap();
+        control.exempt(|| std::thread::sleep(Duration::from_millis(5)));
+        std::thread::sleep(Duration::from_millis(5));
+        let error = control.poll().unwrap_err();
+        assert!(error.0.contains("deadline exceeded"), "{error}");
     }
 }

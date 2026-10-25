@@ -1,0 +1,90 @@
+# Native form macros (experimental)
+
+Build and run the bounded serial big-boy-pants-js backend without linking V8 or
+QuickJS:
+
+```sh
+cargo test --locked --no-default-features --features bbp-macros --test bbp_macros
+cargo build --locked --no-default-features --features bbp-macros
+cargo tree --locked --no-default-features --features bbp-macros -e normal
+```
+
+The integration suite compiles real source macros with the ordinary analyzer and
+emitter, checks their applications in Node, and checks native occurrence reuse,
+zero repeated imports, incremental environment imports, metadata, syntax quote,
+`&form`, `&env`, and error provenance. Node is needed only to run emitted
+applications. Neither legacy engine appears in the last command's dependency
+list. Emitted application JavaScript still uses the conventional runtime.
+
+`bbp-macros` adds an optional workspace dependency. In a build containing a
+legacy engine, call `MacroHost::use_native_macros()` to select it explicitly.
+When it is the only compiled engine it serves clean compilations automatically.
+The production default remains V8 with QuickJS for interactive macro sessions.
+QuickJS-only builds now use `--no-default-features --features quickjs`; plain
+`--no-default-features` embeds no engine. Interactive sessions and compiler data
+readers do not use this backend.
+
+A session retains one task with its own runtime, functions, and JavaScript state.
+Native forms cross a rooted dependency boundary; runtime closures and mutable
+Maps never become shared values. Commands do not serialize forms, invoke a reader,
+or replay effects. Input nodes are memoized for the session by compiler Datum
+identity, with the Datum retained to prevent address reuse. Each imported node
+has an occurrence token; export checks the exact occurrence object and returns
+its original Datum, including exact numeric/character representation and source
+provenance. Newly constructed native nodes alone allocate new Datum nodes.
+An opaque heap-and-generation identity table preserves the same reuse for raw
+native metadata maps, whose engine contract does not wrap metadata in occurrences.
+Scalar values still use distinct occurrence wrappers, even when their values agree.
+
+The `&env` envelope remains a persistent native map. A changed slot is associated
+into its previous version; unchanged namespace/reader subtrees use their existing
+rooted imports. Every macro call records imported, exported and reused nodes plus
+bridge nanoseconds. `MacroHost::native_macro_calls()` exposes those per-call
+records; namespace compilation's `--stats` prints `macro.bridge.N.*` lines. The
+cache identity distinguishes this backend and its native-form ABI, hashes the
+engine source, and includes preloaded helper source.
+
+## Supported boundary
+
+This is a finite-form integration, not backend parity. Lists, vectors, maps,
+keywords, symbols, scalar occurrences, metadata, construction, lookup, basic
+finite sequence operations, equality, arithmetic addition/subtraction and native
+truth tests have first-party implementations using native form intrinsics. Plain
+JavaScript functions and ordinary interop such as `Math.max` run in the same task.
+JavaScript directly inspecting imported forms sees native values; use supported
+Clojure operations to read those forms. Core operations outside the implemented
+runtime report their operation name and never fall back to another engine.
+
+The compiler's existing Rust core macro implementations supply the bootstrap.
+Core macros that need the larger JavaScript bootstrap are unsupported. Simple
+syntax quote/unquote works; lazy sequences, sets, user protocols/types, compiler
+literals, dynamic reader services, compiler build services and generated-symbol
+services are not implemented. Native symbol/keyword component spellings must
+round-trip unambiguously, as described in the engine's native form contract.
+JavaScript dynamic compilation currently limits each emitted unit to 16,384 UTF-16
+code units. Engine syntax/operation errors are reported with the macro's call and
+definition locations. `--jobs` must be 1.
+
+Helpers must be preloaded before source macro expansion. Embedders can provide a
+self-contained helper expression, compiled by the same analyzer/emitter:
+
+```rust
+host.preload_native_helper("cljs.user/helper", "(fn [x] (list '+ x 2))")?;
+// Source declares the binding, then defines and calls the macro:
+// (declare helper)
+// (defmacro add-two [x] (helper x))
+// (add-two 40)
+```
+
+The helper configuration is installed anew in each session; source declarations
+and ordinary helper dependencies are not demanded from a running task. Reading
+an unprepared helper produces `unsupported operation: helper not preloaded`.
+Resumable helper demand belongs to the later scheduler integration.
+
+Bridge depth/node limits and the evaluator's cancellation, poll budget and
+wall-clock deadline bound work. The session keeps imported nodes until teardown,
+so repeated imports trade memory retention for stable identity. Aggregate native
+heap memory enforcement and automatic collection are not provided by this stage;
+the existing `--macro-memory-limit` does not yet cap every native engine allocation.
+Legacy-only unit tests still require the `quickjs` feature; the dedicated
+`bbp_macros` integration target above runs without it.

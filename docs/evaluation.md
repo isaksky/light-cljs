@@ -290,7 +290,7 @@ no-op stub; `newline` invokes it when newline flushing is enabled.
 
 `EvalOptions::backend` (`--engine v8|quickjs` on the command line) chooses the
 engine the forms run in. V8 is the default where the build has it (the default
-features); `--no-default-features` builds have only QuickJS, and WebAssembly builds have
+features); `--no-default-features --features quickjs` builds have only QuickJS, and WebAssembly builds have
 no engine for sessions (light-cljs-357).
 The compiler's own heap, where the session's macros run, is QuickJS for either
 engine. Both engines implement one interactive contract

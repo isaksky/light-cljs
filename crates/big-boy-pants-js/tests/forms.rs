@@ -730,3 +730,75 @@ fn operand_kinds_are_checked_and_internal_maps_are_unchanged() {
     let err = compile_function("function f() { return __rt.formKeyword('a'); }").unwrap_err();
     assert!(err.to_string().contains("takes 2 arguments"), "{err}");
 }
+
+#[test]
+fn paused_task_global_snapshot_roots_forms_without_running_accessors() {
+    let rt = Runtime::new();
+    let executable = big_boy_pants_js::frontend::compile_script(
+        "snapshot",
+        r#"
+        globalThis.result = __rt.formVector(__rt.formKeyword(null, 'native'), 42);
+        Object.defineProperty(globalThis, 'accessor', {get() { throw new Error('must not run'); }});
+        __rt.need(91, 1);
+    "#,
+    )
+    .unwrap();
+    let task = rt.spawn(&executable, &[]).unwrap();
+    {
+        let _guard = task.try_begin_run().unwrap();
+        assert!(matches!(
+            task.global_value("result"),
+            Err(big_boy_pants_js::RunError::AlreadyRunning)
+        ));
+    }
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    assert!(task.global_value("accessor").unwrap().is_none());
+    assert!(task.global_value("missing").unwrap().is_none());
+    let result = task.global_value("result").unwrap().unwrap();
+    drop(task);
+    rt.collect().unwrap();
+    rt.scope(|s| {
+        let result = s.local(&result).unwrap();
+        assert_eq!(s.form_kind(result), Some(FormKind::Vector));
+        assert_eq!(
+            s.view(s.form_nth(result, 1).unwrap()),
+            ValueView::Number(42.0)
+        );
+    });
+}
+
+#[test]
+fn opaque_object_identity_is_heap_and_generation_scoped_without_rooting() {
+    use std::collections::HashSet;
+    let rt = Runtime::new();
+    let mut identities = HashSet::new();
+    let (old, weak) = rt.scope(|s| {
+        assert!(
+            s.object_identity(s.primitive(Primitive::Number(1.0)))
+                .is_none()
+        );
+        let value = s.new_form_vector(&[]).unwrap();
+        let identity = s.object_identity(value).unwrap();
+        assert_eq!(identity, s.object_identity(value).unwrap());
+        let other = s.new_form_vector(&[]).unwrap();
+        assert_ne!(identity, s.object_identity(other).unwrap());
+        identities.insert(identity.clone());
+        (identity, s.downgrade(value))
+    });
+    rt.collect().unwrap();
+    assert!(
+        weak.upgrade().is_err(),
+        "identity tokens are not collector roots"
+    );
+    rt.scope(|s| {
+        let value = s.new_form_vector(&[]).unwrap();
+        assert!(!identities.contains(&s.object_identity(value).unwrap()));
+    });
+    drop(weak);
+    drop(rt);
+    let other_runtime = Runtime::new();
+    other_runtime.scope(|s| {
+        let value = s.new_form_vector(&[]).unwrap();
+        assert_ne!(old, s.object_identity(value).unwrap());
+    });
+}

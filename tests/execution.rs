@@ -262,9 +262,13 @@ fn compiled_batch_script(cases: &[Case], first_index: usize) -> String {
 fn literal_cases_in_both_engines(cases: &[Case], label: &str) -> String {
     let script = compiled_batch_script(cases, 0);
     let node_output = node(&script);
-    // These exact literal cases use the shared observer's empty text stream.
-    // Reject byte writes here: this is not a Node Buffer/IO compatibility layer.
-    let prelude = r#"
+    #[cfg(not(light_quickjs))]
+    let _ = label;
+    #[cfg(light_quickjs)]
+    {
+        // These exact literal cases use the shared observer's empty text stream.
+        // Reject byte writes here: this is not a Node Buffer/IO compatibility layer.
+        let prelude = r#"
         globalThis.literalOutput = "";
         globalThis.process = {
             stdout: {write: text => { literalOutput += text; return true; }},
@@ -280,27 +284,28 @@ fn literal_cases_in_both_engines(cases: &[Case], label: &str) -> String {
         };
         globalThis.console = {log: (...xs) => process.stdout.write(xs.join(" ") + "\n")};
     "#;
-    let runtime = rquickjs::Runtime::new().unwrap();
-    let context = rquickjs::Context::full(&runtime).unwrap();
-    let quickjs_input = format!("{prelude}\n{script}\nliteralOutput");
-    let quickjs_output =
-        context.with(|ctx| ctx.eval::<String, _>(quickjs_input.as_bytes()).unwrap());
-    if let Some(root) = std::env::var_os("LIGHT_LITERAL_EXECUTION_AUDIT_ROOT") {
-        let directory = PathBuf::from(root).join(label);
-        fs::create_dir_all(&directory).unwrap();
-        for (name, value) in [
-            ("node.stdin", &script),
-            ("node.stdout", &node_output),
-            ("quickjs.stdin", &quickjs_input),
-            ("quickjs.stdout", &quickjs_output),
-        ] {
-            fs::write(directory.join(name), value).unwrap();
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        let quickjs_input = format!("{prelude}\n{script}\nliteralOutput");
+        let quickjs_output =
+            context.with(|ctx| ctx.eval::<String, _>(quickjs_input.as_bytes()).unwrap());
+        if let Some(root) = std::env::var_os("LIGHT_LITERAL_EXECUTION_AUDIT_ROOT") {
+            let directory = PathBuf::from(root).join(label);
+            fs::create_dir_all(&directory).unwrap();
+            for (name, value) in [
+                ("node.stdin", &script),
+                ("node.stdout", &node_output),
+                ("quickjs.stdin", &quickjs_input),
+                ("quickjs.stdout", &quickjs_output),
+            ] {
+                fs::write(directory.join(name), value).unwrap();
+            }
         }
+        assert_eq!(
+            quickjs_output, node_output,
+            "Complete literal packets differ between engines"
+        );
     }
-    assert_eq!(
-        quickjs_output, node_output,
-        "Complete literal packets differ between engines"
-    );
     node_output
 }
 
@@ -1756,13 +1761,12 @@ fn resolved_numeric_functions_evaluate_each_argument_once_in_order() {
 
 #[test]
 fn numeric_fixture_applications_match_expected_outcomes_in_quickjs_and_node() {
-    use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
     let numeric = cases()
         .into_iter()
         .filter(|case| case.id.starts_with("numeric-"))
         .collect::<Vec<_>>();
     let actual = compiled_cases(&numeric);
-    for (index, (case, line)) in numeric
+    for (_index, (case, line)) in numeric
         .iter()
         .zip(outcomes(&actual, &numeric).unwrap())
         .enumerate()
@@ -1777,35 +1781,41 @@ fn numeric_fixture_applications_match_expected_outcomes_in_quickjs_and_node() {
                 case.stdout
             )
         );
-        let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
-        e.evaluate_js(&format!(
-            "({})(rt)",
-            include_str!("support/numeric_observation.js")
-        ))
-        .unwrap();
-        let namespace = format!("semantic.case{index}");
-        let source = format!(
-            "(ns {namespace} (:require [cljs.core :as c]))\n(js/numericObservation (fn* [observe] {}))",
-            case.source
-        );
-        let syntax = light_cljs::parse(&source).unwrap();
-        let p = light_cljs::analyzer::analyze_namespaces(&[light_cljs::analyzer::NamespaceInput {
-            name: &namespace,
-            source: &source,
-            syntax: &syntax,
-            aliases: &[("c".into(), "cljs.core".into())],
-            requires: &["cljs.core".into()],
-        }])
-        .unwrap();
-        assert_eq!(
-            e.string(e.evaluate(&p).unwrap()).unwrap(),
-            format!(
-                "{{\"outcome\":{},\"trace\":{},\"stdout\":{}}}",
-                case.outcome, case.trace, case.stdout
-            ),
-            "{}",
-            case.id
-        );
+        #[cfg(light_quickjs)]
+        {
+            let index = _index;
+            use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
+            let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+            e.evaluate_js(&format!(
+                "({})(rt)",
+                include_str!("support/numeric_observation.js")
+            ))
+            .unwrap();
+            let namespace = format!("semantic.case{index}");
+            let source = format!(
+                "(ns {namespace} (:require [cljs.core :as c]))\n(js/numericObservation (fn* [observe] {}))",
+                case.source
+            );
+            let syntax = light_cljs::parse(&source).unwrap();
+            let p =
+                light_cljs::analyzer::analyze_namespaces(&[light_cljs::analyzer::NamespaceInput {
+                    name: &namespace,
+                    source: &source,
+                    syntax: &syntax,
+                    aliases: &[("c".into(), "cljs.core".into())],
+                    requires: &["cljs.core".into()],
+                }])
+                .unwrap();
+            assert_eq!(
+                e.string(e.evaluate(&p).unwrap()).unwrap(),
+                format!(
+                    "{{\"outcome\":{},\"trace\":{},\"stdout\":{}}}",
+                    case.outcome, case.trace, case.stdout
+                ),
+                "{}",
+                case.id
+            );
+        }
     }
     assert_eq!(numeric.len(), 57);
 }
