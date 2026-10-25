@@ -6,7 +6,7 @@
 //! * **Nonmoving, stable identity.** An object is named by an `ObjectId`
 //!   (slot index + generation) that never changes for the object's lifetime,
 //!   and its storage is a separate allocation (`Box<HeapObject>`) that is
-//!   never moved: growing the object table moves slot headers, not objects.
+//!   never moved. Slot headers also stay put in fixed-size segments.
 //! * **Reclamation.** [`gc`] implements a precise stop-the-world mark/sweep.
 //!   Anything not reachable from a root is reclaimed, including cycles. A
 //!   task's allocations are not tied to the task: finishing a task drops its
@@ -32,8 +32,13 @@
 //! such as an atom operation); that is no cycle because the collector never
 //! locks the body of an executing task.
 //!
-//! **No unsafe code.** Objects are only reached through the `objects` lock,
-//! so the collector needs no raw pointers; `Box` provides address stability.
+//! **Allocation.** Registered mutators reserve empty slots in batches under
+//! `objects`, then initialize them without that lock. [`storage`] confines the
+//! unsafe boundary: stable segments, exclusive reservations, Release/Acquire
+//! publication and atomic generation/liveness/shareability. Existing object
+//! bodies are still reached under `objects`; sweep additionally stops every
+//! mutator. Unused reservations survive safepoints and return to the free list
+//! when the thread leaves its last mutator access for this heap.
 //!
 //! **Storage outside the heap.** [`Executable`](crate::Executable) code is
 //! independently owned immutable `Arc` storage, shared by tasks and not
@@ -49,7 +54,7 @@
 //! its trie, and reads take the `objects` lock only to clone the body's `Arc`.
 //! Atoms ([`crate::atom`]) likewise hold an `Arc` cell outside the table;
 //! their operations use Rust atomics on it after cloning the `Arc`, and the
-//! atom module (not the heap) contains the crate's only `unsafe` code.
+//! atom module contains its own separate `unsafe` lifetime boundary.
 //!
 //! **Publication.** Each slot also carries a sticky known-shareable bit,
 //! set when a persistent object is allocated from known-shareable parts or
@@ -60,6 +65,9 @@ pub mod gc;
 mod inventory;
 pub mod roots;
 mod stats;
+mod storage;
+
+use storage::ObjectTable;
 
 use std::any::Any;
 use std::fmt;
@@ -367,148 +375,6 @@ impl Trace for HeapObject {
     }
 }
 
-/// One object-table slot.
-#[derive(Debug)]
-struct Slot {
-    /// Incremented each time the slot's object is reclaimed.
-    generation: u32,
-    /// Mark bit; only set during a collection.
-    marked: bool,
-    /// The object is known to be transitively shareable
-    /// ([`crate::value::share`]): set at allocation or by a successful
-    /// publication check, never cleared while the object lives (the sticky
-    /// bit invariant documented there), and rewritten when the slot is reused.
-    shareable: bool,
-    object: Option<Box<HeapObject>>,
-}
-
-/// The object table: slots with generation-checked lookup and a free list.
-#[derive(Debug, Default)]
-struct ObjectTable {
-    slots: Vec<Slot>,
-    free: Vec<u32>,
-    live: usize,
-}
-
-impl ObjectTable {
-    fn alloc(&mut self, object: HeapObject, shareable: bool) -> Option<ObjectId> {
-        let object = Some(Box::new(object));
-        let index = match self.free.pop() {
-            Some(index) => {
-                let slot = &mut self.slots[index as usize];
-                slot.object = object;
-                slot.shareable = shareable;
-                index
-            }
-            None => {
-                let index = u32::try_from(self.slots.len()).ok()?;
-                self.slots.push(Slot {
-                    generation: 0,
-                    marked: false,
-                    shareable,
-                    object,
-                });
-                index
-            }
-        };
-        self.live += 1;
-        Some(ObjectId {
-            index,
-            generation: self.slots[index as usize].generation,
-        })
-    }
-
-    /// True when `v` is a primitive or a live object known to be transitively
-    /// shareable: its sticky bit is set, or it is an explicit concurrent
-    /// reference (shareable without descending into it).
-    fn known_shareable(&self, v: &Value) -> bool {
-        let Value::Object(id) = *v else {
-            return true;
-        };
-        self.slot(id).is_some_and(|slot| {
-            slot.shareable
-                || slot
-                    .object
-                    .as_deref()
-                    .is_some_and(|o| share::classify(o) == Shareability::ConcurrentReference)
-        })
-    }
-
-    /// The live slot named by `id`, or `None` if `id` is stale or foreign.
-    fn slot(&self, id: ObjectId) -> Option<&Slot> {
-        self.slots
-            .get(id.index as usize)
-            .filter(|s| s.generation == id.generation && s.object.is_some())
-    }
-
-    fn get(&self, id: ObjectId) -> Option<&HeapObject> {
-        self.slot(id)?.object.as_deref()
-    }
-
-    fn get_mut(&mut self, id: ObjectId) -> Option<&mut HeapObject> {
-        let slot = self.slots.get_mut(id.index as usize)?;
-        if slot.generation != id.generation {
-            return None;
-        }
-        slot.object.as_deref_mut()
-    }
-
-    /// Set the mark bit of a live object and report its children. Returns
-    /// `false` (and reports nothing) for stale ids and already-marked objects.
-    fn mark(&mut self, id: ObjectId, children: &mut dyn FnMut(crate::heap::gc::TraceEdge)) -> bool {
-        let Some(slot) = self.slots.get_mut(id.index as usize) else {
-            return false;
-        };
-        if slot.generation != id.generation || slot.marked {
-            return false;
-        }
-        let Some(object) = slot.object.as_deref() else {
-            return false;
-        };
-        slot.marked = true;
-        object.trace(children);
-        true
-    }
-
-    /// The values of the retired boxes of every live atom (`crate::atom`), taken
-    /// while the world is stopped so the caller can drop them after releasing
-    /// the heap locks. Each atom's retire list lock is a leaf lock.
-    fn take_atom_retirements(&self) -> Vec<Value> {
-        let mut out = Vec::new();
-        for slot in &self.slots {
-            if let Some(HeapObject::Atom(cell)) = slot.object.as_deref() {
-                out.extend(cell.take_retired());
-            }
-        }
-        out
-    }
-
-    /// Free every unmarked object and clear the marks. The freed objects are
-    /// returned so the caller can drop them after releasing the heap locks.
-    fn sweep(&mut self) -> Vec<HeapObject> {
-        let mut garbage = Vec::new();
-        for (index, slot) in self.slots.iter_mut().enumerate() {
-            if slot.marked {
-                slot.marked = false;
-                continue;
-            }
-            let Some(object) = slot.object.take() else {
-                continue;
-            };
-            garbage.push(*object);
-            // A slot whose generation would wrap is retired, never reused, so
-            // an old id can never match a new occupant.
-            if let Some(next) = slot.generation.checked_add(1) {
-                slot.generation = next;
-                // `index` fits u32: slots are only created with u32 indices.
-                self.free.push(index as u32);
-            }
-        }
-        self.live -= garbage.len();
-        garbage
-    }
-}
-
 /// Counters describing heap usage, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeapStats {
@@ -552,6 +418,8 @@ pub(crate) struct Heap {
     sources: Mutex<SourceRegistry>,
     /// The object table.
     objects: Mutex<ObjectTable>,
+    /// Stable, atomically published slot-header directory.
+    slot_directory: storage::Directory,
     /// The runtime-wide property-key table (`crate::object`). Mutators take
     /// its leaf lock outside other heap locks; the stopped collector sweeps
     /// it with only `gc` held, after releasing the other tracing locks.
@@ -586,7 +454,7 @@ impl Heap {
     /// allocation path reachable from outside the crate goes through such a
     /// registration; a released scope cannot be reached at all.
     pub(crate) fn alloc(&self, object: HeapObject) -> Option<ObjectId> {
-        lock(&self.objects).alloc(object, false)
+        self.allocate(object, false)
     }
 
     /// [`Heap::alloc`] for a persistent object, recording at allocation
@@ -595,27 +463,26 @@ impl Heap {
     /// known shareable. `parts` must cover every direct edge of `object`
     /// that is not inside a part (for an update: the old collection plus the
     /// values it adds); `None` means "every direct edge of `object`".
-    /// One object-table lock; the work is O(parts).
+    /// Atomic header reads only; the work is O(parts).
     pub(crate) fn alloc_persistent(
         &self,
         object: HeapObject,
         parts: Option<&[Value]>,
     ) -> Option<ObjectId> {
         debug_assert_eq!(share::classify(&object), Shareability::Persistent);
-        let mut table = lock(&self.objects);
         let shareable = match parts {
-            Some(parts) => parts.iter().all(|v| table.known_shareable(v)),
+            Some(parts) => parts.iter().all(|v| self.slot_directory.known_shareable(v)),
             None => {
                 let mut all = true;
                 object.trace(&mut |edge| {
                     if let gc::TraceEdge::Object(id) = edge {
-                        all = all && table.known_shareable(&Value::Object(id));
+                        all = all && self.slot_directory.known_shareable(&Value::Object(id));
                     }
                 });
                 all
             }
         };
-        table.alloc(object, shareable)
+        self.allocate(object, shareable)
     }
 
     /// Run `f` on a live object and its known-shareable bit under the object
@@ -626,8 +493,7 @@ impl Heap {
         f: impl FnOnce(&HeapObject, bool) -> R,
     ) -> Option<R> {
         let table = lock(&self.objects);
-        let slot = table.slot(id)?;
-        slot.object.as_deref().map(|o| f(o, slot.shareable))
+        table.get(id).map(|o| f(o, table.known(id).unwrap()))
     }
 
     /// Set the known-shareable bit of every live object in `ids`: the caller
@@ -636,12 +502,7 @@ impl Heap {
     pub(crate) fn mark_shareable(&self, ids: &[ObjectId]) {
         let mut table = lock(&self.objects);
         for &id in ids {
-            let Some(slot) = table.slots.get_mut(id.index as usize) else {
-                continue;
-            };
-            if slot.generation == id.generation && slot.object.is_some() {
-                slot.shareable = true;
-            }
+            table.mark_shareable(id);
         }
     }
 
@@ -663,12 +524,7 @@ impl Heap {
             return false;
         }
         for &id in ids {
-            let Some(slot) = table.slots.get_mut(id.index as usize) else {
-                continue;
-            };
-            if slot.generation == id.generation && slot.object.is_some() {
-                slot.shareable = true;
-            }
+            table.mark_shareable(id);
         }
         true
     }
@@ -684,23 +540,19 @@ impl Heap {
         f: impl FnOnce(&mut HeapObject, bool) -> R,
     ) -> Option<R> {
         let mut table = lock(&self.objects);
-        let slot = table.slots.get_mut(id.index as usize)?;
-        if slot.generation != id.generation {
-            return None;
-        }
-        let known = slot.shareable;
-        slot.object.as_deref_mut().map(|o| f(o, known))
+        let known = table.known(id)?;
+        table.get_mut(id).map(|o| f(o, known))
     }
 
     /// The known-shareable bit of a live object (tests).
     #[cfg(test)]
     pub(crate) fn known_shareable(&self, id: ObjectId) -> Option<bool> {
-        lock(&self.objects).slot(id).map(|s| s.shareable)
+        lock(&self.objects).known(id)
     }
 
     /// True when `id` names a live (not reclaimed) object of this heap.
     pub(crate) fn is_live(&self, id: ObjectId) -> bool {
-        lock(&self.objects).slot(id).is_some()
+        lock(&self.objects).is_live(id)
     }
 
     /// Run `f` on a live object under the object lock; `None` if `id` is
@@ -708,7 +560,7 @@ impl Heap {
     /// should only copy out what it needs (for collections: an `Arc` clone of
     /// the immutable body), so the lock is held briefly.
     pub(crate) fn read<R>(&self, id: ObjectId, f: impl FnOnce(&HeapObject) -> R) -> Option<R> {
-        lock(&self.objects).slot(id)?.object.as_deref().map(f)
+        lock(&self.objects).get(id).map(f)
     }
 
     /// The kind of a live object, or `None` if `id` is stale or foreign.
@@ -744,7 +596,7 @@ impl Heap {
         // One lock at a time (separate statements), so the lock order holds.
         let collections = lock(&self.gc).collections;
         let persistent_roots = lock(&self.roots).live();
-        let objects = lock(&self.objects).live;
+        let objects = lock(&self.objects).live();
         HeapStats {
             objects,
             persistent_roots,
@@ -844,22 +696,5 @@ mod tests {
             )
             .unwrap();
         assert_eq!(heap.known_shareable(holder), Some(false));
-    }
-
-    #[test]
-    fn slots_whose_generation_would_wrap_are_retired() {
-        let heap = Heap::default();
-        let id = heap.alloc(HeapObject::host_object()).unwrap();
-        lock(&heap.objects).slots[id.index as usize].generation = u32::MAX;
-        let worn = ObjectId {
-            index: id.index,
-            generation: u32::MAX,
-        };
-        assert!(heap.is_live(worn));
-        assert_eq!(heap.collect().unwrap().reclaimed, 1);
-        let next = heap.alloc(HeapObject::host_object()).unwrap();
-        assert_ne!(next.index, id.index, "a retired slot is never reused");
-        assert!(!heap.is_live(worn));
-        assert!(lock(&heap.objects).free.is_empty());
     }
 }

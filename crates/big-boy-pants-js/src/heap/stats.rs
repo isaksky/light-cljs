@@ -3,8 +3,8 @@
 //! shallow bytes the table itself owns.
 //!
 //! [`HeapUsage`] is a diagnostic, not an allocator measurement. Its byte
-//! fields cover only storage the object table owns: the slot and free-list
-//! vectors (by capacity) and one boxed [`HeapObject`] per live object. They
+//! fields cover storage owned by the heap's slot directory, stable segments,
+//! segment/free-list vectors (by capacity), and one boxed [`HeapObject`] per live object. They
 //! exclude storage the table points to but does not own inline: persistent
 //! collection trie bodies (immutable `Arc` nodes shared between versions),
 //! atom cells, native payload boxes, function captures, ordinary objects'
@@ -17,12 +17,14 @@
 //! `array_buffer_bytes`; its object box/property storage remains excluded
 //! from the shallow fields, as with arrays.
 //!
-//! Taking a snapshot walks every slot under the object lock: O(slots), for
-//! tests and measurement, not for hot paths. It changes nothing.
+//! Taking a snapshot walks every segment under the object lock: O(capacity),
+//! for tests and measurement, not for hot paths. Allocators may concurrently
+//! publish reserved slots, so concurrent counts are approximate; quiescent
+//! counts are exact. It changes nothing.
 
 use std::mem::size_of;
 
-use super::{Heap, HeapObject, Slot, lock};
+use super::{Heap, HeapObject, lock};
 
 /// Live heap objects by kind (one field per object kind; append-only like
 /// the kind registry).
@@ -157,12 +159,14 @@ pub struct HeapUsage {
     /// built from shareable parts, or proven shareable by a publication
     /// check).
     pub known_shareable: usize,
-    /// Slots in the object table: live, free for reuse, or retired.
+    /// Slots used at least once: live, free for reuse, or retired. Unused
+    /// reservation capacity is counted in `table_bytes`, not here.
     pub slots: usize,
     /// Free slots waiting for reuse.
     pub free_slots: usize,
-    /// Bytes reserved by the slot and free-list vectors (capacity times
-    /// element size).
+    /// Bytes reserved by segments, their directory, and the segment/free-list
+    /// vectors. Excludes small thread-local reservation bookkeeping and Arc
+    /// allocation headers.
     pub table_bytes: usize,
     /// Bytes of the live objects' boxed storage: live objects times the size
     /// of one heap object. Shallow: excludes the out-of-table bodies listed
@@ -187,24 +191,22 @@ impl Heap {
         let mut objects = ObjectCounts::default();
         let mut known_shareable = 0;
         let mut array_buffer_bytes = 0;
-        for slot in &table.slots {
-            if let Some(object) = slot.object.as_deref() {
-                objects.count(object);
-                known_shareable += usize::from(slot.shareable);
-                if let HeapObject::ArrayBuffer(buffer) = object {
-                    array_buffer_bytes += buffer.bytes.capacity();
-                }
+        table.for_each(|object, shareable| {
+            objects.count(object);
+            known_shareable += usize::from(shareable);
+            if let HeapObject::ArrayBuffer(buffer) = object {
+                array_buffer_bytes += buffer.bytes.capacity();
             }
-        }
-        debug_assert_eq!(objects.total(), table.live);
+        });
+        let (slots, free_slots, table_bytes) = table.usage(&self.slot_directory);
+        let object_bytes = objects.total() * size_of::<HeapObject>();
         HeapUsage {
             objects,
             known_shareable,
-            slots: table.slots.len(),
-            free_slots: table.free.len(),
-            table_bytes: table.slots.capacity() * size_of::<Slot>()
-                + table.free.capacity() * size_of::<u32>(),
-            object_bytes: table.live * size_of::<HeapObject>(),
+            slots,
+            free_slots,
+            table_bytes,
+            object_bytes,
             array_buffer_bytes,
         }
     }
@@ -237,7 +239,7 @@ mod tests {
         assert_eq!(two.slots, 2);
         assert_eq!(two.free_slots, 0);
         assert_eq!(two.object_bytes, 2 * size_of::<HeapObject>());
-        assert!(two.table_bytes >= 2 * size_of::<Slot>());
+        assert!(two.table_bytes >= 2 * size_of::<usize>());
         assert_eq!(two.shallow_bytes(), two.table_bytes + two.object_bytes);
 
         // Nothing is rooted: a collection frees both slots for reuse.

@@ -56,6 +56,39 @@ does not retain a value. A Rust local containing a raw VM value is not a root.
 Scopes register their locals in the heap; do not carry a scope across task
 suspension. Root a value before leaving scoped or registered heap access.
 
+`heap/storage.rs` contains the heap's unsafe boundary. Slot headers live in
+fixed 256-slot segments; a lazy three-level `OnceLock` directory publishes their
+addresses without moving or removing them during the heap's lifetime. Each
+thread in mutator access reserves up to 64 empty slots under the object-table
+lock. Ordinary and persistent allocation initialize these slots without that
+lock; a refill is the only allocation-table critical section. A reservation
+belongs exclusively to that thread and heap. Nested mutator tokens share it;
+the last token returns unused slots, including on unwind. Tokens borrow the
+heap, so the thread-local reservation cannot outlive it or alias a later heap
+at the same address. Idle thread registrations alone do not retain reservations.
+
+The slot's atomic word combines generation, liveness, known-shareable and
+concurrent-reference flags. Initialization writes the boxed body before a
+Release store makes the slot live; lookup Acquires that word before accessing
+the body. Persistent allocation checks only these atomic headers, including
+the concurrent-reference flag, without reading another object's body. A live
+slot is never reinitialized. Published body reads/writes still hold the
+object-table lock, including publication walks and the function own-property
+check. The sticky known-shareable bit therefore keeps its existing publication
+contract. All new unsafe accesses and the `Sync` implementation are confined to
+`heap/storage.rs`, with local `SAFETY` comments.
+
+Sweep holds both the stopped-world rendezvous and the object-table lock: no
+allocator can be initializing a slot, and no body borrow can survive into
+sweep. It clears dead bodies, increments generations (retiring exhausted
+ones), and returns the reclaimed slots to the free list in one pause. Empty
+reserved slots remain exclusively reserved across collections; they are not
+objects or roots. Reclaimed bodies are dropped after all heap locks are
+released. Crate-internal setup/tests without a mutator token use a single-slot
+allocation under the table lock. Diagnostics count previously used slots and
+include reserved segment/directory capacity in table bytes; counts during
+concurrent allocation are approximate, and quiescent counts are exact.
+
 `Runtime::collect` refuses an unsafe rendezvous with `MutatorActive`;
 `request_collection` requests one and waits. Running tasks poll at execution
 and allocation boundaries, report their frames, and park for collection.
@@ -81,8 +114,8 @@ resolve a body under the object-table lock, then walk it without per-node locks.
 Strings own no GC object edges. Atom cells use a separate immutable-box lifetime
 boundary described below. Short metadata/object locks exist; there is no global
 interpreter lock and no lock held across ordinary bytecode execution or a wait.
-Automatic collection triggers, moving/generational/concurrent GC and worker-local
-allocation buffers are deferred. Embedders must schedule collection explicitly.
+Automatic collection triggers and moving/generational/concurrent GC are
+deferred. Embedders must schedule collection explicitly.
 
 ## Publication and native values
 

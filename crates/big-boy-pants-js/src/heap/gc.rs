@@ -631,6 +631,7 @@ impl Drop for MutatorToken<'_> {
         if let Some(entry) = gc.threads.get_mut(&me) {
             *entry.count(self.access) -= 1;
         }
+        self.heap.leave_allocator();
         gc.forget_if_idle(me);
         if gc.pending > 0 {
             self.heap.gc_changed.notify_all();
@@ -998,6 +999,7 @@ impl Heap {
         let me = thread::current().id();
         let mut gc = self.wait_to_enter(lock(&self.gc), me);
         *gc.threads.entry(me).or_default().count(access) += 1;
+        self.enter_allocator();
         MutatorToken {
             heap: self,
             access,
