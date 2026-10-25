@@ -44,6 +44,17 @@ Primitive execution creates no `Fault` result and primitive `Value` clones
 copy their payloads without reference counting. Strings, symbols and BigInts
 retain their existing ownership.
 
+Derived fusion metadata recognizes two numeric local/constant loads followed
+by arithmetic or comparison, optionally including one nested arithmetic
+operation and a local assignment or forward conditional branch. All inputs
+must already be Numbers; only then can the expression bypass intermediate
+operand pushes and tags. The full original instruction count must fit the
+current slice, otherwise the unchanged instruction stream executes up to the
+exact budget boundary. A failed guard also uses that stream, preserving
+conversion order, native continuations and diagnostic locations. Fusion adds
+no serialized opcode and never crosses an interior safepoint; heap references
+stay in task storage throughout.
+
 Run entry, allocation instructions, calls, returns, native steps and caught
 exceptions retain their existing safepoints. A stretch cannot start a native
 continuation or cross a poll. The longest stretch without a poll remains
