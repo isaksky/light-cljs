@@ -239,6 +239,10 @@ pub struct PoolCounts {
     /// Jobs started, by any path.
     pub started: u64,
     pub urgent: u64,
+    /// Jobs run by a waiting worker with independent nested slot state.
+    pub helped: u64,
+    /// The deepest help-while-waiting frame entered in this run.
+    pub help_depth_max: usize,
     /// Jobs started from a worker's own deque.
     pub local: u64,
     /// Claims from a shared phase queue, and the jobs they took.
@@ -272,6 +276,8 @@ impl PoolCounts {
     pub fn absorb(&mut self, other: &PoolCounts) {
         self.started += other.started;
         self.urgent += other.urgent;
+        self.helped += other.helped;
+        self.help_depth_max = self.help_depth_max.max(other.help_depth_max);
         self.local += other.local;
         self.claims += other.claims;
         self.claimed += other.claimed;
@@ -774,6 +780,22 @@ struct Shared<J, O> {
 }
 
 impl<J: Job, O> Shared<J, O> {
+    fn submit_urgent(&self, job: J) {
+        let entry = Entry::new(job, self.phases);
+        let mut state = self.lock();
+        if state.cancelled || state.shutdown {
+            state.counts.cancelled += 1;
+            return;
+        }
+        state.count_admission(entry.bytes);
+        state.urgent.push_back(entry);
+        state.runnable_total += 1;
+        let room = state.admitted_jobs.saturating_sub(state.completed.len());
+        state.completed.reserve(room);
+        drop(state);
+        self.wake(1);
+    }
+
     fn lock(&self) -> MutexGuard<'_, State<J, O>> {
         // A panic under the lock is a scheduler bug; shutdown still needs
         // the state, so poisoning is not a second failure.
@@ -830,9 +852,82 @@ pub struct Worker<'a, J: Job, O> {
     /// This slot's deque index.
     index: usize,
     slot: usize,
+    depth: usize,
+}
+
+/// Whether a waiting worker ran another job. Reaching the nesting bound is
+/// distinct from an empty queue: the caller must unwind or diagnose its demand,
+/// rather than wait for work that only this slot can run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Help {
+    Ran,
+    Idle,
+    DepthLimit,
 }
 
 impl<J: Job, O> Worker<'_, J, O> {
+    /// A hard bound on retained Rust analyzer frames during nested helping.
+    pub const MAX_HELP_DEPTH: usize = 16;
+
+    pub fn help_depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Admit a demanded producer immediately, even when its consumers hold
+    /// all normal admission capacity. Publication remains a queued outcome.
+    pub fn push_urgent(&self, job: J) {
+        self.shared.submit_urgent(job);
+    }
+
+    /// Run one ready job while the current job waits. The caller supplies
+    /// fresh nested state, never its actively borrowed analyzer/evaluator.
+    /// No pool lock is held while making, executing or dropping that state.
+    /// Outcomes and panics use the ordinary publication path.
+    pub fn help<W>(
+        &self,
+        make: impl Fn(usize) -> W + Sync,
+        execute: impl Fn(&mut W, J, &Worker<'_, J, O>) -> O + Sync,
+    ) -> Result<Help, WorkerPanic> {
+        if self.depth >= Self::MAX_HELP_DEPTH {
+            return Ok(Help::DepthLimit);
+        }
+        let mut state = self.shared.lock();
+        if let Some(panic) = &state.panic {
+            return Err(panic.clone());
+        }
+        let Some(Claim { entry, left }) = state.claim(self.index, &self.shared.limits) else {
+            return Ok(Help::Idle);
+        };
+        let worker = Worker {
+            shared: self.shared,
+            index: self.index,
+            slot: self.slot,
+            depth: self.depth + 1,
+        };
+        state.counts.helped += 1;
+        state.counts.help_depth_max = state.counts.help_depth_max.max(worker.depth);
+        let wake = left.min(state.parked);
+        drop(state);
+        self.shared.wake(wake);
+        #[cfg(debug_assertions)]
+        if let Some(p) = &self.shared.perturbation {
+            p.pause(entry.key, self.index, perturb::Boundary::Start);
+        }
+        let mut nested = None;
+        let result = execute_caught(&worker, &mut nested, &make, &execute, entry.job);
+        drop(nested);
+        #[cfg(debug_assertions)]
+        if let Some(p) = &self.shared.perturbation {
+            p.pause(entry.key, self.index, perturb::Boundary::Finish);
+        }
+        let failure = result.as_ref().err().cloned();
+        let mut state = self.shared.lock();
+        publish(self.shared, &mut state, self.index, entry.bytes, result);
+        match failure {
+            Some(panic) => Err(panic),
+            None => Ok(Help::Ran),
+        }
+    }
     /// The slot running the job: 0 is the coordinator's, on the inline
     /// path; workers are 1 to N-1.
     pub fn slot(&self) -> usize {
@@ -957,6 +1052,7 @@ fn work<J: Job, O, W>(
         shared,
         index,
         slot: index + 1,
+        depth: 0,
     };
     let mut slot_state = None;
     let mut state = shared.lock();
@@ -1078,20 +1174,7 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
     /// coordinator or a waiting demand needs now. It is admitted at once,
     /// whatever the bounds, since what waits for it may hold the room.
     pub fn submit_urgent(&mut self, job: J) {
-        let entry = Entry::new(job, self.shared.phases);
-        let mut state = self.shared.lock();
-        if state.cancelled {
-            state.counts.cancelled += 1;
-            return;
-        }
-        state.count_admission(entry.bytes);
-        state.urgent.push_back(entry);
-        state.runnable_total += 1;
-        // Room for its outcome too, beyond the bounds.
-        let room = state.admitted_jobs.saturating_sub(state.completed.len());
-        state.completed.reserve(room);
-        drop(state);
-        self.shared.wake(1);
+        self.shared.submit_urgent(job);
     }
 
     /// Register work that may create more jobs although none is admitted.
@@ -1205,6 +1288,7 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
                 shared,
                 index: 0,
                 slot: 0,
+                depth: 0,
             };
             let bytes = entry.bytes;
             let result = execute_caught(

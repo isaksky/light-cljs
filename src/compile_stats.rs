@@ -562,6 +562,8 @@ impl CompileStats {
             let utilization = if capacity > 0.0 { busy / capacity } else { 0.0 };
             line("pool.utilization", &format!("{utilization:.3}"));
             line("pool.jobs", &pool.started);
+            line("pool.jobs.helped", &pool.helped);
+            line("pool.help-depth.max", &pool.help_depth_max);
             line("pool.jobs.local", &pool.local);
             line("pool.claims", &pool.claims);
             line("pool.claimed", &pool.claimed);

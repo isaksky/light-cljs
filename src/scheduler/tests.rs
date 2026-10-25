@@ -1321,3 +1321,131 @@ fn a_worker_serves_its_scarcest_phase_first() {
     assert!(state.claim(2, &limits).is_none());
     assert_eq!(state.claim(0, &limits).unwrap().entry.job.id, 10);
 }
+
+#[test]
+fn waiting_job_runs_urgent_producer_with_independent_state_at_full_admission() {
+    within(30, || {
+        for slots in [1, 2, 4] {
+            let mut config = config(slots, 1);
+            let workers = slots.saturating_sub(1).max(1);
+            config.limits.admitted_jobs = workers;
+            config.limits.batch_jobs = 1;
+            let arrived = std::sync::Barrier::new(workers);
+            let produced = AtomicUsize::new(0);
+            let (outcomes, counts) = run(
+                &config,
+                |_| String::from("outer analyzer"),
+                |state, job: Task, worker| {
+                    assert_eq!(state, "outer analyzer");
+                    // Every OS worker holds its analyzer frame and admission
+                    // before a producer becomes runnable. No spare slot can
+                    // rescue the build if helping reuses a borrowed frame.
+                    arrived.wait();
+                    worker.push_urgent(task(job.id + 100));
+                    assert_eq!(
+                        worker
+                            .help(
+                                |_| String::from("nested analyzer"),
+                                |nested, producer, helper| {
+                                    assert_eq!(nested, "nested analyzer");
+                                    assert_eq!(helper.help_depth(), 1);
+                                    *nested = String::from("producer finished");
+                                    produced.fetch_add(1, Ordering::SeqCst);
+                                    producer.id
+                                }
+                            )
+                            .unwrap(),
+                        Help::Ran
+                    );
+                    assert_eq!(state, "outer analyzer");
+                    arrived.wait();
+                    job.id
+                },
+                |coordinator| {
+                    coordinator.submit_batch((0..workers as u64).map(task));
+                    let mut outcomes = Vec::new();
+                    loop {
+                        match coordinator.next_outcome().unwrap() {
+                            Next::Outcome(id) => outcomes.push(id),
+                            Next::Quiescent => break,
+                            other => panic!("unexpected {other:?}"),
+                        }
+                    }
+                    (outcomes, coordinator.counts())
+                },
+            )
+            .unwrap();
+            assert_eq!(produced.load(Ordering::SeqCst), workers);
+            assert_eq!(outcomes.len(), workers * 2);
+            assert_eq!(counts.helped, workers as u64);
+            assert_eq!(counts.help_depth_max, 1);
+            assert_eq!(counts.urgent, workers as u64);
+        }
+    });
+}
+
+#[test]
+fn nested_help_has_a_bound_and_keeps_the_unclaimed_job_runnable() {
+    fn execute(_: &mut (), job: Task, worker: &Worker<'_, Task, u64>) -> u64 {
+        if job.id <= Worker::<Task, u64>::MAX_HELP_DEPTH as u64 {
+            worker.push_urgent(task(job.id + 1));
+            let result = worker.help(|_| (), execute).unwrap();
+            assert_eq!(
+                result,
+                if worker.help_depth() == Worker::<Task, u64>::MAX_HELP_DEPTH {
+                    Help::DepthLimit
+                } else {
+                    Help::Ran
+                }
+            );
+        }
+        job.id
+    }
+    let (mut outcomes, counts) = run(
+        &config(1, 1),
+        |_| (),
+        execute,
+        |coordinator| {
+            coordinator.submit(task(0));
+            let mut outcomes = Vec::new();
+            loop {
+                match coordinator.next_outcome().unwrap() {
+                    Next::Outcome(id) => outcomes.push(id),
+                    Next::Quiescent => break,
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+            (outcomes, coordinator.counts())
+        },
+    )
+    .unwrap();
+    outcomes.sort_unstable();
+    assert_eq!(outcomes, (0..=17).collect::<Vec<_>>());
+    assert_eq!(counts.help_depth_max, 16);
+    assert_eq!(counts.helped, 16);
+}
+
+#[test]
+fn nested_help_panic_stops_the_pool_and_cancels_the_outer_job() {
+    let result = run(
+        &config(1, 1),
+        |_| (),
+        |_, job: Task, worker| {
+            worker.push_urgent(task(job.id + 1));
+            let error = worker
+                .help(|_| (), |_, _, _| -> u64 { panic!("nested producer") })
+                .unwrap_err();
+            assert_eq!(error.message, "nested producer");
+            assert!(worker.cancelled());
+            0
+        },
+        |coordinator| {
+            coordinator.submit(task(0));
+            assert_eq!(
+                coordinator.next_outcome().unwrap_err().message,
+                "nested producer"
+            );
+        },
+    );
+    assert!(matches!(result, Err(PoolError::Panic(error)) if error.message == "nested producer"));
+}
