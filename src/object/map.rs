@@ -176,6 +176,34 @@ mod tests {
     }
 
     #[test]
+    fn collision_bucket_capacity_shrinks_after_deletion() {
+        let heap = Heap::default();
+        let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
+        let mut map = MapObject::new(TaskId::from_raw(1), prototype);
+        let first = Value::Null;
+        let survivor = Value::Number(f64::from_bits(0x6e75_6d62_6572_0002));
+        let hash = key_hash(&first);
+        assert_eq!(hash, key_hash(&survivor));
+        map.set(first.clone(), Value::Bool(false)).unwrap();
+        map.set(survivor.clone(), Value::Bool(true)).unwrap();
+        let (cursor, _) = map.entry(0).unwrap();
+        // Model historical collision-bucket allocation independently of
+        // the number of convenient distinct keys with the same full hash.
+        let bucket = map.index.get_mut(&hash).unwrap();
+        bucket.reserve(128);
+        assert!(bucket.capacity() >= 128);
+        assert!(map.delete(&first));
+        let bucket = &map.index[&hash];
+        assert_eq!(bucket.len(), 1);
+        assert!(bucket.capacity() <= 4);
+        assert_eq!(map.get(&survivor), Some(&Value::Bool(true)));
+        assert!(map.get(&first).is_none());
+        let (next, entry) = map.entry(cursor).unwrap();
+        assert_eq!(entry, &(survivor, Value::Bool(true)));
+        assert!(map.entry(next).is_none());
+    }
+
+    #[test]
     fn insertion_position_exhaustion_never_wraps_or_partially_inserts() {
         let heap = Heap::default();
         let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
