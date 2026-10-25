@@ -3320,7 +3320,10 @@ mod tests {
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
         // Five Object statics (-318), following the String and Promise additions.
-        assert_eq!(first.all.len(), 432);
+
+        // Fourteen String methods (-300), six Promise methods, species getter, and AggregateError's pair (-317).
+        // Ten RegExp/String protocol built-ins and one iterator prototype (-301).
+        assert_eq!(first.all.len(), 443);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

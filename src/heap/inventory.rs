@@ -1044,7 +1044,10 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         intrinsics.object_prototype
     };
     // Five Object statics (-318), following the String and Promise additions.
-    assert_eq!(ids.len(), 432);
+
+    // Fourteen String methods (-300), six Promise methods, species getter, and AggregateError's pair (-317).
+    // Ten RegExp/String protocol built-ins and one iterator prototype (-301).
+    assert_eq!(ids.len(), 443);
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();
