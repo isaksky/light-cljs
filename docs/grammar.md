@@ -6835,7 +6835,6 @@ counter.next() === 2 && Counter.has(counter) && !Counter.has({});
 class C { #x; m() { delete this.#x; } }
 ```
 
-
 ### Async iteration statements (clj-quickjs-308)
 
 Within async function, arrow, method and async generator bodies, `for await

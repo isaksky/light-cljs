@@ -287,3 +287,57 @@ fn for_await_using_disposal_errors_and_sync_fallback() {
         check().then(() => { fixtureDone = true; }, e => { fixtureDone = true; os.setTimeout(() => { throw e; }, 0); });
     "#);
 }
+
+#[test]
+fn for_await_generator_consumer_resumes_and_closes() {
+    run(r#"
+        async function check() {
+            let log = '';
+            function source(failClose) { return {
+                n: 0,
+                [Symbol.asyncIterator]() { return this; },
+                async next() {
+                    let n = ++this.n;
+                    log += 'n' + n; await null;
+                    return {done: n > 2, value: { n, [Symbol.asyncDispose]() {
+                        log += 'd' + n;
+                        return Promise.resolve().then(() => { log += 'a' + n; });
+                    } }};
+                },
+                async return() {
+                    assert(arguments.length, 0);
+                    log += 'c'; await null; log += 'z';
+                    if (failClose) throw 11;
+                    return {};
+                }
+            }; }
+            async function* consume(failClose) {
+                try {
+                    for await (await using x of source(failClose)) {
+                        log += 'b' + x.n; yield x.n;
+                    }
+                } finally { log += 'f'; }
+            }
+            let it = consume(false);
+            let r = await it.next(); assert(r.value, 1); assert(r.done, false);
+            assert(log, 'n1b1');
+            r = await it.next(); assert(r.value, 2); assert(r.done, false);
+            assert(log, 'n1b1d1a1n2b2');
+            r = await it.return(Promise.resolve(9));
+            assert(r.value, 9); assert(r.done, true);
+            assert(log, 'n1b1d1a1n2b2d2a2czf');
+            assert((await it.next()).done, true);
+            log = ''; it = consume(true);
+            assert((await it.next()).value, 1);
+            try { await it.throw(10); assert(false, true); } catch(e) { assert(e, 10); }
+            assert(log, 'n1b1d1a1czf');
+            assert((await it.next()).done, true);
+            log = ''; it = consume(false);
+            assert((await it.next()).value, 1);
+            assert((await it.next()).value, 2);
+            r = await it.next(); assert(r.value, undefined); assert(r.done, true);
+            assert(log, 'n1b1d1a1n2b2d2a2n3f');
+        }
+        check().then(() => { fixtureDone = true; }, e => { fixtureDone = true; os.setTimeout(() => { throw e; }, 0); });
+    "#);
+}

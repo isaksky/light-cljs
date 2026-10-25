@@ -280,3 +280,47 @@ fn async_generator_delegated_return_preserves_value() {
         check().then(() => { fixtureDone = true; });
     "#);
 }
+
+#[test]
+fn async_generator_sync_adapter_preserves_arguments() {
+    run(r#"
+        async function check() {
+            let log = '', expected;
+            let sync = {
+                [Symbol.iterator]() { return this; },
+                next(value) {
+                    assert(this, sync); assert(arguments.length, 1); assert(value, expected);
+                    log += 'n'; return {value: 1, done: false};
+                },
+                return(value) {
+                    assert(this, sync); assert(arguments.length, 1); assert(value, expected);
+                    log += 'r'; return {value: 2, done: true};
+                },
+                throw(value) {
+                    assert(this, sync); assert(arguments.length, 1); assert(value, expected);
+                    log += 't'; return {value: 3, done: false};
+                }
+            };
+            async function* g() { return yield* sync; }
+            let it = g();
+            // yield* supplies undefined even for the initial next request.
+            assert((await it.next()).value, 1);
+            assert((await it.next(undefined)).value, 1);
+            expected = {tag: 'next'};
+            assert((await it.next(expected)).value, 1);
+            expected = undefined;
+            assert((await it.throw(undefined)).value, 3);
+            expected = {tag: 'throw'};
+            assert((await it.throw(expected)).value, 3);
+            expected = undefined;
+            let r = await it.return(undefined);
+            assert(r.value, 2); assert(r.done, true); assert(log, 'nnnttr');
+            log = ''; it = g();
+            assert((await it.next()).value, 1);
+            expected = {tag: 'return'};
+            r = await it.return(expected);
+            assert(r.value, 2); assert(r.done, true); assert(log, 'nr');
+        }
+        check().then(() => { fixtureDone = true; });
+    "#);
+}
