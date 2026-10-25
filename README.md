@@ -4216,14 +4216,27 @@ Checks: `cargo test --test js_source proxy_` and
 
 ### Semantic corpus audit and malformed-input rejection (clj-quickjs-30)
 
-The source-level corpus is the set of adapted QuickJS fixtures under
-`tests/fixtures/js/quickjs_*.js` plus their Rust drivers; the rejection half is
-`tests/malformed_input.rs`. One command runs both:
+The source-level corpus is every test binary that compiles JavaScript source:
+the adapted QuickJS fixtures under `tests/fixtures/js/quickjs_*.js` with their
+drivers, the synthetic fixtures for the subset-specific semantics (reserved
+`__rt` intrinsics and persistent collections in `js_source`/`js_functions`,
+`__rt.need` and folds in `need`/`native_fold`, cancellation, modules,
+exceptions and error stacks), and the rejection half, `tests/malformed_input.rs`.
+One command runs it:
 
 ```sh
-CARGO_BUILD_JOBS=3 cargo test quickjs -- --test-threads=3 && \
-CARGO_BUILD_JOBS=3 cargo test --test malformed_input -- --test-threads=3
+CARGO_BUILD_JOBS=3 cargo test --test quickjs_language --test quickjs_functions \
+  --test quickjs_objects --test quickjs_builtins --test quickjs_collections \
+  --test quickjs_bigint --test quickjs_async --test quickjs_intl \
+  --test js_source --test js_functions --test js_modules --test exceptions \
+  --test error_stacks --test need --test native_fold --test cancellation \
+  --test malformed_input -- --test-threads=3
 ```
+
+The feature-to-case map is this document: each "Supported and deferred"
+section names the tests that demonstrate its feature, and `docs/grammar.md`
+tags its examples `js accept`/`js reject` for `frontend::tests::grammar_doc_examples`.
+A consolidated requirement map is clj-quickjs-32's deliverable.
 
 Audit result against `research/quickjs/tests` at `7d1c13c5d8f8` (VERSION
 2026-06-04): every case function of `test_language.js` (29), `test_closure.js`
@@ -4249,7 +4262,8 @@ Rejection coverage: every line-boundary prefix of five corpus fixtures and
 every character-boundary prefix of a synthetic program either compiles and runs
 for a bounded slice or fails with a SyntaxError positioned inside the source;
 every "Rejected forms" row of `docs/grammar.md`, including the reserved
-`__rt` binding misuses, fails through `compile_script_with` with its documented
+`__rt` binding misuses, fails through `compile_script_with` (module-only rows
+through `parse_module`, over-deep sources as `TooDeep`) with its documented
 kind; and hand-built bytecode with bad branch/handler targets, truncated
 operands, back-edge or handler-entry stack mismatches, oversized call operands,
 out-of-range capture/local/constant indices or an unmatched run-time handler

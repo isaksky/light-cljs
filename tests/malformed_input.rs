@@ -5,7 +5,9 @@
 //! truncation sweep reuses the adapted QuickJS corpus fixtures (see their
 //! headers and `docs/attribution.md` for the upstream notice).
 
-use clj_quickjs::frontend::{ScriptOptions, SyntaxError, SyntaxErrorKind, compile_script_with};
+use clj_quickjs::frontend::{
+    ScriptOptions, SyntaxError, SyntaxErrorKind, compile_script_with, parse_module,
+};
 use clj_quickjs::{
     Assembler, Budget, ConstructorKind, Executable, ExecutableSpec, Host, HostCall, Opcode,
     Primitive, RunOutcome, Runtime, ValidationError, ValidationErrorKind, VmErrorKind,
@@ -113,32 +115,71 @@ fn truncated_corpus_sources_are_rejected_or_run_safely() {
     assert!(compiled >= 50, "{compiled} prefixes compiled");
 }
 
-/// Every character-boundary prefix of a program mixing the subset's forms is
-/// rejected at the end of input, or compiles and runs bounded.
+/// Compiles and runs a complete seed program, which must finish with a
+/// number, so every later prefix of it is reachable by the sweep.
+fn seed_completes(name: &str, program: &str) {
+    let executable = compile_script_with(name, program, ScriptOptions::SLOPPY)
+        .unwrap_or_else(|error| panic!("{name} seed must compile: {error}"));
+    let runtime = Runtime::new();
+    let task = runtime.spawn(&executable, &[]).unwrap();
+    match task
+        .run_with(Budget::instructions(100_000), &mut NoEffects)
+        .unwrap()
+    {
+        RunOutcome::Complete(value) => {
+            assert!(
+                matches!(value.view(), clj_quickjs::ValueView::Number(_)),
+                "{name} seed completed with {:?}",
+                value.view()
+            );
+        }
+        other => panic!("{name} seed must complete: {other:?}"),
+    }
+}
+
+/// Every character-boundary prefix of two complete, fully supported programs
+/// (one strict, one sloppy) is rejected at the end of input with a kind a
+/// truncation can produce, or compiles and runs bounded. Because the seeds
+/// use no rejected form, no prefix may stop early at an `Unsupported` token:
+/// the sweep reaches every later construct (generator, async function,
+/// labelled loops, switch, regexp literal, catch pattern, `with`, legacy
+/// octals).
 #[test]
 fn truncated_program_at_every_character_is_safe() {
-    let program = "'use strict';\n\
-        let total = 0x1F + 0b11 - 0o7 + 1.5e1 + 10n ** 2n;\n\
+    let strict = "'use strict';\n\
+        let total = 0x1F + 0b11 - 0o7 + 1.5e1 + Number(10n ** 2n);\n\
         const text = `a${total}b` + \"\\u{1F600}\\x41\" + 'q\\'r';\n\
-        class Point { constructor(x = 1, [y] = [2]) { this.x = x; this.y = y; } get sum() { return this.x + this.y; } static of(...) {} }\n\
+        class Point { constructor(x = 1, [y] = [2]) { this.x = x; this.y = y; } get sum() { return this.x + this.y; } static of(x, y) { return new Point(x, [y]); } }\n\
         function* gen() { try { yield 1; } finally { total++; } }\n\
-        async function later(p) { await p; return p?.q ?? 0; }\n\
-        label: for (const [k, v] of Object.entries({ a: 1 })) { if (k === 'a') continue label; else break; }\n\
+        for (const v of gen()) { total += v + Point.of(1, 2).sum; }\n\
+        async function later(p) { await p; return p?.q; }\n\
+        label: for (let k in { a: 1, b: 2 }) { if (k === 'a') continue label; else break; }\n\
         switch (total) { case 1: total--; break; default: total = /re[g]+x\\//giu.test(text) ? 1 : 2; }\n\
         try { throw new RangeError('r'); } catch ({ message }) { total += message.length; }\n\
         total;\n";
-    let mut compiled = 0;
-    for end in (1..=program.len()).filter(|&end| program.is_char_boundary(end)) {
-        let prefix = &program[..end];
-        match compile_script_with("prefix", prefix, ScriptOptions::SLOPPY) {
-            Err(error) => {
-                check_diagnostic(prefix, &error);
-                // The program itself is rejected only for its deliberate
-                // unsupported forms (rest parameter, `??`), never truncation.
-                if !matches!(
-                    error.kind,
-                    SyntaxErrorKind::Unsupported | SyntaxErrorKind::UnexpectedToken
-                ) {
+    let sloppy = "var total = 017 + 08 + \"\\101\".length;\n\
+        with ({ depth: 2 }) { total += depth; }\n\
+        function f(a, b) { return a + b + arguments.length; }\n\
+        total += f(1, 2);\n\
+        label: do { total--; if (total > 40) continue label; } while (total > 40);\n\
+        total;\n";
+    for (name, program) in [("strict", strict), ("sloppy", sloppy)] {
+        seed_completes(name, program);
+        let (mut compiled, mut at_end, mut rejected) = (0, 0, 0);
+        for end in (1..program.len()).filter(|&end| program.is_char_boundary(end)) {
+            let prefix = &program[..end];
+            match compile_script_with(name, prefix, ScriptOptions::SLOPPY) {
+                Err(error) => {
+                    check_diagnostic(prefix, &error);
+                    rejected += 1;
+                    if error.kind == SyntaxErrorKind::UnexpectedEnd {
+                        at_end += 1;
+                    }
+                    // A cut can leave a token or statement incomplete
+                    // (`UnexpectedEnd`, `InvalidToken`, `UnknownToken`), an
+                    // early error (`const c` without initializer, `Invalid`)
+                    // or a token out of place (`UnexpectedToken`); it never
+                    // reaches a rejected form or the nesting limit.
                     assert!(
                         matches!(
                             error.kind,
@@ -146,24 +187,84 @@ fn truncated_program_at_every_character_is_safe() {
                                 | SyntaxErrorKind::InvalidToken
                                 | SyntaxErrorKind::UnknownToken
                                 | SyntaxErrorKind::Invalid
+                                | SyntaxErrorKind::UnexpectedToken
                         ),
-                        "{prefix:?}: {error}"
+                        "{name} {prefix:?}: {error}"
                     );
                 }
-            }
-            Ok(executable) => {
-                compiled += 1;
-                let runtime = Runtime::new();
-                let task = runtime.spawn(&executable, &[]).unwrap();
-                let _ = task
-                    .run_with(Budget::instructions(5_000), &mut NoEffects)
-                    .unwrap();
+                Ok(executable) => {
+                    compiled += 1;
+                    let runtime = Runtime::new();
+                    let task = runtime.spawn(&executable, &[]).unwrap();
+                    let _ = task
+                        .run_with(Budget::instructions(5_000), &mut NoEffects)
+                        .unwrap();
+                }
             }
         }
+        // Statement boundaries compile; most cuts end inside a statement.
+        assert!(compiled >= 3, "{name}: {compiled} prefixes compiled");
+        assert!(
+            at_end * 2 > rejected,
+            "{name}: {at_end} of {rejected} rejections at the end of input"
+        );
     }
-    // Statement boundaries and comment-free tails compile; most cuts do not.
-    assert!(compiled >= 3, "{compiled} prefixes compiled");
-    assert!(compiled < program.len() / 4, "{compiled} prefixes compiled");
+}
+
+/// Module-only rejected forms (`docs/grammar.md`, "Rejected forms") fail in
+/// the module goal with their documented kinds; `await using` at module top
+/// level is a SyntaxError of either documented kind.
+#[test]
+fn rejected_module_forms_fail_with_documented_kinds() {
+    use SyntaxErrorKind::{Invalid, Unsupported};
+    let rows = [
+        ("import {'x' as x} from 's';", Unsupported),
+        ("let x; export {x as 'name'};", Unsupported),
+        ("import 's' with {};", Unsupported),
+        ("import {a} from 's' with { type: 'json' };", Unsupported),
+        ("x = import.meta;", Unsupported),
+        ("await 1;", Unsupported),
+        ("import('s');", Unsupported),
+        ("export const x = 1; x = {...o};", Unsupported),
+        ("export let a; a ??= 1;", Unsupported),
+        ("export const c;", Invalid),
+    ];
+    for (source, kind) in rows {
+        let error = parse_module(source).expect_err(source);
+        check_diagnostic(source, &error);
+        assert_eq!(error.kind, kind, "{source:?}: {error}");
+    }
+    let error = parse_module("await using x = r;").expect_err("await using");
+    check_diagnostic("await using x = r;", &error);
+    assert!(
+        matches!(error.kind, Invalid | Unsupported),
+        "await using: {error}"
+    );
+}
+
+/// Sources over the nesting budget are rejected as `TooDeep` through
+/// compilation, including truncated deep input, without overflowing the stack.
+#[test]
+fn overdeep_sources_fail_with_too_deep() {
+    let n = 20_000;
+    for source in [
+        format!("x = {}1{};", "(".repeat(n), ")".repeat(n)),
+        format!("{}{}", "{".repeat(n), "}".repeat(n)),
+        format!("{}x;", "if (1) ".repeat(n)),
+        format!("x = {}1{};", "[".repeat(n), "]".repeat(n)),
+        format!("x = 1{};", " + 1".repeat(n)),
+        "(".repeat(n),
+    ] {
+        let error = compile_script_with("deep", &source, ScriptOptions::SLOPPY)
+            .expect_err("over-deep source must be rejected");
+        check_diagnostic(&source, &error);
+        assert_eq!(
+            error.kind,
+            SyntaxErrorKind::TooDeep,
+            "{}: {error}",
+            &source[..20]
+        );
+    }
 }
 
 /// The documented rejected forms (`docs/grammar.md`, "Rejected forms") fail

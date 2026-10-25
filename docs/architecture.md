@@ -8823,7 +8823,12 @@ a span inside the source at character boundaries with a real line/column, and
 a compiled prefix runs for a bounded slice (any outcome, no panic). A table of
 the `docs/grammar.md` "Rejected forms" rows, including every reserved-binding
 misuse of `__rt`, is checked through `compile_script_with` so compile-time
-rejections (async generators) are covered as well as parse-time ones. The
+rejections (async generators) are covered as well as parse-time ones; the
+module-only rows (string-literal names, import attributes, `import.meta`,
+top-level `await`) go through `parse_module`, and over-deep sources through
+compilation (`TooDeep`). The character sweep asserts its two seeds (strict and
+sloppy) compile and complete first, so no prefix stops early at a rejected
+form and every later construct is reached. The
 bytecode rows are early VM tests with hand-built code, not source support:
 backward and end-of-code branch targets, catch targets inside operands,
 truncated branch operands, loop back-edge and handler-entry stack mismatches,
