@@ -5332,7 +5332,8 @@ Async declarations, function expressions, arrows and methods execute. Calls crea
 an intrinsic Promise and run synchronously through parameters and the body to the
 first await. `await v` uses intrinsic PromiseResolve and internal PerformPromiseThen;
 even non-promises resume in a later FIFO job, on the activation's owning task.
-Native promises do not require a `then` property lookup. Thenables follow the
+Promises whose observable constructor matches intrinsic Promise do not require
+a `then` property lookup; subclass instances use thenable adoption (-309). Thenables follow the
 existing resumable getter and resolve-thenable job protocol. Fulfilment is the
 expression's value; rejection throws at await. Return resolves (adopting promises
 and thenables); uncaught throw rejects. Operands and pending catch/finally

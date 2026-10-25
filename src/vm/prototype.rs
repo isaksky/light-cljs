@@ -13,7 +13,7 @@
 //! |-------|-----------|
 //! | ordinary object, array | its `[[Prototype]]` (another task's object: `ForeignObject`) |
 //! | realm intrinsic (`Object.prototype`, `Array.prototype`, `Function.prototype`, built-in functions, `Reflect`) | its fixed prototype (`null`; `Object.prototype`; `Function.prototype` for a built-in function) |
-//! | function object | `Function.prototype` (clj-quickjs-102), fixed |
+//! | function object | its constructor inheritance link, normally `Function.prototype`; a Function subclass instance uses the derived prototype (-309) |
 //! | Error instance | ordinary object prototype (initially the matching realm Error prototype) |
 //! | persistent vector, map, occurrence; builder, atom, binding cell; other native payloads | `null` (they behave as objects without properties, `crate::vm::property`) |
 //!
@@ -28,10 +28,9 @@
 //! `UnsupportedOperand`, and the other kinds are not extensible
 //! (`TypeError`). A non-extensible object (clj-quickjs-122) is a
 //! `TypeError`. A new prototype whose chain leads back to the object is a
-//! `TypeError` (a cycle): the walk follows ordinary objects and arrays and
-//! stops at any other kind, whose prototype is fixed and can never lead back
-//! to a task's ordinary object (an intrinsic's chain holds only intrinsics;
-//! a function's is `Function.prototype`).
+//! `TypeError` (a cycle): the walk follows every supported prototype link,
+//! including derived Function and Promise instances, and stops at an intrinsic
+//! (whose chain holds only intrinsics) or the end of the chain.
 //!
 //! # Ownership of prototype links
 //!
@@ -268,40 +267,7 @@ fn check_chain(
         if realm.and_then(|r| r.view(p)).is_some() {
             return Ok(());
         }
-        proto = heap
-            .read(p, |object| match object {
-                HeapObject::ModuleNamespace(ns) => ns.check_owner(task).map(|()| None),
-                HeapObject::Plain(o) => readable(o, task).map(|()| o.prototype()),
-                HeapObject::Generator(g) => {
-                    readable(&g.object, task).map(|()| g.object.prototype())
-                }
-                HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
-                    readable(m.object(), task).map(|()| m.object().prototype())
-                }
-                HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => {
-                    readable(m.object(), task).map(|()| m.object().prototype())
-                }
-                HeapObject::WeakRef(m) => {
-                    readable(m.object(), task).map(|()| m.object().prototype())
-                }
-                HeapObject::FinalizationRegistry(m) => {
-                    readable(m.object(), task).map(|()| m.object().prototype())
-                }
-                HeapObject::DisposableStack(m) => {
-                    readable(m.object(), task).map(|()| m.object().prototype())
-                }
-
-                HeapObject::ArrayBuffer(b) => {
-                    readable(&b.object, task).map(|()| b.object.prototype())
-                }
-                HeapObject::TypedArray(a) => {
-                    readable(&a.object, task).map(|()| a.object.prototype())
-                }
-                HeapObject::Array(a) => readable(a.object(), task).map(|()| a.object().prototype()),
-                // A fixed prototype that cannot lead back (module docs).
-                _ => Ok(None),
-            })
-            .unwrap_or(Err(Fault::Internal("prototype was reclaimed")))?;
+        proto = get_prototype_of(heap, task, p)?;
     }
     Ok(())
 }

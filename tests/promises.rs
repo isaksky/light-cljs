@@ -86,6 +86,29 @@ fn promise_then_catch_jobs() {
 }
 
 #[test]
+fn intrinsic_promise_resolve_wraps_subclass() {
+    let (result, effects) = run(
+        "class P extends Promise {then(resolve){resolve(9);}} let p = new P(r => r(7)); let q = Promise.resolve(p); q.then(x => __rt.effect(0,x)); q !== p && Object.getPrototypeOf(q) === Promise.prototype",
+    );
+    assert_eq!(result, ValueView::Bool(true));
+    assert_eq!(effects, [Primitive::Number(9.)]);
+    assert_eq!(run("class P extends Promise {} let p = new P(r => r(7)); P.prototype.constructor = Promise; Promise.resolve(p) === p").0, ValueView::Bool(true));
+    assert_eq!(run("class P extends Promise {} let p = new P(r => r(7)); Object.defineProperty(P.prototype,'constructor',{get(){throw 17;}}); let caught; try {Promise.resolve(p);} catch(e){caught = e;} caught === 17").0, ValueView::Bool(true));
+}
+
+#[test]
+fn await_subclass_observes_then_override() {
+    let (_, effects) = run(
+        "class P extends Promise {then(resolve){resolve(9);}} async function f(){let p = new P(r => r(7)); __rt.effect(0,await p);} f(); 0",
+    );
+    assert_eq!(effects, [Primitive::Number(9.)]);
+    let (_, effects) = run(
+        "class P extends Promise {} let p = new P(r => r(7)); Object.defineProperty(P.prototype,'constructor',{get(){throw 17;}}); async function f(){try {await p;} catch(e){__rt.effect(0,e);}} f(); 0",
+    );
+    assert_eq!(effects, [Primitive::Number(17.)]);
+}
+
+#[test]
 fn unhandled_rejections_reported_at_quiescence() {
     // The first body adapts test_async_promise_rejection (license above),
     // using the optional simulated-host timer to observe the drained jobs.
@@ -747,6 +770,8 @@ fn promises_and_resolvers_are_shareable_with_task_local_results_guarded() {
 #[test]
 fn promise_executors_and_then_getters_wait_without_replay() {
     for source in [
+        "class P extends Promise {} let p = new P(r => r(8)); Object.defineProperty(P.prototype,'constructor',{get(){__rt.effect(0,1); __rt.need(246,1); return Promise;}}); Promise.resolve(p).then(x => __rt.effect(0,x)); 42;",
+        "class P extends Promise {} let p = new P(r => r(8)); Object.defineProperty(P.prototype,'constructor',{get(){__rt.effect(0,1); __rt.need(246,1); return Promise;}}); async function f(){__rt.effect(0,await p);} f(); 42;",
         "new Promise(resolve => { __rt.effect(0, 1); resolve(__rt.need(246, 1)); }).then(x => __rt.effect(0, x)); 42;",
         "Promise.resolve({get then() { __rt.effect(0, 1); __rt.need(246, 1); return undefined; }}).then(() => __rt.effect(0, 8)); 42;",
         "Promise.prototype.catch.call({get then() { __rt.effect(0, 1); __rt.need(246, 1); return function(a, b) { b(8); }; }}, x => __rt.effect(0, x)); 42;",

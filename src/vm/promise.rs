@@ -324,6 +324,11 @@ pub(crate) enum PromiseState {
         called: bool,
     },
     Return(Value),
+    IntrinsicResolve {
+        value: Value,
+        awaiting: bool,
+        reading: bool,
+    },
     Static {
         promise: ObjectId,
         resolve: Value,
@@ -392,7 +397,7 @@ impl Trace for PromiseState {
                     visit((*guard).into());
                 }
             }
-            Self::Return(value) => value.trace(visit),
+            Self::Return(value) | Self::IntrinsicResolve { value, .. } => value.trace(visit),
             Self::Static {
                 promise,
                 resolve,
@@ -490,6 +495,34 @@ impl PromiseState {
         input: Input,
     ) -> Result<Action, Fault> {
         match self {
+            Self::IntrinsicResolve {
+                value,
+                awaiting,
+                reading,
+            } => {
+                if !*reading {
+                    *reading = true;
+                    return Ok(Action::Instruction {
+                        instr: super::instr::Instr::GetElem,
+                        operands: vec![value.clone(), Value::String("constructor".into())],
+                    });
+                }
+                let Input::CallResult(constructor) = input else {
+                    return Err(Fault::Internal("PromiseResolve constructor missing"));
+                };
+                let intrinsic = crate::realm::intrinsics(heap)
+                    .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                    .global(crate::realm::Global::Promise);
+                if crate::atom::same_value(&constructor, &intrinsic) {
+                    return if *awaiting {
+                        Ok(Action::SuspendAsync(receiver(heap, value)?))
+                    } else {
+                        Ok(Action::Return(value.clone()))
+                    };
+                }
+                *self = resolve_fresh(heap, value.clone(), *awaiting)?;
+                Ok(Action::Continue)
+            }
             Self::AsyncRejectTypeError { id, called } => {
                 if !*called {
                     *called = true;
@@ -805,17 +838,7 @@ pub(crate) fn start(
                     "Promise subclass capabilities are not supported".into(),
                 ));
             }
-            if receiver(heap, &arg(0)).is_ok() {
-                return Ok(Some(PromiseState::Return(arg(0))));
-            }
-            let promise = new(heap)?;
-            let (_, resolve, _) = resolving_functions(heap, promise)?;
-            PromiseState::Static {
-                promise,
-                resolve,
-                value: arg(0),
-                called: false,
-            }
+            intrinsic_resolve(heap, task, arg(0), false)?
         }
         Builtin::PromiseReject | Builtin::PromiseThen if !construct => {
             PromiseState::Return(leaf(heap, task, inbox, which, this, args)?)
@@ -943,28 +966,49 @@ pub(crate) fn capability(heap: &Heap) -> Result<(ObjectId, Value, Value), Fault>
     Ok((promise, resolve, reject))
 }
 
-/// PromiseResolve with the intrinsic constructor; native promises take the
-/// identity path and their observable `then` property is never consulted.
+/// PromiseResolve with the intrinsic constructor. Identity requires an
+/// observable constructor match; subclass instances otherwise use thenables.
 pub(crate) fn await_state(heap: &Heap, task: TaskId, value: Value) -> Result<PromiseState, Fault> {
+    intrinsic_resolve(heap, task, value, true)
+}
+
+fn intrinsic_resolve(
+    heap: &Heap,
+    task: TaskId,
+    value: Value,
+    awaiting: bool,
+) -> Result<PromiseState, Fault> {
     if let Ok(promise) = receiver(heap, &value) {
         heap.read(promise, |o| match o {
             HeapObject::Promise(p) => p.check_owner(task),
             _ => Err(Fault::Internal("promise changed kind")),
         })
         .ok_or(Fault::Internal("promise reclaimed"))??;
-        return Ok(PromiseState::Await {
-            promise,
-            resolve: Value::Undefined,
-            value: Value::Undefined,
-            called: true,
+        return Ok(PromiseState::IntrinsicResolve {
+            value,
+            awaiting,
+            reading: false,
         });
     }
+    resolve_fresh(heap, value, awaiting)
+}
+
+fn resolve_fresh(heap: &Heap, value: Value, awaiting: bool) -> Result<PromiseState, Fault> {
     let (promise, resolve, _) = capability(heap)?;
-    Ok(PromiseState::Await {
-        promise,
-        resolve,
-        value,
-        called: false,
+    Ok(if awaiting {
+        PromiseState::Await {
+            promise,
+            resolve,
+            value,
+            called: false,
+        }
+    } else {
+        PromiseState::Static {
+            promise,
+            resolve,
+            value,
+            called: false,
+        }
     })
 }
 

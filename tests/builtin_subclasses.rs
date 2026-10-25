@@ -257,3 +257,75 @@ fn builtin_subclasses_run_on_small_worker_stacks() {
         );
     }
 }
+
+#[test]
+fn derived_function_and_promise_prototype_cycles_are_rejected() {
+    check(
+        "class P extends Promise {} let p = new P(() => {}); let ok = false; try {Object.setPrototypeOf(P.prototype,p);} catch(e){ok = e instanceof TypeError;} ok && p instanceof P",
+    );
+    check(
+        "class F extends Function {} let f = new F; let ok = false; try {Object.setPrototypeOf(F.prototype,f);} catch(e){ok = e instanceof TypeError;} ok && f instanceof F",
+    );
+}
+
+#[test]
+fn collection_adders_preserve_prototype_mutations() {
+    check(
+        "class M extends Map {set(k,v){super.set(k,v); Object.setPrototypeOf(this,null); return this;}} let m = new M([[1,2]]); Object.getPrototypeOf(m) === null && Map.prototype.get.call(m,1) === 2",
+    );
+    check(
+        "class M extends Map {set(k,v){super.set(k,v); Object.setPrototypeOf(this,null); Object.preventExtensions(this); return this;}} let m = new M([[1,2]]); Object.getPrototypeOf(m) === null && !Object.isExtensible(m) && Map.prototype.get.call(m,1) === 2",
+    );
+    check(
+        "class S extends Set {add(k){super.add(k); Object.setPrototypeOf(this,null); Object.preventExtensions(this); return this;}} let s = new S([1]); Object.getPrototypeOf(s) === null && Set.prototype.has.call(s,1)",
+    );
+    check(
+        "class W extends WeakMap {set(k,v){super.set(k,v); Object.setPrototypeOf(this,null); Object.preventExtensions(this); return this;}} let k = {}; let w = new W([[k,2]]); Object.getPrototypeOf(w) === null && WeakMap.prototype.get.call(w,k) === 2",
+    );
+    check(
+        "class W extends WeakSet {add(k){super.add(k); Object.setPrototypeOf(this,null); Object.preventExtensions(this); return this;}} let k = {}; let w = new W([k]); Object.getPrototypeOf(w) === null && WeakSet.prototype.has.call(w,k)",
+    );
+}
+
+#[test]
+fn typed_array_primitive_length_precedes_prototype_lookup() {
+    check(
+        "let n = 0; let B = Uint8Array.bind(null); Object.defineProperty(B,'prototype',{get(){n++; throw 17;}}); let C = new Proxy(B,{}); let ok; try {new C(-1);} catch(e){ok = e instanceof RangeError;} ok && n === 0",
+    );
+    check(
+        "let B = Uint8Array.bind(null); Object.defineProperty(B,'prototype',{get(){throw 17;}}); let C = new Proxy(B,{}); let caught; try {new C(3);} catch(e){caught = e;} caught === 17",
+    );
+    check(
+        "let n = 0; let B = Uint8Array.bind(null); Object.defineProperty(B,'prototype',{get(){n++; throw 17;}}); let C = new Proxy(B,{}); let caught; try {new C({get length(){throw 23;}});} catch(e){caught = e;} caught === 17 && n === 1",
+    );
+}
+
+#[test]
+fn new_target_prototype_getter_resumes_once_and_propagates_errors() {
+    check(
+        "let n = 0; let B = Array.bind(null); Object.defineProperty(B,'prototype',{get(){n++; throw 17;}}); let C = new Proxy(B,{}); let caught; try {new C(1,2);} catch(e){caught = e;} caught === 17 && n === 1",
+    );
+    check(
+        "let n = 0; let B = Array.bind(null); Object.defineProperty(B,'prototype',{get(){n++; return null;}}); let C = new Proxy(B,{}); let a = new C(1,2); Array.isArray(a) && a.length === 2 && Object.getPrototypeOf(a) === Array.prototype && n === 1",
+    );
+    let runtime = Runtime::new();
+    let code = compile_script("prototype-wait.js", "let reads = 0; let proto = Object.create(Array.prototype); let B = Array.bind(null,1); Object.defineProperty(B,'prototype',{get(){reads++; __rt.need(309,1); return proto;}}); let C = new Proxy(B,{}); let a = new C(2,3); reads === 1 && Object.getPrototypeOf(a) === proto && Array.isArray(a) && a.length === 3 && a[0] === 1 && a[2] === 3").unwrap();
+    let task = runtime.spawn(&code, &[]).unwrap();
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    runtime.collect().unwrap();
+    let request = task.take_producer_requests().pop().unwrap();
+    let ready = runtime.root(clj_quickjs::Primitive::Undefined);
+    let mut runnable = runtime
+        .complete(
+            request.key(),
+            request.producer(),
+            clj_quickjs::Completion::Ready(&ready),
+        )
+        .unwrap()
+        .into_runnable();
+    let task = runnable.pop().unwrap();
+    let result = std::thread::spawn(move || task.run().unwrap())
+        .join()
+        .unwrap();
+    assert!(matches!(result, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)));
+}

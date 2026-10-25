@@ -22,6 +22,7 @@ pub(super) struct State {
 #[derive(Debug)]
 enum Stage {
     Start,
+    TypedLength,
     Prototype,
     Initialize,
     Result,
@@ -85,6 +86,14 @@ impl State {
     ) -> Result<Action, Fault> {
         match self.stage {
             Stage::Start => {
+                if matches!(self.which, Builtin::IntegerTypedArray(_))
+                    && !matches!(self.args.first(), Some(Value::Object(_)))
+                {
+                    self.stage = Stage::TypedLength;
+                    return Ok(Action::ToNumber(
+                        self.args.first().cloned().unwrap_or(Value::Undefined),
+                    ));
+                }
                 if self.which == Builtin::Promise {
                     crate::vm::dispatch::callee(
                         heap,
@@ -95,6 +104,17 @@ impl State {
                     return Ok(self.lookup());
                 }
                 self.stage = Stage::Initialize;
+            }
+            Stage::TypedLength => {
+                let Input::CallResult(value) = input else {
+                    return Err(Fault::Internal("typed-array length missing"));
+                };
+                let length = crate::object::typed_array::to_index(&value)?;
+                if self.args.is_empty() {
+                    self.args.push(Value::Undefined);
+                }
+                self.args[0] = Value::Number(length as f64);
+                return Ok(self.lookup());
             }
             Stage::Prototype => {
                 let Input::CallResult(value) = input else {
@@ -133,13 +153,20 @@ impl State {
         if !matches!(self.stage, Stage::Finish) {
             return Err(Fault::Internal("invalid constructor continuation"));
         }
-        initialize_prototype(
-            heap,
-            task,
-            &self.result,
-            self.prototype
-                .ok_or(Fault::Internal("constructor prototype missing"))?,
-        )?;
+        // Collection adders receive the object during initialization and may
+        // legitimately change its prototype or prevent extensions.
+        if !matches!(
+            self.which,
+            Builtin::Map | Builtin::WeakMap | Builtin::Set | Builtin::WeakSet
+        ) {
+            initialize_prototype(
+                heap,
+                task,
+                &self.result,
+                self.prototype
+                    .ok_or(Fault::Internal("constructor prototype missing"))?,
+            )?;
+        }
         Ok(Action::Return(self.result.clone()))
     }
 }

@@ -9028,7 +9028,8 @@ the supported Proxy protocol, and falls back to the constructor's own intrinsic
 prototype for nonobjects. No opcode or heap-kind discriminants change.
 
 Prototype selection precedes initialization for Array, Error, collections,
-Promise, RegExp, typed arrays and Intl constructors. Number/String, Date,
+Promise, RegExp and Intl constructors. Typed arrays validate primitive lengths
+before selection; object sources select before reading the source. Number/String, Date,
 ArrayBuffer and dynamic Function retain conversion/validation before prototype
 selection. Existing native constructors supply their exotic/internal-slot
 payloads; their fresh result's prototype is installed before returning to JS.
@@ -9042,7 +9043,9 @@ Intrinsic Promises and their guards remain explicit concurrent references.
 Derived Promise prototypes can point into mutable task-owned state, so such
 Promises and resolving guards carry their creating task and classify as task-owned
 at publication. Property/prototype reads, then, await and resolver invocation
-enforce that ownership. Promise subclass capability/species algorithms remain
+enforce that ownership. Intrinsic Promise.resolve and await resumably read a
+branded Promise's constructor and preserve identity only on a matching intrinsic;
+other constructors lead to ordinary thenable adoption. Promise subclass capability/species algorithms remain
 separate from instance construction. No new worker-selected limits are needed.
 
 The semantic reference is `research/quickjs/quickjs.c` at 7d1c13c5d8f8,

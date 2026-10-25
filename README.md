@@ -4696,6 +4696,9 @@ Realm prototypes remain immutable; derived prototypes are ordinary task-owned
 objects. Promises with derived prototypes and their resolving functions are also
 task-owned and cannot publish mutable prototype edges across tasks. Intrinsic
 Promises retain their concurrent sharing behavior.
+Intrinsic `Promise.resolve` and `await` read a Promise's `constructor` resumably:
+identity requires an intrinsic constructor match; subclasses otherwise adopt
+through their observable `then` method.
 
 Symbol and BigInt remain nonconstructible. Proxy has no `prototype` for class
 heritage, and transparent constructor proxies retain `new.target` identity under
