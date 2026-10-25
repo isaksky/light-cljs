@@ -50,14 +50,16 @@ impl std::panic::RefUnwindSafe for Slot {}
 
 #[derive(Debug)]
 struct Segment {
-    slots: [Slot; SEGMENT_SIZE],
+    slots: Box<[Slot]>,
     live: AtomicUsize,
 }
 
 impl Default for Segment {
     fn default() -> Self {
         Self {
-            slots: std::array::from_fn(|_| Slot::default()),
+            // Build in heap storage: a temporary 256-slot array and its debug
+            // build copies would exhaust the VM's supported 64 KiB stacks.
+            slots: (0..SEGMENT_SIZE).map(|_| Slot::default()).collect(),
             live: AtomicUsize::new(0),
         }
     }
@@ -66,22 +68,22 @@ impl Default for Segment {
 // Three lazy radix levels cover all 24 segment-index bits (32 slot-index bits).
 // OnceLock publishes stable, owned storage: even header lookup needs no raw
 // pointer and no table lock. Empty heaps allocate no directory pages.
-type Row = [OnceLock<Arc<Segment>>; 256];
-type Page = [OnceLock<Box<Row>>; 256];
-type Top = [OnceLock<Box<Page>>; 256];
+type Row = [OnceLock<Arc<Segment>>];
+type Page = [OnceLock<Box<Row>>];
+type Top = [OnceLock<Box<Page>>];
+
+fn directory_level<T>() -> Box<[OnceLock<T>]> {
+    (0..256).map(|_| OnceLock::new()).collect()
+}
 
 #[derive(Debug, Default)]
 pub(super) struct Directory(OnceLock<Box<Top>>);
 
 impl Directory {
     fn install(&self, index: usize, segment: Arc<Segment>) {
-        let top = self
-            .0
-            .get_or_init(|| Box::new(std::array::from_fn(|_| OnceLock::new())));
-        let page =
-            top[index >> 16].get_or_init(|| Box::new(std::array::from_fn(|_| OnceLock::new())));
-        let row = page[(index >> 8) & 255]
-            .get_or_init(|| Box::new(std::array::from_fn(|_| OnceLock::new())));
+        let top = self.0.get_or_init(directory_level);
+        let page = top[index >> 16].get_or_init(directory_level);
+        let row = page[(index >> 8) & 255].get_or_init(directory_level);
         assert!(
             row[index & 255].set(segment).is_ok(),
             "segment installed twice"
@@ -109,13 +111,15 @@ impl Directory {
 
     fn bytes(&self) -> usize {
         let Some(top) = self.0.get() else { return 0 };
-        size_of::<Top>()
+        size_of::<OnceLock<Box<Page>>>() * 256
             + top
                 .iter()
                 .filter_map(OnceLock::get)
                 .map(|page| {
-                    size_of::<Page>()
-                        + page.iter().filter(|row| row.get().is_some()).count() * size_of::<Row>()
+                    size_of::<OnceLock<Box<Row>>>() * 256
+                        + page.iter().filter(|row| row.get().is_some()).count()
+                            * size_of::<OnceLock<Arc<Segment>>>()
+                            * 256
                 })
                 .sum::<usize>()
     }
@@ -302,7 +306,7 @@ impl ObjectTable {
         (
             used,
             free,
-            self.segments.len() * size_of::<Segment>()
+            self.segments.len() * (size_of::<Segment>() + SEGMENT_SIZE * size_of::<Slot>())
                 + self.segments.capacity() * size_of::<Arc<Segment>>()
                 + self.free.capacity() * size_of::<u32>()
                 + directory.bytes(),
@@ -381,12 +385,11 @@ impl Heap {
                 .position(|a| a.heap == heap)
                 .expect("registered allocator");
             allocators[index].depth -= 1;
-            if allocators[index].depth == 0 {
-                if let Some(reservation) = allocators.swap_remove(index).reservation {
-                    if reservation.len > 0 {
-                        lock(&self.objects).release(reservation);
-                    }
-                }
+            if allocators[index].depth == 0
+                && let Some(reservation) = allocators.swap_remove(index).reservation
+                && reservation.len > 0
+            {
+                lock(&self.objects).release(reservation);
             }
         });
     }
@@ -419,6 +422,33 @@ use gc::Trace;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_covers_all_slot_index_bits_without_dense_allocation() {
+        let directory = Directory::default();
+        for index in [0, 255, 256, 65535, 65536, 0xffffff] {
+            let segment = Arc::new(Segment::default());
+            let mut reservation = Reservation {
+                segment: segment.clone(),
+                base: (index * SEGMENT_SIZE) as u32,
+                indices: [255; BATCH_SIZE],
+                len: 1,
+            };
+            let id = reservation.alloc(
+                HeapObject::Vector(crate::collections::PVector::from_values(&[])),
+                true,
+            );
+            directory.install(index, segment);
+            assert_eq!(id.index, (index * SEGMENT_SIZE + 255) as u32);
+            assert!(directory.known_shareable(&Value::Object(id)));
+            assert!(!directory.known_shareable(&Value::Object(ObjectId {
+                generation: 1,
+                ..id
+            })));
+        }
+        // Just the touched radix pages, even for the final u32 slot index.
+        assert!(directory.bytes() < 100_000);
+    }
 
     #[test]
     fn slots_whose_generation_would_wrap_are_retired() {
