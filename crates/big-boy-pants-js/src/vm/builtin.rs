@@ -131,6 +131,7 @@ pub(crate) enum Builtin {
     /// `Object.getOwnPropertyDescriptor` (QuickJS
     /// `js_object_getOwnPropertyDescriptor`; clj-quickjs-119).
     ObjectGetOwnPropertyDescriptor,
+    ObjectGetOwnPropertyDescriptors,
     /// `Object.getPrototypeOf` (QuickJS `js_object_getPrototypeOf`;
     /// clj-quickjs-121, `crate::vm::prototype`).
     ObjectGetPrototypeOf,
@@ -151,6 +152,8 @@ pub(crate) enum Builtin {
     /// `Object.isFrozen` (QuickJS `js_object_isSealed`, frozen flag;
     /// clj-quickjs-122).
     ObjectIsFrozen,
+    ObjectSeal,
+    ObjectIsSealed,
     /// `Object.keys` (QuickJS `js_object_keys`; clj-quickjs-123,
     /// `crate::vm::keys`).
     ObjectKeys,
@@ -362,6 +365,9 @@ pub(crate) enum Builtin {
 
     DateParse,
     MapForEach,
+    MapKeys,
+    MapValues,
+    MapEntries,
 
     ArrayFrom,
     GeneratorNext,
@@ -727,6 +733,9 @@ impl Builtin {
             Builtin::StringIterator | Builtin::IteratorIdentity => "[Symbol.iterator]",
             Builtin::IteratorNext(_) => "next",
             Builtin::MapForEach => "forEach",
+            Builtin::MapKeys => "keys",
+            Builtin::MapValues => "values",
+            Builtin::MapEntries => "entries",
             Builtin::BigInt => "BigInt",
             Builtin::BigIntAsIntN => "asIntN",
             Builtin::BigIntAsUintN => "asUintN",
@@ -861,6 +870,7 @@ impl Builtin {
             Builtin::Array => "Array",
             Builtin::ObjectDefineProperty => "defineProperty",
             Builtin::ObjectGetOwnPropertyDescriptor => "getOwnPropertyDescriptor",
+            Builtin::ObjectGetOwnPropertyDescriptors => "getOwnPropertyDescriptors",
             Builtin::ObjectGetPrototypeOf => "getPrototypeOf",
             Builtin::ObjectSetPrototypeOf => "setPrototypeOf",
             Builtin::ObjectCreate => "create",
@@ -868,6 +878,8 @@ impl Builtin {
             Builtin::ObjectIsExtensible => "isExtensible",
             Builtin::ObjectFreeze => "freeze",
             Builtin::ObjectIsFrozen => "isFrozen",
+            Builtin::ObjectSeal => "seal",
+            Builtin::ObjectIsSealed => "isSealed",
             Builtin::ObjectKeys => "keys",
             Builtin::ObjectGetOwnPropertyNames => "getOwnPropertyNames",
             Builtin::Number => "Number",
@@ -1044,6 +1056,9 @@ impl Builtin {
             | Builtin::SetClear
             | Builtin::SetSize
             | Builtin::SetValues
+            | Builtin::MapKeys
+            | Builtin::MapValues
+            | Builtin::MapEntries
             | Builtin::SetEntries => 0,
             Builtin::SetAdd
             | Builtin::SetHas
@@ -1217,9 +1232,12 @@ impl Builtin {
             Builtin::ObjectPreventExtensions
             | Builtin::ObjectIsExtensible
             | Builtin::ObjectFreeze
-            | Builtin::ObjectIsFrozen => 1,
+            | Builtin::ObjectIsFrozen
+            | Builtin::ObjectSeal
+            | Builtin::ObjectIsSealed => 1,
             Builtin::ObjectKeys
             | Builtin::ObjectGetOwnPropertyNames
+            | Builtin::ObjectGetOwnPropertyDescriptors
             | Builtin::ObjectEntries
             | Builtin::ObjectValues
             | Builtin::ObjectFromEntries => 1,
@@ -1681,6 +1699,18 @@ pub(crate) fn call(
         Builtin::WeakSetAdd | Builtin::WeakSetHas | Builtin::WeakSetDelete => {
             weak_set_operation(heap, task, which, this, args)
         }
+        Builtin::MapKeys | Builtin::MapValues | Builtin::MapEntries => {
+            super::native::iterator::create(
+                heap,
+                task,
+                this,
+                match which {
+                    Builtin::MapKeys => super::native::iterator::Kind::MapKeys,
+                    Builtin::MapValues => super::native::iterator::Kind::MapValues,
+                    _ => super::native::iterator::Kind::MapEntries,
+                },
+            )
+        }
         Builtin::SetValues | Builtin::SetEntries => super::native::iterator::create(
             heap,
             task,
@@ -1818,7 +1848,8 @@ pub(crate) fn call(
         | Builtin::ObjectEntries
         | Builtin::ObjectValues
         | Builtin::ObjectFromEntries
-        | Builtin::ObjectDefineProperties => Err(Fault::Internal(
+        | Builtin::ObjectDefineProperties
+        | Builtin::ObjectGetOwnPropertyDescriptors => Err(Fault::Internal(
             "defineProperty must run through the native trampoline",
         )),
         Builtin::ReflectConstruct
@@ -1847,6 +1878,8 @@ pub(crate) fn call(
         Builtin::ObjectIsExtensible => integrity::is_extensible(heap, task, &arg(0)),
         Builtin::ObjectFreeze => integrity::freeze(heap, task, &arg(0)),
         Builtin::ObjectIsFrozen => integrity::is_frozen(heap, task, &arg(0)),
+        Builtin::ObjectSeal => Ok(arg(0)), // Objects use the resumable integrity path.
+        Builtin::ObjectIsSealed => Ok(Value::Bool(true)),
         Builtin::ObjectKeys => keys::object_keys(heap, task, args, KeyFilter::Enumerable),
         Builtin::ObjectGetOwnPropertyNames => keys::object_keys(heap, task, args, KeyFilter::All),
         Builtin::FunctionPrototype => Ok(Value::Undefined),

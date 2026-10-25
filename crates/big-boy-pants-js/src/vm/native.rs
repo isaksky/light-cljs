@@ -1497,6 +1497,18 @@ pub(crate) fn start_builtin(
         return start_object_to_string(state, this, popped);
     }
     if !construct
+        && matches!(which, Builtin::ObjectSeal | Builtin::ObjectIsSealed)
+        && let Some(Value::Object(target)) = args.first()
+    {
+        let mode = if which == Builtin::ObjectSeal {
+            super::proxy::Mode::Seal(*target)
+        } else {
+            super::proxy::Mode::Sealed(*target)
+        };
+        start_proxy(state, mode, popped)?;
+        return Ok(true);
+    }
+    if !construct
         && matches!(
             which,
             Builtin::ObjectAssign
@@ -1504,6 +1516,7 @@ pub(crate) fn start_builtin(
                 | Builtin::ObjectValues
                 | Builtin::ObjectFromEntries
                 | Builtin::ObjectDefineProperties
+                | Builtin::ObjectGetOwnPropertyDescriptors
         )
     {
         object_statics::start(heap, state, which, args, popped)?;

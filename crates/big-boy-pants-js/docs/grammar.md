@@ -19,8 +19,9 @@ The checked examples below are parsed by
 `sloppy-accept` selects sloppy mode, and `module-accept` uses the module goal.
 `reject` fences specify exact error kind and line:column; `compile-reject`
 fences parse but are rejected by lowering. A parse-only example is not evidence
-of execution; the feature map points to executable source tests. All original
-fixtures are synthetic, not light-cljs output; selected QuickJS material is
+of execution; the feature map points to executable source tests. The checked
+`tests/fixtures/light-cljs/` corpus is real compiler output; other original
+fixtures are synthetic. Selected QuickJS material is
 identified in [attribution.md](attribution.md).
 
 ## Supported syntax and execution
@@ -45,6 +46,7 @@ identified in [attribution.md](attribution.md).
 | Object/Function/Reflect | Object construction, assign/is/entries/values/fromEntries/hasOwn/isPrototypeOf/seal/isSealed, descriptor/key/prototype/integrity methods; Function call/apply/bind/constructor; Reflect internal methods including construct | `tests/object_statics.rs`, `tests/reflect.rs`, `tests/js_functions.rs`, `tests/quickjs_objects.rs` |
 | Arrays/iteration | Sparse arrays and length, push/pop/shift/unshift/splice/reverse/fill/copyWithin; searches; callback/reduction methods; concat/join/slice/flat/flatMap; Array.from/isArray, spread and iterators, sort | `tests/fixtures/js/array_{mutators,search,callbacks,copy}.js`, `tests/js_source.rs`, `tests/need.rs`; callbacks/coercions can wait without replay |
 | Map/Set and weak variants | Iterable constructors with IteratorClose, lookup/mutation, ordered live iterators and forEach; WeakMap/WeakSet ephemeron keys, WeakRef and FinalizationRegistry | `tests/map_iterables.rs`, `tests/sets.rs`, `tests/quickjs_collections.rs`, `tests/gc.rs`; mutable instances are task-owned |
+| Real light-cljs output | Current runtime factory initialization; emitted arithmetic, closure capture, persistent map/vector loops, sequence reduction, user macro expansion and protocol dispatch loop | `tests/light_cljs.rs`; sources, expected numbers, shared emitted runtime and compiler revision in `tests/fixtures/light-cljs/` |
 | Primitive wrappers | Number, String, Boolean, Symbol, BigInt conversion/boxing, including ordinary property lookup and with environments | `tests/boolean_bigint_wrappers.rs`, `tests/js_source.rs`; Symbol/BigInt reject construction |
 | Numbers/BigInt/Math | Predicates/constants, parseInt/parseFloat, number radix/fixed/exponential/precision formatting; in-tree BigInt arithmetic, bitwise/shift/width wrapping and formatting; Math standard numeric surface, sumPrecise, random | `tests/quickjs_bigint.rs`, `tests/math.rs`, `tests/js_source.rs`; numerical policy below |
 | Strings | UTF-16 indexing, char/code-point access/construction, search/extraction/combination/padding/repeat/raw, casing/locale casing, normalization/well-formedness, trim/start/end/includes, split/replace/replaceAll and RegExp symbol protocols | `tests/fixtures/js/string_methods.js`, `tests/fixtures/js/regexp_symbols.js`, `tests/js_source.rs`; first rope flatten may run synchronously |
@@ -55,6 +57,22 @@ identified in [attribution.md](attribution.md).
 | Intl | Locale/canonicalization/likely subtags, NumberFormat (decimal/percent/currency/unit), PluralRules, DateTimeFormat, Collator, ListFormat, RelativeTimeFormat, Segmenter, DisplayNames, DurationFormat | `tests/quickjs_intl.rs`, `tests/sim_host.rs`, `tests/js_source.rs`; service/options/data subset below, no blanket Intl compatibility |
 | Promises | Shareable promises (including subclasses), cross-task settlement, owner-task reactions, adoption/chaining and supported static combinators; quiescent rejection reporting | `tests/promises.rs`, `tests/quickjs_async.rs`; await suspends an activation, need waits the task |
 | Proxy | Construction and forwarding, resumable ownKeys/getOwnPropertyDescriptor traps with invariant checks | `tests/js_source.rs` proxy cases; other present traps explicitly error, revocation deferred |
+
+## Compiler execution evidence
+
+The real compiler gate is bounded execution evidence. It does not establish
+native sharing of compiler forms, on-demand helper scheduling, automatic GC,
+performance targets, or compatibility with every ClojureScript program. Macro
+expansion happens when the fixtures are generated; the engine executes the
+resulting JavaScript. `Map.prototype.entries` is also `@@iterator`; keys,
+values and entries use branded live cursors that observe deletion, clear and
+later insertion until exhausted. The regressions cover spread, for-of,
+destructuring, direct/borrowed next calls, overrides, IteratorClose and GC
+between resumed steps. `Object.getOwnPropertyDescriptors` includes symbol and
+non-enumerable keys without invoking property getters; seal/isSealed preserve
+writable data values and use the supported Proxy descriptor/own-key protocols.
+Realm intrinsics remain immutable and present unsupported Proxy traps still
+raise an explicit error.
 
 ## Modules
 

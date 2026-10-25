@@ -1798,3 +1798,25 @@ expects successful cyclic evaluation. The fixtures retain the complete QuickJS
 copyright and MIT notices. Other new module test sources, including
 `tests/fixtures/modules/default_exports.js`, are synthetic fixtures, not
 light-cljs output.
+## Real light-cljs compiler output
+
+`tests/fixtures/light-cljs/*.cljs` are original inputs written for the bounded
+compiler compatibility gate. Their `.js` counterparts and `runtime.js` are
+actual output from this repository's light-cljs compiler, not hand-written
+compiler-like JavaScript. `generation.txt` records the compiler Git revision,
+build flags and reproducible babashka command; `expected.tsv` records the
+numeric results. The generator extracts one identical runtime factory and
+leaves a marker in each program; the tests substitute its exact bytes back.
+The full MIT notice from the repository root is retained in the fixture
+directory's `LICENSE` (Copyright 2026 Isak Sky). Runtime attribution also
+appears in its original source comment. The current source factory is tested
+directly in addition to the generated copy.
+
+The Map cursor additions reuse this engine's live insertion-position storage
+and resumable iterator implementation. Object descriptor enumeration and
+seal/isSealed compose its existing own-key, descriptor and Proxy operations.
+The implementations and additional JavaScript regressions were written here;
+no QuickJS implementation code or test text was copied. Generation uses the
+compiler's QuickJS macro evaluator; normal corpus execution uses only this
+Rust engine. These cases do not demonstrate native shared compiler forms or
+the compiler scheduling integration.

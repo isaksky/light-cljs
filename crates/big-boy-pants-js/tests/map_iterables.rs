@@ -170,3 +170,63 @@ fn map_iterable_frames_survive_collection_and_migration() {
         assert!(yields > 100);
     }
 }
+
+#[test]
+fn map_entries_are_iterable() {
+    for source in [
+        "[...new Map([[1, 2]])][0][1] === 2",
+        "let sum = 0; for (const [k, v] of new Map([[1, 2], [3, 4]])) sum += k + v; sum === 10",
+        "const [[k, v], ...rest] = new Map([[1, 2], [3, 4]]); k === 1 && v === 2 && rest[0][1] === 4",
+        "let m = new Map([[1, 2]]), it = m.entries(), first = it.next(), last = it.next(); first.done === false && first.value[0] === 1 && first.value[1] === 2 && last.done && last.value === undefined && it[Symbol.iterator]() === it",
+        "let m = new Map([[1, 2], [3, 4]]); [...m.keys()].join() === '1,3' && [...m.values()].join() === '2,4' && m[Symbol.iterator] === m.entries && m.entries.name === 'entries' && m.entries.length === 0 && Object.prototype.toString.call(m.entries()) === '[object Map Iterator]'",
+        "let m = new Map([[1, 2], [3, 4]]), a = m.entries(), b = m.keys(); a.next(); m.delete(3); m.set(5, 6); let x = a.next().value; m.clear(); m.set(7, 8); let y = a.next().value; a.next(); m.set(9, 10); x[0] === 5 && x[1] === 6 && y[0] === 7 && a.next().done && b.next().value === 7",
+        "let m = new Map([[1, 2]]), i = m.values(); m.set(1, 9); i.next().value === 9",
+        "let n = new Map().entries().next, m = new Map([[3, 4]]); n.call(m.keys()).value === 3 && n.call(m.values()).value === 4",
+        "let n = 0; for (let value of [{}, [], new Set().values(), [1].values(), 'a'[Symbol.iterator]()]) { try { new Map().entries().next.call(value); } catch(e) { if(e instanceof TypeError)n++; } } n === 5",
+        "let n = 0; for (let f of [Map.prototype.keys, Map.prototype.values, Map.prototype.entries]) { try { f.call(new Set()); } catch(e) { if(e instanceof TypeError)n++; } } n === 3",
+    ] {
+        check(source);
+    }
+}
+
+#[test]
+fn map_iteration_observes_overrides_and_abrupt_completion() {
+    for source in [
+        "let m = new Map([[1, 2]]), reads = 0; Object.defineProperty(m, Symbol.iterator, {get() { reads++; return function*() { yield [7, 8]; }; }}); [...m][0][1] === 8 && reads === 1",
+        "let m = new Map([[1, 2]]); m.entries = function() { throw 99; }; [...m][0][1] === 2",
+        "let m = new Map([[1, 2]]), calls = 0, i = m.entries(), next = i.next; i.next = function() { calls++; return next.call(this); }; m[Symbol.iterator] = () => i; [...m][0][1] === 2 && calls === 2",
+        "let m = new Map([[1, 2]]), closed = 0, i = m.entries(); i.return = function() { closed++; return {}; }; m[Symbol.iterator] = () => i; for (let entry of m) break; closed === 1",
+        "let m = new Map([[1, 2]]), closed = 0, ok = false, i = m.entries(); i.return = function() { closed++; throw 99; }; m[Symbol.iterator] = () => i; try { for (let [k,v] of m) throw 17; } catch(e) { ok = e === 17; } ok && closed === 1",
+        "let m = new Map([[1, 2]]), closed = 0, i = m.entries(); i.return = function() { closed++; return {}; }; m[Symbol.iterator] = () => i; let [entry] = m; entry[1] === 2 && closed === 1",
+        "let m = new Map(), ok = false; m[Symbol.iterator] = function() { throw 17; }; try { [...m]; } catch(e) { ok = e === 17; } ok",
+    ] {
+        check(source);
+    }
+}
+
+#[test]
+fn map_cursors_survive_collection_and_migration() {
+    let rt = Runtime::new();
+    let code = compile_script("map-cursor-gc", "let m = new Map([[{n:1}, {n:2}], [{n:3}, {n:4}]]), sum = 0; for (let [k,v] of m) sum += k.n + v.n; sum === 10").unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    for _ in 0..2000 {
+        let outcome = std::thread::scope(|scope| {
+            scope
+                .spawn(|| task.run_with(Budget::instructions(1), &mut NoEffects))
+                .join()
+                .unwrap()
+                .unwrap()
+        });
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(v) => {
+                assert_eq!(v.view(), ValueView::Bool(true));
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("map cursor did not finish");
+}

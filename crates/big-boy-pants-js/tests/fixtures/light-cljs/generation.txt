@@ -1,0 +1,5 @@
+Compiler revision: 074706d4debf6aeb42077835e693388efa160b60
+Command: bb crates/big-boy-pants-js/tools/generate-light-cljs.bb
+Compiler: cargo build --locked -p light-cljs --no-default-features
+Each source: target/debug/light-cljs --compile <name>.cljs
+Output: exact emitted text with its common factory factored into runtime.js.

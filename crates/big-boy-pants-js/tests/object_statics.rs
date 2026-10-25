@@ -35,6 +35,36 @@ fn check(source: &str) {
 }
 
 #[test]
+fn own_property_descriptors_preserve_attributes_without_getting_values() {
+    for source in [
+        "let s=Symbol(), calls=0, get=function(){calls++;return 7;}, o={a:1,[s]:2}; Object.defineProperty(o,'hidden',{get,enumerable:false,configurable:true}); let d=Object.getOwnPropertyDescriptors(o); d.a.value===1 && d.a.writable && d.a.enumerable && d.a.configurable && d[s].value===2 && d.hidden.get===get && d.hidden.set===undefined && !d.hidden.enumerable && !('value' in d.hidden) && calls===0",
+        "let d=Object.getOwnPropertyDescriptors('ab'); d[0].value==='a' && !d[0].writable && d.length.value===2 && !d.length.enumerable && Object.keys(Object.getOwnPropertyDescriptors(1)).length===0",
+        "let o=Object.create(null); o.__proto__=7; let d=Object.getOwnPropertyDescriptors(o); Object.getPrototypeOf(d)===Object.prototype && d.__proto__.value===7",
+        "let log='', s=Symbol(), p=new Proxy({a:1,b:2,[s]:3},{ownKeys(){log+='k';return ['b',s,'a'];},getOwnPropertyDescriptor(t,k){log+='d';if(k==='b') {delete t.a;return undefined;} return Object.getOwnPropertyDescriptor(t,k);}}); let d=Object.getOwnPropertyDescriptors(p); log==='kddd' && Reflect.ownKeys(d).length===1 && d[s].value===3",
+        "let calls=0, ok=false, p=new Proxy({a:1,b:2},{getOwnPropertyDescriptor(t,k){calls++;throw 17;}}); try{Object.getOwnPropertyDescriptors(p);}catch(e){ok=e===17;} ok && calls===1",
+        "let n=0; for(let v of [null,undefined]){try{Object.getOwnPropertyDescriptors(v);}catch(e){if(e instanceof TypeError)n++;}} n===2 && Object.getOwnPropertyDescriptors.length===1",
+    ] {
+        check(source);
+    }
+}
+
+#[test]
+fn sealed_objects_keep_writable_values_and_observe_proxy_descriptors() {
+    for source in [
+        "let o={a:1}; Object.seal(o)===o && Object.isSealed(o) && !Object.isFrozen(o) && !Object.isExtensible(o) && !Object.getOwnPropertyDescriptor(o,'a').configurable && (o.a=2)===2",
+        "let a=[1,2]; Object.seal(a); a[0]=3; Object.isSealed(a) && a[0]===3 && !Object.getOwnPropertyDescriptor(a,'length').configurable && Object.getOwnPropertyDescriptor(a,'length').writable",
+        "let o={}, s=Symbol(); Object.defineProperty(o,s,{get(){return 7;},configurable:true}); Object.seal(o); Object.isSealed(o) && o[s]===7 && !Object.getOwnPropertyDescriptor(o,s).configurable",
+        "let o=Object.seal({a:1}), n=0; try{o.b=2;}catch(e){if(e instanceof TypeError)n++;} try{delete o.a;}catch(e){if(e instanceof TypeError)n++;} n===2",
+        "let log='', t={a:1}, p=new Proxy(t,{ownKeys(){log+='k';return ['a'];},getOwnPropertyDescriptor(t,k){log+='d';return Object.getOwnPropertyDescriptor(t,k);}}); Object.seal(p)===p && Object.isSealed(p) && Object.isSealed(t) && log==='kkd'",
+        "let ok=false, o={a:1}, p=new Proxy(o,{ownKeys(){throw 17;}}); try{Object.seal(p);}catch(e){ok=e===17;} ok && !Object.isExtensible(o) && !Object.isSealed(o)",
+        "let o={a:1}, p=new Proxy(o,{getOwnPropertyDescriptor(){throw 17;}}); Object.seal(p)===p && Object.isSealed(o)",
+        "Object.seal(7)===7 && Object.seal(null)===null && Object.isSealed(null) && Object.isSealed(undefined) && !Object.isSealed({}) && Object.isSealed(Object.freeze({a:1}))",
+    ] {
+        check(source);
+    }
+}
+
+#[test]
 fn object_statics_enumeration_and_assignment() {
     for source in [
         "Object.assign.length === 2 && Object.entries.length === 1 && Object.values.length === 1 && Object.fromEntries.length === 1 && Object.defineProperties.length === 2",

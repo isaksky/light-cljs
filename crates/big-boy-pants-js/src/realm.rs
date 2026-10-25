@@ -421,6 +421,7 @@ pub(crate) struct Intrinsics {
     pub(crate) weak_set_prototype: ObjectId,
     weak_set: ObjectId,
     pub(crate) set_iterator_prototype: ObjectId,
+    pub(crate) map_iterator_prototype: ObjectId,
     pub(crate) weak_map_prototype: ObjectId,
     weak_map: ObjectId,
     pub(crate) weak_ref_prototype: ObjectId,
@@ -1365,6 +1366,8 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         )?;
     let set_iterator_prototype =
         set_iterator_intrinsics(&mut b, iterator_prototype, set_prototype)?;
+    let map_iterator_prototype =
+        map_iterator_intrinsics(&mut b, iterator_prototype, map_prototype)?;
     let regexp_iterator_prototype = regexp_iterator_intrinsics(&mut b, iterator_prototype)?;
 
     for method in [Builtin::BigIntAsIntN, Builtin::BigIntAsUintN] {
@@ -1511,6 +1514,7 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         weak_set_prototype,
         weak_set,
         set_iterator_prototype,
+        map_iterator_prototype,
         weak_map_prototype,
         weak_map,
         weak_ref_prototype,
@@ -1778,6 +1782,9 @@ fn object_statics_intrinsics(b: &mut Build<'_>, object: ObjectId) -> Option<()> 
         Builtin::ObjectValues,
         Builtin::ObjectFromEntries,
         Builtin::ObjectDefineProperties,
+        Builtin::ObjectGetOwnPropertyDescriptors,
+        Builtin::ObjectSeal,
+        Builtin::ObjectIsSealed,
     ] {
         let function = b.function(which, &[])?;
         b.add(object, which.name(), function, PropertyFlags::METHOD)?;
@@ -3337,6 +3344,49 @@ fn weak_set_intrinsics(
         })?
         .then_some(())?;
     Some((prototype, constructor))
+}
+
+fn map_iterator_intrinsics(
+    b: &mut Build<'_>,
+    iterator: ObjectId,
+    map: ObjectId,
+) -> Option<ObjectId> {
+    let heap = b.heap;
+    let next = b.function(
+        Builtin::IteratorNext(crate::vm::native::iterator::Kind::MapEntries),
+        &[],
+    )?;
+    let mut prototype = OrdinaryObject::intrinsic(Some(iterator));
+    define(heap, &mut prototype, "next", next, PropertyFlags::METHOD)?;
+    let tag = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    prototype
+        .define_with(
+            tag,
+            Value::String("Map Iterator".into()),
+            PropertyFlags::FUNCTION_INFO,
+        )
+        .then_some(())?;
+    let prototype = heap.alloc(HeapObject::Plain(prototype))?;
+    b.all.push(prototype);
+    for which in [Builtin::MapKeys, Builtin::MapValues, Builtin::MapEntries] {
+        let method = b.function(which, &[])?;
+        b.add(map, which.name(), method, PropertyFlags::METHOD)?;
+        if which == Builtin::MapEntries {
+            let key = heap
+                .keys()
+                .intern_symbol(&crate::value::symbol::well_known("iterator"))?;
+            heap.with_object_mut(map, |o| match o {
+                HeapObject::Plain(o) => {
+                    o.define_with(key, Value::Object(method), PropertyFlags::METHOD)
+                }
+                _ => false,
+            })?
+            .then_some(())?;
+        }
+    }
+    Some(prototype)
 }
 
 fn set_iterator_intrinsics(

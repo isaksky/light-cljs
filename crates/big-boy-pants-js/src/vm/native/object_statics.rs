@@ -15,16 +15,24 @@ pub(super) fn start(
     let task = state.diag.task;
     let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
     let native = match which {
-        Builtin::ObjectEntries | Builtin::ObjectValues => {
+        Builtin::ObjectEntries
+        | Builtin::ObjectValues
+        | Builtin::ObjectGetOwnPropertyDescriptors => {
             if matches!(arg(0), Value::Null | Value::Undefined) {
                 return Err(Fault::TypeError(
                     "cannot convert null or undefined to object".into(),
                 ));
             }
             NativeState::CopyProperties(copy_properties::State::with_mode(
-                property::new_array(heap, task)?,
+                if which == Builtin::ObjectGetOwnPropertyDescriptors {
+                    builtin::new_object(heap, task)?
+                } else {
+                    property::new_array(heap, task)?
+                },
                 arg(0),
-                if which == Builtin::ObjectEntries {
+                if which == Builtin::ObjectGetOwnPropertyDescriptors {
+                    copy_properties::Mode::Descriptors
+                } else if which == Builtin::ObjectEntries {
                     copy_properties::Mode::Entries
                 } else {
                     copy_properties::Mode::Values

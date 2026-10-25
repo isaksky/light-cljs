@@ -16,10 +16,17 @@ pub(crate) enum Kind {
     ArrayEntries,
     SetValues,
     SetEntries,
+    MapKeys,
+    MapValues,
+    MapEntries,
 }
 
 fn is_set(kind: Kind) -> bool {
     matches!(kind, Kind::SetValues | Kind::SetEntries)
+}
+
+fn is_map(kind: Kind) -> bool {
+    matches!(kind, Kind::MapKeys | Kind::MapValues | Kind::MapEntries)
 }
 
 #[derive(Clone, Debug)]
@@ -73,7 +80,7 @@ fn map<R>(
             if set {
                 "Set method requires a Set receiver"
             } else {
-                "Map.prototype.forEach requires a Map receiver"
+                "Map method requires a Map receiver"
             }
             .into(),
         )
@@ -128,12 +135,14 @@ pub(crate) fn create(
             return Err(Fault::TypeError("ArrayBuffer is detached".into()));
         }
     }
-    if is_set(kind) {
-        map(heap, task, source, true, |_| ())?;
+    if is_set(kind) || is_map(kind) {
+        map(heap, task, source, is_set(kind), |_| ())?;
     }
     let realm = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("iterator realm"))?;
     let prototype = if is_set(kind) {
         realm.set_iterator_prototype
+    } else if is_map(kind) {
+        realm.map_iterator_prototype
     } else if kind == Kind::String {
         realm.string_iterator_prototype
     } else {
@@ -278,6 +287,7 @@ impl State {
         let data = cursor(heap, task, iterator, |data| data.clone())?;
         if (data.kind == Kind::String) != (expected == Kind::String)
             || is_set(data.kind) != is_set(expected)
+            || is_map(data.kind) != is_map(expected)
         {
             return Err(Fault::TypeError("incompatible iterator receiver".into()));
         }
@@ -453,18 +463,23 @@ impl State {
                 if self.done {
                     return self.result(heap, task, Value::Undefined, true);
                 }
-                if is_set(self.kind) {
-                    let entry = map(heap, task, &self.source, true, |m| {
+                if is_set(self.kind) || is_map(self.kind) {
+                    let entry = map(heap, task, &self.source, is_set(self.kind), |m| {
                         m.entry(self.index)
-                            .map(|(next, (key, _))| (next, key.clone()))
+                            .map(|(next, entry)| (next, entry.clone()))
                     })?;
-                    let Some((next, mut value)) = entry else {
+                    let Some((next, (key, value))) = entry else {
                         return self.result(heap, task, Value::Undefined, true);
                     };
                     cursor(heap, task, &self.iterator, |data| data.index = next)?;
-                    if self.kind == Kind::SetEntries {
-                        value = builtin::array_constructor(heap, task, &[value.clone(), value])?;
-                    }
+                    let value = match self.kind {
+                        Kind::SetEntries => {
+                            builtin::array_constructor(heap, task, &[key.clone(), key])?
+                        }
+                        Kind::MapEntries => builtin::array_constructor(heap, task, &[key, value])?,
+                        Kind::MapValues => value,
+                        _ => key,
+                    };
                     return self.result(heap, task, value, false);
                 }
                 if matches!(

@@ -1,5 +1,5 @@
-//! Own enumerable property traversal for object spread, assign, entries and
-//! values. Each descriptor check, read and write is a budgeted step; Proxy
+//! Own property traversal for object spread, assign, entries, values and
+//! descriptors. Each descriptor check, read and write is a budgeted step; Proxy
 //! traps, getters and setters return through the ordinary trampoline.
 use super::*;
 
@@ -9,6 +9,7 @@ pub(super) enum Mode {
     Assign,
     Values,
     Entries,
+    Descriptors,
 }
 
 #[derive(Debug)]
@@ -17,6 +18,7 @@ enum Stage {
     Keys,
     Next,
     Enumerable,
+    Descriptor,
     Value,
     Defined,
 }
@@ -31,12 +33,16 @@ pub(super) struct State {
     index: u32,
     length: u32,
     stage: Stage,
+    descriptor: Option<Box<super::super::proxy::State>>,
 }
 
 impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         for value in [&self.target, &self.source, &self.keys, &self.key] {
             value.trace(visit);
+        }
+        if let Some(descriptor) = &self.descriptor {
+            descriptor.trace(visit);
         }
     }
 }
@@ -52,6 +58,7 @@ impl State {
             index: 0,
             length: 0,
             stage: Stage::Start,
+            descriptor: None,
         }
     }
 
@@ -107,6 +114,18 @@ impl State {
                 self.key =
                     property::get(heap, task, &self.keys, &property::Key::Index(self.index))?;
                 self.index += 1;
+                if matches!(self.mode, Mode::Descriptors) {
+                    self.stage = Stage::Descriptor;
+                    if let Value::Object(target) = self.source {
+                        self.descriptor = Some(Box::new(super::super::proxy::State::new(
+                            super::super::proxy::Mode::Descriptor {
+                                target,
+                                key: property::to_property_key(&self.key)?,
+                            },
+                        )));
+                    }
+                    return Ok(Action::Continue);
+                }
                 if matches!(self.mode, Mode::Values | Mode::Entries)
                     && matches!(self.key, Value::Symbol(_))
                 {
@@ -116,6 +135,30 @@ impl State {
                 Ok(Action::Instruction {
                     instr: Instr::IsEnumerable,
                     operands: vec![self.source.clone(), self.key.clone()],
+                })
+            }
+            Stage::Descriptor => {
+                let value = if let Some(descriptor) = &mut self.descriptor {
+                    match descriptor.step(heap, task, input)? {
+                        Action::Return(value) => value,
+                        action => return Ok(action),
+                    }
+                } else {
+                    descriptor::get_own_property_descriptor(
+                        heap,
+                        task,
+                        &[self.source.clone(), self.key.clone()],
+                    )?
+                };
+                self.descriptor = None;
+                self.stage = Stage::Defined;
+                if matches!(value, Value::Undefined) {
+                    return Ok(Action::Continue);
+                }
+                Ok(Action::CreateDataProperty {
+                    this: self.target.clone(),
+                    key: self.key.clone(),
+                    value,
                 })
             }
             Stage::Enumerable => {

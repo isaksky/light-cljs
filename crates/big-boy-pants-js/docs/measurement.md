@@ -39,6 +39,29 @@ C-engine wrapper is used. QuickJS `tests/microbench.js` at the attributed
 revision informed only the named-row/empty-loop reporting style; no workload
 or score is copied from it.
 
+The separate `tests/light_cljs.rs` compatibility gate now runs real emitted
+programs and the current compiler runtime factory. Its checked map, vector and
+protocol loops are available in `tests/fixtures/light-cljs/` with provenance and
+expected results. They have not been substituted into the historical benchmark
+rows below, and passing them is not a timing or scaling measurement.
+
+The compatibility pass on macOS with Rust 1.99.1 ran 739 tests successfully
+across `light_cljs`, `map_iterables`, `object_statics`, `quickjs_collections`,
+`sets`, `js_source`, `exceptions`, `exception_waits` and `need`, using
+`cargo test --locked -p big-boy-pants-js` with those `--test` arguments and
+`-- --test-threads=3`. The full `--all-targets` command aborted in
+`frontend::tests::deep_nesting_is_rejected_without_overflowing_the_stack` with
+a native stack overflow. Running that exact test alone with `--lib`,
+`-- --exact --test-threads=3` also aborted on untouched `074706d4` with the same
+toolchain. This is a pre-existing stack-safety limitation, not a passing suite.
+
+Strict `cargo clippy --locked -p big-boy-pants-js --all-targets -- -D warnings`
+reported the same nine diagnostics on that baseline and this pass: deprecated
+`Atomic::fetch_update`, `clippy::chunks_exact_to_as_chunks`, and
+`clippy::byte_char_slices` in existing symbol, intrinsic and Intl code. Allowing
+only those three categories after `-D warnings` passed; no lint suppression was
+added to the source. The package's `cargo fmt -- --check` and doctests passed.
+
 Timing rows use one discarded warmup, then five measured rounds (three in quick
 mode), reporting median and [min..max]. Each round uses a fresh Runtime, with
 setup outside the interval: compilation, input building, task spawning except

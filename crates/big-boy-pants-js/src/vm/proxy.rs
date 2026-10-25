@@ -734,6 +734,8 @@ pub(crate) enum Mode {
     },
     Freeze(ObjectId),
     Frozen(ObjectId),
+    Seal(ObjectId),
+    Sealed(ObjectId),
     Set {
         target: ObjectId,
         key: Key,
@@ -824,11 +826,11 @@ impl State {
                         }
                     }
                 }
-                Mode::Freeze(target) => {
+                Mode::Freeze(target) | Mode::Seal(target) => {
                     integrity::prevent_extensions(heap, task, &Value::Object(*target))?;
                     self.ops.start(Operation::keys(*target));
                 }
-                Mode::Frozen(target) => {
+                Mode::Frozen(target) | Mode::Sealed(target) => {
                     if extensible(heap, task, *target)? {
                         return Ok(Action::Return(Value::Bool(false)));
                     }
@@ -932,11 +934,17 @@ impl State {
                             }
                         }
                     },
-                    Mode::Freeze(target) | Mode::Frozen(target) => match out {
+                    Mode::Freeze(target)
+                    | Mode::Frozen(target)
+                    | Mode::Seal(target)
+                    | Mode::Sealed(target) => match out {
                         Output::Keys(keys) => self.keys = keys,
                         Output::Descriptor(Some(p)) => {
-                            if matches!(self.mode, Mode::Frozen(_)) {
-                                if p.flags.configurable || p.accessor.is_none() && p.flags.writable
+                            if matches!(self.mode, Mode::Frozen(_) | Mode::Sealed(_)) {
+                                if p.flags.configurable
+                                    || matches!(self.mode, Mode::Frozen(_))
+                                        && p.accessor.is_none()
+                                        && p.flags.writable
                                 {
                                     return Ok(Action::Return(Value::Bool(false)));
                                 }
@@ -948,7 +956,9 @@ impl State {
                                     &self.keys[self.index - 1].key,
                                     &PropertyDescriptor {
                                         configurable: Some(false),
-                                        writable: p.accessor.is_none().then_some(false),
+                                        writable: (matches!(self.mode, Mode::Freeze(_))
+                                            && p.accessor.is_none())
+                                        .then_some(false),
                                         ..PropertyDescriptor::default()
                                     },
                                 )?;
@@ -1002,17 +1012,38 @@ impl State {
                 }
                 return Ok(Action::Return(self.result.clone()));
             }
-            Mode::Freeze(target) | Mode::Frozen(target) => {
+            Mode::Freeze(target)
+            | Mode::Frozen(target)
+            | Mode::Seal(target)
+            | Mode::Sealed(target) => {
                 if let Some(key) = self.keys.get(self.index) {
                     self.index += 1;
+                    // SetIntegrityLevel(sealed) defines configurable:false
+                    // directly. Unlike frozen, it must not observe a Proxy's
+                    // getOwnPropertyDescriptor trap first.
+                    if matches!(self.mode, Mode::Seal(_)) {
+                        property::define_own_property(
+                            heap,
+                            task,
+                            *target,
+                            &key.key,
+                            &PropertyDescriptor {
+                                configurable: Some(false),
+                                ..PropertyDescriptor::default()
+                            },
+                        )?;
+                        return Ok(Action::Continue);
+                    }
                     self.ops
                         .start(Operation::descriptor(*target, key.key.clone()));
                 } else {
-                    return Ok(Action::Return(if matches!(self.mode, Mode::Freeze(_)) {
-                        Value::Object(*target)
-                    } else {
-                        Value::Bool(true)
-                    }));
+                    return Ok(Action::Return(
+                        if matches!(self.mode, Mode::Freeze(_) | Mode::Seal(_)) {
+                            Value::Object(*target)
+                        } else {
+                            Value::Bool(true)
+                        },
+                    ));
                 }
             }
             _ => return Err(Fault::Internal("completed Proxy operation was resumed")),
@@ -1035,7 +1066,10 @@ impl Trace for State {
             | Mode::Set { target, .. }
             | Mode::Descriptor { target, .. }
             | Mode::Enumerable { target, .. } => visit((*target).into()),
-            Mode::Freeze(target) | Mode::Frozen(target) => visit((*target).into()),
+            Mode::Freeze(target)
+            | Mode::Frozen(target)
+            | Mode::Seal(target)
+            | Mode::Sealed(target) => visit((*target).into()),
         }
         match &self.mode {
             Mode::Set {

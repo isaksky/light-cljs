@@ -4,7 +4,8 @@ A Rust-native JavaScript runtime for concurrent compile-time execution. This is
 an implemented **architectural slice**, with a broad tested JavaScript subset,
 not a complete ECMAScript engine or an integrated compiler.
 [Requirements](docs/design.md) are authoritative; Pellets is the backlog.
-All compiler-like examples are synthetic fixtures, not light-cljs output.
+The checked light-cljs corpus executes real compiler output and the current
+runtime factory; other compiler-like examples remain synthetic fixtures.
 
 ## Run
 
@@ -96,6 +97,31 @@ integration. Full incremental invalidation and automatic GC triggering remain
 deferred. See the contract for exact boundaries and rejection tests.
 
 ## Semantic corpus
+
+From the workspace root, run the real compiler compatibility gate with:
+
+```sh
+cargo test --locked -p big-boy-pants-js --test light_cljs --test map_iterables -- --test-threads=3
+```
+
+[`tests/light_cljs.rs`](tests/light_cljs.rs) boots the current `src/js_runtime.js`
+factory and executes seven checked compiler programs, covering arithmetic,
+closure capture, persistent maps/vectors, sequence reduction, user macro
+expansion and protocol dispatch. The map, vector and protocol programs contain
+small loops for future measurements. They use one shared emitted runtime;
+engine tests need neither a compiler build, an external checkout, V8 nor Node.
+This is execution evidence for a bounded corpus, not native shared-form or
+compile-time scheduler integration, general ClojureScript compatibility, or a
+performance result.
+
+Regenerate from this checkout using
+`bb crates/big-boy-pants-js/tools/generate-light-cljs.bb`. It builds the compiler
+with `--no-default-features` (QuickJS expands macros during generation), then
+compiles the checked `.cljs` sources. `tests/fixtures/light-cljs/generation.txt`
+records the compiler revision and command, `expected.tsv` supplies independent
+numeric expectations, and `LICENSE` retains the emitted runtime's MIT notice.
+The generator factors out identical runtime text without changing JavaScript
+semantics; tests reassemble the exact output before compiling it in this engine.
 
 Run this in the development shell, with `CARGO_BUILD_JOBS=3`:
 
