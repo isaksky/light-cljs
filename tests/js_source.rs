@@ -30461,6 +30461,109 @@ fn string_search_predicates_symbol_match() {
 }
 
 #[test]
+fn string_locale_case_receiver_precedes_locales() {
+    // Synthetic fixtures, not light-cljs output.
+    #[derive(Default)]
+    struct LocaleHost {
+        conversions: usize,
+        defaults: usize,
+    }
+    impl Host for LocaleHost {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            self.conversions += 1;
+            Ok(Primitive::Undefined)
+        }
+        fn default_locale(&mut self) -> String {
+            assert_eq!(self.conversions, 1, "receiver must precede host locale");
+            self.defaults += 1;
+            "tr".into()
+        }
+    }
+    for (method, input, expected) in [
+        ("toLocaleLowerCase", "I", "ı"),
+        ("toLocaleUpperCase", "i", "İ"),
+    ] {
+        for body in [
+            "let seen=0, caught=false; try {method.call(null,{get length(){seen++;throw 17;}});} catch(e){caught=e instanceof TypeError;} caught && seen===0",
+            "let seen=0, caught=false; try {method.call(undefined,{get length(){seen++;throw 17;}});} catch(e){caught=e instanceof TypeError;} caught && seen===0",
+            "let seen=0, caught=false; try {method.call({toString(){throw 23;}},{get length(){seen++;throw 17;}});} catch(e){caught=e===23;} caught && seen===0",
+            "let seen=0, caught=false; try {method.call({get [Symbol.toPrimitive](){throw 23;}},{get length(){seen++;throw 17;}});} catch(e){caught=e===23;} caught && seen===0",
+            "let seen=0, caught=false; try {method.call(Symbol(),{get length(){seen++;throw 17;}});} catch(e){caught=e instanceof TypeError;} caught && seen===0",
+            "let log='', caught=false; try {method.call({toString(){log+='s';return '';}},{get length(){log+='l';throw 17;}});} catch(e){caught=e===17;} caught && log==='sl'",
+            "let locales=['en']; let result=method.call({toString(){locales[0]='tr';return input;}},locales); result===expected",
+        ] {
+            let source = format!(
+                "let method=String.prototype.{method}, input='{input}', expected='{expected}'; {body}"
+            );
+            assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        }
+
+        for locales in ["undefined", "[]"] {
+            let rt = Runtime::new();
+            let mut host = LocaleHost::default();
+            let source = format!(
+                "let method=String.prototype.{method}; let caught=0; try{{method.call(null,{locales});}}catch(e){{caught+=e instanceof TypeError;}} try{{method.call({{toString(){{throw 23;}}}},{locales});}}catch(e){{caught+=e===23;}} method.call({{toString(){{__rt.effect(0,0);return '{input}';}}}},{locales})==='{expected}' && caught===2"
+            );
+            let outcome = rt
+                .spawn(&exe(&source), &[])
+                .unwrap()
+                .run_with(Budget::UNLIMITED, &mut host)
+                .unwrap();
+            assert!(
+                matches!(outcome, RunOutcome::Complete(value) if value.view() == ValueView::Bool(true)),
+                "{source}"
+            );
+            assert_eq!((host.conversions, host.defaults), (1, 1));
+        }
+
+        for conversion in ["toString", "[Symbol.toPrimitive]"] {
+            let rt = Runtime::new();
+            let source = format!(
+                "let log=''; let receiver={{get {conversion}(){{log+='r';__rt.need(328,1);return function(hint){{log+='s';__rt.need(328,2);if(hint!==undefined && hint!=='string')throw 99;return '{input}';}};}}}}; let locales={{get length(){{log+='l';__rt.need(328,3);return 1;}},get 0(){{log+='i';return {{toString(){{log+='c';__rt.need(328,4);return 'tr';}}}};}}}}; String.prototype.{method}.call(receiver,locales)==='{expected}' && log==='rslic'"
+            );
+            let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+            let mut waits = 0;
+            let mut done = false;
+            for _ in 0..2000 {
+                let (next, outcome) = std::thread::spawn(move || {
+                    let outcome = task
+                        .run_with(Budget::instructions(1), &mut NoEffects)
+                        .unwrap();
+                    (task, outcome)
+                })
+                .join()
+                .unwrap();
+                task = next;
+                rt.collect().unwrap();
+                match outcome {
+                    RunOutcome::Yielded => (),
+                    RunOutcome::Waiting(_) => {
+                        waits += 1;
+                        assert!(waits <= 4, "callback replay: {source}");
+                        let request = task.take_producer_requests().pop().unwrap();
+                        let value = rt.root(Primitive::Number(0.0));
+                        task = rt
+                            .complete(request.key(), request.producer(), Completion::Ready(&value))
+                            .unwrap()
+                            .into_runnable()
+                            .pop()
+                            .unwrap();
+                    }
+                    RunOutcome::Complete(value) => {
+                        assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                        done = true;
+                        break;
+                    }
+                    other => panic!("{source}: {other:?}"),
+                }
+            }
+            assert!(done, "instruction bound: {source}");
+            assert_eq!(waits, 4, "{source}");
+        }
+    }
+}
+
+#[test]
 fn string_methods_wait_collect_and_migrate() {
     // Synthetic fixtures, not light-cljs output. Every callback increments once
     // before waiting; moving each run to a fresh executor catches saved-state bugs.

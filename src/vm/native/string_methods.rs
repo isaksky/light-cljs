@@ -25,7 +25,6 @@ pub(super) fn handles(which: builtin::Builtin) -> bool {
 }
 #[derive(Debug, PartialEq, Eq)]
 enum Stage {
-    Start,
     Locales,
     DefaultLocale,
     Text,
@@ -149,7 +148,7 @@ impl State {
             which,
             this: this.clone(),
             args: std::array::from_fn(|i| args.get(i).cloned().unwrap_or(Value::Undefined)),
-            stage: Stage::Start,
+            stage: Stage::Text,
             locale_list: None,
             language: String::new(),
             collator: None,
@@ -280,25 +279,13 @@ impl State {
                 }
                 Ok(Action::Continue)
             }
-            Stage::Start => {
-                if matches!(
-                    self.which,
-                    StringToLocaleUpperCase | StringToLocaleLowerCase
-                ) {
-                    self.locale_list = Some(intl::Intl::new(&self.args[..1], false)?);
-                    self.stage = Stage::Locales;
-                } else {
-                    self.stage = Stage::Text;
-                }
-                Ok(Action::Continue)
-            }
             Stage::Locales => match self.locale_list.as_mut().unwrap().step(heap, task, input)? {
                 Action::Return(list) => {
                     let first = property::get(heap, task, &list, &index_key(0))?;
                     self.locale_list = None;
                     if let Value::String(locale) = first {
                         self.language(locale);
-                        self.stage = Stage::Text;
+                        self.stage = Stage::Argument;
                         Ok(Action::Continue)
                     } else {
                         self.stage = Stage::DefaultLocale;
@@ -309,7 +296,7 @@ impl State {
             },
             Stage::DefaultLocale => {
                 self.language(text(result(input)?)?);
-                self.stage = Stage::Text;
+                self.stage = Stage::Argument;
                 Ok(Action::Continue)
             }
             Stage::Text => {
@@ -324,7 +311,15 @@ impl State {
             }
             Stage::TextValue => {
                 self.text = text(result(input)?)?;
-                self.stage = Stage::Argument;
+                if matches!(
+                    self.which,
+                    StringToLocaleUpperCase | StringToLocaleLowerCase
+                ) {
+                    self.locale_list = Some(intl::Intl::new(&self.args[..1], false)?);
+                    self.stage = Stage::Locales;
+                } else {
+                    self.stage = Stage::Argument;
+                }
                 Ok(Action::Continue)
             }
             Stage::Argument => {
