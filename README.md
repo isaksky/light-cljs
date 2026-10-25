@@ -3078,6 +3078,16 @@ and string regexp consumers. Eval is deferred; the raw NUL case uses the
 constructor and a raw-NUL literal. Run
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.
 
+### RegExp capture materialization limits (clj-quickjs-290)
+
+`exec` and intrinsic `test` reserve all captured UTF-16 code units, including
+group zero and overlapping captures, from the same 1,000,000-unit search
+allowance before copying any result strings. Exhaustion throws a catchable
+RangeError with or without `d`. Range-only matcher callers retain their
+existing allowance; replacement callback captures share the replacement
+operation's aggregate work limit. Run
+`CARGO_BUILD_JOBS=3 cargo test --test js_source overlapping_capture_output -- --test-threads=3`.
+
 ### BigInt function and string conversion (clj-quickjs-201)
 
 Supported: `BigInt(value)` converts integral finite Numbers exactly, booleans,

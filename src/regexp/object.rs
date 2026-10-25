@@ -219,12 +219,13 @@ pub(crate) fn exec(
     } else {
         0
     };
-    let found = matcher::exec(&c.program, input.code_units(), start).map_err(|e| match e {
-        matcher::MatchError::LimitExceeded => {
-            Fault::RangeError("regular expression step limit exceeded".into())
-        }
-        _ => Fault::SyntaxError(e.to_string()),
-    })?;
+    let (found, mut budget) = matcher::exec_with_budget(&c.program, input.code_units(), start)
+        .map_err(|e| match e {
+            matcher::MatchError::LimitExceeded => {
+                Fault::RangeError("regular expression step limit exceeded".into())
+            }
+            _ => Fault::SyntaxError(e.to_string()),
+        })?;
     if stateful {
         let end = found
             .as_ref()
@@ -244,6 +245,14 @@ pub(crate) fn exec(
     let Some(m) = found else {
         return Ok(Value::Null);
     };
+    // Reserve every copied UTF-16 unit, including group zero and overlapping
+    // lookahead/nested captures, against the allowance left by this search.
+    // Do this before allocating any result, so a rejected match copies nothing.
+    for range in m.groups.iter().flatten() {
+        budget
+            .charge(range.len())
+            .map_err(|_| CompileError::Limit.fault())?;
+    }
     let a = property::new_array(heap, task)?;
     // The matcher reserves the extra per-capture work for d within its search
     // allowance before we allocate any indices. This leaf has no safepoints;

@@ -21880,17 +21880,87 @@ fn regexp_has_indices() {
 /// allocation must share the allowance with matching, including at success.
 #[test]
 fn regexp_indices_limit_is_catchable() {
-    assert_eq!(
-        eval(
-            "let pattern = '^' + ''.padEnd(80000, '()') + 'a{120000}$'; \
-             let text = ''.padEnd(120000, 'a'); \
-             let ordinary = RegExp(pattern).exec(text); \
-             let caught = false; try { RegExp(pattern, 'd').exec(text); } \
-             catch(e) { caught = e instanceof RangeError && e.message.indexOf('step limit') >= 0; } \
-             ordinary.length === 40001 && ordinary[0] === text && caught"
-        ),
-        ValueView::Bool(true)
-    );
+    for length in [100_000, 120_000] {
+        assert_eq!(
+            eval(&format!(
+                "let pattern = '^' + ''.padEnd(80000, '()') + 'a{{{length}}}$'; \
+                 let text = ''.padEnd({length}, 'a'); \
+                 let ordinary; let ordinaryCaught = false; \
+                 try {{ ordinary = RegExp(pattern).exec(text); }} \
+                 catch(e) {{ ordinaryCaught = e instanceof RangeError && e.message.indexOf('step limit') >= 0; }} \
+                 let caught = false; try {{ RegExp(pattern, 'd').exec(text); }} \
+                 catch(e) {{ caught = e instanceof RangeError && e.message.indexOf('step limit') >= 0; }} \
+                 ({length} === 120000 ? ordinaryCaught : \
+                  !ordinaryCaught && ordinary.length === 40001 && ordinary[0] === text) && caught"
+            )),
+            ValueView::Bool(true)
+        );
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Matching is cheap, but overlapping
+/// captures would copy more than the entire search allowance in one leaf.
+#[test]
+fn regexp_overlapping_capture_output_is_bounded() {
+    for flags in ["", "d", "g", "dg", "y", "dy"] {
+        for method in ["exec", "test"] {
+            // 7,000 units fit. At 7,500 the copies alone still fit, but the
+            // combined matching/copy work does not. At 8,000 even copies exceed
+            // the budget. Empty captures must remain supported as well.
+            // Also exercise the original 1,000 captures / 10,000 units report
+            // after reproducing first with the smaller allocation above.
+            for (captures, length) in [
+                (128, 0),
+                (128, 7000),
+                (128, 7500),
+                (128, 8000),
+                (1000, 10000),
+            ] {
+                let valid = if method == "test" {
+                    "result === true".to_owned()
+                } else {
+                    format!(
+                        "result.length === {} && result[0] === text && result[{captures}] === text",
+                        captures + 1
+                    )
+                };
+                assert_eq!(
+                    eval(&format!(
+                        "let pattern = ''.padEnd({captures}, '(') + 'a*' + ''.padEnd({captures}, ')'); \
+                         let text = ''.padEnd({length}, 'a'); \
+                         let re = RegExp(pattern, '{flags}'); \
+                         let caught = false; let valid = false; \
+                         try {{ let result = re.{method}(text); valid = {valid}; }} \
+                         catch(e) {{ caught = e instanceof RangeError && e.message.indexOf('step limit') >= 0; }} \
+                         {length} >= 7500 ? caught : !caught && valid"
+                    )),
+                    ValueView::Bool(true),
+                    "{method}, flags={flags:?}, captures={captures}, length={length}"
+                );
+            }
+        }
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. The replacement path constructs
+/// callback arguments separately and must charge all overlapping copies too.
+#[test]
+fn string_replace_overlapping_capture_output_is_bounded() {
+    for flags in ["g", "dg"] {
+        for method in ["replace", "replaceAll"] {
+            assert_eq!(
+                eval(&format!(
+                    "let pattern = ''.padEnd(128, '(') + 'a*' + ''.padEnd(128, ')'); \
+                     let text = ''.padEnd(8000, 'a'); let calls = 0; let caught = false; \
+                     try {{ text.{method}(RegExp(pattern, '{flags}'), () => {{ calls++; return ''; }}); }} \
+                     catch(e) {{ caught = e instanceof RangeError && e.message.indexOf('replacement work limit') >= 0; }} \
+                     caught && calls === 0"
+                )),
+                ValueView::Bool(true),
+                "{method}, flags={flags:?}"
+            );
+        }
+    }
 }
 
 #[test]

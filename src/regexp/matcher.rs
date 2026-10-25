@@ -779,8 +779,18 @@ pub fn exec(
     input: &[u16],
     start: usize,
 ) -> Result<Option<Captures>, MatchError> {
+    exec_with_budget(program, input, start).map(|(captures, _)| captures)
+}
+
+/// Return the unspent search allowance so the object layer can reserve capture
+/// string copies before allocating results. Range-only callers need no copies.
+pub(super) fn exec_with_budget(
+    program: &Program,
+    input: &[u16],
+    start: usize,
+) -> Result<(Option<Captures>, Budget), MatchError> {
     if start > input.len() {
-        return Ok(None);
+        return Ok((None, Budget(MAX_MATCH_STEPS)));
     }
     let start = if program.unicode
         && start > 0
@@ -820,10 +830,13 @@ pub fn exec(
                 )?;
             }
             machine.captures[0] = Some(index..machine.pos);
-            return Ok(Some(Captures {
-                index,
-                groups: machine.captures,
-            }));
+            return Ok((
+                Some(Captures {
+                    index,
+                    groups: machine.captures,
+                }),
+                machine.budget,
+            ));
         }
         machine.rewind(0)?;
         if program.sticky || index == input.len() {
@@ -831,7 +844,7 @@ pub fn exec(
         }
         index = advance_string_index(input, index, program.unicode);
     }
-    Ok(None)
+    Ok((None, machine.budget))
 }
 
 /// Read a code unit, or a code point including an unpaired surrogate in
