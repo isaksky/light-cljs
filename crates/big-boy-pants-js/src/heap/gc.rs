@@ -1236,10 +1236,7 @@ impl Heap {
             }
             if let Some(id) = object {
                 let mut discovery = DiscoverConditional::default();
-                objects
-                    .get_mut(id)
-                    .unwrap()
-                    .trace_conditional(&mut discovery);
+                objects.trace_conditional(id, &mut discovery);
                 if discovery.has_storage {
                     conditional_owners.push(id);
                 }
@@ -1257,15 +1254,15 @@ impl Heap {
         let mut cleared = Vec::new();
         let mut retired_symbols = Vec::new();
         for owner in conditional_owners {
-            objects
-                .get_mut(owner)
-                .unwrap()
-                .trace_conditional(&mut ClearConditional {
+            objects.trace_conditional(
+                owner,
+                &mut ClearConditional {
                     marked: &marked,
                     owner,
                     cleared: &mut cleared,
                     retired_symbols: &mut retired_symbols,
-                });
+                },
+            );
         }
         let cleared_weak_slots = cleared
             .into_iter()

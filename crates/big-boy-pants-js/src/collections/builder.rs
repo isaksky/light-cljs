@@ -26,7 +26,7 @@
 //!   the builder's private draft in place and return the same builder. A
 //!   vector draft is a plain `Vec`, so appends are amortized O(1); a map draft
 //!   is a [`PMap`] updated by path copying (in-place node editing is not
-//!   implemented). Each operation takes the heap's object-table lock once.
+//!   implemented). Each operation takes the builder's access word once.
 //! * **Freeze.** `freeze` moves the draft out, allocates a new persistent
 //!   vector or map from it (a separate object with its own identity), and
 //!   leaves the builder `Frozen`. Nothing else ever sees the draft, so the
@@ -265,7 +265,7 @@ pub(crate) fn new_builder(
     Ok(Value::Object(id))
 }
 
-/// Run `f` on builder `b` under one object-table lock. Check 1 of the module
+/// Run `f` on builder `b` under its access word. Check 1 of the module
 /// docs: `b` must be a builder, of kind `expected` when given.
 fn with_builder<R>(
     heap: &Heap,

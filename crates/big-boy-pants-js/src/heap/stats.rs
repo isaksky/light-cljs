@@ -17,7 +17,8 @@
 //! `array_buffer_bytes`; its object box/property storage remains excluded
 //! from the shallow fields, as with arrays.
 //!
-//! Taking a snapshot walks every segment under the object lock: O(capacity),
+//! Taking a snapshot walks every segment under the object-table lock, and
+//! each mutable body under its access word: O(capacity),
 //! for tests and measurement, not for hot paths. Allocators may concurrently
 //! publish reserved slots, so concurrent counts are approximate; quiescent
 //! counts are exact. It changes nothing.

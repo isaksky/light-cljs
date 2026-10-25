@@ -87,7 +87,8 @@
 //! That edge is the one exception to "a persistent object's edges never
 //! change": it is written at most once, and never on a function whose
 //! known-shareable bit is set. Both the attach and the setting of the bit
-//! happen under the object-table lock: the attach refuses a known function
+//! happen under the function's own access word (`crate::heap::storage`,
+//! light-cljs-471): the attach refuses a known function
 //! (the write is then the `TypeError` of a shared, immutable function), and
 //! [`check`] sets bits with [`Heap::mark_shareable_unless`], which marks
 //! nothing and makes the check walk again if a function it expanded gained
@@ -120,7 +121,8 @@
 //! explicit queue (no recursion, so depth is limited only by memory) and a
 //! visited set (so cycles, which can exist through task-owned objects and
 //! native payloads, terminate and every object is inspected at most once).
-//! It reads each object under one short object-table lock, copying out the
+//! It reads each object once, without the object-table lock (frozen bodies
+//! with no lock, others under their own access word), copying out the
 //! collection body (an `Arc` clone) and walking it with no lock held. It
 //! fails at the first task-owned object it meets, with a [`PublishError`]
 //! naming the path from the published value to that object (breadth-first,
@@ -496,8 +498,8 @@ impl Children {
     }
 }
 
-/// Inspect one object under the object lock: copy out only what the walk
-/// needs.
+/// Inspect one object under its access word (none if frozen): copy out only
+/// what the walk needs.
 fn inspect(object: &HeapObject, known: bool) -> Node {
     if known {
         return Node::Shareable;
@@ -1056,18 +1058,18 @@ mod tests {
             assert_eq!(proven.len(), if bound { 4 } else { 2 });
             // ... then its owner attaches one ...
             let record = plain(&heap);
-            let attached = heap.with_object_mut_known(id(&f), |o, known| match o {
-                HeapObject::Function(func) if !known => {
+            let attached = heap.with_unshared_object_mut(id(&f), |o| match o {
+                HeapObject::Function(func) => {
                     func.properties = Some(id(&record));
                     true
                 }
-                HeapObject::BoundFunction(func) if !known => {
+                HeapObject::BoundFunction(func) => {
                     func.properties = Some(id(&record));
                     true
                 }
                 _ => false,
             });
-            assert_eq!(attached, Some(true));
+            assert_eq!(attached, Some(Some(true)));
             // ... so the walk's result is not marked, and the check rejects.
             let gained = |o: &HeapObject| match o {
                 HeapObject::Function(f) => f.properties.is_some(),
@@ -1091,8 +1093,107 @@ mod tests {
             let g = function(&heap);
             assert_eq!(check(&heap, &g), Ok(()));
             assert!(known(&heap, &g));
-            let refused = heap.with_object_mut_known(id(&g), |_, known| known);
-            assert_eq!(refused, Some(true));
+            let refused = heap.with_unshared_object_mut(id(&g), |_| ());
+            assert_eq!(refused, Some(None));
+        }
+    }
+
+    /// The publication protocol without the object-table lock
+    /// (light-cljs-471): an attach and the marking of a walk's result take
+    /// the function's access word, so whichever holds it first wins. Each
+    /// order is forced with a hook inside the holder's critical section;
+    /// the other side starts only once the word is held.
+    #[test]
+    fn attach_and_publication_serialize_on_the_function_access_word() {
+        use crate::vm::function::FunctionObject;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        const WAIT: Duration = Duration::from_secs(30);
+        let gained = |o: &HeapObject| match o {
+            HeapObject::Function(f) => f.properties.is_some(),
+            HeapObject::BoundFunction(f) => f.properties.is_some(),
+            _ => false,
+        };
+        let attach = |o: &mut HeapObject, record: ObjectId| match o {
+            HeapObject::Function(f) => f.properties = Some(record),
+            HeapObject::BoundFunction(f) => f.properties = Some(record),
+            other => panic!("not a function: {other:?}"),
+        };
+        for bound in [false, true] {
+            let heap = Arc::new(Heap::default());
+            let _scope = Scope::new(&heap);
+            let code = crate::frontend::compile_script("f", "1").unwrap().0;
+            let function = || {
+                let f = FunctionObject::new(Arc::clone(&code), Box::new([]), OWNER);
+                let f = Value::Object(heap.alloc(HeapObject::Function(f)).unwrap());
+                if bound {
+                    crate::vm::function::bind(&heap, OWNER, &f, &[])
+                        .ok()
+                        .expect("bound function")
+                } else {
+                    f
+                }
+            };
+
+            // An attach holding the word first: the check, started after,
+            // reads the function only once the record is there, and rejects.
+            let f = function();
+            let holder = coll::new_vector(&heap, std::slice::from_ref(&f)).unwrap();
+            let record = id(&plain(&heap));
+            let (inside_tx, inside_rx) = mpsc::channel();
+            let (go_tx, go_rx) = mpsc::channel::<()>();
+            let result = std::thread::scope(|s| {
+                let attacher = s.spawn(|| {
+                    heap.with_unshared_object_mut(id(&f), move |o| {
+                        inside_tx.send(()).unwrap();
+                        go_rx.recv_timeout(WAIT).unwrap();
+                        attach(o, record);
+                    })
+                });
+                inside_rx.recv_timeout(WAIT).unwrap();
+                let checker = s.spawn(|| check(&heap, &holder));
+                go_tx.send(()).unwrap();
+                assert_eq!(attacher.join().unwrap(), Some(Some(())));
+                checker.join().unwrap()
+            });
+            let Err(PublishError::NotShareable { path, .. }) = result else {
+                panic!("the check missed the attached record: {result:?}")
+            };
+            assert_eq!(
+                path.steps(),
+                [PathStep::Index(0), PathStep::FunctionProperties]
+            );
+            assert!(!known(&heap, &f) && !known(&heap, &holder));
+
+            // Marking holding the words first: the attach, started after,
+            // finds the function known and is refused.
+            let g = function();
+            let holder = coll::new_vector(&heap, std::slice::from_ref(&g)).unwrap();
+            let record = id(&plain(&heap));
+            let proven = walk(&heap, id(&holder), &mut 0).unwrap();
+            let (inside_tx, inside_rx) = mpsc::channel();
+            let (go_tx, go_rx) = mpsc::channel::<()>();
+            let attached = std::thread::scope(|s| {
+                let marker = s.spawn(|| {
+                    let hook = std::cell::Cell::new(Some((inside_tx, go_rx)));
+                    heap.mark_shareable_unless(&proven, |o| {
+                        if let Some((inside, go)) = hook.take() {
+                            inside.send(()).unwrap();
+                            go.recv_timeout(WAIT).unwrap();
+                        }
+                        gained(o)
+                    })
+                });
+                inside_rx.recv_timeout(WAIT).unwrap();
+                let attacher =
+                    s.spawn(|| heap.with_unshared_object_mut(id(&g), |o| attach(o, record)));
+                go_tx.send(()).unwrap();
+                assert!(marker.join().unwrap(), "nothing changed during the walk");
+                attacher.join().unwrap()
+            });
+            assert_eq!(attached, Some(None), "a known function gained a record");
+            assert!(known(&heap, &g) && known(&heap, &holder));
+            assert_eq!(check(&heap, &holder), Ok(()));
         }
     }
 

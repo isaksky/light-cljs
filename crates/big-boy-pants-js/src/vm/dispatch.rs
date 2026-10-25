@@ -502,9 +502,11 @@ fn throw_message(code: &Code, pc: usize, kind: ThrowKind) -> String {
 
 /// The property name a `GetField`, `PutField` or `DefineField` operand
 /// names: a string constant (checked at load time).
-fn name_constant(code: &Code, i: u16) -> Result<JsString, Fault> {
+/// Borrowed: constants are shared by every task running the code, and a
+/// clone per property access would contend on the string's reference count.
+fn name_constant(code: &Code, i: u16) -> Result<&JsString, Fault> {
     match code.constants.get(usize::from(i)) {
-        Some(Value::String(name)) => Ok(name.clone()),
+        Some(Value::String(name)) => Ok(name),
         _ => Err(Fault::Internal("property name is not a string constant")),
     }
 }
@@ -672,7 +674,7 @@ fn declare_global(
     let Value::Object(id) = global_object(state, heap)? else {
         return Err(Fault::Internal("missing global object"));
     };
-    realm::declare_global_with(heap, id, &name, function, state.top().eval)?;
+    realm::declare_global_with(heap, id, name, function, state.top().eval)?;
     Ok(Flow::Next)
 }
 
@@ -1075,7 +1077,7 @@ fn property_step(
                 heap,
                 state.diag.task,
                 &base,
-                &property::Key::from_name(&name),
+                &property::Key::from_name(name),
             )?;
             super::native::read_result(state, read, base)?;
         }
@@ -1095,7 +1097,7 @@ fn property_step(
                     heap,
                     state,
                     object,
-                    &property::Key::from_name(&name),
+                    &property::Key::from_name(name),
                     v,
                     code.strict || matches!(instr, Instr::PutFieldStrict(_)),
                 )?;
@@ -1104,13 +1106,13 @@ fn property_step(
                     heap,
                     task,
                     &object,
-                    &name,
+                    name,
                     v,
                     matches!(instr, Instr::DefineGetter(_)),
                 )?;
                 state.push(object);
             } else {
-                property::define_field(heap, task, &object, &name, v)?;
+                property::define_field(heap, task, &object, name, v)?;
                 state.push(object);
             }
         }
@@ -1375,7 +1377,7 @@ fn private_step(
     let task = state.diag.task;
     match instr {
         Instr::NewPrivateName(i) => state.push(Value::Symbol(crate::value::JsSymbol::new(Some(
-            name_constant(code, i)?,
+            name_constant(code, i)?.clone(),
         )))),
         Instr::GetPrivate => {
             let key = state.pop()?;
@@ -1503,7 +1505,7 @@ fn property_read_step(
         return Ok(Flow::Next);
     }
     let key = match instr {
-        Instr::GetField(i) => property::Key::from_name(&name_constant(code, i)?),
+        Instr::GetField(i) => property::Key::from_name(name_constant(code, i)?),
         Instr::GetElem => {
             let raw = state.pop()?;
             let base = state
@@ -1681,12 +1683,10 @@ fn computed_name_step(
                 .ok_or(Fault::StringTooLong)?,
         },
     };
-    let name = JsString::concat(&name_constant(code, index)?, &name).ok_or(Fault::StringTooLong)?;
+    let name = JsString::concat(name_constant(code, index)?, &name).ok_or(Fault::StringTooLong)?;
     let record = heap
-        .with_object_mut_known(*id, |object, shared| match object {
-            HeapObject::Function(f)
-                if !shared && f.owner == state.diag.task && f.computed_name.is_none() =>
-            {
+        .with_unshared_object_mut(*id, |object| match object {
+            HeapObject::Function(f) if f.owner == state.diag.task && f.computed_name.is_none() => {
                 f.computed_name = Some(name.clone());
                 Ok(f.properties)
             }
@@ -1694,7 +1694,12 @@ fn computed_name_step(
                 "computed function name needs a fresh owned function",
             )),
         })
-        .unwrap_or(Err(Fault::Internal("computed function was reclaimed")))?;
+        .ok_or(Fault::Internal("computed function was reclaimed"))?
+        .unwrap_or_else(|| {
+            Err(Fault::Internal(
+                "computed function name needs a fresh owned function",
+            ))
+        })?;
     // Generator initialization has already materialized its metadata record.
     // Update that existing name while preserving its standard attributes.
     if let Some(record) = record {
@@ -2875,7 +2880,7 @@ fn global_check_step(
     realm::check_global_declaration(
         heap,
         id,
-        &name,
+        name,
         matches!(instr, Instr::CheckGlobalFunction(_)),
         state.top().eval,
     )?;
@@ -2897,7 +2902,7 @@ fn global_read_step(
         }
         Instr::GetGlobal(i) | Instr::GetGlobalOrUndefined(i) => {
             let name = name_constant(code, i)?;
-            if let Some(binding) = state.global_lexicals.get(&name) {
+            if let Some(binding) = state.global_lexicals.get(name) {
                 let value = with_cell(heap, &binding.cell, state.diag.task, |v| {
                     v.clone().ok_or(Fault::Throw(ThrowKind::Uninitialized))
                 })?;
@@ -2909,7 +2914,7 @@ fn global_read_step(
                 heap,
                 state.diag.task,
                 &global,
-                &property::Key::from_name(&name),
+                &property::Key::from_name(name),
             )?;
             if found.is_none() && !matches!(instr, Instr::GetGlobalOrUndefined(_)) {
                 return Err(Fault::Throw(ThrowKind::Unresolvable));
@@ -2934,7 +2939,7 @@ fn global_step(
         }
         Instr::PutGlobal(i) | Instr::PutGlobalStrict(i) => {
             let name = name_constant(code, i)?;
-            if let Some(binding) = state.global_lexicals.get(&name) {
+            if let Some(binding) = state.global_lexicals.get(name) {
                 let value = state
                     .operands()
                     .last()
@@ -2958,7 +2963,7 @@ fn global_step(
                     heap,
                     state.diag.task,
                     &global,
-                    &property::Key::from_name(&name),
+                    &property::Key::from_name(name),
                 )?
             {
                 return Err(Fault::Throw(ThrowKind::Unresolvable));
@@ -2968,7 +2973,7 @@ fn global_step(
                 heap,
                 state.diag.task,
                 &global,
-                &property::Key::from_name(&name),
+                &property::Key::from_name(name),
                 value.clone(),
                 code.strict || matches!(instr, Instr::PutGlobalStrict(_)),
             )?;
@@ -2987,7 +2992,7 @@ fn global_step(
         | Instr::DeclareGlobalConst(i)
         | Instr::DeclareGlobalConstValue(i) => {
             let name = name_constant(code, i)?;
-            if state.global_lexicals.contains_key(&name) {
+            if state.global_lexicals.contains_key(name) {
                 return Err(Fault::SyntaxError(format!(
                     "global lexical '{name}' is already declared"
                 )));
@@ -3010,7 +3015,7 @@ fn global_step(
                 cell
             };
             state.global_lexicals.insert(
-                name,
+                name.clone(),
                 super::frames::GlobalLexical {
                     cell: cell.clone(),
                     mutable: matches!(instr, Instr::DeclareGlobalLet(_)),
@@ -3021,7 +3026,7 @@ fn global_step(
             let name = name_constant(code, i)?;
             let binding = state
                 .global_lexicals
-                .get(&name)
+                .get(name)
                 .ok_or(Fault::Internal("missing global lexical"))?;
             let value = state
                 .operands()
@@ -3036,7 +3041,7 @@ fn global_step(
         }
         Instr::CheckGlobalLexicalConflict(i) => {
             let name = name_constant(code, i)?;
-            if state.global_lexicals.contains_key(&name) {
+            if state.global_lexicals.contains_key(name) {
                 return Err(Fault::SyntaxError(format!(
                     "global declaration conflicts with lexical '{name}'"
                 )));
@@ -3047,7 +3052,7 @@ fn global_step(
         }
         Instr::DeleteGlobal(i) => {
             let name = name_constant(code, i)?;
-            let deleted = if state.global_lexicals.contains_key(&name) {
+            let deleted = if state.global_lexicals.contains_key(name) {
                 false
             } else {
                 let global = global_object(state, heap)?;
@@ -3055,7 +3060,7 @@ fn global_step(
                     heap,
                     state.diag.task,
                     &global,
-                    &Value::String(name),
+                    &Value::String(name.clone()),
                     code.strict,
                 )?
             };

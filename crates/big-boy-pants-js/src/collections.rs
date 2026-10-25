@@ -231,7 +231,8 @@ enum Body {
     Other(&'static str),
 }
 
-/// Resolve `v` to its body under one short object-table lock.
+/// Resolve `v` to its body: persistent bodies are frozen and read without
+/// any lock (`crate::heap::storage`).
 fn body(heap: &Heap, v: &Value) -> Body {
     let Value::Object(id) = *v else {
         return Body::Other(v.type_name());

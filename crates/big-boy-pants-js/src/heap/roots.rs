@@ -228,7 +228,7 @@ impl Rooted {
 
     /// Collector test hook: live WeakMap entries, or `None` for another kind.
     /// This diagnostic is never exposed to JavaScript. It takes only the
-    /// object-table lock and does not inspect any key or value.
+    /// map's access word and does not inspect any key or value.
     #[doc(hidden)]
     pub fn weak_map_live_entry_count(&self) -> Option<usize> {
         let Value::Object(id) = self.value else {

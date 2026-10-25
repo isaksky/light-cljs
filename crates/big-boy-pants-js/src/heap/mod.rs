@@ -26,8 +26,10 @@
 //! bytecode executes. Lock order (a thread only ever acquires in this order):
 //! `gc` (collector state and the per-thread mutator registry; see [`gc`] for
 //! the safepoint rendezvous and its condition variable) → `roots` → `scopes` → `sources`
-//! → task bodies (collector only) → `objects`. The collector holds all of
-//! them for the duration of one stop-the-world collection. A run holds its
+//! → task bodies (collector only) → `objects` → per-object access words
+//! (several only in ascending slot order; see [`storage`]). The collector
+//! holds all of the named locks for the duration of one stop-the-world
+//! collection and takes access words one at a time. A run holds its
 //! own task body while it takes `gc` (to poll, or for a nested registration
 //! such as an atom operation); that is no cycle because the collector never
 //! locks the body of an executing task.
@@ -35,10 +37,20 @@
 //! **Allocation.** Registered mutators reserve empty slots in batches under
 //! `objects`, then initialize them without that lock. [`storage`] confines the
 //! unsafe boundary: stable segments, exclusive reservations, Release/Acquire
-//! publication and atomic generation/liveness/shareability. Existing object
-//! bodies are still reached under `objects`; sweep additionally stops every
-//! mutator. Unused reservations survive safepoints and return to the free list
-//! when the thread leaves its last mutator access for this heap.
+//! publication and atomic generation/liveness/shareability. Unused
+//! reservations survive safepoints and return to the free list when the
+//! thread leaves its last mutator access for this heap.
+//!
+//! **Access.** Existing objects are not reached through `objects`
+//! (light-cljs-471). A frozen body (persistent collections, atom handles,
+//! and known-shareable functions, built-ins and intrinsics) never changes
+//! and is read with no lock. Every other body is read or changed under its
+//! own slot's access word, which its owning task's run holds without
+//! contention. Owner and generation checks are unchanged; memory safety does
+//! not rely on task identity or scheduling. Sweep holds the stopped world,
+//! `objects` and each reclaimed slot's word. The rules, including how
+//! publication marks objects against a concurrent function-record attach,
+//! are in [`storage`] and `docs/architecture.md`.
 //!
 //! **Storage outside the heap.** [`Executable`](crate::Executable) code is
 //! independently owned immutable `Arc` storage, shared by tasks and not
@@ -51,7 +63,7 @@
 //! Persistent collections ([`crate::collections`]) are heap objects whose
 //! bodies are immutable `Arc` trie nodes outside the object table, shared
 //! between versions; the owning object's `Trace` reports every heap edge in
-//! its trie, and reads take the `objects` lock only to clone the body's `Arc`.
+//! its trie, and reads take no lock to clone the frozen body's `Arc`.
 //! Atoms ([`crate::atom`]) likewise hold an `Arc` cell outside the table;
 //! their operations use Rust atomics on it after cloning the `Arc`, and the
 //! atom module contains its own separate `unsafe` lifetime boundary.
@@ -192,8 +204,8 @@ pub(crate) enum ObjectKind {
 /// [`Rooted`] or a cleared-slot notification: those roots would keep their
 /// targets (and any cycles through them) alive forever. Notification queues
 /// belong outside the heap. Reclaimed payloads are dropped after the collector
-/// has released every heap lock. Payloads are reached only under the heap's object lock,
-/// so they need `Send` but not `Sync`.
+/// has released every heap lock. Payloads are never frozen: they are reached
+/// only under their slot's access word, so they need `Send` but not `Sync`.
 ///
 /// Every payload type must also declare its publication category
 /// ([`NativePayload::shareability`]; see [`crate::value::share`]).
@@ -202,7 +214,7 @@ pub(crate) trait NativePayload: Trace + Any + Send + fmt::Debug {
     /// payload's lifetime, and a [`Shareability::Persistent`] payload must
     /// never change the edges its [`Trace`] reports: the publication check
     /// walks those edges and caches a positive answer in the object's slot.
-    /// Called under the object lock: it must only return the category (same
+    /// Called under the object's access word: it must only return the category (same
     /// restrictions as [`Trace`]).
     fn shareability(&self) -> Shareability;
 }
@@ -211,8 +223,8 @@ pub(crate) trait NativePayload: Trace + Any + Send + fmt::Debug {
 #[derive(Debug)]
 pub(crate) enum HeapObject {
     /// An ordinary JavaScript object: task-owned and mutable by its owning
-    /// task's run only, in place under the object lock (`crate::object`),
-    /// or a realm intrinsic (`Object.prototype`), immutable once installed.
+    /// task's run only, in place under its access word (`crate::object`),
+    /// or a realm intrinsic (`Object.prototype`), frozen once installed.
     Plain(OrdinaryObject),
     /// Constructed by tests today; resumable native continuations
     /// (clj-quickjs-12) and later native kinds construct it.
@@ -225,24 +237,24 @@ pub(crate) enum HeapObject {
     Map(PMap),
     Occurrence(Occurrence),
     /// A task-owned transient builder: the one mutable collection kind. Only
-    /// its owning task's run mutates it, in place under the object lock; an
+    /// its owning task's run mutates it, in place under its access word; an
     /// open builder's `Trace` reports its draft's contents.
     Builder(Builder),
     /// A function object over shared immutable code and its captured values
     /// (`crate::vm::function`).
     Function(FunctionObject),
     /// A binding cell: mutable, task-owned; only its owning task's run
-    /// changes it, in place under the object lock (`crate::vm::function`).
+    /// changes it, in place under its access word (`crate::vm::function`).
     Cell(BindingCell),
     /// An atom (`crate::atom`): an explicit concurrent reference. Its cell is
     /// independently owned `Arc` storage so operations run on Rust atomics
-    /// without holding the object lock; its `Trace` reports the current value.
+    /// on a frozen heap object; its `Trace` reports the current value.
     Atom(Arc<AtomCell>),
     /// A built-in function (`crate::vm::builtin`): a realm intrinsic,
     /// immutable after the realm is built and shared by every task.
     Builtin(BuiltinFunction),
     /// A JavaScript array object: task-owned and mutable by its owning
-    /// task's run only, in place under the object lock
+    /// task's run only, in place under its access word
     /// (`crate::object::array`). Boxed: its element storage would otherwise
     /// enlarge every heap object.
     Array(Box<ArrayObject>),
@@ -485,111 +497,107 @@ impl Heap {
         self.allocate(object, shareable)
     }
 
-    /// Run `f` on a live object and its known-shareable bit under the object
-    /// lock; `None` if `id` is stale or foreign. Same rules as [`Heap::read`].
+    /// Run `f` on a live object and its known-shareable bit; `None` if `id`
+    /// is stale or foreign. Same rules as [`Heap::read`].
     pub(crate) fn read_shareable<R>(
         &self,
         id: ObjectId,
         f: impl FnOnce(&HeapObject, bool) -> R,
     ) -> Option<R> {
-        let table = lock(&self.objects);
-        table.get(id).map(|o| f(o, table.known(id).unwrap()))
+        self.slot_directory.read(id, f)
     }
 
     /// Set the known-shareable bit of every live object in `ids`: the caller
     /// has just proved each one transitively shareable. Stale ids are
-    /// ignored. One object-table lock.
+    /// ignored. Takes each object's access word in turn ([`storage`]).
     pub(crate) fn mark_shareable(&self, ids: &[ObjectId]) {
-        let mut table = lock(&self.objects);
-        for &id in ids {
-            table.mark_shareable(id);
-        }
+        self.slot_directory.mark_shareable(ids);
     }
 
     /// [`Heap::mark_shareable`] for the result of a publication walk, unless
-    /// one of the objects changed since the walk read it: in one object-table
-    /// critical section, if `changed` holds for any live object in
-    /// `ids`, nothing is marked and the result is false (the caller walks
+    /// one of the objects changed since the walk read it: while holding the
+    /// access words of all of `ids`, if `changed` holds for any live object
+    /// in `ids`, nothing is marked and the result is false (the caller walks
     /// again); otherwise every live object in `ids` is marked and the result
     /// is true. The one change it guards against is a function object
     /// gaining its own-property record (`crate::vm::function`, "Own
-    /// properties"), which takes the same lock and refuses a known function.
+    /// properties"), which [`Heap::with_unshared_object_mut`] makes under
+    /// that function's access word and refuses on a known function.
     pub(crate) fn mark_shareable_unless(
         &self,
         ids: &[ObjectId],
         changed: impl Fn(&HeapObject) -> bool,
     ) -> bool {
-        let mut table = lock(&self.objects);
-        if ids.iter().any(|&id| table.get(id).is_some_and(&changed)) {
-            return false;
-        }
-        for &id in ids {
-            table.mark_shareable(id);
-        }
-        true
+        self.slot_directory.mark_shareable_unless(ids, changed)
     }
 
-    /// Run `f` on a live object and its known-shareable bit under the object
-    /// lock, with mutable access; `None` if `id` is stale. Same rules as
-    /// [`Heap::with_object_mut`]; used to attach a function's own-property
-    /// record only while the function is not known shareable
-    /// (`crate::vm::function`).
-    pub(crate) fn with_object_mut_known<R>(
+    /// [`Heap::with_object_mut`] unless the object is known shareable:
+    /// `None` if `id` is stale, `Some(None)` if it is known shareable (`f`
+    /// does not run), otherwise `f`'s result. Check and change happen under
+    /// the object's access word; used to attach a function's own-property
+    /// record or computed name only while the function is not known
+    /// shareable (`crate::vm::function`).
+    pub(crate) fn with_unshared_object_mut<R>(
         &self,
         id: ObjectId,
-        f: impl FnOnce(&mut HeapObject, bool) -> R,
-    ) -> Option<R> {
-        let mut table = lock(&self.objects);
-        let known = table.known(id)?;
-        table.get_mut(id).map(|o| f(o, known))
+        f: impl FnOnce(&mut HeapObject) -> R,
+    ) -> Option<Option<R>> {
+        self.slot_directory.write(id, true, f)
     }
 
     /// The known-shareable bit of a live object (tests).
     #[cfg(test)]
     pub(crate) fn known_shareable(&self, id: ObjectId) -> Option<bool> {
-        lock(&self.objects).known(id)
+        self.slot_directory.known(id)
     }
 
     /// True when `id` names a live (not reclaimed) object of this heap.
+    /// One atomic header load; no lock.
     pub(crate) fn is_live(&self, id: ObjectId) -> bool {
-        lock(&self.objects).is_live(id)
+        self.slot_directory.is_live(id)
     }
 
-    /// Run `f` on a live object under the object lock; `None` if `id` is
-    /// stale or foreign. `f` must not touch the heap (it would deadlock) and
-    /// should only copy out what it needs (for collections: an `Arc` clone of
-    /// the immutable body), so the lock is held briefly.
+    /// Run `f` on a live object; `None` if `id` is stale or foreign. Frozen
+    /// objects (persistent collections, atoms, and known-shareable
+    /// functions, built-ins and intrinsics) are read without any lock;
+    /// other objects under their own access word, never the object-table
+    /// lock ([`storage`]). `f` must not touch the heap (it could deadlock)
+    /// and should only copy out what it needs (for collections: an `Arc`
+    /// clone of the immutable body), so the word is held briefly. The
+    /// caller is a registered mutator or keeps `id` reachable.
+    #[inline]
     pub(crate) fn read<R>(&self, id: ObjectId, f: impl FnOnce(&HeapObject) -> R) -> Option<R> {
-        lock(&self.objects).get(id).map(f)
+        self.slot_directory.read(id, |object, _| f(object))
     }
 
     /// The kind of a live object, or `None` if `id` is stale or foreign.
     #[cfg(test)]
     pub(crate) fn kind(&self, id: ObjectId) -> Option<ObjectKind> {
-        lock(&self.objects).get(id).map(HeapObject::kind)
+        self.read(id, HeapObject::kind)
     }
 
-    /// Run `f` on a live object under the object lock; `None` if `id` is
-    /// stale. `f` must not touch the heap (it would deadlock). Only mutable
+    /// Run `f` on a live object under its access word; `None` if `id` is
+    /// stale. `f` must not touch the heap (it could deadlock). Only mutable
     /// kinds may be changed: transient builders, binding cells and ordinary
     /// objects (each by its owning task's run), a realm intrinsic while its
     /// realm is being built, before anything can reach it (`crate::realm`),
-    /// and, in tests, native payloads. Persistent kinds never change.
+    /// and, in tests, native payloads. A frozen object is never lent
+    /// mutably: `f` inspects a private copy (to reject the change) and
+    /// anything it writes there is discarded ([`storage`]).
+    #[inline]
     pub(crate) fn with_object_mut<R>(
         &self,
         id: ObjectId,
         f: impl FnOnce(&mut HeapObject) -> R,
     ) -> Option<R> {
-        lock(&self.objects).get_mut(id).map(f)
+        self.slot_directory.write(id, false, f).flatten()
     }
 
     /// Address of a live object's storage, to test that the heap never moves
     /// objects.
     #[cfg(test)]
     pub(crate) fn address(&self, id: ObjectId) -> Option<usize> {
-        lock(&self.objects)
-            .get(id)
-            .map(|o| std::ptr::from_ref(o) as usize)
+        self.read(id, |o| std::ptr::from_ref(o) as usize)
     }
 
     pub(crate) fn stats(&self) -> HeapStats {
@@ -616,7 +624,7 @@ impl Heap {
     }
 
     /// Hold the object-table lock until the guard drops (tests: proves a
-    /// path takes no object lock).
+    /// path does not take it).
     #[cfg(test)]
     pub(crate) fn hold_objects(&self) -> ObjectsHeld<'_> {
         ObjectsHeld(lock(&self.objects))

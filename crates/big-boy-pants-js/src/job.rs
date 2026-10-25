@@ -65,7 +65,8 @@ fn run_hook(slot: &TestHook) {
 }
 
 impl JobInbox {
-    /// Called under the object-table lock, like registry cell mutation.
+    /// Called under the registry object's access word, like registry cell
+    /// mutation.
     /// Never acquire heap access while holding the inbox lock.
     pub(crate) fn retain_registry(&self, id: ObjectId, retain: bool) {
         let mut inbox = self.inbox.lock().unwrap();

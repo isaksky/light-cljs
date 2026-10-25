@@ -140,7 +140,7 @@
 //!   record can no longer be created, so a write is a catchable `TypeError`
 //!   and the first read of its `prototype` fails with `UnsupportedOperand`.
 //!   Attaching a record and setting the bit both happen under the
-//!   object-table lock and each refuses the other
+//!   function's access word and each refuses the other
 //!   ([`Heap::mark_shareable_unless`]), so no known-shareable function ever
 //!   has a record; for the same reason a function is never known shareable
 //!   at allocation, only after a check.
@@ -172,7 +172,7 @@ use crate::vm::executable::Code;
 use crate::vm::property::Key;
 
 /// Storage of a function object. See the module docs.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct FunctionObject {
     pub(crate) code: Arc<Code>,
     /// The closure's environment: `code.captures` values, never changed
@@ -222,7 +222,7 @@ impl Trace for FunctionObject {
 
 /// A bound callable has immutable call operands and initial metadata. Own
 /// property changes use the same optional, task-owned record as closures.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct BoundFunction {
     pub(crate) target: Value,
     pub(crate) this: Value,
@@ -947,23 +947,17 @@ fn writable_record(
     }
     let fresh = heap.alloc(HeapObject::Plain(fresh)).ok_or_else(exhausted)?;
     let record = heap
-        .with_object_mut_known(function, |object, known| {
+        .with_unshared_object_mut(function, |object| {
             let properties = match object {
                 HeapObject::Function(f) => &mut f.properties,
                 HeapObject::BoundFunction(f) => &mut f.properties,
                 _ => return Err(Fault::Internal("not a function object")),
             };
-            match *properties {
-                Some(record) => Ok(record),
-                // A check proved it shareable since `info` was read.
-                None if known => Err(change.on_shared()),
-                None => {
-                    *properties = Some(fresh);
-                    Ok(fresh)
-                }
-            }
+            Ok(*properties.get_or_insert(fresh))
         })
-        .unwrap_or(Err(Fault::Internal("function object was reclaimed")))?;
+        .ok_or(Fault::Internal("function object was reclaimed"))?
+        // A check proved it shareable since `info` was read.
+        .unwrap_or_else(|| Err(change.on_shared()))?;
     // Complete initial property order before a user property can be added.
     // Untouched functions still answer metadata and keys without a record.
     if info.constructor {

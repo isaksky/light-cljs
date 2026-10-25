@@ -140,10 +140,11 @@
 //! `NewArray` and an access to a function object, which may allocate its
 //! property record and lazy `prototype` (`crate::vm::function`), so
 //! `GetField`, `PutField`, `GetElem`, `PutElem` and `In` are poll points. Each
-//! object visited is read or changed under one short object-table lock (a
-//! realm intrinsic is read from the realm's immutable view instead, with no
-//! lock: `crate::realm`, "Lock-free reads"), and the property-key table is
-//! consulted before, never while that lock is held.
+//! object visited is read or changed under its own short access word, never
+//! the object-table lock (`crate::heap::storage`; a realm intrinsic is read
+//! from the realm's immutable view instead, with no lock: `crate::realm`,
+//! "Lock-free reads"), and the property-key table is consulted before,
+//! never while that word is held.
 //! Polls run before the operation, never inside these helpers. Interned
 //! key caches (including `Interned`) end before returning to the dispatch
 //! loop; accessor calls are returned as values for a later VM step. Keys
@@ -197,7 +198,8 @@ impl Key {
     fn lookup(&self, heap: &Heap) -> Option<PropertyKey> {
         match self {
             Key::Symbol(s) => heap.keys().lookup_symbol(s),
-            _ => heap.keys().lookup(&self.to_name()),
+            Key::Name(name) => heap.keys().lookup(name),
+            Key::Index(_) => heap.keys().lookup(&self.to_name()),
         }
     }
 
@@ -207,7 +209,8 @@ impl Key {
                 .keys()
                 .intern_symbol(s)
                 .ok_or(Fault::OutOfMemory("property-key table exhausted")),
-            _ => intern(heap, &self.to_name()),
+            Key::Name(name) => intern(heap, name),
+            Key::Index(_) => intern(heap, &self.to_name()),
         }
     }
 

@@ -70,8 +70,8 @@
 //! An atom's cell (`AtomCell`, independently owned `Arc` storage referenced
 //! by the heap object, like collection bodies) holds an `AtomicPtr` to an
 //! immutable boxed value. Each operation first takes two short heap metadata
-//! locks: the `gc` lock to register as a mutator (below) and the object lock
-//! to clone the cell's `Arc`, as every heap object access does. The value
+//! locks: the `gc` lock to register as a mutator (below). The atom's heap
+//! object is frozen, so cloning the cell's `Arc` takes no lock. The value
 //! itself is then read, compared and replaced with Rust atomics only:
 //!
 //! * a write allocates and fills its box, then installs it with

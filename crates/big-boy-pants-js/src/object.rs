@@ -47,10 +47,11 @@
 //!   Freezing also makes every own property non-writable and
 //!   non-configurable; it does not change the owner.
 //!
-//! Reads and writes take only the heap's object-table lock (one short
-//! critical section per object visited), no per-object lock: only the owning
-//! task's run ever touches an owned object's properties, so there is no
-//! contention on the object itself.
+//! Reads and writes take only the object's own access word in the heap
+//! (one short critical section per object visited), never the object-table
+//! lock (`crate::heap::storage`): only the owning task's run ever touches an
+//! owned object's properties, so the word is uncontended and stays with
+//! that task's worker. A frozen realm intrinsic is read with no lock.
 //!
 //! # Property keys
 //!
@@ -77,7 +78,9 @@ pub(crate) mod weak_ref;
 pub(crate) mod array_buffer;
 pub(crate) mod typed_array;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{PoisonError, RwLock};
 
 use crate::atom::same_value;
@@ -104,9 +107,45 @@ impl Trace for PropertyKey {
 /// leaf lock only outside other heap locks. The stopped collector sweeps it
 /// with only the rendezvous lock held. Raw keys must be traced across a
 /// safepoint; operation-local caches must end before the next safepoint.
-#[derive(Debug, Default)]
+///
+/// [`PropertyKeys::lookup`] first consults a bounded thread-local cache of
+/// found names, so concurrent tasks do not all write the read lock's shared
+/// counter on every property access. An entry is tagged with this table's
+/// never-reused identity and the sweep epoch read under the lock. Only a
+/// sweep removes a name or frees a key for reuse, and it advances the epoch
+/// under the write lock before mutators resume, which invalidates every
+/// cached entry; interning only adds names, which a cache never denies.
+#[derive(Debug)]
 pub(crate) struct PropertyKeys {
     table: RwLock<KeyTable>,
+    identity: u64,
+    epoch: AtomicU64,
+}
+
+impl Default for PropertyKeys {
+    fn default() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        PropertyKeys {
+            table: RwLock::default(),
+            identity: NEXT.fetch_add(1, Ordering::Relaxed),
+            epoch: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Found names of one key table on this thread (see [`PropertyKeys`]).
+#[derive(Default)]
+struct KeyCache {
+    table: u64,
+    epoch: u64,
+    keys: HashMap<JsString, PropertyKey>,
+}
+
+/// Entries kept per thread before the cache starts over.
+const KEY_CACHE_LIMIT: usize = 4096;
+
+thread_local! {
+    static KEY_CACHE: RefCell<KeyCache> = RefCell::new(KeyCache::default());
 }
 
 #[derive(Debug, Default)]
@@ -146,11 +185,45 @@ impl KeyTable {
 }
 
 impl PropertyKeys {
-    /// The key of `name` if it is currently interned. A
-    /// shared read lock only.
+    /// The key of `name` if it is currently interned: from this thread's
+    /// cache when valid (type docs), otherwise under a shared read lock.
     pub(crate) fn lookup(&self, name: &JsString) -> Option<PropertyKey> {
-        let table = self.table.read().unwrap_or_else(PoisonError::into_inner);
-        table.ids.get(name).copied()
+        let epoch = self.epoch.load(Ordering::Acquire);
+        // A thread tearing down its locals simply takes the lock.
+        let cached = KEY_CACHE
+            .try_with(|cache| {
+                let cache = cache.borrow();
+                if cache.table == self.identity && cache.epoch == epoch {
+                    cache.keys.get(name).copied()
+                } else {
+                    None
+                }
+            })
+            .ok()
+            .flatten();
+        if cached.is_some() {
+            return cached;
+        }
+        let (key, epoch) = {
+            let table = self.table.read().unwrap_or_else(PoisonError::into_inner);
+            (
+                table.ids.get(name).copied()?,
+                self.epoch.load(Ordering::Relaxed),
+            )
+        };
+        let _ = KEY_CACHE.try_with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.table != self.identity
+                || cache.epoch != epoch
+                || cache.keys.len() >= KEY_CACHE_LIMIT
+            {
+                cache.table = self.identity;
+                cache.epoch = epoch;
+                cache.keys.clear();
+            }
+            cache.keys.insert(name.clone(), key);
+        });
+        Some(key)
     }
 
     /// The key of `name`, interning it if new. `None` only when all 2^32
@@ -213,6 +286,8 @@ impl PropertyKeys {
     /// mark. Only the stopped collector calls this, before mutators resume.
     pub(crate) fn sweep(&self, is_live: impl Fn(PropertyKey) -> bool) {
         let mut table = self.table.write().unwrap_or_else(PoisonError::into_inner);
+        // Invalidate every thread's cached names before any is removed.
+        self.epoch.fetch_add(1, Ordering::Release);
         for index in 0..table.names.len() {
             let Some(entry) = &table.names[index] else {
                 continue;
@@ -510,6 +585,39 @@ impl OrdinaryObject {
             segmenter: None,
             duration_format: None,
         }
+    }
+
+    /// A copy of a frozen intrinsic's plain property store, for an attempted
+    /// change that the heap must not apply to the shared original
+    /// (`crate::heap::storage`). `None` if internal slots are present: no
+    /// frozen object carries them.
+    pub(crate) fn stand_in(&self) -> Option<OrdinaryObject> {
+        let internal = self.internal.is_some()
+            || self.locale_data.is_some()
+            || self.number_format.is_some()
+            || self.iterator.is_some()
+            || self.plural_rules.is_some()
+            || self.collator.is_some()
+            || self.date_time_format.is_some()
+            || self.list_format.is_some()
+            || self.intl_service.is_some()
+            || self.segmenter.is_some()
+            || self.duration_format.is_some();
+        (!internal).then(|| OrdinaryObject {
+            owner: self.owner,
+            intrinsic: self.intrinsic,
+            prototype: self.prototype,
+            extensible: self.extensible,
+            entries: self.entries.clone(),
+            index: self.index.clone(),
+            primitive_data: self.primitive_data.clone(),
+            error_data: self.error_data,
+            arguments_data: self.arguments_data,
+            date_value: self.date_value,
+            regexp: self.regexp.clone(),
+            number_format_bound: self.number_format_bound.clone(),
+            ..OrdinaryObject::new(None)
+        })
     }
 
     /// An empty, extensible object owned by `owner` whose prototype is
@@ -1214,6 +1322,40 @@ mod tests {
         assert_eq!(keys.lookup(&s("x")), Some(x));
         assert_eq!(keys.name(y), Some(s("y")));
         assert_eq!(keys.len(), 2);
+    }
+
+    /// The thread-local lookup cache (light-cljs-471) never outlives a
+    /// sweep that removed or reused a key, and never answers for another
+    /// table on the same thread.
+    #[test]
+    fn cached_lookups_follow_sweeps_and_stay_within_their_table() {
+        let keys = PropertyKeys::default();
+        let dead = keys.intern(&s("dead")).unwrap();
+        let live = keys.intern(&s("live")).unwrap();
+        // Cached now, on this thread.
+        assert_eq!(keys.lookup(&s("dead")), Some(dead));
+        assert_eq!(keys.lookup(&s("live")), Some(live));
+        keys.sweep(|key| key == live);
+        assert_eq!(keys.lookup(&s("dead")), None);
+        assert_eq!(keys.lookup(&s("live")), Some(live));
+        // The freed slot now names something else; the old name is new.
+        let reused = keys.intern(&s("other")).unwrap();
+        assert_eq!(reused.0, dead.0);
+        assert_eq!(keys.lookup(&s("other")), Some(reused));
+        assert_eq!(keys.lookup(&s("dead")), None);
+        let again = keys.intern(&s("dead")).unwrap();
+        assert_ne!(again, reused);
+        assert_eq!(keys.lookup(&s("dead")), Some(again));
+
+        let second = PropertyKeys::default();
+        assert_eq!(second.lookup(&s("live")), None);
+        let first = second.intern(&s("first")).unwrap();
+        second.intern(&s("padding")).unwrap();
+        let theirs = second.intern(&s("live")).unwrap();
+        assert_ne!(theirs, live);
+        assert_eq!(second.lookup(&s("live")), Some(theirs));
+        assert_eq!(keys.lookup(&s("live")), Some(live));
+        assert_eq!(second.lookup(&s("first")), Some(first));
     }
 
     #[test]

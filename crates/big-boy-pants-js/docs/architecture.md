@@ -67,20 +67,73 @@ the last token returns unused slots, including on unwind. Tokens borrow the
 heap, so the thread-local reservation cannot outlive it or alias a later heap
 at the same address. Idle thread registrations alone do not retain reservations.
 
-The slot's atomic word combines generation, liveness, known-shareable and
-concurrent-reference flags. Initialization writes the boxed body before a
-Release store makes the slot live; lookup Acquires that word before accessing
-the body. Persistent allocation checks only these atomic headers, including
-the concurrent-reference flag, without reading another object's body. A live
-slot is never reinitialized. Published body reads/writes still hold the
-object-table lock, including publication walks and the function own-property
-check. The sticky known-shareable bit therefore keeps its existing publication
-contract. All new unsafe accesses and the `Sync` implementation are confined to
-`heap/storage.rs`, with local `SAFETY` comments.
+The slot's atomic word combines generation, liveness, known-shareable,
+concurrent-reference and frozen flags. Initialization writes the boxed body
+before a Release store makes the slot live; lookup Acquires that word and
+compares the generation before accessing the body. Persistent allocation checks
+only these atomic headers, including the concurrent-reference flag, without
+reading another object's body. A live slot is never reinitialized.
 
-Sweep holds both the stopped-world rendezvous and the object-table lock: no
-allocator can be initializing a slot, and no body borrow can survive into
-sweep. It clears dead bodies, increments generations (retiring exhausted
+Existing objects are no longer reached through the object-table lock
+(light-cljs-471). There are two access classes per slot:
+
+- **Frozen** bodies never change while live and are read with no lock and no
+  atomic read-modify-write. Persistent vectors, maps, occurrences and atom
+  handles are frozen at allocation. Functions, bound functions, built-ins and
+  realm intrinsic objects/arrays become frozen when marked known shareable
+  (realm installation or a successful publication check). Each freezable type
+  is statically asserted `Sync` and has no conditional (weak) storage. A frozen
+  body is never lent mutably. The mutable API hands a caller a private copy:
+  it only inspects that copy in order to reject the change, for example a
+  property write to an intrinsic or a `Map` method on a vector, and anything
+  written to it is discarded.
+- **Mutable** bodies (task-owned objects, cells, builders, promises, native
+  payloads and functions not yet known shareable) are read and changed only
+  while holding the slot's one-byte access word, a per-object spin lock. One
+  holder at a time gets a reference, which never escapes the closure.
+
+Ownership is not the soundness argument. Owner checks and `ForeignObject`
+faults remain exactly where they were, inside the access closures. But memory
+safety would hold even with duplicate task IDs, concurrent host callers or a
+foreign task, because those can only contend for the word. Ownership and
+scheduling make it fast: only the owning task's run changes an owned object,
+and a task runs on one worker at a time. The word is therefore uncontended and
+its cache line stays with that worker, and nothing on the access path is
+shared between tasks. A lock-free ownership protocol without the word would
+instead need biased-lock revocation for every foreign or host access, so it was
+not adopted.
+
+Marking takes the word, and the frozen flag is set while holding it. So the
+last mutation happens-before the Release that freezes a body, and a writer that
+raced the marking sees the flag once it holds the word. Publication replaces
+the old table-lock exclusion with an explicit per-object protocol.
+`mark_shareable_unless` takes the words of every expanded object in ascending
+slot order, re-checks that no function gained its own-property record since the
+walk, and marks them all before releasing. A record attach checks the
+known-shareable bit under the same function's word. Whichever holds the word
+first wins: an attach either precedes the re-check (the check walks again and
+rejects) or follows the marking (the attach is refused). The sticky
+known-shareable bit therefore keeps its contract. A thread holding a word
+never waits for another, except during that ordered multi-word marking.
+`objects` may be held while taking words (GC, statistics), never the reverse.
+No heap lock or safepoint is taken while a word is held. All unsafe accesses
+and the `Sync` implementation are confined to `heap/storage.rs`, which states
+these rules with local `SAFETY` comments.
+
+The runtime-wide property-key table keeps its leaf `RwLock`, but name lookups
+first consult a bounded thread-local cache. Entries are tagged with the table's
+never-reused identity and the sweep epoch read under the lock; a sweep advances
+the epoch under the write lock before mutators resume. Concurrent tasks
+therefore do not write the lock's shared reader count on every property access.
+
+Sweep holds the stopped-world rendezvous, the object-table lock and each
+reclaimed slot's access word: no allocator can be initializing a slot, and no
+table reader or body borrow can survive into sweep. A lock-free frozen read
+comes from an unparked registered mutator (which delays the rendezvous), from a
+thread that keeps the object reachable from a root, or from a thread holding
+the table lock. None of them can see an unreachable body being swept. The
+collector traces mutable bodies under their words. It skips the conditional
+pass for frozen bodies, which have no weak storage. It clears dead bodies, increments generations (retiring exhausted
 ones), and returns the reclaimed slots to the free list in one pause. Empty
 reserved slots remain exclusively reserved across collections; they are not
 objects or roots. Reclaimed bodies are dropped after all heap locks are
@@ -110,7 +163,7 @@ FinalizationRegistry callbacks are owner-task jobs, never collector callbacks.
 Immutable executable code, strings/ropes and persistent trie nodes use coarse
 `Arc` ownership outside the object table. Trie-owning heap objects trace every
 contained heap edge; `Arc` does not substitute for tracing. Persistent reads
-resolve a body under the object-table lock, then walk it without per-node locks.
+resolve a frozen body with no lock, then walk it without per-node locks.
 Strings own no GC object edges. Atom cells use a separate immutable-box lifetime
 boundary described below. Short metadata/object locks exist; there is no global
 interpreter lock and no lock held across ordinary bytecode execution or a wait.

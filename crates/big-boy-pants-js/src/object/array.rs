@@ -43,8 +43,8 @@
 //!   beyond `length` sets `length` to that index plus one; a read-only
 //!   `length` rejects that write.
 //!
-//! Reads and writes take only the heap's object-table lock, as for
-//! ordinary objects (`crate::object`).
+//! Reads and writes take only the array's own access word, as for ordinary
+//! objects (`crate::object`).
 
 use std::collections::BTreeMap;
 
@@ -138,6 +138,20 @@ impl ArrayObject {
             ..ArrayObject::new(None)
         }
     }
+    /// A copy of a frozen intrinsic array ([`OrdinaryObject::stand_in`]).
+    pub(crate) fn stand_in(&self) -> Option<ArrayObject> {
+        Some(ArrayObject {
+            object: self.object.stand_in()?,
+            dense: self.dense.clone(),
+            sparse: self.sparse.clone(),
+            length: self.length,
+            attributes: self.attributes.clone(),
+            accessors: self.accessors.clone(),
+            length_writable: self.length_writable,
+            frozen: self.frozen,
+        })
+    }
+
     /// An empty array (length 0) with a null prototype, owned by `owner`.
     pub(crate) fn new(owner: Option<TaskId>) -> ArrayObject {
         ArrayObject {

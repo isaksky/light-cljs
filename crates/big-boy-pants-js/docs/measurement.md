@@ -353,6 +353,150 @@ cargo test --locked -Zbuild-std --target aarch64-apple-darwin -p big-boy-pants-j
 cargo test --locked -Zbuild-std --target aarch64-apple-darwin -p big-boy-pants-js --test gc --test gc_roots -- --test-threads=3
 ```
 
+## Object access without the table lock (2026-10-25)
+
+light-cljs-471 removed the object-table lock from existing-object access: frozen
+bodies are read with no lock, mutable bodies under their own slot access word
+(contract in [architecture.md](architecture.md#heap-roots-and-safepoints)).
+After that change the profile's top frame was the property-key table's read
+lock, so name lookups now go through an epoch-validated thread-local cache, and
+`GetField`/`Key::lookup` borrow constant names instead of cloning them.
+
+Both binaries came from the same Mac/Rust 1.99.1 workspace release profile on an
+Apple M3 Ultra (Virtual) host reporting 24 available CPUs. The baseline is
+`b4ec39703e52b25cfe9bf7cc52a9b63d2ad6247e`, built before any source edit. The
+final binary is the working tree described in the light-cljs-471 commit. Each
+was built with `CARGO_BUILD_JOBS=3 cargo build --locked --release -p
+big-boy-pants-js --example bench`, copied aside, and run as `bench scaling`:
+full size, one discarded warmup, five measured rounds, four tasks per thread.
+No other build or test ran during any timing window. Host background activity
+was not controlled. Load averages were `1.98 2.21 2.76` → `8.28 6.55 4.76` for
+the baseline run and `2.59 3.10 3.27` → `5.92 4.07 3.62` for the final run.
+
+| Kernel | Threads | Before ns/iteration median [min..max] | After ns/iteration median [min..max] | Before scaling | After scaling |
+|---|---:|---:|---:|---:|---:|
+| arithmetic | 1 | 311.4 [309.7..315.3] | 337.9 [335.8..339.9] | 1.000x | 1.000x |
+| arithmetic | 8 | 43.2 [42.9..44.5] | 43.7 [43.5..44.7] | 7.208x | 7.724x |
+| allocate | 1 | 3227198.2 [3163549.7..3287121.4] | 3361345.8 [3353193.8..3384494.0] | 1.000x | 1.000x |
+| allocate | 2 | 4343762.8 [4267607.8..4612418.8] | 2070419.9 [2029196.1..2191692.8] | 0.743x | 1.624x |
+| allocate | 4 | 10222366.9 [10106138.4..10536385.2] | 1491898.9 [1463117.8..1575597.4] | 0.316x | 2.253x |
+| allocate | 8 | 11060169.6 [10928626.1..11161242.4] | 1465033.9 [1459920.6..1482360.0] | 0.292x | 2.294x |
+| properties | 1 | 1071.1 [1061.9..1078.5] | 1042.1 [1039.6..1066.0] | 1.000x | 1.000x |
+| properties | 2 | 951.1 [920.8..989.0] | 665.6 [649.4..705.7] | 1.126x | 1.566x |
+| properties | 4 | 1134.6 [1042.5..1529.5] | 660.3 [652.0..750.6] | 0.944x | 1.578x |
+| properties | 8 | 3343.4 [3223.2..3384.8] | 1068.7 [949.4..1136.5] | 0.320x | 0.975x |
+| cljs_map | 1 | 5694556.5 [5692872.7..5843830.7] | 5736397.9 [5709430.5..5804557.0] | 1.000x | 1.000x |
+| cljs_map | 8 | 23202487.4 [22823951.9..23394430.7] | 1180897.8 [1162437.8..1220608.9] | 0.245x | 4.858x |
+| cljs_protocol | 1 | 667301.8 [652064.3..683168.8] | 658736.5 [654191.7..660824.2] | 1.000x | 1.000x |
+| cljs_protocol | 8 | 2294287.8 [2282441.6..2306093.9] | 135864.7 [131952.8..141041.8] | 0.291x | 4.848x |
+
+The two- and four-thread arithmetic, cljs_map and cljs_protocol rows are in the
+same output files. Final arithmetic scales 1.961x and 3.855x; cljs_map
+1.849x and 3.182x; cljs_protocol 1.873x and 3.175x. At eight threads, aggregate
+throughput rose 7.6x for allocate (90.4 to 682.6 iterations/s), 3.1x for
+properties, 19.6x for cljs_map and 16.9x for cljs_protocol.
+
+**The 6x gate is not met.** Allocate-and-traverse reaches 2.29x and the
+property-heavy kernel 0.98x at eight threads. Arithmetic stays near linear.
+
+The unpaired one-thread rows above differ by up to 8.5% (arithmetic, which
+touches no heap object). So the single-thread check was repeated as
+interleaved A/B pairs right after, three pairs of `bench kernels` alternating
+the two copied binaries, with load `4.91 3.93 3.58` → `3.31 3.63 3.49`. Medians
+of the three per-run medians, before → after:
+
+| Kernel | Before | After | Change |
+|---|---:|---:|---:|
+| arithmetic | 332.6 | 338.4 | +1.7% |
+| allocate | 3378760.9 | 3391446.4 | +0.4% |
+| properties | 1068.5 | 1053.6 | -1.4% |
+| cljs_map | 5824774.5 | 5775376.6 | -0.8% |
+| cljs_protocol | 665291.7 | 663438.5 | -0.3% |
+
+All single-thread rows are within the 5% limit in the paired comparison.
+
+Remaining contention, from `sample <pid> 5 1` of a separate final-binary
+`bench scaling --rounds 1` during the eight-thread allocate and properties
+phases (wall-time stacks, not instruction counts):
+
+| Phase | Top self frames (share of 21,032 / 14,426 worker samples) |
+|---|---|
+| allocate | `dispatch::execute_budgeted` 4,399 (20.9%); `Heap::read` closure in `dispatch::callee` 1,312 (6.2%); `dispatch::Fault` drop 1,030 (4.9%); `step_instruction` 820; `return_flow` 697 |
+| properties | `property::Key` drop 2,559 (17.7%); `property_read_step` 1,897 (13.2%); `execute_budgeted` 1,221 (8.5%); `property_step` 1,065 (7.4%); `step_instruction` 951 |
+
+Every `__ulock_wait` sample (2,723 and 3,511) is the main thread in
+`pthread_join`. Worker mutex waits total 51 and 2 samples, under realm lookup
+and allocation refills. No lock is the serialized operation any more. The
+growth in self time on short frames at eight threads, against flat
+single-thread cost, points at shared cache lines rather than locks. That
+attribution is inferred, not instruction-level proof. The frames that grow
+contain atomic reference-count traffic on immutable data shared by every task
+running one `Executable`:
+
+- `callee` clones the function's `Arc<Code>` for each call, and frames keep and
+  drop it.
+- `Key::Name` clones the constant property name's `JsString` once per access.
+
+light-cljs-473 plans to intern name constants per executable. The per-call
+`Arc<Code>` traffic is the focused follow-up light-cljs-486 (remove shared code
+reference-count traffic from VM calls).
+
+The changed contracts are tested by:
+
+- `heap::storage::tests::object_access_and_publication_complete_while_the_table_lock_is_held`:
+  owned reads and writes, frozen reads, liveness, a publication walk and marking
+  all finish while another thread holds the table lock.
+- `unlocked_access_keeps_owner_faults_and_generation_checks`
+- `frozen_bodies_are_lent_mutably_only_as_discarded_copies`
+- `owned_and_frozen_access_interleave_with_collections`
+- `value::share::tests::attach_and_publication_serialize_on_the_function_access_word`:
+  both orders, forced with hooks inside the holder's critical section.
+- `object::tests::cached_lookups_follow_sweeps_and_stay_within_their_table`
+
+Validation of the final content used `CARGO_BUILD_JOBS=3` and
+`--test-threads=3`:
+
+- `cargo test --locked -p big-boy-pants-js --all-targets` passed **1,975 tests**
+  in 59 result groups, with no failures or ignored tests. `--doc` passed all
+  **six doctests**.
+- Fifty iterations of the compiled test binaries made 600 non-empty runs, all
+  passing, for **22,550 test executions**:
+  - 550 runs of the complete `atoms`, `cancellation`, `concurrency`
+    (multi-worker adversarial suite), `executor`, `executor_gc`, `gc`,
+    `gc_roots`, `promises`, `publication`, `safepoints` and `wakeup` binaries:
+    279 tests per iteration, 13,950 executions.
+  - 50 runs of the lib binary filtered to `heap:: value::share atom:: task::`,
+    covering root inventory, storage, GC, publication, atoms, promises/jobs,
+    cancellation and handoff. Every iteration reported 172 passed, 0 failed,
+    0 ignored and 358 filtered out: 8,600 executions.
+  - A first lib loop passed the four filters as one quoted zsh scalar. libtest
+    received a single unmatched filter and ran zero tests 50 times. Those empty
+    runs are excluded from the counts above. The lib repetitions were then
+    rerun on the unchanged final source, with the filters passed as separate
+    words, from `crates/big-boy-pants-js/`:
+
+    ```sh
+    for i in {1..50}; do ../../target/debug/deps/big_boy_pants_js-<hash> heap:: value::share atom:: task:: --test-threads=3 || break; done
+    ```
+
+    Check each run's `test result:` line for the expected nonzero count.
+- `cargo fmt -p big-boy-pants-js -- --check` passed. Strict
+  `cargo clippy --locked -p big-boy-pants-js --all-targets -- -D warnings`
+  still fails with only the same nine pre-existing diagnostics (`deprecated`,
+  `clippy::chunks_exact_to_as_chunks`, `clippy::byte_char_slices`). Allowing
+  only those three categories passes. No source suppression was added for
+  those nine diagnostics. The change does add two narrow attributes in
+  `heap/storage.rs`. `Slot::body_mut` carries `#[allow(clippy::mut_from_ref)]`
+  at the `UnsafeCell` boundary; it is an `unsafe fn` whose documented
+  precondition is that the caller holds the slot's access word and observed
+  the slot live and not frozen. The compile-time `Sync` assertion helper
+  `freezable_kinds_are_sync`, which is never called, carries
+  `#[allow(dead_code)]`.
+- ThreadSanitizer, with the commands of the previous section, passed the lib
+  filters `heap:: value::share object::tests::` (**77 tests**, passed after
+  `--`). It also passed the `gc`, `gc_roots`, `publication` and `atoms` binaries
+  (**164 tests**). There were no race reports.
+
 ## Method and limits of the measurements
 
 `examples/bench/main.rs` handles timing, a counting allocator and reports;

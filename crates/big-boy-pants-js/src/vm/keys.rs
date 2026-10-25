@@ -51,9 +51,9 @@
 //!
 //! # Locks
 //!
-//! The target is read under one object-table lock, collecting interned
-//! keys; their names are looked up in the property-key table after that
-//! lock is released (the key table's lock is a leaf, `crate::object`). No
+//! The target is read under its access word, collecting interned keys;
+//! their names are looked up in the property-key table after that word is
+//! released (the key table's lock is a leaf, `crate::object`). No
 //! JavaScript runs and nothing is allocated before the result array, which
 //! the built-ins allocate last.
 //!
@@ -250,7 +250,7 @@ fn key_store(heap: &Heap, target: ObjectId) -> Result<Option<ObjectId>, Fault> {
     }
 }
 
-/// Collect the keys of one object under the object-table lock (no key-table
+/// Collect the keys of one object under its access word (no key-table
 /// lookups here).
 fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
     let readable = |owner: Option<TaskId>| match owner {
