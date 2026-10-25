@@ -98,6 +98,26 @@ fn promise_subclass_keeps_brand_and_runs_executor() {
 }
 
 #[test]
+fn derived_promise_own_properties_follow_ordinary_object_rules() {
+    check(
+        r#"
+        class P extends Promise { constructor() { super(() => {}); this.tag = {value: 7}; } }
+        let p = new P();
+        Object.defineProperty(p, 'answer', {get() { return this.tag.value; }, configurable: true});
+        let ok = p.answer === 7 && Object.keys(p).join(',') === 'tag' &&
+            Object.getOwnPropertyDescriptor(p, 'tag').writable && delete p.answer;
+        let prototype = {marker: 8};
+        Object.setPrototypeOf(p, prototype);
+        ok = ok && p.marker === 8 && Object.getPrototypeOf(p) === prototype;
+        Object.freeze(p);
+        let caught = false; try { Object.defineProperty(p, 'extra', {value: 1}); }
+        catch(e) { caught = e instanceof TypeError; }
+        ok && caught && Object.isFrozen(p) && !Object.isExtensible(p) && p.tag.value === 7;
+    "#,
+    );
+}
+
+#[test]
 fn buffer_typed_array_and_function_subclasses() {
     check(
         "class B extends ArrayBuffer {} let b = new B(8); class U extends Uint8Array {} let u = new U(b); u[0] = 7; b instanceof B && b.byteLength === 8 && u instanceof U && u instanceof Uint8Array && u.length === 8 && u[0] === 7",
@@ -139,7 +159,7 @@ fn bound_builtin_super_and_argument_forwarding() {
 }
 
 #[test]
-fn promise_subclass_and_resolver_cannot_publish_mutable_prototype() {
+fn derived_promises_publish_without_exposing_mutable_properties() {
     for (source, consumer) in [
         (
             "class P extends Promise {} new P(() => {});",
@@ -150,8 +170,28 @@ fn promise_subclass_and_resolver_cannot_publish_mutable_prototype() {
             "function consume(p){return Promise.prototype.then.call(p,()=>{});}",
         ),
         (
-            "let resolve; class P extends Promise {} new P(r => {resolve = r;}); resolve;",
-            "function consume(r){return r(1);}",
+            "class P extends Promise {} new P(() => {});",
+            "function consume(p){return p.constructor;}",
+        ),
+        (
+            "class P extends Promise {} let p = new P(() => {}); p.private = {value: 7}; p;",
+            "function consume(p){return p.private;}",
+        ),
+        (
+            "class P extends Promise {} new P(() => {});",
+            "function consume(p){p.private = 1;}",
+        ),
+        (
+            "class P extends Promise {} new P(() => {});",
+            "function consume(p){return Object.keys(p);}",
+        ),
+        (
+            "class P extends Promise {} new P(() => {});",
+            "function consume(p){return Object.getOwnPropertyDescriptor(p, 'private');}",
+        ),
+        (
+            "class P extends Promise {} new P(() => {});",
+            "function consume(p){return Object.freeze(p);}",
         ),
     ] {
         let runtime = Runtime::new();
@@ -159,13 +199,36 @@ fn promise_subclass_and_resolver_cannot_publish_mutable_prototype() {
         let RunOutcome::Complete(value) = runtime.spawn(&code, &[]).unwrap().run().unwrap() else {
             panic!("expected constructor result");
         };
-        assert!(runtime.publish(&value).is_err(), "{source}");
+        runtime.publish(&value).unwrap();
         let consumer = clj_quickjs::frontend::compile_function(consumer).unwrap();
         let result = runtime.spawn(&consumer, &[&value]).unwrap().run().unwrap();
         assert!(
             matches!(result, RunOutcome::Failed(e) if matches!(e.kind(), clj_quickjs::VmErrorKind::ForeignObject { .. })),
             "{source}"
         );
+    }
+}
+
+#[test]
+fn derived_promise_resolvers_can_be_called_from_another_task() {
+    for resolver in ["resolve", "reject"] {
+        let runtime = Runtime::new();
+        let code = compile_script(
+            "derived-resolver.js",
+            &format!("let saved; class P extends Promise {{}} new P((resolve, reject) => {{saved = {resolver};}}); saved;"),
+        ).unwrap();
+        let RunOutcome::Complete(value) = runtime.spawn(&code, &[]).unwrap().run().unwrap() else {
+            panic!("expected resolver");
+        };
+        let consumer =
+            clj_quickjs::frontend::compile_function("function settle(r){r(1); return true;}")
+                .unwrap();
+        let result = runtime.spawn(&consumer, &[&value]).unwrap().run().unwrap();
+        assert!(
+            matches!(result, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)),
+            "{resolver}"
+        );
+        runtime.publish(&value).unwrap();
     }
 }
 

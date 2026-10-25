@@ -367,7 +367,13 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
         | HeapObject::Atom(_)
         | HeapObject::PromiseReaction(_)
         | HeapObject::PromiseResolving(_) => Ok(Raw::default()),
-        HeapObject::Promise(_) => Ok(Raw::default()),
+        HeapObject::Promise(p) => {
+            p.check_owner(task)?;
+            Ok(Raw {
+                named: p.properties.as_ref().map_or_else(Vec::new, named),
+                ..Raw::default()
+            })
+        }
         HeapObject::Generator(g) => {
             readable(g.object.owner())?;
             Ok(Raw {

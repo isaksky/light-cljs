@@ -19,7 +19,9 @@ pub(crate) mod standard;
 #[derive(Debug)]
 pub(crate) struct Promise {
     pub(crate) prototype: ObjectId,
-    pub(crate) owner: Option<TaskId>,
+    // Derived instances have ordinary task-owned properties/prototypes.
+    // This ownership never restricts the concurrent settlement state.
+    pub(crate) properties: Option<OrdinaryObject>,
     result: Option<Settlement>,
     reactions: Vec<Registration>,
     is_handled: bool,
@@ -34,7 +36,6 @@ pub(crate) struct Promise {
 pub(crate) struct Resolving {
     promise: ObjectId,
     resolved: bool,
-    pub(crate) owner: Option<TaskId>,
 }
 impl Trace for Resolving {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
@@ -69,7 +70,11 @@ impl Registration {
 }
 impl Trace for Promise {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
-        visit(self.prototype.into());
+        if let Some(properties) = &self.properties {
+            properties.trace(visit);
+        } else {
+            visit(self.prototype.into());
+        }
         if let Some(result) = &self.result {
             result.value.trace(visit);
         }
@@ -79,18 +84,23 @@ impl Trace for Promise {
     }
 }
 
-fn check_owner(owner: Option<TaskId>, task: TaskId) -> Result<(), Fault> {
-    if owner.is_some_and(|owner| owner != task) {
-        return Err(Fault::ForeignObject {
-            owner,
-            caller: task,
-        });
-    }
-    Ok(())
-}
 impl Promise {
+    /// Check access to JavaScript properties, never settlement ownership.
     pub(crate) fn check_owner(&self, task: TaskId) -> Result<(), Fault> {
-        check_owner(self.owner, task)
+        let owner = self.properties.as_ref().and_then(OrdinaryObject::owner);
+        if owner.is_some_and(|owner| owner != task) {
+            return Err(Fault::ForeignObject {
+                owner,
+                caller: task,
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prototype(&self) -> Option<ObjectId> {
+        self.properties
+            .as_ref()
+            .map_or(Some(self.prototype), OrdinaryObject::prototype)
     }
 }
 
@@ -167,7 +177,7 @@ fn new_with_prototype(
         heap,
         HeapObject::Promise(Promise {
             prototype,
-            owner,
+            properties: owner.map(|task| OrdinaryObject::with_prototype(task, prototype)),
             result: None,
             reactions: vec![],
             is_handled: false,
@@ -206,37 +216,28 @@ fn function(heap: &Heap, which: Builtin) -> Result<Value, Fault> {
     )?))
 }
 fn resolving_functions(heap: &Heap, promise: ObjectId) -> Result<(ObjectId, Value, Value), Fault> {
-    let owner = heap
-        .read(promise, |o| match o {
-            HeapObject::Promise(p) => p.owner,
-            _ => None,
-        })
-        .ok_or(Fault::Internal("promise reclaimed"))?;
     let guard = alloc(
         heap,
         HeapObject::PromiseResolving(Resolving {
             promise,
             resolved: false,
-            owner,
         }),
     )?;
     let resolve = function(heap, Builtin::PromiseResolver(guard, false))?;
     let reject = function(heap, Builtin::PromiseResolver(guard, true))?;
     Ok((guard, resolve, reject))
 }
-fn claim(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<ObjectId>, Fault> {
-    claim_with_capacity(heap, task, id, true)
+fn claim(heap: &Heap, id: ObjectId) -> Result<Option<ObjectId>, Fault> {
+    claim_with_capacity(heap, id, true)
 }
 
 fn claim_with_capacity(
     heap: &Heap,
-    task: TaskId,
     id: ObjectId,
     capacity: bool,
 ) -> Result<Option<ObjectId>, Fault> {
     heap.with_object_mut(id, |o| match o {
         HeapObject::PromiseResolving(p) => {
-            check_owner(p.owner, task)?;
             if p.resolved {
                 return Ok(None);
             }
@@ -598,7 +599,7 @@ impl PromiseState {
                     return Err(Fault::Internal("missing TypeError result"));
                 };
                 if let Some(guard) = forwarding {
-                    if let Some(target) = claim(heap, task, *guard)? {
+                    if let Some(target) = claim(heap, *guard)? {
                         settle(heap, task, inbox, target, true, value)?;
                     }
                     // A resolver forwards the rejection and returns normally.
@@ -668,7 +669,7 @@ impl PromiseState {
                 value,
                 constructor,
             } => {
-                if guard.is_none() || claim(heap, task, guard.unwrap())?.is_some() {
+                if guard.is_none() || claim(heap, guard.unwrap())?.is_some() {
                     settle(heap, task, inbox, *promise, true, value.clone())?;
                 }
                 Ok(Action::Return(if *constructor {
@@ -900,8 +901,7 @@ pub(crate) fn start(
         }
         Builtin::Promise => return Err(Fault::TypeError("Promise requires new".into())),
         Builtin::PromiseResolver(guard, reject) if !construct => {
-            let Some(promise) = claim_with_capacity(heap, task, guard, reject || native_capacity)?
-            else {
+            let Some(promise) = claim_with_capacity(heap, guard, reject || native_capacity)? else {
                 return Ok(None);
             };
             if reject {

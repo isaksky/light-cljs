@@ -1022,6 +1022,83 @@ fn builtin_job_callback_waits_and_resumes() {
 }
 
 #[test]
+fn derived_promises_publish_and_settle_across_tasks() {
+    for (settler_body, expected) in [
+        ("resolve(8); reject(99); resolve(100);", 8.),
+        ("reject(9); resolve(99); reject(100);", 9.),
+        ("resolve({private: 8}); reject(99);", 42.),
+        ("reject({private: 9}); resolve(99);", 42.),
+    ] {
+        let (rt, owner, _, mut host) = setup(
+            r#"
+            var resolve, reject;
+            class P extends Promise {}
+            var p = new P((r, j) => { resolve = r; reject = j; });
+            p.local = {value: 6};
+            p.then(x => __rt.effect(0, x), e => __rt.effect(0, e))
+                .catch(e => __rt.effect(0, e instanceof TypeError ? 42 : 99));
+            __rt.effect(0, -1);
+            p.local.value++;
+            Object.freeze(p);
+            p.local.value;
+        "#,
+        );
+        // Read the paused source task's globals through the existing internal
+        // job-test access. This keeps its registered reactions alive while
+        // publishing the Promise and both resolvers to another task.
+        let mut guard = owner.try_begin_run().unwrap();
+        let global = guard.vm().unwrap().global_object.unwrap();
+        let handles: Vec<_> = ["p", "resolve", "reject"]
+            .into_iter()
+            .map(|name| {
+                let key = rt.heap().keys().lookup(&name.into()).unwrap();
+                let value = rt
+                    .heap()
+                    .read(global, |o| match o {
+                        crate::heap::HeapObject::Plain(o) => o.get_own(key).unwrap().value.clone(),
+                        _ => unreachable!(),
+                    })
+                    .unwrap();
+                Rooted::new(rt.heap(), value)
+            })
+            .collect();
+        drop(guard);
+        for handle in &handles {
+            rt.publish(handle).unwrap();
+        }
+        rt.collect().unwrap();
+        let code = crate::frontend::compile_function(&format!(
+            "function settle(p, resolve, reject) {{ {settler_body} return 1; }}"
+        ))
+        .unwrap();
+        let settler = rt
+            .spawn(&code, &handles.iter().collect::<Vec<_>>())
+            .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(complete(settler.run().unwrap())).unwrap();
+        });
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            ValueView::Number(1.)
+        );
+        worker.join().unwrap();
+        assert_eq!(
+            host.0,
+            [-1.],
+            "settlement must not run the owner's callbacks"
+        );
+        rt.collect().unwrap();
+        assert_eq!(
+            complete(owner.run_with(Budget::UNLIMITED, &mut host).unwrap()),
+            ValueView::Number(7.)
+        );
+        assert_eq!(host.0, [-1., expected], "{settler_body}");
+        assert!(owner.unhandled_rejections().entries.is_empty());
+    }
+}
+
+#[test]
 fn native_promise_await_uses_internal_reactions_without_then_lookup() {
     let (_rt, task, _jobs, mut host) = setup(
         r#"

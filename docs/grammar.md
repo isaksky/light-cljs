@@ -53,7 +53,7 @@ identified in [attribution.md](attribution.md).
 | JSON | parse with positioned errors; stringify with getters/toJSON/wrappers/arrays/objects/indentation/cycles | `tests/js_source.rs`, `tests/js_modules.rs`; callable reviver and non-nullish replacers explicitly rejected |
 | Date | Time clipping, UTC/local fields and setters, host clock/zone, ISO and pinned fallback parsing, non-locale formats | `tests/date_host.rs`, `tests/js_source.rs`; clock/zone and conversion policy below |
 | Intl | Locale/canonicalization/likely subtags, NumberFormat (decimal/percent/currency/unit), PluralRules, DateTimeFormat, Collator, ListFormat, RelativeTimeFormat, Segmenter, DisplayNames, DurationFormat | `tests/quickjs_intl.rs`, `tests/sim_host.rs`, `tests/js_source.rs`; service/options/data subset below, no blanket Intl compatibility |
-| Promises | Shareable intrinsic promises, cross-task settlement, owner-task reactions, adoption/chaining and supported static combinators; quiescent rejection reporting | `tests/promises.rs`, `tests/quickjs_async.rs`; await suspends an activation, need waits the task |
+| Promises | Shareable promises (including subclasses), cross-task settlement, owner-task reactions, adoption/chaining and supported static combinators; quiescent rejection reporting | `tests/promises.rs`, `tests/quickjs_async.rs`; await suspends an activation, need waits the task |
 | Proxy | Construction and forwarding, resumable ownKeys/getOwnPropertyDescriptor traps with invariant checks | `tests/js_source.rs` proxy cases; other present traps explicitly error, revocation deferred |
 
 ## Modules
@@ -75,9 +75,11 @@ Ordinary objects, arrays, globals, generator/async activations, wrappers and
 mutable collections belong to their task. `Object.freeze` does not grant
 cross-task ownership. Realm intrinsics are shared and immutable; attempts to
 change them fail, although task global bindings can be replaced. Published
-functions cannot gain mutable property records. Intrinsic Promises/guards and
-atoms are explicit concurrent references; a derived Promise with a private
-prototype is task-owned. See [architecture.md](architecture.md#publication-and-native-values).
+functions cannot gain mutable property records. Promises/guards (including
+subclasses) and atoms are explicit concurrent references. Subclass Promise own
+properties and prototype access remain task-owned under ordinary-object rules;
+sharing their settlement state grants no foreign access to that state.
+See [architecture.md](architecture.md#publication-and-native-values).
 
 `undefined`, `NaN` and `Infinity` are reserved literal bindings and cannot be
 shadowed. `await`/`yield` remain reserved as identifiers. Block functions stay

@@ -164,6 +164,7 @@ use crate::value::string::number_to_string;
 use crate::value::{JsString, JsSymbol, Value};
 use crate::vm::dispatch::Fault;
 use crate::vm::function::{self, FunctionRead};
+use crate::vm::promise::Promise;
 
 /// A property key after ToPropertyKey: an array index, or any other name.
 #[derive(Clone, Debug, PartialEq)]
@@ -437,7 +438,11 @@ fn visit<'a>(object: &'a HeapObject, task: TaskId) -> Result<Visit<'a>, Fault> {
         _ => Ok(()),
     };
     match object {
-        HeapObject::Plain(o) => readable(o).map(|()| Visit::Store(o)),
+        HeapObject::Plain(o)
+        | HeapObject::Promise(Promise {
+            properties: Some(o),
+            ..
+        }) => readable(o).map(|()| Visit::Store(o)),
         HeapObject::Generator(g) => readable(&g.object).map(|()| Visit::Store(&g.object)),
         HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
             readable(m.object()).map(|()| Visit::Store(m.object()))
@@ -731,9 +736,9 @@ fn lookup(
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     Ok(Lookup::Function)
                 }
-                Visit::Other(HeapObject::Promise(p)) => p
-                    .check_owner(task)
-                    .map(|()| Lookup::Next(Some(p.prototype))),
+                Visit::Other(HeapObject::Promise(p)) => {
+                    p.check_owner(task).map(|()| Lookup::Next(p.prototype()))
+                }
                 Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
                     Some(fault) => Err(fault),
                     None => Ok(Lookup::Next(None)),
@@ -852,7 +857,11 @@ fn store(
         HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable(key)),
         HeapObject::Builtin(_) => Err(immutable(key)),
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => Ok(Stored::Function),
-        HeapObject::Plain(o) => {
+        HeapObject::Plain(o)
+        | HeapObject::Promise(Promise {
+            properties: Some(o),
+            ..
+        }) => {
             check_write(o, task)?;
             named(o)
         }
@@ -1063,7 +1072,14 @@ pub(crate) fn prepare_put(
             (HeapObject::Array(a), _) => Ok(added(
                 chain_key.is_some_and(|k| a.object_mut().add(k, value)),
             )),
-            (HeapObject::Plain(o), _) => Ok(added(chain_key.is_some_and(|k| o.add(k, value)))),
+            (
+                HeapObject::Plain(o)
+                | HeapObject::Promise(Promise {
+                    properties: Some(o),
+                    ..
+                }),
+                _,
+            ) => Ok(added(chain_key.is_some_and(|k| o.add(k, value)))),
             (HeapObject::JsMap(m) | HeapObject::JsSet(m), _) => Ok(added(
                 chain_key.is_some_and(|k| m.object_mut().add(k, value)),
             )),
@@ -1365,7 +1381,7 @@ fn check_inherited(
                     Ok(Walk::Function)
                 }
                 Visit::Other(HeapObject::Promise(p)) => {
-                    p.check_owner(task).map(|()| Walk::Next(Some(p.prototype)))
+                    p.check_owner(task).map(|()| Walk::Next(p.prototype()))
                 }
                 // Another kind as a prototype: one without JavaScript
                 // properties ends the walk.
@@ -1441,8 +1457,16 @@ pub(crate) fn define_field(
     };
     let key = intern(heap, name)?;
     heap.with_object_mut(id, |target| match target {
-        HeapObject::Plain(o) if o.owner() != Some(task) => Err(foreign(o.owner(), task)),
-        HeapObject::Plain(o) => {
+        HeapObject::Plain(o)
+        | HeapObject::Promise(Promise {
+            properties: Some(o),
+            ..
+        }) if o.owner() != Some(task) => Err(foreign(o.owner(), task)),
+        HeapObject::Plain(o)
+        | HeapObject::Promise(Promise {
+            properties: Some(o),
+            ..
+        }) => {
             if o.define(key, value) {
                 Ok(())
             } else {
@@ -1547,7 +1571,11 @@ pub(crate) fn define_own_property(
     heap.with_object_mut(target, |object| match object {
         HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable_define(key)),
         HeapObject::Builtin(_) => Err(immutable_define(key)),
-        HeapObject::Plain(o) => {
+        HeapObject::Plain(o)
+        | HeapObject::Promise(Promise {
+            properties: Some(o),
+            ..
+        }) => {
             check_write(o, task)?;
             named(o)
         }
@@ -1631,7 +1659,11 @@ pub(crate) fn define_accessor(
     };
     let key = intern(heap, name)?;
     heap.with_object_mut(*id, |target| match target {
-        HeapObject::Plain(o) => {
+        HeapObject::Plain(o)
+        | HeapObject::Promise(Promise {
+            properties: Some(o),
+            ..
+        }) => {
             check_write(o, task)?;
             let desc = PropertyDescriptor {
                 get: getter.then_some(function.clone()),
@@ -1836,7 +1868,11 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
     heap.with_object_mut(id, |object| match object {
         HeapObject::Plain(o) if o.is_intrinsic() => shared(o),
         HeapObject::Builtin(f) => shared(&f.properties),
-        HeapObject::Plain(o) => {
+        HeapObject::Plain(o)
+        | HeapObject::Promise(Promise {
+            properties: Some(o),
+            ..
+        }) => {
             check_write(o, task)?;
             if string_wrapper_property(o, key).is_some() {
                 return Ok(DeleteOutcome::NonConfigurable);

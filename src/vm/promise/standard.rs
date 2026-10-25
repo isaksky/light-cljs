@@ -638,7 +638,7 @@ impl ReactionState {
                     return Ok(Action::Continue);
                 }
                 if let Some(guard) = self.forwarding {
-                    if let Some(target) = claim(heap, task, guard)? {
+                    if let Some(target) = claim(heap, guard)? {
                         settle(heap, task, inbox, target, true, self.value.clone())?;
                     }
                     self.value = Value::Undefined;

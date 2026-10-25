@@ -94,18 +94,22 @@ publication; spawn leaves cross-task handoff validation to the embedder.
 | --- | --- |
 | Immutable/shareable | Primitives, persistent collections/occurrences and eligible functions whose captures and other edges pass publication. Unchanged subtrees preserve identity. |
 | Task-owned | Ordinary objects/arrays, property records, lexical mutation cells, builders, generators and async activations; freezing JS properties does not make these publishable. |
-| Explicit concurrent reference | Atoms and intrinsic Promises/settlement guards; installs validate their contents rather than allowing arbitrary shared mutable graphs. |
+| Explicit concurrent reference | Atoms and all Promises/settlement guards; installs validate their contents rather than allowing arbitrary shared mutable graphs. |
 
 A closure with mutable captures or a task-owned home/property record cannot
 publish. Published functions are frozen against later property mutation; globals
-remain those of the executing task. Derived Promise prototypes may reach private
-state, so derived Promises and guards are task-owned. Publication checks and
+remain those of the executing task. Derived Promises and their resolving guards
+are shareable and permit cross-task settlement. Subclass own properties and
+prototype access follow ordinary-object ownership rules, including property
+protocols such as constructor/species lookup; publishing a Promise grants no
+foreign access to that state. Publication checks and
 property mutation coordinate to avoid caching a stale shareability decision.
-Module namespaces remain task-owned even when empty or frozen. An intrinsic
+Module namespaces remain task-owned even when empty or frozen. Any
 Promise can retain a private result in an opaque envelope tagged with the
 settling task; foreign reactions reject rather than reading it. Sharing the
 Promise therefore does not publish that private graph.
-Tests: `tests/publication.rs`, `tests/promises.rs`, `tests/builtin_subclasses.rs`.
+Tests: `tests/publication.rs`, `tests/promises.rs`, `tests/builtin_subclasses.rs`,
+`src/task/job_tests.rs::derived_promises_publish_and_settle_across_tasks`.
 
 Native collections are this project's own contract (`src/collections.rs`), with
 persistent radix-trie vectors, HAMT maps and provenance occurrences. Updates

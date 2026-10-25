@@ -51,6 +51,7 @@ use crate::ids::TaskId;
 use crate::value::Value;
 use crate::vm::dispatch::Fault;
 use crate::vm::function::{self, IntegrityStore};
+use crate::vm::promise::Promise;
 
 /// Which integrity operation runs.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -132,7 +133,11 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         return Ok(false);
     }
     heap.read(id, |object| match object {
-        HeapObject::Plain(o) => readable(o.owner()).map(|()| has_level(o, level)),
+        HeapObject::Plain(o)
+        | HeapObject::Promise(Promise {
+            properties: Some(o),
+            ..
+        }) => readable(o.owner()).map(|()| has_level(o, level)),
         HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
             readable(m.object().owner()).map(|()| has_level(m.object(), level))
         }
@@ -227,7 +232,11 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
     heap.with_object_mut(id, |object| match object {
         HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable()),
         HeapObject::Builtin(_) => Err(immutable()),
-        HeapObject::Plain(o) => {
+        HeapObject::Plain(o)
+        | HeapObject::Promise(Promise {
+            properties: Some(o),
+            ..
+        }) => {
             writable(o.owner())?;
             match level {
                 Level::NonExtensible => o.prevent_extensions(),

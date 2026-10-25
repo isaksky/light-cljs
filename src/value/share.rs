@@ -8,8 +8,8 @@
 //! | Category | Kinds today | Shareable? |
 //! |----------|-------------|------------|
 //! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure; its own-property record is a separate ordinary object), built-in function, realm intrinsic ordinary object (`Object.prototype`, `crate::realm`), internal frozen template arrays; natives that declare it | when everything it references is shareable (transitively) |
-//! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, JavaScript Maps, Sets, WeakMaps, WeakSets, WeakRefs, FinalizationRegistries and DisposableStacks, ArrayBuffers and typed-array views, Promises with derived prototypes and their resolving guards, binding cells, natives that declare it | never |
-//! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`), intrinsic-prototype Promises and their resolving-pair guards (`crate::vm::promise`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
+//! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, JavaScript Maps, Sets, WeakMaps, WeakSets, WeakRefs, FinalizationRegistries and DisposableStacks, ArrayBuffers and typed-array views, binding cells, natives that declare it | never |
+//! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`), Promises (including subclasses) and their resolving-pair guards (`crate::vm::promise`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
 //! Primitives are always shareable, strings, symbols and BigInts included: a string
 //! (`crate::value::JsString`, clj-quickjs-65) is immutable `Arc` storage
@@ -45,8 +45,10 @@
 //! task boundaries; tracing an opaque envelope grants no foreign read access.
 //! Resolving-pair guards contain only a fixed Promise edge and a first-call
 //! flag claimed under the heap metadata lock; they never store user values.
-//! A Promise with a derived prototype and its resolving guards instead remain
-//! task-owned: publication must not hide mutable subclass prototype edges.
+//! Derived Promises keep ordinary task-owned properties and prototype access
+//! separate from their concurrent settlement state. Publishing the Promise or
+//! its guards grants no foreign access to those mutable edges; resolver calls
+//! can settle from any task, with the same checked result envelopes as above.
 //!
 //! A function object is persistent: its code and captured values never change
 //! after allocation. A closure is therefore shareable exactly when its
@@ -211,19 +213,8 @@ pub(crate) enum Shareability {
 /// declare one (module docs, "What a later object kind must declare").
 pub(crate) fn classify(object: &HeapObject) -> Shareability {
     match object {
-        HeapObject::Promise(p) => {
-            if p.owner.is_some() {
-                Shareability::TaskOwned
-            } else {
-                Shareability::ConcurrentReference
-            }
-        }
-        HeapObject::PromiseResolving(p) => {
-            if p.owner.is_some() {
-                Shareability::TaskOwned
-            } else {
-                Shareability::ConcurrentReference
-            }
+        HeapObject::Promise(_) | HeapObject::PromiseResolving(_) => {
+            Shareability::ConcurrentReference
         }
         HeapObject::PromiseReaction(_) => Shareability::TaskOwned,
         HeapObject::Generator(_) | HeapObject::AsyncState(_) => Shareability::TaskOwned,
@@ -280,8 +271,6 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
 
         HeapObject::ArrayBuffer(b) => b.object.owner(),
         HeapObject::TypedArray(a) => a.object.owner(),
-        HeapObject::Promise(p) => p.owner,
-        HeapObject::PromiseResolving(p) => p.owner,
         HeapObject::Native(_)
         | HeapObject::Vector(_)
         | HeapObject::Map(_)
@@ -290,7 +279,9 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         | HeapObject::BoundFunction(_)
         | HeapObject::Atom(_)
         | HeapObject::Builtin(_)
-        | HeapObject::PromiseReaction(_) => None,
+        | HeapObject::PromiseReaction(_)
+        | HeapObject::Promise(_)
+        | HeapObject::PromiseResolving(_) => None,
     }
 }
 

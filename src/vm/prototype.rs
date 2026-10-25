@@ -70,6 +70,7 @@ use crate::object::OrdinaryObject;
 use crate::value::Value;
 use crate::vm::dispatch::{self, Fault};
 use crate::vm::function;
+use crate::vm::promise::Promise;
 
 /// The failure of reading another task's object.
 fn foreign(owner: Option<TaskId>, caller: TaskId) -> Fault {
@@ -98,8 +99,12 @@ pub(crate) fn get_prototype_of(
     let function = heap
         .read(id, |object| match object {
             HeapObject::ModuleNamespace(ns) => ns.check_owner(task).map(|()| Some(None)),
-            HeapObject::Plain(o) => readable(o, task).map(|()| Some(o.prototype())),
-            HeapObject::Promise(p) => p.check_owner(task).map(|()| Some(Some(p.prototype))),
+            HeapObject::Plain(o)
+            | HeapObject::Promise(Promise {
+                properties: Some(o),
+                ..
+            }) => readable(o, task).map(|()| Some(o.prototype())),
+            HeapObject::Promise(p) => p.check_owner(task).map(|()| Some(p.prototype())),
             HeapObject::Generator(g) => {
                 readable(&g.object, task).map(|()| Some(g.object.prototype()))
             }
@@ -172,7 +177,11 @@ pub(crate) fn set_prototype_of(
         owner => Err(foreign(owner, task)),
     };
     heap.read(id, |object| match object {
-        HeapObject::Plain(o) => writable(o),
+        HeapObject::Plain(o)
+        | HeapObject::Promise(Promise {
+            properties: Some(o),
+            ..
+        }) => writable(o),
         HeapObject::JsMap(m) | HeapObject::JsSet(m) => writable(m.object()),
         HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => writable(m.object()),
         HeapObject::WeakRef(m) => writable(m.object()),
@@ -198,7 +207,11 @@ pub(crate) fn set_prototype_of(
     .unwrap_or(Err(Fault::Internal("prototype target was reclaimed")))?;
     check_chain(heap, task, proto, Some(id))?;
     heap.with_object_mut(id, |object| match object {
-        HeapObject::Plain(o) => {
+        HeapObject::Plain(o)
+        | HeapObject::Promise(Promise {
+            properties: Some(o),
+            ..
+        }) => {
             o.set_prototype(proto);
             Ok(())
         }
