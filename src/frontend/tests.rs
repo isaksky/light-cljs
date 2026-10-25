@@ -3542,6 +3542,88 @@ fn radix_literals_round_correctly() {
 }
 
 #[test]
+fn numeric_separator_literals() {
+    // Synthetic fixtures, not light-cljs output. Compare token values and
+    // spans so separators cannot alter rounding, exact integers or source.
+    for (source, plain) in [
+        ("1_000", "1000"),
+        ("1_2_3", "123"),
+        ("0xF_F", "0xff"),
+        ("0xe_E", "0xee"),
+        ("0X0_0_F_F", "0xff"),
+        ("0o7_1", "0o71"),
+        ("0O0_7_1", "0o71"),
+        ("0b1_0_1", "0b101"),
+        ("0B0_1_0_1", "0b101"),
+        ("1_2.3_4", "12.34"),
+        ("0.0_1", "0.01"),
+        (".1_2", ".12"),
+        ("1_2.", "12."),
+        ("1_2.e+1_0", "12.e+10"),
+        ("1_2.3_4E-1_0", "12.34E-10"),
+        ("0e1_0", "0e10"),
+        ("1e0_1", "1e01"),
+        ("1e3_0_9", "1e309"),
+        ("9_007_199_254_740_993", "9007199254740993"),
+        ("0x20_0000_0000_0003", "0x20000000000003"),
+        ("9_007_199_254_740_993n", "9007199254740993n"),
+        ("0xFF_FFn", "0xffffn"),
+        ("0X0_F_Fn", "0xffn"),
+        ("0o7_1n", "0o71n"),
+        ("0O0_7_1n", "0o71n"),
+        ("0b1_0_1n", "0b101n"),
+        ("0B0_1_0_1n", "0b101n"),
+    ] {
+        let token = Lexer::new(source).next_token().unwrap();
+        assert_eq!(
+            token.kind,
+            Lexer::new(plain).next_token().unwrap().kind,
+            "{source}"
+        );
+        assert_eq!(token.span.text(source), source);
+        for options in [ScriptOptions::STRICT, ScriptOptions::SLOPPY] {
+            super::compile_script_with("separators", source, options)
+                .unwrap_or_else(|e| panic!("{source}: {e}"));
+        }
+    }
+    // `_1` is an identifier, including as a property after `.`.
+    assert_eq!(ast("let _1 = 2; a._1"), "(let (_1 2)) (. a _1)");
+    let too_large = format!("0x1{}n", "_0".repeat(crate::MAX_BIGINT_BITS / 4));
+    rejects_with(
+        &too_large,
+        SyntaxErrorKind::TooLarge,
+        1,
+        1,
+        "BigInt is too large",
+    );
+}
+
+#[test]
+fn numeric_separator_early_errors() {
+    for source in [
+        "1_", "1__0", "1_n", "1_.0", "1._0", "1_e2", "1e_2", "1e+_2", "1e-_2", "1e2_", "1e2_n",
+        "1.2__3", "1.2_", "0_1", "0_1n", "0x_1", "0x1_", "0x1__2", "0x1_n", "0o_1", "0o1_",
+        "0o1__2", "0o1_n", "0b_1", "0b1_", "0b1__0", "0b1_n", "0b1_2", "0o1_8", "1n_0",
+    ] {
+        let underscore = source.find('_').unwrap();
+        for options in [ScriptOptions::STRICT, ScriptOptions::SLOPPY] {
+            let e = super::compile_script_with("separators", source, options).unwrap_err();
+            assert_eq!(e.kind, SyntaxErrorKind::InvalidToken, "{source}");
+            assert_eq!(e.span.start, underscore, "{source}");
+            assert_eq!(e.column as usize, underscore + 1, "{source}");
+        }
+    }
+    // Annex B leading-zero forms never accept separators, even in a
+    // NonOctalDecimalIntegerLiteral's fraction or exponent.
+    for source in ["01_2", "08_1", "08.1_2", "08e1_2"] {
+        let e =
+            super::compile_script_with("separators", source, ScriptOptions::SLOPPY).unwrap_err();
+        assert_eq!(e.kind, SyntaxErrorKind::InvalidToken, "{source}");
+        assert_eq!(e.span.start, source.find('_').unwrap(), "{source}");
+    }
+}
+
+#[test]
 fn bigint_literal_lexing() {
     for (source, decimal) in [
         ("0n", "0"),
@@ -4455,7 +4537,7 @@ fn rejects_lexically_ambiguous_input() {
     // Legacy and modern number forms outside the subset.
     rejects("017", InvalidToken, 1, 1);
     rejects("08", InvalidToken, 1, 1);
-    rejects_with("1_000", Unsupported, 1, 2, "separator");
+    assert_eq!(ast("1_000"), "1000");
     assert!(compile_script("bigint", "10n").is_ok());
     rejects("0x;", InvalidToken, 1, 1);
     rejects("1e+;", InvalidToken, 1, 1);
@@ -4758,7 +4840,7 @@ fn legacy_octal_literals_in_sloppy_mode() {
     rejects("01", InvalidToken, 1, 1);
     rejects("08", InvalidToken, 1, 1);
     rejects("x = 09.5;", InvalidToken, 1, 5);
-    rejects("0_1", InvalidToken, 1, 1);
+    rejects("0_1", InvalidToken, 1, 2);
     // A `"use strict"` directive makes the literal right after it strict,
     // although that token is read before the directive is recognised.
     sloppy_rejects("\"use strict\"; 010", InvalidToken, 1, 15);
@@ -4777,7 +4859,7 @@ fn legacy_octal_literals_in_sloppy_mode() {
     sloppy_rejects("\"use strict\"; 08.1_2;", InvalidToken, 1, 15);
     sloppy_rejects("\"use strict\"; 01n;", InvalidToken, 1, 15);
     sloppy_rejects("'use strict'\n01n;", InvalidToken, 2, 1);
-    sloppy_rejects("'use strict' /*\n*/ 0_1;", InvalidToken, 2, 4);
+    sloppy_rejects("'use strict' /*\n*/ 0_1;", InvalidToken, 2, 5);
     sloppy_rejects("function f() { 'use strict'; 08n }", InvalidToken, 1, 30);
     // Not a directive: the sloppy error stands.
     sloppy_rejects("'use strict' 01n;", InvalidToken, 1, 16);

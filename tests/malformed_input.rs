@@ -317,7 +317,7 @@ fn rejected_forms_fail_with_documented_kinds() {
         ("a?.b++;", STRICT, Invalid),
         ("new a?.b();", STRICT, Invalid),
         ("x = {[k]};", STRICT, UnexpectedToken),
-        ("x = 1_000;", STRICT, Unsupported),
+        ("x = 1__000;", STRICT, SyntaxErrorKind::InvalidToken),
         ("x = a ?? b || c;", STRICT, Invalid),
         ("a &&= b ?? c && d;", STRICT, Invalid),
         ("a ||= b || c ?? d;", STRICT, Invalid),

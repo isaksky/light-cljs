@@ -6,7 +6,8 @@
 //! the parser as one token and is rejected there with a precise diagnostic.
 //! A `/` initially lexes as division; the parser requests the regexp goal
 //! where an operand is expected. Integer `n` literals retain exact BigInt
-//! digits; numeric separators are rejected here.
+//! digits; single numeric separators between digits are checked here and
+//! removed only for value conversion, preserving source spans.
 //!
 //! Template literals (clj-quickjs-57) lex as one token per part. The lexer
 //! keeps a stack of open substitutions, and the `}` that closes one (the
@@ -22,7 +23,7 @@
 //! normalization: `a\u0062c` is `abc`, while `Ãµ` (U+00C3 U+00B5) and `õ`
 //! (U+00F5) are different names.
 
-use std::cmp::Ordering;
+use std::{borrow::Cow, cmp::Ordering};
 
 use super::unicode_ident::{ID_CONTINUE, ID_START};
 use super::{Span, SyntaxError, SyntaxErrorKind};
@@ -728,7 +729,7 @@ impl<'a> Lexer<'a> {
         None
     }
 
-    fn eat_digits(&mut self, radix: u32) -> Result<usize, SyntaxError> {
+    fn eat_digits(&mut self, radix: u32, separators: bool) -> Result<usize, SyntaxError> {
         let mut count = 0;
         loop {
             match self.peek_char() {
@@ -737,11 +738,17 @@ impl<'a> Lexer<'a> {
                     count += 1;
                 }
                 Some('_') => {
-                    return Err(self.error_at(
-                        self.pos,
-                        SyntaxErrorKind::Unsupported,
-                        "numeric separators are not supported",
-                    ));
+                    if !separators
+                        || count == 0
+                        || !self.peek_char_at(1).is_some_and(|c| c.is_digit(radix))
+                    {
+                        return Err(self.error_at(
+                            self.pos,
+                            SyntaxErrorKind::InvalidToken,
+                            "a numeric separator is not allowed here",
+                        ));
+                    }
+                    self.bump();
                 }
                 _ => return Ok(count),
             }
@@ -761,22 +768,28 @@ impl<'a> Lexer<'a> {
         let (value, bigint_suffix) = if radix != 10 {
             self.pos += 2;
             let digits_start = self.pos;
-            if self.eat_digits(radix)? == 0 {
+            if self.eat_digits(radix, true)? == 0 {
                 return Err(self.error(
                     SyntaxErrorKind::InvalidToken,
                     Span::new(start, self.pos),
                     "missing digits after radix prefix",
                 ));
             }
-            (radix_value(&self.src[digits_start..self.pos], radix), true)
+            (
+                radix_value(
+                    &without_numeric_separators(&self.src[digits_start..self.pos]),
+                    radix,
+                ),
+                true,
+            )
         } else if is_leading_zero_literal(rest) {
             if self.strict {
                 return Err(leading_zero_in_strict_code(self.src, start));
             }
             (self.lex_leading_zero_literal(start)?, false)
         } else {
-            self.eat_digits(10)?;
-            self.lex_decimal_tail(start)?
+            self.eat_digits(10, !rest.starts_with('0'))?;
+            self.lex_decimal_tail(start, true)?
         };
         if self.peek_char() == Some('n') && bigint_suffix {
             let digits_start = start + if radix == 10 { 0 } else { 2 };
@@ -792,15 +805,17 @@ impl<'a> Lexer<'a> {
                     "identifier or digit starts immediately after BigInt literal",
                 ));
             }
-            let bigint =
-                crate::value::JsBigInt::from_digits(&self.src[digits_start..digits_end], radix)
-                    .map_err(|error| {
-                        self.error(
-                            SyntaxErrorKind::TooLarge,
-                            Span::new(start, self.pos),
-                            error.to_string(),
-                        )
-                    })?;
+            let bigint = crate::value::JsBigInt::from_digits(
+                &without_numeric_separators(&self.src[digits_start..digits_end]),
+                radix,
+            )
+            .map_err(|error| {
+                self.error(
+                    SyntaxErrorKind::TooLarge,
+                    Span::new(start, self.pos),
+                    error.to_string(),
+                )
+            })?;
             return Ok(TokenKind::BigInt(bigint));
         }
         match self.peek_char() {
@@ -816,12 +831,16 @@ impl<'a> Lexer<'a> {
     /// After the integer digits of a decimal literal starting at `start`:
     /// an optional fraction and exponent. Returns the literal's value and
     /// whether it is an integer (no fraction or exponent).
-    fn lex_decimal_tail(&mut self, start: usize) -> Result<(f64, bool), SyntaxError> {
+    fn lex_decimal_tail(
+        &mut self,
+        start: usize,
+        separators: bool,
+    ) -> Result<(f64, bool), SyntaxError> {
         let mut integral = true;
         if self.peek_char() == Some('.') {
             integral = false;
             self.bump();
-            self.eat_digits(10)?;
+            self.eat_digits(10, separators)?;
         }
         if matches!(self.peek_char(), Some('e' | 'E')) {
             integral = false;
@@ -829,7 +848,7 @@ impl<'a> Lexer<'a> {
             if matches!(self.peek_char(), Some('+' | '-')) {
                 self.bump();
             }
-            if self.eat_digits(10)? == 0 {
+            if self.eat_digits(10, separators)? == 0 {
                 return Err(self.error(
                     SyntaxErrorKind::InvalidToken,
                     Span::new(start, self.pos),
@@ -841,13 +860,15 @@ impl<'a> Lexer<'a> {
         // ignores leading zeros, and accepts every form lexed above ("1.",
         // ".5", "1.e3", "09.5"). A failure here would be a lexer bug;
         // report it.
-        let value = self.src[start..self.pos].parse::<f64>().map_err(|_| {
-            self.error(
-                SyntaxErrorKind::InvalidToken,
-                Span::new(start, self.pos),
-                "malformed number literal",
-            )
-        })?;
+        let value = without_numeric_separators(&self.src[start..self.pos])
+            .parse::<f64>()
+            .map_err(|_| {
+                self.error(
+                    SyntaxErrorKind::InvalidToken,
+                    Span::new(start, self.pos),
+                    "malformed number literal",
+                )
+            })?;
         Ok((value, integral))
     }
 
@@ -859,7 +880,7 @@ impl<'a> Lexer<'a> {
     /// Otherwise (an `8` or `9` among them) it is a
     /// NonOctalDecimalIntegerLiteral, a decimal literal that may take a
     /// fraction and exponent (`09.5`, `08e1`). Neither form allows a
-    /// numeric separator in its integer digits.
+    /// numeric separator in any of its digits.
     fn lex_leading_zero_literal(&mut self, start: usize) -> Result<f64, SyntaxError> {
         self.bump();
         let digits_start = self.pos;
@@ -877,7 +898,7 @@ impl<'a> Lexer<'a> {
         if digits.bytes().all(|b| b < b'8') {
             Ok(radix_value(digits, 8))
         } else {
-            Ok(self.lex_decimal_tail(start)?.0)
+            Ok(self.lex_decimal_tail(start, false)?.0)
         }
     }
 
@@ -1195,13 +1216,11 @@ fn push_code_point(out: &mut Vec<u16>, value: u32) {
     }
 }
 
-/// Correctly rounded value of a non-empty digit string in a power-of-two
-/// radix (2, 8 or 16).
 /// `text`, the source from the start of a number literal, starts with a
-/// legacy octal or leading-zero decimal literal (`017`, `08`; also `0_1`,
-/// which is invalid in either mode): an early error in strict code.
+/// legacy octal or leading-zero decimal literal (`017`, `08`): an early
+/// error in strict code. `0_1` is rejected at its separator in either mode.
 pub(crate) fn is_leading_zero_literal(text: &str) -> bool {
-    text.starts_with('0') && text[1..].starts_with(|c: char| c.is_ascii_digit() || c == '_')
+    text.starts_with('0') && text[1..].starts_with(|c: char| c.is_ascii_digit())
 }
 
 /// The strict-mode early error for a legacy octal or leading-zero literal
@@ -1233,6 +1252,18 @@ pub(crate) fn legacy_escape_in_strict_code(src: &str, string: Span) -> Option<Sy
     lexer.next_token().err()
 }
 
+/// Remove separators from an already validated literal, never from runtime
+/// numeric strings. Source text and byte offsets remain unchanged.
+fn without_numeric_separators(text: &str) -> Cow<'_, str> {
+    if text.contains('_') {
+        Cow::Owned(text.replace('_', ""))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Correctly rounded value of a non-empty digit string in a power-of-two
+/// radix (2, 8 or 16).
 fn radix_value(digits: &str, radix: u32) -> f64 {
     let bits_per_digit = radix.trailing_zeros();
     let digits = digits.trim_start_matches('0');

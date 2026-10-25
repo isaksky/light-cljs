@@ -2834,6 +2834,21 @@ JSON serialization throws TypeError.
 Validation: `cargo test --lib bigint -- --test-threads=3` and
 `cargo test --test js_source bigint -- --test-threads=3`.
 
+### Numeric separators (clj-quickjs-316)
+
+Number and BigInt source literals accept single `_` between digits in strict
+and sloppy scripts: `1_000`, `0xF_F`, `0o7_1`, `0b1_0`, `.1_2`,
+`1_2.3_4e+1_0`, `9_007_199_254_740_993n`. Separators cannot start or end a
+digit part, touch another separator, follow a decimal leading zero or radix
+prefix, or touch `.`, an exponent marker/sign, or `n`. Leading-zero Annex B
+literals reject separators throughout (`01_2`, `08.1_2`, `08e1_2`).
+`eval` and `Function` use the same lexer, including lossless UTF-16 sources.
+String conversion rules stay separate: `Number('1_000')` is NaN,
+`parseFloat('1_000')` is 1, and `BigInt('1_000')` throws SyntaxError.
+No new resource limit; the existing 1 Mbit BigInt magnitude cap and runtime
+source size limits still apply. Validation:
+`cargo test numeric_separator -- --test-threads=3`.
+
 ### ArrayBuffer (clj-quickjs-165)
 
 Supported: task-owned `new ArrayBuffer(length)` with zero-filled bytes (16 MiB

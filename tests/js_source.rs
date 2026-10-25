@@ -11019,6 +11019,36 @@ fn use_strict_directives() {
     assert_eq!(e.kind, SyntaxErrorKind::ReservedWord);
 }
 
+#[test]
+fn numeric_separators_execute_and_preserve_string_conversion_rules() {
+    // Synthetic fixtures, not light-cljs output.
+    for source in [
+        "1_000 === 1000 && 0xF_F === 255 && 0o7_1 === 57 && 0b1_0_1 === 5",
+        "1_2.3_4 === 12.34 && .1_2 === 0.12 && 0.0_1 === 0.01 && 1_2. === 12",
+        "1_2.3_4e+1_0 === 123400000000 && 1e-1_0 === 0.0000000001",
+        "9_007_199_254_740_993n === 9007199254740993n && 0xF_Fn === 255n && 0o7_1n === 57n && 0b1_0_1n === 5n",
+        "({1_000: 7})[1000] === 7 && `${1_000}` === '1000'",
+        "eval('1_000') === 1000 && (0, eval)('0xF_Fn') === 255n",
+        "Function('return 1_2.3_4e1_0')() === 123400000000 && new Function('return 0b1_0n')() === 2n",
+        "Function('x = 1_000', 'return x')() === 1000 && eval('\"use strict\"; 1_000') === 1000",
+        "let s = String.fromCharCode(0xd800); eval('/*' + s + '*/ 1_000') === 1000 && Function('return [0xF_Fn, \"' + s + '\"]')()[1] === s",
+        "let s = ' '.padEnd(255, ' ') + '1_000'; eval(s) === 1000 && Function('return ' + s)() === 1000",
+        "Number.isNaN(Number('1_000')) && Number.isNaN(Number('0xF_F')) && Number.isNaN(+'1_2')",
+        "parseFloat('1_000') === 1 && parseFloat('1.2_3') === 1.2 && parseFloat('1e1_0') === 10 && parseInt('1_000') === 1",
+        "let caught = false; try { BigInt('1_000'); } catch(e) { caught = e instanceof SyntaxError; } caught",
+        "let caught = 0; for (let s of ['1__0', '0_1', '0x_1', '1_n', '1._0', '1e_1', '01_2', '08.1_2']) { try { eval(s); } catch(e) { if (e instanceof SyntaxError) caught++; } try { Function('return ' + s); } catch(e) { if (e instanceof SyntaxError) caught++; } } caught === 16",
+    ] {
+        for options in [ScriptOptions::STRICT, ScriptOptions::SLOPPY] {
+            let code = compile_script_with("separators", source, options)
+                .unwrap_or_else(|e| panic!("{source}: {e}"));
+            match run(&code, &[]) {
+                RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true), "{source}"),
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+    }
+}
+
 /// Legacy octal and leading-zero decimal literals run in sloppy scripts and
 /// are early errors in strict code (clj-quickjs-51).
 #[test]
