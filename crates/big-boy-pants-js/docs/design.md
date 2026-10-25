@@ -1,3 +1,10 @@
+> Integration update, 2026-10-25: this engine now lives in the light-cljs
+> repository at `crates/big-boy-pants-js/`. The original specification below
+> records its standalone development constraints. Its instructions about an
+> unavailable compiler and a separate repository are historical: inspect and
+> integrate with the compiler in the same checkout. The runtime architecture
+> requirements still apply.
+
 You are starting a standalone Rust project: a custom JavaScript runtime designed for highly concurrent compiler workloads.
 
 Implement the first meaningful architectural slice, with runnable code and tests. Do not stop at a design document.

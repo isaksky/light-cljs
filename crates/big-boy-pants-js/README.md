@@ -8,16 +8,24 @@ All compiler-like examples are synthetic fixtures, not light-cljs output.
 
 ## Run
 
-Use the Rust 1.95 environment pinned by `flake.lock`. Cargo is not on the base
-shell PATH in the verification environment; enter it first:
+This crate is part of the light-cljs workspace. From the repository root,
+select it with `cargo build -p big-boy-pants-js` or
+`cargo test -p big-boy-pants-js --all-targets -- --test-threads=3`.
+The commands below run from `crates/big-boy-pants-js/`. Cargo uses the root
+workspace's lockfile, profiles and `target/` directory. Building this package
+alone does not build the compiler or either legacy JavaScript engine.
+
+Use an installed Rust toolchain, or the retained Linux development environment
+(`nix develop` in this directory). Historical measurements used Rust 1.95
+and the standalone crate's build profiles; remeasure with the workspace
+profiles before comparing new results.
 
 ```sh
-nix develop
 export CARGO_BUILD_JOBS=3
 cargo build --all-targets
 cargo test --all-targets -- --test-threads=3
 cargo test --doc -- --test-threads=3
-cargo fmt --all -- --check
+cargo fmt -p big-boy-pants-js -- --check
 cargo clippy --all-targets -- -D warnings
 cargo run
 cargo run -- examples/demo.js
@@ -41,6 +49,23 @@ The variants exercise producer failure, consumer cancellation, and a nested
 native fold callback with closure and finally state. Assertions live in
 [`tests/e2e.rs`](tests/e2e.rs); the complete requirement map is in
 [architecture](docs/architecture.md#requirement-map).
+
+## Repository history
+
+The engine was imported without squashing from commit
+`7a6e6478469ded185d0eb6bc633eaa7ea6f57033`. All 777 commits reachable from
+that commit retain their original hashes. Its tree was placed under
+`crates/big-boy-pants-js/`; older commits retain their original root-relative
+paths. For example, inspect pre-import runtime history with:
+
+```sh
+git log 7a6e6478469ded185d0eb6bc633eaa7ea6f57033 -- src/runtime.rs
+```
+
+Develop the engine here with the compiler. There is no submodule or separate
+checkout required. The `bbp-integration` group in the light-cljs Pellets project
+holds the integration work. The original sibling repository is retained as a
+historical checkout.
 
 ## Contract and coverage
 

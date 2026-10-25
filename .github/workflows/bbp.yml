@@ -1,0 +1,24 @@
+name: big-boy-pants-js
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+      - run: cargo fmt -p big-boy-pants-js -- --check
+      - run: cargo clippy --locked -p big-boy-pants-js --all-targets -- -D warnings
+      - run: cargo test --locked -p big-boy-pants-js --all-targets -- --test-threads=3
+      - run: cargo test --locked -p big-boy-pants-js --doc -- --test-threads=3

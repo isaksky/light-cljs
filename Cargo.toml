@@ -10,6 +10,15 @@ readme = "README.md"
 # See LICENSE, epl-v10.html and THIRD_PARTY_NOTICES.md.
 license = "MIT AND EPL-1.0"
 
+[workspace]
+members = ["crates/big-boy-pants-js"]
+default-members = ["."]
+exclude = ["vendor/v8", "vendor/rquickjs-sys", "playground/crate"]
+resolver = "3"
+
+[workspace.dependencies]
+big-boy-pants-js = { path = "crates/big-boy-pants-js" }
+
 # QuickJS is the native builds' interactive and data-reader engine (and every
 # compile-time engine without V8). WebAssembly builds leave it out: their
 # embedder supplies the engine (`host_evaluator::ScriptHost`, light-cljs-357).

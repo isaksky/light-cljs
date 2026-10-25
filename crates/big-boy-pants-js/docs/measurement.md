@@ -7,6 +7,11 @@ architectural proofs and their limitations are mapped in
 
 ## Reproduce
 
+Run these commands from `crates/big-boy-pants-js/` in the light-cljs checkout.
+Cargo now uses the root workspace profiles, lockfile and `target/` directory.
+The results below predate that import and used the standalone crate's profiles;
+they are historical measurements, not a baseline for the workspace build.
+
 Inside the pinned `nix develop` environment, use `CARGO_BUILD_JOBS=3` throughout.
 Test commands use `--test-threads=3`. Release measurements:
 

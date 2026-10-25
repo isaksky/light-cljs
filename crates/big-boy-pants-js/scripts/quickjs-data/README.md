@@ -8,7 +8,9 @@ go into a caller-selected new directory.
 
 ## Run
 
-From the repository root, with the repository's development environment:
+From `crates/big-boy-pants-js/`, with the crate's Linux development environment
+(`flake.nix`). Paths below are relative to that directory; the pinned QuickJS
+reference checkout must be supplied separately for regeneration:
 
 ```sh
 nix develop --command bash scripts/quickjs-data/generate.sh \

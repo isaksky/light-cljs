@@ -7,6 +7,14 @@ this repository that derive from it. When adapting more upstream material, keep
 the upstream notice in the file, name the pinned revision, and add the path
 here.
 
+## big-boy-pants-js
+
+The engine under `crates/big-boy-pants-js/` was imported with its history from
+commit `7a6e6478469ded185d0eb6bc633eaa7ea6f57033`. Its adapted QuickJS sources,
+fixtures and generated Unicode/locale data retain their original notices.
+The engine's [attribution inventory](crates/big-boy-pants-js/docs/attribution.md)
+records the upstream revisions, derived paths and retained license texts.
+
 ## ClojureScript
 
 - Upstream: <https://github.com/clojure/clojurescript>, pinned at commit

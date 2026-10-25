@@ -66,6 +66,25 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
 
 ## Building
 
+The repository is a Cargo workspace. The compiler is the default package;
+the Rust-native JavaScript engine lives in
+[`crates/big-boy-pants-js`](crates/big-boy-pants-js/README.md). It was imported
+with its full Git history and is being integrated as the compile-time backend.
+Compiler and engine changes can be developed and committed together. To work
+on the engine without building V8 or QuickJS, run from the repository root:
+
+```sh
+cargo build --locked -p big-boy-pants-js
+cargo test --locked -p big-boy-pants-js --all-targets -- --test-threads=3
+cargo test --locked -p big-boy-pants-js --doc
+cargo run --locked -p big-boy-pants-js
+```
+
+Both packages use the root `Cargo.lock`, build profiles and `target/` directory.
+The playground and vendored engines remain outside the workspace. The workspace
+dependency declares the local engine path for integration; the compiler does
+not execute macros in it yet.
+
 The default native build requires Rust 1.91+, babashka (`bb`), Git, curl, tar,
 Python 3, a C/C++ toolchain and libclang. The first build on a machine compiles a pinned V8
 source patch into a per-user cache; later builds in any checkout, worktree or clean
