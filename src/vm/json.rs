@@ -1064,7 +1064,9 @@ impl Stringifier {
                         return Ok(A::ToString(self.value.clone()));
                     }
                     Some(PrimitiveData::Boolean(value)) => self.value = Value::Bool(value),
-                    Some(PrimitiveData::BigInt(value)) => self.value = Value::BigInt(value),
+                    Some(PrimitiveData::BigInt(value)) => {
+                        self.value = Value::BigInt((*value).clone())
+                    }
                     None | Some(PrimitiveData::Symbol(_)) => {}
                 }
             }

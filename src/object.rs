@@ -335,7 +335,9 @@ pub(crate) enum PrimitiveData {
     String(JsString),
     Symbol(crate::value::JsSymbol),
     Boolean(bool),
-    BigInt(crate::value::JsBigInt),
+    // Keep the wrapper slot pointer-sized: inline BigInt storage would enlarge
+    // every OrdinaryObject and heap-allocation temporary on small VM workers.
+    BigInt(std::sync::Arc<crate::value::JsBigInt>),
 }
 
 #[derive(Debug)]
@@ -1101,6 +1103,13 @@ impl Trace for OrdinaryObject {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primitive_wrapper_slots_stay_compact_for_small_workers() {
+        // These slots occur inline in every ordinary object. Growing them
+        // over their original 16 bytes overflows existing 64 KiB VM paths.
+        assert!(std::mem::size_of::<super::PrimitiveData>() <= 16);
+    }
+
     use super::*;
 
     fn s(text: &str) -> JsString {

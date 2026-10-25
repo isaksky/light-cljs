@@ -2054,7 +2054,7 @@ pub(crate) fn this_bigint_value(
         return Ok(value.clone());
     }
     match wrapper_data(heap, task, this)? {
-        Some(PrimitiveData::BigInt(value)) => Ok(value),
+        Some(PrimitiveData::BigInt(value)) => Ok((*value).clone()),
         _ => Err(Fault::TypeError("not a BigInt".into())),
     }
 }
@@ -2233,7 +2233,7 @@ pub(crate) fn array_string_receiver(
             let realm =
                 realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
             let object = OrdinaryObject::with_prototype(task, realm.bigint_prototype)
-                .with_primitive_data(PrimitiveData::BigInt(value.clone()));
+                .with_primitive_data(PrimitiveData::BigInt(std::sync::Arc::new(value.clone())));
             heap.alloc(HeapObject::Plain(object))
                 .map(Value::Object)
                 .ok_or(Fault::OutOfMemory("heap object table exhausted"))

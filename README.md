@@ -4636,7 +4636,8 @@ JSON.stringify reads Boolean wrapper data directly and rejects BigInt wrapper da
 with TypeError after any `toJSON` callback. Wrappers keep ordinary mutable properties,
 survive collection/waits/migration, and cannot be published across tasks. Intrinsics
 retain the shared immutable realm policy. BigInt payloads share immutable limb storage
-without heap edges. No new size limit is imposed; the existing 1 Mbit BigInt cap applies.
+without heap edges and sit behind a pointer to keep every ordinary object compact
+on small VM workers. No new size limit is imposed; the existing 1 Mbit BigInt cap applies.
 Built-in subclassing and general Symbol.toPrimitive dispatch remain separate work.
 Object.prototype.toString on BigInt primitives/wrappers retains the explicit
 UnsupportedOperand gap for Symbol.toStringTag consumption.

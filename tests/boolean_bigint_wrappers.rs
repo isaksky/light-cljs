@@ -103,6 +103,26 @@ fn boolean_and_bigint_with_environments() {
 }
 
 #[test]
+fn boolean_and_bigint_generic_array_receivers() {
+    for (primitive, constructor) in [("false", "Boolean"), ("1n", "BigInt")] {
+        for method in ["sort", "reverse", "fill"] {
+            check(&format!(
+                "let b = Array.prototype.{method}.call({primitive}); typeof b === 'object' && b.valueOf() === {primitive} && Object.getPrototypeOf(b) === {constructor}.prototype"
+            ));
+        }
+        for source in [
+            "Array.prototype.unshift.call(PRIMITIVE,7) === 1 && Array.prototype.splice.call(PRIMITIVE,0,0,7).length === 0",
+            "Array.prototype.indexOf.call(PRIMITIVE,7) === -1 && !Array.prototype.includes.call(PRIMITIVE,undefined)",
+            "let n = 0; let a = Array.prototype.map.call(PRIMITIVE,() => { n++; }); Array.isArray(a) && a.length === 0 && n === 0 && Array.prototype.reduce.call(PRIMITIVE,() => { n++; },7) === 7 && n === 0",
+            "let a = Array.prototype.slice.call(PRIMITIVE), b = Array.prototype.toReversed.call(PRIMITIVE), c = Array.prototype.flat.call(PRIMITIVE); Array.isArray(a) && Array.isArray(b) && Array.isArray(c) && a.length === 0 && b.length === 0 && c.length === 0",
+            "let a = Array.prototype.concat.call(PRIMITIVE,7); a.length === 2 && typeof a[0] === 'object' && a[0].valueOf() === PRIMITIVE && a[1] === 7",
+        ] {
+            check(&source.replace("PRIMITIVE", primitive));
+        }
+    }
+}
+
+#[test]
 fn wrappers_are_task_owned_and_survive_migration() {
     let runtime = Runtime::new();
     for source in ["Object(true)", "Object(123456789012345678901234567890n)"] {
