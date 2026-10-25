@@ -111,7 +111,42 @@ fn fold(ranges: Ranges, budget: &mut Budget) -> Result<Ranges, MatchError> {
 }
 
 fn member(m: &ClassMember, ignore_case: bool, budget: &mut Budget) -> Result<Set, MatchError> {
+    if let ClassMember::StringProperty(property) = m {
+        budget.charge(property.ranges().len())?;
+        let mut strings = Vec::new();
+        let mut max_len = 0;
+        for s in property.strings() {
+            budget.charge(s.len() + 1)?;
+            max_len = max_len.max(s.len());
+            strings.push(
+                s.iter()
+                    .map(|&c| {
+                        if ignore_case {
+                            canonicalize(c, true)
+                        } else {
+                            c
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        // Comparisons inspect at most max_len scalars; charge before sorting.
+        budget.charge(sort_cost(strings.len()).saturating_mul(max_len))?;
+        strings.sort_unstable();
+        budget.charge(strings.len().saturating_mul(max_len))?;
+        strings.dedup();
+        let ranges = property.ranges().to_vec();
+        return Ok(Set {
+            ranges: if ignore_case {
+                fold(ranges, budget)?
+            } else {
+                ranges
+            },
+            strings,
+        });
+    }
     let (ranges, inverted) = match m {
+        ClassMember::StringProperty(_) => unreachable!(),
         ClassMember::Literal(c) => {
             if *c > 0x10ffff {
                 return Err(MatchError::InvalidPattern);
@@ -231,7 +266,7 @@ pub(super) fn validate(items: &[ClassSetItem], budget: &mut Budget) -> Result<()
                 } {
                     return Err(MatchError::InvalidPattern);
                 }
-                stack.push(false);
+                stack.push(matches!(member, ClassMember::StringProperty(_)));
             }
             ClassSetItem::String(s) => {
                 budget.charge(s.len())?;

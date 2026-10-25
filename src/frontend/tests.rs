@@ -4589,6 +4589,32 @@ fn regexp_property_syntax_is_independent_of_matcher_support() {
 }
 
 #[test]
+fn regexp_string_properties_preserve_literal_early_errors() {
+    // Synthetic fixtures, not light-cljs output.
+    for name in [
+        "Basic_Emoji",
+        "Emoji_Keycap_Sequence",
+        "RGI_Emoji_Modifier_Sequence",
+        "RGI_Emoji_Flag_Sequence",
+        "RGI_Emoji_Tag_Sequence",
+        "RGI_Emoji_ZWJ_Sequence",
+        "RGI_Emoji",
+    ] {
+        for pattern in [format!(r"\p{{{name}}}"), format!(r"[\p{{{name}}}]")] {
+            parse_script(&format!("false && /{pattern}/v")).unwrap();
+            assert!(parse_script(&format!("false && /{pattern}/u")).is_err());
+        }
+        for pattern in [
+            format!(r"\P{{{name}}}"),
+            format!(r"[^\p{{{name}}}]"),
+            format!(r"[^\p{{{name}}}--\p{{{name}}}]"),
+        ] {
+            assert!(parse_script(&format!("false && /{pattern}/v")).is_err());
+        }
+    }
+}
+
+#[test]
 fn rejects_lexically_ambiguous_input() {
     use SyntaxErrorKind::*;
     // Regexp-goal cases parse and compile to fresh RegExp objects.

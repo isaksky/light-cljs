@@ -1,5 +1,19 @@
 # Attribution
 
+## RegExp properties of strings (clj-quickjs-305)
+
+`research/quickjs/libunicode.c::unicode_sequence_prop` and
+`research/quickjs/libregexp.c` class-string handling at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` were semantic references.
+The existing offline Unicode repacker executes that decoder and independently
+compares its inventories with pinned Unicode Emoji 17.0 `emoji-sequences.txt`
+and `emoji-zwj-sequences.txt`. Five overgenerated FAMILY modifier sequences
+are checked and excluded to follow the normative RGI data. Generated tables
+retain QuickJS copyright and refer to `src/intl/data/QUICKJS-LICENSE`;
+Unicode License v3 is retained in `docs/UNICODE-LICENSE`. Input and generator
+hashes are in `src/regexp/case_fold_provenance.txt`. Runtime code and synthetic
+fixtures were written afresh; no QuickJS runtime is linked.
+
 ## Class static initialization blocks (clj-quickjs-292)
 
 Semantic references: `js_parse_class` and `js_parse_function_decl2`, including

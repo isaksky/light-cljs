@@ -3398,7 +3398,7 @@ verification against QuickJS and pinned UCD inputs. In iu, property complements
 are taken before folding; `/\P{Lower}/iu` matches lowercase letters too.
 Without u or v, p/P remain Annex B identity escapes. Unknown names throw SyntaxError.
 Script/Script_Extensions (including sc/scx) are supported by clj-quickjs-304;
-string properties remain deferred and throw SyntaxError. Run:
+string properties execute under v (clj-quickjs-305). Run:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_property_escapes -- --exact --test-threads=3`.
 
 ### Percent and currency NumberFormat (clj-quickjs-214)
@@ -3539,12 +3539,34 @@ both lowercase and uppercase letters. Scoped `i` works inside `v` patterns.
 
 Malformed operations, unescaped class syntax/reserved double punctuation,
 negation of classes that may contain strings, and combining `u` with `v`
-throw catchable SyntaxError. Unicode string properties (including RGI_Emoji)
-and lookbehind remain deferred. Script/Script_Extensions are supported below.
+throw catchable SyntaxError. Unicode string properties are supported by
+clj-quickjs-305 below. Lookbehind remains deferred. Script/Script_Extensions are supported below.
 Set compilation and string matching share the existing catchable step bounds;
 normal builds use the existing generated Unicode 17 tables without new data
 or dependencies. Run `CARGO_BUILD_JOBS=3 cargo test --lib regexp:: -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.
+
+### RegExp Unicode properties of strings (clj-quickjs-305)
+
+Supported in `v`: `Basic_Emoji`, `Emoji_Keycap_Sequence`,
+`RGI_Emoji_Modifier_Sequence`, `RGI_Emoji_Flag_Sequence`,
+`RGI_Emoji_Tag_Sequence`, `RGI_Emoji_ZWJ_Sequence` and `RGI_Emoji`.
+Pinned Emoji 17.0 data matches Unicode 17.0.0; all 3,953 RGI sequences,
+including singleton code points, are represented. Properties work as atoms
+and class operands with `\q{...}`, `&&` and `--`, matching longest first
+and backtracking to shorter members. Names are exact, with no aliases.
+String properties under `u`, in `\P`, or in classes whose static
+MayContainStrings is true when negated are SyntaxErrors, also at literal sites.
+
+Generated tables store the six categories once; `RGI_Emoji` reuses their union.
+Generation checks every sequence against the pinned Unicode text files and
+QuickJS decoder, excluding QuickJS's five non-RGI FAMILY modifier sequences.
+See `scripts/quickjs-data/README.md` for regeneration and verification.
+No new runtime allowance is introduced: decoding/copying, sorting, set algebra
+and bytecode emission share the existing 1,000,000-step compilation budget;
+execution shares the existing 1,000,000-step search budget. Exhaustion throws
+RangeError. Normal builds use checked-in data and need no network or C compiler.
+Run `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_unicode_string_properties -- --exact --test-threads=3`.
 
 ### Collector weak edges (clj-quickjs-172)
 
@@ -4398,7 +4420,7 @@ Gaps found by the audit are filed as pellets, not fixed here. Private names now
 execute (clj-quickjs-291), as do static blocks (-292) and Set/WeakSet (-295);
 remaining work includes generator `return`/`throw` (-293), Array.prototype mutators,
 search, callback and copying methods (-296 to -299), the plain RegExp `i` flag
-(-303), Script property escapes (-304), v-flag string properties (-305),
+(-303), Script property escapes (-304),
 NumberFormat unit style (-306), DateTimeFormat timeZoneName (-307),
 `Symbol.toPrimitive`
 dispatch (implemented by -310), `Object.prototype.toString`
@@ -4730,7 +4752,7 @@ uses explicit script sets where present and Script otherwise; Common/Inherited
 characters with explicit extensions belong to those sets instead of their
 original script. Unknown values, loose casing and lone script names throw
 SyntaxError. Script properties work in character classes, scoped i and v set
-operations. Unicode string properties remain deferred (clj-quickjs-305).
+operations. Unicode string properties execute under v (clj-quickjs-305).
 
 Tables use shared sorted inclusive ranges with no runtime decoding, new native
 continuation or GC edges. Existing parse, set compilation and matching work

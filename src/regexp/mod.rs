@@ -11,3 +11,4 @@ pub mod case_fold;
 pub(crate) mod object;
 pub mod property;
 mod sets;
+pub mod string_property;

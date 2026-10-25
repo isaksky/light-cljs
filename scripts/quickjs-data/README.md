@@ -245,6 +245,9 @@ curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedBinaryProp
   -o target/ucd-17/DerivedBinaryProperties.txt
 curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt \
   -o target/ucd-17/emoji-data.txt
+for file in emoji-sequences.txt emoji-zwj-sequences.txt; do
+  curl -fsSL "https://www.unicode.org/Public/17.0.0/emoji/$file" -o "target/ucd-17/$file"
+done
 nix develop --command bash scripts/quickjs-data/verify.sh \
   /home/dev/projects/clj-quickjs/research/quickjs target/unicode-import
 nix develop --command bash scripts/gen-unicode-ident.sh \
@@ -277,7 +280,7 @@ for Script and Script_Extensions; exact aliases come
 from the verified NUL-separated pools. QuickJS-only binary names are filtered
 by an explicit ECMAScript allowlist. Script aliases are independently checked
 against PropertyValueAliases.txt, including Qaai and Qaac. Unicode string
-properties remain deferred to clj-quickjs-305.
+properties are generated and supported by clj-quickjs-305.
 Every raw set (including derived binary properties) is independently compared
 with pinned Unicode 17.0.0 UCD input. The offline decoder's intervals are
 intersected with U+0000..U+10FFFF, including lone surrogates. Compact ranges
@@ -291,6 +294,28 @@ Identical raw/folded range sets share a single immutable array, keeping the
 combined source smaller than the previous binary/category-only table.
 Run language tests with `cargo test --test js_source regexp_property_ -- --test-threads=3`
 and `cargo test --test js_source regexp_script_property_escapes -- --exact --test-threads=3`.
+
+### Properties of strings (clj-quickjs-305)
+
+The same repacker pins Emoji 17.0 `emoji-sequences.txt` and
+`emoji-zwj-sequences.txt`, matching Unicode 17.0.0. It expands every text row,
+compares all seven complete inventories against the offline
+`unicode_sequence_prop` decoder, and emits `string_property_data.rs`.
+QuickJS expands five FAMILY U+1F46A modifier sequences that Emoji 17 excludes:
+the generator verifies exactly those outputs and excludes them from both
+RGI_Emoji_Modifier_Sequence and RGI_Emoji. No other discrepancy is allowed.
+Singletons become disjoint ranges; multi-code-point strings use compact
+length-prefixed scalar pools. The six disjoint categories are stored once;
+RGI_Emoji reuses their union. The normative RGI inventory has 3,953 members.
+
+`gen-unicode-ident.sh` installs this module alongside the other Unicode data.
+The optional UCD argument to `verify.sh` repeats generation byte-for-byte,
+compares every installed sequence reader (including singletons and the union)
+to the independently verified inventory, detects a deliberately corrupted
+sequence, and rejects changed Emoji input hashes. The normal build reads
+only immutable checked-in Rust data. Consumer semantics run with
+`cargo test --lib regexp:: -- --test-threads=3` and
+`cargo test --test js_source regexp_unicode_string_properties -- --exact --test-threads=3`.
 
 ## Collator root normalization and folding (clj-quickjs-218)
 

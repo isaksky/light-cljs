@@ -22754,6 +22754,14 @@ fn string_replace_overlapping_capture_output_is_bounded() {
 }
 
 #[test]
+fn regexp_unicode_string_properties() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/regexp_string_properties.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn regexp_unicode_sets() {
     assert_eq!(
         eval(include_str!("fixtures/js/regexp_sets.js")),
@@ -22798,7 +22806,7 @@ fn regexp_quantifier_capacity_is_a_runtime_limit() {
 }
 
 #[test]
-fn regexp_unsupported_properties_remain_runtime_errors() {
+fn regexp_property_literals_execute_when_evaluated() {
     // Synthetic fixtures, not light-cljs output.
     assert_eq!(
         eval(r"false && /\p{Script=Greek}/u"),
@@ -22809,10 +22817,7 @@ fn regexp_unsupported_properties_remain_runtime_errors() {
         ValueView::Bool(false)
     );
     assert_eq!(eval(r"false && /\p{RGI_Emoji}/v"), ValueView::Bool(false));
-    assert_eq!(
-        eval(r"try { /\p{RGI_Emoji}/v; false } catch(e) { e instanceof SyntaxError }"),
-        ValueView::Bool(true)
-    );
+    assert_eq!(eval(r"/\p{RGI_Emoji}/v.test('😀')"), ValueView::Bool(true));
 }
 
 #[test]

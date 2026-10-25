@@ -6715,8 +6715,8 @@ Rust traversal or destruction depends on class nesting depth.
 to sorted disjoint code-point intervals and finite strings. It reuses the
 verified Unicode 17 property ranges and simple-fold mappings. Case folding
 computes each operand's canonical image before set operations, including
-complement, so `vi` property complements differ from `iu`. No data generation,
-new runtime dependency or GC edge is introduced.
+complement, so `vi` property complements differ from `iu`. No new runtime
+dependency or GC edge is introduced.
 
 The compiler lowers strings to ordinary Char/Split/Jump alternatives in
 longest-code-point-length order, then a code-point class, then an optional
@@ -6725,8 +6725,21 @@ repeat progress checks handle these alternatives. Interval scans, string
 comparisons, sort bounds and instruction emission consume the compilation
 budget; matching consumes the existing shared search budget. Exhaustion is
 catchable RangeError. Programs retain the same immutable Arc storage boundary
-and RegExp instances remain task-owned. String-property decoding is deferred
-and unsupported string property names throw SyntaxError.
+and RegExp instances remain task-owned.
+
+`regexp::string_property` (clj-quickjs-305) reads generated Emoji 17.0
+singleton ranges and length-prefixed scalar sequences from six disjoint
+categories. The `RGI_Emoji` identity iterates their union without duplicating
+the immutable data. Parsing stores only a validated property identity;
+compilation expands it under the existing compilation budget, charging scalar
+copies, string comparison bounds and instruction emission. No new limit or
+continuation kind is added. Static MayContainStrings is true for every string
+property, even when set subtraction removes its actual multi-scalar members.
+The existing Unicode repacker checks all seven sequence inventories against
+pinned Emoji text inputs and the offline QuickJS decoder. Its exact five
+non-RGI FAMILY-plus-modifier outputs are verified and excluded to agree with
+Emoji 17.0. Names remain invalid under u, in `\P`, and in negated classes
+whose expression may contain strings.
 
 ## Resumable Array.prototype.sort (clj-quickjs-208)
 

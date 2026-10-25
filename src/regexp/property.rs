@@ -15,16 +15,7 @@ pub(super) fn syntax_kind(name: &str) -> Option<PropertyKind> {
     if lookup(name).is_some() {
         return Some(PropertyKind::CodePoint);
     }
-    if matches!(
-        name,
-        "Basic_Emoji"
-            | "Emoji_Keycap_Sequence"
-            | "RGI_Emoji_Modifier_Sequence"
-            | "RGI_Emoji_Flag_Sequence"
-            | "RGI_Emoji_Tag_Sequence"
-            | "RGI_Emoji_ZWJ_Sequence"
-            | "RGI_Emoji"
-    ) {
+    if super::string_property::lookup(name).is_some() {
         return Some(PropertyKind::String);
     }
     None

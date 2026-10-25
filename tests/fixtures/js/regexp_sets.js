@@ -69,7 +69,7 @@ let invalid = ['[a&&&b]', '[a&&&]', '[(]', '[^\\q{ab}]', '[a-z&&b]', '[a-z&&]',
  '[!!]', '[##]', '[$$]', '[%%]', '[**]', '[++]', '[,,]', '[..]', '[::]',
  '[;;]', '[<<]', '[==]', '[>>]', '[??]', '[@@]', '[a^^]', '[``]', '[~~]',
  '[^\\q{}]', '[^[\\q{ab}]--\\q{ab}]', '[\\d-a]', '[a-\\d]',
- '[\\q{\\d}]', '[\\q{a(b}]', '\\q{ab}', '\\p{RGI_Emoji}', '[^\\p{RGI_Emoji}]'];
+ '[\\q{\\d}]', '[\\q{a(b}]', '\\q{ab}', '[^\\p{RGI_Emoji}]'];
 for (let i = 0; i < invalid.length; i++) {
  let caught = false;
  try { RegExp(invalid[i], 'v'); } catch(e) { caught = e instanceof SyntaxError; }

@@ -81,6 +81,8 @@ pub enum ClassMember {
         property: super::property::UnicodeProperty,
         inverted: bool,
     },
+    /// Only valid in a v-mode UnicodeSet, never a CharacterClass.
+    StringProperty(super::string_property::UnicodeStringProperty),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -4024,9 +4024,8 @@ apply strict pattern syntax. Invalid patterns produce `SyntaxError` kind
 including in unevaluated expressions and function bodies. The AST preserves
 the raw pattern and flags; matcher compilation remains in the runtime.
 Literal validation recognizes exact Script/Script_Extensions aliases and the
-seven v-mode string properties. Scripts also execute; valid but unsupported
-string properties compile in unevaluated expressions and evaluating them
-retains the runtime's catchable SyntaxError. Invalid names/values, string
+seven v-mode string properties. Scripts and string properties execute
+(clj-quickjs-304/-305). Invalid names/values, string
 properties in u mode or in `\P`, and complemented classes that may contain
 strings are early errors. Script aliases use the pinned Unicode 17 name pool.
 Literal syntax validation accepts arbitrary-length decimal quantifier bounds,
@@ -4882,7 +4881,7 @@ while `/[^\p{Lower}]/iu.test('a')` is false. Matching retains the catchable
 step budget and UTF-16 offsets.
 
 Script, sc, Script_Extensions and scx execute (clj-quickjs-304).
-Unicode string properties remain deferred.
+Unicode string properties execute under v (clj-quickjs-305).
 
 ```js accept
 /\p{General_Category=Uppercase_Letter}/u.test('A');
@@ -5092,10 +5091,15 @@ negation even if subtraction would remove all actual strings. Parsing and
 set traversal use explicit stacks; compilation and matching retain their
 catchable RangeError work limits.
 
-Explicit gaps: properties of strings such as `\p{RGI_Emoji}` deliberately
-throw SyntaxError. Lookbehind and symbol-based
-string dispatch retain their existing deferred status.
-Literal pattern errors retain the current catchable construction-time policy.
+All seven Unicode properties of strings execute under `v` (clj-quickjs-305):
+`Basic_Emoji`, `Emoji_Keycap_Sequence`, `RGI_Emoji_Modifier_Sequence`,
+`RGI_Emoji_Flag_Sequence`, `RGI_Emoji_Tag_Sequence`, `RGI_Emoji_ZWJ_Sequence`
+and their union `RGI_Emoji`. They use exact names and pinned Emoji 17.0
+sequences, including mandatory variation selectors. They participate in
+longest-first matching, backtracking and class set operations with `\q`.
+Under `u`, in `\P`, and in negated classes with static MayContainStrings,
+they are SyntaxErrors. Literal errors are early errors even if unevaluated.
+Lookbehind remains deferred; symbol-based string dispatch executes (-301).
 
 ```js accept
 /[\q{abc|ab|a}]/v.exec('abcd')[0] === 'abc';

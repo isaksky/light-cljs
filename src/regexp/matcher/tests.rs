@@ -513,3 +513,30 @@ fn unicode_sets_share_compilation_and_search_budget() {
     let p = program(r"([\q{aa|a}]+)+b", "v").unwrap();
     assert_eq!(exec(&p, &[97; 25], 0), Err(MatchError::LimitExceeded));
 }
+
+#[test]
+fn unicode_string_properties_use_shared_limits_and_validate_ir() {
+    let property = crate::regexp::string_property::lookup("RGI_Emoji").unwrap();
+    for flags in ["", "u", "v"] {
+        let mut ir = parse(&JsString::from("a"), &JsString::from(flags)).unwrap();
+        ir.nodes[0] = Node::Class(CharacterClass {
+            inverted: false,
+            members: vec![ClassMember::StringProperty(property)],
+        });
+        assert!(matches!(compile(&ir), Err(MatchError::InvalidPattern)));
+    }
+    let mut ir = parse(&JsString::from("a"), &JsString::from("v")).unwrap();
+    ir.nodes[0] = Node::UnicodeSet(vec![
+        ClassSetItem::Member(ClassMember::StringProperty(property)),
+        ClassSetItem::Member(ClassMember::StringProperty(property)),
+        ClassSetItem::Subtraction,
+        ClassSetItem::Complement,
+    ]);
+    assert!(matches!(compile(&ir), Err(MatchError::InvalidPattern)));
+    assert!(matches!(
+        program(&r"\p{RGI_Emoji}".repeat(100), "v"),
+        Err(MatchError::LimitExceeded)
+    ));
+    let p = program(r"\p{RGI_Emoji}", "v").unwrap();
+    assert_eq!(exec(&p, &[97; 1000], 0), Err(MatchError::LimitExceeded));
+}

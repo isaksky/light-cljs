@@ -205,6 +205,7 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                         ClassMember::Range(a, b) => a > b || *b > max_character,
                         ClassMember::Escape(_) => false,
                         ClassMember::Property { .. } => !unicode,
+                        ClassMember::StringProperty(_) => true,
                     } {
                         return Err(MatchError::InvalidPattern);
                     }
@@ -593,6 +594,7 @@ impl Machine {
                                 ClassMember::Property { property, inverted } => {
                                     property.contains(c, *inverted, *ignore_case)
                                 }
+                                ClassMember::StringProperty(_) => unreachable!("validated arena"),
                             };
                             if found {
                                 break;

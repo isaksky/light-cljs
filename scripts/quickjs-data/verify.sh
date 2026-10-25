@@ -51,7 +51,7 @@ echo 'PASS: repeatable generation, edge cases, mutation detection, and input pin
 if [[ $# == 3 ]]; then
     perl "$script_dir/repack-unicode.pl" "$output_dir/first" "$source_dir" "$3" "$output_dir/unicode-first"
     perl "$script_dir/repack-unicode.pl" "$output_dir/second" "$source_dir" "$3" "$output_dir/unicode-second"
-    for file in case_fold_data.rs unicode_ident.rs property_data.rs string_data.rs string-reference.txt provenance.txt reference.bin legacy-reference.bin property-reference.bin; do
+    for file in case_fold_data.rs unicode_ident.rs property_data.rs string_property_data.rs sequence-reference.txt string_data.rs string-reference.txt provenance.txt reference.bin legacy-reference.bin property-reference.bin; do
         cmp "$output_dir/unicode-first/$file" "$output_dir/unicode-second/$file"
     done
     rustc --edition=2024 -D warnings "$output_dir/unicode-first/verify.rs" -o "$output_dir/unicode-first/verify"
@@ -60,6 +60,15 @@ if [[ $# == 3 ]]; then
     "$output_dir/unicode-first/verify-properties" "$output_dir/unicode-first/property-reference.bin"
     rustc --edition=2024 -O -D warnings "$output_dir/unicode-first/verify-strings.rs" -o "$output_dir/unicode-first/verify-strings"
     "$output_dir/unicode-first/verify-strings" "$output_dir/unicode-first/string-reference.txt"
+    rustc --edition=2024 -O -D warnings "$output_dir/unicode-first/verify-sequences.rs" -o "$output_dir/unicode-first/verify-sequences"
+    "$output_dir/unicode-first/verify-sequences" "$output_dir/unicode-first/sequence-reference.txt"
+    sed '0,/^Basic_Emoji;1F004$/s//Basic_Emoji;1F005/' "$output_dir/unicode-first/sequence-reference.txt" > "$output_dir/unicode-first/sequence-corrupt.txt"
+    if cmp -s "$output_dir/unicode-first/sequence-reference.txt" "$output_dir/unicode-first/sequence-corrupt.txt"; then
+        echo 'sequence mutation did not apply' >&2; exit 1
+    fi
+    if "$output_dir/unicode-first/verify-sequences" "$output_dir/unicode-first/sequence-corrupt.txt" > "$output_dir/sequence-corruption.log" 2>&1; then
+        echo 'incorrect emoji sequence escaped comparison' >&2; exit 1
+    fi
     sed '0,/^U 61 41/s//U 61 40/' "$output_dir/unicode-first/string-reference.txt" > "$output_dir/unicode-first/string-corrupt.txt"
     if "$output_dir/unicode-first/verify-strings" "$output_dir/unicode-first/string-corrupt.txt" > "$output_dir/string-corruption.log" 2>&1; then
         echo 'incorrect String mapping escaped comparison' >&2; exit 1
@@ -95,6 +104,14 @@ if [[ $# == 3 ]]; then
         echo 'unpinned UCD accepted' >&2; exit 1
     fi
     test ! -e "$output_dir/ucd-drift-result/export.c"
+    # Restore the UCD file and mutate the separately pinned Emoji data too.
+    cp "$3/CaseFolding.txt" "$output_dir/ucd-drift/CaseFolding.txt"
+    echo '# unexpected Emoji version' >> "$output_dir/ucd-drift/emoji-sequences.txt"
+    if perl "$script_dir/repack-unicode.pl" "$output_dir/first" "$source_dir" "$output_dir/ucd-drift" "$output_dir/emoji-drift-result" \
+        > "$output_dir/emoji-drift.log" 2>&1; then
+        echo 'unpinned Emoji accepted' >&2; exit 1
+    fi
+    test ! -e "$output_dir/emoji-drift-result/export.c"
     echo 'PASS: Unicode repeatability, full-domain runtime comparison, corruption and version guards'
 fi
 

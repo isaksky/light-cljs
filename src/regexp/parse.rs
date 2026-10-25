@@ -80,7 +80,7 @@ impl Flags {
 /// Parse pattern text without literal delimiters. No lossy conversion to UTF-8
 /// occurs. The result owns its arena and has no heap/GC edges. Both parsing and
 /// dropping nested groups are iterative. Quantifier counts above u64::MAX are
-/// rejected explicitly; string property escapes are deferred.
+/// rejected explicitly.
 pub fn parse(pattern: &JsString, flags: &JsString) -> Result<Pattern, SyntaxError> {
     let flags_value = Flags::parse(flags)?;
     Parser::new(pattern.code_units(), flags_value, false).run()
@@ -204,7 +204,7 @@ struct Parser<'a> {
     flags: Flags,
     syntax_only: bool,
     // Metadata for the last character consumed by set_character. Required for
-    // v-mode complement/intersection rules even when property matching is deferred.
+    // v-mode static complement/intersection rules, including syntax-only validation.
     property_may_strings: bool,
     total_captures: usize,
     has_named: bool,
@@ -974,6 +974,13 @@ impl<'a> Parser<'a> {
                 }
                 if !self.eat(125) {
                     return Err(error(start, "invalid Unicode property escape"));
+                }
+                if let Some(property) = super::string_property::lookup(&name) {
+                    self.property_may_strings = true;
+                    if !self.flags.unicode_sets || unit == 80 {
+                        return Err(error(start, "invalid string property escape"));
+                    }
+                    return Ok(ClassMember::StringProperty(property));
                 }
                 if self.syntax_only {
                     let kind = super::property::syntax_kind(&name)
