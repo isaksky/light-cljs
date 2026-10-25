@@ -30,6 +30,83 @@ const NUMBER: (DependencyId, ResultKind) = (DependencyId::new(5), ResultKind::ne
 /// `__rt.need(6, 2)`: a callable.
 const CALLABLE: (DependencyId, ResultKind) = (DependencyId::new(6), ResultKind::new(2));
 
+/// Synthetic fixtures, not light-cljs output. Logical references survive
+/// waits in key conversion, getters, RHSs and setters, with GC at each yield
+/// and migration to a different thread after dependency publication.
+#[test]
+fn logical_assignment_waits_collects_and_migrates() {
+    for source in [
+        "let n = 0, o = {p: null}; function base() { n++; return o; } let v = base().p ??= __rt.need(5, 3) + 20; v + o.p - 30 + n - 1",
+        "let n = 0, key = {toString() { n++; __rt.need(5, 3); return 'p'; }}; let o = {p: 1}; let v = o[key] &&= 30; v + o.p - 30 + n - 1",
+        "let n = 0, o = {get p() { n++; return __rt.need(5, 3); }}; let v = o.p ||= 99; v + 20 + n - 1",
+        "let n = 0, o = {get p() { n++; return __rt.need(5, 3) - 10; }, set p(v) { this.q = v; }}; let v = o.p ||= 30; v + o.q - 30 + n - 1",
+        "let n = 0, o = {set p(v) { n++; this.q = v + __rt.need(5, 3); }}; let v = o.p ??= 20; v + o.q - 20 + n - 1",
+        "let o = {m() { return super.p ??= __rt.need(5, 3) + 20; }}; o.m()",
+        "let x = 0, n = 0, o = {get x() { n++; return __rt.need(5, 3) - 10; }, set x(v) { this.y = v; }}; with(o) { x ||= (delete o.x, 30); } o.x + x + n - 1",
+        "let x; let v = x ??= __rt.need(5, 3) + 20; x + v - 30",
+        "null ?? (__rt.need(5, 3) + 20)",
+    ] {
+        let rt = Runtime::new();
+        let code = clj_quickjs::frontend::compile_script_with(
+            "logical-wait",
+            source,
+            clj_quickjs::frontend::ScriptOptions::SLOPPY,
+        )
+        .unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let expected = key(&rt, NUMBER);
+        for step in 0..2000 {
+            match task
+                .run_with(Budget::instructions(1), &mut Recorder::default())
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected, "{source}");
+                    break;
+                }
+            }
+            assert!(step < 1999, "bounded logical-assignment wait");
+        }
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 10.0));
+        let result = thread::spawn(move || {
+            for _ in 0..2000 {
+                match resumed
+                    .run_with(Budget::instructions(1), &mut Recorder::default())
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    outcome => return number(outcome),
+                }
+            }
+            panic!("bounded logical-assignment completion")
+        })
+        .join()
+        .unwrap();
+        assert_eq!(result, 30.0, "{source}");
+    }
+    for source in [
+        "let o = {p: 30}; o.p ||= __rt.need(5, 3)",
+        "let o = {p: 30}; o['p'] ??= __rt.need(5, 3)",
+        "let x = 0; (x &&= __rt.need(5, 3)) + 30",
+        "30 ?? __rt.need(5, 3)",
+    ] {
+        let rt = Runtime::new();
+        let task = rt
+            .spawn(&compile_script("logical-skip", source).unwrap(), &[])
+            .unwrap();
+        assert_eq!(number(task.run().unwrap()), 30.0);
+        assert!(task.take_producer_requests().is_empty());
+        assert!(task.dependency_log().edges().is_empty());
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output: super keeps its receiver,
 /// lookup base, converted key and assigned value through suspension and GC.
 #[test]

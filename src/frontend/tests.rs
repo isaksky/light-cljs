@@ -741,8 +741,19 @@ fn render_expr(e: &Expr) -> String {
             let op = match op {
                 LogicalOp::And => "&&",
                 LogicalOp::Or => "||",
+                LogicalOp::Coalesce => "??",
             };
             format!("({op} {} {})", render_expr(left), render_expr(right))
+        }
+        ExprKind::LogicalAssign {
+            op, target, value, ..
+        } => {
+            let op = match op {
+                LogicalOp::And => "&&=",
+                LogicalOp::Or => "||=",
+                LogicalOp::Coalesce => "??=",
+            };
+            format!("({op} {} {})", render_expr(target), render_expr(value))
         }
         ExprKind::Conditional {
             test,
@@ -2309,9 +2320,7 @@ fn bitwise_and_shift_precedence() {
     assert_eq!(ast("a <<= 1;"), "(<<= a 1)");
     assert_eq!(ast("a >>= 1;"), "(>>= a 1)");
     assert_eq!(ast("a >>>= b | c;"), "(>>>= a (| b c))");
-    // `??` stays rejected at the operator.
-    use SyntaxErrorKind::Unsupported;
-    rejects_with("a | b ?? c;", Unsupported, 1, 7, "??");
+    assert_eq!(ast("a | b ?? c;"), "(?? (| a b) c)");
 }
 
 /// The exponentiation operator (clj-quickjs-63): tighter than `*`,
@@ -2462,12 +2471,60 @@ fn conditional_and_assignment_are_right_associative() {
     assert_eq!(ast("a ?.5 : 1;"), "(? a 0.5 1)");
 }
 
+#[test]
+fn nullish_and_logical_assignment_grammar() {
+    assert_eq!(ast("a ?? b ?? c"), "(?? (?? a b) c)");
+    assert_eq!(ast("a ?? b ? c : d"), "(? (?? a b) c d)");
+    assert_eq!(ast("a ?? b + c * d"), "(?? a (+ b (* c d)))");
+    assert_eq!(ast("a &&= b ||= c ??= d"), "(&&= a (||= b (??= c d)))");
+    assert_eq!(ast("((a)) ??= (b, c)"), "(??= a (, b c))");
+    for boolean in ["&&", "||"] {
+        for source in [
+            format!("a ?? b {boolean} c"),
+            format!("a {boolean} b ?? c"),
+            format!("(a) {boolean} b ?? c"),
+            format!("(a) ?? b {boolean} c"),
+            format!("false && (a ?? b {boolean} c)"),
+        ] {
+            let error = parse_script(&source).unwrap_err();
+            assert_eq!(error.kind, SyntaxErrorKind::Invalid, "{source}: {error}");
+            assert!(error.message.contains("cannot mix"), "{source}: {error}");
+        }
+        for source in [
+            format!("(a ?? b) {boolean} c"),
+            format!("a ?? (b {boolean} c)"),
+            format!("(a {boolean} b) ?? c"),
+            format!("a {boolean} (b ?? c)"),
+        ] {
+            parse_script(&source).unwrap();
+        }
+    }
+    for source in ["f() ||= 1", "[a] ??= b", "({a}) &&= b", "a?.b ||= c"] {
+        assert_eq!(
+            parse_script(source).unwrap_err().kind,
+            SyntaxErrorKind::Invalid,
+            "{source}"
+        );
+    }
+    for source in [
+        "__rt.x ??= 1",
+        "__rt ||= 1",
+        "eval &&= 1",
+        "arguments ??= 1",
+    ] {
+        assert_eq!(
+            compile_script("reserved", source).unwrap_err().kind,
+            SyntaxErrorKind::ReservedWord,
+            "{source}"
+        );
+    }
+}
+
 /// Arithmetic, bitwise, shift and `**` compound assignment on identifier
-/// bindings (clj-quickjs-84): the target rules of `=`, right-associative,
-/// and the logical assignments stay unsupported.
+/// bindings (clj-quickjs-84): the target rules of `=`, right-associative.
 #[test]
 fn compound_assignment() {
-    use SyntaxErrorKind::{Invalid, ReservedWord, Unsupported};
+    use SyntaxErrorKind::{Invalid, ReservedWord};
     assert_eq!(ast("a += 1;"), "(+= a 1)");
     assert_eq!(ast("a -= b *= 2;"), "(-= a (*= b 2))");
     assert_eq!(ast("(a) %= 3;"), "(%= a 3)");
@@ -2533,12 +2590,11 @@ fn compound_assignment() {
     assert_eq!((target.span.start, target.span.end), (2, 8));
     assert_eq!((op_span.start, op_span.end), (9, 12));
     rejects_with("a.b++ += 1;", Invalid, 1, 1, "invalid assignment target");
-    rejects_with("a.b &&= 1;", Unsupported, 1, 5, "&&=");
-    rejects_with("a[0] ??= 1;", Unsupported, 1, 6, "??=");
-    // Logical assignment is not supported.
-    rejects_with("a &&= 1;", Unsupported, 1, 3, "&&=");
-    rejects_with("a ||= 1;", Unsupported, 1, 3, "||=");
-    rejects_with("a ??= 1;", Unsupported, 1, 3, "??=");
+    assert_eq!(ast("a.b &&= 1;"), "(&&= (. a b) 1)");
+    assert_eq!(ast("a[0] ??= 1;"), "(??= ([] a 0) 1)");
+    assert_eq!(ast("a &&= 1;"), "(&&= a 1)");
+    assert_eq!(ast("a ||= 1;"), "(||= a 1)");
+    assert_eq!(ast("a ??= 1;"), "(??= a 1)");
 }
 
 #[test]
@@ -2824,7 +2880,7 @@ fn object_literal_methods_nesting_fits_a_2_mib_stack() {
 /// reserved intrinsic binding stays rejected.
 #[test]
 fn property_assignment() {
-    use SyntaxErrorKind::{ReservedWord, Unsupported};
+    use SyntaxErrorKind::ReservedWord;
     assert_eq!(ast("a.b = 1;"), "(= (. a b) 1)");
     assert_eq!(ast("(a.b) = 1;"), "(= (. a b) 1)");
     assert_eq!(ast("a.b.c = d.e = f;"), "(= (. (. a b) c) (= (. d e) f))");
@@ -2833,7 +2889,7 @@ fn property_assignment() {
     // on a property.
     assert_eq!(ast("a.b += 1;"), "(+= (. a b) 1)");
     assert_eq!(ast("a.b++;"), "(post++ (. a b))");
-    rejects_with("a.b ||= 1;", Unsupported, 1, 5, "||=");
+    assert_eq!(ast("a.b ||= 1;"), "(||= (. a b) 1)");
     rejects_with("__rt.x = 1;", ReservedWord, 1, 1, "cannot be assigned");
 }
 
@@ -2899,7 +2955,7 @@ fn array_literals() {
 /// property parse (clj-quickjs-260, -76), and `__rt` cannot be indexed.
 #[test]
 fn computed_member_access() {
-    use SyntaxErrorKind::{ReservedWord, Unsupported};
+    use SyntaxErrorKind::ReservedWord;
     assert_eq!(ast("a[b];"), "([] a b)");
     assert_eq!(ast("a[b][c];"), "([] ([] a b) c)");
     assert_eq!(ast("a.b[c].d;"), "(. ([] (. a b) c) d)");
@@ -2916,7 +2972,7 @@ fn computed_member_access() {
     assert_eq!(ast("a\n[0]"), "([] a 0)");
     // Compound assignment to a computed property (clj-quickjs-260).
     assert_eq!(ast("a[0] += 1;"), "(+= ([] a 0) 1)");
-    rejects_with("a[0] ??= 1;", Unsupported, 1, 6, "??=");
+    assert_eq!(ast("a[0] ??= 1;"), "(??= ([] a 0) 1)");
     rejects_with("__rt[0];", ReservedWord, 1, 5, "computed access");
     rejects_with("__rt[0] = 1;", ReservedWord, 1, 5, "computed access");
 }
@@ -4376,8 +4432,8 @@ fn rejects_lexically_ambiguous_input() {
     // assignments, clj-quickjs-84; the others are unsupported).
     assert_eq!(ast("a>>>=b"), "(>>>= a b)");
     assert_eq!(ast("a**=b"), "(**= a b)");
-    rejects_with("a&&=b", Unsupported, 1, 2, "&&=");
-    rejects_with("a ?? b", Unsupported, 1, 3, "??");
+    assert_eq!(ast("a&&=b"), "(&&= a b)");
+    assert_eq!(ast("a ?? b"), "(?? a b)");
     // `a--b` is `a--` then `b`, with no operator between them. (HTML-like
     // comments are not comments here: `a <!-- b` is `a < !--b`, and `++`
     // after a line break begins the next statement; both parse, see
@@ -4912,9 +4968,7 @@ fn rejects_unsupported_syntax_with_positions() {
         ("import x from 'y';", 1, 1, "import"),
         ("export const x = 1;", 1, 1, "export"),
         ("x = import('y');", 1, 5, "import"),
-        ("x.y &&= 1;", 1, 5, "&&="),
         ("function f(...a) {}", 1, 12, "rest"),
-        ("a ||= 1;", 1, 3, "||="),
     ];
     for &(src, line, column, needle) in cases {
         rejects_with(src, Unsupported, line, column, needle);
@@ -5257,6 +5311,8 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
         format!("x = f{};", "()".repeat(n)),
         format!("x = a{};", ".b".repeat(n)),
         format!("x = {}1;", "a = ".repeat(n)),
+        format!("x = {}1;", "a ??= ".repeat(n)),
+        format!("x = 1{};", " ?? 1".repeat(n)),
         format!("x = {}1;", "a ? b : ".repeat(n)),
         format!("x = {}1{};", "f(".repeat(n), ")".repeat(n)),
         // Truncated deep input is also rejected for depth, not overflow.
@@ -5305,6 +5361,16 @@ fn mixed_expression_depth_is_bounded() {
 fn nesting_at_the_limit_fits_a_2_mib_stack() {
     type Make = fn(usize) -> String;
     let syntax_makers: &[(&str, Make)] = &[
+        ("nullish coalescing", |n| format!("{}0", "a ?? ".repeat(n))),
+        ("logical identifier assignments", |n| {
+            format!("{}0", "a ||= ".repeat(n))
+        }),
+        ("logical named property assignments", |n| {
+            format!("{}0", "a.b &&= ".repeat(n))
+        }),
+        ("logical computed property assignments", |n| {
+            format!("{}0", "a[b] ??= ".repeat(n))
+        }),
         ("nested class field initializers", |n| {
             format!("let C = {}0{};", "class { x = ".repeat(n), "; }".repeat(n))
         }),

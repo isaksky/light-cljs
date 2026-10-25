@@ -2352,7 +2352,7 @@ impl<'a> Parser<'a> {
 
     /// AssignmentExpression: ConditionalExpression, ArrowFunction, or an
     /// identifier or a property reference `o.p` / `o[k]` (`=` | an
-    /// arithmetic, bitwise, shift or `**` compound operator)
+    /// arithmetic, bitwise, shift, `**` or logical assignment operator)
     /// AssignmentExpression (right-associative).
     fn parse_assignment(&mut self) -> PResult<Expr> {
         let saved = self.depth;
@@ -2366,6 +2366,11 @@ impl<'a> Parser<'a> {
             return Ok(arrow);
         }
         let left = self.parse_conditional()?;
+        if let TokenKind::Punct(p) = self.tok.kind
+            && let Some(op) = logical_assign_op(p)
+        {
+            return self.logical_assign(op, left, saved);
+        }
         if let TokenKind::Punct(p) = self.tok.kind
             && let Some(op) = compound_assign_op(p)
         {
@@ -2717,14 +2722,30 @@ impl<'a> Parser<'a> {
         )
     }
 
-    /// Rejects logical assignment and an arrow after an expression.
+    #[inline(never)]
+    fn logical_assign(&mut self, op: LogicalOp, left: Expr, saved: usize) -> PResult<Expr> {
+        if !is_property_target(&left) {
+            self.simple_target(&left, TargetUse::Assign)?;
+        }
+        let op_span = self.advance()?.span;
+        let value = self.parse_assignment()?;
+        self.depth = saved;
+        let span = left.span.to(value.span);
+        self.expr(
+            ExprKind::LogicalAssign {
+                op,
+                target: Box::new(left),
+                value: Box::new(value),
+                op_span,
+            },
+            span,
+        )
+    }
+
+    /// Rejects an arrow after an expression.
     #[inline(never)]
     fn assignment_operator_error(&self) -> Option<SyntaxError> {
         match &self.tok.kind {
-            TokenKind::Punct(p) if is_logical_assign(*p) => Some(self.unsupported(
-                self.tok.span,
-                &format!("logical assignment `{}` is", p.as_str()),
-            )),
             TokenKind::Punct(Punct::Arrow) => Some(self.misplaced_arrow(&self.tok)),
             _ => None,
         }
@@ -3282,7 +3303,7 @@ impl<'a> Parser<'a> {
         )
     }
 
-    /// ConditionalExpression: LogicalOr (`?` Assignment `:` Assignment)?
+    /// ConditionalExpression: ShortCircuit (`?` Assignment `:` Assignment)?
     fn parse_conditional(&mut self) -> PResult<Expr> {
         let test = self.parse_binary(1)?;
         if !self.is_punct(Punct::Question) {
@@ -3314,8 +3335,12 @@ impl<'a> Parser<'a> {
     fn parse_binary(&mut self, min_prec: u8) -> PResult<Expr> {
         let saved = self.depth;
         let mut left = self.parse_exponent()?;
+        // Parentheses start a fresh invocation. Coalesce operands stop
+        // before either boolean operator, so all unparenthesized mixing
+        // is seen here even though && has higher precedence than ||.
+        let mut coalesce = false;
+        let mut boolean = false;
         loop {
-            self.reject_unsupported_binary()?;
             // `[~In]` (a `for` head's init): `in` ends the expression.
             if self.no_in && self.is_keyword(Keyword::In) {
                 break;
@@ -3326,23 +3351,31 @@ impl<'a> Parser<'a> {
             if prec < min_prec {
                 break;
             }
+            match op {
+                BinOrLogical::Logical(LogicalOp::Coalesce) => coalesce = true,
+                BinOrLogical::Logical(_) => boolean = true,
+                _ => {}
+            }
+            if coalesce && boolean {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    self.tok.span,
+                    "cannot mix ?? with && or || without parentheses",
+                ));
+            }
             self.deeper(cost::OPERATOR)?;
             let op_span = self.advance()?.span;
-            let right = self.parse_binary(prec + 1)?;
+            let right_prec = if matches!(op, BinOrLogical::Logical(LogicalOp::Coalesce)) {
+                3
+            } else {
+                prec + 1
+            };
+            let right = self.parse_binary(right_prec)?;
             left = make_binary(op, left, right, op_span);
             self.check_height(left.height)?;
         }
         self.depth = saved;
         Ok(left)
-    }
-
-    #[inline(never)]
-    fn reject_unsupported_binary(&self) -> PResult<()> {
-        let what = match &self.tok.kind {
-            TokenKind::Punct(p @ Punct::Nullish) => p.as_str(),
-            _ => return Ok(()),
-        };
-        Err(self.unsupported(self.tok.span, &format!("the `{what}` operator is")))
     }
 
     /// ExponentiationExpression:
@@ -4302,6 +4335,7 @@ fn binary_op(kind: &TokenKind) -> Option<(u8, BinOrLogical)> {
     };
     Some(match p {
         Punct::PipePipe => (1, Logical(LogicalOp::Or)),
+        Punct::Nullish => (1, Logical(LogicalOp::Coalesce)),
         Punct::AmpAmp => (2, Logical(LogicalOp::And)),
         Punct::Pipe => (3, Binary(BinaryOp::BitOr)),
         Punct::Caret => (4, Binary(BinaryOp::BitXor)),
@@ -4361,12 +4395,13 @@ fn compound_assign_op(p: Punct) -> Option<BinaryOp> {
     })
 }
 
-/// `&&=`, `||=` and `??=`, which the subset rejects.
-fn is_logical_assign(p: Punct) -> bool {
-    matches!(
-        p,
-        Punct::AmpAmpAssign | Punct::PipePipeAssign | Punct::NullishAssign
-    )
+fn logical_assign_op(p: Punct) -> Option<LogicalOp> {
+    Some(match p {
+        Punct::AmpAmpAssign => LogicalOp::And,
+        Punct::PipePipeAssign => LogicalOp::Or,
+        Punct::NullishAssign => LogicalOp::Coalesce,
+        _ => return None,
+    })
 }
 
 /// Statements of JavaScript that the subset rejects, keyed by their first

@@ -4959,7 +4959,8 @@ impl<'s> Lowerer<'s> {
     }
 
     /// A property reference that is read and then written (`o.p++`,
-    /// `o[k]--`, and compound assignment `o.p op= v`, clj-quickjs-260):
+    /// `o[k]--`, compound assignment `o.p op= v`, clj-quickjs-260, and
+    /// logical assignment, clj-quickjs-314):
     /// evaluates the base once and, for `o[k]`, the key once, followed by
     /// `ToPropertyKey` (the base's `undefined`/`null` check and
     /// the only key conversion), leaving `o` or `o key` on the stack. Then
@@ -5266,6 +5267,12 @@ impl<'s> Lowerer<'s> {
                 op_span,
             } => self.binary_expr(*op, left, right, *op_span),
             ExprKind::Logical { op, left, right } => self.logical(*op, left, right, span),
+            ExprKind::LogicalAssign {
+                op,
+                target,
+                value,
+                op_span,
+            } => self.logical_assign(*op, target, value, *op_span),
             ExprKind::Conditional {
                 test,
                 consequent,
@@ -5555,7 +5562,7 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
-    /// `left && right`, `left || right`: the left value is the result
+    /// `left && right`, `left || right`, `left ?? right`: the left value is the result
     /// unless it selects the right.
     #[inline(never)]
     fn logical(
@@ -5567,14 +5574,93 @@ impl<'s> Lowerer<'s> {
     ) -> Result<(), SyntaxError> {
         self.expr(left)?;
         let end = self.out().label();
-        self.out().op(Opcode::Dup, span);
-        if op == LogicalOp::Or {
-            self.out().op(Opcode::Not, span);
-        }
-        self.out().branch(Opcode::JumpIfFalse, end, span);
+        self.logical_skip(op, end, span)?;
         self.out().op(Opcode::Pop, span);
         self.expr(right)?;
         self.out().bind(end);
+        Ok(())
+    }
+
+    /// Preserve the value on top and branch when the RHS is not selected.
+    /// Strict comparisons avoid invoking any user conversion for ??/??=.
+    fn logical_skip(&mut self, op: LogicalOp, end: usize, span: Span) -> Result<(), SyntaxError> {
+        self.out().op(Opcode::Dup, span);
+        match op {
+            LogicalOp::And => {}
+            LogicalOp::Or => self.out().op(Opcode::Not, span),
+            LogicalOp::Coalesce => {
+                let check_null = self.out().label();
+                let rhs = self.out().label();
+                self.out().op(Opcode::Undefined, span);
+                self.out().op(Opcode::StrictEq, span);
+                self.out().branch(Opcode::JumpIfFalse, check_null, span);
+                self.out().branch(Opcode::Jump, rhs, span);
+                self.out().bind(check_null);
+                self.out().op(Opcode::Dup, span);
+                self.constant(Primitive::Null, span)?;
+                self.out().op(Opcode::StrictEq, span);
+                self.out().branch(Opcode::JumpIfFalse, end, span);
+                self.out().bind(rhs);
+                return Ok(());
+            }
+        }
+        self.out().branch(Opcode::JumpIfFalse, end, span);
+        Ok(())
+    }
+
+    /// Resolve and read once, then bypass both RHS evaluation and PutValue
+    /// on the short branch. Only identifier references use NamedEvaluation.
+    #[inline(never)]
+    fn logical_assign(
+        &mut self,
+        op: LogicalOp,
+        target: &Expr,
+        value: &Expr,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        let saved = self.cur().next_slot;
+        let short = self.out().label();
+        if let ExprKind::Identifier(name) = &target.kind {
+            let at = self.name_span(name, target.span);
+            let access = self.resolve_reference(name);
+            if matches!(access, Access::Intrinsic) {
+                return self.store(access, at);
+            }
+            let access = self.prepare_reference(access, at)?;
+            self.load(access, at)?;
+            self.logical_skip(op, short, span)?;
+            self.out().op(Opcode::Pop, span);
+            self.named_expr(value, JsString::from(name.as_str()))?;
+            self.store(access, at)?;
+            self.out().bind(short);
+        } else {
+            let r = self.property_reference(target, true)?;
+            self.reference_get(r);
+            self.logical_skip(op, short, span)?;
+            self.out().op(Opcode::Pop, span);
+            self.expr(value)?;
+            self.reference_put(r);
+            let end = self.out().label();
+            self.out().branch(Opcode::Jump, end, span);
+            self.out().bind(short);
+            // Remove the reference underneath the old value without a
+            // write. The scratch slot is cleared immediately after use.
+            let result = self.temp(span)?;
+            self.out().op_u16(Opcode::SetLocal, result, span);
+            let depth = match r {
+                PropertyRef::Field(..) => 1,
+                PropertyRef::Elem(..) => 2,
+                PropertyRef::Super(..) => 3,
+            };
+            for _ in 0..depth {
+                self.out().op(Opcode::Pop, span);
+            }
+            self.out().op_u16(Opcode::GetLocal, result, span);
+            self.out().op(Opcode::Undefined, span);
+            self.out().op_u16(Opcode::SetLocal, result, span);
+            self.out().bind(end);
+        }
+        self.cur_mut().next_slot = saved;
         Ok(())
     }
 

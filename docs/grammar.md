@@ -51,8 +51,8 @@ execute. `switch` statements (clj-quickjs-83)
 parse and execute. Arithmetic, bitwise, shift and `**` compound assignment
 (`+=`, `-=`, `*=`, `/=`, `%=`, `**=`, `&=`, `|=`, `^=`, `<<=`, `>>=`,
 `>>>=`) on identifier bindings (clj-quickjs-84) and on properties `o.p` and
-`o[k]` (clj-quickjs-260) parses and executes; the
-logical assignments `&&=`, `||=` and `??=` do not. The `typeof` operator
+`o[k]` (clj-quickjs-260) parses and executes. Nullish coalescing `??` and
+logical assignments `&&=`, `||=` and `??=` execute (clj-quickjs-314). The `typeof` operator
 (clj-quickjs-69) parses and executes, including on a name with no binding.
 The `void` operator (clj-quickjs-133) parses and executes. The `instanceof`
 operator (clj-quickjs-75) parses and executes. The `delete` operator on
@@ -185,8 +185,8 @@ FunctionBody        = "{" { Directive } { StatementListItem } "}"
 Expression            = AssignmentExpression { "," AssignmentExpression }
 AssignmentExpression  = ConditionalExpression | ArrowFunction | YieldExpression
                       | Identifier AssignOperator AssignmentExpression
-                      | Call "." IdentifierName "=" AssignmentExpression
-                      | Call "[" Expression "]" "=" AssignmentExpression
+                      | Call "." IdentifierName AssignOperator AssignmentExpression
+                      | Call "[" Expression "]" AssignOperator AssignmentExpression
                       | ArrayAssignmentPattern "=" AssignmentExpression
                       | ObjectAssignmentPattern "=" AssignmentExpression
 ArrayAssignmentPattern = "[" { "," | AssignmentElement "," }
@@ -200,12 +200,15 @@ AssignmentProperty    = Identifier [ "=" AssignmentExpression ]
                       | PatternPropertyName ":" AssignmentElement
 AssignOperator        = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**="
                       | "&=" | "|=" | "^=" | "<<=" | ">>=" | ">>>="
+                      | "&&=" | "||=" | "??="
 ArrowFunction         = [ "async" [no LineTerminator here] ] ArrowParameters [no LineTerminator here] "=>" ConciseBody
 YieldExpression       = "yield" [ [no LineTerminator here] [ "*" ] AssignmentExpression ]
                         (* generator bodies only; "*" requires an operand *)
 ArrowParameters       = BindingIdentifier | FormalParameters
 ConciseBody           = FunctionBody | AssignmentExpression
-ConditionalExpression = LogicalOr [ "?" AssignmentExpression ":" AssignmentExpression ]
+ConditionalExpression = ShortCircuit [ "?" AssignmentExpression ":" AssignmentExpression ]
+ShortCircuit          = LogicalOr | Coalesce
+Coalesce              = BitwiseOr "??" BitwiseOr { "??" BitwiseOr }
 LogicalOr             = LogicalAnd { "||" LogicalAnd }
 LogicalAnd            = BitwiseOr { "&&" BitwiseOr }
 BitwiseOr             = BitwiseXor { "|" BitwiseXor }
@@ -545,7 +548,6 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | an optional chain as an assignment/update target (`a?.b = 1`, `a?.b++`), a `new` callee (`new a?.b()`), or before a tagged template in the same chain | Invalid |
 | in object literals: computed shorthand `{[k]}` | UnexpectedToken |
 | numeric separators | Unsupported |
-| `??`, logical assignment (`&&=`, `\|\|=`, `??=`, also to a property: `a.b &&= 1`) | Unsupported |
 | `super.x` outside a method/accessor or field initializer context, bare `super`, `super?.x` | Invalid |
 | `delete` of an identifier reference in strict code (`delete x`, ECMAScript 13.5.1.1), reported at the `delete` | Invalid |
 | a reserved word as a shorthand property (`{if}`) | ReservedWord |
@@ -1055,6 +1057,11 @@ delete a[o];
 ```
 
 ## Execution
+
+| Operators (clj-quickjs-314) | Execution |
+| --- | --- |
+| `left ?? right` | Returns the left value unless it is null or undefined; only then evaluates and returns the right. Left-associative, above the conditional operator; unparenthesized mixing with `&&` or `\|\|` is an early SyntaxError. No operand conversion. |
+| `target &&= value`, `target \|\|= value`, `target ??= value` | Identifiers, named/computed members and existing `super` properties. Resolve and read the reference once; evaluate the RHS and perform PutValue only for a truthy, falsy or nullish old value respectively. Otherwise return the old value with no write, including to constants and getter-only/non-writable properties. Computed keys convert once before the read. Selected identifier assignments infer anonymous function/arrow/generator/async/class names; property assignments do not. Sloppy with-object bindings retain the selected reference even if the RHS changes the environment. Existing instruction budgets, traced operands and resumable calls cover yields, waits and collection; no new limits or opcodes. Private names remain unavailable. Fixture: `tests/fixtures/js/logical_assignment.js`. |
 
 Sloppy `with (value) statement` (clj-quickjs-110) converts `value` to an
 object, throwing TypeError for null or undefined. Identifier references in
@@ -2746,16 +2753,30 @@ f()++;
 a--b;
 ```
 
-```js reject Unsupported 1:2
+```js accept
 a&&=b
 ```
 
-```js reject Unsupported 1:3
+```js accept
 h ??= 1;
 ```
 
-```js reject Unsupported 1:5
+```js accept
 a.b &&= 1;
+```
+
+```js accept
+// Synthetic fixture, not light-cljs output.
+let x = null; x ??= 3; x &&= 4; x ||= 5;
+null ?? (false || 7);
+```
+
+```js reject Invalid 1:11
+null ?? 0 || 1;
+```
+
+```js reject Invalid 1:12
+false && 0 ?? 1;
 ```
 
 ```js reject Invalid 1:1

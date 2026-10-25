@@ -1407,3 +1407,12 @@ function of `test_language.js`, `test_closure.js`, `test_loop.js`,
 listed above; `test_line_column_numbers` is the only case that cannot run
 unmodified (see README). Adapted QuickJS test text, synthetic fixtures, not
 light-cljs output.
+
+## Nullish coalescing and logical assignment (clj-quickjs-314)
+
+Consulted `research/quickjs/quickjs.c` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`: `js_parse_coalesce_expr`,
+`js_parse_logical_and_or`, and the logical assignment branch in
+`js_parse_assign_expr2` for mixing restrictions, single reference evaluation,
+short-circuit stores and identifier NamedEvaluation. The Rust implementation
+and synthetic tests are independently written; no QuickJS code or tests copied.

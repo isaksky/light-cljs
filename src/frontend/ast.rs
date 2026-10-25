@@ -600,6 +600,7 @@ impl Expr {
             ExprKind::CompoundAssignProperty { target, value, .. } => {
                 target.height.max(value.height)
             }
+            ExprKind::LogicalAssign { target, value, .. } => target.height.max(value.height),
         };
         Expr {
             kind,
@@ -660,7 +661,7 @@ pub enum ExprKind {
         /// reported.
         op_span: Span,
     },
-    /// `&&` and `||` (short-circuiting, value-returning).
+    /// `&&`, `||` and `??` (short-circuiting, value-returning).
     Logical {
         op: LogicalOp,
         left: Box<Expr>,
@@ -718,8 +719,7 @@ pub enum ExprKind {
     /// `op` on an identifier binding (property targets are
     /// [`ExprKind::CompoundAssignProperty`]; the target may be parenthesized): reads the binding, evaluates
     /// `value`, applies `op` as the binary operator does, and stores the
-    /// result, which is the expression's value. The logical assignments
-    /// (`&&=`, `||=`, `??=`) are not supported.
+    /// result, which is the expression's value.
     CompoundAssign {
         op: BinaryOp,
         target: Ident,
@@ -840,6 +840,14 @@ pub enum ExprKind {
     OptionalChain {
         base: Box<Expr>,
         links: Vec<ChainLink>,
+    },
+    /// A binding or property reference, evaluated once. Only the selected
+    /// branch evaluates `value` and performs PutValue.
+    LogicalAssign {
+        op: LogicalOp,
+        target: Box<Expr>,
+        value: Box<Expr>,
+        op_span: Span,
     },
 }
 
@@ -1014,4 +1022,5 @@ pub enum BinaryOp {
 pub enum LogicalOp {
     And,
     Or,
+    Coalesce,
 }

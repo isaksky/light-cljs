@@ -8286,6 +8286,41 @@ fn num(src: &str) -> f64 {
     }
 }
 
+#[test]
+fn nullish_and_logical_assignment() {
+    // Synthetic fixture, not light-cljs output.
+    assert_eq!(num("null ?? 1"), 1.0);
+    assert_eq!(num("let a = null; a ??= 3; a"), 3.0);
+    assert_eq!(
+        eval(include_str!("fixtures/js/logical_assignment.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn logical_assignment_dynamic_bindings_and_super() {
+    // Synthetic fixtures, not light-cljs output.
+    for source in [
+        "let x = 0, o = {x: null}; with(o) { x ??= (delete o.x, 7); } x === 0 && o.x === 7",
+        "let x = 0, n = 0, o = {get x() { n++; return 2; }}; with(o) { x ||= 9; x ??= 8; } n === 2 && x === 0",
+        "let x = 0, o = {x: 1, [Symbol.unscopables]: {x: true}}; with(o) { x ||= 9; } x === 9 && o.x === 1",
+        "let x = 0, o = {x: 1}; with(o) { x &&= (o[Symbol.unscopables] = {x:true}, 5); } x === 0 && o.x === 5",
+        "let o = {f: null}; with(o) { f ??= function() {}; } o.f.name === 'f'",
+        "var x = null; x ??= 4; globalThis.x === 4",
+        "let x; function outer() { return () => x ??= 5; } let f = outer(); f() === 5 && f() === 5 && x === 5",
+    ] {
+        assert_eq!(sloppy_eval(source), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        "let stored, log = ''; class B { get p() { log += 'g'; return stored; } set p(v) { log += 's'; stored = v; } } class D extends B { f() { let x = super.p ??= 3; let y = super.p ||= 4; let z = super.p &&= 5; return x === 3 && y === 3 && z === 5; } } let d = new D(); d.f() && stored === 5 && log === 'gsggs'",
+        "let n = 0; class B { get p() { return 1; } } class D extends B { f() { return (super[(n++, 'p')] ||= 9) === 1 && (super.p ??= 8) === 1; } } new D().f() && n === 1",
+        "let o = {}; Object.defineProperty(o, 'p', {value: 0}); let n = 0, caught = false; try { o.p ||= (n++, 1); } catch(e) { caught = e instanceof TypeError; } caught && n === 1 && o.p === 0",
+        "let n = 0, caught = false; try { null.x ??= n++; } catch(e) { caught = e instanceof TypeError; } caught && n === 0",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
 fn failure(src: &str) -> VmError {
     match run(&exe(src), &[]) {
         RunOutcome::Failed(e) => e,
@@ -13388,12 +13423,6 @@ fn compound_assignment_on_properties() {
         let e = compile_script("t", src).unwrap_err();
         assert_eq!(e.kind, SyntaxErrorKind::ReservedWord, "{src}: {e}");
     }
-    // Logical assignment stays unsupported, on properties too.
-    for src in ["o.x &&= 1;", "o[0] ||= 1;", "o.x ??= 1;"] {
-        let e = compile_script("t", src).unwrap_err();
-        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
-    }
-
     // `o[k]` converts its key once and reads with the reference
     // duplicated; `o.p` duplicates its base.
     let ops = opcodes(&exe("let o = {}, k = 'p'; o[k] += 1;"));

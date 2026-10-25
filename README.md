@@ -364,7 +364,7 @@ Deferred:
   binding compile since clj-quickjs-21, string values since clj-quickjs-65,
   below.)
 - Object operand conversion is supported since clj-quickjs-70 (below).
-- The logical assignment operators (rejected by the parser). (`var`:
+- Logical assignment is supported since clj-quickjs-314, below. (`var`:
   clj-quickjs-94; update: clj-quickjs-64; compound assignment: clj-quickjs-84; unlabelled `break` and
   `continue`: clj-quickjs-78; `do`-`while`: clj-quickjs-80; `for`:
   clj-quickjs-81; labels: clj-quickjs-82; `switch`: clj-quickjs-83, below.)
@@ -1600,10 +1600,8 @@ Supported (`cargo test --lib frontend::tests::compound_assignment`,
   old value is the one read before `v` runs. No new opcode; failures of
   the operator are reported at the `op=` token.
 
-Deferred:
-
-- Logical assignment (`&&=`, `||=`, `??=`) stays `Unsupported`. (Compound
-  assignment to a property: clj-quickjs-260, below.)
+Logical assignment (`&&=`, `||=`, `??=`) is supported since clj-quickjs-314,
+below. Compound assignment to a property: clj-quickjs-260, below.
 
 ### Compound assignment on properties (clj-quickjs-260)
 
@@ -1628,7 +1626,8 @@ Supported (`cargo test --lib frontend::tests::compound_assignment`,
 
 Deferred:
 
-- Logical assignment on properties (`o.p &&= v`) stays `Unsupported`; a
+- Logical assignment on properties (`o.p &&= v`) is supported since
+  clj-quickjs-314; a
   property value, operand or key that is an object converts since clj-quickjs-70. Assignment chains deeper than about 190
   levels can overflow a 2 MiB debug stack before the nesting limit
   (clj-quickjs-262).
@@ -4285,3 +4284,22 @@ logical assignment (-314), rest parameters/object spread/destructuring loop
 heads (-315), numeric separators (-316), Promise combinators (-317), Object
 statics (-318), the remaining Math functions (-319), Reflect methods (-320) and
 module default exports (-321). No engine behaviour changes in this pellet.
+
+### Nullish coalescing and logical assignment (clj-quickjs-314)
+
+Supported: `??` returns its left value unless null or undefined, and skips
+its RHS otherwise. Mixing `??` with unparenthesized `&&`/`||` is an early
+SyntaxError. `&&=`, `||=` and `??=` resolve and read identifiers or properties
+once, evaluating the RHS and storing only when selected. This includes
+sloppy with-object bindings and existing `super` properties; skipped branches
+perform no write, even to constants or read-only properties. Identifier
+assignments infer anonymous function and class names. Property assignments
+do not infer names. Existing instruction budgets and traced VM references
+preserve execution across yields, waits and GC; no new limits or opcodes.
+Private names remain deferred.
+
+Checks: `cargo test --test js_source logical_assignment`,
+`cargo test --test need logical_assignment`, and
+`cargo test --lib frontend::tests::nullish_and_logical_assignment_grammar`.
+The source fixture `tests/fixtures/js/logical_assignment.js` is synthetic,
+not light-cljs output.
