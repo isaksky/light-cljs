@@ -194,6 +194,25 @@ run's user decisions. Other caps are implementation-selected resource policies.
 There is no independent fixed async-generator request-queue limit; existing
 allocation/frame/value limits and cooperative budgets apply.
 
+### Nesting limit
+
+The frontend's 256-unit weighted nesting budget and 256-node AST-height
+limit cover parsing, recursive lowering and syntax-tree teardown on a 2 MiB
+host thread stack, including unoptimized builds. Shared recursive parser and
+lowerer frames must stay small: assignment construction and return/with
+statement scratch values live in separate helpers so unrelated syntax does
+not pay their stack cost at every level. Exceeding the budget reports a
+positioned `TooDeep` syntax error, including for truncated input.
+
+`frontend::tests::nesting_at_the_limit_fits_a_2_mib_stack` checks every accepted
+depth for the covered constructs. The focused parameter-default and for-of
+lowering tests cover macOS aarch64 debug overflows at depths 62 and 124,
+respectively. The 2 MiB host requirement does not apply to execution workers:
+the existing 64 KiB worker tests exercise explicit VM continuations, migration,
+eval and teardown. Runtime eval/Function compilation uses its own joined
+2 MiB compiler thread, including AST cleanup, without retaining a JavaScript
+continuation on that thread.
+
 ## Explicit gaps and rejection
 
 JSON reviver traversal and stringify replacers, Proxy revocation/other traps,

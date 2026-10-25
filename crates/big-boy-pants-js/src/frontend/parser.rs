@@ -2544,20 +2544,7 @@ impl<'a> Parser<'a> {
             if is_property_target(&left) {
                 return self.compound_assign_property(op, left, saved);
             }
-            let target = self.simple_target(&left, TargetUse::Assign)?;
-            let op_span = self.advance()?.span;
-            let value = self.parse_assignment()?;
-            self.depth = saved;
-            let span = left.span.to(value.span);
-            return self.expr(
-                ExprKind::CompoundAssign {
-                    op,
-                    target,
-                    value: Box::new(value),
-                    op_span,
-                },
-                span,
-            );
+            return self.compound_assign_identifier(op, left, saved);
         }
         if !self.is_punct(Punct::Assign) {
             if let Some(error) = self.assignment_operator_error() {
@@ -2574,6 +2561,15 @@ impl<'a> Parser<'a> {
         {
             return self.parse_pattern_assignment(left, saved);
         }
+        self.assign_identifier(left, saved)
+    }
+
+    // Assignment construction needs several owned AST/error temporaries in
+    // unoptimized builds. Keep them off the common expression-parser frame:
+    // it stays live through every nested function parameter default, even
+    // when that expression contains no assignment operator.
+    #[inline(never)]
+    fn assign_identifier(&mut self, left: Expr, saved: usize) -> PResult<Expr> {
         let target = self.simple_target(&left, TargetUse::Assign)?;
         self.advance()?;
         let value = self.parse_assignment()?;
@@ -2583,6 +2579,29 @@ impl<'a> Parser<'a> {
             ExprKind::Assign {
                 target,
                 value: Box::new(value),
+            },
+            span,
+        )
+    }
+
+    #[inline(never)]
+    fn compound_assign_identifier(
+        &mut self,
+        op: BinaryOp,
+        left: Expr,
+        saved: usize,
+    ) -> PResult<Expr> {
+        let target = self.simple_target(&left, TargetUse::Assign)?;
+        let op_span = self.advance()?.span;
+        let value = self.parse_assignment()?;
+        self.depth = saved;
+        let span = left.span.to(value.span);
+        self.expr(
+            ExprKind::CompoundAssign {
+                op,
+                target,
+                value: Box::new(value),
+                op_span,
             },
             span,
         )

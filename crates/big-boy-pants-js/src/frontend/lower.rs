@@ -3223,44 +3223,9 @@ impl<'s> Lowerer<'s> {
             }
             StmtKind::Lexical(decl) => self.declarators(decl)?,
             StmtKind::Var(declarators) => self.var_declarators(declarators)?,
-            StmtKind::Return(value) => {
-                if self.cur().completion.is_some() {
-                    // The parser rejects this; kept as a guard.
-                    return Err(self.error(
-                        SyntaxErrorKind::Invalid,
-                        span,
-                        "return outside a function",
-                    ));
-                }
-                match value {
-                    Some(e) => self.expr(e)?,
-                    None => self.out().op(Opcode::Undefined, span),
-                }
-                if self.cur().async_generator && value.is_some() {
-                    self.out().op(Opcode::Await, span);
-                }
-                self.out().op(Opcode::Return, span);
-            }
+            StmtKind::Return(value) => self.return_statement(value.as_ref(), span)?,
             StmtKind::Block(body) => self.statement_list(body, &[], false)?,
-            StmtKind::With { object, body } => {
-                self.reset_completion(span);
-                let saved = self.cur().next_slot;
-                let slot = self.temp(span)?;
-                let key = self.next_self_key;
-                self.next_self_key -= 1;
-                self.expr(object)?;
-                self.out().op(Opcode::ToObject, span);
-                self.out().op_u16(Opcode::SetLocal, slot, span);
-                let depth = self.cur().scopes.len();
-                self.cur_mut()
-                    .with_envs
-                    .push((depth, Place::Local(slot), key));
-                self.statement(body)?;
-                self.cur_mut().with_envs.pop();
-                self.out().op(Opcode::Undefined, span);
-                self.out().op_u16(Opcode::SetLocal, slot, span);
-                self.cur_mut().next_slot = saved;
-            }
+            StmtKind::With { object, body } => self.with_statement(object, body, span)?,
             StmtKind::If {
                 test,
                 consequent,
@@ -3347,6 +3312,53 @@ impl<'s> Lowerer<'s> {
             // Created when its statement list was entered (hoisting).
             StmtKind::FunctionDecl(_) | StmtKind::Empty => {}
         }
+        Ok(())
+    }
+
+    // Keep return/with scratch values off the shared statement frame. That
+    // frame remains live once per nested loop, including for-of's iterator
+    // and disposal handlers, which must fit the parser's 2 MiB budget.
+    #[inline(never)]
+    fn return_statement(&mut self, value: Option<&Expr>, span: Span) -> Result<(), SyntaxError> {
+        if self.cur().completion.is_some() {
+            // The parser rejects this; kept as a guard.
+            return Err(self.error(SyntaxErrorKind::Invalid, span, "return outside a function"));
+        }
+        match value {
+            Some(e) => self.expr(e)?,
+            None => self.out().op(Opcode::Undefined, span),
+        }
+        if self.cur().async_generator && value.is_some() {
+            self.out().op(Opcode::Await, span);
+        }
+        self.out().op(Opcode::Return, span);
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn with_statement(
+        &mut self,
+        object: &Expr,
+        body: &Stmt,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.reset_completion(span);
+        let saved = self.cur().next_slot;
+        let slot = self.temp(span)?;
+        let key = self.next_self_key;
+        self.next_self_key -= 1;
+        self.expr(object)?;
+        self.out().op(Opcode::ToObject, span);
+        self.out().op_u16(Opcode::SetLocal, slot, span);
+        let depth = self.cur().scopes.len();
+        self.cur_mut()
+            .with_envs
+            .push((depth, Place::Local(slot), key));
+        self.statement(body)?;
+        self.cur_mut().with_envs.pop();
+        self.out().op(Opcode::Undefined, span);
+        self.out().op_u16(Opcode::SetLocal, slot, span);
+        self.cur_mut().next_slot = saved;
         Ok(())
     }
 

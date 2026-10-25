@@ -5517,6 +5517,48 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
     }
 }
 
+/// Parameter defaults used to overflow the parser's stack before its depth
+/// check on macOS aarch64 debug builds (generator defaults at depth 62).
+#[test]
+fn nested_parameter_defaults_fit_a_2_mib_stack() {
+    std::thread::Builder::new()
+        .name("parameter-default-nesting".into())
+        .stack_size(2 << 20)
+        .spawn(|| {
+            for prefix in ["function (a = ", "function* (a = "] {
+                for n in [62, 63] {
+                    let source = format!("x = {}1{};", prefix.repeat(n), ") {}".repeat(n));
+                    drop(parse_script(&source).unwrap());
+                    drop(compile_script("defaults", &source).unwrap());
+                }
+                for n in [64, 20_000] {
+                    let source = format!("x = {}1{};", prefix.repeat(n), ") {}".repeat(n));
+                    assert_eq!(err(&source).kind, SyntaxErrorKind::TooDeep);
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// The parser accepts this depth; lowering used to overflow in the shared
+/// statement frame before reaching the innermost for-of body on macOS.
+#[test]
+fn nested_for_of_lowering_fits_a_2_mib_stack() {
+    std::thread::Builder::new()
+        .name("for-of-nesting".into())
+        .stack_size(2 << 20)
+        .spawn(|| {
+            let source = format!("{}x;", "for (let k of o) ".repeat(124));
+            drop(parse_script(&source).unwrap());
+            drop(compile_script("for-of", &source).unwrap());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 /// Wrapping finished subtrees again (which the parser's recursion budget
 /// does not see) is bounded by the tree-height limit.
 #[test]
@@ -5897,6 +5939,7 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         }),
     ];
     std::thread::Builder::new()
+        .name("frontend-nesting-limit".into())
         .stack_size(2 << 20)
         .spawn(move || {
             // Generator functions, including delegation, compile at every
