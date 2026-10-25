@@ -30,6 +30,29 @@ The full invocation runs every row group; quick uses smaller sizes. The
 uses four executor workers and nine measured rounds; tests still use three
 test threads. The benchmark owns its default target output only.
 
+## Automatic collection pauses (2026-10-25)
+
+Measured engine commit `84ac7c0e`, macOS aarch64, virtual Apple M3 Ultra
+(24 available CPUs), Homebrew Rust/Cargo 1.99.1, workspace release profile.
+Peer builds/tests were stopped. Load average was 3.29/3.56/3.51 before and after.
+Build with `CARGO_BUILD_JOBS=3 cargo build --release --locked -p big-boy-pants-js
+--example bench`, then run `target/release/examples/bench gc --quick --rounds 5`
+from the repository root. One discarded warmup and five measured rounds use
+fresh runtimes; each worker allocates 4,000 short-lived arrays. The policy floor
+is 1,024 objects, with no hard object cap. These are collector pause observations,
+not throughput/scaling ratios: eight workers perform eight times the total work.
+
+| Workers | Total pause ms/run, median [min..max] | Maximum pause ms, median [min..max] | Collections/run, median [min..max] | Last live objects, median [min..max] |
+| --- | --- | --- | --- | --- |
+| 1 | 0.7 [0.6..0.7] | 0.2 [0.2..0.2] | 4 [4..4] | 495 [495..495] |
+| 8 | 13.2 [12.5..14.4] | 0.2 [0.2..0.2] | 82 [78..92] | 495 [495..497] |
+
+Pause timing includes stopped-world tracing and sweep, excluding rendezvous
+waits, payload destruction and post-pause observers. Overlapping worker requests
+can cause additional collections; counts are not allocations divided by the
+threshold. Values are rounded by the harness. Object admission is an aggregate
+object-count budget only; these rows do not establish a managed-byte/RSS bound.
+
 ## Compiler-shaped kernel baseline (2026-10-25)
 
 Run from this crate directory (or add `-p big-boy-pants-js` from the repository
