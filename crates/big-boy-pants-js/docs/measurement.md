@@ -508,6 +508,87 @@ not retain code in property snapshots. Function creation still takes a shared
 code reference. The lifetime/rooting contract is in
 [architecture.md](architecture.md#embedding); no unsafe code was added.
 
+Both binaries used the same release profile on the Apple M3 Ultra (Virtual),
+macOS aarch64 host reporting 24 available CPUs. The baseline is `a15d53f7`;
+the final code is `78e0ccf9`. Each was built using `CARGO_BUILD_JOBS=3 cargo
+build --locked --release -p big-boy-pants-js --example bench` and copied aside.
+`bench scaling` used full sizes, one discarded warmup, five measured rounds
+and four tasks per thread. No concurrent build or test ran during any timing
+or sampling window. Host background activity was not controlled. Load averages
+were `2.92 3.29 3.44` → `5.90 4.04 3.70` before and
+`5.90 4.04 3.70` → `5.70 4.33 3.83` after.
+
+| Kernel | Threads | Before ns/iteration median [min..max] | After ns/iteration median [min..max] | Before scaling | After scaling |
+|---|---:|---:|---:|---:|---:|
+| arithmetic | 1 | 339.2 [336.8..344.8] | 335.5 [335.0..337.1] | 1.000x | 1.000x |
+| arithmetic | 2 | 172.0 [170.7..173.4] | 170.4 [169.3..172.6] | 1.972x | 1.968x |
+| arithmetic | 4 | 87.3 [86.7..88.0] | 85.9 [85.8..86.5] | 3.887x | 3.905x |
+| arithmetic | 8 | 44.8 [43.8..46.1] | 43.4 [43.2..45.0] | 7.575x | 7.724x |
+| allocate | 1 | 3369743.5 [3356549.7..3406196.9] | 3512637.2 [3506870.6..3535788.5] | 1.000x | 1.000x |
+| allocate | 2 | 2072603.6 [2038643.4..2126765.0] | 1888249.6 [1875128.6..1927022.4] | 1.626x | 1.860x |
+| allocate | 4 | 1495310.7 [1472086.3..1539830.0] | 1116576.2 [1108065.4..1122500.7] | 2.254x | 3.146x |
+| allocate | 8 | 1511503.5 [1469594.6..1516876.5] | 842235.0 [807246.9..866222.0] | 2.229x | 4.171x |
+| properties | 1 | 1056.7 [1044.4..1105.7] | 1042.2 [1035.0..1075.8] | 1.000x | 1.000x |
+| properties | 2 | 654.3 [649.7..706.4] | 657.6 [649.6..679.5] | 1.615x | 1.585x |
+| properties | 4 | 545.1 [540.7..566.4] | 564.8 [557.1..605.7] | 1.939x | 1.845x |
+| properties | 8 | 672.8 [630.8..757.6] | 682.2 [656.5..741.9] | 1.571x | 1.528x |
+| cljs_map | 1 | 5731282.8 [5711793.0..5821765.6] | 5900252.1 [5848978.4..5920530.2] | 1.000x | 1.000x |
+| cljs_map | 2 | 3122659.0 [3055502.0..3148778.8] | 3096581.0 [3058940.8..3136930.5] | 1.835x | 1.905x |
+| cljs_map | 4 | 1770133.0 [1759038.0..1827922.3] | 1671555.1 [1659149.9..1694137.8] | 3.238x | 3.530x |
+| cljs_map | 8 | 1171078.6 [1167948.1..1178075.4] | 964270.2 [963657.0..974868.3] | 4.894x | 6.119x |
+| cljs_protocol | 1 | 653833.3 [651838.5..659684.4] | 674796.9 [672929.4..680066.7] | 1.000x | 1.000x |
+| cljs_protocol | 2 | 355892.1 [349856.2..428930.9] | 361439.3 [348163.0..375207.0] | 1.837x | 1.867x |
+| cljs_protocol | 4 | 208198.2 [203730.1..209253.8] | 198099.9 [197812.8..200874.2] | 3.140x | 3.406x |
+| cljs_protocol | 8 | 138106.0 [137140.2..140085.7] | 127185.8 [123198.0..132255.7] | 4.734x | 5.306x |
+
+**The 6x allocation gate is still missed.** Eight-thread allocate-and-traverse
+scaling rose from **2.229x to 4.171x**, and aggregate throughput from 661.6 to
+1,187.3 iterations/s (**1.795x**, or +79.5%). Properties stayed around 1.5x
+scaling (1.571x before, 1.528x after), with overlapping timing ranges.
+
+The controlled change removes shared code-count updates while retaining the
+same executable, runtime, workloads and dispatch/budget policy. Its large
+multi-thread gain supports shared reference-count contention as a material
+cost. This is a controlled comparison, not instruction-level attribution or
+proof that every remaining plateau is cache-line contention.
+
+Immediately afterward, three interleaved A/B pairs of `bench kernels` used
+the same full-size, five-round settings. Medians of the three per-run medians
+give the paired single-thread check; load was `5.70 4.33 3.83` →
+`3.41 3.91 3.72`:
+
+| Kernel | Before ns/iteration | After ns/iteration | Change |
+|---|---:|---:|---:|
+| arithmetic | 337.5 | 334.2 | -0.98% |
+| allocate | 3359383.3 | 3522639.6 | +4.86% |
+| properties | 1048.4 | 1036.1 | -1.17% |
+| cljs_map | 5744834.1 | 5869623.4 | +2.17% |
+| cljs_protocol | 658256.5 | 664179.2 | +0.90% |
+
+All paired rows meet the no-more-than-5% regression bound. The allocation
+row is close to that limit: task-local ownership adds a cache lookup and an
+extra owning indirection in exchange for removing shared count contention.
+
+A separate final-binary `bench scaling --rounds 10` supplied profiles.
+`sample <pid> 2 1 -file <output>` started immediately after each four-thread
+allocate/properties row, sampling its eight-thread phase for two seconds at
+one-millisecond intervals. Profile-run timings are excluded from the tables
+above. Self samples below exclude the main thread, including its joins and
+between-round teardown:
+
+| Phase | Top self frames (share of 8,087 / 10,427 worker samples) |
+|---|---|
+| allocate | `execute_budgeted` 918 (11.35%); `Fault` drop 550 (6.80%); `step_instruction` 399 (4.93%); `native::start_conversion` 286 (3.54%); `OrdinaryObject::position` 255 (3.15%) |
+| properties | `Key` drop 2,243 (21.51%); `property_read_step` 1,648 (15.81%); `property_step` 923 (8.85%); `execute_budgeted` 734 (7.04%); `step_instruction` 577 (5.53%) |
+
+The allocation profile has `cached_callee` at 98 self samples (1.21%); the
+old shared-code-cloning callee closure is gone. The remaining dispatch,
+conversion and ordinary property work is already scoped by **light-cljs-474**
+and **light-cljs-473**, respectively. Those existing focused follow-ups cover
+the missed gate; no duplicate pellet or additional optimization is introduced
+here. Neither wall-time sampling nor overlapping property ranges justify a
+new claim that the property plateau was fixed by code ownership.
+
 Validation at `78e0ccf9` used Homebrew Rust/Cargo **1.99.1**, with
 `CARGO_BUILD_JOBS=3` and `--test-threads=3`:
 
