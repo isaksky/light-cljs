@@ -225,7 +225,6 @@ fn rejected_module_forms_fail_with_documented_kinds() {
         ("x = import.meta;", Unsupported),
         ("await 1;", Unsupported),
         ("import('s');", Unsupported),
-        ("export const x = 1; x = {...o};", Unsupported),
         ("export let a; a ??= b || c ?? d;", Invalid),
         ("export const c;", Invalid),
     ];
@@ -236,6 +235,8 @@ fn rejected_module_forms_fail_with_documented_kinds() {
     }
     // Logical assignment is accepted since clj-quickjs-314.
     parse_module("export let a; a ??= 1;").unwrap();
+    // Object spread is accepted since clj-quickjs-315.
+    parse_module("export const x = 1; x = {...o};").unwrap();
     let error = parse_module("await using x = r;").expect_err("await using");
     check_diagnostic("await using x = r;", &error);
     assert!(
@@ -305,14 +306,10 @@ fn rejected_forms_fail_with_documented_kinds() {
         ("x = import.meta;", STRICT, Unsupported),
         ("() => new.target", STRICT, Invalid),
         ("async function* g() {}", STRICT, Unsupported),
-        ("function f(...a) {}", STRICT, Unsupported),
-        ("for (let [a] of o) {}", STRICT, Unsupported),
-        ("for (let [a] in o) {}", STRICT, Unsupported),
         ("'use strict'; for (var k = 1 in o) {}", SLOPPY, Invalid),
         ("for (let k = 1 in o) {}", SLOPPY, Invalid),
         ("for (var k = 1 of o) {}", SLOPPY, Invalid),
         // expressions outside the subset
-        ("x = {...o};", STRICT, Unsupported),
         ("a?.b = 1;", STRICT, Invalid),
         ("a?.b++;", STRICT, Invalid),
         ("new a?.b();", STRICT, Invalid),
@@ -405,6 +402,15 @@ fn rejected_forms_fail_with_documented_kinds() {
         }
     }
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    // Rest parameters, object spread and pattern heads execute (-315).
+    for source in [
+        "function f(...a) {}",
+        "for (let [a] of o) {}",
+        "for (let [a] in o) {}",
+        "x = {...o};",
+    ] {
+        compile_script_with("accepted-rest-spread", source, STRICT).expect(source);
+    }
     // The former unsupported rows now compile; keep explicit acceptance
     // checks alongside their replacement mixing errors (clj-quickjs-314).
     for source in [
