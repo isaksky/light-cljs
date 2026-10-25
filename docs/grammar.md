@@ -3845,8 +3845,12 @@ RangeError beyond it). Each step visits one member/transition or quotes at
 most 256 UTF-16 units; indentation emits at most 256 units per step;
 final string assembly copies at most 256 units/part
 boundaries per step. Output retains the normal `2^30 - 1` code-unit limit.
-Shared leaf own-key enumeration is bounded by a limit of 4096 stored
-properties per ordinary object, including non-enumerable properties. Member
+Shared leaf own-key enumeration is bounded by a limit of 4096 properties
+across every supported ordinary store, including collections, generators and
+class instances. Non-enumerable and symbol properties count, as do virtual
+typed-array indices, boxed-string indices/length and namespace exports/tag.
+Proxy ownKeys lists are bounded before filtering, and their target snapshots
+are checked after callbacks, including nested proxies (clj-quickjs-288). Member
 names read during serialization are limited to 4096 UTF-16 units to bound
 leaf key hashing. Strings returned by Number-wrapper ToPrimitive are limited
 to 4096 UTF-16 units (including whitespace), checked before the shared leaf

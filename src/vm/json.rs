@@ -574,6 +574,99 @@ use std::collections::HashSet;
 // Own-key collection is a shared leaf API. Bound its scan/sort here; arrays
 // stream their indices and have no corresponding element-count limit.
 const MAX_OBJECT_PROPERTIES: usize = 4096;
+
+pub(super) fn check_property_count(count: usize) -> Result<(), Fault> {
+    if count > MAX_OBJECT_PROPERTIES {
+        Err(Fault::RangeError(
+            "JSON.stringify object property limit of 4096 exceeded".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Bound every store scanned by leaf own-key enumeration, including hidden
+/// and symbol properties and virtual keys. Arrays serialized as arrays stream
+/// their indices instead; this check is only for key snapshots.
+pub(super) fn check_key_snapshot(heap: &Heap, task: TaskId, id: ObjectId) -> Result<(), Fault> {
+    let function = heap
+        .read(id, |o| {
+            matches!(o, HeapObject::Function(_) | HeapObject::BoundFunction(_))
+        })
+        .ok_or(Fault::Internal("JSON.stringify object reclaimed"))?;
+    let id = if function {
+        match super::function::property_record(heap, id)? {
+            Some(record) => record,
+            None => return Ok(()), // At most length, name, and prototype.
+        }
+    } else {
+        id
+    };
+    let typed_length = crate::object::typed_array::view(heap, task, id)?
+        .map(|v| v.live_length(heap))
+        .transpose()?
+        .unwrap_or(0);
+    heap.read(id, |o| {
+        let (store, virtual_keys) = match o {
+            HeapObject::Plain(o) => {
+                let virtual_keys = if !o.is_intrinsic()
+                    && let Some(PrimitiveData::String(s)) = o.primitive_data()
+                {
+                    s.len().saturating_add(1)
+                } else {
+                    0
+                };
+                (o, virtual_keys)
+            }
+            HeapObject::JsMap(m) => (m.object(), 0),
+            HeapObject::WeakMap(m) => (m.object(), 0),
+            HeapObject::WeakRef(m) => (m.object(), 0),
+            HeapObject::FinalizationRegistry(m) => (m.object(), 0),
+            HeapObject::DisposableStack(m) => (m.object(), 0),
+            HeapObject::ArrayBuffer(b) => (&b.object, 0),
+            HeapObject::TypedArray(a) => (&a.object, typed_length),
+            HeapObject::Generator(g) => (&g.object, 0),
+            HeapObject::Builtin(f) => (&f.properties, 0),
+            // A length bound also bounds scanning holes in dense storage.
+            HeapObject::Array(a) => (a.object(), (a.length() as usize).saturating_add(1)),
+            HeapObject::ModuleNamespace(ns) => {
+                ns.check_owner(task)?;
+                return check_property_count(ns.exports.len().saturating_add(1));
+            }
+            HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Proxy(_) => {
+                return Err(Fault::Internal("JSON key snapshot store unresolved"));
+            }
+            HeapObject::Native(_)
+            | HeapObject::Vector(_)
+            | HeapObject::Map(_)
+            | HeapObject::Occurrence(_)
+            | HeapObject::Builder(_)
+            | HeapObject::Cell(_)
+            | HeapObject::Atom(_)
+            | HeapObject::Promise(_)
+            | HeapObject::PromiseReaction(_)
+            | HeapObject::PromiseResolving(_)
+            | HeapObject::AsyncState(_) => return Ok(()),
+        };
+        if let Some(owner) = store.owner()
+            && owner != task
+        {
+            return Err(Fault::ForeignObject {
+                owner: Some(owner),
+                caller: task,
+            });
+        }
+        check_property_count(virtual_keys)?;
+        check_property_count(
+            virtual_keys
+                + store
+                    .properties()
+                    .take(MAX_OBJECT_PROPERTIES - virtual_keys + 1)
+                    .count(),
+        )
+    })
+    .ok_or(Fault::Internal("JSON.stringify object reclaimed"))?
+}
 // StringToNumber remains a leaf; bound strings returned by a Number
 // wrapper's observable ToPrimitive before invoking its scanner/parser.
 pub(super) const MAX_NUMBER_CONVERSION_UNITS: usize = 4096;
@@ -769,10 +862,6 @@ impl Stringifier {
                 "JSON.stringify nesting limit of 512 exceeded".into(),
             ));
         }
-        let typed_length = crate::object::typed_array::view(heap, task, id)?
-            .map(|v| v.live_length(heap))
-            .transpose()?
-            .unwrap_or(0);
         let len = heap
             .read(super::proxy::unwrapped(heap, id)?, |o| match o {
                 HeapObject::Array(a) => {
@@ -786,37 +875,6 @@ impl Stringifier {
                     }
                     Ok(Some(a.length()))
                 }
-                HeapObject::Plain(o)
-                    if o.properties().take(MAX_OBJECT_PROPERTIES + 1).count()
-                        > MAX_OBJECT_PROPERTIES =>
-                {
-                    Err(Fault::RangeError(
-                        "JSON.stringify object property limit of 4096 exceeded".into(),
-                    ))
-                }
-                HeapObject::ArrayBuffer(b)
-                    if b.object
-                        .properties()
-                        .take(MAX_OBJECT_PROPERTIES + 1)
-                        .count()
-                        > MAX_OBJECT_PROPERTIES =>
-                {
-                    Err(Fault::RangeError(
-                        "JSON.stringify object property limit of 4096 exceeded".into(),
-                    ))
-                }
-                HeapObject::TypedArray(a)
-                    if typed_length
-                        + a.object
-                            .properties()
-                            .take(MAX_OBJECT_PROPERTIES + 1)
-                            .count()
-                        > MAX_OBJECT_PROPERTIES =>
-                {
-                    Err(Fault::RangeError(
-                        "JSON.stringify object property limit of 4096 exceeded".into(),
-                    ))
-                }
                 _ => Ok(None),
             })
             .ok_or(Fault::Internal("JSON.stringify object reclaimed"))??;
@@ -825,16 +883,11 @@ impl Stringifier {
             Members::Array { next: 0, len }
         } else {
             if super::proxy::inspect(heap, task, id)?.is_some() {
-                self.proxy_keys = Some(Box::new(super::proxy::State::new(
-                    super::proxy::Mode::Keys {
-                        target: id,
-                        enumerable: true,
-                        symbols: false,
-                    },
-                )));
+                self.proxy_keys = Some(Box::new(super::proxy::State::json_keys(id)));
                 self.stage = StringifyStage::ProxyKeys;
                 return Ok(());
             }
+            check_key_snapshot(heap, task, id)?;
             let mut keys = keys::own_property_keys(heap, task, id, keys::KeyFilter::Enumerable)?;
             keys.retain(|key| !matches!(key.key, property::Key::Symbol(_)));
             self.append(JsString::from("{"))?;
@@ -879,11 +932,7 @@ impl Stringifier {
                     let Value::Number(len) = len else {
                         return Err(Fault::Internal("Proxy JSON keys length"));
                     };
-                    if len > MAX_OBJECT_PROPERTIES as f64 {
-                        return Err(Fault::RangeError(
-                            "JSON.stringify object property limit of 4096 exceeded".into(),
-                        ));
-                    }
+                    check_property_count(len as usize)?;
                     let mut keys = Vec::new();
                     for i in 0..len as u32 {
                         let Value::String(name) =

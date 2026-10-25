@@ -20456,28 +20456,188 @@ fn json_stringify_depth_width_and_member_limits() {
         failure("let o = {}; for (let i = 0; i < 4097; i++) { o[i] = 1; } JSON.stringify(o)");
     assert_eq!(error.kind(), VmErrorKind::RangeError);
     assert!(error.message().contains("object property limit of 4096"));
+    for init in [
+        "let o = {}",
+        "let o = new ArrayBuffer(0)",
+        "let o = new Map()",
+        "let o = new WeakMap()",
+        "let o = new WeakRef({})",
+        "let o = new FinalizationRegistry(function(){})",
+        "let o = new DisposableStack()",
+        "let o = new AsyncDisposableStack()",
+        "let o = (function*(){})()",
+        "class C {} let o = new C()",
+        "let o = Object(Symbol())",
+        "let o = new Proxy({}, {})",
+        "let o = new Proxy(new Map(), {})",
+    ] {
+        for (property, check) in [
+            ("o[i] = 1", "JSON.parse(JSON.stringify(o))[4095] === 1"),
+            (
+                "Object.defineProperty(o, i, {value: 1})",
+                "JSON.stringify(o) === '{}'",
+            ),
+            ("o[Symbol()] = 1", "JSON.stringify(o) === '{}'"),
+        ] {
+            assert_eq!(
+                eval(&format!(
+                    "{init}; for (let i = 0; i < 4096; i++) {{ {property}; }} {check}"
+                )),
+                ValueView::Bool(true),
+                "{init}; {property}"
+            );
+            let error = failure(&format!(
+                "{init}; for (let i = 0; i < 4097; i++) {{ {property}; }} JSON.stringify(o)"
+            ));
+            assert_eq!(error.kind(), VmErrorKind::RangeError, "{init}; {property}");
+            assert!(error.message().contains("object property limit of 4096"));
+        }
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Bound the unfiltered ownKeys
+/// list and recheck the target after every trap has had a chance to grow it.
+#[test]
+fn json_stringify_proxy_snapshot_limits() {
+    for count in [4096, 4097] {
+        for key in ["'' + i", "Symbol()"] {
+            assert_eq!(eval(&format!(
+                "let keys = []; for(let i=0;i<{count};i++) keys.push({key});
+                 let p=new Proxy({{}}, {{ownKeys() {{return keys;}},
+                     getOwnPropertyDescriptor(){{return undefined;}}}});
+                 let caught=false, result; try {{result=JSON.stringify(p);}} catch(e) {{caught=e instanceof RangeError;}}
+                 {}",
+                if count == 4097 { "caught" } else { "!caught && result==='{}'" }
+            )), ValueView::Bool(true));
+        }
+    }
+    assert_eq!(
+        eval(
+            "let reads=0, descriptors=0; let p=new Proxy({}, {
+            ownKeys(){return {length:4097,get 0(){reads++;throw 42;}};},
+            getOwnPropertyDescriptor(){descriptors++;throw 43;}});
+         let caught=false;try{JSON.stringify(p);}catch(e){caught=e instanceof RangeError;}
+         caught && reads===0 && descriptors===0"
+        ),
+        ValueView::Bool(true)
+    );
+    for phase in ["trap", "length", "element"] {
+        let grow =
+            "for(let i=0;i<4097;i++) Object.defineProperty(t,i,{value:1,configurable:true});";
+        let body = match phase {
+            "trap" => format!("{grow} return []"),
+            "length" => format!("return {{get length(){{{grow} return 0;}}}}"),
+            _ => format!("return {{length:1,get 0(){{{grow} return '0';}}}}"),
+        };
+        let source = format!(
+            "let t=new Map(), calls=0; let inner=new Proxy(t,{{ownKeys(){{calls++;{body};}}}});
+             let p=new Proxy(inner,{{}}); let caught=false;
+             try {{JSON.stringify(p);}} catch(e) {{caught=e instanceof RangeError;}}
+             caught && calls===1"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{phase}");
+    }
+    // Ordinary reflection keeps its existing limits outside JSON.stringify.
+    assert_eq!(
+        eval(
+            "let keys=[];for(let i=0;i<4097;i++) keys.push(''+i);
+         Object.getOwnPropertyNames(new Proxy({}, {ownKeys(){return keys;}})).length===4097"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. Virtual typed indices share
+/// the snapshot bound with stored names, including non-enumerable names.
+#[test]
+fn json_stringify_typed_snapshot_limits() {
     for hidden in [false, true] {
         let property = if hidden {
-            "Object.defineProperty(o, i, {value: 1})"
+            "Object.defineProperty(o, 'x'+i, {value:1})"
         } else {
-            "o[i] = 1"
-        };
-        let check = if hidden {
-            "JSON.stringify(o) === '{}'"
-        } else {
-            "JSON.parse(JSON.stringify(o))[4095] === 1"
+            "o['x'+i]=1"
         };
         assert_eq!(
             eval(&format!(
-                "let o = new ArrayBuffer(0); for (let i = 0; i < 4096; i++) {{ {property}; }} {check}"
+                "let o=new Uint8Array(4095), i=0; {property}; JSON.parse(JSON.stringify(o))[4094]===0"
             )),
             ValueView::Bool(true)
         );
         let error = failure(&format!(
-            "let o = new ArrayBuffer(0); for (let i = 0; i < 4097; i++) {{ {property}; }} JSON.stringify(o)"
+            "let o=new Uint8Array(4095); for(let i=0;i<2;i++) {{{property};}} JSON.stringify(o)"
         ));
         assert_eq!(error.kind(), VmErrorKind::RangeError);
         assert!(error.message().contains("object property limit of 4096"));
+    }
+    let error = failure("JSON.stringify(new Uint8Array(4097))");
+    assert_eq!(error.kind(), VmErrorKind::RangeError);
+}
+
+/// Synthetic fixtures, not light-cljs output. Limits bound key snapshots;
+/// omitted functions, unboxed values and streamed arrays need no snapshot.
+#[test]
+fn json_stringify_paths_without_key_snapshots() {
+    for (value, expected) in [
+        ("function(){}", "undefined"),
+        ("(function(){}).bind(null)", "undefined"),
+        ("new Number(7)", "'7'"),
+        ("new String('x')", "'\"x\"'"),
+        ("[]", "'[]'"),
+        ("new Proxy([], {})", "'[]'"),
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "let o={value};for(let i=0;i<4097;i++) o['x'+i]=1;
+             JSON.stringify(o)==={expected}"
+            )),
+            ValueView::Bool(true),
+            "{value}"
+        );
+    }
+    for value in ["[]", "function(){throw 1;}"] {
+        assert_eq!(
+            eval(&format!(
+                "let r={value};for(let i=0;i<4097;i++) r['x'+i]=1;
+             let reads=0,o={{get toJSON(){{reads++;throw 2;}}}},caught=false;
+             try{{JSON.stringify(o,r);}}catch(e){{caught=e instanceof TypeError &&
+                 e.message==='JSON.stringify replacer is not supported';}} caught && reads===0"
+            )),
+            ValueView::Bool(true)
+        );
+    }
+    let error = failure(
+        "let m=new Map();for(let i=0;i<4097;i++)m[i]=1;
+         let f=function(){};f.toJSON=function(){return m;};JSON.stringify(f)",
+    );
+    assert_eq!(error.kind(), VmErrorKind::RangeError);
+}
+
+/// Synthetic fixtures, not light-cljs output. Proxy-wrapped String objects
+/// enumerate virtual indices and length instead of unboxing to a string.
+#[test]
+fn json_stringify_boxed_string_snapshot_limits() {
+    for count in [4095, 4096] {
+        let code = compile_function(
+            "function stringify(text) {return JSON.stringify(new Proxy(new String(text),{}));}",
+        )
+        .unwrap();
+        let text = "x".repeat(count);
+        match run(&code, &[Primitive::String(text.as_str().into())]) {
+            RunOutcome::Complete(value) if count == 4095 => {
+                assert!(
+                    value
+                        .string()
+                        .unwrap()
+                        .code_units()
+                        .starts_with(&"{\"0\":\"x\"".encode_utf16().collect::<Vec<_>>())
+                );
+            }
+            RunOutcome::Failed(error) if count == 4096 => {
+                assert_eq!(error.kind(), VmErrorKind::RangeError);
+                assert!(error.message().contains("object property limit of 4096"));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }
 

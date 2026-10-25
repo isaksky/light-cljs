@@ -2021,6 +2021,29 @@ fn json_module_namespace_has_only_default() {
 }
 
 #[test]
+fn json_stringify_namespace_snapshot_limits() {
+    // Synthetic fixtures, not light-cljs output. The namespace's virtual
+    // Symbol.toStringTag shares the bound with its exported string keys.
+    for count in [4095, 4096] {
+        let exports: String = (0..count).map(|i| format!("export let x{i}=1;")).collect();
+        let entry = format!(
+            "import * as ns from './exports.js';
+             let caught=false, result; try{{result=JSON.stringify(ns);}}catch(e){{caught=e instanceof RangeError;}}
+             __rt.effect(0, {});",
+            if count == 4095 {
+                "!caught && JSON.parse(result).x4094===1"
+            } else {
+                "caught"
+            }
+        );
+        assert_effects(
+            &[("entry.js", &entry), ("exports.js", &exports)],
+            vec![Primitive::Bool(true)],
+        );
+    }
+}
+
+#[test]
 fn json_module_primitives_and_strict_json() {
     for text in ["null", "true", "false", "42", "-0", "\"hello\"", "[]"] {
         assert_effects(

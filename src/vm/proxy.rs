@@ -297,6 +297,7 @@ struct Operations {
     stack: Vec<Operation>,
     output: Option<Output>,
     ready: Option<Value>,
+    json_keys: bool,
 }
 enum Progress {
     Action(Action),
@@ -354,12 +355,17 @@ impl Operations {
                         Some(k) => Output::Descriptor(property::get_own_property(
                             heap, task, op.object, k,
                         )?),
-                        None => Output::Keys(keys::own_property_keys(
-                            heap,
-                            task,
-                            op.object,
-                            keys::KeyFilter::All,
-                        )?),
+                        None => {
+                            if self.json_keys {
+                                super::json::check_key_snapshot(heap, task, op.object)?;
+                            }
+                            Output::Keys(keys::own_property_keys(
+                                heap,
+                                task,
+                                op.object,
+                                keys::KeyFilter::All,
+                            )?)
+                        }
                     };
                     return self.finish(out);
                 };
@@ -450,6 +456,9 @@ impl Operations {
                 } else {
                     n.floor().min(9007199254740991.0)
                 };
+                if self.json_keys {
+                    super::json::check_property_count(n.min(usize::MAX as f64) as usize)?;
+                }
                 if n > u32::MAX as f64 {
                     return Err(error("ownKeys result is too large"));
                 }
@@ -715,6 +724,18 @@ pub(crate) struct State {
     coercing: Option<(ObjectId, PropertyDescriptor)>,
 }
 impl State {
+    /// JSON's snapshot bound applies before filtering keys and to every
+    /// target snapshot, including targets mutated by an ownKeys callback.
+    pub(crate) fn json_keys(target: ObjectId) -> Self {
+        let mut state = Self::new(Mode::Keys {
+            target,
+            enumerable: true,
+            symbols: false,
+        });
+        state.ops.json_keys = true;
+        state
+    }
+
     pub(crate) fn new(mode: Mode) -> Self {
         Self {
             mode,

@@ -4803,6 +4803,19 @@ enumerated symbol keys are filtered before any value read. The bounded
 property preflight includes stored symbol keys, keeping the shared leaf
 enumeration bounded even when none of those keys contribute JSON members.
 
+The shared `json::check_key_snapshot` preflight covers all property stores
+that own-key enumeration reads (clj-quickjs-288), including collections,
+generators, class instances and function property records. It counts virtual
+typed-array and String-wrapper keys and namespace exports plus the namespace
+tag before the leaf collection. Ordinary stores scan at most 4097 entries.
+JSON's Proxy operation state carries the same bound through nested operations:
+it rejects oversized unfiltered ownKeys result lengths before element reads
+and rechecks each leaf target just before collecting keys, after any trap,
+length getter or element getter has mutated it. Other Proxy consumers keep
+their existing limits. Serialization still omits functions, converts
+Number/String wrappers and streams array indices without key snapshots;
+replacer arrays/functions still fail explicitly before reading the value.
+
 Indentation (clj-quickjs-161) saves the original space value as a traced
 continuation root until its optional Number/String wrapper conversion has
 completed. These conversions run before root `toJSON` and use the existing

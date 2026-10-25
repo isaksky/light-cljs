@@ -2753,6 +2753,15 @@ gaps. See `docs/grammar.md` for precise limits and behavior.
 
 Tests: `cargo test --test js_source json_stringify`.
 
+The property snapshot bound covers every supported ordinary property store,
+including collections, generators and class instances (clj-quickjs-288).
+Hidden/symbol properties and virtual typed-array, boxed-string and namespace
+keys count before filtering. Proxy ownKeys lists and target snapshots obey the
+same bound, including targets grown by callbacks. Arrays still stream indices;
+omitted functions and unboxed Number/String values do not snapshot properties.
+Replacer arrays/functions retain the explicit unsupported TypeError.
+Namespace boundary test: `cargo test --test js_modules json_stringify_namespace_snapshot_limits`.
+
 ### Symbol registry (clj-quickjs-128)
 
 `Symbol.for(key)` applies resumable ToString and returns the same symbol for
