@@ -3,7 +3,7 @@
 Status, October 25, 2026: strategy, not a delivered contract. The engine is in
 the workspace at [`crates/big-boy-pants-js`](../crates/big-boy-pants-js/README.md)
 (bbp below). The compiler does not run macros in it yet. The integration work
-is queued in the Pellets group `bbp-integration` (light-cljs-462 to 467). This
+is queued in the Pellets group `bbp-integration` (light-cljs-462 to 481). This
 document gives the reasons for that queue, the architecture it should arrive
 at, and the conditions under which the bet pays off. Measurements are from
 `298325f8` on the 24-core Mac (Apple M3 Ultra VM). They are listed under
@@ -378,23 +378,28 @@ the retained single runtime (Phase 5) even before *k* is small.
 
 ## Phases
 
-The phases are strategy. Pellets hold the work. Pellet numbers are given
-where the work is already queued.
+The phases are strategy. Pellets hold the work, and their order in the queue
+is not strictly by phase: the heap pellets (470, 471) come before 466 and
+462, because native form values and the backend build on the heap access
+API that those pellets change.
 
-**Phase 0: an engine hot path that scales.** Lock-free access to task-owned
-and published objects, exotic-kind tags, allocation buffers, then shapes and
-inline caches for property access, and string keys interned once instead of
-being encoded and SipHashed per lookup. Track two kernel suites, generic JS
-and cljs-shaped code taken from real compiler output (light-cljs-465's
-corpus), at 1, 2, 4 and 8 threads. Gate: allocation scaling of at least 6x
-at eight threads, and single-thread kernels within 3x of `node --jitless`.
-Not queued yet.
+**Phase 0: an engine hot path that scales.** light-cljs-468 adds the kernel
+and scaling benchmark. It tracks two kernel suites, generic JS and
+cljs-shaped code taken from real compiler output (light-cljs-465's corpus),
+at 1, 2, 4 and 8 threads. 469 removes the per-access exotic-object probes.
+470 allocates without the global lock. 471 accesses task-owned and published
+objects without it, with a gate of at least 6x allocation scaling at eight
+threads. 472 triggers collection automatically within one aggregate budget.
+473 adds shapes, inline caches and keys interned once instead of encoded and
+SipHashed per lookup. 474 cuts per-instruction overhead, with a gate of
+single-thread kernels within 3x of `node --jitless`.
 
 **Phase 1: real macros, serially.** light-cljs-465 boots the real runtime and
 runs a checked corpus. 466 adds native Clojure form values. 462 adds a
 selectable bbp backend that runs real `defmacro`s with no legacy engine.
-467 hardens deep nesting. Gate: the pellets' own acceptance criteria, plus
-the first measurement of *k* on real macro units (light-cljs-464).
+467 hardens deep nesting. Gate: the pellets' own acceptance criteria. The
+first measurement of *k* on real macro units is light-cljs-464, which runs
+after Phase 0 and 463 and is the checkpoint before Phase 3.
 
 **Phase 2: resumable helper demand.** light-cljs-463 replaces
 `__lightCompileUnit` with dependency cells, help-while-waiting on the
@@ -415,8 +420,10 @@ bbp intrinsics:
   exactly-once realization.
 
 Emitted applications are unaffected, because this is a compile-time
-emission mode only. Gate: the share of non-shareable helper values in
-Penpot's `--stats` is small, and *k* is measured again.
+emission mode only. The pellets are light-cljs-477 (collections, keywords,
+symbols), 478 (protocols and immutable types) and 479 (lazy seqs). Gate: the
+share of non-shareable helper values in Penpot's `--stats` is small, and *k*
+is measured again.
 
 **Phase 4: one-heap parallel build.** Top-level passes and units become
 tasks and jobs over one runtime. Namespaces are ordered by `need`, and
@@ -424,13 +431,17 @@ effect lanes enforce source order for shared atoms. Restart-the-form is
 added if Phase 2's trace shows stack or inversion problems. Gate: identical
 JavaScript and source maps on Penpot at every N with the 12-seed stress, the
 `macros.rs` semantics including `1 2` without a blocker, peak RSS near 1x of
-serial, and wall time compared with Stage A on the same commit.
+serial, and wall time compared with Stage A on the same commit. The pellets
+are light-cljs-480 (effect lanes) and 481 (deferred units on one runtime
+across the pool). Parallel top-level passes ordered by `need` are 475, which
+is maybe-later and will be cut into focused pellets once 481 has numbers.
 
 **Phase 5: worlds for watch and REPL.** A retained runtime creates a new
 world per rebuild. Completed results stay stable for the tasks that hold
 them. Recorded edges, which include ready reads, say exactly which units an
 edit invalidates. Together with the persistent cache's namespace keys, this
-gives per-unit incremental rebuilds.
+gives per-unit incremental rebuilds. The pellet is light-cljs-476, which is
+maybe-later.
 
 ## Risks
 
@@ -459,18 +470,25 @@ gives per-unit incremental rebuilds.
   default. bbp runs single-threaded there, which is no worse than today, but
   it is a second configuration to test.
 
-## Decisions for the user
+## Decisions
 
-1. **Effect lanes.** Adopt source-order lanes for shared compile-time atoms
-   as the default contract for one-heap builds, so that `--jobs N` has
-   exactly the semantics of `--jobs 1` for atom effects? The alternative is
-   the per-isolate isolation contract settled on October 22.
-2. **Phase 0 placement.** Queue the heap hot-path redesign now, beside
-   light-cljs-465 to 462? The alternative is to wait for 464 to find the
-   object lock on real workloads, which it will.
-3. **Forms long term.** Keep `Datum` engine-independent with a memoized
-   bridge (recommended until Phase 2 measures it), or plan for `Datum` nodes
-   as engine values?
+These were taken when the queue was planned on October 25. The user asked
+for the planning and may overturn any of them.
+
+1. **Effect lanes.** Source-order lanes for shared compile-time atoms are
+   the contract for one-heap builds (light-cljs-480), so `--jobs N` has
+   exactly the semantics of `--jobs 1` for atom effects. If lanes serialize
+   too much, the fallback is the per-isolate isolation contract settled on
+   October 22.
+2. **Phase 0 placement.** The heap hot-path redesign is queued now, ahead of
+   466 and 462, instead of waiting for 464 to find the object lock on real
+   workloads.
+3. **Forms.** `Datum` stays engine-independent behind a memoized bridge
+   with an incrementally updated `&env` (light-cljs-462). Whether `Datum`
+   nodes should become engine values is decided from Phase 2's bridge
+   measurements.
+4. **Unsafe code.** New `unsafe` in the heap is allowed when it is confined
+   to one module with documented invariants (470, 471).
 
 ## Method and reproduction
 
