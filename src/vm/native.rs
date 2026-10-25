@@ -1547,6 +1547,7 @@ pub(crate) fn start_builtin(
             | Builtin::RegExpFlag(_)
             | Builtin::IntlNumberFormatGetFormat
             | Builtin::IntlNumberFormatResolvedOptions
+            | Builtin::IntlCollatorGetCompare
             | Builtin::ObjectSetPrototypeOf
             | Builtin::ObjectCreate
             | Builtin::ArraySpecies
@@ -4084,6 +4085,9 @@ impl NativeState {
             NativeState::DefineProperty(_) => self.step_define_property(heap, task, input),
             NativeState::Proxy(proxy) => proxy.step(heap, task, input),
             NativeState::RegExp(regexp) => regexp.step(heap, task, input),
+            // Locale parsing descends into Intl helpers. Avoid reserving the
+            // unrelated step_other temporaries on 64 KiB workers.
+            NativeState::StringMethods(method) => method.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::NumberFormat(format) => format.step(heap, task, input),
             NativeState::PluralRules(rules) => rules.step(heap, task, input),
@@ -4541,7 +4545,7 @@ impl NativeState {
             NativeState::Error(error) => error.step(heap, task, input),
             NativeState::RegExp(_) => unreachable!("RegExp dispatched before other native arms"),
             NativeState::StringRegExp(state) => state.step(heap, task, input),
-            NativeState::StringMethods(method) => method.step(heap, task, input),
+            NativeState::StringMethods(_) => unreachable!("String methods dispatched separately"),
             NativeState::Bind { .. } => unreachable!("bind dispatched separately"),
             NativeState::Apply {
                 callee,

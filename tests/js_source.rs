@@ -30380,9 +30380,47 @@ fn string_methods_semantic_fixture() {
 }
 
 #[test]
+fn string_methods_semantic_fixture_on_small_worker() {
+    // Compile and initialize the realm on the embedding thread. Every
+    // instruction then migrates to a fresh 64 KiB worker, with GC in between.
+    let rt = Runtime::new();
+    rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
+    let mut task = rt
+        .spawn(&exe(include_str!("fixtures/js/string_methods.js")), &[])
+        .unwrap();
+    let mut yields = 0;
+    for _ in 0..20_000 {
+        let (next, outcome) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        task = next;
+        rt.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => yields += 1,
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert!(yields > 0);
+                return;
+            }
+            other => panic!("String fixture: {other:?}"),
+        }
+    }
+    panic!("String fixture exceeded instruction bound");
+}
+
+#[test]
 fn string_methods_budget_and_gc() {
     // Synthetic fixtures, not light-cljs output. Inputs enter as already rooted
     // primitives, so yields below measure native work rather than input creation.
+    // Each bounded slice runs on a fresh 64 KiB worker.
     for (body, input) in [
         ("s.toUpperCase().length === s.length * 2", "ß".repeat(4096)),
         (
@@ -30416,14 +30454,23 @@ fn string_methods_budget_and_gc() {
         let rt = Runtime::new();
         let input = rt.root(Primitive::String(input.as_str().into()));
         let code = compile_function(&format!("function test(s) {{ return {body}; }}")).unwrap();
-        let task = rt.spawn(&code, &[&input]).unwrap();
+        let mut task = rt.spawn(&code, &[&input]).unwrap();
         let mut yields = 0;
         let mut complete = false;
         for _ in 0..50_000 {
-            match task
-                .run_with(Budget::instructions(3), &mut NoEffects)
+            let (next, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task
+                        .run_with(Budget::instructions(3), &mut NoEffects)
+                        .unwrap();
+                    (task, outcome)
+                })
                 .unwrap()
-            {
+                .join()
+                .unwrap();
+            task = next;
+            match outcome {
                 RunOutcome::Yielded => {
                     yields += 1;
                     if yields % 31 == 0 {
@@ -30525,14 +30572,17 @@ fn string_locale_case_receiver_precedes_locales() {
             let mut waits = 0;
             let mut done = false;
             for _ in 0..2000 {
-                let (next, outcome) = std::thread::spawn(move || {
-                    let outcome = task
-                        .run_with(Budget::instructions(1), &mut NoEffects)
-                        .unwrap();
-                    (task, outcome)
-                })
-                .join()
-                .unwrap();
+                let (next, outcome) = std::thread::Builder::new()
+                    .stack_size(64 * 1024)
+                    .spawn(move || {
+                        let outcome = task
+                            .run_with(Budget::instructions(1), &mut NoEffects)
+                            .unwrap();
+                        (task, outcome)
+                    })
+                    .unwrap()
+                    .join()
+                    .unwrap();
                 task = next;
                 rt.collect().unwrap();
                 match outcome {
@@ -30566,15 +30616,21 @@ fn string_locale_case_receiver_precedes_locales() {
 #[test]
 fn string_methods_wait_collect_and_migrate() {
     // Synthetic fixtures, not light-cljs output. Every callback increments once
-    // before waiting; moving each run to a fresh executor catches saved-state bugs.
+    // before waiting; each run uses a fresh 64 KiB executor.
     for expression in [
         "String.prototype.toUpperCase.call({get toString(){count++; __rt.need(300,1); return ()=>'ß';}}) === 'SS'",
+        "String.prototype.toLowerCase.call({toString(){count++; __rt.need(300,1); return 'ΟΣ';}}) === 'ος'",
+        "String.prototype.trim.call({toString(){count++; __rt.need(300,1); return ' x ';}}) === 'x'",
+        "String.prototype.trimStart.call({toString(){count++; __rt.need(300,1); return ' x ';}}) === 'x '",
+        "String.prototype.trimEnd.call({toString(){count++; __rt.need(300,1); return ' x ';}}) === ' x'",
         "'abc'.startsWith({get [Symbol.match](){count++; __rt.need(300,1); return false;},toString(){return 'a';}})",
+        "'abc'.endsWith('b',{valueOf(){count++; __rt.need(300,1); return 2;}})",
         "'abc'.includes({toString(){count++; __rt.need(300,1); return 'b';}})",
         "'abc'.at({valueOf(){count++; __rt.need(300,1); return -1;}}) === 'c'",
         "'ab'.repeat({valueOf(){count++; __rt.need(300,1); return 2;}}) === 'abab'",
         "'é'.normalize({toString(){count++; __rt.need(300,1); return 'NFD';}}) === 'e\\u0301'",
         "'i'.toLocaleUpperCase({length:1,get 0(){count++; __rt.need(300,1); return 'tr';}}) === 'İ'",
+        "'I'.toLocaleLowerCase({length:1,get 0(){count++; __rt.need(300,1); return 'tr';}}) === 'ı'",
         "'A'.localeCompare('a','en',{get sensitivity(){count++; __rt.need(300,1); return 'base';}}) === 0",
     ] {
         let rt = Runtime::new();
@@ -30583,14 +30639,17 @@ fn string_methods_wait_collect_and_migrate() {
         let mut waits = 0;
         let mut done = false;
         for _ in 0..2000 {
-            let (next, outcome) = std::thread::spawn(move || {
-                let outcome = task
-                    .run_with(Budget::instructions(1), &mut NoEffects)
-                    .unwrap();
-                (task, outcome)
-            })
-            .join()
-            .unwrap();
+            let (next, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task
+                        .run_with(Budget::instructions(1), &mut NoEffects)
+                        .unwrap();
+                    (task, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
             task = next;
             rt.collect().unwrap();
             match outcome {
@@ -30644,6 +30703,67 @@ fn string_repeat_result_length_limits() {
         ),
         ValueView::Bool(true)
     );
+}
+
+#[test]
+fn string_symbol_dispatch_wait_collect_and_migrate() {
+    // Synthetic fixtures, not light-cljs output. Both GetMethod and Call wait;
+    // the receiver stays an object and each observable step happens once.
+    for (method, symbol, argument) in [
+        ("match", "match", "undefined"),
+        ("matchAll", "matchAll", "undefined"),
+        ("search", "search", "undefined"),
+        ("replace", "replace", "replacement"),
+        ("replaceAll", "replace", "replacement"),
+        ("split", "split", "limit"),
+    ] {
+        let source = format!(
+            "let log=''; let receiver={{toString(){{throw 99;}}}}; let replacement={{}}, limit={{}}; let pattern={{get [Symbol.{symbol}](){{log+='g'; __rt.need(329,1); return function(s,arg){{log+='c'; __rt.need(329,2); return this===pattern && s===receiver && arg==={argument};}};}}}}; String.prototype.{method}.call(receiver,pattern,{argument}) && log==='gc'"
+        );
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut waits = 0;
+        let mut yields = 0;
+        let mut done = false;
+        for _ in 0..2000 {
+            let (next, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task
+                        .run_with(Budget::instructions(1), &mut NoEffects)
+                        .unwrap();
+                    (task, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => yields += 1,
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert!(waits <= 2, "callback replay: {source}");
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    done = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(done && yields > 0, "instruction bound: {source}");
+        assert_eq!(waits, 2, "{source}");
+    }
 }
 
 /// Synthetic fixtures, not light-cljs output.
@@ -30723,25 +30843,45 @@ fn regexp_symbol_limits() {
 #[test]
 fn regexp_symbols_on_small_worker_stack() {
     // Synthetic fixture, not light-cljs output. Compile on the embedding
-    // thread, then exercise native transitions on a 64 KiB worker.
-    let rt = Runtime::new();
-    rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
-    let code = exe(
+    // thread, then migrate one-instruction slices across 64 KiB workers.
+    for source in [
         "let matches = 'a1b2'.match(/\\d/g); let split = 'a1b2'.split(/\\d/); let it = 'a1b2'.matchAll(/\\d/g); matches[0] === '1' && split[2] === '' && it.next().value.index === 1 && 'abc'.search(/c/) === 2 && 'abc'.replace(/b/,(m,p) => p) === 'a1c'",
-    );
-    let task = rt.spawn(&code, &[]).unwrap();
-    let value = std::thread::Builder::new()
-        .stack_size(64 * 1024)
-        .spawn(move || {
-            let RunOutcome::Complete(value) = task.run().unwrap() else {
-                panic!()
-            };
-            value.view()
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-    assert_eq!(value, ValueView::Bool(true));
+        include_str!("fixtures/js/regexp_symbols.js"),
+    ] {
+        let rt = Runtime::new();
+        rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
+        let mut task = rt.spawn(&exe(source), &[]).unwrap();
+        let mut yields = 0;
+        let mut done = false;
+        for _ in 0..20_000 {
+            let (next, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task
+                        .run_with(Budget::instructions(1), &mut NoEffects)
+                        .unwrap();
+                    (task, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => yields += 1,
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    done = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(
+            done && yields > 0,
+            "RegExp fixture exceeded instruction bound"
+        );
+    }
 }
 
 #[test]

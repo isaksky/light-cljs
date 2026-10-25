@@ -65,9 +65,9 @@ pub(super) struct State {
     this: Value,
     args: [Value; 3],
     stage: Stage,
-    locale_list: Option<intl::Intl>,
+    locale_list: Option<Box<intl::Intl>>,
     language: String,
-    collator: Option<collator::State>,
+    collator: Option<Box<collator::State>>,
     comparison: Option<crate::intl::collator::Comparison>,
     cursor: Option<UnitCursor>,
     units: Vec<u16>,
@@ -315,7 +315,11 @@ impl State {
                     self.which,
                     StringToLocaleUpperCase | StringToLocaleLowerCase
                 ) {
-                    self.locale_list = Some(intl::Intl::new(&self.args[..1], false)?);
+                    // Keep large nested-native construction out of this step's
+                    // frame, which remains live while stepping locale parsing.
+                    self.locale_list = Some(box_constructor_state(|| {
+                        intl::Intl::new(&self.args[..1], false)
+                    })?);
                     self.stage = Stage::Locales;
                 } else {
                     self.stage = Stage::Argument;
@@ -566,13 +570,9 @@ impl State {
     fn prepare(&mut self, heap: &Heap, task: TaskId) -> Result<Action, Fault> {
         use builtin::Builtin::*;
         if self.which == StringLocaleCompare {
-            self.collator = Some(collator::State::new(
-                IntlCollator,
-                &Value::Undefined,
-                &self.args[1..],
-                heap,
-                task,
-            )?);
+            self.collator = Some(box_constructor_state(|| {
+                collator::State::new(IntlCollator, &Value::Undefined, &self.args[1..], heap, task)
+            })?);
             self.stage = Stage::Collator;
             return Ok(Action::Continue);
         }
