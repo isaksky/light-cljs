@@ -88,18 +88,23 @@ const ERROR_STACK_METADATA_UNITS: usize = 256;
 /// so migration and detached generator activations need no special lifetime
 /// rules or unsafe references. The immutable Code itself is never copied.
 #[derive(Clone, Debug)]
-pub(crate) struct TaskCode(Arc<Arc<Code>>);
+pub(crate) struct TaskCode(Arc<TaskCodeOwner>);
+
+#[derive(Debug)]
+struct TaskCodeOwner {
+    shared: Arc<Code>,
+}
 
 impl TaskCode {
     pub(crate) fn shared(&self) -> Arc<Code> {
-        Arc::clone(&self.0)
+        Arc::clone(&self.0.shared)
     }
 }
 
 impl std::ops::Deref for TaskCode {
     type Target = Code;
     fn deref(&self) -> &Code {
-        &self.0
+        &self.0.shared
     }
 }
 
@@ -120,7 +125,9 @@ impl CodeCache {
         if cache.len() == 256 {
             cache.clear();
         }
-        let local = TaskCode(Arc::new(Arc::clone(code)));
+        let local = TaskCode(Arc::new(TaskCodeOwner {
+            shared: Arc::clone(code),
+        }));
         cache.insert(key, local.clone());
         local
     }

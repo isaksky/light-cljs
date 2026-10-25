@@ -34,7 +34,8 @@ finished task receives `Finished`. A run releases its Rust stack and reports:
 Budgets count VM instructions and resumable native steps, not wall time.
 A task can migrate between slices without moving or reconstructing its values.
 
-VM calls retain immutable code through `TaskCode`, an owning `Arc<Arc<Code>>`.
+VM calls retain immutable code through `TaskCode`: an `Arc<TaskCodeOwner>`
+whose owner holds an `Arc<Code>`.
 Each task caches at most 256 distinct handles by code identity; a miss takes
 one shared code reference, while calls, returns and dispatch-frame changes
 clone only the task's outer handle. Clearing a full cache cannot invalidate
