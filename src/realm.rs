@@ -3392,7 +3392,8 @@ mod tests {
 
         // Fourteen String methods (-300), six Promise methods, species getter, and AggregateError's pair (-317).
         // Ten RegExp/String protocol built-ins and one iterator prototype (-301).
-        assert_eq!(first.all.len(), 443);
+        // The remaining Math methods add 27 intrinsics (-319).
+        assert_eq!(first.all.len(), 470);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
