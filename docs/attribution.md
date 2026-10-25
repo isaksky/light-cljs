@@ -17,6 +17,10 @@ carry a full notice. **15 generated Rust files** identify their revision and
 retained license. All eleven source/header hashes in
 `scripts/quickjs-data/inputs.sha256` match the reference checkout. The ten
 whole-file module JavaScript bodies and `message.json` match upstream bytes.
+The 86 upstream-file hash entries across retained provenance files also match.
+Selected byte ranges in 19 unchanged corpus fixtures were compared directly;
+the using and collection fixtures differ only by their documented intrinsic-write
+and WeakRef job-lifetime adaptations.
 Per-file original copyright years (including libunicode's 2017–2018 Bellard
 notice) remain in generated headers. Unicode License v3 is retained in
 [UNICODE-LICENSE](UNICODE-LICENSE); snapshot provenance does not establish a
