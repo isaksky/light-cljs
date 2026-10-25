@@ -9064,3 +9064,21 @@ separate from instance construction. No new worker-selected limits are needed.
 The semantic reference is `research/quickjs/quickjs.c` at 7d1c13c5d8f8,
 `JS_CreateFromConstructor`, `js_array_constructor` and `js_error_constructor`;
 this is a fresh implementation over traced task-owned native continuations.
+
+## Reflect internal methods (clj-quickjs-320)
+
+Reflect methods are immutable realm functions. Each invocation owns a traced
+native continuation with its arguments, converted key, descriptor reader,
+receiver, Proxy operations and argument-list cursor. User code runs through VM
+actions, never under a heap lock or on a retained Rust stack. Reflect reuses the
+existing property, prototype, integrity and Proxy internal methods. Ordinary
+rejection returns a boolean; unsupported Proxy traps, ownership failures and
+immutable-realm errors preserve their established runtime policy.
+
+Ordinary base constructors now share the built-in GetPrototypeFromConstructor
+continuation: the new target's prototype is read resumably before receiver
+allocation and constructor entry. Derived constructors continue to forward the
+original new target through super construction. The receiver and all prototype
+edges retain their usual task ownership and publication rules. Key result arrays
+are task-owned and traced during incremental materialization. No opcode or heap
+kind, dependency, or additional fixed resource limit is introduced.

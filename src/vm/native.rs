@@ -237,6 +237,7 @@ mod intl_service;
 mod list_format;
 mod number_format;
 mod plural_rules;
+mod reflect;
 mod relative_time_format;
 pub(crate) mod segmenter;
 mod string_methods;
@@ -359,6 +360,12 @@ pub(crate) enum Action {
         which: builtin::Builtin,
         args: Vec<Value>,
         prototype: Option<ObjectId>,
+    },
+    EnterConstructor {
+        callee: Value,
+        target: Value,
+        this: Value,
+        args: Vec<Value>,
     },
     /// Run the original instruction with its converted operands. This is
     /// one leaf instruction, never interpreter re-entry.
@@ -678,6 +685,8 @@ enum NativeState {
     AddEntries(Box<add_entries::State>),
     StringMethods(Box<string_methods::State>),
     ObjectStatics(Box<object_statics::State>),
+
+    Reflect(Box<reflect::State>),
 }
 
 #[derive(Debug)]
@@ -956,6 +965,7 @@ impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match &self.state {
             NativeState::BuiltinConstruct(constructor) => constructor.trace(visit),
+            NativeState::Reflect(reflect) => reflect.trace(visit),
             NativeState::CopyProperties(copy) => copy.trace(visit),
             NativeState::ObjectStatics(object) => object.trace(visit),
             NativeState::Rest { values, out, .. } => {
@@ -1571,6 +1581,33 @@ pub(crate) fn start_builtin(
     {
         return start_number_format(heap, state, which, this, args, popped);
     }
+    if which == Builtin::FunctionPrototypeBind && !construct {
+        let native = NativeState::Bind {
+            target: this.clone(),
+            args: args.to_vec(),
+            length: Value::Undefined,
+            stage: 0,
+        };
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, native)?;
+        return Ok(true);
+    }
+    if which == Builtin::ObjectDefineProperty
+        && !construct
+        && !matches!(args.get(1), Some(Value::Object(_) | Value::BigInt(_)))
+    {
+        let desc = descriptor::DefineProperty::new(args)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::DefineProperty(desc))?;
+        return Ok(true);
+    }
+    if !construct && reflect::is_method(which) {
+        let (max_args, max_hops) = state.forward_limits(state.stack_len() - popped);
+        let native = reflect::State::new(which, args.to_vec(), max_args, max_hops);
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::Reflect(Box::new(native)))?;
+        return Ok(true);
+    }
     if !construct
         && matches!(
             which,
@@ -1825,6 +1862,20 @@ pub(crate) fn start_builtin_constructor(
     push_native(
         state,
         NativeState::BuiltinConstruct(Box::new(construct::State::new(which, target, args))),
+    )
+}
+
+pub(crate) fn start_ordinary_constructor(
+    state: &mut VmState,
+    callee: Value,
+    target: Value,
+    args: Vec<Value>,
+    popped: usize,
+) -> Result<(), Fault> {
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(
+        state,
+        NativeState::BuiltinConstruct(Box::new(construct::State::ordinary(callee, target, args))),
     )
 }
 
@@ -2617,12 +2668,6 @@ fn start_builtin_slow(
                 next: 0,
                 finishing: false,
             }),
-            Builtin::FunctionPrototypeBind => Some(NativeState::Bind {
-                target: this.clone(),
-                args: args.to_vec(),
-                length: Value::Undefined,
-                stage: 0,
-            }),
             _ => None,
         };
         if let Some(native) = native {
@@ -2630,15 +2675,6 @@ fn start_builtin_slow(
             push_native(state, native)?;
             return Ok(true);
         }
-    }
-    if which == Builtin::ObjectDefineProperty
-        && !construct
-        && !matches!(args.get(1), Some(Value::Object(_) | Value::BigInt(_)))
-    {
-        let desc = descriptor::DefineProperty::new(args)?;
-        state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::DefineProperty(desc))?;
-        return Ok(true);
     }
     start_builtin_conversion(heap, state, which, this, args, construct, popped)
 }
@@ -3319,6 +3355,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::Call { .. }
             | Action::Construct { .. }
             | Action::InitializeBuiltin { .. }
+            | Action::EnterConstructor { .. }
             | Action::ToNumber(_)
             | Action::ToPrimitiveNumber(_)
             | Action::DefaultLocale
@@ -3684,6 +3721,24 @@ fn apply_action(
         Action::InitializeBuiltin { .. } => {
             unreachable!("constructor entered before action dispatch")
         }
+        Action::EnterConstructor {
+            callee,
+            target,
+            this,
+            args,
+        } => {
+            let Callee::Code(id, code) = dispatch::callee(heap, &callee)? else {
+                return Err(Fault::Internal("ordinary constructor is not code"));
+            };
+            set_awaiting(state, Awaiting::CallResult)?;
+            state.push(callee);
+            let argc = args.len();
+            args.into_iter().for_each(|arg| state.push(arg));
+            state.enter_constructor(code, id, this, argc)?;
+            state.top_mut().construct = true;
+            state.top_mut().new_target = target;
+            Ok(Flow::FrameChanged)
+        }
         Action::Continue => Ok(Flow::Next),
         Action::Need { dependency, kind } => {
             set_awaiting(state, Awaiting::Dependency)?;
@@ -3977,6 +4032,10 @@ impl NativeState {
     ) -> Result<Action, Fault> {
         match self {
             NativeState::BuiltinConstruct(constructor) => constructor.step(heap, task, input),
+            NativeState::Reflect(reflect) => reflect.step(heap, task, input),
+            NativeState::Bind { .. } => self.step_bind(heap, task, input),
+            NativeState::DefineProperty(_) => self.step_define_property(heap, task, input),
+            NativeState::Proxy(proxy) => proxy.step(heap, task, input),
             NativeState::RegExp(regexp) => regexp.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::NumberFormat(format) => format.step(heap, task, input),
@@ -4034,6 +4093,144 @@ impl NativeState {
         }
     }
 
+    #[inline(never)]
+    fn step_bind(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Action, Fault> {
+        let NativeState::Bind {
+            target,
+            args,
+            length,
+            stage,
+        } = self
+        else {
+            return Err(Fault::Internal("expected bind continuation"));
+        };
+
+        if *stage == 0 || *stage == 3 {
+            dispatch::callee(heap, target)?;
+            let Value::Object(id) = target else {
+                unreachable!()
+            };
+            let key = property::Key::Name(JsString::from("length"));
+            if *stage == 0 && super::proxy::inspect(heap, task, *id)?.is_some() {
+                *stage = 3;
+                let object = crate::realm::intrinsics(heap)
+                    .ok_or(Fault::OutOfMemory("realm allocation"))?
+                    .global(crate::realm::Global::Object);
+                let callee = property::get(
+                    heap,
+                    task,
+                    &object,
+                    &property::Key::Name(JsString::from("getOwnPropertyDescriptor")),
+                )?;
+                return Ok(Action::Call {
+                    callee,
+                    this: object,
+                    args: vec![target.clone(), Value::String(JsString::from("length"))],
+                });
+            }
+            let has_length = if *stage == 3 {
+                match &input {
+                    Input::CallResult(v) => *v != Value::Undefined,
+                    _ => return Err(Fault::Internal("bind expected descriptor")),
+                }
+            } else {
+                property::get_own_property(heap, task, *id, &key)?.is_some()
+            };
+            *stage = 1;
+            if has_length {
+                match property::read(heap, task, target, &key)? {
+                    Some(property::Read::Getter(callee)) => {
+                        return Ok(Action::Call {
+                            callee,
+                            this: target.clone(),
+                            args: vec![],
+                        });
+                    }
+                    Some(property::Read::Value(v)) => *length = v,
+                    None => {}
+                }
+            }
+        } else if *stage == 1 {
+            let Input::CallResult(v) = input else {
+                return Err(Fault::Internal("bind expected length"));
+            };
+            *length = v;
+        } else {
+            let Input::CallResult(name) = input else {
+                return Err(Fault::Internal("bind expected name"));
+            };
+            return super::function::bind_with_metadata(heap, task, target, args, length, &name)
+                .map(Action::Return);
+        }
+        *stage = 2;
+        let name = match property::read(
+            heap,
+            task,
+            target,
+            &property::Key::Name(JsString::from("name")),
+        )? {
+            Some(property::Read::Getter(callee)) => {
+                return Ok(Action::Call {
+                    callee,
+                    this: target.clone(),
+                    args: vec![],
+                });
+            }
+            Some(property::Read::Value(v)) => v,
+            None => Value::Undefined,
+        };
+        super::function::bind_with_metadata(heap, task, target, args, length, &name)
+            .map(Action::Return)
+    }
+
+    #[inline(never)]
+    fn step_define_property(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        input: Input,
+    ) -> Result<Action, Fault> {
+        let NativeState::DefineProperty(desc) = self else {
+            return Err(Fault::Internal("expected descriptor continuation"));
+        };
+
+        let result = match input {
+            Input::Start => None,
+            Input::CallResult(v) => Some(v),
+            Input::Dependency(_) => {
+                return Err(Fault::Internal("descriptor received a dependency"));
+            }
+        };
+        match desc.step(heap, task, result)? {
+            descriptor::DefineStep::Getter { callee, this } => Ok(Action::Call {
+                callee,
+                this,
+                args: vec![],
+            }),
+            descriptor::DefineStep::Done(v) => Ok(Action::Return(v)),
+            descriptor::DefineStep::TypedArrayValue {
+                target,
+                result,
+                index,
+                value,
+            } => {
+                *self = NativeState::Convert {
+                    formatter: None,
+                    number_scan: None,
+                    target: ConvertTarget::TypedArrayWrite,
+                    operands: vec![target, result, Value::Number(index), value],
+                    next: 3,
+                    end: 4,
+                    hint: Hint::Number,
+                    method: 0,
+                    method_get: false,
+                    symbol_method: SymbolMethod::Pending,
+                };
+                Ok(Action::Continue)
+            }
+        }
+    }
+
     fn step_other(
         &mut self,
         heap: &Heap,
@@ -4043,6 +4240,7 @@ impl NativeState {
     ) -> Result<Action, Fault> {
         match self {
             NativeState::BuiltinConstruct(_) => unreachable!("constructor dispatched separately"),
+            NativeState::Reflect(_) => unreachable!("Reflect dispatched separately"),
             NativeState::Async(a) => a.step(heap, input),
             NativeState::CopyProperties(_)
             | NativeState::Rest { .. }
@@ -4246,91 +4444,7 @@ impl NativeState {
             NativeState::RegExp(_) => unreachable!("RegExp dispatched before other native arms"),
             NativeState::StringRegExp(state) => state.step(heap, task, input),
             NativeState::StringMethods(method) => method.step(heap, task, input),
-            NativeState::Bind {
-                target,
-                args,
-                length,
-                stage,
-            } => {
-                if *stage == 0 || *stage == 3 {
-                    dispatch::callee(heap, target)?;
-                    let Value::Object(id) = target else {
-                        unreachable!()
-                    };
-                    let key = property::Key::Name(JsString::from("length"));
-                    if *stage == 0 && super::proxy::inspect(heap, task, *id)?.is_some() {
-                        *stage = 3;
-                        let object = crate::realm::intrinsics(heap)
-                            .ok_or(Fault::OutOfMemory("realm allocation"))?
-                            .global(crate::realm::Global::Object);
-                        let callee = property::get(
-                            heap,
-                            task,
-                            &object,
-                            &property::Key::Name(JsString::from("getOwnPropertyDescriptor")),
-                        )?;
-                        return Ok(Action::Call {
-                            callee,
-                            this: object,
-                            args: vec![target.clone(), Value::String(JsString::from("length"))],
-                        });
-                    }
-                    let has_length = if *stage == 3 {
-                        match &input {
-                            Input::CallResult(v) => *v != Value::Undefined,
-                            _ => return Err(Fault::Internal("bind expected descriptor")),
-                        }
-                    } else {
-                        property::get_own_property(heap, task, *id, &key)?.is_some()
-                    };
-                    *stage = 1;
-                    if has_length {
-                        match property::read(heap, task, target, &key)? {
-                            Some(property::Read::Getter(callee)) => {
-                                return Ok(Action::Call {
-                                    callee,
-                                    this: target.clone(),
-                                    args: vec![],
-                                });
-                            }
-                            Some(property::Read::Value(v)) => *length = v,
-                            None => {}
-                        }
-                    }
-                } else if *stage == 1 {
-                    let Input::CallResult(v) = input else {
-                        return Err(Fault::Internal("bind expected length"));
-                    };
-                    *length = v;
-                } else {
-                    let Input::CallResult(name) = input else {
-                        return Err(Fault::Internal("bind expected name"));
-                    };
-                    return super::function::bind_with_metadata(
-                        heap, task, target, args, length, &name,
-                    )
-                    .map(Action::Return);
-                }
-                *stage = 2;
-                let name = match property::read(
-                    heap,
-                    task,
-                    target,
-                    &property::Key::Name(JsString::from("name")),
-                )? {
-                    Some(property::Read::Getter(callee)) => {
-                        return Ok(Action::Call {
-                            callee,
-                            this: target.clone(),
-                            args: vec![],
-                        });
-                    }
-                    Some(property::Read::Value(v)) => v,
-                    None => Value::Undefined,
-                };
-                super::function::bind_with_metadata(heap, task, target, args, length, &name)
-                    .map(Action::Return)
-            }
+            NativeState::Bind { .. } => unreachable!("bind dispatched separately"),
             NativeState::Apply {
                 callee,
                 this,
@@ -4483,44 +4597,8 @@ impl NativeState {
             NativeState::Instanceof { value, target } => {
                 step_instanceof(heap, task, value, target, input)
             }
-            NativeState::Proxy(proxy) => proxy.step(heap, task, input),
-            NativeState::DefineProperty(desc) => {
-                let result = match input {
-                    Input::Start => None,
-                    Input::CallResult(v) => Some(v),
-                    Input::Dependency(_) => {
-                        return Err(Fault::Internal("descriptor received a dependency"));
-                    }
-                };
-                match desc.step(heap, task, result)? {
-                    descriptor::DefineStep::Getter { callee, this } => Ok(Action::Call {
-                        callee,
-                        this,
-                        args: vec![],
-                    }),
-                    descriptor::DefineStep::Done(v) => Ok(Action::Return(v)),
-                    descriptor::DefineStep::TypedArrayValue {
-                        target,
-                        result,
-                        index,
-                        value,
-                    } => {
-                        *self = NativeState::Convert {
-                            formatter: None,
-                            number_scan: None,
-                            target: ConvertTarget::TypedArrayWrite,
-                            operands: vec![target, result, Value::Number(index), value],
-                            next: 3,
-                            end: 4,
-                            hint: Hint::Number,
-                            method: 0,
-                            method_get: false,
-                            symbol_method: SymbolMethod::Pending,
-                        };
-                        Ok(Action::Continue)
-                    }
-                }
-            }
+            NativeState::Proxy(_) => unreachable!("Proxy dispatched separately"),
+            NativeState::DefineProperty(_) => unreachable!("descriptor dispatched separately"),
             NativeState::PropertyCall {
                 callee,
                 this,
@@ -5345,6 +5423,7 @@ impl NativeState {
             (NativeState::BigIntParse { .. } | NativeState::BigIntFormat(_), _) => Action::Unwind,
             (
                 NativeState::Eval(_)
+                | NativeState::Reflect(_)
                 | NativeState::BuiltinConstruct(_)
                 | NativeState::CopyProperties(_)
                 | NativeState::ObjectStatics(_)

@@ -210,7 +210,7 @@ impl Key {
         }
     }
 
-    fn is_length(&self) -> bool {
+    pub(crate) fn is_length(&self) -> bool {
         matches!(self, Key::Name(name) if *name == "length")
     }
 }

@@ -1642,3 +1642,13 @@ pattern selection, unit affix/part composition and fallback semantics from
 permission notice are retained in `src/intl/data/QUICKJS-LICENSE`; unit patterns
 continue to use the existing -225 importer/provenance without table changes.
 Synthetic source tests reproduce these strings and are not light-cljs output.
+
+### Reflect internal methods (clj-quickjs-320)
+
+Fresh Rust implementation in `src/vm/native/reflect.rs`, integrating existing
+property, descriptor, prototype, integrity, constructor and Proxy continuations.
+Semantic reference: `research/quickjs/quickjs.c`, `js_reflect_funcs`,
+`js_reflect_construct`, `js_reflect_get`, `js_reflect_set` and related Reflect
+functions, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (2026-06-04).
+No upstream code or tests copied; `tests/reflect.rs` contains synthetic fixtures,
+not light-cljs output.

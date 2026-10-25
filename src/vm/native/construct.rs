@@ -11,6 +11,7 @@ use crate::vm::{builtin::Builtin, instr::Instr, prototype};
 #[derive(Debug)]
 pub(super) struct State {
     which: Builtin,
+    ordinary: Option<Value>,
     target: Value,
     args: Vec<Value>,
     prototype: Option<ObjectId>,
@@ -32,6 +33,9 @@ enum Stage {
 impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.target.trace(visit);
+        if let Some(callee) = &self.ordinary {
+            callee.trace(visit);
+        }
         for arg in &self.args {
             arg.trace(visit);
         }
@@ -58,6 +62,7 @@ impl State {
         );
         Self {
             which,
+            ordinary: None,
             target,
             args,
             prototype: None,
@@ -65,6 +70,12 @@ impl State {
             stage: Stage::Start,
             late,
         }
+    }
+
+    pub(super) fn ordinary(callee: Value, target: Value, args: Vec<Value>) -> Self {
+        let mut state = Self::new(Builtin::Object, target, args);
+        state.ordinary = Some(callee);
+        state
     }
 
     fn lookup(&mut self) -> Action {
@@ -135,6 +146,9 @@ impl State {
                     return Err(Fault::Internal("constructor missing result"));
                 };
                 self.result = value;
+                if self.ordinary.is_some() {
+                    return Ok(Action::Return(self.result.clone()));
+                }
                 if self.late {
                     return Ok(self.lookup());
                 }
@@ -144,6 +158,22 @@ impl State {
         }
         if matches!(self.stage, Stage::Initialize) {
             self.stage = Stage::Result;
+            if let Some(callee) = &self.ordinary {
+                let prototype = self
+                    .prototype
+                    .ok_or(Fault::Internal("ordinary constructor prototype missing"))?;
+                let receiver = heap
+                    .alloc(crate::heap::HeapObject::Plain(
+                        crate::object::OrdinaryObject::with_prototype(task, prototype),
+                    ))
+                    .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+                return Ok(Action::EnterConstructor {
+                    callee: callee.clone(),
+                    target: self.target.clone(),
+                    this: Value::Object(receiver),
+                    args: std::mem::take(&mut self.args),
+                });
+            }
             return Ok(Action::InitializeBuiltin {
                 which: self.which,
                 args: std::mem::take(&mut self.args),

@@ -1050,7 +1050,8 @@ fn realm_intrinsics_reclaim_with_their_heap() {
     // The remaining Math methods add 27 intrinsics (-319).
     // Date's Symbol.toPrimitive adds one built-in (-310).
     // NumberFormat formatToParts adds one built-in (-306).
-    assert_eq!(ids.len(), 472);
+    // Reflect adds twelve methods (-320).
+    assert_eq!(ids.len(), 484);
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

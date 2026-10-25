@@ -579,6 +579,20 @@ pub(crate) enum Builtin {
 
     DateToPrimitive,
     IntlNumberFormatToParts,
+
+
+    ReflectConstruct,
+    ReflectDefineProperty,
+    ReflectDeleteProperty,
+    ReflectGet,
+    ReflectGetOwnPropertyDescriptor,
+    ReflectGetPrototypeOf,
+    ReflectHas,
+    ReflectIsExtensible,
+    ReflectOwnKeys,
+    ReflectPreventExtensions,
+    ReflectSet,
+    ReflectSetPrototypeOf,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -642,6 +656,19 @@ impl Builtin {
             Self::RegExpReplace => "[Symbol.replace]",
             Self::RegExpSplit => "[Symbol.split]",
             Self::RegExpIteratorNext => "next",
+
+            Builtin::ReflectConstruct => "construct",
+            Builtin::ReflectDefineProperty => "defineProperty",
+            Builtin::ReflectDeleteProperty => "deleteProperty",
+            Builtin::ReflectGet => "get",
+            Builtin::ReflectGetOwnPropertyDescriptor => "getOwnPropertyDescriptor",
+            Builtin::ReflectGetPrototypeOf => "getPrototypeOf",
+            Builtin::ReflectHas => "has",
+            Builtin::ReflectIsExtensible => "isExtensible",
+            Builtin::ReflectOwnKeys => "ownKeys",
+            Builtin::ReflectPreventExtensions => "preventExtensions",
+            Builtin::ReflectSet => "set",
+            Builtin::ReflectSetPrototypeOf => "setPrototypeOf",
             Builtin::Set => "Set",
             Builtin::WeakSet => "WeakSet",
             Builtin::SetAdd | Builtin::WeakSetAdd => "add",
@@ -999,6 +1026,18 @@ impl Builtin {
             | Self::RegExpSearch => 1,
             Self::RegExpReplace | Self::RegExpSplit => 2,
             Self::RegExpIteratorNext => 0,
+
+            Builtin::ReflectConstruct
+            | Builtin::ReflectDeleteProperty
+            | Builtin::ReflectGet
+            | Builtin::ReflectGetOwnPropertyDescriptor
+            | Builtin::ReflectHas
+            | Builtin::ReflectSetPrototypeOf => 2,
+            Builtin::ReflectDefineProperty | Builtin::ReflectSet => 3,
+            Builtin::ReflectGetPrototypeOf
+            | Builtin::ReflectIsExtensible
+            | Builtin::ReflectOwnKeys
+            | Builtin::ReflectPreventExtensions => 1,
             Builtin::Set
             | Builtin::WeakSet
             | Builtin::SetClear
@@ -1766,6 +1805,20 @@ pub(crate) fn call(
         | Builtin::ObjectFromEntries
         | Builtin::ObjectDefineProperties => Err(Fault::Internal(
             "defineProperty must run through the native trampoline",
+        )),
+        Builtin::ReflectConstruct
+        | Builtin::ReflectDefineProperty
+        | Builtin::ReflectDeleteProperty
+        | Builtin::ReflectGet
+        | Builtin::ReflectGetOwnPropertyDescriptor
+        | Builtin::ReflectGetPrototypeOf
+        | Builtin::ReflectHas
+        | Builtin::ReflectIsExtensible
+        | Builtin::ReflectOwnKeys
+        | Builtin::ReflectPreventExtensions
+        | Builtin::ReflectSet
+        | Builtin::ReflectSetPrototypeOf => Err(Fault::Internal(
+            "Reflect method must run through the native trampoline",
         )),
         Builtin::ObjectGetOwnPropertyDescriptor => {
             descriptor::get_own_property_descriptor(heap, task, args)

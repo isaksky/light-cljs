@@ -52,7 +52,7 @@
 //! | `Function.prototype` (clj-quickjs-102/-103) | built-in function ([`Builtin::FunctionPrototype`]), prototype `Object.prototype` | `length` (0), `name` (`""`), `constructor` (`Function`), `call`, `apply`, `bind`; `toString`, `arguments` and `caller` are missing and their lookup fails (`crate::vm::function::lacks_inherited`) |
 //! | `Function.prototype.call`, `Function.prototype.apply` | built-in functions | `length` (1, 2), `name` |
 //! | `Function` (fails when called, clj-quickjs-111) | built-in function ([`Builtin::Function`]) | `length` (1), `name`, `prototype` (`Function.prototype`) |
-//! | `Reflect` (clj-quickjs-102) | ordinary object, prototype `Object.prototype` | `apply` |
+//! | `Reflect` (clj-quickjs-102, -320) | ordinary object, prototype `Object.prototype` | all thirteen methods |
 //! | `Reflect.apply` | built-in function | `length` (3), `name` |
 //! | Number predicates and constants (clj-quickjs-147) | built-in functions and primitive values | `Number` has `isNaN`, `isFinite`, `isInteger`, `isSafeInteger` (each function has `length` 1 and `name`), plus `EPSILON`, `MIN_VALUE`, `MAX_VALUE`, `MAX_SAFE_INTEGER`, `MIN_SAFE_INTEGER`, `NaN`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY` (no attributes set); globals `isNaN` and `isFinite` each have `length` 1 and `name` |
 //! | `Math` (clj-quickjs-152, clj-quickjs-164) | ordinary object, prototype `Object.prototype` | `floor`, `ceil`, `abs`, `fround` (length 1), `imul`, `hypot`, `pow` (length 2); each function has `name` |
@@ -169,7 +169,7 @@ pub(crate) enum Global {
     String = 2,
     /// `Function`: dynamic global-scope compilation (clj-quickjs-111).
     Function = 3,
-    /// `Reflect` (clj-quickjs-102): an ordinary object with `apply`.
+    /// `Reflect` (clj-quickjs-102, -320): the reflection namespace.
     Reflect = 4,
     /// `Array` (clj-quickjs-155/-153): callable and constructible.
     Array = 5,
@@ -917,16 +917,32 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         b.add(function_prototype, name, value, PropertyFlags::METHOD)?;
     }
 
-    // `Reflect`: an ordinary object with `apply` (clj-quickjs-102).
-    let reflect_apply = b.function(Builtin::ReflectApply, &[])?;
+    // Reflect methods share the immutable realm; operation state is task-owned.
     let mut reflect = OrdinaryObject::intrinsic(Some(object_prototype));
-    define(
-        heap,
-        &mut reflect,
-        "apply",
-        reflect_apply,
-        PropertyFlags::METHOD,
-    )?;
+    for which in [
+        Builtin::ReflectApply,
+        Builtin::ReflectConstruct,
+        Builtin::ReflectDefineProperty,
+        Builtin::ReflectDeleteProperty,
+        Builtin::ReflectGet,
+        Builtin::ReflectGetOwnPropertyDescriptor,
+        Builtin::ReflectGetPrototypeOf,
+        Builtin::ReflectHas,
+        Builtin::ReflectIsExtensible,
+        Builtin::ReflectOwnKeys,
+        Builtin::ReflectPreventExtensions,
+        Builtin::ReflectSet,
+        Builtin::ReflectSetPrototypeOf,
+    ] {
+        let method = b.function(which, &[])?;
+        define(
+            heap,
+            &mut reflect,
+            which.name(),
+            method,
+            PropertyFlags::METHOD,
+        )?;
+    }
     let reflect = heap.alloc(HeapObject::Plain(reflect))?;
     b.all.push(reflect);
 
@@ -3420,7 +3436,8 @@ mod tests {
         // The remaining Math methods add 27 intrinsics (-319).
         // Date's Symbol.toPrimitive adds one built-in (-310).
         // NumberFormat formatToParts adds one built-in (-306).
-        assert_eq!(first.all.len(), 472);
+        // Reflect adds twelve methods (-320).
+        assert_eq!(first.all.len(), 484);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

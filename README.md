@@ -2098,7 +2098,7 @@ Deferred:
 - Freezing does not change ownership: a frozen object stays task-owned and cannot be published,
   and freezing a function makes it unpublishable (it gets a property record).
 - `Object.seal`,
-  `Object.isSealed` and `Reflect`'s extensibility functions are not provided.
+  `Object.isSealed` are not provided.
   Error instances follow the ordinary object rules.
 
 ### `Object.keys` and `Object.getOwnPropertyNames` (clj-quickjs-123)
@@ -2118,7 +2118,7 @@ decision record in `docs/architecture.md`, "Own-property keys"):
 
 Deferred:
 
-- `Object.getOwnPropertySymbols`, `Reflect.ownKeys`,
+- `Object.getOwnPropertySymbols`,
   `Object.entries`/`values`.
 
 ### `instanceof` (clj-quickjs-75)
@@ -2331,7 +2331,7 @@ Deferred:
 
 - `Function(...)`/`new Function` (clj-quickjs-111: `UnsupportedOperand`/`TypeError`),
   `toString`, `arguments`/`caller` (their names fail with
-  `UnsupportedOperand`), the other `Reflect` functions, changing a function's prototype, and the
+  `UnsupportedOperand`), changing a function's prototype, and the
   sloppy-mode `this` substitution of a callee (an explicit `UnsupportedOperand`, as for `this`).
 
 ### Bound functions (clj-quickjs-103)
@@ -2663,7 +2663,7 @@ as a dependency failure, is rejected as task-owned mutation.
 Tests: `cargo test --test js_source error_` and
 `cargo test --test exceptions uncaught_error_objects_report_name_and_message`.
 Engine-raised errors also use these instances (clj-quickjs-230); subclasses
-construct with their derived prototype (-309). `Reflect.construct` remains deferred.
+construct with their derived prototype (-309). `Reflect.construct` is supported (-320).
 
 ### String splitting (clj-quickjs-157)
 
@@ -4035,7 +4035,7 @@ yields, dependency waits, collection and worker migration.
 
 Verify with `CARGO_BUILD_JOBS=3 cargo test --test js_functions -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 cargo test --lib frontend:: -- --test-threads=3`.
-`Reflect.construct` remains deferred. Built-in subclass construction executes (-309). Lexical `super`
+`Reflect.construct` is supported (-320). Built-in subclass construction executes (-309). Lexical `super`
 through arrows and direct eval is supported (-112).
 
 ### Static module loading (clj-quickjs-252)
@@ -4425,7 +4425,7 @@ dispatch (implemented by -310), `Object.prototype.toString`
 tags (-311), eval SyntaxError stacks (-312), async generators (-313), `??` and
 logical assignment (-314), rest parameters/object spread/destructuring loop
 heads (-315), numeric separators (-316), Promise combinators (-317), Object
-statics (-318), the remaining Math functions (-319), Reflect methods (-320) and
+statics (-318), the remaining Math functions (-319) and
 module default exports (-321). No engine behaviour changes in this pellet.
 
 ### Nullish coalescing and logical assignment (clj-quickjs-314)
@@ -4784,7 +4784,7 @@ through their observable `then` method.
 Symbol and BigInt remain nonconstructible. Proxy has no `prototype` for class
 heritage, and transparent constructor proxies retain `new.target` identity under
 the supported Proxy trap subset. Promise capabilities/species are supported
-(clj-quickjs-317); `Reflect.construct` and other method-specific species gaps
+(clj-quickjs-317); other method-specific species gaps
 remain deferred.
 
 Validation: `CARGO_BUILD_JOBS=3 cargo test --test builtin_subclasses -- --test-threads=3`.
@@ -4948,3 +4948,33 @@ Existing NumberFormat decimal limits remain 100,000 coefficient characters and
 exponent magnitude 10,000; no additional unit-specific limit is introduced.
 Complete CLDR unit translations and range methods remain deferred.
 Check: `CARGO_BUILD_JOBS=3 cargo test --test js_source intl_number_format -- --test-threads=3`.
+
+### Reflect internal methods (clj-quickjs-320)
+
+`Reflect` provides `construct`, `defineProperty`, `deleteProperty`, `get`,
+`getOwnPropertyDescriptor`, `getPrototypeOf`, `has`, `isExtensible`, `ownKeys`,
+`preventExtensions`, `set` and `setPrototypeOf`, in addition to `apply`.
+Targets must be objects; ordinary internal-method rejection returns `false`,
+while invalid arguments, descriptor/conversion errors and user exceptions throw.
+`get` and `set` accept explicit receivers, including primitive receivers for
+accessors. `set` checks an existing receiver data descriptor without invoking
+an accessor on that receiver. `ownKeys` includes both strings and symbols.
+
+`construct` accepts an array-like argument list and optional constructor
+`newTarget`, preserves `new.target`, and uses the existing constructor paths for
+ordinary functions, classes, bound functions and built-ins. Prototype getters,
+argument getters, property-key conversion, descriptor getters and accessors
+resume after yields, dependency waits, GC and worker migration without replay.
+Array lengths and typed-array values use resumable numeric conversion.
+
+The existing Proxy subset applies: `ownKeys` and `getOwnPropertyDescriptor`
+traps execute resumably; other present traps raise the existing named TypeError.
+Absent traps forward to their targets. Shared realm objects remain immutable,
+and ownership/publication restrictions still apply; these runtime policy errors
+are not converted to `false`. Function prototype mutation retains its existing
+unsupported error. `Reflect[Symbol.toStringTag]` is tracked by clj-quickjs-311.
+No new resource limit is introduced: constructor argument forwarding uses the
+existing VM stack and 65,535-argument (u16) limits. Key snapshots retain existing
+internal-method bounds; returned key arrays are populated one element per step.
+
+Validation: `CARGO_BUILD_JOBS=3 cargo test --test reflect -- --test-threads=3`.

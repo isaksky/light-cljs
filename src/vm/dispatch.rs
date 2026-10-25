@@ -865,9 +865,13 @@ fn construct_target(
         Err(Fault::NotCallable(what)) => return Err(not_a_constructor(state, &f, what)),
         Err(fault) => return Err(fault),
     };
-    // Reading `prototype` may create the lazy prototype object and build
-    // the realm; nothing is held across it but `f`, which is an operand.
-    let this = if code.constructor_kind.is_derived() {
+    // GetPrototypeFromConstructor may invoke a newTarget.prototype accessor.
+    // Ordinary and built-in allocation share its traced native continuation.
+    if !code.constructor_kind.is_derived() {
+        super::native::start_ordinary_constructor(state, f, new_target, args, argc + 1)?;
+        return Ok(Flow::FrameChanged);
+    }
+    let this = {
         let id = heap
             .alloc(HeapObject::Cell(BindingCell {
                 owner: task,
@@ -875,8 +879,6 @@ fn construct_target(
             }))
             .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
         Value::Object(id)
-    } else {
-        allocate_receiver(heap, task, &new_target)?
     };
     let keep = state.stack_len() - argc - 1;
     state.truncate_operands(keep)?;
@@ -887,25 +889,6 @@ fn construct_target(
     state.top_mut().construct = true;
     state.top_mut().new_target = new_target;
     Ok(Flow::FrameChanged)
-}
-
-fn allocate_receiver(heap: &Heap, task: TaskId, target: &Value) -> Result<Value, Fault> {
-    let prototype = match property::get_field(heap, task, target, &JsString::from("prototype"))? {
-        Value::Object(prototype) => prototype,
-        _ => {
-            realm::intrinsics(heap)
-                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
-                .object_prototype
-        }
-    };
-    // The new object goes straight into the new frame's traced `this` in
-    // this instruction: no collection can run in between.
-    let object = heap
-        .alloc(HeapObject::Plain(OrdinaryObject::with_prototype(
-            task, prototype,
-        )))
-        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
-    Ok(Value::Object(object))
 }
 
 pub(crate) fn resolve_this(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fault> {

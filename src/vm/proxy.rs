@@ -183,7 +183,7 @@ pub(crate) fn unwrapped(heap: &Heap, mut id: ObjectId) -> Result<ObjectId, Fault
 }
 
 #[derive(Debug)]
-enum Output {
+pub(crate) enum Output {
     Keys(Vec<keys::OwnKey>),
     Descriptor(Option<Property>),
 }
@@ -313,13 +313,13 @@ impl Trace for Operation {
     }
 }
 #[derive(Debug, Default)]
-struct Operations {
+pub(crate) struct Operations {
     stack: Vec<Operation>,
     output: Option<Output>,
     ready: Option<Value>,
     json_keys: bool,
 }
-enum Progress {
+pub(crate) enum Progress {
     Action(Action),
     Done(Output),
     Ready(Value),
@@ -338,6 +338,11 @@ impl Trace for Operations {
     }
 }
 impl Operations {
+    pub(crate) fn descriptor(object: ObjectId, key: Key) -> Self {
+        let mut ops = Self::default();
+        ops.start(Operation::descriptor(object, key));
+        ops
+    }
     fn start(&mut self, op: Operation) {
         self.stack.push(op);
     }
@@ -346,7 +351,12 @@ impl Operations {
         self.output = Some(output);
         Ok(Progress::Action(Action::Continue))
     }
-    fn step(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Progress, Fault> {
+    pub(crate) fn step(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        input: Input,
+    ) -> Result<Progress, Fault> {
         let input = self.ready.take().map(Input::CallResult).unwrap_or(input);
         match self.advance(heap, task, input)? {
             Progress::Ready(v) => {
@@ -737,6 +747,8 @@ pub(crate) struct State {
     ops: Operations,
     keys: Vec<keys::OwnKey>,
     selected: Vec<Value>,
+    result: Value,
+    emitted: usize,
     index: usize,
     pending: Option<(ObjectId, Key)>,
     started: bool,
@@ -762,6 +774,8 @@ impl State {
             ops: Operations::default(),
             keys: vec![],
             selected: vec![],
+            result: Value::Undefined,
+            emitted: 0,
             index: 0,
             pending: None,
             started: false,
@@ -964,10 +978,10 @@ impl State {
                 enumerable,
                 symbols,
             } => {
-                while let Some(key) = self.keys.get(self.index) {
+                if let Some(key) = self.keys.get(self.index) {
                     self.index += 1;
                     if !symbols && matches!(key.key, Key::Symbol(_)) {
-                        continue;
+                        return Ok(Action::Continue);
                     }
                     if *enumerable {
                         self.ops
@@ -975,12 +989,18 @@ impl State {
                         return Ok(Action::Continue);
                     }
                     self.selected.push(key_value(&key.key));
+                    return Ok(Action::Continue);
                 }
-                let out = property::new_array(heap, task)?;
-                for value in &self.selected {
-                    property::append(heap, task, &out, Some(value.clone()))?;
+                if self.result == Value::Undefined {
+                    self.result = property::new_array(heap, task)?;
+                    return Ok(Action::Continue);
                 }
-                return Ok(Action::Return(out));
+                if let Some(value) = self.selected.get(self.emitted) {
+                    property::append(heap, task, &self.result, Some(value.clone()))?;
+                    self.emitted += 1;
+                    return Ok(Action::Continue);
+                }
+                return Ok(Action::Return(self.result.clone()));
             }
             Mode::Freeze(target) | Mode::Frozen(target) => {
                 if let Some(key) = self.keys.get(self.index) {
@@ -1002,6 +1022,7 @@ impl State {
 }
 impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
+        self.result.trace(visit);
         if let Some((target, desc)) = &self.coercing {
             visit((*target).into());
             for v in [&desc.value, &desc.get, &desc.set].into_iter().flatten() {

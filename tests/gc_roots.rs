@@ -1194,7 +1194,8 @@ fn realm_intrinsics_retain() {
     // The remaining Math methods add twenty-seven built-ins (-319).
     // Date's Symbol.toPrimitive adds one built-in (-310).
     // NumberFormat formatToParts adds one built-in (-306).
-    assert_eq!(rt.heap_usage().objects.builtin, 407);
+    // Reflect adds twelve methods (-320).
+    assert_eq!(rt.heap_usage().objects.builtin, 419);
     assert_eq!(rt.heap_usage().objects.plain, 65);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
