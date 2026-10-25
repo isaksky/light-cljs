@@ -1052,7 +1052,9 @@ fn realm_intrinsics_reclaim_with_their_heap() {
     // NumberFormat formatToParts adds one built-in (-306).
     // Reflect adds twelve methods (-320).
     // %TypedArray%.prototype's tag accessor adds one builtin (-311).
-    assert_eq!(ids.len(), 485);
+    // Map's iterator prototype, next, keys, values and entries add five intrinsics.
+    // Object.getOwnPropertyDescriptors, seal and isSealed add three built-ins.
+    assert_eq!(ids.len(), 493);
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

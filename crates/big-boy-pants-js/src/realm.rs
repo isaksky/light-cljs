@@ -3555,7 +3555,9 @@ mod tests {
         // NumberFormat formatToParts adds one built-in (-306).
         // Reflect adds twelve methods (-320).
         // %TypedArray%.prototype's tag accessor adds one builtin (-311).
-        assert_eq!(first.all.len(), 485);
+        // Map's iterator prototype, next, keys, values and entries add five intrinsics.
+        // Object.getOwnPropertyDescriptors, seal and isSealed add three built-ins.
+        assert_eq!(first.all.len(), 493);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

@@ -900,16 +900,17 @@ fn object_property_reclaims() {
     // prototypes (clj-quickjs-237), Generator.prototype (clj-quickjs-243), and
     // the typed-array prototypes (clj-quickjs-166, clj-quickjs-167),
     // which the realm keeps for the
-    // runtime's lifetime, plus Array's unscopables record (clj-quickjs-110).
+    // runtime's lifetime, plus Array's unscopables record (clj-quickjs-110)
+    // and the Map iterator prototype.
     let Held {
         weak,
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 65);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 66);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 65);
+    assert_eq!(rt.heap_usage().objects.plain, 66);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -1197,8 +1198,10 @@ fn realm_intrinsics_retain() {
     // NumberFormat formatToParts adds one built-in (-306).
     // Reflect adds twelve methods (-320).
     // Includes %TypedArray%.prototype's Symbol.toStringTag getter (-311).
-    assert_eq!(rt.heap_usage().objects.builtin, 420);
-    assert_eq!(rt.heap_usage().objects.plain, 65);
+    // Map iteration adds one prototype and four built-ins (next, keys, values, entries).
+    // Object.getOwnPropertyDescriptors, seal and isSealed add three built-ins.
+    assert_eq!(rt.heap_usage().objects.builtin, 427);
+    assert_eq!(rt.heap_usage().objects.plain, 66);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1397,18 +1400,19 @@ fn function_properties_reclaim() {
     let held = function_properties(&rt);
     assert_retained(&rt, &held);
     // The argument, the record, the object in `x` and the prototype object
-    // go with the function; the realm's 65 ordinary objects stay (-301).
+    // go with the function; the realm's 66 ordinary objects stay,
+    // including the Map iterator prototype.
     let Held {
         weak,
         release,
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 65, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 66, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (65, 0));
+    assert_eq!((usage.plain, usage.function), (66, 0));
 }
 
 #[test]
@@ -1420,18 +1424,19 @@ fn array_element_reclaims() {
     // prototypes (`Object`, `Array`, `Number`, `String`, `Symbol`, `Error`, seven
     // NativeErrors, `Map`, `WeakMap`, `WeakRef`, `FinalizationRegistry`, `DisposableStack`, `ArrayBuffer`, `Intl.Locale`, `Intl.NumberFormat`,
     // `Date`, `RegExp`, `BigInt`, `Generator`, the three iterator prototypes and the eleven
-    // typed-array prototypes), `Reflect`, `Math`, `JSON` and `Intl` stay.
+    // typed-array prototypes), the Map iterator prototype, `Reflect`, `Math`, `JSON`
+    // and `Intl` stay.
     let Held {
         weak,
         release,
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 65, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 66, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (65, 0));
+    assert_eq!((usage.plain, usage.array), (66, 0));
 }
 
 #[test]
@@ -2156,7 +2161,7 @@ fn intl_number_format_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 65);
+        assert_eq!(rt.heap_usage().objects.plain, 66);
     }
 }
 
@@ -2181,7 +2186,7 @@ fn intl_collator_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 65);
+        assert_eq!(rt.heap_usage().objects.plain, 66);
     }
 }
 
@@ -2260,7 +2265,7 @@ fn intl_date_time_format_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 65);
+        assert_eq!(rt.heap_usage().objects.plain, 66);
     }
 }
 
