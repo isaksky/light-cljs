@@ -923,6 +923,11 @@ fn realm_intrinsics_retain() {
         "Object",
         "Object.prototype",
         "Object.is",
+        "Object.assign",
+        "Object.entries",
+        "Object.values",
+        "Object.fromEntries",
+        "Object.defineProperties",
         "Object.prototype.toString",
         "Object.prototype.valueOf",
         "Array.prototype.push",
@@ -1171,7 +1176,8 @@ fn realm_intrinsics_retain() {
     // Boolean adds one prototype and three built-ins (-302).
     // Fourteen String prototype methods (-300).
     // Promise methods, species and AggregateError add eight built-ins and one prototype (-317).
-    assert_eq!(rt.heap_usage().objects.builtin, 363);
+    // Five Object statics add five built-ins (-318).
+    assert_eq!(rt.heap_usage().objects.builtin, 368);
     assert_eq!(rt.heap_usage().objects.plain, 64);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
