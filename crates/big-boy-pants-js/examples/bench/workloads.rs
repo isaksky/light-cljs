@@ -5,8 +5,8 @@
 //! structural memory facts, never times or byte counts).
 //!
 //! Every workload is host glue on the public embedding API. The JavaScript
-//! is the synthetic fixtures next to this file plus `examples/e2e/work.js`
-//! (not light-cljs output), compiled once by [`Fixtures::compile`] outside
+//! includes synthetic fixtures plus two real emitted corpus programs. Code is
+//! compiled once by [`Fixtures::compile`] or the kernel runner outside
 //! every measured interval. Each workload separates setup (building inputs,
 //! completing cells, spawning) from the interval it measures, and checks
 //! every task's result against a value computed in Rust, so no measured work
@@ -736,4 +736,171 @@ pub fn work_while_waiting(
         still_waiting,
         wake_all,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Compiler-shaped kernels. Sources also feed the optional Node comparison.
+
+#[derive(Clone, Copy, Debug)]
+pub enum Kernel {
+    Arithmetic,
+    Allocate,
+    Properties,
+    CljsMap,
+    CljsProtocol,
+}
+
+impl Kernel {
+    pub const ALL: [Self; 5] = [
+        Self::Arithmetic,
+        Self::Allocate,
+        Self::Properties,
+        Self::CljsMap,
+        Self::CljsProtocol,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Arithmetic => "arithmetic",
+            Self::Allocate => "allocate",
+            Self::Properties => "properties",
+            Self::CljsMap => "cljs_map",
+            Self::CljsProtocol => "cljs_protocol",
+        }
+    }
+
+    /// Iteration = arithmetic/property loop body, one pair of 1000-element
+    /// lists, or one complete emitted corpus program (16 map/protocol steps).
+    pub fn iterations(self, quick: bool) -> u64 {
+        match (self, quick) {
+            (Self::Arithmetic, false) => 400_000,
+            (Self::Properties, false) => 40_000,
+            (Self::Arithmetic | Self::Properties, true) => 4_000,
+            (Self::Allocate, false) => 40,
+            (Self::Allocate, true) => 2,
+            (Self::CljsMap | Self::CljsProtocol, false) => 40,
+            (Self::CljsMap | Self::CljsProtocol, true) => 2,
+        }
+    }
+
+    pub fn expected(self, n: u64) -> f64 {
+        match self {
+            Self::Arithmetic => (n / 7 * 21 + (0..n % 7).sum::<u64>()) as f64,
+            Self::Allocate => (n * 1000) as f64,
+            Self::Properties => (n * (n + 3)) as f64,
+            Self::CljsMap => (n * 240) as f64,
+            Self::CljsProtocol => (n * 120) as f64,
+        }
+    }
+
+    pub fn source(self) -> String {
+        match self {
+            Self::Arithmetic => r#"function kernel(n) {
+                let i = 0; let s = 0;
+                while (i < n) { s = s + i % 7; i = i + 1; }
+                return s;
+            }"#.into(),
+            Self::Allocate => r#"function kernel(n) {
+                function Cons(first, rest) { this.first = first; this.rest = rest; }
+                function cons(x, xs) { return new Cons(x, xs); }
+                function count(xs) { let n = 0; while (xs !== null) { n = n + 1; xs = xs.rest; } return n; }
+                function mapList(f, xs) { if (xs === null) return null; return cons(f(xs.first), mapList(f, xs.rest)); }
+                let total = 0;
+                for (let r = 0; r < n; r = r + 1) {
+                    let xs = null;
+                    for (let i = 0; i < 1000; i = i + 1) xs = cons(i, xs);
+                    const ys = mapList(function (x) { return x + r; }, xs);
+                    total = total + count(ys);
+                }
+                return total;
+            }"#.into(),
+            Self::Properties => r#"function kernel(n) {
+                const a = {x: 0, y: 1};
+                const b = {y: 2, x: 0, z: 3};
+                let total = 0;
+                for (let i = 0; i < n; i++) {
+                    a.x = i; b.x = a.x + a.y;
+                    a.y = b.y - 1;
+                    total += a.x + b.x + b.z;
+                }
+                return total;
+            }"#.into(),
+            Self::CljsMap | Self::CljsProtocol => {
+                let program = match self {
+                    Self::CljsMap => include_str!("../../tests/fixtures/light-cljs/map.js"),
+                    _ => include_str!("../../tests/fixtures/light-cljs/protocol.js"),
+                };
+                // Preserve the emitted program verbatim except for hoisting its
+                // runtime factory once per task. Mutable JS state is task-local;
+                // every worker shares the executable and the Rust Runtime only.
+                let declaration = "const rt = /* LIGHT_CLJS_RUNTIME */;";
+                assert_eq!(program.matches(declaration).count(), 1);
+                let body = program.replacen(declaration, "", 1);
+                format!(
+                    "function kernel(n) {{ const rt = {}; let total = 0; \
+                     for (let r = 0; r < n; r++) {{ total += {}; }} return total; }}",
+                    include_str!("../../tests/fixtures/light-cljs/runtime.js"),
+                    body.trim(),
+                )
+            }
+        }
+    }
+}
+
+pub struct KernelRun {
+    pub elapsed: Duration,
+    pub tasks: usize,
+    pub iterations: u64,
+}
+
+/// One shared Runtime and executable; each registered OS thread spawns and
+/// runs its own tasks. Barriers exclude thread creation/registration and input
+/// rooting from wall time. Spawning, execution, checking and dropping each
+/// task/result are included; collection and Runtime destruction are excluded.
+/// No collection runs between tasks, matching the original strategy probe.
+pub fn kernel_run(
+    code: &Executable,
+    kernel: Kernel,
+    workers: usize,
+    tasks_per_worker: usize,
+    iterations: u64,
+) -> KernelRun {
+    assert!(workers > 0 && tasks_per_worker > 0);
+    let rt = Runtime::new();
+    let barrier = std::sync::Barrier::new(workers + 1);
+    let elapsed = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                let rt = &rt;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let _registration = rt.register_thread();
+                    let n = num(rt, iterations as f64);
+                    barrier.wait();
+                    barrier.wait();
+                    for _ in 0..tasks_per_worker {
+                        let task = rt.spawn(code, &[&n]).expect("kernel spawn");
+                        assert_eq!(
+                            number(&finish(&task)),
+                            kernel.expected(iterations),
+                            "{}",
+                            kernel.name()
+                        );
+                    }
+                })
+            })
+            .collect();
+        barrier.wait();
+        let start = Instant::now();
+        barrier.wait();
+        for handle in handles {
+            handle.join().expect("kernel worker");
+        }
+        start.elapsed()
+    });
+    KernelRun {
+        elapsed,
+        tasks: workers * tasks_per_worker,
+        iterations,
+    }
 }

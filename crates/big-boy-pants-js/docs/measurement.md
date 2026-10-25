@@ -1,7 +1,8 @@
 # Measurement and command verification
 
-These measurements describe this standalone runtime only. There is no matched
-comparison with QuickJS, V8 or the unavailable compiler. The source-driven
+These measurements describe the engine package. Compiler-shaped kernels below
+include an optional Node jitless reference; historical standalone rows do not
+compare against other engines or the compiler. The source-driven
 architectural proofs and their limitations are mapped in
 [architecture.md](architecture.md#requirement-map).
 
@@ -28,6 +29,60 @@ The full invocation runs every row group; quick uses smaller sizes. The
 `memory` and `strings` selectors isolate those groups. The work selector above
 uses four executor workers and nine measured rounds; tests still use three
 test threads. The benchmark owns its default target output only.
+
+## Compiler-shaped kernel baseline (2026-10-25)
+
+Run from this crate directory (or add `-p big-boy-pants-js` from the repository
+root):
+
+```sh
+cargo run --locked --release --example bench -- scaling
+cargo run --locked --release --example bench -- kernels
+bb scripts/kernels.bb
+bb scripts/kernels.bb kernels --quick --rounds 3
+```
+
+`kernels` selects single-thread ns/iteration; `scaling` selects 1, 2, 4 and 8
+registered OS threads. Both select the same five sources. `--quick` reduces
+sizes, and `--rounds N` changes the number of measured rounds. The default is
+one discarded warmup and five measured rounds, each with a fresh `Runtime`.
+Compilation, Runtime construction, thread creation/registration, and numeric
+argument rooting happen before the timer. The start barrier releases all
+workers together. Each worker spawns and runs four tasks to completion using
+one shared executable and Runtime. Spawn/run, result assertions, task/result
+drop and worker joins are timed. Runtime destruction and collection are not;
+there is no collection between tasks, matching the strategy's original probe.
+The result is aggregate iterations/s and wall ns per aggregate iteration;
+speedup is the one-thread median ns divided by the row median ns. Spreads are
+min..max of measured rounds, not confidence intervals. Work per thread stays
+constant, so total work and retained garbage grow with thread count.
+
+The arithmetic loop touches only VM locals (task startup still allocates).
+`allocate` is the strategy's exact cons/map/count body, with list length 1000;
+one iteration builds and maps one list, using constructor objects, a captured
+closure and recursion. `properties` repeatedly reads/writes two object shapes.
+Their full task sizes are 400,000 loop bodies, 40 list pairs, and 40,000 loop
+bodies respectively. The `cljs_map` and `cljs_protocol` rows each repeat the
+checked emitted `tests/fixtures/light-cljs/{map,protocol}.js` program 40 times
+per task. Each iteration performs the corpus's 16 assoc/reduce steps or 16
+protocol calls/Box allocations. Only the runtime declaration is hoisted once
+per task; emitted expressions, namespace setup, protocol registration and
+expected totals remain unchanged. Runtime factory initialization is included
+once per task. These are real-output kernels, not warmed macro sessions;
+their iteration units differ from the synthetic loops and from one another.
+No mutable JavaScript runtime object is shared between tasks.
+
+The Babashka script works from any directory and runs the release bench. If
+`node` is on PATH it asks the bench for `--node-kernels`, which emits the exact
+same source, sizes and expected results, then runs it under `node --jitless`.
+It prints a reference column and engine/Node ratio for the one-thread rows.
+Node uses the same warmup, measured rounds and four calls per round; parsing
+and process startup are outside its timer. Node's GC policy and lack of engine
+task bookkeeping differ, so this is an end-to-end kernel reference rather
+than an isolated opcode comparison. Node is optional and never invoked by
+Rust tests. Small correctness instances run all five kernels with 1/2/4/8
+threads in `tests/measurement.rs`; neither tests nor scripts impose a speed
+threshold.
 
 ## Method and limits of the measurements
 

@@ -8,7 +8,8 @@
 //! ```
 //!
 //! Row groups (positional filters; default all): `startup`, `reads`,
-//! `park`, `persistent`, `memory`, `work`, `overhead`, `strings`. The workloads and
+//! `park`, `persistent`, `memory`, `work`, `overhead`, `strings`, `kernels`,
+//! `scaling`. The workloads and
 //! what each measures are in `workloads.rs`; how to read the output, and
 //! representative results with their environment, are in
 //! `docs/measurement.md`.
@@ -119,9 +120,12 @@ struct Options {
     rounds: usize,
     workers: usize,
     groups: Vec<String>,
+    node_kernels: bool,
 }
 
-const GROUPS: [&str; 8] = [
+const GROUPS: [&str; 10] = [
+    "kernels",
+    "scaling",
     "startup",
     "reads",
     "park",
@@ -135,6 +139,7 @@ const GROUPS: [&str; 8] = [
 fn options() -> Result<Options, String> {
     let mut o = Options {
         quick: false,
+        node_kernels: false,
         rounds: 0,
         workers: 2,
         groups: Vec::new(),
@@ -148,6 +153,7 @@ fn options() -> Result<Options, String> {
                 .ok_or(format!("{name} needs a positive integer"))
         };
         match a.as_str() {
+            "--node-kernels" => o.node_kernels = true,
             "--quick" => o.quick = true,
             "--rounds" => o.rounds = value("--rounds")?,
             "--workers" => o.workers = value("--workers")?,
@@ -155,7 +161,7 @@ fn options() -> Result<Options, String> {
             other => {
                 return Err(format!(
                     "unknown argument {other:?}; usage: bench [--quick] [--rounds N] \
-                     [--workers N] [{}]...",
+                     [--workers N] [--node-kernels] [{}]...",
                     GROUPS.join("|")
                 ));
             }
@@ -186,10 +192,21 @@ fn proc_field(path: &str, key: &str) -> Option<String> {
         .map(|(_, v)| v.trim().to_string())
 }
 
+fn sysctl(key: &str) -> Option<String> {
+    let output = std::process::Command::new("sysctl")
+        .args(["-n", key])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 fn load_average() -> String {
     std::fs::read_to_string("/proc/loadavg")
         .map(|s| s.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
-        .unwrap_or_else(|_| "n/a".into())
+        .unwrap_or_else(|_| sysctl("vm.loadavg").unwrap_or_else(|| "n/a".into()))
 }
 
 fn rss() -> String {
@@ -217,7 +234,9 @@ fn environment(o: &Options) {
         std::env::consts::OS,
         std::env::consts::ARCH,
         std::thread::available_parallelism().map_or(0, |n| n.get()),
-        proc_field("/proc/cpuinfo", "model name").unwrap_or_else(|| "n/a".into()),
+        proc_field("/proc/cpuinfo", "model name")
+            .or_else(|| sysctl("machdep.cpu.brand_string"))
+            .unwrap_or_else(|| "n/a".into()),
     );
     println!(
         "  mode: {}; rounds: 1 warmup + {} measured per row; executor workers: {}",
@@ -656,7 +675,14 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if o.node_kernels {
+        node_kernels(&o);
+        return ExitCode::SUCCESS;
+    }
     environment(&o);
+    if o.wants("kernels") || o.wants("scaling") {
+        kernels(&o);
+    }
     let fx = Fixtures::compile();
     if o.wants("strings") {
         strings(&o);
@@ -709,5 +735,72 @@ fn strings(o: &Options) {
                 row(&format!("strings.{stage}"), &param, times, "ns/unit");
             }
         }
+    }
+}
+
+fn kernels(o: &Options) {
+    header("compiler-shaped kernels: spawn + run, one Runtime and executable per round");
+    println!("  throughput is aggregate iterations/s; speedup is relative to the 1-thread median");
+    for kernel in workloads::Kernel::ALL {
+        let code = big_boy_pants_js::frontend::compile_function(&kernel.source()).unwrap();
+        let n = kernel.iterations(o.quick);
+        let threads: &[usize] = if o.wants("scaling") {
+            &[1, 2, 4, 8]
+        } else {
+            &[1]
+        };
+        let mut baseline = 0.0;
+        for &workers in threads {
+            let rs = rounds(o, || workloads::kernel_run(&code, kernel, workers, 4, n));
+            let ns = col(&rs, |r| per(r.elapsed, r.tasks as u64 * r.iterations));
+            let (median, min, max) = summary(ns);
+            if workers == 1 {
+                baseline = median;
+            }
+            println!(
+                "  kernels.{:<16} threads={workers} n={n:<6} tasks={:<2} {median:.1} [{min:.1} .. {max:.1}] ns/iteration; {:.1} iter/s; {:.3}x",
+                kernel.name(),
+                workers * 4,
+                1e9 / median,
+                baseline / median,
+            );
+        }
+    }
+}
+
+/// Emit the exact same sources and sizes for scripts/kernels.bb. Node performs
+/// one discarded warmup and the same measured rounds/tasks, without process
+/// startup or parsing in its timer. No Node executable is needed by Rust tests.
+fn node_kernels(o: &Options) {
+    println!("const rounds = {}; const tasks = 4;", o.rounds);
+    println!(
+        r#"
+function measure(name, kernel, n, expected) {{
+    const samples = [];
+    for (let round = -1; round < rounds; round++) {{
+        const start = process.hrtime.bigint();
+        for (let t = 0; t < tasks; t++) {{
+            const actual = kernel(n);
+            if (actual !== expected) throw new Error(name + ': ' + actual + ' != ' + expected);
+        }}
+        const elapsed = Number(process.hrtime.bigint() - start) / (tasks * n);
+        if (round >= 0) samples.push(elapsed);
+    }}
+    samples.sort((a, b) => a - b);
+    const mid = Math.floor(samples.length / 2);
+    const median = samples.length % 2 ? samples[mid] : (samples[mid - 1] + samples[mid]) / 2;
+    console.log(name + '\t' + median.toFixed(1) + '\t' + samples[0].toFixed(1) + '..' + samples[samples.length - 1].toFixed(1));
+}}
+"#
+    );
+    for kernel in workloads::Kernel::ALL {
+        let n = kernel.iterations(o.quick);
+        println!(
+            "measure('{}', ({}), {}, {});",
+            kernel.name(),
+            kernel.source(),
+            n,
+            kernel.expected(n)
+        );
     }
 }

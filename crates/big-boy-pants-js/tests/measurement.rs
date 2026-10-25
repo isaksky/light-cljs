@@ -8,7 +8,7 @@
 //! consumers share one input graph and one executable (each parked consumer
 //! adds exactly its own task-owned heap objects, never a copy of the
 //! input), and [`Task::stats`] / [`Runtime::heap_usage`] describe what they
-//! claim. The JavaScript is synthetic (not light-cljs output).
+//! claim. Kernels also cover the real map/protocol emitted corpus programs.
 
 #[path = "../examples/bench/workloads.rs"]
 mod workloads;
@@ -287,4 +287,17 @@ fn heap_usage_matches_heap_stats_and_counts_kinds() {
     let swept = rt.heap_usage();
     assert_eq!(swept.objects.total(), 0);
     assert_eq!((swept.slots, swept.free_slots), (31, 31));
+}
+
+#[test]
+fn compiler_shaped_kernels_check_results_on_shared_runtime_threads() {
+    for kernel in workloads::Kernel::ALL {
+        let code =
+            compile_function(&kernel.source()).unwrap_or_else(|e| panic!("{}: {e}", kernel.name()));
+        for workers in [1, 2, 4, 8] {
+            let run = workloads::kernel_run(&code, kernel, workers, 2, 2);
+            assert_eq!(run.tasks, workers * 2);
+            assert_eq!(run.iterations, 2);
+        }
+    }
 }
