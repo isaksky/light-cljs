@@ -714,6 +714,72 @@ All six doctests and the formatter passed. Strict Clippy retains the nine pre-ex
 `deprecated`, `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`;
 allowing only those categories passes, with no source suppressions.
 
+## Primitive instruction batching (2026-10-25)
+
+light-cljs-474 adds immutable poll/run metadata and a guarded primitive
+dispatcher. Numeric operations avoid generic conversion startup and success-path
+`Fault` results; local/constant copies retain the existing cheap primitive
+payload copies. A run charges completed instructions in batches capped by the
+remaining budget. Branches end batches, backward branches begin at their poll,
+and conversion misses leave operands and pc unchanged for the generic path.
+The direct ordinary-bytecode frame-entry path already delivered by earlier
+work remains in use. No serialized opcode or value ownership format changed.
+See [the execution contract](architecture.md) for the unchanged safepoints and
+cancellation boundaries.
+
+The baseline is **`5059ce9c`**, including 469/470/471/473 and call ownership;
+the measured implementation is **`fb580226`**. Both used the workspace release
+profile (thin LTO, one codegen unit), Homebrew Rust/Cargo **1.99.1**, macOS
+**15.7.3**, Apple M3 Ultra (Virtual), 24 available threads, and Node **26.12.1**.
+No builds, tests or peer benchmarks ran during these timing/profile windows.
+Each binary ran `bench kernels reads --rounds 5`: one discarded warmup and five
+measured rounds, full sizes, four tasks per kernel round, one worker. Node ran
+the exact source emitted by `bench --node-kernels kernels --rounds 5` through
+`node --jitless`, with matching sizes/warmup/rounds. These are one sequential
+before/after pair, not repeated paired trials. Load averages were
+`2.52 2.96 4.05` → `2.23 2.86 3.99` before and
+`2.23 2.86 3.99` → `2.28 2.85 3.97` after.
+
+| Kernel | Before ns/iteration median [min..max] | After ns/iteration median [min..max] | Node jitless median [min..max] | After / Node |
+|---|---:|---:|---:|---:|
+| arithmetic | 333.7 [332.5..335.1] | 88.7 [87.9..89.3] | 9.6 [9.5..9.6] | 9.24x |
+| allocate | 3427026.8 [3409437.2..3512381.0] | 2864674.7 [2853468.5..2894785.2] | 136767.4 [133227.9..139207.3] | 20.95x |
+| properties | 901.5 [898.5..905.5] | 479.9 [478.7..485.0] | 36.4 [34.0..36.9] | 13.18x |
+| cljs_map | 5687601.8 [5674896.6..5712793.0] | 4392302.1 [4354116.7..4484907.8] | 340843.2 [336278.4..352767.2] | 12.89x |
+| cljs_protocol | 660625.0 [653450.0..666082.6] | 599737.8 [574167.7..615270.3] | 38327.9 [36299.5..46473.4] | 15.65x |
+
+The simpler `reads.js_baseline_loop` fell from **302.9 [302.4..305.2]** to
+**65.8 [65.5..66.7] ns/iteration**. `reads.js_need_loop` fell from
+435.8 [434.4..437.8] to 148.4 [147.5..149.4]; the Rust `RunGuard::need` control
+was 53.8 [53.4..55.3] before and 54.7 [53.9..54.9] after.
+
+Separate `bench kernels --rounds 20` runs supplied profiles, excluded from
+the timings above. `sample <pid> 1 1` began at launch during arithmetic;
+`sample <pid> 2 1` began immediately after the arithmetic row during the
+allocation/call-heavy kernel. Worker self samples below subtract immediate
+child counts in the call tree and exclude the waiting main thread. Arithmetic
+had 750 before / 753 after samples; allocation had 1,401 before / 1,389 after.
+Inlining attributes the primitive implementation to `execute_budgeted`.
+
+| Kernel / frame | Before self samples | After self samples |
+|---|---:|---:|
+| arithmetic / `execute_budgeted` | 143 (19.07%) | 613 (81.41%) |
+| arithmetic / `step_instruction` | 118 (15.73%) | 0 |
+| arithmetic / `native::start_conversion` | 110 (14.67%) | 0 |
+| arithmetic / `Fault` drop | 83 (11.07%) | 0 |
+| arithmetic / `fmod` | 73 (9.73%) | 134 (17.80%) |
+| allocate / `execute_budgeted` | 200 (14.28%) | 254 (18.29%) |
+| allocate / `Fault` drop | 97 (6.92%) | 92 (6.62%) |
+| allocate / `memmove` | 49 (3.50%) | 53 (3.82%) |
+| allocate / `enter_constructor` | 42 (3.00%) | 44 (3.17%) |
+| allocate / heap `Directory::slot` | 34 (2.43%) | 44 (3.17%) |
+
+**The 3x target remains missed for every kernel.** The explicit numeric-miss
+fallback is used: these ratios and remaining frames are recorded, and focused
+follow-up **light-cljs-487** investigates guarded fusion to reduce primitive
+operand-stack traffic. It does not claim arithmetic fusion will eliminate the
+remaining call, constructor, property or allocation costs.
+
 ## Method and limits of the measurements
 
 `examples/bench/main.rs` handles timing, a counting allocator and reports;
