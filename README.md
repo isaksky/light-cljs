@@ -4213,3 +4213,61 @@ naming the unsupported trap; revocation is deferred. Proxies remain task-owned.
 
 Checks: `cargo test --test js_source proxy_` and
 `cargo test --lib heap::inventory::proxy_edges_retain_and_reclaim`.
+
+### Semantic corpus audit and malformed-input rejection (clj-quickjs-30)
+
+The source-level corpus is the set of adapted QuickJS fixtures under
+`tests/fixtures/js/quickjs_*.js` plus their Rust drivers; the rejection half is
+`tests/malformed_input.rs`. One command runs both:
+
+```sh
+CARGO_BUILD_JOBS=3 cargo test quickjs -- --test-threads=3 && \
+CARGO_BUILD_JOBS=3 cargo test --test malformed_input -- --test-threads=3
+```
+
+Audit result against `research/quickjs/tests` at `7d1c13c5d8f8` (VERSION
+2026-06-04): every case function of `test_language.js` (29), `test_closure.js`
+(7), `test_loop.js` (19), `test_builtin.js` (23) and `test_bigint.js` (7) was
+compared with the fixtures. 84 of the 85 run through fixtures: 77 already did,
+and `tests/fixtures/js/quickjs_test_language_parsing.js` adds `test_template`,
+`test_template_skip`, `test_regexp_skip`, `test_parse_semicolon`,
+`test_parse_arrow_function`, `test_unicode_ident` and `test_number_literals`
+unmodified in upstream's sloppy mode (`tests/quickjs_language.rs`). The only
+documented adaptations remain `test_using` (immutable intrinsics, user decision
+clj-quickjs-234) and `test_weak_ref` (kept-object timing, clj-quickjs-178);
+`test_cyclic_labels` is compiled but uncalled, as upstream. The one case that
+cannot run unmodified is `test_line_column_numbers`: eval SyntaxErrors carry
+their position in the message instead of the first stack line (filed as
+clj-quickjs-312; the other rows pass individually), and its rows 1131-1134 read
+QuickJS's non-standard function `lineNumber`/`columnNumber`, an intended
+omission. `test_std.js`, `test_worker.js`, `test_rw_handler.js` and
+`test_bjson.js` need the QuickJS shell modules (`std`, `os`, `bjson`) and stay
+outside the corpus beyond the two adapted async cases; `test_intl.js` lines
+1-470 already run (clj-quickjs-226).
+
+Rejection coverage: every line-boundary prefix of five corpus fixtures and
+every character-boundary prefix of a synthetic program either compiles and runs
+for a bounded slice or fails with a SyntaxError positioned inside the source;
+every "Rejected forms" row of `docs/grammar.md`, including the reserved
+`__rt` binding misuses, fails through `compile_script_with` with its documented
+kind; and hand-built bytecode with bad branch/handler targets, truncated
+operands, back-edge or handler-entry stack mismatches, oversized call operands,
+out-of-range capture/local/constant indices or an unmatched run-time handler
+instruction is rejected by the validator or fails the task with `Internal`,
+never with a panic.
+
+Gaps found by the audit are filed as pellets, not fixed here: private names
+(clj-quickjs-291), static blocks (-292), generator `return`/`throw` (-293),
+`new Map(iterable)` (-294), Set/WeakSet (-295), Array.prototype mutators,
+search, callback and copying methods (-296 to -299), String.prototype case/trim/
+repeat/search predicates (-300) and match/matchAll/search with RegExp symbol
+dispatch (-301), Boolean and BigInt wrappers (-302), the plain RegExp `i` flag
+(-303), Script property escapes (-304), v-flag string properties (-305),
+NumberFormat unit style (-306), DateTimeFormat timeZoneName (-307),
+`for await` (-308), built-in subclassing (-309), `Symbol.toPrimitive`
+dispatch, which today silently yields NaN (-310), `Object.prototype.toString`
+tags (-311), eval SyntaxError stacks (-312), async generators (-313), `??` and
+logical assignment (-314), rest parameters/object spread/destructuring loop
+heads (-315), numeric separators (-316), Promise combinators (-317), Object
+statics (-318), the remaining Math functions (-319), Reflect methods (-320) and
+module default exports (-321). No engine behaviour changes in this pellet.
