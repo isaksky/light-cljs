@@ -181,6 +181,70 @@ fn promise_private_elements_remain_task_owned_after_publication() {
 }
 
 #[test]
+fn promise_private_storage_claims_respect_existing_ownership() {
+    for (source, can_stamp) in [
+        ("new Promise(() => {});", true),
+        ("class P extends Promise {} new P(() => {});", false),
+    ] {
+        let runtime = Runtime::new();
+        let code = compile_script("unstamped-promise.js", source).unwrap();
+        let RunOutcome::Complete(promise) = runtime.spawn(&code, &[]).unwrap().run().unwrap()
+        else {
+            panic!("expected Promise");
+        };
+        runtime.publish(&promise).unwrap();
+        let stamp = clj_quickjs::frontend::compile_function(
+            r#"function stamp(p) {
+                class B { constructor() { return p; } }
+                class C extends B {
+                    #x = {value: 11};
+                    static read(o) { return o.#x.value; }
+                    static has(o) { return #x in o; }
+                    static operations() { return __rt.vector(
+                        o => #x in o, o => o.#x, o => { o.#x = 2; }); }
+                }
+                let absent = false;
+                try { absent = !C.has(p); } catch(e) {
+                    if (!(e instanceof TypeError)) return false;
+                }
+                try { new C(); } catch(e) { return e instanceof TypeError && !absent; }
+                return __rt.vector(p, C.operations(), absent && C.has(p) && C.read(p) === 11);
+            }"#,
+        )
+        .unwrap();
+        let RunOutcome::Complete(result) =
+            runtime.spawn(&stamp, &[&promise]).unwrap().run().unwrap()
+        else {
+            panic!("expected stamping result: {source}");
+        };
+        if !can_stamp {
+            assert_eq!(result.view(), ValueView::Bool(true));
+            continue;
+        }
+        runtime.publish(&result).unwrap();
+        runtime.collect().unwrap();
+        let foreign = clj_quickjs::frontend::compile_function(
+            r#"function foreign(pair) {
+                let p = __rt.nth(pair, 0), operations = __rt.nth(pair, 1), caught = 0;
+                for (let i = 0; i < 3; i++) {
+                    try { __rt.nth(operations, i)(p); }
+                    catch(e) { if(e instanceof TypeError) caught++; }
+                }
+                class B { constructor() { return p; } }
+                class Stamp extends B { #foreign = 3; }
+                try { new Stamp(); } catch(e) { if(e instanceof TypeError) caught++; }
+                return __rt.nth(pair, 2) && caught === 4;
+            }"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(runtime.spawn(&foreign, &[&result]).unwrap().run().unwrap(),
+                RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+        );
+    }
+}
+
+#[test]
 fn derived_promise_own_properties_follow_ordinary_object_rules() {
     check(
         r#"
