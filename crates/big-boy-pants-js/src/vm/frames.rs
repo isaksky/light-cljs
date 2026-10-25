@@ -710,6 +710,92 @@ impl VmState {
         self.stack.get(self.top().floor()..).unwrap_or(&[])
     }
 
+    #[inline]
+    fn fusion_number(&self, code: &Code, source: super::dispatch::NumberSource) -> Option<f64> {
+        use super::dispatch::NumberSource;
+        let value = match source {
+            NumberSource::Local(i) if i < code.locals => {
+                self.stack.get(self.top().base + usize::from(i))?
+            }
+            NumberSource::Constant(i) => code.constants.get(usize::from(i))?,
+            _ => return None,
+        };
+        match value {
+            Value::Number(number) => Some(*number),
+            _ => None,
+        }
+    }
+
+    /// Execute only a completely guarded expression. Nothing can allocate,
+    /// call, poll, throw or yield between these numeric reads and the commit;
+    /// heap references remain in traced task storage throughout. Misses leave
+    /// pc, locals and operands untouched for the original instruction stream.
+    #[inline]
+    pub(crate) fn fused_primitive_step(
+        &mut self,
+        code: &Code,
+        fusion: &super::dispatch::PrimitiveFusion,
+    ) -> bool {
+        use super::dispatch::FusionOutput;
+        use super::instr::Instr;
+        #[inline]
+        fn arithmetic(op: Instr, a: f64, b: f64) -> f64 {
+            match op {
+                Instr::Add | Instr::Plus => a + b,
+                Instr::Sub => a - b,
+                Instr::Mul => a * b,
+                Instr::Div => a / b,
+                Instr::Rem => a % b,
+                _ => unreachable!("validated fused arithmetic"),
+            }
+        }
+        let Some(mut a) = self.fusion_number(code, fusion.left) else {
+            return false;
+        };
+        let Some(mut b) = self.fusion_number(code, fusion.right) else {
+            return false;
+        };
+        let mut op = fusion.op;
+        if let Some((source, outer)) = fusion.outer {
+            let Some(first) = self.fusion_number(code, source) else {
+                return false;
+            };
+            b = arithmetic(op, a, b);
+            a = first;
+            op = outer;
+        }
+        if let FusionOutput::Store(i, _) = fusion.output
+            && (i >= code.locals || self.top().base + usize::from(i) >= self.top().floor())
+        {
+            return false;
+        }
+        let value = match op {
+            Instr::Lt | Instr::CompareLt => Value::Bool(a < b),
+            Instr::Gt | Instr::CompareGt => Value::Bool(a > b),
+            Instr::Le | Instr::CompareLe => Value::Bool(a <= b),
+            Instr::Ge | Instr::CompareGe => Value::Bool(a >= b),
+            _ => Value::Number(arithmetic(op, a, b)),
+        };
+        let next = self.top().pc + fusion.len as usize;
+        match fusion.output {
+            FusionOutput::Push => self.push(value),
+            FusionOutput::Store(i, keep) => {
+                let at = self.top().base + usize::from(i);
+                if keep {
+                    self.push(value.clone());
+                }
+                self.stack[at] = value;
+            }
+            FusionOutput::Branch(target) if !value.truthy() => {
+                self.top_mut().pc = target as usize;
+                return true;
+            }
+            FusionOutput::Branch(_) => {}
+        }
+        self.top_mut().pc = next;
+        true
+    }
+
     /// Primitive dispatch without a `Result<_, Fault>` temporary. A miss
     /// changes nothing, so the ordinary instruction path can diagnose it or
     /// perform JavaScript conversion. All indexing remains checked.

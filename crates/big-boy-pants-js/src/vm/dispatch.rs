@@ -3295,6 +3295,116 @@ fn polls(instr: Instr, pc: usize) -> bool {
 pub(crate) struct InstructionInfo {
     poll: bool,
     primitive_run: u32,
+    fusion: Option<Box<PrimitiveFusion>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NumberSource {
+    Local(u16),
+    Constant(u16),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FusionOutput {
+    Push,
+    Store(u16, bool),
+    Branch(u32),
+}
+
+/// A small numeric expression and its optional assignment/branch. This is
+/// derived metadata, never a serialized opcode. All inputs must be Numbers
+/// before any state is changed. A short slice uses the original instructions.
+#[derive(Debug)]
+pub(crate) struct PrimitiveFusion {
+    pub(crate) left: NumberSource,
+    pub(crate) right: NumberSource,
+    pub(crate) op: Instr,
+    pub(crate) outer: Option<(NumberSource, Instr)>,
+    pub(crate) output: FusionOutput,
+    pub(crate) len: u32,
+}
+
+fn number_source(instr: Instr) -> Option<NumberSource> {
+    match instr {
+        Instr::GetLocal(i) => Some(NumberSource::Local(i)),
+        Instr::Const(i) => Some(NumberSource::Constant(i)),
+        _ => None,
+    }
+}
+
+fn numeric_operator(instrs: &[Instr], pc: &mut usize, arithmetic_only: bool) -> Option<Instr> {
+    if matches!(instrs.get(*pc), Some(Instr::ToNumberPair)) {
+        *pc += 1;
+    }
+    let op = *instrs.get(*pc)?;
+    match op {
+        Instr::Add | Instr::Plus | Instr::Sub | Instr::Mul | Instr::Div | Instr::Rem => {}
+        Instr::Lt
+        | Instr::Gt
+        | Instr::Le
+        | Instr::Ge
+        | Instr::CompareLt
+        | Instr::CompareGt
+        | Instr::CompareLe
+        | Instr::CompareGe
+            if !arithmetic_only => {}
+        _ => return None,
+    }
+    *pc += 1;
+    Some(op)
+}
+
+fn primitive_fusion(instrs: &[Instr], start: usize, run: u32) -> Option<PrimitiveFusion> {
+    let first = number_source(*instrs.get(start)?)?;
+    let second = number_source(*instrs.get(start + 1)?)?;
+    let mut pc = start + 2;
+    // Also cover a + b % c, the common accumulator shape, without tagging
+    // the intermediate number. Limit recognition to two binary operations.
+    let (left, right, op, outer) =
+        if let Some(third) = instrs.get(pc).copied().and_then(number_source) {
+            pc += 1;
+            let inner = numeric_operator(instrs, &mut pc, true)?;
+            let outer = numeric_operator(instrs, &mut pc, false)?;
+            (second, third, inner, Some((first, outer)))
+        } else {
+            (
+                first,
+                second,
+                numeric_operator(instrs, &mut pc, false)?,
+                None,
+            )
+        };
+    let mut output = FusionOutput::Push;
+    match instrs.get(pc..) {
+        Some([Instr::Dup, Instr::SetLocal(local), Instr::Pop, ..]) => {
+            output = FusionOutput::Store(*local, false);
+            pc += 3;
+        }
+        Some([Instr::Dup, Instr::SetLocal(local), ..]) => {
+            output = FusionOutput::Store(*local, true);
+            pc += 2;
+        }
+        Some([Instr::SetLocal(local), ..]) => {
+            output = FusionOutput::Store(*local, false);
+            pc += 1;
+        }
+        Some([Instr::JumpIfFalse(target), ..]) if !polls(instrs[pc], pc) => {
+            output = FusionOutput::Branch(*target);
+            pc += 1;
+        }
+        _ => {}
+    }
+    let len = u32::try_from(pc - start).ok()?;
+    // Primitive runs end before every interior poll or branch. In particular,
+    // a backward conditional branch stays outside the fused expression.
+    (len <= run).then_some(PrimitiveFusion {
+        left,
+        right,
+        op,
+        outer,
+        output,
+        len,
+    })
 }
 
 pub(crate) fn instruction_info(instrs: &[Instr]) -> Box<[InstructionInfo]> {
@@ -3304,6 +3414,7 @@ pub(crate) fn instruction_info(instrs: &[Instr]) -> Box<[InstructionInfo]> {
         .map(|(pc, &instr)| InstructionInfo {
             poll: polls(instr, pc),
             primitive_run: 0,
+            fusion: None,
         })
         .collect();
     for pc in (0..instrs.len()).rev() {
@@ -3350,6 +3461,9 @@ pub(crate) fn instruction_info(instrs: &[Instr]) -> Box<[InstructionInfo]> {
             };
             info[pc].primitive_run = following.saturating_add(1);
         }
+    }
+    for (pc, item) in info.iter_mut().enumerate() {
+        item.fusion = primitive_fusion(instrs, pc, item.primitive_run).map(Box::new);
     }
     info.into_boxed_slice()
 }
@@ -3456,6 +3570,13 @@ pub(crate) fn execute_budgeted(
                 let count = u64::from(info.primitive_run).min(budget.unwrap_or(u64::MAX));
                 let mut executed = 0;
                 while executed < count {
+                    if let Some(fusion) = code.instruction_info[state.top().pc].fusion.as_deref()
+                        && u64::from(fusion.len) <= count - executed
+                        && state.fused_primitive_step(&code, fusion)
+                    {
+                        executed += u64::from(fusion.len);
+                        continue;
+                    }
                     let Some(&instr) = code.instrs.get(state.top().pc) else {
                         break;
                     };
@@ -3600,6 +3721,16 @@ mod tests {
         VmState::new(&code.0, &[], diag, VmLimits::DEFAULT)
     }
 
+    fn disable_primitive_dispatch(code: &mut Arc<Code>) {
+        let code = Arc::get_mut(code).unwrap();
+        for info in &mut code.instruction_info {
+            info.primitive_run = 0;
+        }
+        for child in &mut code.functions {
+            disable_primitive_dispatch(child);
+        }
+    }
+
     #[test]
     fn primitive_batches_preserve_every_budget_prefix() {
         // Compare each possible short run against the generic instruction
@@ -3608,23 +3739,29 @@ mod tests {
         // exact remaining budget, not just the final program result.
         for source in [
             "function f() { let i = 0, s = 0; while (i < 7) { s = s + i % 3; i++; } return s; }",
+            "function f() { let i = 0, s = 0; while (i < 7) { s = s + i % 3; i = i + 1; } return s; }",
             "function f() { let x = -0; x = x / 0; return !(x <= 1) && !(x >= 1) && x !== x; }",
             "function f() { let x = '2'; x = x + 1; x = x - 1; return x * 2; }",
             "function f() { let x = 3n; x++; return x + 2n; }",
             "function f() { let x = true; return +x + (null - 1) + ('4' / 2); }",
+            "function f() { let x = {valueOf() { return 3; }}; let y = 2; x = x + y; if (x < y) return 0; return x; }",
+            "function f() { let x = {valueOf() { throw 9; }}; let y = 2; try { x = x + y; } catch (e) { return e; } }",
+            "function f() { let a = 'x', b = 3, c = 2; return a + b % c; }",
+            "function f() { let a = 1n, b = 3, c = 2; try { return a + b % c; } catch (e) { return 7; } }",
         ] {
             let fast = crate::frontend::compile_function(source).unwrap();
             let mut generic = crate::frontend::compile_function(source).unwrap();
-            for info in &mut Arc::get_mut(&mut generic.0).unwrap().instruction_info {
-                info.primitive_run = 0;
-            }
-            for limit in 0..256 {
+            disable_primitive_dispatch(&mut generic.0);
+            let mut completed = false;
+            for limit in 0..2048 {
                 let mut a = state(&fast, 1);
                 let mut b = state(&generic, 1);
+                let heap_a = Heap::default();
+                let heap_b = Heap::default();
                 let mut left_a = Some(limit);
                 let mut left_b = Some(limit);
-                let exit_a = execute_budgeted(&mut a, &Heap::default(), &mut NoHost, &mut left_a);
-                let exit_b = execute_budgeted(&mut b, &Heap::default(), &mut NoHost, &mut left_b);
+                let exit_a = execute_budgeted(&mut a, &heap_a, &mut NoHost, &mut left_a);
+                let exit_b = execute_budgeted(&mut b, &heap_b, &mut NoHost, &mut left_b);
                 assert_eq!(
                     format!("{exit_a:?}"),
                     format!("{exit_b:?}"),
@@ -3632,15 +3769,119 @@ mod tests {
                 );
                 assert_eq!(left_a, left_b, "{source}, budget {limit}");
                 if !matches!(exit_a, Exit::Yield) {
+                    completed = true;
                     break;
                 }
                 assert_eq!(a.top().pc, b.top().pc, "{source}, budget {limit}");
                 assert_eq!(format!("{:?}", a.operands()), format!("{:?}", b.operands()));
-                for local in 0..fast.0.locals {
+                assert_eq!(a.depth(), b.depth());
+                assert_eq!(a.top().code.locals, b.top().code.locals);
+                for local in 0..a.top().code.locals {
                     assert_eq!(
                         format!("{:?}", a.local(local).ok().unwrap()),
                         format!("{:?}", b.local(local).ok().unwrap())
                     );
+                }
+                // Resume after each possible interior cut, with enough budget
+                // to take remaining fusions. Conversion/native continuations
+                // and saved instruction positions must still agree.
+                let mut resume_a = None;
+                let mut resume_b = None;
+                assert_eq!(
+                    format!(
+                        "{:?}",
+                        execute_budgeted(&mut a, &heap_a, &mut NoHost, &mut resume_a)
+                    ),
+                    format!(
+                        "{:?}",
+                        execute_budgeted(&mut b, &heap_b, &mut NoHost, &mut resume_b)
+                    ),
+                    "{source}, resume after {limit}"
+                );
+            }
+            assert!(completed, "fixture exceeded prefix bound: {source}");
+        }
+    }
+
+    #[test]
+    fn primitive_fusion_numeric_edges_and_short_slices() {
+        let values = [
+            -0.0,
+            0.0,
+            1.0,
+            -1.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            9007199254740991.0,
+        ];
+        for expression in [
+            "a + b",
+            "a - b",
+            "a * b",
+            "a / b",
+            "a % b",
+            "a + b % a",
+            "a < b",
+            "a > b",
+            "a <= b",
+            "a >= b",
+        ] {
+            let source = format!(
+                "function f(a, b) {{ let x = {expression}; if (a < b) {{ x = x; }} return x; }}"
+            );
+            let fast = crate::frontend::compile_function(&source).unwrap();
+            assert!(
+                fast.0
+                    .instruction_info
+                    .iter()
+                    .any(|info| info.fusion.is_some())
+            );
+            let mut generic = Executable::load(fast.to_spec()).unwrap();
+            disable_primitive_dispatch(&mut generic.0);
+            for a in values {
+                for b in values {
+                    // Includes every interior prefix and repeated resumption
+                    // at lengths smaller than, equal to and larger than a fusion.
+                    for slice in 1..=fast.instruction_count() as u64 + 1 {
+                        let mut x = state(&fast, 1);
+                        let mut y = state(&generic, 1);
+                        let heap_a = Heap::default();
+                        let heap_b = Heap::default();
+                        for state in [&mut x, &mut y] {
+                            *state.local(0).ok().unwrap() = Value::Number(a);
+                            *state.local(1).ok().unwrap() = Value::Number(b);
+                        }
+                        loop {
+                            let mut left_x = Some(slice);
+                            let mut left_y = Some(slice);
+                            let ex = execute_budgeted(&mut x, &heap_a, &mut NoHost, &mut left_x);
+                            let ey = execute_budgeted(&mut y, &heap_b, &mut NoHost, &mut left_y);
+                            assert_eq!(
+                                format!("{ex:?}"),
+                                format!("{ey:?}"),
+                                "{expression}: {a:?}, {b:?}, slice {slice}"
+                            );
+                            assert_eq!(left_x, left_y);
+                            if !matches!(ex, Exit::Yield) {
+                                break;
+                            }
+                            assert_eq!(x.top().pc, y.top().pc);
+                            assert_eq!(
+                                format!("{:?}", x.operands()),
+                                format!("{:?}", y.operands())
+                            );
+                            for local in 0..fast.0.locals {
+                                assert_eq!(
+                                    format!("{:?}", x.local(local).ok().unwrap()),
+                                    format!("{:?}", y.local(local).ok().unwrap())
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
