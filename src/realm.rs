@@ -1435,15 +1435,11 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
     // Append after existing allocations to preserve intrinsic identities.
     date_symbol_intrinsic(&mut b, date_prototype)?;
     typed_array_tag_intrinsic(&mut b, typed_array_prototypes[0])?;
-    for (id, tag) in [
-        (json, "JSON"),
-        (reflect, "Reflect"),
-        (promise_prototype, "Promise"),
-        (bigint_prototype, "BigInt"),
-        (array_buffer_prototype, "ArrayBuffer"),
-    ] {
-        b.tag(id, tag)?;
-    }
+    b.tag(json, "JSON")?;
+    b.tag(reflect, "Reflect")?;
+    b.tag(promise_prototype, "Promise")?;
+    b.tag(bigint_prototype, "BigInt")?;
+    b.tag(array_buffer_prototype, "ArrayBuffer")?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -2327,13 +2323,17 @@ impl Build<'_> {
 // temporaries off the cold realm builder on small workers.
 #[inline(never)]
 fn typed_array_tag_intrinsic(b: &mut Build<'_>, prototype: ObjectId) -> Option<()> {
-    let heap = b.heap;
+    let getter = b.function(Builtin::TypedArrayToStringTag, &[])?;
+    define_typed_array_tag(b.heap, prototype, getter)
+}
+
+#[inline(never)]
+fn define_typed_array_tag(heap: &Heap, prototype: ObjectId, getter: ObjectId) -> Option<()> {
     let shared = heap.read(prototype, |object| match object {
         HeapObject::Plain(o) => o.prototype(),
         _ => None,
     })??;
     // Unbranded receivers return undefined; instances report their element kind.
-    let getter = b.function(Builtin::TypedArrayToStringTag, &[])?;
     let key = heap
         .keys()
         .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
