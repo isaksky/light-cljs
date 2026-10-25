@@ -54,6 +54,18 @@ fn object_statics_enumeration_and_assignment() {
 }
 
 #[test]
+fn object_assign_exotic_targets() {
+    for source in [
+        "let n=0, t={a:0}, p=new Proxy(t,{getOwnPropertyDescriptor(t,k){n++;return {value:t[k],writable:true,enumerable:true,configurable:true};}}); Object.assign(p,{a:7})===p && t.a===7 && n===1",
+        "let n=0, t=new Int32Array(1); Object.assign(t,{'0':{valueOf(){n++;return 7;}}})===t && t[0]===7 && n===1",
+        "let t={}; Object.defineProperty(t,'a',{value:0}); let p=new Proxy(t,{}), ok=false; try{Object.assign(p,{a:7});}catch(e){ok=e instanceof TypeError;} ok && t.a===0",
+        "let n=0, t={}, p=new Proxy(t,{set(){n++;return true;}}), ok=false; try{Object.assign(p,{a:7});}catch(e){ok=e instanceof TypeError && e.message.indexOf('set')>=0;} ok && n===0 && !('a' in t)",
+    ] {
+        check(source);
+    }
+}
+
+#[test]
 fn object_statics_from_entries_and_iterator_close() {
     for source in [
         "let s=Symbol(), o=Object.fromEntries(new Set([['a',1],[s,2],['a',3],['__proto__',7]])); o.a===3 && o[s]===2 && o.__proto__===7 && Object.getPrototypeOf(o)===Object.prototype && Object.getOwnPropertyDescriptor(o,'a').writable",

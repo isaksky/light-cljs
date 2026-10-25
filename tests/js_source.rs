@@ -795,6 +795,7 @@ fn derived_classes() {
 #[test]
 fn super_property_access() {
     for source in [
+        "let k={[Symbol.toPrimitive](){return 'x';},toString(){return 'y';}}; let p={get x(){return this.a;},set x(v){this.a=v;},get y(){return this.b;},set y(v){this.b=v;}}; let o={__proto__:p,m(){super[k]=7;return super[k];}}; o.m()===7 && o.a===7 && o.b===undefined",
         "class C { f() { return 1; } static F() { return -1; } } class D extends C { h() { return super.f(); } static H() { return super['F'](); } } let o = new D(); o.h() === 1 && D.H() === -1",
         "let p = {x: 1, m() { return this.y; }}; let o = {__proto__: p, y: 2, f() { return super.x + super.m(); }, g() { return super['x'] + super['m'](); }}; o.f() === 3 && o.g() === 3",
         "let p = {get x() { return this; }, set z(v) { this.y = v; }}; let o = {__proto__: p, get x() { return super.x; }, set z(v) { super.z = v; }}; o.z = 5; o.x === o && o.y === 5 && p.y === undefined",
@@ -829,6 +830,12 @@ fn super_property_access() {
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
+    assert_eq!(
+        sloppy_eval(
+            "let k={[Symbol.toPrimitive](){return 'x';},toString(){return 'y';}}; let p={get x(){return this.a;},set x(v){this.a=v;}}; let o={__proto__:p,m(){super[k]=7;return super[k];}}; o.m()===7 && o.a===7"
+        ),
+        ValueView::Bool(true)
+    );
     assert_eq!(
         sloppy_eval(
             "let p = {}; Object.defineProperty(p, 'x', {value: 1}); let o = {__proto__: p, m() { super.x = 2; return super.x; }}; o.m() === 1"

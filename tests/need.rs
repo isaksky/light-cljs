@@ -112,6 +112,7 @@ fn logical_assignment_waits_collects_and_migrates() {
 #[test]
 fn super_property_access_waits_collects_and_migrates() {
     for source in [
+        "let n=0; let k={[Symbol.toPrimitive](hint){if(hint!=='string')throw 99; n++; __rt.need(5,3); return 'x';},toString(){throw 98;}}; let p={get x(){return this.a;},set x(v){this.a=v;}}; let o={__proto__:p,m(){super[k]=30;return super[k]+n-2;}}; o.m()",
         "let p = {get x() { return __rt.need(5, 3) + this.y; }}; let o = {__proto__: p, y: 20, m() { return super.x; }}; o.m()",
         "let p = {set x(v) { this.y = __rt.need(5, 3) + v.n; }}; let o = {__proto__: p, m() { let assigned = (super.x = {n: 10}); return this.y + assigned.n; }}; o.m()",
         "let p = {m(v) { return this.y + v; }}; let o = {__proto__: p, y: 20, m() { return super.m(__rt.need(5, 3)); }}; o.m()",
@@ -3147,6 +3148,8 @@ fn array_copy_failure_and_cancellation() {
 #[test]
 fn object_statics_wait_collect_and_migrate() {
     for source in [
+        "let n=0, t={a:0}, p=new Proxy(t,{getOwnPropertyDescriptor(t,k){n++; __rt.effect(1,1); __rt.need(5,3); return {value:t[k],writable:true,enumerable:true,configurable:true};}}); let r=Object.assign(p,{a:7}); if(r!==p)throw 99; t.a+n-1",
+        "let n=0, t=new Int32Array(1); let r=Object.assign(t, {'0':{valueOf(){n++; __rt.effect(1,1); return __rt.need(5,3);}}}); if(r!==t)throw 99; t[0]+n-1",
         "let n=0; let o=Object.assign({}, {get a(){n++; __rt.effect(1,1); return __rt.need(5,3);}}); o.a+n-1",
         "let n=0, t={set a(v){n++; __rt.effect(1,1); this.b=v+__rt.need(5,3);}}; Object.assign(t,{a:0}); t.b+n-1",
         "let n=0; let o=Object.values({get a(){n++; __rt.effect(1,1); return __rt.need(5,3);}}); o[0]+n-1",

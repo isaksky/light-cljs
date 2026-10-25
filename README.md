@@ -4793,7 +4793,7 @@ this runtime's named TypeError policy. Immutable realm intrinsics reject assignm
 arrays and Sets), converts entry keys with string hint while preserving symbols, and
 creates own writable/enumerable/configurable properties. Entry read/key conversion errors
 close the iterator, preserving the original exception; iterator step failures do not close.
-Unary property-key conversion (also used for computed `super` keys) consults
+Property-key conversion for `fromEntries` and computed `super` keys consults
 `Symbol.toPrimitive` before ordinary conversion methods, including resumable lookup/calls.
 `defineProperties` converts every enumerable own descriptor, including symbols, before
 writing any target property, and then applies descriptors in order. Conversion failure

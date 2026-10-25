@@ -844,11 +844,6 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
     let is_frozen = b.function(Builtin::ObjectIsFrozen, &[])?;
     let keys = b.function(Builtin::ObjectKeys, &[])?;
     let get_own_property_names = b.function(Builtin::ObjectGetOwnPropertyNames, &[])?;
-    let assign = b.function(Builtin::ObjectAssign, &[])?;
-    let entries = b.function(Builtin::ObjectEntries, &[])?;
-    let values = b.function(Builtin::ObjectValues, &[])?;
-    let from_entries = b.function(Builtin::ObjectFromEntries, &[])?;
-    let define_properties = b.function(Builtin::ObjectDefineProperties, &[])?;
     let object = b.function(
         Builtin::Object,
         &[
@@ -872,11 +867,6 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
             ("freeze", freeze, PropertyFlags::METHOD),
             ("isFrozen", is_frozen, PropertyFlags::METHOD),
             ("keys", keys, PropertyFlags::METHOD),
-            ("assign", assign, PropertyFlags::METHOD),
-            ("entries", entries, PropertyFlags::METHOD),
-            ("values", values, PropertyFlags::METHOD),
-            ("fromEntries", from_entries, PropertyFlags::METHOD),
-            ("defineProperties", define_properties, PropertyFlags::METHOD),
             (
                 "getOwnPropertyNames",
                 get_own_property_names,
@@ -884,6 +874,7 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
             ),
         ],
     )?;
+    object_statics_intrinsics(&mut b, object)?;
     // `Object.prototype`'s properties; `constructor` is the cycle
     // `Object.prototype.constructor === Object`.
     for (name, value) in [
@@ -1717,6 +1708,23 @@ fn promise_species(b: &mut Build<'_>, constructor: ObjectId) -> Option<()> {
             _ => false,
         })?
         .then_some(())
+}
+
+/// Keep the Object method table's temporaries out of the realm builder's
+/// frame: cold realm initialization also runs on 64 KiB module workers.
+#[inline(never)]
+fn object_statics_intrinsics(b: &mut Build<'_>, object: ObjectId) -> Option<()> {
+    for which in [
+        Builtin::ObjectAssign,
+        Builtin::ObjectEntries,
+        Builtin::ObjectValues,
+        Builtin::ObjectFromEntries,
+        Builtin::ObjectDefineProperties,
+    ] {
+        let function = b.function(which, &[])?;
+        b.add(object, which.name(), function, PropertyFlags::METHOD)?;
+    }
+    Some(())
 }
 
 #[inline(never)]

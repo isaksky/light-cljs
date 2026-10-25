@@ -405,8 +405,8 @@ enum Hint {
     String,
 }
 
-/// Symbol wrappers and unary property-key conversion consult @@toPrimitive
-/// before the ordinary method pair. Other general conversions remain deferred.
+/// Symbol wrappers and property-key conversion for fromEntries/computed super
+/// consult @@toPrimitive first. Other general conversions remain deferred.
 #[derive(Clone, Copy, Debug)]
 enum SymbolMethod {
     Pending,
@@ -4896,12 +4896,15 @@ impl NativeState {
                     }
                     if matches!(symbol_method, SymbolMethod::Pending) {
                         *symbol_method = SymbolMethod::Ordinary;
-                        if matches!(target, ConvertTarget::Instruction(Instr::ToSuperKey))
-                            || matches!(
-                                builtin::wrapper_data(heap, task, receiver)?,
-                                Some(crate::object::PrimitiveData::Symbol(_))
+                        if matches!(
+                            target,
+                            ConvertTarget::Instruction(
+                                Instr::ToSuperKey | Instr::PutSuperElem | Instr::PutSuperElemStrict
                             )
-                        {
+                        ) || matches!(
+                            builtin::wrapper_data(heap, task, receiver)?,
+                            Some(crate::object::PrimitiveData::Symbol(_))
+                        ) {
                             let key = property::Key::Symbol(crate::value::symbol::well_known(
                                 "toPrimitive",
                             ));
