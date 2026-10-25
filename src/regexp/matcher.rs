@@ -7,7 +7,7 @@
 
 use std::{fmt, ops::Range};
 
-use super::case_fold::{SIMPLE_FOLD, canonicalize};
+use super::case_fold::{self, mappings};
 use super::ir::*;
 
 /// Work allowance for one complete search, including all candidate positions,
@@ -118,14 +118,11 @@ fn merge_span(a: CaptureSpan, b: CaptureSpan) -> CaptureSpan {
 }
 
 /// Compile validated parser IR without recursive traversal. Lookbehind
-/// and non-Unicode ignore-case matching are explicitly deferred.
+/// is explicitly deferred.
 /// The public arena is checked for invalid edges/indices before indexing it.
 pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
     let unicode = pattern.flags.unicode || pattern.flags.unicode_sets;
     let max_character = if unicode { 0x10ffff } else { 0xffff };
-    if pattern.flags.ignore_case && !unicode {
-        return Err(MatchError::Unsupported("ignore-case matching"));
-    }
     if pattern.root.0 >= pattern.nodes.len() {
         return Err(MatchError::InvalidPattern);
     }
@@ -177,9 +174,6 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                 enable,
                 disable,
             } => {
-                if enable.ignore_case && !unicode {
-                    return Err(MatchError::Unsupported("ignore-case matching"));
-                }
                 if enable.multiline && disable.multiline
                     || enable.dot_all && disable.dot_all
                     || enable.ignore_case && disable.ignore_case
@@ -348,7 +342,7 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                         ]);
                     }
                     Node::Literal(c) => sequence.push(Build::Emit(Instruction::Char(
-                        canonicalize(*c, modifiers.ignore_case),
+                        canonicalize(*c, modifiers.ignore_case, unicode),
                         modifiers.ignore_case,
                     ))),
                     Node::Dot => sequence.push(Build::Emit(Instruction::Dot(modifiers.dot_all))),
@@ -416,16 +410,17 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
                             // Negation remains outside this operation.
                             for member in &mut closed.members {
                                 if let ClassMember::Literal(cp) = member {
-                                    *cp = canonicalize(*cp, true);
+                                    *cp = canonicalize(*cp, true, unicode);
                                 }
                             }
                             for member in &class.members {
                                 if let ClassMember::Range(a, b) = member {
-                                    let start = SIMPLE_FOLD.partition_point(|&(cp, _)| cp < *a);
-                                    let end = SIMPLE_FOLD.partition_point(|&(cp, _)| cp <= *b);
+                                    let table = mappings(unicode);
+                                    let start = table.partition_point(|&(cp, _)| cp < *a);
+                                    let end = table.partition_point(|&(cp, _)| cp <= *b);
                                     budget.charge(end - start)?;
                                     closed.members.extend(
-                                        SIMPLE_FOLD[start..end]
+                                        table[start..end]
                                             .iter()
                                             .map(|&(_, target)| ClassMember::Literal(target)),
                                     );
@@ -567,7 +562,7 @@ impl Machine {
                 Instruction::Accept => return Ok(true),
                 Instruction::Char(c, ignore_case) => {
                     if let Some((actual, width)) = read_character(input, self.pos, program.unicode)
-                        && canonicalize(actual, *ignore_case) == *c
+                        && canonicalize(actual, *ignore_case, program.unicode) == *c
                     {
                         self.pos += width;
                         true
@@ -587,7 +582,7 @@ impl Machine {
                 }
                 Instruction::Class(class, ignore_case) => {
                     if let Some((c, width)) = read_character(input, self.pos, program.unicode) {
-                        let c = canonicalize(c, *ignore_case);
+                        let c = canonicalize(c, *ignore_case, program.unicode);
                         let mut found = false;
                         for member in &class.members {
                             self.budget.charge(1)?;
@@ -620,10 +615,10 @@ impl Machine {
                         .pos
                         .checked_sub(1)
                         .and_then(|i| input.get(i))
-                        .map(|&c| canonicalize(u32::from(c), *ignore_case));
+                        .map(|&c| canonicalize(u32::from(c), *ignore_case, program.unicode));
                     let next = input
                         .get(self.pos)
-                        .map(|&c| canonicalize(u32::from(c), *ignore_case));
+                        .map(|&c| canonicalize(u32::from(c), *ignore_case, program.unicode));
                     match assertion {
                         Assertion::Start => {
                             self.pos == 0 || *multiline && previous.is_some_and(line)
@@ -661,8 +656,8 @@ impl Machine {
                                 equal = false;
                                 break;
                             };
-                            if canonicalize(actual, *ignore_case)
-                                != canonicalize(expected, *ignore_case)
+                            if canonicalize(actual, *ignore_case, program.unicode)
+                                != canonicalize(expected, *ignore_case, program.unicode)
                             {
                                 equal = false;
                                 break;
@@ -872,6 +867,14 @@ pub(crate) fn advance_string_index(input: &[u16], index: usize, unicode: bool) -
 fn line(c: u32) -> bool {
     matches!(c, 0x0a | 0x0d | 0x2028 | 0x2029)
 }
+fn canonicalize(cp: u32, ignore_case: bool, unicode: bool) -> u32 {
+    if ignore_case {
+        case_fold::canonicalize(cp, unicode)
+    } else {
+        cp
+    }
+}
+
 fn word(c: u32) -> bool {
     matches!(c, 48..=57 | 65..=90 | 95 | 97..=122)
 }

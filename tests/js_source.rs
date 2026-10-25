@@ -22555,6 +22555,14 @@ fn regexp_property_escapes() {
 }
 
 #[test]
+fn regexp_case_insensitive_legacy() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/regexp_legacy_case_fold.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn regexp_case_insensitive_unicode() {
     // Synthetic fixture, not light-cljs output. The two replacement rows are
     // adapted from QuickJS; see the fixture's copyright and attribution.
@@ -22613,15 +22621,13 @@ fn regexp_constructor_copies_pattern_and_resets_last_index() {
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn regexp_flags_errors_and_internal_state() {
-    for flag in ['i'] {
-        for expression in [format!("/a/{flag}"), format!("RegExp('a', '{flag}')")] {
-            assert_eq!(
-                eval(&format!(
-                    "let caught = false; try {{ {expression}; }} catch(e) {{ caught = e instanceof SyntaxError && e.message.indexOf(\"'{flag}'\") >= 0; }} caught"
-                )),
-                ValueView::Bool(true)
-            );
-        }
+    for expression in ["/a/i", "RegExp('a', 'i')"] {
+        assert_eq!(
+            eval(&format!(
+                "let r = {expression}; r.test('A') && r.ignoreCase && r.flags === 'i'"
+            )),
+            ValueView::Bool(true)
+        );
     }
     for src in [
         "let caught = false; try {'a'.split(/a/);} catch(e){caught = e instanceof TypeError && e.message.indexOf('RegExp separators') >= 0;} caught",

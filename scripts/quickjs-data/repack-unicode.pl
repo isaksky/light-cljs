@@ -31,6 +31,7 @@ for my $name (sort keys %pins) {
 }
 my %ucd_pins = (
     'CaseFolding.txt' => 'ff8d8fefbf123574205085d6714c36149eb946d717a0c585c27f0f4ef58c4183',
+    'SpecialCasing.txt' => 'efc25faf19de21b92c1194c111c932e03d2a5eaf18194e33f1156e96de4c9588',
     'DerivedCoreProperties.txt' => '24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08',
     'UnicodeData.txt' => '2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c',
     'PropList.txt' => '130dcddcaadaf071008bdfce1e7743e04fdfbc910886f017d9f9ac931d8c64dd',
@@ -111,6 +112,10 @@ static void *resize(void *opaque, void *ptr, size_t size) {
     (void)opaque; return realloc(ptr, size);
 }
 int main(void) {
+    for (unsigned cp = 0; cp <= 0xffff; cp++) {
+        unsigned upper = lre_canonicalize(cp, 0);
+        if (cp != upper) printf("L %X %X\n", cp, upper);
+    }
     for (unsigned cp = 0; cp <= 0x10ffff; cp++) {
         unsigned folded = lre_canonicalize(cp, 1);
         if (cp != folded) printf("F %X %X\n", cp, folded);
@@ -129,7 +134,7 @@ system($ENV{CC} // 'cc', '-std=c11', '-O2',
        '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-I', $source,
        "$out/export.c", "$source/libunicode.c", '-o', "$out/export") == 0 or die "compile reference\n";
 open my $pipe, '-|', "$out/export" or die $!;
-my (@fold, @start, @continue);
+my (@fold, @legacy, @start, @continue);
 while (<$pipe>) {
     if (/^P ([0-9A-F]+) ([0-9A-F]+) ([0-9A-F]+)\n$/) {
         my ($i, $a, $b) = (hex($1), hex($2), hex($3));
@@ -137,10 +142,32 @@ while (<$pipe>) {
         push @{$properties[$i]{ranges}}, [$a, $b];
         next;
     }
-    /^([FSC]) ([0-9A-F]+) ([0-9A-F]+)\n$/ or die "reference output\n";
-    push @{ $1 eq 'F' ? \@fold : $1 eq 'S' ? \@start : \@continue }, [hex($2), hex($3)];
+    /^([FLSC]) ([0-9A-F]+) ([0-9A-F]+)\n$/ or die "reference output\n";
+    push @{ $1 eq 'F' ? \@fold : $1 eq 'L' ? \@legacy : $1 eq 'S' ? \@start : \@continue }, [hex($2), hex($3)];
 }
 close $pipe or die "reference failed\n";
+# Independently apply ECMA-262 non-Unicode Canonicalize to full default
+# uppercase mappings. SpecialCasing overrides UnicodeData's simple mappings;
+# conditional/locale-sensitive entries do not apply to default toUpperCase.
+my %upper;
+for (split /\n/, read_file("$ucd/UnicodeData.txt")) {
+    my @fields = split /;/;
+    $upper{hex($fields[0])} = [hex($fields[12])] if $fields[12];
+}
+for (split /\n/, read_file("$ucd/SpecialCasing.txt")) {
+    s/#.*//;
+    if (/^([0-9A-F]+);[^;]*;[^;]*;\s*([0-9A-F ]+);\s*$/) {
+        $upper{hex($1)} = [map { hex } split ' ', $2];
+    }
+}
+my %actual_legacy = map { @$_ } @legacy;
+for my $cp (0 .. 0xffff) {
+    my $upper = $upper{$cp} // [$cp];
+    my $expected = @$upper == 1 && $upper->[0] <= 0xffff
+        && !($cp >= 128 && $upper->[0] < 128) ? $upper->[0] : $cp;
+    die sprintf("legacy Canonicalize differs from Unicode 17.0.0 at U+%X\n", $cp)
+        unless ($actual_legacy{$cp} // $cp) == $expected;
+}
 my %expected_fold;
 for (split /\n/, read_file("$ucd/CaseFolding.txt")) {
     $expected_fold{hex($1)} = hex($2) if /^([0-9A-F]+); [CS]; ([0-9A-F]+);/;
@@ -251,7 +278,8 @@ sub table {
     }
     return $text . "];\n";
 }
-write_file("$out/case_fold_data.rs", $header . table('SIMPLE_FOLD', 'pub(crate) ', \@fold));
+write_file("$out/case_fold_data.rs", $header . table('SIMPLE_FOLD', 'pub(crate) ', \@fold) .
+    table('LEGACY_UPPER', 'pub(crate) ', \@legacy));
 write_file("$out/unicode_ident.rs", $header . table('ID_START', 'pub(super) ', \@start) .
     table('ID_CONTINUE', 'pub(super) ', \@continue));
 my $property_data = $header . "use super::PropertyData;\n\npub(super) const PROPERTIES: &[PropertyData] = &[\n";
@@ -277,6 +305,7 @@ print $property_binary $_->{bits} for @properties;
 close $property_binary or die $!;
 write_file("$out/provenance.txt", $provenance .
     "Unicode 17.0.0: complete domain folding C/S and ID properties verified.\n" .
+    "Non-Unicode Canonicalize verified over all 65,536 code units against full default uppercase.\n" .
     "53 ECMA-262 binary properties and 38 General_Category values verified over the complete domain.\n" .
     "QuickJS FB05/FB06 representative reversed to normative C/S; equivalence unchanged.\n" .
     join('', map { "$pins{$_}  $_\n" } sort keys %pins) .
@@ -292,6 +321,9 @@ for my $cp (0 .. 0x10ffff) {
         vec($start_bits, $cp, 1) + 2 * vec($continue_bits, $cp, 1));
 }
 close $binary or die $!;
+open my $legacy_binary, '>:raw', "$out/legacy-reference.bin" or die $!;
+print $legacy_binary pack('V', $actual_legacy{$_} // $_) for 0 .. 0xffff;
+close $legacy_binary or die $!;
 my $runtime = abs_path('src/regexp/case_fold.rs');
 my $ident = abs_path('src/frontend/unicode_ident.rs');
 die "run from repository root\n" unless defined $runtime && defined $ident;
@@ -313,6 +345,13 @@ fn main() {
         assert_eq!(flags, bytes[index + 4], "identifier U+{cp:X}");
     }
     println!("PASS: runtime folding and identifiers match pinned reference over 1,114,112 code points");
+    let bytes = std::fs::read(std::env::args_os().nth(2).unwrap()).unwrap();
+    assert_eq!(bytes.len(), 0x10000 * 4);
+    for (cp, bytes) in bytes.chunks_exact(4).enumerate() {
+        let expected = u32::from_le_bytes(bytes.try_into().unwrap());
+        assert_eq!(case_fold::canonicalize(cp as u32, false), expected, "legacy U+{cp:X}");
+    }
+    println!("PASS: runtime legacy Canonicalize matches full uppercase over all 65,536 code units");
 }
 R
 my $property_runtime = abs_path('src/regexp/property.rs');
@@ -332,6 +371,7 @@ fn main() {
         let p = property::lookup(aliases.split(',').next().unwrap()).unwrap();
         for alias in aliases.split(',') {
             assert_eq!(property::lookup(alias), Some(p));
+            assert!(matches!(property::syntax_kind(alias), Some(property::PropertyKind::CodePoint)));
             for key in ["gc", "General_Category"] {
                 assert_eq!(property::lookup(&format!("{key}={alias}")), category.then_some(p));
             }
@@ -340,6 +380,9 @@ fn main() {
         let mut negative = vec![false; 0x110000];
         for cp in 0..=0x10ffffu32 {
             let yes = bit(bits, cp);
+            let ranges = p.ranges();
+            let i = ranges.partition_point(|&(_, end)| end < cp);
+            assert_eq!(ranges.get(i).is_some_and(|&(start, _)| start <= cp), yes);
             assert_eq!(p.contains(cp, false, false), yes, "{aliases} U+{cp:X}");
             assert_eq!(p.contains(cp, true, false), !yes, "!{aliases} U+{cp:X}");
             let folded = case_fold::canonicalize(cp, true) as usize;

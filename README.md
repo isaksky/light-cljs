@@ -2968,8 +2968,9 @@ Each search is bounded by `MAX_MATCH_STEPS = 1_000_000` across all candidate
 positions, assertions and backtracks. Exhaustion returns `LimitExceeded`
 (the RegExp object layer must throw a catchable RangeError). Native stack
 depth is independent of pattern depth and input length. Compilation has its
-own allowance of the same size. Lookbehind and non-Unicode ignore-case
-fail explicitly. Unicode mode executes by code point (clj-quickjs-190), with
+own allowance of the same size. Lookbehind fails explicitly. Non-Unicode
+ignore-case uses code-unit Canonicalize (clj-quickjs-303).
+Unicode mode executes by code point (clj-quickjs-190), with
 simple folding for iu and scoped i (clj-quickjs-191).
 JavaScript RegExp objects/methods,
 literals and global lastIndex are supplied by clj-quickjs-188.
@@ -3083,10 +3084,10 @@ ToLength and global/sticky updates. Match arrays include `index`, `input`,
 use a null-prototype object. Programs are immutable; objects are task-owned
 and cannot be published. Argument coercions and getters may suspend.
 
-Matching supports d/g/m/s/u/v/y and i with u or v. The 1,000,000-step search/compilation bounds throw
-catchable RangeError; invalid patterns and plain i throw
+Matching supports d/g/i/m/s/u/v/y. The 1,000,000-step search/compilation bounds throw
+catchable RangeError; invalid patterns throw
 catchable SyntaxError. Flag ordering is `dgimsuvy` (u and v are exclusive).
-Deferred: literal pattern early errors, lookbehind, non-Unicode case folding, Symbol.match recognition,
+Deferred: literal pattern early errors, lookbehind, Symbol.match recognition,
 and string regexp consumers. Eval is deferred; the raw NUL case uses the
 constructor and a raw-NUL literal. Run
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_ -- --test-threads=3`.
@@ -3187,8 +3188,8 @@ themselves, never half a pair. Braced escapes and astral ranges execute.
 Match/capture indices and lastIndex remain UTF-16 offsets; an initial lastIndex
 inside a pair starts at its lead surrogate. Global replacement advances empty
 matches by code point, while plain `exec` leaves empty matches at their end.
-The existing catchable step limit applies. Deferred: non-Unicode i folding,
-Script property escapes and lookbehind. Match indices execute with d (clj-quickjs-193). Test:
+The existing catchable step limit applies. Deferred: Script property escapes
+and lookbehind. Match indices execute with d (clj-quickjs-193). Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_unicode_mode -- --exact --test-threads=3`.
 
 ### Promise core (clj-quickjs-246)
@@ -3284,9 +3285,23 @@ Supported: iu simple case folding for literals, ranges, class escapes, word
 boundaries, backreferences and scoped i. Classes close under folding before
 negation: `"aAbBcC".replace(/[^b]/gui, "X")` returns `"XXbBXX"`.
 Unicode 17.0.0 folding and identifier tables share verified, pinned generation;
-normal builds need only Rust. Plain `/a/i` remains a catchable SyntaxError.
+normal builds need only Rust. Plain `/a/i` uses legacy Canonicalize (clj-quickjs-303).
 Script properties and lookbehind remain deferred. Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_case_insensitive_unicode -- --exact --test-threads=3`.
+
+### Non-Unicode RegExp ignore-case (clj-quickjs-303)
+
+Plain `i` and scoped `(?i:...)` apply ECMAScript Canonicalize to each UTF-16
+code unit: uppercase it only if the result is one code unit and does not map
+non-ASCII to ASCII. Literals, classes (including ranges and negation), word
+boundaries and backreferences share this rule. Thus `/abc/i.test('ABC')` is
+true, while `/s/i.test('ſ')`, `/k/i.test('K')` and `/ß/i.test('ẞ')` are false;
+all three latter pairs match with `iu`. Multi-unit uppercase mappings such as
+`ß` and ligatures stay unchanged; `İ` does not match `i` in either mode.
+`flags` and `ignoreCase` report `i` normally. The existing 1,000,000-step
+compilation/search allowances cover range closure and comparisons; no new
+limits or dependencies apply. The mappings use pinned Unicode 17.0.0 data.
+Test: `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_case_insensitive_legacy -- --exact --test-threads=3`.
 
 ### Intl.PluralRules (clj-quickjs-212)
 
@@ -3460,7 +3475,7 @@ both lowercase and uppercase letters. Scoped `i` works inside `v` patterns.
 Malformed operations, unescaped class syntax/reserved double punctuation,
 negation of classes that may contain strings, and combining `u` with `v`
 throw catchable SyntaxError. Unicode string properties (including RGI_Emoji),
-Script/Script_Extensions, lookbehind and non-Unicode folding remain deferred.
+Script/Script_Extensions and lookbehind remain deferred.
 Set compilation and string matching share the existing catchable step bounds;
 normal builds use the existing generated Unicode 17 tables without new data
 or dependencies. Run `CARGO_BUILD_JOBS=3 cargo test --lib regexp:: -- --test-threads=3`

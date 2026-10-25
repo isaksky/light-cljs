@@ -51,11 +51,11 @@ echo 'PASS: repeatable generation, edge cases, mutation detection, and input pin
 if [[ $# == 3 ]]; then
     perl "$script_dir/repack-unicode.pl" "$output_dir/first" "$source_dir" "$3" "$output_dir/unicode-first"
     perl "$script_dir/repack-unicode.pl" "$output_dir/second" "$source_dir" "$3" "$output_dir/unicode-second"
-    for file in case_fold_data.rs unicode_ident.rs property_data.rs provenance.txt reference.bin property-reference.bin; do
+    for file in case_fold_data.rs unicode_ident.rs property_data.rs provenance.txt reference.bin legacy-reference.bin property-reference.bin; do
         cmp "$output_dir/unicode-first/$file" "$output_dir/unicode-second/$file"
     done
     rustc --edition=2024 -D warnings "$output_dir/unicode-first/verify.rs" -o "$output_dir/unicode-first/verify"
-    "$output_dir/unicode-first/verify" "$output_dir/unicode-first/reference.bin"
+    "$output_dir/unicode-first/verify" "$output_dir/unicode-first/reference.bin" "$output_dir/unicode-first/legacy-reference.bin"
     rustc --edition=2024 -O -D warnings "$output_dir/unicode-first/verify-properties.rs" -o "$output_dir/unicode-first/verify-properties"
     "$output_dir/unicode-first/verify-properties" "$output_dir/unicode-first/property-reference.bin"
     perl -e 'local $/; open my $f, "<:raw", $ARGV[0] or die $!; my $s = <$f>; substr($s, 0, 1) = chr(ord(substr($s, 0, 1)) ^ 1); print $s' \
@@ -66,8 +66,13 @@ if [[ $# == 3 ]]; then
     # A wrong decoded value must fail the runtime differential comparison.
     perl -e 'local $/; open my $f, "<:raw", $ARGV[0] or die $!; my $s = <$f>; substr($s, 65 * 5, 4) = pack("V", 65); print $s' \
         "$output_dir/unicode-first/reference.bin" > "$output_dir/unicode-first/corrupt.bin"
-    if "$output_dir/unicode-first/verify" "$output_dir/unicode-first/corrupt.bin" > "$output_dir/unicode-corruption.log" 2>&1; then
+    if "$output_dir/unicode-first/verify" "$output_dir/unicode-first/corrupt.bin" "$output_dir/unicode-first/legacy-reference.bin" > "$output_dir/unicode-corruption.log" 2>&1; then
         echo 'incorrect decoded Unicode value escaped comparison' >&2; exit 1
+    fi
+    perl -e 'local $/; open my $f, "<:raw", $ARGV[0] or die $!; my $s = <$f>; substr($s, 97 * 4, 4) = pack("V", 97); print $s' \
+        "$output_dir/unicode-first/legacy-reference.bin" > "$output_dir/unicode-first/legacy-corrupt.bin"
+    if "$output_dir/unicode-first/verify" "$output_dir/unicode-first/reference.bin" "$output_dir/unicode-first/legacy-corrupt.bin" > "$output_dir/legacy-corruption.log" 2>&1; then
+        echo 'incorrect legacy Canonicalize value escaped comparison' >&2; exit 1
     fi
     mkdir "$output_dir/ucd-drift"
     cp "$3/"*.txt "$output_dir/ucd-drift/"

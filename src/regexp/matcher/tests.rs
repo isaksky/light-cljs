@@ -339,14 +339,8 @@ fn unsupported_features_fail_explicitly() {
             Err(MatchError::Unsupported("lookbehind"))
         ));
     }
-    assert!(matches!(
-        program("a", "i"),
-        Err(MatchError::Unsupported("ignore-case matching"))
-    ));
-    assert!(matches!(
-        program("(?i:a)", ""),
-        Err(MatchError::Unsupported("ignore-case matching"))
-    ));
+    check("a", "i", "A", Some((0, &[Some("A")])));
+    check("(?i:a)", "", "A", Some((0, &[Some("A")])));
     assert!(
         MatchError::LimitExceeded
             .to_string()

@@ -238,6 +238,8 @@ curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt \
   -o target/ucd-17/CaseFolding.txt
 curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt \
   -o target/ucd-17/DerivedCoreProperties.txt
+curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt \
+  -o target/ucd-17/SpecialCasing.txt
 for file in UnicodeData.txt PropList.txt DerivedNormalizationProps.txt; do
   curl -fsSL "https://www.unicode.org/Public/17.0.0/ucd/$file" -o "target/ucd-17/$file"
 done
@@ -261,6 +263,15 @@ and rejects deliberately corrupted decoded values and changed UCD inputs.
 It must be run after installing regenerated data. RegExp semantics are covered
 separately by `cargo test --lib regexp::` and
 `cargo test --test js_source regexp_case_insensitive_unicode -- --exact`.
+
+Legacy RegExp Canonicalize uses a separate `LEGACY_UPPER` mapping emitted by
+the same decoder. Every UTF-16 code unit is independently compared with
+UnicodeData.txt uppercase mappings overridden by unconditional SpecialCasing.txt
+entries. Multi-code-unit results and non-ASCII to ASCII mappings retain the
+original code unit. Verification compares the installed Rust reader across all
+65,536 code units, repeats generation, and rejects corrupted legacy results.
+Run `cargo test --test js_source regexp_case_insensitive_legacy -- --exact`
+for matching semantics; no new runtime work allowance is introduced.
 
 The same command installs `src/regexp/property_data.rs`. It contains all 53
 ECMA-262 binary properties and 38 General_Category values; exact aliases come

@@ -5400,7 +5400,7 @@ only at quiescence after jobs and timers drain (clj-quickjs-249 below).
 
 The in-tree matcher compiles the arena with an explicit build stack into
 immutable Rust bytecode. `regexp::matcher::compile` rejects lookbehind
-and non-Unicode ignore-case execution explicitly. Backreferences
+explicitly. Non-Unicode ignore-case uses legacy Canonicalize (clj-quickjs-303). Backreferences
 are supported, with an undefined/forward capture matching the empty string.
 Scoped m/s modifiers are compiled into the consuming/assertion instructions.
 The compiler checks arena edges/indices and computes each atom's capture span
@@ -5771,11 +5771,11 @@ catchable RangeError and never becomes a failed match. Parsing, source
 escaping, capture copying and string flattening are synchronous, bounded by
 the runtime's string length limit, like existing string leaf operations.
 
-Objects support the code-unit and Unicode matcher, d/g/m/s/u/v/y and iu/iv, named captures with a
+Objects support the code-unit and Unicode matcher, d/g/i/m/s/u/v/y, named captures with a
 null-prototype groups object, and explicit undefined elements for unmatched
-captures. Plain i constructors and literals throw SyntaxError naming the
-unsupported flag; lookbehind also fails explicitly. Symbol.match
-recognition, symbol-based string consumers, non-Unicode folding
+captures. Plain i constructors and literals use legacy Canonicalize
+(clj-quickjs-303); lookbehind fails explicitly. Symbol.match
+recognition and symbol-based string consumers
 remain later work. The raw NUL upstream case is exercised through the
 constructor and a literal containing an actual NUL; indirect eval is also
 available since clj-quickjs-106.

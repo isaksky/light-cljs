@@ -783,6 +783,15 @@ with hashes in the repacker and `src/regexp/case_fold_provenance.txt`.
 The QuickJS FB05/FB06 representative is reversed to the normative C/S target.
 The Unicode License v3 notice is reproduced in `docs/UNICODE-LICENSE`.
 
+The legacy `LEGACY_UPPER` table (clj-quickjs-303) in the same generated file
+uses `research/quickjs/libunicode.c::lre_canonicalize` with Unicode mode off
+at that revision. All 65,536 UTF-16 code units are independently checked
+against Unicode 17.0.0 UnicodeData.txt and
+[SpecialCasing.txt](https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt)
+full default uppercase mappings, applying the ECMAScript single-code-unit
+and non-ASCII-to-ASCII restrictions. Their hashes and the generator hash are
+recorded in the same provenance file. The new legacy fixture is synthetic.
+
 ## BigInt width wrapping (clj-quickjs-204)
 
 `tests/js_source.rs::bigint_as_int_n_and_as_uint_n` adapts all 19 assertions in

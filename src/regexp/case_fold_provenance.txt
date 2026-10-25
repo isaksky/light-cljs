@@ -10,13 +10,17 @@ a0aed883c00fcd0ccb82892793c2699789d10b14900ce3ff316c894da690327a  temporal/timez
 d2da6d06a75b9e6c116c82b7a41df6bcc170c8b1779f374fa953ecf688eda647  cutils.h
 09d208759171634a5b1e60aa314fd00da5d088ac28621b7ae4682ba2fb103415  quickjs.h
 0606525b61db637ef2052d5e45e2732e1ba89e3125db30ab4bdf25f0d8681068  intl/intl.c
-7e28ebf3d37b4b893e9fa01084d92df60540c11f072ae4bc4ef9618a915212f9  export.pl
-9ac1f1efb5674b238191314a6b0023a695f4bc91dd73ffe9c136120c21c337d8  generate.sh
-b7f1c73204ec51258fb50357ceba97f2fbc19b323325f9cf07c90da99a2d5d5b  inputs.sha256
+737b8f48645dcdb2e9ce5850ff19a2b142c4e131907a04b672b2bf78fbe41e81  intl/relativetimeformat.c
+4a799a7b704d7e850c6450d7acd4e4fa2a279d4f5c162d35bf95bf8fa1f0110a  intl/numberformat.c
+ecaaaae228b311761d6aa76798bc1a089b8e0753bd4481f0bf5c16f40b48b345  intl/displaynames.c
+97b7909964c49781591af3a561aea3fdbb1e1f03d10f4ef35d892be270d0d321  export.pl
+474633bb04b744eeb4cee2e3a91f69fd127b94791d51b59a4d7b71b4009c9425  generate.sh
+6603c3a59288d4b1ae3405ecd1a151be4b0fe32c8eada480680fda26abd65322  inputs.sha256
 gcc (GCC) 15.3.0
 rustc 1.95.0 (59807616e 2026-04-14) (built from a source tarball)
 perl 5.42.3
 Unicode 17.0.0: complete domain folding C/S and ID properties verified.
+Non-Unicode Canonicalize verified over all 65,536 code units against full default uppercase.
 53 ECMA-262 binary properties and 38 General_Category values verified over the complete domain.
 QuickJS FB05/FB06 representative reversed to normative C/S; equivalence unchanged.
 d2da6d06a75b9e6c116c82b7a41df6bcc170c8b1779f374fa953ecf688eda647  cutils.h
@@ -29,6 +33,7 @@ ff8d8fefbf123574205085d6714c36149eb946d717a0c585c27f0f4ef58c4183  https://www.un
 24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08  https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
 71fd6a206a2c0cdd41feb6b7f656aa31091db45e9cedc926985d718397f9e488  https://www.unicode.org/Public/17.0.0/ucd/DerivedNormalizationProps.txt
 130dcddcaadaf071008bdfce1e7743e04fdfbc910886f017d9f9ac931d8c64dd  https://www.unicode.org/Public/17.0.0/ucd/PropList.txt
+efc25faf19de21b92c1194c111c932e03d2a5eaf18194e33f1156e96de4c9588  https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt
 2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c  https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt
 2cb2bb9455cda83e8481541ecf5b6dfda66a3bb89efa3fa7c5297eccf607b72b  https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt
-323bba881875716657d6592a824da65e4e958183e5bc932411f0991b699d2ca7  repack-unicode.pl
+0cdc898b6dfd71e6f31fba49061b4e25f7a300d0c8b8bfb26407a0e5d57c35af  repack-unicode.pl

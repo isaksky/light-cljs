@@ -116,7 +116,11 @@ fn member(m: &ClassMember, ignore_case: bool, budget: &mut Budget) -> Result<Set
             if *c > 0x10ffff {
                 return Err(MatchError::InvalidPattern);
             }
-            let c = canonicalize(*c, ignore_case);
+            let c = if ignore_case {
+                canonicalize(*c, true)
+            } else {
+                *c
+            };
             return Ok(Set {
                 ranges: vec![(c, c)],
                 strings: Vec::new(),
@@ -280,7 +284,17 @@ pub(super) fn compile(
                 } else {
                     stack.push(Set {
                         ranges: Vec::new(),
-                        strings: vec![s.iter().map(|&c| canonicalize(c, ignore_case)).collect()],
+                        strings: vec![
+                            s.iter()
+                                .map(|&c| {
+                                    if ignore_case {
+                                        canonicalize(c, true)
+                                    } else {
+                                        c
+                                    }
+                                })
+                                .collect(),
+                        ],
                     });
                 }
             }

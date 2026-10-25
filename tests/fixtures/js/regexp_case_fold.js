@@ -42,8 +42,6 @@ check(/(\u{10400})\1/iu.test("\u{10400}\u{10428}"));
 check(/\uD800/iu.test("\uD800"));
 check(/(?i:a)(?-i:b)/u.test("Ab") && !/(?i:a)(?-i:b)/u.test("AB"));
 check(/(?-i:a)b/iu.test("aB") && !/(?-i:a)b/iu.test("AB"));
-let caught = false;
-try { /a/i; } catch(e) { caught = e instanceof SyntaxError && e.message.indexOf("'i'") >= 0; }
-check(caught);
+check(/a/i.test('A') && !/k/i.test('K'));
 check(/a/iu.ignoreCase && /a/iu.unicode && /a/iu.flags === 'iu');
 true;
