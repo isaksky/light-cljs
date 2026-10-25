@@ -29663,3 +29663,60 @@ fn array_copy_depth_limit_and_small_worker() {
         .join()
         .unwrap();
 }
+
+#[test]
+fn array_copy_bound_constructor_hop_limit() {
+    for wrappers in [2, 3] {
+        for (operation, check) in [
+            ("new B(1)", "r.n === 1"),
+            (
+                "Array.of.call(B,7)",
+                "r.n === 1 && r.length === 1 && r[0] === 7",
+            ),
+        ] {
+            let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+                max_call_depth: 2,
+                ..clj_quickjs::VmLimits::default()
+            });
+            let source = format!(
+                "function C(n) {{ this.n=n; }} let B=C; for(let i=0;i<{wrappers};i++) B=B.bind(null); let r={operation}; {check}"
+            );
+            let task = rt.spawn(&exe(&source), &[]).unwrap();
+            let mut finished = false;
+            for _ in 0..2000 {
+                match task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    RunOutcome::Complete(value) if wrappers == 2 => {
+                        assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                        finished = true;
+                        break;
+                    }
+                    RunOutcome::Failed(error) if wrappers == 3 => {
+                        assert_eq!(error.kind(), VmErrorKind::StackOverflow, "{source}");
+                        finished = true;
+                        break;
+                    }
+                    other => panic!("{source}: {other:?}"),
+                }
+            }
+            assert!(finished, "{source}");
+        }
+    }
+}
+
+#[test]
+fn class_heritage_recognizes_intl_constructors() {
+    // Synthetic fixtures, not light-cljs output. Heritage validation checks
+    // constructor identity without instantiating unsupported built-in subclasses.
+    for name in ["DisplayNames", "DurationFormat"] {
+        let source = format!(
+            "class C extends Intl.{name} {{}} Object.getPrototypeOf(C) === Intl.{name} && Object.getPrototypeOf(C.prototype) === Intl.{name}.prototype"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}

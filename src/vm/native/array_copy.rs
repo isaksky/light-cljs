@@ -369,12 +369,12 @@ impl State {
                 // Probe one bound target per budgeted step, but construct the
                 // original receiver so bound arguments and new.target survive.
                 if let Ok(Callee::Bound(bound)) = dispatch::callee(heap, &self.probe) {
-                    self.hops += 1;
                     if self.hops >= self.limit {
                         return Err(Fault::StackOverflow(
                             "maximum bound constructor depth exceeded".into(),
                         ));
                     }
+                    self.hops += 1;
                     self.probe = bound.callee;
                     return Ok(Action::Continue);
                 }
