@@ -1,7 +1,8 @@
 #!/usr/bin/env bb
 (require '[babashka.fs :as fs]
          '[babashka.process :as p]
-         '[clojure.string :as str])
+         '[clojure.string :as str]
+         '[clojure.java.io :as io])
 
 ;; Run from any directory. Rust owns kernel sources, sizes and expected results;
 ;; --node-kernels exports those exact inputs rather than maintaining JS copies.
@@ -15,9 +16,11 @@
             (let [result @(p/process cmd (merge {:dir root :out :string :err :inherit} opts))]
               (when-not (zero? (:exit result)) (System/exit (:exit result)))
               (:out result)))
-      engine (run (into cargo args) {})]
-  (print engine)
-  (flush)
+      proc (p/process (into cargo args) {:dir root :out :stream :err :inherit})
+      engine (with-open [reader (io/reader (:out proc))]
+               (str/join "\n" (doall (for [line (line-seq reader)]
+                                         (do (println line) (flush) line)))))
+      _ (when-not (zero? (:exit @proc)) (System/exit (:exit @proc)))]
   (if-let [node (fs/which "node")]
     (let [source (run (into cargo (cons "--node-kernels" args)) {})
           reference (run [(str node) "--jitless" "-"] {:in source})

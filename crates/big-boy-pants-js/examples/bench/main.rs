@@ -2,7 +2,7 @@
 //! clj-quickjs-15, `docs/design.md` §15). Std only; no benchmark framework.
 //!
 //! ```sh
-//! cargo run --release --example bench              # full run (about a minute when the machine is quiet)
+//! cargo run --release --example bench              # full run (scaling takes several minutes)
 //! cargo run --release --example bench -- --quick   # small sizes, 3 rounds
 //! cargo run --release --example bench -- memory work --workers 2 --rounds 5
 //! ```
