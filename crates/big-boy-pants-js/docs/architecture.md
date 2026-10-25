@@ -237,7 +237,11 @@ variants use conditional tracing. See the [native contract](grammar.md#reserved-
 
 Native Clojure form values (light-cljs-466, `src/collections/form.rs`) are a
 separate frozen kind for macro inputs and outputs: keywords and symbols with
-exact UTF-16 namespace/name, lists, vectors and maps, and metadata. They reuse
+exact UTF-16 namespace/name, lists, vectors and maps, and metadata. A name is
+accepted only when its spelling splits back into the same namespace and name at
+its first `/` (the reader's split; `AmbiguousName` otherwise), because the
+runtime compares names by spelling but hashes namespace and name, so
+`(keyword nil "a/b")` is `=` to `:a/b` with another hash. They reuse
 the vector trie and the HAMT storage (the trie operations take key hash and
 equality as parameters; the SameValueZero map API is unchanged). Equality and
 the 32-bit hash are the light-cljs runtime's `=`/`hash` for these values: lists

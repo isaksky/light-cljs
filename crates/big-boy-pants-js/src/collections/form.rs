@@ -26,6 +26,33 @@
 //! returns a new object whose untouched children (and trie nodes) are the
 //! same ones as before. Metadata must be `nil` or a form map.
 //!
+//! # Names
+//!
+//! A keyword or symbol is constructed only when its spelling (`name`, or
+//! `namespace/name`) splits back into the same namespace and name at its
+//! first `/`, a lone `/` being an unqualified name: the split the compiler
+//! reader applies to a token (`name` in light-cljs `src/compiler_reader.rs`).
+//! So a namespace contains no `/`, an unqualified name contains no `/`
+//! unless it is `/` itself, and namespace `""` with name `""` (spelled `/`)
+//! is excluded. Everything the reader produces qualifies: `a`, `/`, `a/b`,
+//! `clojure.core//`, auto-resolved and namespaced-map keys; so do host names
+//! such as namespace `a` with name `b/c` or an empty namespace or name.
+//! Construction fails with [`CollectionError::AmbiguousName`] otherwise.
+//!
+//! The reason is that the light-cljs runtime compares keywords and symbols
+//! by their full spelling but hashes them by namespace and name
+//! (`structuralEqualPair` against `hashNamed` in `src/js_runtime.js`), while
+//! the compiler's `Datum` compares namespace and name. A rejected
+//! name such as `(keyword nil "a/b")` is `=` to `(keyword "a" "b")` there
+//! yet hashes differently (384366870 against 1482224565, light-cljs
+//! `tests/fixtures/compiler-keyword-map-keys.tsv`), so its runtime maps keep
+//! the two as distinct keys or merge them depending on the map's
+//! representation. No single equality and hash pair reproduces that, and
+//! equal keys must hash alike for structural lookup. On the supported names
+//! a spelling has exactly one namespace/name pair, so the namespace/name
+//! comparison below *is* the runtime's spelling comparison and the hash is
+//! the runtime's.
+//!
 //! # Equality, hashing and identity
 //!
 //! [`equals`] and [`hash`] follow the light-cljs runtime's `=` and `hash`
@@ -38,7 +65,8 @@
 //!   strings by their exact UTF-16 code units.
 //! * Keywords equal keywords, and symbols symbols, with the same namespace
 //!   (or both none) and the same name, each compared as exact code units.
-//!   A keyword never equals a symbol or a string.
+//!   For the supported names (see "Names") this is the runtime's comparison
+//!   of full spellings. A keyword never equals a symbol or a string.
 //! * Lists and vectors are *sequential*: a list equals a vector with
 //!   pairwise equal elements, and both hash alike (`hashOrderedColl`).
 //! * Maps are equal with the same count and, for every entry of one, an
@@ -116,8 +144,9 @@
 //! [`Scope::form_assoc`], [`Scope::form_dissoc`], [`Scope::form_conj`].
 //! Comparison: [`Scope::form_equals`], [`Scope::form_hash`]. Errors are
 //! [`CollectionError`]s (`WrongType`, `InvalidIndex`, `IndexOutOfBounds`,
-//! `OutOfMemory`); nothing panics. JavaScript reaches the same operations
-//! through the private `__rt.form*` intrinsics ([`crate::vm::intrinsics`]).
+//! `AmbiguousName`, `OutOfMemory`); nothing panics. JavaScript reaches the
+//! same operations through the private `__rt.form*` intrinsics
+//! ([`crate::vm::intrinsics`]).
 //!
 //! ```
 //! use big_boy_pants_js::frontend::compile_function;
@@ -168,8 +197,11 @@
 //!
 //! Supported: the five kinds above, metadata, occurrences as elements and
 //! keys, the operations listed, and sequential list/vector equality. Not
-//! supported (not claimed): sets, sorted maps, lazy sequences, seq views
-//! (`rest` and friends; a list is read by index), records and other
+//! supported (not claimed): keyword and symbol names whose spelling does
+//! not split back (rejected, see "Names"), and a runtime keyword whose
+//! stored spelling differs from its namespace and name (the runtime's
+//! one-argument `(keyword "a/b/c")`); sets, sorted maps, lazy sequences,
+//! seq views (`rest` and friends; a list is read by index), records and other
 //! user-defined types, user hashing or equality (`IHash`/`IEquiv`),
 //! interned or cached keyword identity, characters as a separate kind (a
 //! character is a one-unit string; the reader distinction, like exact
@@ -230,7 +262,23 @@ pub struct FormName {
 }
 
 impl FormName {
-    /// Same namespace (or both none) and same name, by code units.
+    /// Whether the spelling splits back into this namespace and name at its
+    /// first `/` (a lone `/` unqualified): the names a form may hold. See
+    /// "Names" in the module docs.
+    fn splits_back(&self) -> bool {
+        const SLASH: u16 = b'/' as u16;
+        let name = self.name.code_units();
+        match &self.namespace {
+            None => name == [SLASH] || !name.contains(&SLASH),
+            Some(ns) => {
+                let ns = ns.code_units();
+                !ns.contains(&SLASH) && !(ns.is_empty() && name.is_empty())
+            }
+        }
+    }
+
+    /// Same namespace (or both none) and same name, by code units. For
+    /// names that split back this is equality of full spellings.
     fn same(&self, other: &FormName) -> bool {
         self.name.code_units() == other.name.code_units()
             && match (&self.namespace, &other.namespace) {
@@ -438,7 +486,8 @@ fn map_get(heap: &Heap, map: &PMap, key: &Value) -> Option<Value> {
 
 // ---- Construction ----
 
-/// A new keyword or symbol (`kind` is one of the two).
+/// A new keyword or symbol (`kind` is one of the two); `AmbiguousName`
+/// unless its spelling splits back into `namespace` and `name`.
 pub(crate) fn new_named(
     heap: &Heap,
     kind: FormKind,
@@ -446,6 +495,9 @@ pub(crate) fn new_named(
     name: JsString,
 ) -> Result<Value, CollectionError> {
     let name = FormName { namespace, name };
+    if !name.splits_back() {
+        return Err(CollectionError::AmbiguousName);
+    }
     let body = match kind {
         FormKind::Keyword => FormBody::Keyword(name),
         _ => FormBody::Symbol(name),
@@ -1033,7 +1085,9 @@ pub(crate) fn hash(heap: &Heap, v: &Value) -> i32 {
 
 /// The embedder API. See the module docs.
 impl<'s> Scope<'s> {
-    /// A new keyword `:namespace/name` (exact code units).
+    /// A new keyword `:namespace/name` (exact code units);
+    /// [`CollectionError::AmbiguousName`] unless the spelling splits back
+    /// into `namespace` and `name` (module docs, "Names").
     pub fn new_keyword(
         &self,
         namespace: Option<JsString>,
@@ -1042,7 +1096,8 @@ impl<'s> Scope<'s> {
         self.result(new_named(self.heap(), FormKind::Keyword, namespace, name))
     }
 
-    /// A new symbol `namespace/name` without metadata (exact code units).
+    /// A new symbol `namespace/name` without metadata (exact code units);
+    /// [`CollectionError::AmbiguousName`] as for [`Scope::new_keyword`].
     pub fn new_symbol(
         &self,
         namespace: Option<JsString>,

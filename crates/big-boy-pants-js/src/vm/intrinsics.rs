@@ -103,7 +103,7 @@
 //! |-------------|-------------|--------|--------|
 //! | `formList(x1, …, xn)`, `formVector(…)` | `new_form_list n`, `new_form_vector n` | new list or vector of the values, in order | – |
 //! | `formMap(k1, v1, …)` | `new_form_map n` | new map; a later equal key replaces the value | – |
-//! | `formKeyword(ns, name)`, `formSymbol(ns, name)` | `form_op` | new keyword or symbol; `ns` a string or `null`/`undefined`, `name` a string (exact UTF-16) | `WrongType` |
+//! | `formKeyword(ns, name)`, `formSymbol(ns, name)` | `form_op` | new keyword or symbol; `ns` a string or `null`/`undefined`, `name` a string (exact UTF-16), whose spelling splits back into `ns` and `name` at its first `/` | `WrongType`, `AmbiguousName` |
 //! | `formKind(v)` | `form_op` | `"keyword"`, `"symbol"`, `"list"`, `"vector"`, `"map"`, `"occurrence"`, or `null` | – |
 //! | `formNamespace(x)`, `formName(x)` | `form_op` | a keyword's or symbol's namespace (or `null`) and name | `WrongType` |
 //! | `formCount(c)` | `form_op` | element or entry count | `WrongType` |

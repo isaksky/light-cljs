@@ -453,6 +453,95 @@ fn a_mutable_descendant_is_rejected_on_publication_with_a_path() {
     assert_eq!(KeyName::Form(":k".into()).to_string(), ":k");
 }
 
+/// Why a keyword or symbol name must split back at its first `/`, from the
+/// light-cljs runtime's own source run in this engine: it compares names by
+/// full spelling but hashes namespace and name, so `(keyword nil "a/b")` is
+/// `=` to `(keyword "a" "b")` with another hash (the values recorded in
+/// light-cljs `tests/fixtures/compiler-keyword-map-keys.tsv`), and a hash
+/// map keeps both; symbols likewise (`symbol-full-spelling` in
+/// `tests/fixtures/execution.tsv`). Native construction rejects the name
+/// with no single split, through Rust and JavaScript alike, and on every
+/// supported name (the ones the reader produces and host names such as
+/// `a`/`b/c` or an empty namespace) agrees with the runtime's `=` and
+/// `hash`.
+#[test]
+fn names_whose_spelling_does_not_split_back_are_rejected() {
+    let rt = Runtime::new();
+    let src = format!(
+        r#"function check() {{
+        const c = ({}).core;
+        const a = c.keyword(null, 'a/b'), b = c.keyword('a', 'b');
+        const sa = c.symbol(null, 'a/b/c'), sb = c.symbol('a/b/c');
+        const runtime = [c.equal(a, b), c.hash(a), c.hash(b), c.count(c.hashMap(a, 1, b, 2)),
+            c.equal(sa, sb), c.hash(sa) !== c.hash(sb), c.namespace(sb), c.name(sb)];
+        // Supported names: native `=` and `hash` are the runtime's.
+        const names = [[null, 'a'], [null, '/'], ['clojure.core', '/'], ['a', 'b'], ['a', 'b/c'],
+            ['ns', ''], ['', 'x'], ['', '/'], [null, 'é😀'], ['\ud800', 'x\udc00']];
+        const made = [];
+        for (const [ns, n] of names) {{
+            made.push([c.keyword(ns, n), __rt.formKeyword(ns, n)], [c.symbol(ns, n), __rt.formSymbol(ns, n)]);
+        }}
+        const mismatches = [];
+        for (let i = 0; i < made.length; i++) {{
+            const [r, f] = made[i];
+            if (c.hash(r) !== __rt.formHash(f) || c.namespace(r) !== __rt.formNamespace(f) || c.name(r) !== __rt.formName(f))
+                mismatches.push('hash or name ' + i);
+            for (let j = 0; j < made.length; j++) {{
+                if (c.equal(r, made[j][0]) !== __rt.formEquals(f, made[j][1])) mismatches.push('= ' + i + ' ' + j);
+            }}
+        }}
+        return [...runtime, made.length, mismatches.join(', ')].join(' ');
+    }}"#,
+        include_str!("../../../src/js_runtime.js")
+    );
+    let result = call(&rt, &src, &[]);
+    assert_eq!(
+        result.string().map(|s| s.to_string_lossy()).as_deref(),
+        Some("true 384366870 1482224565 2 true true a b/c 20 ")
+    );
+    // The fixture's canonical keyword hashes the same natively.
+    rt.scope(|s| {
+        let b = s.new_keyword(Some(js("a")), js("b")).unwrap();
+        assert_eq!(s.form_hash(b), 1_482_224_565);
+    });
+
+    let ambiguous = [
+        (None, "a/b"),
+        (None, "a/b/c"),
+        (None, "/x"),
+        (Some("a/b"), "c"),
+        (Some("a/"), ""),
+        (Some(""), ""),
+    ];
+    rt.scope(|s| {
+        for (ns, n) in ambiguous {
+            assert_eq!(
+                s.new_keyword(ns.map(js), js(n)).err(),
+                Some(CollectionError::AmbiguousName),
+                "keyword {ns:?} {n:?}"
+            );
+            assert_eq!(
+                s.new_symbol(ns.map(js), js(n)).err(),
+                Some(CollectionError::AmbiguousName),
+                "symbol {ns:?} {n:?}"
+            );
+        }
+    });
+    for (ns, n) in ambiguous {
+        let ns = ns.map_or("null".to_string(), |ns| format!("'{ns}'"));
+        for op in ["formKeyword", "formSymbol"] {
+            let src = format!("function f() {{ return __rt.{op}({ns}, '{n}'); }}");
+            let e = failure(&rt, &src);
+            assert_eq!(
+                e.kind(),
+                VmErrorKind::Collection(CollectionError::AmbiguousName),
+                "{src}"
+            );
+            assert!(e.to_string().contains("split back"), "{e}");
+        }
+    }
+}
+
 /// The form hash is the light-cljs runtime's `hash`: checked against the
 /// runtime's own functions run in this engine, and against values computed
 /// by the runtime under Node.
