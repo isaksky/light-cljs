@@ -43,7 +43,7 @@ fn named_cache_reads_current_descriptors_and_setters() {
 #[test]
 fn concurrent_tasks_share_executable_with_different_shapes() {
     let runtime = Runtime::new();
-    let code = compile_function("function run(which) { let o=which ? {x:1,z:2} : {z:2,x:1}; function get(o){return o.x;} function set(o,v){o.x=v;} let sum=0; for(let i=0;i<2000;i++){set(o,i);sum+=get(o);} return sum; }").unwrap();
+    let code = compile_function("function run(which) { let o=which ? {a:0,x:1,z:2} : {z:2,b:0,x:1}; function get(o){return o.x;} function set(o,v){o.x=v;} let sum=0; for(let i=0;i<2000;i++){set(o,i);sum+=get(o);} return sum; }").unwrap();
     let barrier = std::sync::Barrier::new(2);
     std::thread::scope(|scope| {
         let workers: Vec<_> = [false, true]

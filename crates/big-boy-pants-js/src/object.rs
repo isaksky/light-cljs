@@ -915,6 +915,12 @@ impl OrdinaryObject {
     }
 
     fn cached_position(&self, key: PropertyKey, cache: &InlineCache) -> Option<usize> {
+        // The first slot needs only its authoritative key check. In
+        // particular, single-property records need no shape indirection or
+        // shared atomic load on their entire named-access path.
+        if self.entries.first().is_some_and(|(k, _)| *k == key) {
+            return Some(0);
+        }
         let Some(shape) = &self.shape else {
             return self.position(key);
         };
