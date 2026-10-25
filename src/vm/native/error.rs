@@ -212,7 +212,7 @@ impl crate::vm::frames::VmState {
             self.diag.task,
             error,
             suppressed,
-            self.error_stack(self.top().pc.saturating_sub(1)),
+            self.error_stack(self.top().pc.saturating_sub(1))?,
         )
     }
 }
@@ -427,7 +427,10 @@ mod tests {
             get(&value, "name"),
             Value::String(JsString::from("SuppressedError"))
         );
-        assert_eq!(get(&value, "stack"), Value::String(state.error_stack(0)));
+        assert_eq!(
+            get(&value, "stack"),
+            Value::String(state.error_stack(0).ok().unwrap())
+        );
         assert!(
             property::get_own_property(heap, owner, id, &key("message"))
                 .ok()

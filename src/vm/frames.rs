@@ -73,6 +73,42 @@ use crate::vm::exception::{Completion, Exception, Handler, HandlerKind};
 use crate::vm::executable::Code;
 use crate::vm::native::{self, NativeFrame};
 
+/// Maximum UTF-16 units in a stack snapshot, including formatting. Individual
+/// metadata fields are limited to 256 units as well, so one frame cannot force
+/// a large synchronous copy. Oversized function names are replaced wholesale
+/// before inspecting their rope; filenames retain a bounded UTF-16 prefix.
+const ERROR_STACK_UNITS: usize = 16_384;
+const ERROR_STACK_METADATA_UNITS: usize = 256;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FAIL_STACK_RESERVATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A single fallibly reserved buffer. Appends and formatting cannot grow it.
+struct ErrorStackSnapshot {
+    units: Vec<u16>,
+    limit: usize,
+}
+
+impl ErrorStackSnapshot {
+    fn append(&mut self, units: impl IntoIterator<Item = u16>) {
+        self.units
+            .extend(units.into_iter().take(self.limit - self.units.len()));
+    }
+
+    fn text(&mut self, text: &str) {
+        self.append(text.encode_utf16());
+    }
+}
+
+impl std::fmt::Write for ErrorStackSnapshot {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.text(text);
+        Ok(())
+    }
+}
+
 /// Per-task VM resource policy, fixed when the task is spawned
 /// ([`Runtime::with_limits`](crate::Runtime::with_limits)).
 ///
@@ -1105,41 +1141,79 @@ impl VmState {
         false
     }
 
-    /// Snapshot at most 64 JS frames, innermost first. Native callbacks use
+    /// Snapshot at most 64 JS frames and 16,384 UTF-16 units, innermost first.
+    /// Fields are capped before copying; the final line may be truncated.
+    /// Native callbacks use
     /// their initiating JS instruction's saved position, just like diagnostics.
     /// This reads immutable code metadata only: no getters, heap edges, or
     /// worker/Rust-stack state. The resulting string survives frame teardown.
-    pub(crate) fn error_stack(&self, pc: usize) -> JsString {
-        let mut stack = Vec::new();
+    pub(crate) fn error_stack(&self, pc: usize) -> Result<JsString, Fault> {
+        self.error_stack_with_limit::<ERROR_STACK_UNITS>(pc)
+    }
+
+    fn error_stack_with_limit<const LIMIT: usize>(&self, pc: usize) -> Result<JsString, Fault> {
+        use std::fmt::Write;
+
+        let limit = LIMIT.min(crate::value::string::MAX_STRING_LEN);
+        let mut units = Vec::new();
+        // Same checked reservation/owned-buffer path as engine messages in
+        // raise_failure. The hook forces a capacity error, never a large alloc.
+        #[cfg(test)]
+        let reservation = if FAIL_STACK_RESERVATION.replace(false) {
+            usize::MAX
+        } else {
+            limit
+        };
+        #[cfg(not(test))]
+        let reservation = limit;
+        units
+            .try_reserve_exact(reservation)
+            .map_err(|_| Fault::OutOfMemory("error stack allocation failed"))?;
+        let mut stack = ErrorStackSnapshot { units, limit };
         for (index, frame) in std::iter::once(&self.entry)
             .chain(&self.calls)
             .rev()
             .take(64)
             .enumerate()
         {
+            if stack.units.len() == limit {
+                break;
+            }
             let at = if index == 0 {
                 pc
             } else {
                 frame.pc.saturating_sub(1)
             };
             let code = &frame.code;
-            stack.extend("    at ".encode_utf16());
+            stack.text("    at ");
             if code.function_name.is_empty() {
-                stack.extend("<anonymous>".encode_utf16());
+                stack.text("<anonymous>");
+            } else if code.function_name.len() > ERROR_STACK_METADATA_UNITS
+                || code.function_name.len() > limit - stack.units.len()
+            {
+                // Do not flatten or even traverse oversized/deep rope names.
+                stack.text("<truncated>");
             } else {
                 // Inferred names may contain arbitrary UTF-16, including
                 // lone surrogates. Preserve them without a Rust str round trip.
-                stack.extend_from_slice(code.function_name.code_units());
+                code.function_name
+                    .try_copy_code_units_to(&mut stack.units)
+                    .ok_or(Fault::OutOfMemory("error stack allocation failed"))?;
             }
             let file = code.debug.as_ref().map_or(&*code.name, |d| &*d.filename);
-            stack.extend(" (".encode_utf16());
-            stack.extend(file.encode_utf16());
-            if let Some(source) = code.location(at) {
-                stack.extend(format!(":{}:{}", source.line, source.column).encode_utf16());
+            stack.text(" (");
+            let mut file = file.encode_utf16();
+            stack.append(file.by_ref().take(ERROR_STACK_METADATA_UNITS));
+            if file.next().is_some() {
+                stack.text("…");
             }
-            stack.extend(")\n".encode_utf16());
+            if let Some(source) = code.location(at) {
+                // Formatting writes into the reserved buffer without a String.
+                let _ = write!(stack, ":{}:{}", source.line, source.column);
+            }
+            stack.text(")\n");
         }
-        JsString::from_code_units(stack).expect("error stack exceeds maximum string length")
+        JsString::from_owned_code_units(stack.units).ok_or(Fault::StringTooLong)
     }
 
     /// A failure at instruction `pc` of the running frame, with the call
@@ -1244,6 +1318,122 @@ mod tests {
     use super::*;
     use crate::vm::Assembler;
     use crate::vm::instr::Opcode;
+
+    fn metadata_state(name: JsString, filename: &str, frames: usize) -> VmState {
+        // Early VM fixture: loaded metadata and repeated explicit frames.
+        let exe = Assembler::new()
+            .op(Opcode::Undefined)
+            .op(Opcode::Return)
+            .finish(filename, 0, 0)
+            .unwrap();
+        let mut spec = exe.to_spec();
+        spec.function_name = Some(name);
+        let exe = crate::vm::Executable::load(spec).unwrap();
+        let diag = DiagnosticContext {
+            task: TaskId::from_raw(1),
+            world: WorldId::INITIAL,
+        };
+        let mut vm = VmState::new(&exe.0, &[], diag, VmLimits::DEFAULT);
+        for _ in 1..frames {
+            vm.calls
+                .push(VmState::new(&exe.0, &[], diag, VmLimits::DEFAULT).entry);
+        }
+        vm
+    }
+
+    #[test]
+    fn error_stack_caps_metadata_before_copying() {
+        // Early VM fixture: loaded rope metadata and repeated explicit frames.
+        // A reduced snapshot limit reproduces overflow without large buffers.
+        let mut name = JsString::from("rope-name");
+        for _ in 0..10 {
+            name = name.concat(&name).unwrap();
+        }
+        let vm = metadata_state(name, "filename", 4);
+        let before = JsString::copied_code_units();
+        let stack = vm.error_stack_with_limit::<64>(0).ok().unwrap();
+        assert!(stack.len() <= 64);
+        assert!(JsString::copied_code_units() - before <= 64);
+        assert!(
+            stack
+                .to_string_lossy()
+                .starts_with("    at <truncated> (filename)\n")
+        );
+    }
+
+    #[test]
+    fn error_stack_preserves_bounded_rope_names_and_caps_filenames() {
+        let mut name = JsString::from_code_units(vec![0xd800; 32]).unwrap();
+        for _ in 0..3 {
+            name = name.concat(&name).unwrap();
+        }
+        let filename = "😀".repeat(300);
+        let vm = metadata_state(name, &filename, 100);
+        let before = JsString::copied_code_units();
+        let stack = vm.error_stack(0).ok().unwrap();
+        assert_eq!(stack.len(), ERROR_STACK_UNITS);
+        assert!(JsString::copied_code_units() - before <= ERROR_STACK_UNITS as u64);
+        let units = stack.code_units();
+        assert_eq!(&units[7..263], &[0xd800; 256]);
+        let file_start = 265;
+        assert_eq!(
+            &units[file_start..file_start + 256],
+            "😀".repeat(128).encode_utf16().collect::<Vec<_>>()
+        );
+        assert_eq!(units[file_start + 256], '…' as u16);
+        assert!(vm.error_stack_with_limit::<0>(0).ok().unwrap().is_empty());
+
+        let vm = metadata_state(JsString::from("name"), "file", 1);
+        let expected = "    at name (file)\n";
+        assert_eq!(vm.error_stack_with_limit::<19>(0).ok().unwrap(), expected);
+        assert_eq!(vm.error_stack_with_limit::<20>(0).ok().unwrap(), expected);
+        assert_eq!(
+            vm.error_stack_with_limit::<18>(0).ok().unwrap(),
+            "    at name (file)"
+        );
+    }
+
+    #[test]
+    fn error_stack_allocation_failure_is_uncatchable() {
+        use crate::heap::Heap;
+        use crate::host::NoHost;
+        use crate::vm::dispatch::{Exit, execute};
+
+        // Synthetic fixtures, not light-cljs output. Cover constructors,
+        // engine-error wrapping, suppression and disposal snapshot callers.
+        for operation in [
+            "Error('x');",
+            "new TypeError('x');",
+            "missing;",
+            "SuppressedError(1, 2);",
+            "using x = {[Symbol.dispose]() { throw 1; }}; throw 2;",
+            "let s = new DisposableStack(); s.dispose();",
+        ] {
+            let source = format!("try {{ {operation} }} catch (e) {{}} 42;");
+            let exe = crate::frontend::compile_script("stack-allocation.js", &source).unwrap();
+            let heap = Heap::default();
+            let diag = DiagnosticContext {
+                task: TaskId::from_raw(1),
+                world: WorldId::INITIAL,
+            };
+            let mut vm = VmState::new(&exe.0, &[], diag, VmLimits::DEFAULT);
+            FAIL_STACK_RESERVATION.set(true);
+            let Exit::Fail(error) = execute(&mut vm, &heap, &mut NoHost, None) else {
+                panic!("stack reservation must fail without entering catch: {operation}");
+            };
+            assert_eq!(error.kind, VmErrorKind::OutOfMemory, "{operation}");
+            assert_eq!(
+                error.message, "error stack allocation failed",
+                "{operation}"
+            );
+            assert!(!FAIL_STACK_RESERVATION.get(), "hook consumed once");
+            let mut vm = VmState::new(&exe.0, &[], diag, VmLimits::DEFAULT);
+            assert!(matches!(
+                execute(&mut vm, &heap, &mut NoHost, None),
+                Exit::Return(Value::Number(42.0))
+            ));
+        }
+    }
 
     #[test]
     fn ignored_entry_arguments_do_not_grow_saved_storage() {

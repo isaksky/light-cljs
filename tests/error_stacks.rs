@@ -181,6 +181,40 @@ fn stack_preserves_utf16_function_names() {
 }
 
 #[test]
+fn loaded_rope_metadata_is_bounded_for_constructed_and_caught_errors() {
+    use clj_quickjs::JsString;
+    use clj_quickjs::vm::Executable;
+
+    // Synthetic fixtures, not light-cljs output. Exercise actual recursion
+    // with executable metadata supplied by the embedder, without large data.
+    let mut name = JsString::from("rope-name");
+    for _ in 0..10 {
+        name = name.concat(&name).unwrap();
+    }
+    let filename = format!("{}.js", "f".repeat(512));
+    for capture in [
+        "return Error().stack;",
+        "try { missing; } catch(e) { return e.stack; }",
+    ] {
+        let source =
+            format!("function recur(n) {{ if (n) return recur(n - 1); {capture} }} recur(100);");
+        let exe = compile_script(&filename, &source).unwrap();
+        let mut spec = exe.to_spec();
+        let mut function = spec.functions[0].to_spec();
+        function.function_name = Some(name.clone());
+        // Loaded executables use their diagnostic name as the filename.
+        function.name = filename.clone();
+        spec.functions[0] = Executable::load(function).unwrap();
+        let exe = Executable::load(spec).unwrap();
+        let rt = Runtime::new();
+        let stack = string(rt.spawn(&exe, &[]).unwrap().run().unwrap());
+        assert_eq!(stack.encode_utf16().count(), 16_384);
+        assert!(stack.starts_with("    at <truncated> ("));
+        assert!(stack.contains(&format!("{}…)", "f".repeat(256))));
+    }
+}
+
+#[test]
 fn native_error_stacks_share_error_capture() {
     for name in [
         "TypeError",

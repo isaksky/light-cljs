@@ -1545,7 +1545,7 @@ fn start_stack_method(
         which,
         this,
         args,
-        state.error_stack(state.top().pc.saturating_sub(1)),
+        state.error_stack(state.top().pc.saturating_sub(1))?,
     )?;
     state.truncate_operands(state.stack_len() - popped)?;
     push_native(state, NativeState::Disposal(Box::new(native)))?;
@@ -1859,14 +1859,14 @@ fn start_builtin_slow(
             state.diag.task,
             args,
             None,
-            state.error_stack(state.top().pc.saturating_sub(1)),
+            state.error_stack(state.top().pc.saturating_sub(1))?,
         )?),
         Builtin::NativeError(kind) => Some(error::ErrorState::constructor(
             heap,
             state.diag.task,
             args,
             Some(kind),
-            state.error_stack(state.top().pc.saturating_sub(1)),
+            state.error_stack(state.top().pc.saturating_sub(1))?,
         )?),
         Builtin::ErrorPrototypeToString if !construct => Some(error::ErrorState::to_string(this)?),
         _ => None,
@@ -2533,7 +2533,7 @@ pub(crate) fn start(
                 resources,
                 error,
                 cancelling,
-                state.error_stack(state.top().pc.saturating_sub(1)),
+                state.error_stack(state.top().pc.saturating_sub(1))?,
             );
             (
                 popped,

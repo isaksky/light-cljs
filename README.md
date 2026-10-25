@@ -2661,6 +2661,13 @@ instance behavior remain deferred. Eval remains deferred.
 
 Test: `cargo test --test error_stacks`.
 
+Stack snapshots are capped at 16,384 UTF-16 units, including formatting
+(clj-quickjs-286). Function names above 256 units become `<truncated>` before
+their rope is traversed; filenames retain their first 256 units followed by
+`…`. The last frame line may be cut off at the snapshot limit. Smaller names
+preserve exact UTF-16 units, including lone surrogates. Buffer reservation
+failure terminates the task with uncatchable `OutOfMemory`.
+
 ### Array construction and brand (clj-quickjs-153)
 
 Supported: callable and constructible `Array`, with no arguments, a single

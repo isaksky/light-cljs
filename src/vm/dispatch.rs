@@ -2104,7 +2104,10 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
         if matches!(error.kind, VmErrorKind::DependencyFailed(_)) {
             define("cause", cause)?;
         }
-        let callers = state.error_stack(pc);
+        let callers = state.error_stack(pc).map_err(|fault| match fault {
+            Fault::OutOfMemory(message) => message,
+            _ => "error stack too long",
+        })?;
         let stack = if let Some((line, column)) = input {
             // A fixed-size input location, followed by the existing bounded
             // snapshot. No rescanning or JavaScript callbacks on failure.

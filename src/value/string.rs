@@ -214,6 +214,34 @@ impl JsString {
         units
     }
 
+    /// Copy a caller-bounded string without populating its flatten cache.
+    /// Reserve both buffers fallibly before walking the immutable rope.
+    pub(crate) fn try_copy_code_units_to(&self, out: &mut Vec<u16>) -> Option<()> {
+        out.try_reserve_exact(self.len()).ok()?;
+        if let Storage::Flat(units) = &self.0.storage {
+            out.extend_from_slice(units);
+            record_copies(self.len());
+            return Some(());
+        }
+        let mut pending = Vec::new();
+        // Nonempty rope children imply at most len pending nodes. Empty
+        // strings never form rope children (concat returns its other input).
+        pending.try_reserve_exact(self.len()).ok()?;
+        pending.push(self.0.as_ref());
+        while let Some(body) = pending.pop() {
+            match &body.storage {
+                Storage::Flat(units) => out.extend_from_slice(units),
+                Storage::Rope(Some((left, right))) => {
+                    pending.push(right.0.as_ref());
+                    pending.push(left.0.as_ref());
+                }
+                Storage::Rope(None) => unreachable!("live rope retains its children"),
+            }
+        }
+        record_copies(self.len());
+        Some(())
+    }
+
     /// Reuse an existing flat leaf without retaining a flattened rope's
     /// obsolete ancestors and their caches. No code units are copied.
     fn concat_operand(&self) -> JsString {

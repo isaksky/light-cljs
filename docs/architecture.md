@@ -4474,8 +4474,17 @@ compiled metadata; diagnostic capture never runs JavaScript.
 
 The snapshot is an ordinary immutable `JsString` leaf buffer with no heap
 edges, using the existing coarse immutable Arc boundary for strings. It
-retains no frame, function object, source text or task; creation cost is
-bounded by 64 frames and the names written. Constructed Errors store it as
+retains no frame, function object, source text or task. Capture is bounded by
+64 frames and 16,384 UTF-16 units including formatting (clj-quickjs-286).
+Each metadata field is capped at 256 units: oversized function names become
+`<truncated>` without traversing or flattening their rope, while filenames
+retain a UTF-16 prefix followed by `…`. The final line may be truncated.
+Smaller rope names use a fallibly reserved traversal buffer without filling
+the string's flatten cache. The output buffer is reserved fallibly once,
+formatted directly, and transferred through the same checked owned-buffer
+conversion as engine messages. Reservation failure propagates as uncatchable
+OutOfMemory through constructors, engine-error wrapping and disposal capture.
+Constructed Errors store it as
 an ordinary non-enumerable property, as do engine errors (clj-quickjs-230).
 Engine error slots retain and trace their original cause even if the own
 `cause` property changes or is deleted. No worker-local state or system-stack walk is involved, so
