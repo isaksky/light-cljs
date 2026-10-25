@@ -32,6 +32,7 @@ pub(crate) struct PVector {
     len: usize,
     shift: u32,
     root: Arc<Node>,
+    _reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 impl Default for PVector {
@@ -40,13 +41,113 @@ impl Default for PVector {
             len: 0,
             shift: 0,
             root: Arc::new(Node::Leaf(Vec::new())),
+            _reservation: None,
         }
     }
 }
 
 impl PVector {
+    /// Charge a conservative complete representation for each distinct
+    /// version, including shared nodes. This deliberately overcounts sharing
+    /// so dropping an earlier version cannot release a descendant's charge.
+    fn reserve(
+        heap: &crate::heap::Heap,
+        len: usize,
+    ) -> Result<Option<Arc<crate::heap::budget::ByteReservation>>, super::CollectionError> {
+        let bytes = len
+            .checked_mul(4 * std::mem::size_of::<Value>() + 64)
+            .and_then(|bytes| bytes.checked_add(128))
+            .ok_or(super::CollectionError::HeapLimit)?;
+        let reservation = heap
+            .reserve_bytes(bytes)
+            .ok_or(super::CollectionError::HeapLimit)?;
+        Ok(reservation.is_charged().then(|| Arc::new(reservation)))
+    }
+
+    pub(crate) fn try_from_values(
+        heap: &crate::heap::Heap,
+        values: &[Value],
+    ) -> Result<Self, super::CollectionError> {
+        let _reservation = Self::reserve(heap, values.len())?;
+        Ok(Self {
+            _reservation,
+            ..Self::build(values)
+        })
+    }
+
+    pub(crate) fn try_push(
+        &self,
+        heap: &crate::heap::Heap,
+        value: Value,
+    ) -> Result<Self, super::CollectionError> {
+        let len = self
+            .len
+            .checked_add(1)
+            .ok_or(super::CollectionError::HeapLimit)?;
+        let _reservation = Self::reserve(heap, len)?;
+        Ok(Self {
+            _reservation,
+            ..self.push(value)
+        })
+    }
+
+    pub(crate) fn try_set(
+        &self,
+        heap: &crate::heap::Heap,
+        index: usize,
+        value: Value,
+    ) -> Result<Self, super::CollectionError> {
+        if index >= self.len {
+            return Err(super::CollectionError::IndexOutOfBounds {
+                index,
+                count: self.len,
+            });
+        }
+        let _reservation = Self::reserve(heap, self.len)?;
+        Ok(Self {
+            _reservation,
+            ..self.set(index, value).expect("validated index")
+        })
+    }
+
+    pub(crate) fn try_pop(&self, heap: &crate::heap::Heap) -> Result<Self, super::CollectionError> {
+        let len = self
+            .len
+            .checked_sub(1)
+            .ok_or(super::CollectionError::IndexOutOfBounds { index: 0, count: 0 })?;
+        let _reservation = Self::reserve(heap, len)?;
+        Ok(Self {
+            _reservation,
+            ..self.pop().expect("nonempty vector")
+        })
+    }
+
+    pub(crate) fn try_prepend(
+        &self,
+        heap: &crate::heap::Heap,
+        value: Value,
+    ) -> Result<Self, super::CollectionError> {
+        let len = self
+            .len
+            .checked_add(1)
+            .ok_or(super::CollectionError::HeapLimit)?;
+        let _reservation = Self::reserve(heap, len)?;
+        let mut values = Vec::with_capacity(len);
+        values.push(value);
+        self.for_each(|value| values.push(value.clone()));
+        Ok(Self {
+            _reservation,
+            ..Self::build(&values)
+        })
+    }
+
     /// A vector of `values`, built bottom-up in O(n).
+    #[cfg(test)]
     pub(crate) fn from_values(values: &[Value]) -> PVector {
+        Self::build(values)
+    }
+
+    fn build(values: &[Value]) -> PVector {
         let mut level: Vec<Arc<Node>> = values
             .chunks(WIDTH)
             .map(|c| Arc::new(Node::Leaf(c.to_vec())))
@@ -64,6 +165,7 @@ impl PVector {
                 len: values.len(),
                 shift,
                 root,
+                _reservation: None,
             },
             None => PVector::default(),
         }
@@ -92,7 +194,7 @@ impl PVector {
     }
 
     /// A new version with `index` set to `value`; `None` when out of bounds.
-    pub(crate) fn set(&self, index: usize, value: Value) -> Option<PVector> {
+    fn set(&self, index: usize, value: Value) -> Option<PVector> {
         if index >= self.len {
             return None;
         }
@@ -103,7 +205,7 @@ impl PVector {
     }
 
     /// A new version with `value` appended.
-    pub(crate) fn push(&self, value: Value) -> PVector {
+    fn push(&self, value: Value) -> PVector {
         // `checked_shl` fails only for a 64-level-deep trie, which cannot exist.
         let capacity = 1usize.checked_shl(self.shift + BITS).unwrap_or(usize::MAX);
         if self.len == capacity {
@@ -115,18 +217,20 @@ impl PVector {
                 len: self.len + 1,
                 shift: self.shift + BITS,
                 root: Arc::new(root),
+                _reservation: None,
             }
         } else {
             PVector {
                 len: self.len + 1,
                 shift: self.shift,
                 root: Arc::new(push_in(&self.root, self.shift, self.len, value)),
+                _reservation: None,
             }
         }
     }
 
     /// A new version without the last element; `None` when empty.
-    pub(crate) fn pop(&self) -> Option<PVector> {
+    fn pop(&self) -> Option<PVector> {
         match self.len {
             0 => return None,
             1 => return Some(PVector::default()),
@@ -148,6 +252,7 @@ impl PVector {
             len: self.len - 1,
             shift,
             root,
+            _reservation: None,
         })
     }
 

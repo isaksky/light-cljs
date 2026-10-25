@@ -139,6 +139,8 @@ pub(crate) enum Fault {
     Host(String),
     /// The heap could not allocate.
     OutOfMemory(&'static str),
+    /// A configured managed-byte reservation was denied before allocation.
+    HeapLimit,
     /// A collection intrinsic rejected its operands.
     Collection(CollectionError),
     /// A builder operation was rejected by the builder lifecycle.
@@ -1887,6 +1889,10 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
         Fault::Internal(m) => (VmErrorKind::Internal, m.to_string()),
         Fault::Host(m) => (VmErrorKind::HostEffect, m),
         Fault::OutOfMemory(m) => (VmErrorKind::OutOfMemory, m.to_string()),
+        Fault::HeapLimit => (VmErrorKind::HeapLimit, "heap byte limit exceeded".into()),
+        Fault::Collection(CollectionError::HeapLimit) => {
+            (VmErrorKind::HeapLimit, "heap byte limit exceeded".into())
+        }
         Fault::Collection(e) => (VmErrorKind::Collection(e), e.to_string()),
         Fault::Builder(e) => (VmErrorKind::Builder(e), e.to_string()),
         Fault::NotCallable(what) => (VmErrorKind::TypeError, format!("{what} is not a function")),
@@ -2035,7 +2041,7 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
         return raise(
             state,
             Exception {
-                value: Value::String(JsString::from("heap object limit exceeded")),
+                value: Value::String(JsString::from(error.message.as_str())),
                 error: Box::new(error),
             },
         );

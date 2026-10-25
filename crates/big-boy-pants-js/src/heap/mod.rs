@@ -72,6 +72,7 @@
 //! set when a persistent object is allocated from known-shareable parts or
 //! proven shareable by the publication check (`value::share`).
 
+pub(crate) mod budget;
 pub mod gc;
 #[cfg(test)]
 mod inventory;
@@ -454,6 +455,7 @@ pub(crate) struct ObjectsHeld<'a>(#[allow(dead_code)] MutexGuard<'a, ObjectTable
 /// The heap shared by all tasks of one runtime.
 #[derive(Debug, Default)]
 pub(crate) struct Heap {
+    byte_budget: Arc<budget::ByteBudget>,
     policy: HeapPolicy,
     allocations_since_collection: AtomicUsize,
     allocated_objects: AtomicUsize,
@@ -509,8 +511,21 @@ fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Heap {
+    pub(crate) fn reserve_bytes(&self, bytes: usize) -> Option<budget::ByteReservation> {
+        self.byte_budget.reserve(bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_byte_limit(bytes: usize) -> Self {
+        Self {
+            byte_budget: budget::ByteBudget::new(Some(bytes)),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn with_policy(policy: HeapPolicy) -> Self {
         Self {
+            byte_budget: budget::ByteBudget::new(None),
             policy,
             next_collection: AtomicUsize::new(policy.threshold(0)),
             ..Self::default()

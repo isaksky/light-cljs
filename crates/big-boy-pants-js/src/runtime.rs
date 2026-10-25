@@ -61,6 +61,10 @@ impl Runtime {
     /// Set the runtime-wide collection policy alongside per-task VM limits.
     pub fn with_heap_policy(limits: VmLimits, policy: crate::HeapPolicy) -> Runtime {
         let heap = Arc::new(Heap::with_policy(policy));
+        Self::with_heap(limits, heap)
+    }
+
+    fn with_heap(limits: VmLimits, heap: Arc<Heap>) -> Runtime {
         Runtime(Arc::new(RuntimeShared {
             deps: Arc::new(DependencyTable::new(Arc::clone(&heap))),
             heap,
@@ -69,6 +73,11 @@ impl Runtime {
             next_world: AtomicU64::new(1),
             limits,
         }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_byte_limit(bytes: usize) -> Runtime {
+        Self::with_heap(VmLimits::DEFAULT, Arc::new(Heap::with_byte_limit(bytes)))
     }
 
     /// The initial world: where [`Runtime::spawn`] runs tasks.

@@ -25,6 +25,9 @@ pub(crate) struct ArrayBuffer {
     pub(crate) object: OrdinaryObject,
     pub(crate) bytes: Vec<u8>,
     pub(crate) detached: bool,
+    // Declared after bytes so its admission is refunded after backing storage
+    // is dropped. Transfer explicitly drops the old bytes before this ticket.
+    reservation: crate::heap::budget::ByteReservation,
 }
 
 impl Trace for ArrayBuffer {
@@ -47,10 +50,14 @@ pub(crate) fn to_index(value: &Value) -> Result<usize, Fault> {
     Ok(index as usize)
 }
 
-fn zeroed(length: usize) -> Result<Vec<u8>, Fault> {
+fn zeroed(
+    heap: &Heap,
+    length: usize,
+) -> Result<(Vec<u8>, crate::heap::budget::ByteReservation), Fault> {
     if length > MAX_BYTE_LENGTH {
         return Err(invalid_length());
     }
+    let reservation = heap.reserve_bytes(length).ok_or(Fault::HeapLimit)?;
     let mut bytes = Vec::new();
     #[cfg(test)]
     let reservation_length = if FAIL_RESERVATION.replace(false) {
@@ -64,10 +71,14 @@ fn zeroed(length: usize) -> Result<Vec<u8>, Fault> {
         .try_reserve_exact(reservation_length)
         .map_err(|_| invalid_length())?;
     bytes.resize(length, 0);
-    Ok(bytes)
+    Ok((bytes, reservation))
 }
 
-fn allocate(heap: &Heap, task: TaskId, bytes: Vec<u8>) -> Result<Value, Fault> {
+fn allocate(
+    heap: &Heap,
+    task: TaskId,
+    (bytes, reservation): (Vec<u8>, crate::heap::budget::ByteReservation),
+) -> Result<Value, Fault> {
     let prototype = crate::realm::intrinsics(heap)
         .ok_or_else(invalid_length)?
         .array_buffer_prototype;
@@ -75,13 +86,14 @@ fn allocate(heap: &Heap, task: TaskId, bytes: Vec<u8>) -> Result<Value, Fault> {
         object: OrdinaryObject::with_prototype(task, prototype),
         bytes,
         detached: false,
+        reservation,
     })))
     .map(Value::Object)
     .ok_or_else(invalid_length)
 }
 
 pub(crate) fn constructor(heap: &Heap, task: TaskId, length: &Value) -> Result<Value, Fault> {
-    allocate(heap, task, zeroed(to_index(length)?)?)
+    allocate(heap, task, zeroed(heap, to_index(length)?)?)
 }
 
 /// Brand/ownership check precedes any observable argument coercion.
@@ -142,10 +154,10 @@ pub(crate) fn transfer(
         .read(id, |o| match o {
             HeapObject::ArrayBuffer(b) => {
                 attached(b)?;
-                let mut bytes = zeroed(length.unwrap_or(b.bytes.len()))?;
+                let (mut bytes, reservation) = zeroed(heap, length.unwrap_or(b.bytes.len()))?;
                 let copied = bytes.len().min(b.bytes.len());
                 bytes[..copied].copy_from_slice(&b.bytes[..copied]);
-                Ok(bytes)
+                Ok((bytes, reservation))
             }
             _ => Err(Fault::Internal("ArrayBuffer changed kind")),
         })
@@ -154,6 +166,7 @@ pub(crate) fn transfer(
     heap.with_object_mut(id, |o| {
         if let HeapObject::ArrayBuffer(b) = o {
             b.bytes = Vec::new();
+            b.reservation = Default::default();
             b.detached = true;
         }
     })
@@ -210,9 +223,9 @@ pub(crate) fn slice(
                 };
                 let first = relative(start);
                 let last = end.map_or(b.bytes.len(), relative).max(first);
-                let mut bytes = zeroed(last - first)?;
+                let (mut bytes, reservation) = zeroed(heap, last - first)?;
                 bytes.copy_from_slice(&b.bytes[first..last]);
-                Ok(bytes)
+                Ok((bytes, reservation))
             }
             _ => Err(Fault::Internal("ArrayBuffer changed kind")),
         })
@@ -225,6 +238,80 @@ mod tests {
     use super::*;
     use crate::Scope;
     use std::sync::Arc;
+
+    #[test]
+    fn byte_denial_and_allocator_failure_refund_before_recovery() {
+        let heap = Arc::new(Heap::with_byte_limit(8));
+        let scope = Scope::new(&heap);
+        let task = TaskId::from_raw(1);
+        FAIL_RESERVATION.set(true);
+        assert!(matches!(
+            constructor(&heap, task, &Value::Number(8.0)),
+            Err(Fault::RangeError(_))
+        ));
+        let buffer = constructor(&heap, task, &Value::Number(8.0)).ok().unwrap();
+        assert!(matches!(
+            constructor(&heap, task, &Value::Number(1.0)),
+            Err(Fault::HeapLimit)
+        ));
+        for length in [Value::Undefined, Value::Number(16.0)] {
+            assert!(matches!(
+                transfer(&heap, task, &buffer, &length),
+                Err(Fault::HeapLimit)
+            ));
+            assert!(matches!(
+                inspect(&heap, task, &buffer, false),
+                Ok(Value::Number(8.0))
+            ));
+            assert!(matches!(
+                inspect(&heap, task, &buffer, true),
+                Ok(Value::Bool(false))
+            ));
+        }
+        assert!(matches!(
+            slice(
+                &heap,
+                task,
+                &buffer,
+                &Value::Number(0.0),
+                &Value::Number(1.0)
+            ),
+            Err(Fault::HeapLimit)
+        ));
+        drop(scope);
+        heap.collect().unwrap();
+        let _scope = Scope::new(&heap);
+        assert!(constructor(&heap, task, &Value::Number(8.0)).is_ok());
+    }
+
+    #[test]
+    fn configured_byte_denial_is_catchable_and_runtime_recovers_after_gc() {
+        use crate::frontend::compile_function;
+        use crate::{Budget, RunOutcome, Runtime, ValueView};
+        let runtime = Runtime::with_byte_limit(1024);
+        let code = compile_function("function f() { let b = new ArrayBuffer(1024); try { b.transfer(1024); } catch (e) { return e === 'heap byte limit exceeded' && b.byteLength === 1024 && !b.detached; } }").unwrap();
+        let task = runtime.spawn(&code, &[]).unwrap();
+        let result = loop {
+            match task
+                .run_with(Budget::instructions(3), &mut crate::host::NoHost)
+                .unwrap()
+            {
+                RunOutcome::Yielded => continue,
+                RunOutcome::Complete(result) => break result,
+                outcome => panic!("{outcome:?}"),
+            }
+        };
+        assert_eq!(result.view(), ValueView::Bool(true));
+        drop(task);
+        runtime.collect().unwrap();
+        let code =
+            compile_function("function f() { return new ArrayBuffer(1024).byteLength; }").unwrap();
+        let task = runtime.spawn(&code, &[]).unwrap();
+        let RunOutcome::Complete(result) = task.run().unwrap() else {
+            panic!("budget recovered");
+        };
+        assert_eq!(result.view(), ValueView::Number(1024.0));
+    }
 
     #[test]
     fn allocation_failure_is_range_error_and_preserves_source() {

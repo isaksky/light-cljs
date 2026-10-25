@@ -202,6 +202,8 @@ pub enum CollectionError {
     IndexOutOfBounds { index: usize, count: usize },
     /// The heap's object table is exhausted.
     OutOfMemory,
+    /// The runtime's managed-byte admission limit was reached.
+    HeapLimit,
     /// A strict lookup (the `get` intrinsic) found no entry for the key.
     MissingKey,
     /// A keyword or symbol whose spelling `namespace/name` does not split
@@ -224,6 +226,7 @@ impl fmt::Display for CollectionError {
                 write!(f, "index {index} is out of bounds for count {count}")
             }
             CollectionError::OutOfMemory => f.write_str("heap object table exhausted"),
+            CollectionError::HeapLimit => f.write_str("heap byte limit exceeded"),
             CollectionError::MissingKey => f.write_str("key not found in map"),
             CollectionError::AmbiguousName => f.write_str(
                 "a keyword or symbol spelling must split back into its namespace and name at its first '/'",
@@ -365,15 +368,18 @@ pub(crate) fn kind_of(heap: &Heap, v: &Value) -> Option<PersistentKind> {
 pub(crate) fn new_vector(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
     alloc(
         heap,
-        HeapObject::Vector(PVector::from_values(items)),
+        HeapObject::Vector(PVector::try_from_values(heap, items)?),
         Some(items),
     )
 }
 
 pub(crate) fn new_map(heap: &Heap, entries: &[(Value, Value)]) -> Result<Value, CollectionError> {
-    let map = entries.iter().fold(PMap::default(), |m, (k, v)| {
-        m.assoc(k.clone(), v.clone()).unwrap_or(m)
-    });
+    let mut map = PMap::default();
+    for (key, value) in entries {
+        if let Some(updated) = map.try_assoc(heap, key.clone(), value.clone())? {
+            map = updated;
+        }
+    }
     alloc(heap, HeapObject::Map(map), None)
 }
 
@@ -455,7 +461,7 @@ pub(crate) fn assoc(
             if index == count {
                 return alloc(
                     heap,
-                    HeapObject::Vector(vec.push(value.clone())),
+                    HeapObject::Vector(vec.try_push(heap, value.clone())?),
                     Some(&[coll, value]),
                 );
             }
@@ -465,12 +471,10 @@ pub(crate) fn assoc(
             if identical(&old, &value) {
                 return Ok(coll);
             }
-            let updated = vec
-                .set(index, value.clone())
-                .ok_or(CollectionError::IndexOutOfBounds { index, count })?;
+            let updated = vec.try_set(heap, index, value.clone())?;
             alloc(heap, HeapObject::Vector(updated), Some(&[coll, value]))
         }
-        Body::Map(map) => match map.assoc(key.clone(), value.clone()) {
+        Body::Map(map) => match map.try_assoc(heap, key.clone(), value.clone())? {
             Some(updated) => alloc(heap, HeapObject::Map(updated), Some(&[coll, key, value])),
             None => Ok(coll),
         },
@@ -487,21 +491,19 @@ fn identical(a: &Value, b: &Value) -> bool {
 }
 
 pub(crate) fn dissoc(heap: &Heap, map: Value, key: Value) -> Result<Value, CollectionError> {
-    match map_body(heap, &map)?.dissoc(&key) {
+    match map_body(heap, &map)?.try_dissoc(heap, &key)? {
         Some(updated) => alloc(heap, HeapObject::Map(updated), Some(&[map])),
         None => Ok(map),
     }
 }
 
 pub(crate) fn conj(heap: &Heap, vec: Value, value: Value) -> Result<Value, CollectionError> {
-    let updated = vector_body(heap, &vec)?.push(value.clone());
+    let updated = vector_body(heap, &vec)?.try_push(heap, value.clone())?;
     alloc(heap, HeapObject::Vector(updated), Some(&[vec, value]))
 }
 
 pub(crate) fn pop(heap: &Heap, vec: Value) -> Result<Value, CollectionError> {
-    let updated = vector_body(heap, &vec)?
-        .pop()
-        .ok_or(CollectionError::IndexOutOfBounds { index: 0, count: 0 })?;
+    let updated = vector_body(heap, &vec)?.try_pop(heap)?;
     alloc(heap, HeapObject::Vector(updated), Some(&[vec]))
 }
 

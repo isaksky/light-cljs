@@ -127,6 +127,7 @@ fn position(bitmap: u32, bit: u32) -> usize {
 pub(crate) struct PMap {
     len: usize,
     root: Option<Arc<Node>>,
+    _reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 enum Assoc {
@@ -143,6 +144,80 @@ enum Dissoc {
 }
 
 impl PMap {
+    // A 64-bit hash has at most 13 radix levels. Charge all levels for every
+    // entry, including geometric Vec capacity and Arc/node headers. Charging
+    // the complete result makes sharing independent of old-version lifetime.
+    fn reserve(
+        heap: &crate::heap::Heap,
+        len: usize,
+    ) -> Result<Option<Arc<crate::heap::budget::ByteReservation>>, super::CollectionError> {
+        let bytes = len
+            .checked_mul(4096)
+            .and_then(|n| n.checked_add(128))
+            .ok_or(super::CollectionError::HeapLimit)?;
+        let reservation = heap
+            .reserve_bytes(bytes)
+            .ok_or(super::CollectionError::HeapLimit)?;
+        Ok(reservation.is_charged().then(|| Arc::new(reservation)))
+    }
+
+    pub(crate) fn try_assoc(
+        &self,
+        heap: &crate::heap::Heap,
+        key: Value,
+        value: Value,
+    ) -> Result<Option<PMap>, super::CollectionError> {
+        self.try_assoc_with(heap, key_hash(&key), canonical_key(key), value, &key_eq)
+    }
+
+    pub(crate) fn try_assoc_with(
+        &self,
+        heap: &crate::heap::Heap,
+        hash: u64,
+        key: Value,
+        value: Value,
+        eq: KeyEq<'_>,
+    ) -> Result<Option<PMap>, super::CollectionError> {
+        let old = self.get_with(hash, &key, eq);
+        if old.as_ref().is_some_and(|old| identical(old, &value)) {
+            return Ok(None);
+        }
+        let len = self
+            .len
+            .checked_add(usize::from(old.is_none()))
+            .ok_or(super::CollectionError::HeapLimit)?;
+        let reservation = Self::reserve(heap, len)?;
+        Ok(self.assoc_with(hash, key, value, eq).map(|mut result| {
+            result._reservation = reservation;
+            result
+        }))
+    }
+
+    pub(crate) fn try_dissoc(
+        &self,
+        heap: &crate::heap::Heap,
+        key: &Value,
+    ) -> Result<Option<PMap>, super::CollectionError> {
+        self.try_dissoc_with(heap, key_hash(key), key, &key_eq)
+    }
+
+    pub(crate) fn try_dissoc_with(
+        &self,
+        heap: &crate::heap::Heap,
+        hash: u64,
+        key: &Value,
+        eq: KeyEq<'_>,
+    ) -> Result<Option<PMap>, super::CollectionError> {
+        if self.get_with(hash, key, eq).is_none() {
+            return Ok(None);
+        }
+        let reservation = Self::reserve(heap, self.len - 1)?;
+        Ok(self.dissoc_with(hash, key, eq).map(|mut result| {
+            result._reservation = reservation;
+            result
+        }))
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.len
     }
@@ -153,11 +228,13 @@ impl PMap {
 
     /// A new version mapping `key` to `value`, or `None` when the key already
     /// maps to an identical value (so the caller can return the original).
+    #[cfg(test)]
     pub(crate) fn assoc(&self, key: Value, value: Value) -> Option<PMap> {
         self.assoc_hashed(key_hash(&key), key, value)
     }
 
     /// A new version without `key`, or `None` when the key is absent.
+    #[cfg(test)]
     pub(crate) fn dissoc(&self, key: &Value) -> Option<PMap> {
         self.dissoc_hashed(key_hash(key), key)
     }
@@ -201,19 +278,14 @@ impl PMap {
         }
     }
 
+    #[cfg(test)]
     fn assoc_hashed(&self, hash: u64, key: Value, value: Value) -> Option<PMap> {
         self.assoc_with(hash, canonical_key(key), value, &key_eq)
     }
 
     /// [`PMap::assoc`] with a caller-supplied hash and key equality (see
     /// [`PMap::get_with`]). The key is stored as given.
-    pub(crate) fn assoc_with(
-        &self,
-        hash: u64,
-        key: Value,
-        value: Value,
-        eq: KeyEq<'_>,
-    ) -> Option<PMap> {
+    fn assoc_with(&self, hash: u64, key: Value, value: Value, eq: KeyEq<'_>) -> Option<PMap> {
         let Some(root) = &self.root else {
             let root = Node::Bitmap {
                 bitmap: bit_for(hash, 0),
@@ -222,6 +294,7 @@ impl PMap {
             return Some(PMap {
                 len: 1,
                 root: Some(Arc::new(root)),
+                _reservation: None,
             });
         };
         let (root, len) = match assoc_in(root, 0, hash, key, value, eq) {
@@ -232,21 +305,24 @@ impl PMap {
         Some(PMap {
             len,
             root: Some(Arc::new(root)),
+            _reservation: None,
         })
     }
 
+    #[cfg(test)]
     fn dissoc_hashed(&self, hash: u64, key: &Value) -> Option<PMap> {
         self.dissoc_with(hash, key, &key_eq)
     }
 
     /// [`PMap::dissoc`] with a caller-supplied hash and key equality (see
     /// [`PMap::get_with`]).
-    pub(crate) fn dissoc_with(&self, hash: u64, key: &Value, eq: KeyEq<'_>) -> Option<PMap> {
+    fn dissoc_with(&self, hash: u64, key: &Value, eq: KeyEq<'_>) -> Option<PMap> {
         match dissoc_in(self.root.as_deref()?, 0, hash, key, eq) {
             Dissoc::Absent => None,
             Dissoc::Removed(root) => Some(PMap {
                 len: self.len - 1,
                 root: root.map(Arc::new),
+                _reservation: None,
             }),
         }
     }

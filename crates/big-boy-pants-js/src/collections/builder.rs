@@ -147,7 +147,7 @@ impl BuilderKind {
 /// The private contents of an open builder.
 #[derive(Debug)]
 enum Draft {
-    Vector(Vec<Value>),
+    Vector(Vec<Value>, crate::heap::budget::ByteReservation),
     Map(PMap),
 }
 
@@ -195,7 +195,7 @@ impl Builder {
 impl Trace for Builder {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match &self.state {
-            State::Open(Draft::Vector(items)) => items.trace(visit),
+            State::Open(Draft::Vector(items, _)) => items.trace(visit),
             State::Open(Draft::Map(map)) => map.trace(visit),
             State::Frozen | State::Released => {}
         }
@@ -250,7 +250,7 @@ pub(crate) fn new_builder(
     owned: &mut OwnedBuilders,
 ) -> Result<Value, CollectionError> {
     let draft = match kind {
-        BuilderKind::Vector => Draft::Vector(Vec::new()),
+        BuilderKind::Vector => Draft::Vector(Vec::new(), Default::default()),
         BuilderKind::Map => Draft::Map(PMap::default()),
     };
     let builder = Builder {
@@ -291,10 +291,37 @@ fn with_builder<R>(
 }
 
 /// Append `value` to vector builder `b` in place.
+fn push(
+    heap: &Heap,
+    items: &mut Vec<Value>,
+    reservation: &mut crate::heap::budget::ByteReservation,
+    value: Value,
+) -> Result<(), CollectionError> {
+    if items.len() == items.capacity() {
+        let capacity = items
+            .capacity()
+            .checked_mul(2)
+            .map(|n| n.max(1))
+            .ok_or(CollectionError::HeapLimit)?;
+        let bytes = (capacity - items.capacity())
+            .checked_mul(std::mem::size_of::<Value>())
+            .ok_or(CollectionError::HeapLimit)?;
+        let additional = heap
+            .reserve_bytes(bytes)
+            .ok_or(CollectionError::HeapLimit)?;
+        items
+            .try_reserve_exact(capacity - items.len())
+            .map_err(|_| CollectionError::OutOfMemory)?;
+        reservation.merge(additional);
+    }
+    items.push(value);
+    Ok(())
+}
+
 pub(crate) fn conj(heap: &Heap, caller: TaskId, b: Value, value: Value) -> Result<(), BuildFault> {
     with_builder(heap, b, Some(BuilderKind::Vector), |builder| {
         match builder.draft(caller)? {
-            Draft::Vector(items) => items.push(value),
+            Draft::Vector(items, reservation) => push(heap, items, reservation, value)?,
             Draft::Map(_) => return Err(INCONSISTENT),
         }
         Ok(())
@@ -312,17 +339,17 @@ pub(crate) fn assoc(
 ) -> Result<(), BuildFault> {
     with_builder(heap, b, None, |builder| {
         match builder.draft(caller)? {
-            Draft::Vector(items) => {
+            Draft::Vector(items, reservation) => {
                 let index = index_from_value(&key)?;
                 let count = items.len();
                 match items.get_mut(index) {
                     Some(slot) => *slot = value,
-                    None if index == count => items.push(value),
+                    None if index == count => push(heap, items, reservation, value)?,
                     None => return Err(CollectionError::IndexOutOfBounds { index, count }.into()),
                 }
             }
             Draft::Map(map) => {
-                if let Some(updated) = map.assoc(key, value) {
+                if let Some(updated) = map.try_assoc(heap, key, value)? {
                     *map = updated;
                 }
             }
@@ -334,23 +361,24 @@ pub(crate) fn assoc(
 /// Freeze builder `b` (either kind): a new persistent vector or map with its
 /// contents. The builder becomes `Frozen`.
 pub(crate) fn freeze(heap: &Heap, caller: TaskId, b: Value) -> Result<Value, BuildFault> {
-    let draft = with_builder(heap, b, None, |builder| {
-        builder.draft(caller)?;
-        match mem::replace(&mut builder.state, State::Frozen) {
-            State::Open(draft) => Ok(draft),
-            State::Frozen | State::Released => Err(INCONSISTENT),
-        }
+    let object = with_builder(heap, b.clone(), None, |builder| {
+        Ok(match builder.draft(caller)? {
+            Draft::Vector(items, _) => HeapObject::Vector(PVector::try_from_values(heap, items)?),
+            Draft::Map(map) => HeapObject::Map(map.clone()),
+        })
     })?;
     // The draft's values are held only here until the new object exists;
     // the caller is a registered mutator, so no collection can intervene.
-    let object = match draft {
-        Draft::Vector(items) => HeapObject::Vector(PVector::from_values(&items)),
-        Draft::Map(map) => HeapObject::Map(map),
-    };
     // Known shareable at once when every drafted value already is.
-    heap.alloc_persistent(object, None)
+    let result = heap
+        .alloc_persistent(object, None)
         .map(Value::Object)
-        .ok_or(BuildFault::Collection(CollectionError::OutOfMemory))
+        .ok_or(BuildFault::Collection(CollectionError::OutOfMemory))?;
+    with_builder(heap, b, None, |builder| {
+        builder.state = State::Frozen;
+        Ok(())
+    })?;
+    Ok(result)
 }
 
 /// A draft whose shape disagrees with its builder's kind, or a state that
@@ -364,6 +392,28 @@ mod tests {
 
     use super::*;
     use crate::heap::Scope;
+
+    #[test]
+    fn denied_freeze_keeps_builder_open_and_contents_intact() {
+        let heap = Arc::new(Heap::with_byte_limit(std::mem::size_of::<Value>()));
+        let _scope = Scope::new(&heap);
+        let owner = TaskId::from_raw(1);
+        let mut owned = OwnedBuilders::default();
+        let builder = new_builder(&heap, owner, BuilderKind::Vector, &mut owned).unwrap();
+        conj(&heap, owner, builder.clone(), Value::Number(42.0)).unwrap();
+        assert_eq!(
+            freeze(&heap, owner, builder.clone()),
+            Err(BuildFault::Collection(CollectionError::HeapLimit))
+        );
+        with_builder(&heap, builder, None, |builder| {
+            let Draft::Vector(items, _) = builder.draft(owner)? else {
+                panic!("vector");
+            };
+            assert!(matches!(items.as_slice(), [Value::Number(42.0)]));
+            Ok(())
+        })
+        .unwrap();
+    }
 
     #[test]
     fn owned_list_stays_bounded_and_release_skips_frozen_builders() {

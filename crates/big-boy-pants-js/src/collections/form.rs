@@ -474,9 +474,14 @@ fn trie_hash(hash: i32) -> u64 {
     z ^ (z >> 31)
 }
 
-fn map_assoc(heap: &Heap, map: &PMap, key: Value, value: Value) -> Option<PMap> {
+fn map_assoc(
+    heap: &Heap,
+    map: &PMap,
+    key: Value,
+    value: Value,
+) -> Result<Option<PMap>, CollectionError> {
     let h = trie_hash(hash(heap, &key));
-    map.assoc_with(h, key, value, &|a, b| equals(heap, a, b))
+    map.try_assoc_with(heap, h, key, value, &|a, b| equals(heap, a, b))
 }
 
 fn map_get(heap: &Heap, map: &PMap, key: &Value) -> Option<Value> {
@@ -525,21 +530,24 @@ pub(crate) fn new_named_from_values(
 }
 
 pub(crate) fn new_list(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
-    let body = FormBody::List(PVector::from_values(items));
+    let body = FormBody::List(PVector::try_from_values(heap, items)?);
     alloc(heap, FormObject::new(body, None), items)
 }
 
 pub(crate) fn new_vector(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
-    let body = FormBody::Vector(PVector::from_values(items));
+    let body = FormBody::Vector(PVector::try_from_values(heap, items)?);
     alloc(heap, FormObject::new(body, None), items)
 }
 
 /// A new map; a later duplicate (equal) key replaces an earlier one's
 /// value, keeping the earlier key object.
 pub(crate) fn new_map(heap: &Heap, entries: &[(Value, Value)]) -> Result<Value, CollectionError> {
-    let map = entries.iter().fold(PMap::default(), |m, (k, v)| {
-        map_assoc(heap, &m, k.clone(), v.clone()).unwrap_or(m)
-    });
+    let mut map = PMap::default();
+    for (key, value) in entries {
+        if let Some(updated) = map_assoc(heap, &map, key.clone(), value.clone())? {
+            map = updated;
+        }
+    }
     let parts: Vec<Value> = entries
         .iter()
         .flat_map(|(k, v)| [k.clone(), v.clone()])
@@ -645,7 +653,7 @@ pub(crate) fn assoc(
     };
     let parts = [coll.clone(), key.clone(), value.clone()];
     match &f.body {
-        FormBody::Map(map) => match map_assoc(heap, map, key, value) {
+        FormBody::Map(map) => match map_assoc(heap, map, key, value)? {
             Some(updated) => alloc(heap, f.updated(FormBody::Map(updated)), &parts),
             None => Ok(coll.clone()),
         },
@@ -653,7 +661,7 @@ pub(crate) fn assoc(
             let index = index_from_value(&key)?;
             let count = items.len();
             let updated = if index == count {
-                items.push(value)
+                items.try_push(heap, value)?
             } else {
                 let old = items
                     .get(index)
@@ -661,9 +669,7 @@ pub(crate) fn assoc(
                 if identical(&old, &value) {
                     return Ok(coll.clone());
                 }
-                items
-                    .set(index, value)
-                    .ok_or(CollectionError::IndexOutOfBounds { index, count })?
+                items.try_set(heap, index, value)?
             };
             alloc(heap, f.updated(FormBody::Vector(updated)), &parts)
         }
@@ -680,7 +686,7 @@ pub(crate) fn dissoc(heap: &Heap, map: &Value, key: &Value) -> Result<Value, Col
         return Err(wrong(heap, "form map", map));
     };
     let h = trie_hash(hash(heap, key));
-    match body.dissoc_with(h, key, &|a, b| equals(heap, a, b)) {
+    match body.try_dissoc_with(heap, h, key, &|a, b| equals(heap, a, b))? {
         Some(updated) => alloc(
             heap,
             f.updated(FormBody::Map(updated)),
@@ -697,13 +703,8 @@ pub(crate) fn conj(heap: &Heap, coll: &Value, value: Value) -> Result<Value, Col
     };
     let parts = [coll.clone(), value.clone()];
     let body = match &f.body {
-        FormBody::Vector(items) => FormBody::Vector(items.push(value)),
-        FormBody::List(items) => {
-            let mut all = Vec::with_capacity(items.len() + 1);
-            all.push(value);
-            items.for_each(|v| all.push(v.clone()));
-            FormBody::List(PVector::from_values(&all))
-        }
+        FormBody::Vector(items) => FormBody::Vector(items.try_push(heap, value)?),
+        FormBody::List(items) => FormBody::List(items.try_prepend(heap, value)?),
         _ => return Err(wrong(heap, "list or form vector", coll)),
     };
     alloc(heap, f.updated(body), &parts)
