@@ -18,6 +18,19 @@ const native = (() => {
   const list = a => { let v = __rt.formList(); for(let i=a.length-1;i>=0;i--) v=__rt.formConj(v,a[i]); return v; };
   const vector = a => { let v=__rt.formVector();for(const x of a)v=__rt.formConj(v,x);return v; };
   const map = a => { let v=__rt.formMap();for(let i=0;i<a.length;i+=2)v=__rt.formAssoc(v,a[i],a[i+1]);return v; };
+  const seq = x => {
+    const value = val(x), kind = __rt.formKind(value);
+    if (value == null) return null;
+    if (kind === 'list') return __rt.formCount(value) === 0 ? null : x;
+    let items;
+    if (kind === 'vector') items = arr(value);
+    else if (kind === 'map') items = arr(__rt.formKeys(value)).map(k => vector([k, __rt.formGet(value, k, null)]));
+    else if (typeof value === 'string') {
+      items = [];
+      for (let i = 0; i < value.length; i++) items.push(value.charAt(i));
+    } else throw new Error('unsupported operation: native macro runtime seq on ' + (kind || typeof value));
+    return items.length === 0 ? null : list(items);
+  };
   const get = (m,k,n=null) => val(m) == null ? n : __rt.formGet(val(m),val(k),n);
   const invoke = (f,...args) => typeof f === 'function' ? f(...args) : __rt.formKind(val(f))==='keyword' ? get(args[0],f,args.length>1?args[1]:null) : get(f,args[0],args.length>1?args[1]:null);
   const unsupported = name => function(){throw new Error('unsupported operation: native macro runtime '+name);};
@@ -29,7 +42,7 @@ const native = (() => {
     second:x=>val(x)==null||__rt.formCount(val(x))<2?null:__rt.formNth(val(x),1),
     nth:(x,n,d)=>val(n)<__rt.formCount(val(x))?__rt.formNth(val(x),val(n)):d===undefined?(()=>{throw new Error('index out of bounds')})():d,
     count:x=>val(x)==null?0:__rt.formCount(val(x)),
-    seq:x=>val(x)==null||__rt.formCount(val(x))===0?null:x,
+    seq,
     rest:x=>list(arr(x).slice(1)), next:x=>arr(x).length<2?null:list(arr(x).slice(1)),
     cons:(x,xs)=>list([x,...arr(xs)]), concat:(...xs)=>list(xs.flatMap(arr)),
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),

@@ -1,5 +1,145 @@
 #![cfg(feature = "bbp-macros")]
 use light_cljs::{MacroHost, analyze_with_macros, emit_js, parse};
+
+const SEQ_FIXTURES: &[(&str, &str)] = &[
+    (
+        "(defmacro call-form [x] (seq x)) (js/console.log (call-form [+ 1 2]))",
+        "3\n",
+    ),
+    (
+        "(defmacro quoted-seq [x] (list 'quote (seq x))) (js/console.log (pr-str (quoted-seq [1 2])) (pr-str (quoted-seq {:a 1})) (pr-str (quoted-seq \"ab\")))",
+        "(1 2) ([:a 1]) (\"a\" \"b\")\n",
+    ),
+    (
+        "(defmacro sequence? [x] (seq? (seq x))) (js/console.log (sequence? [1]) (sequence? {:a 1}) (sequence? \"a\") (sequence? (1)))",
+        "true true true true\n",
+    ),
+    (
+        "(defmacro empty-seq? [x] (nil? (seq x))) (js/console.log (empty-seq? nil) (empty-seq? ()) (empty-seq? []) (empty-seq? {}) (empty-seq? \"\"))",
+        "true true true true true\n",
+    ),
+    (
+        "(defmacro units [x] (count (seq x))) (js/console.log (units \"😀\"))",
+        "2\n",
+    ),
+];
+
+fn program_output(js: &str) -> String {
+    let output = std::process::Command::new("node")
+        .arg("-e")
+        .arg(js)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn seq_converts_supported_finite_inputs_to_lists() {
+    for (source, expected) in SEQ_FIXTURES {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+            .unwrap_or_else(|e| panic!("{source}: {e}"));
+        assert_eq!(program_output(&emit_js(&program)), *expected, "{source}");
+        assert!(!host.native_macro_calls().is_empty());
+    }
+}
+
+#[test]
+fn seq_preserves_list_identity_and_existing_element_occurrences() {
+    use light_cljs::{
+        CollectionKind,
+        bbp_evaluator::BbpEvaluator,
+        compiler_data::{Datum, DatumKind, ExpansionOrigin, Name, Source},
+        evaluator::{EvaluatorOptions, MacroEvaluator},
+    };
+    let evaluator = BbpEvaluator::new(EvaluatorOptions::default()).unwrap();
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let source = "(fn [form env x] (seq x))";
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    let function = evaluator
+        .evaluate_unit(&light_cljs::emitter::emit_js_unit(&program))
+        .unwrap();
+    let environment = Datum::new(DatumKind::Collection {
+        kind: CollectionKind::Map,
+        children: Box::new([]),
+    });
+    for input in [
+        "(sequence (1 1))",
+        "(sequence [1 1])",
+        "(sequence {:a [1 1]})",
+    ] {
+        let call = host
+            .read_compiler_form(&Source::new("sequence.cljs", input))
+            .unwrap()
+            .unwrap();
+        let original = &call.children()[1];
+        for iteration in 0..2 {
+            let result = host
+                .expand_javascript(
+                    &evaluator,
+                    function,
+                    &call,
+                    &environment,
+                    ExpansionOrigin {
+                        macro_name: Name::new(None, "sequence"),
+                        call: call.span(),
+                        definition: None,
+                        helpers: vec![],
+                    },
+                )
+                .unwrap();
+            assert!(matches!(
+                result.data().kind(),
+                DatumKind::Collection {
+                    kind: CollectionKind::List,
+                    ..
+                }
+            ));
+            if input.contains("(1 1)") {
+                assert!(std::ptr::eq(result.data().kind(), original.data().kind()));
+                assert_eq!(result.span().bytes(), original.span().bytes());
+            }
+            let elements = if input.contains('{') {
+                result.children()[0].children()
+            } else {
+                result.children()
+            };
+            assert_eq!(elements.len(), original.children().len());
+            for (element, original) in elements.iter().zip(original.children()) {
+                assert!(std::ptr::eq(element.data().kind(), original.data().kind()));
+                assert_eq!(element.span().bytes(), original.span().bytes());
+                assert_eq!(element.span().source().name(), "sequence.cljs");
+            }
+            if iteration == 1 {
+                assert_eq!(host.native_macro_calls().last().unwrap().imported, 0);
+            }
+        }
+    }
+    evaluator.release(function).unwrap();
+}
+
+#[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+#[test]
+fn seq_expansions_and_program_results_match_legacy() {
+    for (source, expected) in SEQ_FIXTURES {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+        let native = emit_js(&program);
+        let legacy = light_cljs::compile(source).unwrap();
+        assert_eq!(native, legacy, "{source}");
+        assert_eq!(program_output(&native), *expected, "{source}");
+        assert_eq!(program_output(&legacy), *expected, "{source}");
+    }
+}
+
 #[test]
 fn constructs_real_macro_form() {
     let source = "(defmacro make-add [x] (list '+ x 2)) (js/console.log (make-add 40))";
@@ -314,6 +454,22 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
         (
             "(defmacro js-instance [x] (instance? js/Object x)) (js-instance [1 2])",
             "unsupported operation: JavaScript interop with native vector form",
+        ),
+        (
+            "(defmacro sequence [x] (seq x)) (sequence 1)",
+            "unsupported operation: native macro runtime seq on number",
+        ),
+        (
+            "(defmacro sequence [x] (seq x)) (sequence :a)",
+            "unsupported operation: native macro runtime seq on keyword",
+        ),
+        (
+            "(defmacro sequence [x] (seq x)) (sequence a)",
+            "unsupported operation: native macro runtime seq on symbol",
+        ),
+        (
+            "(defmacro sequence [] (seq (js* \"({})\"))) (sequence)",
+            "unsupported operation: native macro runtime seq on object",
         ),
     ] {
         let mut host = MacroHost::new();

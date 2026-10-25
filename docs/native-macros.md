@@ -60,8 +60,11 @@ engine source, and includes preloaded helper source.
 This is a finite-form integration, not backend parity. Lists, vectors, maps,
 keywords, symbols, scalar occurrences, metadata, construction, lookup, basic
 finite sequence operations, equality, arithmetic addition/subtraction and native
-truth tests have first-party implementations using native form intrinsics. Plain
-JavaScript functions and ordinary interop such as `Math.max` run in the same task.
+truth tests have first-party implementations using native form intrinsics.
+`seq` returns native lists for vectors, map entries (two-element vectors), and
+strings (UTF-16 code units), preserves nonempty lists, and returns nil for nil or
+empty supported inputs. Other input kinds report an unsupported-operation error.
+Plain JavaScript functions and ordinary interop such as `Math.max` run in the same task.
 Direct JavaScript calls, constructors, method calls, instance checks,
 property/index access and property assignment unwrap imported scalar occurrences. For example,
 `(defmacro maximum [x] (js/Math.max x 2))` accepts a numeric input. Native
