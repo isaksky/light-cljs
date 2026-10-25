@@ -1,0 +1,2 @@
+Generated 199129 nonblank lines (213984 physical, 9966430 bytes, 15450 top-level forms), 450 worker namespaces in research/project-attempt-200k
+Distinct normalized lines: 147512 (ratio 0.7408). Waste markers: {:best-effort 1104, :compile-time 114, :never-loaded 87, :removable 2815, :retained 406}. See README.md and manifest.edn.
