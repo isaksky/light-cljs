@@ -870,6 +870,80 @@ formatting passes. Strict Clippy reports only the existing nine diagnostics in
 allowing only those categories passes, without source suppressions. These
 checks remain applicable to the following documentation-only commits.
 
+### Guarded integral Number remainder (2026-10-25)
+
+light-cljs-488 replaces floating-point remainder in the primitive and fused
+paths only when both Number operands round-trip exactly through `i32` and the
+divisor is nonzero. Integer remainder is then exact; `wrapping_rem` handles
+`i32::MIN % -1`, and `copysign` preserves the dividend's negative zero.
+Fractions, larger Numbers, NaN, infinities and zero divisors keep the general
+f64 path. The generic dispatcher, BigInt/conversion fallback, bytecode, budgets,
+fusion boundaries, roots and polls are unchanged.
+
+Baseline **`176c2bf1`** and implementation **`c72d54cd`** were built separately
+with the workspace release profile (thin LTO, one codegen unit), on the same
+Apple M3 Ultra (Virtual), macOS **15.7.3**, Homebrew Rust/Cargo **1.99.1**,
+24 available threads, and Node **26.12.1**. An orchestrator-reserved quiet
+window excluded peer builds, tests and benchmarks. Each saved binary ran
+`bench kernels reads --rounds 5`, full sizes, four tasks and one worker per
+kernel round, with one discarded warmup and five measured rounds. Node ran
+the exact source from `bench --node-kernels kernels --rounds 5` using
+`node --jitless`. This is one sequential before/after pair, not repeated paired
+trials. Load averages were `4.14 5.81 5.66` before, `3.82 5.69 5.62` between
+binaries, and `3.54 5.56 5.57` after the implementation run.
+
+| Kernel | Before ns/iteration median [min..max] | After ns/iteration median [min..max] | Node jitless median [min..max] | After / Node |
+|---|---:|---:|---:|---:|
+| arithmetic | 44.3 [42.8..44.8] | 21.8 [21.5..22.8] | 9.8 [9.8..10.3] | 2.22x |
+| allocate | 2912403.1 [2891740.1..2947070.1] | 2922045.6 [2877829.2..2932777.3] | 139937.2 [138851.0..141245.6] | 20.88x |
+| properties | 491.6 [478.8..495.0] | 481.8 [479.3..489.6] | 38.1 [35.7..43.2] | 12.65x |
+| cljs_map | 4514382.6 [4473398.7..4600451.0] | 4477008.9 [4461394.8..4595574.0] | 343786.2 [338455.2..359535.7] | 13.02x |
+| cljs_protocol | 601236.7 [598409.1..606631.8] | 611843.5 [595828.4..619191.1] | 37298.4 [34488.8..46408.1] | 16.40x |
+
+Arithmetic improves **2.03x and meets the 3x jitless target**. The other four
+kernels still miss it: allocation and protocols regress by **+0.33%** and
+**+1.76%**, while properties and emitted maps improve by **1.99%** and
+**0.83%** in this pair. These mixed small changes do not demonstrate a broad
+compiler-kernel improvement. Existing native collections/protocol work in
+477/478 covers those remaining costs; no duplicate follow-up is created.
+The reads control is likewise essentially unchanged: `js_baseline_loop`
+22.4 [22.0..23.2] to 22.8 [22.0..44.8], `js_need_loop`
+115.4 [113.4..116.9] to 114.7 [113.6..116.7], and Rust `RunGuard::need`
+54.6 [54.3..55.1] to 55.0 [54.4..55.5] ns/iteration or ns/read respectively.
+
+A separate final-binary `bench kernels --rounds 80` supplied profiles and is
+excluded from those timings. The longer run keeps arithmetic active throughout
+`sample <pid> 1 1` at launch; `sample <pid> 2 1` starts immediately after its
+arithmetic row during allocation. Self counts subtract immediate children in
+each call tree and exclude the main thread, including joins and runtime
+teardown. There are **753 arithmetic** and **1,414 allocation worker samples**.
+Inlining attributes the numeric path to `execute_budgeted`.
+
+| Kernel / remaining frame | Self samples | Share |
+|---|---:|---:|
+| arithmetic / `execute_budgeted` | 751 | 99.73% |
+| arithmetic / `fmod` | 0 | 0.00% |
+| allocate / `execute_budgeted` | 237 | 16.76% |
+| allocate / `Fault` drop | 85 | 6.01% |
+| allocate / `memmove` | 59 | 4.17% |
+| allocate / `enter_constructor` | 56 | 3.96% |
+| allocate / `nanov2_free` | 46 | 3.25% |
+| allocate / heap `Directory::slot` | 45 | 3.18% |
+
+Validation at `c72d54cd`, with `CARGO_BUILD_JOBS=3` and `--test-threads=3`,
+passes **2,007 tests across 60 result groups** with
+`cargo test --locked -p big-boy-pants-js --all-targets` and **seven doctests**
+with `--doc`. The direct remainder regression checks bit-exact non-NaN results
+for all 841 pairs of 29 edge values and 40,000 deterministic integer/IEEE
+pairs. The generic f64 dispatcher remains an independent oracle for every
+budget prefix, resumed cuts, and repeated short fusion slices, with 26 Number
+edge values for remainder expressions, BigInt errors, conversion callbacks
+and throws. Engine formatting passes. Strict Clippy reports the unchanged
+nine diagnostics in `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+`clippy::byte_char_slices`; allowing only those categories passes without
+source suppressions. These checks also cover the following documentation-only
+measurement commit.
+
 ## Method and limits of the measurements
 
 `examples/bench/main.rs` handles timing, a counting allocator and reports;
