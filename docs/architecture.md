@@ -8638,9 +8638,13 @@ dispose only for a nullish result, with ordinary VM callback frames.
 Sync entries in a mixed scope use hint 0. After calling an async entry, Run
 requests the ordinary PromiseResolve/await native operation, retaining itself
 and its catch handler inside the detachable activation. A fallback drops the
-method's return value before awaiting undefined. Nullish entries request that
-await directly. Both synchronous callback throws and rejected awaits merge
-into the existing traced error state, then disposal continues in LIFO order.
+method's return value before awaiting undefined. A fallback throw retains its
+error across an await, matching GetDisposeMethod's rejected promise wrapper;
+that await also covers nullish records (clj-quickjs-285). Direct method throws
+continue without awaiting. Nullish entries coalesce into a pending await unless
+an async disposer supplies it (clj-quickjs-284). Callback throws and rejected
+awaits merge into the existing traced error state, then disposal continues in
+LIFO order.
 Async-boundary lookup skips native frames inside the current JS activation;
 detach/attach already traces and relocates those frames and NativeCatch indices.
 No heap kind, dependency wait, JS wrapper function or second disposal loop is
@@ -8687,10 +8691,12 @@ calling task. The private builtin is a rooted realm intrinsic, never a user
 property lookup or a JavaScript-visible entry point.
 
 The shared loop awaits async use/adopt/defer results, discards sync fallback
-results, and awaits undefined for nullish records. A synchronous throw in an
-async stack records the error and yields through await before the next resource;
-await rejections enter the same intrinsic SuppressedError path. Pending errors
-remain traced until final rejection, including thrown undefined. The ordinary
+results, and coalesces nullish records with other pending awaits. A synchronous
+throw from a direct async method or adopt/defer callback records the error and
+continues immediately. A sync fallback throw awaits before the next resource,
+matching its rejected promise wrapper (clj-quickjs-285). Await rejections enter
+the same intrinsic SuppressedError path. Pending errors remain traced until final
+rejection, including thrown undefined. The ordinary
 async machinery detaches and resumes the disposal native frame and its catch
 handler; all callbacks remain VM frames and `__rt.need` remains a dependency
 wait. `async_disposable_stack_callback_waits_and_resumes` collects the task and

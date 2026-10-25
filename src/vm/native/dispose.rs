@@ -159,8 +159,7 @@ pub(super) struct Run {
     calling: bool,
     // A disposer call must be followed by await; fallback discards its result.
     await_call: Option<bool>,
-    // Async stacks await adopt/defer too, and preserve a job boundary after
-    // synchronous throws before invoking the next disposer.
+    // Async stacks await normal adopt/defer results too.
     await_all: bool,
     await_failure: bool,
     // DisposeResources coalesces nullish async records with a later async
@@ -210,8 +209,9 @@ impl Run {
     pub(super) fn failed(&mut self, exception: super::super::exception::Exception) {
         self.failure = Some(exception.value);
         self.calling = false;
-        let pending_call = self.await_call.take().is_some();
-        self.await_failure = self.await_all && pending_call;
+        // GetDisposeMethod's sync fallback wrapper turns a throw into a
+        // rejected promise. Direct calls that throw have no result to await.
+        self.await_failure = self.await_call.take() == Some(true);
     }
     pub(super) fn step(
         &mut self,
@@ -221,6 +221,7 @@ impl Run {
     ) -> Result<Action, Fault> {
         self.calling = false;
         if std::mem::take(&mut self.await_failure) {
+            self.has_awaited = true;
             self.calling = true;
             return Ok(Action::Await(Value::Undefined));
         }

@@ -4004,8 +4004,10 @@ The shared disposal loop visits resources in reverse order and combines errors
 with intrinsic SuppressedError. Null/undefined records coalesce into one await
 unless an async disposer provides it; a pending boundary runs before the next
 synchronous disposer (clj-quickjs-284).
-Sync fallback return values are discarded. Cleanup awaits during consumer
-cancellation end that scope's cleanup under the existing finally rules.
+Sync fallback return values are discarded. A throwing sync fallback awaits its
+rejection; a directly throwing async disposer continues immediately
+(clj-quickjs-285). Cleanup awaits during consumer cancellation end that scope's
+cleanup under the existing finally rules.
 
 Deferred: classic for-using heads, `for (await using x of iterable)`, module
 top-level await using (top-level await is absent).
@@ -4020,6 +4022,9 @@ It resolves to undefined or rejects with intrinsic SuppressedError chains.
 Callbacks may wait, migrate and survive collection; `await using` composes with
 the stack at scope exit. Nullish resources share an await boundary with other
 nullish records or async callbacks, and sync fallback return values are discarded.
+Synchronous throws from direct async methods and adopt/defer callbacks continue
+to the next resource immediately; sync fallback throws await before continuing
+(clj-quickjs-285).
 
 ```sh
 CARGO_BUILD_JOBS=3 cargo test --test js_source using_declarations -- --exact --test-threads=3
