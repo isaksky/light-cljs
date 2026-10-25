@@ -220,6 +220,7 @@ mod intl;
 pub(crate) mod iterator;
 pub(crate) mod regexp;
 
+mod array_callbacks;
 mod array_from;
 mod array_mutate;
 mod array_search;
@@ -646,6 +647,7 @@ enum NativeState {
     DurationFormat(Box<duration_format::State>),
     ArrayMutate(Box<array_mutate::State>),
     ArraySearch(Box<array_search::State>),
+    ArrayCallbacks(Box<array_callbacks::State>),
 }
 
 #[derive(Debug)]
@@ -889,6 +891,7 @@ impl Trace for NativeFrame {
             NativeState::ArraySort(sort) => sort.trace(visit),
             NativeState::ArrayMutate(array) => array.trace(visit),
             NativeState::ArraySearch(array) => array.trace(visit),
+            NativeState::ArrayCallbacks(array) => array.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
             NativeState::Dispose(dispose) => dispose.trace(visit),
             NativeState::Disposal(disposal) => disposal.trace(visit),
@@ -1448,6 +1451,16 @@ pub(crate) fn start_builtin(
     }
     if !construct {
         match which {
+            Builtin::ArrayPrototypeForEach
+            | Builtin::ArrayPrototypeMap
+            | Builtin::ArrayPrototypeFilter
+            | Builtin::ArrayPrototypeReduce
+            | Builtin::ArrayPrototypeReduceRight
+            | Builtin::ArrayPrototypeSome
+            | Builtin::ArrayPrototypeEvery
+            | Builtin::ArrayPrototypeFlatMap => {
+                return start_array_callbacks(state, which, this, args, popped);
+            }
             Builtin::ArrayPrototypeIndexOf
             | Builtin::ArrayPrototypeLastIndexOf
             | Builtin::ArrayPrototypeIncludes
@@ -1576,6 +1589,20 @@ pub(crate) fn start_builtin(
         return start_typed_array_constructor(heap, state, kind, args, popped);
     }
     start_builtin_slow(heap, state, which, this, args, construct, popped)
+}
+
+#[inline(never)]
+fn start_array_callbacks(
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    let native = array_callbacks::State::new(which, this.clone(), args);
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::ArrayCallbacks(Box::new(native)))?;
+    Ok(true)
 }
 
 #[inline(never)]
@@ -3306,6 +3333,7 @@ impl NativeState {
             NativeState::DurationFormat(format) => format.step(heap, task, input),
             NativeState::ArrayMutate(array) => array.step(heap, task, input),
             NativeState::ArraySearch(array) => array.step(heap, task, input),
+            NativeState::ArrayCallbacks(array) => array.step(heap, task, input),
             _ => self.step_other(heap, task, input, host),
         }
     }
@@ -3396,6 +3424,9 @@ impl NativeState {
             NativeState::ArraySort(sort) => sort.step(heap, task, input),
             NativeState::ArraySearch(_) => {
                 unreachable!("array search dispatched before other native arms")
+            }
+            NativeState::ArrayCallbacks(_) => {
+                unreachable!("array callbacks dispatched before other native arms")
             }
             NativeState::ArrayMutate(_) => {
                 unreachable!("array mutator dispatched before other native arms")
@@ -4658,6 +4689,7 @@ impl NativeState {
                 | NativeState::ArraySort(_)
                 | NativeState::ArrayMutate(_)
                 | NativeState::ArraySearch(_)
+                | NativeState::ArrayCallbacks(_)
                 | NativeState::Iterator(_)
                 | NativeState::Dispose(_)
                 | NativeState::Disposal(_)

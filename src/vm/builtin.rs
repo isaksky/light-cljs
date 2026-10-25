@@ -472,6 +472,14 @@ pub(crate) enum Builtin {
     ArrayPrototypeFindLast,
     ArrayPrototypeFindLastIndex,
     ArrayPrototypeAt,
+    ArrayPrototypeForEach,
+    ArrayPrototypeMap,
+    ArrayPrototypeFilter,
+    ArrayPrototypeReduce,
+    ArrayPrototypeReduceRight,
+    ArrayPrototypeSome,
+    ArrayPrototypeEvery,
+    ArrayPrototypeFlatMap,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -517,6 +525,14 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::ArrayPrototypeForEach => "forEach",
+            Builtin::ArrayPrototypeMap => "map",
+            Builtin::ArrayPrototypeFilter => "filter",
+            Builtin::ArrayPrototypeReduce => "reduce",
+            Builtin::ArrayPrototypeReduceRight => "reduceRight",
+            Builtin::ArrayPrototypeSome => "some",
+            Builtin::ArrayPrototypeEvery => "every",
+            Builtin::ArrayPrototypeFlatMap => "flatMap",
             Builtin::ArrayPrototypeIndexOf => "indexOf",
             Builtin::ArrayPrototypeLastIndexOf => "lastIndexOf",
             Builtin::ArrayPrototypeIncludes => "includes",
@@ -784,6 +800,14 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Builtin::ArrayPrototypeForEach
+            | Builtin::ArrayPrototypeMap
+            | Builtin::ArrayPrototypeFilter
+            | Builtin::ArrayPrototypeReduce
+            | Builtin::ArrayPrototypeReduceRight
+            | Builtin::ArrayPrototypeSome
+            | Builtin::ArrayPrototypeEvery
+            | Builtin::ArrayPrototypeFlatMap => 1,
             Builtin::ArrayPrototypeIndexOf
             | Builtin::ArrayPrototypeLastIndexOf
             | Builtin::ArrayPrototypeIncludes
@@ -1037,6 +1061,16 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
+        Builtin::ArrayPrototypeForEach
+        | Builtin::ArrayPrototypeMap
+        | Builtin::ArrayPrototypeFilter
+        | Builtin::ArrayPrototypeReduce
+        | Builtin::ArrayPrototypeReduceRight
+        | Builtin::ArrayPrototypeSome
+        | Builtin::ArrayPrototypeEvery
+        | Builtin::ArrayPrototypeFlatMap => Err(Fault::Internal(
+            "array callback iteration requires a resumable frame",
+        )),
         Builtin::ArrayPrototypeIndexOf
         | Builtin::ArrayPrototypeLastIndexOf
         | Builtin::ArrayPrototypeIncludes

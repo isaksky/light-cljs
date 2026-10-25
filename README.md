@@ -4388,3 +4388,39 @@ Array iteration/transformation methods retain their existing support status.
 Validation: `cargo test --test js_source array_search` and
 `cargo test --test need array_search`. The fixture
 `tests/fixtures/js/array_search.js` is synthetic, not light-cljs output.
+
+### Array callback iteration (clj-quickjs-298)
+
+`Array.prototype.forEach`, `map`, `filter`, `reduce`, `reduceRight`, `some`,
+`every` and `flatMap` support generic array-like receivers, inherited elements,
+resumable getters and length conversion. Each method reads length once, skips
+holes, and observes subsequent callback mutations within that original range.
+Callbacks receive `(value, index, object)` and the supplied `thisArg`; reductions
+receive `(accumulator, value, index, object)` with undefined `this`. Reductions
+without an initial value use the first present element in traversal order and
+throw on empty or entirely sparse receivers. `some` and `every` short-circuit.
+
+`map`, `filter` and `flatMap` use ArraySpeciesCreate, including resumable custom
+constructors and species getters. Results define own writable, enumerable,
+configurable data properties, bypassing inherited setters. `map` preserves
+holes; `filter` packs the original selected values. `flatMap` flattens returned
+arrays by one level, skips their holes, snapshots each returned array's length,
+and does not flatten generic array-like values or consult `isConcatSpreadable`.
+Custom species results receive the constructor's length argument (`map`: input
+length; `filter`/`flatMap`: zero), with no final assignment to their length.
+
+Each scan, callback and result-element write advances through budgeted native
+steps. All saved values and partial results are traced across collection,
+dependency waits, cancellation and migration; callbacks retain no Rust stack.
+There is no new worker-selected size limit: receiver lengths use ToLength's
+`2^53 - 1` cap; ordinary array results retain the existing `2^32 - 1` length
+bound. Primitive receivers reuse the existing Number/String/Symbol wrappers;
+Boolean/BigInt wrappers remain unsupported. Proxy property access retains the
+existing property layer's trap restrictions. `flat` and other Array methods
+retain their existing support status.
+
+Validation: `cargo test --test js_source array_callbacks` and
+`cargo test --test need array_callbacks`. The synthetic source fixture
+`tests/fixtures/js/array_callbacks.js` (not light-cljs output) also runs under a
+three-instruction budget; dependency tests collect at every one-instruction
+yield and migrate pending operations to 64 KiB workers.

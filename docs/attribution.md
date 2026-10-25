@@ -1433,3 +1433,12 @@ Semantic references: `research/quickjs/quickjs.c`, `js_array_indexOf`,
 at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
 The Rust continuation state and tests were written afresh; no QuickJS source
 or tests were copied. All JavaScript fixtures are synthetic, not light-cljs output.
+
+## Array callback iteration (clj-quickjs-298)
+
+Consulted `research/quickjs/quickjs.c`, `js_array_every`, `js_array_reduce`,
+`js_array_flatten` and `JS_FlattenIntoArray`, at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04) for callback
+arguments, hole handling, species results and flattening depth. The Rust native
+continuations and synthetic tests were independently written; no QuickJS source
+or test text was copied.

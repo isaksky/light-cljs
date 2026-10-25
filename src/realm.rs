@@ -1592,6 +1592,14 @@ fn array_mutator_intrinsics(
         Builtin::ArrayPrototypeFindLast,
         Builtin::ArrayPrototypeFindLastIndex,
         Builtin::ArrayPrototypeAt,
+        Builtin::ArrayPrototypeForEach,
+        Builtin::ArrayPrototypeMap,
+        Builtin::ArrayPrototypeFilter,
+        Builtin::ArrayPrototypeReduce,
+        Builtin::ArrayPrototypeReduceRight,
+        Builtin::ArrayPrototypeSome,
+        Builtin::ArrayPrototypeEvery,
+        Builtin::ArrayPrototypeFlatMap,
     ] {
         let function = b.function(method, &[])?;
         b.add(prototype, method.name(), function, PropertyFlags::METHOD)?;

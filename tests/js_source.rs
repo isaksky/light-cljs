@@ -28865,3 +28865,154 @@ fn array_search_yield_and_collect() {
         );
     }
 }
+
+/// Synthetic fixture, not light-cljs output.
+#[test]
+fn array_callbacks() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/array_callbacks.js")),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_callbacks_order_species_and_errors() {
+    for src in [
+        "let n=0; for (let method of ['forEach','map','filter','reduce','reduceRight','some','every','flatMap']) { let o={get length() { n++; return 0; }}; try { Array.prototype[method].call(o,null); } catch(e) { if (e instanceof TypeError) n++; } } n === 16",
+        "let n=0; for (let method of ['forEach','map','filter','reduce','reduceRight','some','every','flatMap']) { for (let receiver of [null,undefined]) { try { Array.prototype[method].call(receiver,()=>true); } catch(e) { if (e instanceof TypeError) n++; } } try { new Array.prototype[method](); } catch(e) { if (e instanceof TypeError) n++; } } n === 24",
+        "let n=0; for (let method of ['reduce','reduceRight']) { for (let a of [[],new Array(4)]) { try { a[method]((a,b)=>a+b); } catch(e) { if (e instanceof TypeError) n++; } } } n === 4",
+        "let n=0; for (let method of ['reduce','reduceRight']) { let a=new Array(3); a[1]=undefined; if (a[method](()=>{ n+=100; }) === undefined) n++; } n === 2",
+        "let log='', a=[1,2]; Object.defineProperty(a,'constructor',{get() { log+='c'; return {get [Symbol.species]() { log+='s'; return function(n) { log+='n'+n; }; }}; }}); let r=a.map(v=>{ log+='v'+v; return v*2; }); log === 'csn2v1v2' && r[0] === 2 && r[1] === 4 && r.length === undefined",
+        "let log='',a=[1]; Object.defineProperty(a,'constructor',{get() { log+='c'; return {}; }}); try { a.map(null); } catch(e) { if (e instanceof TypeError) log+='e'; } log === 'e'",
+        "let n=0; let o={get length() { n++; return {valueOf() { n++; return 2; }}; },get 0() { n++; return 3; },1:4}; Array.prototype.reduce.call(o,(acc,v)=>acc+v,0) === 7 && n === 3",
+        "let seen='',a=[1,2,3]; let r=a.reduceRight((acc,v,i,o)=>{ seen+=i; if (i === 2) { delete o[1]; o[0]=8; o.push(9); } return acc+v; },0); r === 11 && seen === '20'",
+        "let n=0; for (let method of ['forEach','map','filter','reduce','reduceRight','some','every','flatMap']) { try { [1,2][method](()=>{ n++; throw 42; },0); } catch(e) { if(e === 42) n++; } } n === 16",
+        "let n=0; [1].reduce(function(a,v) { if (this === undefined && arguments.length === 4) n++; },0); [1].reduceRight(function(a,v) { if (this === undefined && arguments.length === 4) n++; },0); n === 2",
+        "let a=[1]; a.constructor={[Symbol.species]:null}; a.map(v=>v)[0] === 1 && Array.isArray(a.filter(()=>true)) && a.flatMap(v=>[v])[0] === 1",
+        "let a=[1]; a.constructor=undefined; Array.isArray(a.map(v=>v))",
+        "let n=0,a=[{valueOf() { n++; return 257; }}]; a.constructor={[Symbol.species]:function(n) { return new Uint8Array(n); }}; let r=a.map(v=>v); r[0] === 1 && n === 1",
+        "let a=[1,2,3], f; function C(n) { this.count=n; f=this; } a.constructor={[Symbol.species]:C}; let r=a.filter(v=>v>1); r === f && r.count === 0 && r[0] === 2 && r[1] === 3 && r.length === undefined",
+        "let a=[1],r; function C(n) { this.count=n; r=this; } a.constructor={[Symbol.species]:C}; a.flatMap(v=>[v,v]) === r && r.count === 0 && r[0] === 1 && r[1] === 1 && r.length === undefined",
+        "let a=[1],inner=[2,3,4],seen=''; Object.defineProperty(inner,0,{get() { delete inner[1]; inner[2]=9; inner.push(8); return 2; }}); let r=a.flatMap(()=>inner); r.join() === '2,9'",
+        "let proto=Object.create(Array.prototype); proto[1]=7; let inner=new Array(3); inner[2]=[8]; Object.setPrototypeOf(inner,proto); let r=[0].flatMap(()=>inner); r.length === 2 && r[0] === 7 && r[1][0] === 8",
+        "let a=[1,2]; let r=a.map(function(v) { return v*this.x; }.bind({x:3}),{x:9}); r.join() === '3,6'",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for method in ["map", "filter", "flatMap"] {
+        for constructor in [
+            "1",
+            "null",
+            "{[Symbol.species]:{}}",
+            "{[Symbol.species]:()=>{}}",
+            "{[Symbol.species]:function() { return Object.freeze({}); }}",
+        ] {
+            let source = format!("let a=[1]; a.constructor={constructor}; a.{method}(v=>v)");
+            assert_eq!(failure(&source).kind(), VmErrorKind::TypeError, "{source}");
+        }
+        for constructor in [
+            "function C() { return Object.create({set 0(v) { calls++; throw 42; }}); }",
+            "function C() { let r={}; Object.defineProperty(r,0,{get() { throw 43; },set(v) { calls++; throw 42; },configurable:true}); return r; }",
+            "function C() { let r={}; Object.defineProperty(r,0,{value:9,writable:false,configurable:true}); return r; }",
+        ] {
+            let source = format!(
+                "let calls=0; {constructor} let a=[7]; a.constructor={{[Symbol.species]:C}}; let r=a.{method}(v=>v),d=Object.getOwnPropertyDescriptor(r,0); calls === 0 && d.value === 7 && d.writable && d.enumerable && d.configurable && d.get === undefined && d.set === undefined"
+            );
+            assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        }
+    }
+}
+
+#[test]
+fn array_callbacks_yield_and_collect() {
+    struct Marker(bool);
+    impl Host for Marker {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(call.arg)
+        }
+    }
+    for (operation, check) in [
+        (
+            "a.forEach(v=>{ n+=v.x; })",
+            "r === undefined && n === 19900",
+        ),
+        (
+            "a.map(v=>({x:v.x+1}))",
+            "r.length === 200 && r[199].x === 200",
+        ),
+        (
+            "a.filter(v=>v.x%2 === 0)",
+            "r.length === 100 && r[99].x === 198",
+        ),
+        ("a.reduce((acc,v)=>({x:acc.x+v.x}),{x:0})", "r.x === 19900"),
+        (
+            "a.reduceRight((acc,v)=>({x:acc.x+v.x}),{x:0})",
+            "r.x === 19900",
+        ),
+        ("a.some(v=>v.x === 199)", "r === true"),
+        ("a.every(v=>v.x < 200)", "r === true"),
+        (
+            "a.flatMap(v=>[v,{x:v.x}])",
+            "r.length === 400 && r[399].x === 199",
+        ),
+        ("[0].flatMap(()=>a)", "r.length === 200 && r[199].x === 199"),
+        (
+            "Array.prototype.forEach.call({length:200},()=>{throw 42;})",
+            "r === undefined",
+        ),
+        (
+            "new Array(200).map(()=>{throw 42;})",
+            "r.length === 200 && !(199 in r)",
+        ),
+    ] {
+        let source = format!(
+            "let n=0,a=[]; for(let i=0;i<200;i++) a.push({{x:i}}); __rt.effect(1,0); let r={operation}; {check}"
+        );
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut host = Marker(false);
+        let mut yields = 0;
+        let mut completed = false;
+        for _ in 0..5000 {
+            match task.run_with(Budget::instructions(25), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    yields += usize::from(host.0);
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{operation}");
+                    completed = true;
+                    break;
+                }
+                other => panic!("{operation}: {other:?}"),
+            }
+        }
+        assert!(
+            completed && yields >= 4,
+            "{operation}: {completed}, yields={yields}"
+        );
+    }
+    // The semantic fixture itself also runs with a tiny instruction budget.
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(&exe(include_str!("fixtures/js/array_callbacks.js")), &[])
+        .unwrap();
+    for _ in 0..20000 {
+        match task
+            .run_with(Budget::instructions(3), &mut Marker(false))
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("fixture did not complete");
+}

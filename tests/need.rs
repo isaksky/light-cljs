@@ -2675,3 +2675,130 @@ fn array_search_failure_and_cancellation() {
         rt.collect().unwrap();
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. One-instruction slices collect
+/// at every yield; a dependency completion migrates the pending native and
+/// callback to a different 64 KiB worker without replaying effects.
+#[test]
+fn array_callbacks_wait_without_replay() {
+    for src in [
+        "let n=0,seen=''; [1,2,3].forEach(v=>{ seen+=v; if(v === 2) { n++; __rt.effect(1,3); __rt.need(5,3); } }); n === 1 && seen === '123'",
+        "let n=0,a=[{x:1},{x:2}]; let r=a.map((v,i,o)=>{ if(i === 1) { n++; delete o[i]; __rt.effect(1,3); __rt.need(5,3); } return {x:v.x+1}; }); n === 1 && r[0].x === 2 && r[1].x === 3",
+        "let n=0,a=[{x:1},{x:2}]; let r=a.filter((v,i,o)=>{ if(i === 1) { n++; delete o[i]; __rt.effect(1,3); __rt.need(5,3); } return true; }); n === 1 && r[0].x === 1 && r[1].x === 2",
+        "let n=0; let r=[{x:1},{x:2}].reduce((acc,v,i,o)=>{ if(i === 1) { n++; delete o[i]; __rt.effect(1,3); __rt.need(5,3); } return {x:acc.x+v.x}; },{x:0}); n === 1 && r.x === 3",
+        "let n=0; let r=[{x:1},{x:2}].reduceRight((acc,v,i,o)=>{ if(i === 0) { n++; delete o[i]; __rt.effect(1,3); __rt.need(5,3); } return {x:acc.x+v.x}; },{x:0}); n === 1 && r.x === 3",
+        "let n=0,seen=''; let r=[1,2,3].some(v=>{ seen+=v; if(v === 2) { n++; __rt.effect(1,3); return __rt.need(5,3); } return false; }); n === 1 && r && seen === '12'",
+        "let n=0,seen=''; let r=[1,2,3].every(v=>{ seen+=v; if(v === 2) { n++; __rt.effect(1,3); return __rt.need(5,3); } return true; }); n === 1 && r && seen === '123'",
+        "let n=0,a=[{x:1},{x:2}]; let r=a.flatMap((v,i,o)=>{ if(i === 1) { n++; delete o[i]; __rt.effect(1,3); __rt.need(5,3); } return [v,{x:v.x}]; }); n === 1 && r.length === 4 && r[0].x === 1 && r[3].x === 2",
+        "let n=0,o={get length() { n++; __rt.effect(1,3); return __rt.need(5,3)-5; },0:2,1:3}; let r=Array.prototype.map.call(o,v=>v*2); n === 1 && r.length === 2 && r[0] === 4 && r[1] === 6",
+        "let n=0,o={length:{valueOf() { n++; __rt.effect(1,3); return __rt.need(5,3)-5; }},0:2,1:3}; Array.prototype.reduce.call(o,(acc,v)=>acc+v,0) === 5 && n === 1",
+        "let n=0,o={length:2,get 0() { n++; __rt.effect(1,3); return {x:__rt.need(5,3)}; },1:{x:2}}; let r=Array.prototype.filter.call(o,()=>true); n === 1 && r[0].x === 7 && r[1].x === 2",
+        "let n=0,a=[{x:1}]; Object.defineProperty(a,'constructor',{get() { n++; __rt.effect(1,3); __rt.need(5,3); return {[Symbol.species]:function(n) { this.size=n; }}; }}); let r=a.map(v=>v); n === 1 && r[0].x === 1 && r.size === 1",
+        "let n=0,a=[{x:1}]; a.constructor={get [Symbol.species]() { n++; __rt.effect(1,3); __rt.need(5,3); return function(n) { this.size=n; }; }}; let r=a.filter(()=>true); n === 1 && r[0].x === 1 && r.size === 0",
+        "let n=0,a=[{x:1}]; a.constructor={[Symbol.species]:function(n) { this.size=n; __rt.effect(1,3); __rt.need(5,3); }}; let r=a.flatMap(v=>[v]); r[0].x === 1 && r.size === 0",
+        "let n=0; let r=[1].flatMap(v=>{ let a=[{x:2},0,{x:3}]; Object.defineProperty(a,1,{get() { n++; delete a[1]; __rt.effect(1,3); return {x:__rt.need(5,3)}; }}); return a; }); n === 1 && r.length === 3 && r[0].x === 2 && r[1].x === 7 && r[2].x === 3",
+        "let n=0,a=[1]; a.constructor={[Symbol.species]:function(n) { return new Uint8Array(n); }}; let r=a.map(v=>({valueOf() { n++; __rt.effect(1,3); return __rt.need(5,3); }})); n === 1 && r[0] === 7",
+    ] {
+        let rt = Runtime::new();
+        let code = compile_script("array-callback-wait", src).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let mut host = Recorder::default();
+        let expected = key(&rt, NUMBER);
+        let mut waiting_now = false;
+        for _ in 0..4000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected, "{src}");
+                    waiting_now = true;
+                    break;
+                }
+            }
+        }
+        assert!(waiting_now, "did not wait: {src}");
+        assert_eq!(host.effects, [3.0]);
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+        let worker_rt = rt.clone();
+        let (value, host) = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                for _ in 0..4000 {
+                    match resumed
+                        .run_with(Budget::instructions(1), &mut host)
+                        .unwrap()
+                    {
+                        RunOutcome::Yielded => {
+                            worker_rt.collect().unwrap();
+                        }
+                        RunOutcome::Complete(value) => return (value, host),
+                        other => panic!("unexpected resumed callback: {other:?}"),
+                    }
+                }
+                panic!("callback iteration did not complete");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value.view(), ValueView::Bool(true), "{src}");
+        assert_eq!(host.effects, [3.0], "no replay: {src}");
+        assert_eq!(task.dependency_log().edges(), &[expected]);
+    }
+}
+
+#[test]
+fn array_callbacks_failure_and_cancellation() {
+    for method in [
+        "forEach",
+        "map",
+        "filter",
+        "reduce",
+        "reduceRight",
+        "some",
+        "every",
+        "flatMap",
+    ] {
+        let source = format!(
+            "let n=0,caught=false; try {{ [{{x:1}}].{method}(v=>{{ n++; try {{ __rt.need(5,3); }} finally {{ __rt.effect(2,9); }} return v; }},0); }} catch(e) {{ caught=e.cause === 42; }} caught && n === 1"
+        );
+        let code = compile_script("callback-failure", &source).unwrap();
+        for cancel in [false, true] {
+            let rt = Runtime::new();
+            let task = rt.spawn(&code, &[]).unwrap();
+            let mut host = Recorder::default();
+            let expected = key(&rt, NUMBER);
+            assert_eq!(waiting(run(&task, &mut host)), expected);
+            let request = one_request(&task, expected);
+            rt.collect().unwrap();
+            if cancel {
+                let Cancel::Runnable(cancelled) = task.cancel() else {
+                    panic!("runnable cancellation");
+                };
+                assert!(matches!(run(&cancelled, &mut host), RunOutcome::Cancelled));
+                assert!(
+                    publish_number(&rt, &request, 7.0)
+                        .into_runnable()
+                        .is_empty()
+                );
+            } else {
+                let error = rt.root(Primitive::Number(42.0));
+                let wakeups = rt
+                    .complete(
+                        request.key(),
+                        request.producer(),
+                        Completion::Failed(&error),
+                    )
+                    .unwrap();
+                let RunOutcome::Complete(value) = run(&only_runnable(wakeups), &mut host) else {
+                    panic!("callback did not catch failure");
+                };
+                assert_eq!(value.view(), ValueView::Bool(true), "{method}");
+            }
+            assert_eq!(host.reports, [9.0]);
+            rt.collect().unwrap();
+        }
+    }
+}
