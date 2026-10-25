@@ -370,7 +370,7 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
         HeapObject::Promise(p) => {
             p.check_owner(task)?;
             Ok(Raw {
-                named: p.properties.as_ref().map_or_else(Vec::new, named),
+                named: p.properties.as_deref().map_or_else(Vec::new, named),
                 ..Raw::default()
             })
         }

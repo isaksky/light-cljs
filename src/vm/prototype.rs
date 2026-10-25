@@ -99,8 +99,8 @@ pub(crate) fn get_prototype_of(
     let function = heap
         .read(id, |object| match object {
             HeapObject::ModuleNamespace(ns) => ns.check_owner(task).map(|()| Some(None)),
-            HeapObject::Plain(o)
-            | HeapObject::Promise(Promise {
+            HeapObject::Plain(o) => readable(o, task).map(|()| Some(o.prototype())),
+            HeapObject::Promise(Promise {
                 properties: Some(o),
                 ..
             }) => readable(o, task).map(|()| Some(o.prototype())),
@@ -177,8 +177,8 @@ pub(crate) fn set_prototype_of(
         owner => Err(foreign(owner, task)),
     };
     heap.read(id, |object| match object {
-        HeapObject::Plain(o)
-        | HeapObject::Promise(Promise {
+        HeapObject::Plain(o) => writable(o),
+        HeapObject::Promise(Promise {
             properties: Some(o),
             ..
         }) => writable(o),
@@ -207,8 +207,11 @@ pub(crate) fn set_prototype_of(
     .unwrap_or(Err(Fault::Internal("prototype target was reclaimed")))?;
     check_chain(heap, task, proto, Some(id))?;
     heap.with_object_mut(id, |object| match object {
-        HeapObject::Plain(o)
-        | HeapObject::Promise(Promise {
+        HeapObject::Plain(o) => {
+            o.set_prototype(proto);
+            Ok(())
+        }
+        HeapObject::Promise(Promise {
             properties: Some(o),
             ..
         }) => {

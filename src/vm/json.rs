@@ -626,6 +626,10 @@ pub(super) fn check_key_snapshot(heap: &Heap, task: TaskId, id: ObjectId) -> Res
             HeapObject::ArrayBuffer(b) => (&b.object, 0),
             HeapObject::TypedArray(a) => (&a.object, typed_length),
             HeapObject::Generator(g) => (&g.object, 0),
+            HeapObject::Promise(p) => match p.properties.as_deref() {
+                Some(properties) => (properties, 0),
+                None => return Ok(()),
+            },
             HeapObject::Builtin(f) => (&f.properties, 0),
             // A length bound also bounds scanning holes in dense storage.
             HeapObject::Array(a) => (a.object(), (a.length() as usize).saturating_add(1)),
@@ -643,7 +647,6 @@ pub(super) fn check_key_snapshot(heap: &Heap, task: TaskId, id: ObjectId) -> Res
             | HeapObject::Builder(_)
             | HeapObject::Cell(_)
             | HeapObject::Atom(_)
-            | HeapObject::Promise(_)
             | HeapObject::PromiseReaction(_)
             | HeapObject::PromiseResolving(_)
             | HeapObject::AsyncState(_) => return Ok(()),

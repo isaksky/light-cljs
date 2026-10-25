@@ -21,7 +21,9 @@ pub(crate) struct Promise {
     pub(crate) prototype: ObjectId,
     // Derived instances have ordinary task-owned properties/prototypes.
     // This ownership never restricts the concurrent settlement state.
-    pub(crate) properties: Option<OrdinaryObject>,
+    // Box the optional store so ordinary Promise/heap allocation temporaries
+    // stay small enough for 64 KiB VM worker stacks.
+    pub(crate) properties: Option<Box<OrdinaryObject>>,
     result: Option<Settlement>,
     reactions: Vec<Registration>,
     is_handled: bool,
@@ -87,7 +89,7 @@ impl Trace for Promise {
 impl Promise {
     /// Check access to JavaScript properties, never settlement ownership.
     pub(crate) fn check_owner(&self, task: TaskId) -> Result<(), Fault> {
-        let owner = self.properties.as_ref().and_then(OrdinaryObject::owner);
+        let owner = self.properties.as_deref().and_then(OrdinaryObject::owner);
         if owner.is_some_and(|owner| owner != task) {
             return Err(Fault::ForeignObject {
                 owner,
@@ -99,7 +101,7 @@ impl Promise {
 
     pub(crate) fn prototype(&self) -> Option<ObjectId> {
         self.properties
-            .as_ref()
+            .as_deref()
             .map_or(Some(self.prototype), OrdinaryObject::prototype)
     }
 }
@@ -177,7 +179,7 @@ fn new_with_prototype(
         heap,
         HeapObject::Promise(Promise {
             prototype,
-            properties: owner.map(|task| OrdinaryObject::with_prototype(task, prototype)),
+            properties: owner.map(|task| Box::new(OrdinaryObject::with_prototype(task, prototype))),
             result: None,
             reactions: vec![],
             is_handled: false,

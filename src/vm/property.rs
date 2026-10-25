@@ -438,8 +438,8 @@ fn visit<'a>(object: &'a HeapObject, task: TaskId) -> Result<Visit<'a>, Fault> {
         _ => Ok(()),
     };
     match object {
-        HeapObject::Plain(o)
-        | HeapObject::Promise(Promise {
+        HeapObject::Plain(o) => readable(o).map(|()| Visit::Store(o)),
+        HeapObject::Promise(Promise {
             properties: Some(o),
             ..
         }) => readable(o).map(|()| Visit::Store(o)),
@@ -857,8 +857,11 @@ fn store(
         HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable(key)),
         HeapObject::Builtin(_) => Err(immutable(key)),
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => Ok(Stored::Function),
-        HeapObject::Plain(o)
-        | HeapObject::Promise(Promise {
+        HeapObject::Plain(o) => {
+            check_write(o, task)?;
+            named(o)
+        }
+        HeapObject::Promise(Promise {
             properties: Some(o),
             ..
         }) => {
@@ -1073,13 +1076,13 @@ pub(crate) fn prepare_put(
                 chain_key.is_some_and(|k| a.object_mut().add(k, value)),
             )),
             (
-                HeapObject::Plain(o)
-                | HeapObject::Promise(Promise {
+                HeapObject::Promise(Promise {
                     properties: Some(o),
                     ..
                 }),
                 _,
             ) => Ok(added(chain_key.is_some_and(|k| o.add(k, value)))),
+            (HeapObject::Plain(o), _) => Ok(added(chain_key.is_some_and(|k| o.add(k, value)))),
             (HeapObject::JsMap(m) | HeapObject::JsSet(m), _) => Ok(added(
                 chain_key.is_some_and(|k| m.object_mut().add(k, value)),
             )),
@@ -1457,16 +1460,8 @@ pub(crate) fn define_field(
     };
     let key = intern(heap, name)?;
     heap.with_object_mut(id, |target| match target {
-        HeapObject::Plain(o)
-        | HeapObject::Promise(Promise {
-            properties: Some(o),
-            ..
-        }) if o.owner() != Some(task) => Err(foreign(o.owner(), task)),
-        HeapObject::Plain(o)
-        | HeapObject::Promise(Promise {
-            properties: Some(o),
-            ..
-        }) => {
+        HeapObject::Plain(o) if o.owner() != Some(task) => Err(foreign(o.owner(), task)),
+        HeapObject::Plain(o) => {
             if o.define(key, value) {
                 Ok(())
             } else {
@@ -1571,8 +1566,11 @@ pub(crate) fn define_own_property(
     heap.with_object_mut(target, |object| match object {
         HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable_define(key)),
         HeapObject::Builtin(_) => Err(immutable_define(key)),
-        HeapObject::Plain(o)
-        | HeapObject::Promise(Promise {
+        HeapObject::Plain(o) => {
+            check_write(o, task)?;
+            named(o)
+        }
+        HeapObject::Promise(Promise {
             properties: Some(o),
             ..
         }) => {
@@ -1659,11 +1657,7 @@ pub(crate) fn define_accessor(
     };
     let key = intern(heap, name)?;
     heap.with_object_mut(*id, |target| match target {
-        HeapObject::Plain(o)
-        | HeapObject::Promise(Promise {
-            properties: Some(o),
-            ..
-        }) => {
+        HeapObject::Plain(o) => {
             check_write(o, task)?;
             let desc = PropertyDescriptor {
                 get: getter.then_some(function.clone()),
@@ -1868,8 +1862,14 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
     heap.with_object_mut(id, |object| match object {
         HeapObject::Plain(o) if o.is_intrinsic() => shared(o),
         HeapObject::Builtin(f) => shared(&f.properties),
-        HeapObject::Plain(o)
-        | HeapObject::Promise(Promise {
+        HeapObject::Plain(o) => {
+            check_write(o, task)?;
+            if string_wrapper_property(o, key).is_some() {
+                return Ok(DeleteOutcome::NonConfigurable);
+            }
+            Ok(named(o))
+        }
+        HeapObject::Promise(Promise {
             properties: Some(o),
             ..
         }) => {

@@ -133,8 +133,8 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         return Ok(false);
     }
     heap.read(id, |object| match object {
-        HeapObject::Plain(o)
-        | HeapObject::Promise(Promise {
+        HeapObject::Plain(o) => readable(o.owner()).map(|()| has_level(o, level)),
+        HeapObject::Promise(Promise {
             properties: Some(o),
             ..
         }) => readable(o.owner()).map(|()| has_level(o, level)),
@@ -232,8 +232,15 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
     heap.with_object_mut(id, |object| match object {
         HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable()),
         HeapObject::Builtin(_) => Err(immutable()),
-        HeapObject::Plain(o)
-        | HeapObject::Promise(Promise {
+        HeapObject::Plain(o) => {
+            writable(o.owner())?;
+            match level {
+                Level::NonExtensible => o.prevent_extensions(),
+                Level::Frozen => o.freeze(),
+            }
+            Ok(())
+        }
+        HeapObject::Promise(Promise {
             properties: Some(o),
             ..
         }) => {

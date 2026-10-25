@@ -159,6 +159,41 @@ fn bound_builtin_super_and_argument_forwarding() {
 }
 
 #[test]
+fn derived_promise_json_snapshot_limits() {
+    for (key, enumerable, expected) in [
+        ("i", true, "JSON.parse(text)[4095] === 1"),
+        ("i", false, "text === '{}'"),
+        ("Symbol()", true, "text === '{}'"),
+    ] {
+        let source = format!(
+            r#"
+            class P extends Promise {{}}
+            let p = new P(() => {{}});
+            for (let i = 0; i < 4096; i++) {{
+                Object.defineProperty(p, {key}, {{value: 1, enumerable: {enumerable}}});
+            }}
+            let text = JSON.stringify(p);
+            let ok = {expected};
+            let i = 4096;
+            Object.defineProperty(p, {key}, {{value: 1, enumerable: {enumerable}}});
+            let caught = false;
+            try {{ JSON.stringify(p); }} catch(e) {{
+                caught = e instanceof RangeError && e.message.indexOf('object property limit of 4096') >= 0;
+            }}
+            ok && caught;
+        "#
+        );
+        let runtime = Runtime::new();
+        let code = compile_script("promise-json-limit.js", &source).unwrap();
+        let outcome = runtime.spawn(&code, &[]).unwrap().run().unwrap();
+        assert!(
+            matches!(outcome, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)),
+            "{key}, enumerable: {enumerable}"
+        );
+    }
+}
+
+#[test]
 fn derived_promises_publish_without_exposing_mutable_properties() {
     for (source, consumer) in [
         (
