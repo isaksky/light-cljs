@@ -24372,7 +24372,7 @@ fn intl_number_format_unit() {
         "let o=new Intl.NumberFormat('en',{unit:'hour',unitDisplay:'long'}).resolvedOptions(); o.unit === undefined && o.unitDisplay === undefined",
         "let n=new Intl.NumberFormat('en',{style:'unit',unit:'hour',numberingSystem:'fullwide'}); JSON.stringify(n.formatToParts(1234.5)) === '[{\"type\":\"integer\",\"value\":\"１\"},{\"type\":\"group\",\"value\":\",\"},{\"type\":\"integer\",\"value\":\"２３４\"},{\"type\":\"decimal\",\"value\":\".\"},{\"type\":\"fraction\",\"value\":\"５\"},{\"type\":\"literal\",\"value\":\" \"},{\"type\":\"unit\",\"value\":\"hr\"}]'",
         "let n=new Intl.NumberFormat('ja',{style:'unit',unit:'kilometer-per-hour',unitDisplay:'long'}); JSON.stringify(n.formatToParts(2)) === '[{\"type\":\"unit\",\"value\":\"時速\"},{\"type\":\"literal\",\"value\":\" \"},{\"type\":\"integer\",\"value\":\"2\"},{\"type\":\"literal\",\"value\":\" \"},{\"type\":\"unit\",\"value\":\"キロメートル\"}]'",
-        "let log=''; let caught=false; try {new Intl.NumberFormat('en',{style:'unit',get unit(){log+='u';},get unitDisplay(){log+='d';},get notation(){log+='n';}});}catch(e){caught=e instanceof RangeError;} caught && log === 'u'",
+        "let log=''; let caught=false; try {new Intl.NumberFormat('en',{style:'unit',get unit(){log+='u';},get unitDisplay(){log+='d';},get notation(){log+='n';}});}catch(e){caught=e instanceof TypeError;} caught && log === 'u'",
         "let log=''; let caught=false; try {new Intl.NumberFormat('en',{unit:'unknown',get unitDisplay(){log+='d';}});}catch(e){caught=e instanceof RangeError;} caught && log === ''",
         "let log=''; let caught=false; try {new Intl.NumberFormat('en',{style:'currency',get unit(){log+='u';return 'unknown';}});}catch(e){caught=e instanceof TypeError;} caught && log === ''",
         "let d=Object.getOwnPropertyDescriptor(Intl.NumberFormat.prototype,'formatToParts'); d.writable && d.configurable && !d.enumerable && d.value.name === 'formatToParts' && d.value.length === 1",
@@ -24415,7 +24415,6 @@ fn intl_number_format_unit() {
         assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
     }
     for option in [
-        "style:'unit'",
         "unit:''",
         "unit:'unknown'",
         "unit:'Hour'",
@@ -24437,6 +24436,21 @@ fn intl_number_format_unit() {
         "new Intl.NumberFormat.prototype.formatToParts(1)",
     ] {
         assert_eq!(failure(source).kind(), VmErrorKind::TypeError, "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Error types follow the pinned
+/// QuickJS intl/numberformat.c::js_numberformat_constructor unit validation.
+#[test]
+fn intl_number_format_unit_error_types() {
+    for (options, kind) in [
+        ("style:'unit'", VmErrorKind::TypeError),
+        ("style:'unit',unit:undefined", VmErrorKind::TypeError),
+        ("style:'unit',unit:''", VmErrorKind::RangeError),
+        ("style:'unit',unit:'unknown'", VmErrorKind::RangeError),
+    ] {
+        let source = format!("new Intl.NumberFormat('en-US',{{{options}}})");
+        assert_eq!(failure(&source).kind(), kind, "{source}");
     }
 }
 
@@ -24654,12 +24668,12 @@ fn intl_number_format_options_and_rounding() {
         "numberingSystem:'bad!'",
         "useGrouping:'never'",
         "useGrouping:1",
-        "style:'unit'",
     ] {
         let source = format!("new Intl.NumberFormat('en',{{{option}}})");
         assert_eq!(failure(&source).kind(), VmErrorKind::RangeError, "{source}");
     }
     for source in [
+        "new Intl.NumberFormat('en',{style:'unit'})",
         "new Intl.NumberFormat('en',{style:'currency'})",
         "new Intl.NumberFormat('en',null)",
         "Intl.NumberFormat.prototype.resolvedOptions.call({})",
@@ -25369,7 +25383,7 @@ fn intl_number_format_currency_options_and_percent_scaling() {
         "let o=new Intl.NumberFormat('en',{style:'decimal',currency:'eur',currencyDisplay:'code',currencySign:'accounting'}).resolvedOptions(); o.currency === undefined && o.currencyDisplay === undefined && o.currencySign === undefined",
         "let log=''; let caught=false; try {new Intl.NumberFormat('en',{style:'currency',get currencyDisplay(){log+='d';return 'symbol';},get currencySign(){log+='s';return 'standard';},get notation(){log+='n';return 'standard';}});} catch(e){caught=e instanceof TypeError;} caught && log === 'ds'",
         "let log=''; let caught=false; try {new Intl.NumberFormat('en',{currency:'EU',get currencyDisplay(){log+='d';return 'symbol';}});} catch(e){caught=e instanceof RangeError;} caught && log === ''",
-        "let caught=false; try {new Intl.NumberFormat('en',{style:'unit'});} catch(e){caught=e instanceof RangeError;} caught",
+        "let caught=false; try {new Intl.NumberFormat('en',{style:'unit'});} catch(e){caught=e instanceof TypeError;} caught",
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }

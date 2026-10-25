@@ -309,7 +309,7 @@ impl State {
                 if OPTIONS.get(self.option) == Some(&"unitDisplay") {
                     let slots = self.slots.as_ref().unwrap();
                     if slots.style == "unit" && slots.unit.is_none() {
-                        return Err(Fault::RangeError("unit option is required".into()));
+                        return Err(Fault::TypeError("unit option is required".into()));
                     }
                 }
                 if OPTIONS.get(self.option) == Some(&"roundingMode")

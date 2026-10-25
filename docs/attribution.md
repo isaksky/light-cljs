@@ -1643,6 +1643,10 @@ permission notice are retained in `src/intl/data/QUICKJS-LICENSE`; unit patterns
 continue to use the existing -225 importer/provenance without table changes.
 Synthetic source tests reproduce these strings and are not light-cljs output.
 
+The missing-unit TypeError and invalid-unit RangeError (clj-quickjs-322) follow
+`js_numberformat_constructor` in the same source and revision; the regression
+fixtures are synthetic, not copied from upstream tests.
+
 ### Reflect internal methods (clj-quickjs-320)
 
 Fresh Rust implementation in `src/vm/native/reflect.rs`, integrating existing

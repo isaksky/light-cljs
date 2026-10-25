@@ -4961,9 +4961,9 @@ while `kilometer-per-hour` has `1 km/h`. Exact locale rows precede the snapshot'
 first matching prefix; untranslated policy locales retain the literal fallback.
 The snapshot's singular forms use the rounded mathematical value one, ignoring
 visible zero padding; exact PluralRules operands avoid float conversion.
-NaN/infinities have no unit affix. Missing/invalid units throw RangeError;
-invalid identifiers are rejected even for other styles. This deliberately uses
-RangeError for missing units as required by -306 (the snapshot uses TypeError).
+NaN/infinities have no unit affix. Missing units for unit style throw TypeError;
+invalid identifiers throw RangeError even for other styles. These error types
+match the QuickJS snapshot (clj-quickjs-322).
 
 Options and numeric coercions use saved native stages; output arrays allocate
 one part per step and remain rooted across yields/waits/collection/migration.

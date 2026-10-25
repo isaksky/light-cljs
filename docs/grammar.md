@@ -7037,8 +7037,8 @@ No new limits: existing property lookup/native frame limits apply.
 `Intl.NumberFormat` accepts `style: 'unit'` with a sanctioned simple `unit` or
 one sanctioned `X-per-Y` compound. `unitDisplay` defaults to short and accepts
 long/narrow. `resolvedOptions` includes these fields only for unit style.
-Missing units and invalid identifiers/displays throw RangeError (missing units
-intentionally follow the pellet contract rather than QuickJS's TypeError).
+Missing units for unit style throw TypeError; invalid identifiers/displays throw
+RangeError, matching QuickJS (clj-quickjs-322).
 Getters and conversions follow currencySign, unit, unitDisplay, notation order;
 missing/invalid units fail before reading unitDisplay. Parts include `unit` and
 separate literal spaces, with no extra unit metadata. `formatToParts` also
