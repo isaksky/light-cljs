@@ -3489,8 +3489,8 @@ Math.hypot(3, 4) === 5 && Math.hypot(NaN, Infinity) === Infinity;
 
 The user-approved acceptance correction of 2026-10-24 specifies
 `floor(-0.5) === -1`; `floor(-0)` preserves -0.
-Explicit gaps: Math constants and other Math methods remain deferred to
-their pellets. Global-object integration remains clj-quickjs-104; lexical
+The remaining Math functions and constants are supported (clj-quickjs-319;
+see README). Global-object integration is clj-quickjs-104; lexical
 bindings shadow `Math`. Like every realm intrinsic, Math is shared and
 immutable despite its methods' writable/configurable descriptor flags.
 `Math()` and `new Math()` throw catchable TypeError instances (clj-quickjs-230).

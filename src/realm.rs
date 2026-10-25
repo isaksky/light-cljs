@@ -406,7 +406,7 @@ pub(crate) struct Intrinsics {
     parse_float: ObjectId,
     eval: ObjectId,
     /// Ordinary, non-callable Math namespace.
-    math: ObjectId,
+    pub(crate) math: ObjectId,
     pub(crate) error_prototype: ObjectId,
     error: ObjectId,
     /// (constructor, prototype) pairs in NativeErrorKind order; rooted in `all`.
@@ -1051,10 +1051,61 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         Builtin::MathSqrt,
         Builtin::MathLog2,
         Builtin::MathSumPrecise,
+        Builtin::MathMin,
+        Builtin::MathMax,
+        Builtin::MathRound,
+        Builtin::MathTrunc,
+        Builtin::MathSign,
+        Builtin::MathRandom,
+        Builtin::MathLog,
+        Builtin::MathLog10,
+        Builtin::MathLog1p,
+        Builtin::MathExp,
+        Builtin::MathExpm1,
+        Builtin::MathSin,
+        Builtin::MathCos,
+        Builtin::MathTan,
+        Builtin::MathAsin,
+        Builtin::MathAcos,
+        Builtin::MathAtan,
+        Builtin::MathAtan2,
+        Builtin::MathSinh,
+        Builtin::MathCosh,
+        Builtin::MathTanh,
+        Builtin::MathAsinh,
+        Builtin::MathAcosh,
+        Builtin::MathAtanh,
+        Builtin::MathCbrt,
+        Builtin::MathClz32,
+        Builtin::MathF16round,
     ] {
         let method = b.function(which, &[])?;
         b.add(math, which.name(), method, PropertyFlags::METHOD)?;
     }
+    for (name, value) in [
+        ("E", std::f64::consts::E),
+        ("LN10", std::f64::consts::LN_10),
+        ("LN2", std::f64::consts::LN_2),
+        ("LOG2E", std::f64::consts::LOG2_E),
+        ("LOG10E", std::f64::consts::LOG10_E),
+        ("PI", std::f64::consts::PI),
+        ("SQRT1_2", std::f64::consts::FRAC_1_SQRT_2),
+        ("SQRT2", std::f64::consts::SQRT_2),
+    ] {
+        b.add_value(math, name, Value::Number(value), PropertyFlags::FIXED)?;
+    }
+    let math_tag = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    heap.with_object_mut(math, |object| match object {
+        HeapObject::Plain(o) => o.define_with(
+            math_tag,
+            Value::String(JsString::from("Math")),
+            PropertyFlags::FUNCTION_INFO,
+        ),
+        _ => false,
+    })?
+    .then_some(())?;
     let error_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
         object_prototype,
     ))))?;

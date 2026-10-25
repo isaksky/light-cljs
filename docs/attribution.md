@@ -1592,3 +1592,16 @@ Semantic references: `js_string_match`, `js_regexp_Symbol_match`,
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
 Rust continuations and synthetic JavaScript tests were written afresh;
 no QuickJS source or test text was copied.
+
+## Remaining Math members (clj-quickjs-319)
+
+Semantic references: `research/quickjs/quickjs.c` (`js_math_funcs`,
+`js_math_min_max`, `js_math_round`, `js_math_sign`, `js_math_clz32`,
+`js_math_f16round`, `js_math_random`) at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+Implementation and `tests/math.rs` fixtures are written afresh, not copied
+QuickJS code/tests and not light-cljs output. Exact transcendental bit pins
+were independently measured from the same system libm operations that
+QuickJS registers, with C compiler builtin folding disabled. The new random
+source is task-local SplitMix64, rather than QuickJS's clock-seeded
+per-context xorshift64*.

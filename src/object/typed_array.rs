@@ -116,6 +116,11 @@ fn from_binary16(bits: u16) -> f64 {
     }
 }
 
+/// Math.f16round uses the same direct ties-to-even conversion as Float16Array.
+pub(crate) fn round_binary16(number: f64) -> f64 {
+    from_binary16(to_binary16(number))
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct View {
     pub(crate) kind: ElementType,

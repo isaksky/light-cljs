@@ -1190,7 +1190,8 @@ fn realm_intrinsics_retain() {
     // Promise methods, species and AggregateError add eight built-ins and one prototype (-317).
     // Five Object statics add five built-ins (-318).
     // RegExp symbol protocols add ten built-ins and one iterator prototype (-301).
-    assert_eq!(rt.heap_usage().objects.builtin, 378);
+    // The remaining Math methods add twenty-seven built-ins (-319).
+    assert_eq!(rt.heap_usage().objects.builtin, 405);
     assert_eq!(rt.heap_usage().objects.plain, 65);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

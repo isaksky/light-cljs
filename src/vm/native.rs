@@ -487,7 +487,8 @@ enum ConvertTarget {
     },
     Math {
         which: builtin::Builtin,
-        // Largest absolute operand, gathered during ToNumber for hypot.
+        // Gathered during budgeted ToNumber: largest absolute operand for
+        // hypot, running extremum for min/max (NaN stays sticky).
         magnitude: f64,
     },
     NumberValueLimited(usize),
@@ -2409,6 +2410,20 @@ fn start_builtin_slow(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if which == Builtin::MathRandom && !construct {
+        state.truncate_operands(state.stack_len() - popped)?;
+        // SplitMix64 with a fixed seed per task. Advance exactly once here,
+        // before returning through the ordinary call trampoline.
+        state.random_state = state.random_state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut bits = state.random_state;
+        bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        bits ^= bits >> 31;
+        state.push(Value::Number(
+            (bits >> 11) as f64 * (1.0 / 9007199254740992.0),
+        ));
+        return Ok(true);
+    }
     if string_methods::handles(which) && !construct {
         let native = string_methods::State::new(which, this, args)?;
         state.truncate_operands(state.stack_len() - popped)?;
@@ -2818,25 +2833,57 @@ fn start_builtin_conversion(
         | Builtin::MathFround
         | Builtin::MathSqrt
         | Builtin::MathLog2
+        | Builtin::MathMin
+        | Builtin::MathMax
+        | Builtin::MathRound
+        | Builtin::MathTrunc
+        | Builtin::MathSign
+        | Builtin::MathLog
+        | Builtin::MathLog10
+        | Builtin::MathLog1p
+        | Builtin::MathExp
+        | Builtin::MathExpm1
+        | Builtin::MathSin
+        | Builtin::MathCos
+        | Builtin::MathTan
+        | Builtin::MathAsin
+        | Builtin::MathAcos
+        | Builtin::MathAtan
+        | Builtin::MathAtan2
+        | Builtin::MathSinh
+        | Builtin::MathCosh
+        | Builtin::MathTanh
+        | Builtin::MathAsinh
+        | Builtin::MathAcosh
+        | Builtin::MathAtanh
+        | Builtin::MathCbrt
+        | Builtin::MathClz32
+        | Builtin::MathF16round
         | Builtin::MathHypot
             if !construct =>
         {
             let count = match which {
-                Builtin::MathHypot => args.len(),
-                Builtin::MathImul | Builtin::MathPow => args.len().min(2),
+                Builtin::MathHypot | Builtin::MathMin | Builtin::MathMax => args.len(),
+                Builtin::MathImul | Builtin::MathPow | Builtin::MathAtan2 => args.len().min(2),
                 _ => args.len().min(1),
             };
             let operands = &args[..count];
-            // hypot always takes the budgeted path, including primitives.
-            if which != Builtin::MathHypot
-                && !operands.iter().any(|v| matches!(v, Value::Object(_)))
+            // Variadic methods always budget their work, including primitives.
+            if !matches!(
+                which,
+                Builtin::MathHypot | Builtin::MathMin | Builtin::MathMax
+            ) && !operands.iter().any(|v| matches!(v, Value::Object(_)))
             {
                 return Ok(false);
             }
             (
                 ConvertTarget::Math {
                     which,
-                    magnitude: 0.0,
+                    magnitude: match which {
+                        Builtin::MathMin => f64::INFINITY,
+                        Builtin::MathMax => f64::NEG_INFINITY,
+                        _ => 0.0,
+                    },
                 },
                 operands.to_vec(),
                 Hint::Number,
@@ -4762,9 +4809,32 @@ impl NativeState {
                             *next += 1;
                             continue;
                         }
-                        if let ConvertTarget::Math { magnitude, .. } = target {
+                        if let ConvertTarget::Math { which, magnitude } = target {
                             let number = dispatch::to_number(receiver)?;
-                            *magnitude = magnitude.max(number.abs());
+                            *magnitude = match which {
+                                builtin::Builtin::MathMin | builtin::Builtin::MathMax => {
+                                    let maximum = *which == builtin::Builtin::MathMax;
+                                    if magnitude.is_nan() || number.is_nan() {
+                                        f64::NAN
+                                    } else if number == *magnitude && number == 0.0 {
+                                        let negative = if maximum {
+                                            magnitude.is_sign_negative()
+                                                && number.is_sign_negative()
+                                        } else {
+                                            magnitude.is_sign_negative()
+                                                || number.is_sign_negative()
+                                        };
+                                        if negative { -0.0 } else { 0.0 }
+                                    } else if (maximum && number > *magnitude)
+                                        || (!maximum && number < *magnitude)
+                                    {
+                                        number
+                                    } else {
+                                        *magnitude
+                                    }
+                                }
+                                _ => magnitude.max(number.abs()),
+                            };
                             operands[*next] = Value::Number(number);
                             *next += 1;
                             return Ok(Action::Continue);
@@ -5057,6 +5127,10 @@ impl NativeState {
                         };
                         Ok(Action::Continue)
                     }
+                    ConvertTarget::Math {
+                        which: builtin::Builtin::MathMin | builtin::Builtin::MathMax,
+                        magnitude,
+                    } => Ok(Action::Return(Value::Number(magnitude))),
                     ConvertTarget::Math { which, .. } => {
                         builtin::math(which, operands).map(Action::Return)
                     }

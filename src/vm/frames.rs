@@ -268,6 +268,8 @@ pub(crate) struct GlobalLexical {
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
+    /// Deterministic task-local Math.random stream; never worker/realm state.
+    pub(crate) random_state: u64,
     pub(crate) module_link: Option<Box<crate::module::Linker>>,
     pub(crate) sim_host: Option<Box<crate::host::sim::facilities::TaskHost>>,
     pub(crate) collection_point: bool,
@@ -436,6 +438,7 @@ impl VmState {
         stack.extend_from_slice(bound);
         bind_args(&mut stack, 0, code, bound.len());
         VmState {
+            random_state: 0,
             module_link: None,
             sim_host: None,
             collection_point: false,

@@ -2547,8 +2547,8 @@ Supported: the ordinary `Math` namespace with `floor`, `ceil`, `abs`, `imul`,
 can yield, wait, survive collection and migrate. `hypot` converts every
 argument before handling Infinity/NaN and uses budgeted scaled compensated
 summation for extreme magnitudes. `Math.floor(-0.5)` is -1;
-`Math.ceil(-0.5)` preserves negative zero. Math constants and other methods
-remain deferred. Run `cargo test --test js_source math_`.
+`Math.ceil(-0.5)` preserves negative zero. The remaining Math members
+are described under clj-quickjs-319 below. Run `cargo test --test js_source math_`.
 
 ### Math.pow (clj-quickjs-164)
 
@@ -2556,7 +2556,7 @@ Supported: `Math.pow(base, exponent)` shares the `**` Number exponentiation
 routine, including NaN, infinities and signed zeros. Both arguments undergo
 ToNumber in order through resumable conversion; extra arguments are ignored.
 The method has length 2 and is non-enumerable, writable and configurable.
-Other Math methods and constants remain deferred to their pellets.
+The remaining Math members are described under clj-quickjs-319 below.
 Check: `cargo test --test js_source math_pow -- --exact`.
 
 ### Global object bindings (clj-quickjs-104)
@@ -3075,7 +3075,7 @@ ties-to-even (directly from Number for Float16), preserve negative zero and
 subnormals, overflow to signed infinity and canonicalize NaNs to positive quiet
 NaNs. Loads widen exactly to Number; bytes are always little-endian.
 
-Deferred: `Math.f16round`, BigInt views and typed-array methods beyond
+Deferred: BigInt views and typed-array methods beyond
 those added by clj-quickjs-168 below. Validation: `cargo test --test js_source float_typed_array`
 and `cargo test --lib object::typed_array::tests::`.
 
@@ -4829,3 +4829,43 @@ split retains its existing incremental scan/copy behavior and string limits.
 Iterator Symbol.toStringTag is exposed; generic Object.prototype.toString tag
 lookup remains tracked separately. Tests: `cargo test --test js_source regexp_`,
 `cargo test --test js_source string_replace`, `cargo test --test js_source string_split`.
+
+### Remaining Math members (clj-quickjs-319)
+
+Supported: `min`, `max`, `round`, `trunc`, `sign`, `random`, `log`, `log10`,
+`log1p`, `exp`, `expm1`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
+`sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `cbrt`, `clz32`, `f16round`,
+and all eight standard constants (`E`, `LN2`, `LN10`, `LOG2E`, `LOG10E`, `PI`,
+`SQRT1_2`, `SQRT2`). The immutable shared Math intrinsic also exposes its
+`Symbol.toStringTag`. Methods have standard name/length/descriptors and reject
+construction; constants are non-writable, non-enumerable and non-configurable.
+This completes the Math member list, including the previously implemented
+`sumPrecise`. As with other realm intrinsics, method descriptor flags do not
+permit mutation of the shared object.
+
+Numeric methods use resumable left-to-right ToNumber for object arguments.
+`min`/`max` consume one budgeted conversion/fold step per argument, including
+arguments after NaN; ties preserve the required sign of zero. `round` breaks
+halfway ties toward positive infinity and preserves negative zero. `f16round`
+reuses Float16Array's direct binary64-to-binary16 ties-to-even conversion,
+avoiding intermediate f32 double rounding. No new argument limits are imposed;
+the existing VM call-argument/resource limits apply.
+
+Transcendentals normally use Rust `f64` methods, with platform-dependent last
+bits as in QuickJS's system libm. Exceptions: `cbrt`, `asinh`, `acosh`, `atanh`
+call host libm directly, because Rust 1.95's `cbrt(2)` differs by one ULP,
+`asinh(1e308)`/`acosh(1e308)` overflow, and `atanh(-0.2)` differs by one ULP.
+On Linux/glibc the binary64 libm aliases require glibc 2.27 or later and avoid
+Rust compiler-builtins interposition. Other hosts require C99 math functions;
+exact libm bit pins are checked on Linux x86_64/glibc. Other platforms and
+libm versions may produce different transcendental last bits. Existing
+`hypot` retains its scaled compensated summation algorithm.
+
+`Math.random()` is a deterministic, non-cryptographic SplitMix64 stream with
+seed zero **per task**. Every call advances once and returns the top 53 bits
+scaled into `[0, 1)`. Separate tasks deliberately start the same sequence;
+yields, waits, GC and worker migration do not reset it. It uses no clock or
+process-wide random state. No runtime random source existed to reuse.
+
+Check: `CARGO_BUILD_JOBS=3 cargo test --test math -- --test-threads=3` and
+`CARGO_BUILD_JOBS=3 cargo test --test js_source math_ -- --test-threads=3`.

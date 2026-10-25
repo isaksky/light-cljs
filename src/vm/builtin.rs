@@ -548,6 +548,34 @@ pub(crate) enum Builtin {
     RegExpReplace,
     RegExpSplit,
     RegExpIteratorNext,
+
+    MathMin,
+    MathMax,
+    MathRound,
+    MathTrunc,
+    MathSign,
+    MathRandom,
+    MathLog,
+    MathLog10,
+    MathLog1p,
+    MathExp,
+    MathExpm1,
+    MathSin,
+    MathCos,
+    MathTan,
+    MathAsin,
+    MathAcos,
+    MathAtan,
+    MathAtan2,
+    MathSinh,
+    MathCosh,
+    MathTanh,
+    MathAsinh,
+    MathAcosh,
+    MathAtanh,
+    MathCbrt,
+    MathClz32,
+    MathF16round,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -862,6 +890,33 @@ impl Builtin {
             Builtin::MathPow => "pow",
             Builtin::MathSqrt => "sqrt",
             Builtin::MathLog2 => "log2",
+            Builtin::MathMin => "min",
+            Builtin::MathMax => "max",
+            Builtin::MathRound => "round",
+            Builtin::MathTrunc => "trunc",
+            Builtin::MathSign => "sign",
+            Builtin::MathRandom => "random",
+            Builtin::MathLog => "log",
+            Builtin::MathLog10 => "log10",
+            Builtin::MathLog1p => "log1p",
+            Builtin::MathExp => "exp",
+            Builtin::MathExpm1 => "expm1",
+            Builtin::MathSin => "sin",
+            Builtin::MathCos => "cos",
+            Builtin::MathTan => "tan",
+            Builtin::MathAsin => "asin",
+            Builtin::MathAcos => "acos",
+            Builtin::MathAtan => "atan",
+            Builtin::MathAtan2 => "atan2",
+            Builtin::MathSinh => "sinh",
+            Builtin::MathCosh => "cosh",
+            Builtin::MathTanh => "tanh",
+            Builtin::MathAsinh => "asinh",
+            Builtin::MathAcosh => "acosh",
+            Builtin::MathAtanh => "atanh",
+            Builtin::MathCbrt => "cbrt",
+            Builtin::MathClz32 => "clz32",
+            Builtin::MathF16round => "f16round",
             Builtin::Map => "Map",
             Builtin::WeakMap => "WeakMap",
             Builtin::SimGc => "gc",
@@ -1165,6 +1220,31 @@ impl Builtin {
             Builtin::MathFloor | Builtin::MathCeil | Builtin::MathAbs | Builtin::MathFround => 1,
             Builtin::MathImul | Builtin::MathHypot | Builtin::MathPow => 2,
             Builtin::MathSqrt | Builtin::MathLog2 => 1,
+            Builtin::MathMin | Builtin::MathMax | Builtin::MathAtan2 => 2,
+            Builtin::MathRandom => 0,
+            Builtin::MathRound
+            | Builtin::MathTrunc
+            | Builtin::MathSign
+            | Builtin::MathLog
+            | Builtin::MathLog10
+            | Builtin::MathLog1p
+            | Builtin::MathExp
+            | Builtin::MathExpm1
+            | Builtin::MathSin
+            | Builtin::MathCos
+            | Builtin::MathTan
+            | Builtin::MathAsin
+            | Builtin::MathAcos
+            | Builtin::MathAtan
+            | Builtin::MathSinh
+            | Builtin::MathCosh
+            | Builtin::MathTanh
+            | Builtin::MathAsinh
+            | Builtin::MathAcosh
+            | Builtin::MathAtanh
+            | Builtin::MathCbrt
+            | Builtin::MathClz32
+            | Builtin::MathF16round => 1,
             Builtin::Map
             | Builtin::MapGet
             | Builtin::MapHas
@@ -1613,8 +1693,35 @@ pub(crate) fn call(
         | Builtin::MathPow
         | Builtin::MathFround
         | Builtin::MathSqrt
-        | Builtin::MathLog2 => math(which, args),
-        Builtin::MathHypot => Err(Fault::Internal("hypot requires a budgeted native frame")),
+        | Builtin::MathLog2
+        | Builtin::MathRound
+        | Builtin::MathTrunc
+        | Builtin::MathSign
+        | Builtin::MathLog
+        | Builtin::MathLog10
+        | Builtin::MathLog1p
+        | Builtin::MathExp
+        | Builtin::MathExpm1
+        | Builtin::MathSin
+        | Builtin::MathCos
+        | Builtin::MathTan
+        | Builtin::MathAsin
+        | Builtin::MathAcos
+        | Builtin::MathAtan
+        | Builtin::MathAtan2
+        | Builtin::MathSinh
+        | Builtin::MathCosh
+        | Builtin::MathTanh
+        | Builtin::MathAsinh
+        | Builtin::MathAcosh
+        | Builtin::MathAtanh
+        | Builtin::MathCbrt
+        | Builtin::MathClz32
+        | Builtin::MathF16round => math(which, args),
+        Builtin::MathHypot | Builtin::MathMin | Builtin::MathMax => Err(Fault::Internal(
+            "variadic Math requires a budgeted native frame",
+        )),
+        Builtin::MathRandom => Err(Fault::Internal("Math.random requires task state")),
         Builtin::ObjectPrototypeToString => {
             let tag = to_string_tag(heap, task, this)?;
             Ok(Value::String(JsString::from(
@@ -1782,6 +1889,49 @@ pub(super) fn math(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
         }
         Builtin::MathSqrt => x.sqrt(),
         Builtin::MathLog2 => math_log2(x),
+        Builtin::MathRound => {
+            if !x.is_finite() || x == 0.0 {
+                x
+            } else {
+                // Do not add 0.5 to x: that double-rounds the predecessor
+                // of 0.5. Negative ties round toward positive infinity.
+                let floor = x.floor();
+                let rounded = if x - floor < 0.5 { floor } else { floor + 1.0 };
+                if rounded == 0.0 {
+                    0.0_f64.copysign(x)
+                } else {
+                    rounded
+                }
+            }
+        }
+        Builtin::MathTrunc => x.trunc(),
+        Builtin::MathSign => {
+            if x.is_nan() || x == 0.0 {
+                x
+            } else {
+                x.signum()
+            }
+        }
+        Builtin::MathLog => x.ln(),
+        Builtin::MathLog10 => x.log10(),
+        Builtin::MathLog1p => x.ln_1p(),
+        Builtin::MathExp => x.exp(),
+        Builtin::MathExpm1 => x.exp_m1(),
+        Builtin::MathSin => x.sin(),
+        Builtin::MathCos => x.cos(),
+        Builtin::MathTan => x.tan(),
+        Builtin::MathAsin => x.asin(),
+        Builtin::MathAcos => x.acos(),
+        Builtin::MathAtan => x.atan(),
+        Builtin::MathAtan2 => x.atan2(to_number(args.get(1).unwrap_or(&Value::Undefined))?),
+        Builtin::MathSinh => x.sinh(),
+        Builtin::MathCosh => x.cosh(),
+        Builtin::MathTanh => x.tanh(),
+        Builtin::MathAsinh | Builtin::MathAcosh | Builtin::MathAtanh | Builtin::MathCbrt => {
+            math_libm(which, x)
+        }
+        Builtin::MathClz32 => f64::from((super::dispatch::to_int32(x) as u32).leading_zeros()),
+        Builtin::MathF16round => crate::object::typed_array::round_binary16(x),
         Builtin::MathImul => {
             let y = to_number(args.get(1).unwrap_or(&Value::Undefined))?;
             f64::from(super::dispatch::to_int32(x).wrapping_mul(super::dispatch::to_int32(y)))
@@ -1806,6 +1956,36 @@ fn math_log2(x: f64) -> f64 {
         }
     }
     x.log2()
+}
+
+// Rust 1.95's cbrt and inverse hyperbolic formulas differ from QuickJS's
+// system libm. In particular, asinh/acosh overflow for large finite inputs.
+fn math_libm(which: Builtin, x: f64) -> f64 {
+    #[cfg_attr(unix, link(name = "m"))]
+    unsafe extern "C" {
+        // On glibc use its binary64 aliases (glibc >= 2.27), so Rust's weak
+        // compiler-builtins symbols cannot interpose the host libm calls.
+        #[cfg_attr(all(target_os = "linux", target_env = "gnu"), link_name = "cbrtf64")]
+        fn cbrt(x: f64) -> f64;
+        #[cfg_attr(all(target_os = "linux", target_env = "gnu"), link_name = "asinhf64")]
+        fn asinh(x: f64) -> f64;
+        #[cfg_attr(all(target_os = "linux", target_env = "gnu"), link_name = "acoshf64")]
+        fn acosh(x: f64) -> f64;
+        #[cfg_attr(all(target_os = "linux", target_env = "gnu"), link_name = "atanhf64")]
+        fn atanh(x: f64) -> f64;
+    }
+    // SAFETY: these libm functions accept every f64, touch no Rust storage,
+    // and neither suspend nor reenter the VM. Binary64 aliases have the
+    // same C ABI as their double counterparts on glibc.
+    unsafe {
+        match which {
+            Builtin::MathCbrt => cbrt(x),
+            Builtin::MathAsinh => asinh(x),
+            Builtin::MathAcosh => acosh(x),
+            Builtin::MathAtanh => atanh(x),
+            _ => unreachable!("not a libm Math operation"),
+        }
+    }
 }
 
 /// Global predicates receive a primitive after resumable ToPrimitive;
@@ -2593,15 +2773,17 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
     {
         return Ok("Module");
     }
-    // The shared Intl namespace has a fixed data descriptor and cannot be
-    // mutated. Its own tag needs no getter, coercion, or resumable JS call.
-    if let Value::Object(id) = this
-        && *id
-            == realm::intrinsics(heap)
-                .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
-                .intl
-    {
-        return Ok("Intl");
+    // The shared namespaces have fixed data descriptors and cannot be
+    // mutated. Their tags need no getter, coercion, or resumable JS call.
+    if let Value::Object(id) = this {
+        let intrinsics =
+            realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        if *id == intrinsics.intl {
+            return Ok("Intl");
+        }
+        if *id == intrinsics.math {
+            return Ok("Math");
+        }
     }
     // HasProperty walks outside object-table locks and never invokes a
     // getter. The receiver and its prototype chain stay rooted by the frame.
