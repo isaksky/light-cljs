@@ -3710,8 +3710,7 @@ host zone per runtime; UTC, fixed minute offsets and the host's selected named
 zone (with recorded aliases) work. Named identifiers match without ASCII case. `format()` reads the unrecorded host clock;
 without a clock it throws RangeError. Invalid time values also throw RangeError.
 
-Explicit gaps: explicit time zone name components validate
-then throw RangeError. Calendars other than `gregory` and
+Explicit gaps: calendars other than `gregory` and
 named zones other than the host-selected zone throw RangeError. The snapshot's
 59 transition records do not imply support for its 598-name inventory. Numeric
 and named components reproduce QuickJS strings, including its English field
@@ -3727,8 +3726,8 @@ cycles work, and `resolvedOptions()` includes `hourCycle`/`hour12` only with an
 hour field. Locale defaults come from the generated short time patterns.
 Manual time fields use QuickJS's colon layout and trailing day periods, including
 Japanese `6:00 午前` and Spanish `6:00 a. m.`. Date plus time uses `, `.
-Fractional seconds truncate milliseconds and also work alone. `timeZoneName`
-remains an explicit RangeError gap; styles are described below.
+Fractional seconds truncate milliseconds and also work alone. Explicit
+`timeZoneName` components and styles are described below.
 
 ### Intl.DateTimeFormat styles (clj-quickjs-217)
 
@@ -3742,8 +3741,34 @@ components, adding hourCycle/hour12 for time styles.
 Full/long time styles render zone names for UTC, fixed offsets and the runtime's
 host-selected named zone. Snapshot output uses English UTC and Vienna long
 names, raw fixed-offset identifiers, and GMT offsets for other named zones,
-with offsets selected at the formatted instant. Explicit `timeZoneName`
-components remain a RangeError gap. No generated table changes were needed.
+with offsets selected at the formatted instant. No generated table changes were needed.
+
+### Intl.DateTimeFormat timeZoneName (clj-quickjs-307)
+
+Explicit `timeZoneName` accepts `short`, `long`, `shortOffset`, `longOffset`,
+`shortGeneric` and `longGeneric`, and reports the requested value in
+`resolvedOptions()`. Names follow the pinned QuickJS snapshot rather than
+full ECMA-402 locale data: only `long` selects long names; the other five
+values all select short names, including `longOffset` and `longGeneric`.
+UTC displays `UTC` or `Coordinated Universal Time`; Vienna has English
+standard/summer long names; other named zones display GMT offsets at the
+formatted instant, truncating historical offset seconds to minutes.
+Names and GMT digits remain English/ASCII across supported locales.
+
+UTC, explicit minute offsets, and each of the 59 transition-backed named
+zones work within the existing one-host-zone-per-runtime boundary: explicit
+named zones must match the host-selected zone or an alias. Other named zones,
+including inventory-only names, throw RangeError. Explicit offsets display
+GMT offsets (zero is `GMT`); second-precision host offsets retain their raw
+identifier. Style patterns continue to display raw fixed-offset identifiers.
+Names alone preserve numeric date defaults (`1/1/1970, UTC`); date fields use
+`, ` before the name and time fields use a space after any day period.
+QuickJS's explicit-component path emits fractional seconds only with a second
+field; a standalone day period follows the name without a separator
+(`UTCat night`) and is omitted beside date fields without time fields.
+Mixing styles and explicit names throws TypeError; invalid option values
+throw RangeError. Formatting reuses the bounded snapshot/native path with
+no new work limits or generated data.
 
 ### Async functions and await (clj-quickjs-248)
 
@@ -4134,7 +4159,7 @@ rows. Supported constructors exercised are `Intl.DateTimeFormat`,
 
 This fixture covers the agreed test locales and QuickJS snapshot strings.
 Deferred behavior remains: DateTimeFormat calendars beyond gregory,
-`timeZoneName` options, and named time zones other than the host's configured
+and named time zones other than the host's configured
 zone (UTC and fixed offsets are supported);
 Segmenter sentence granularity and complete UAX #29 segmentation;
 DisplayNames localized names beyond en/fr (English fallback); and duration
@@ -4419,7 +4444,7 @@ Gaps found by the audit are filed as pellets, not fixed here. Private names now
 execute (clj-quickjs-291), as do static blocks (-292) and Set/WeakSet (-295);
 remaining work includes generator `return`/`throw` (-293), Array.prototype mutators,
 search, callback and copying methods (-296 to -299), the plain RegExp `i` flag
-(-303), Script property escapes (-304), DateTimeFormat timeZoneName (-307),
+(-303), Script property escapes (-304),
 `Symbol.toPrimitive`
 dispatch (implemented by -310), `Object.prototype.toString`
 tags (-311), eval SyntaxError stacks (-312), async generators (-313), `??` and

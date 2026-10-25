@@ -26537,6 +26537,51 @@ fn weak_map_property_descriptors_and_delete() {
 
 /// Synthetic fixtures, not light-cljs output.
 #[test]
+fn intl_date_time_format_time_zone_name() {
+    for source in [
+        "new Intl.DateTimeFormat('en',{timeZone:'UTC',timeZoneName:'short'}).format(0) === '1/1/1970, UTC'",
+        "new Intl.DateTimeFormat('fr',{timeZone:'UTC',timeZoneName:'long'}).format(0) === '1 1, 1970, Coordinated Universal Time'",
+        "new Intl.DateTimeFormat('en',{timeZone:'+05:30',hour:'numeric',minute:'numeric',timeZoneName:'short'}).format(0) === '5:30 AM GMT+5:30'",
+        "new Intl.DateTimeFormat('en',{timeZone:'-04',year:'numeric',timeZoneName:'long'}).format(0) === '1969, GMT-04:00'",
+        "new Intl.DateTimeFormat('en',{timeZone:'-00',timeZoneName:'long'}).format(0) === '1/1/1970, GMT'",
+        "new Intl.DateTimeFormat('ar',{timeZone:'+05:30',year:'numeric',timeZoneName:'long'}).format(0) === '١٩٧٠, GMT+05:30'",
+        "new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'numeric',second:'numeric',fractionalSecondDigits:3,timeZoneName:'short'}).format(123) === '12:00:00.123 AM UTC'",
+        "new Intl.DateTimeFormat('en',{timeZoneName:'short',dayPeriod:'long'}).format(0) === 'UTCat night'",
+        "new Intl.DateTimeFormat('en',{timeZoneName:'short',fractionalSecondDigits:3}).format(123) === 'UTC'",
+        "new Intl.DateTimeFormat('en',{timeZoneName:'short',year:'numeric',dayPeriod:'long'}).format(0) === '1970, UTC'",
+        "Object.keys(new Intl.DateTimeFormat('en',{second:'numeric',fractionalSecondDigits:3,timeZoneName:'short'}).resolvedOptions()).join() === 'locale,calendar,numberingSystem,timeZone,second,fractionalSecondDigits,timeZoneName'",
+        "let caught=false;try{new Intl.DateTimeFormat('en',{timeZoneName:{toString(){throw 7;}}});}catch(e){caught=e === 7;}caught",
+        "let caught=false;try{new Intl.DateTimeFormat('en',{timeZoneName:Symbol()});}catch(e){caught=e instanceof TypeError;}caught",
+        "let caught=false;try{new Intl.DateTimeFormat('en',{timeZone:'America/New_York',timeZoneName:'long'});}catch(e){caught=e instanceof RangeError;}caught",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for name in [
+        "short",
+        "long",
+        "shortOffset",
+        "longOffset",
+        "shortGeneric",
+        "longGeneric",
+    ] {
+        let utc = if name == "long" {
+            "Coordinated Universal Time"
+        } else {
+            "UTC"
+        };
+        let offset = if name == "long" { "GMT+01:00" } else { "GMT+1" };
+        assert_eq!(
+            eval(&format!(
+                "let d=new Intl.DateTimeFormat('en',{{timeZoneName:'{name}'}}); let r=d.resolvedOptions(); r.timeZoneName === '{name}' && r.year === 'numeric' && r.month === 'numeric' && r.day === 'numeric' && d.format(0) === '1/1/1970, {utc}' && new Intl.DateTimeFormat('en',{{timeZone:'+01',timeZoneName:'{name}'}}).format(0) === '1/1/1970, {offset}'"
+            )),
+            ValueView::Bool(true),
+            "{name}"
+        );
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
 fn intl_date_time_format_options_and_brands() {
     for source in [
         "let f=Intl.DateTimeFormat('en'); f instanceof Intl.DateTimeFormat && f[Symbol.toStringTag] === 'Intl.DateTimeFormat' && Intl.DateTimeFormat.name === 'DateTimeFormat' && Intl.DateTimeFormat.length === 1 && f.resolvedOptions.length === 0 && Intl.DateTimeFormat.supportedLocalesOf.length === 1",
@@ -26603,7 +26648,8 @@ fn intl_date_time_format_options_and_brands() {
         "{fractionalSecondDigits:0}",
         "{fractionalSecondDigits:NaN}",
         "{fractionalSecondDigits:Infinity}",
-        "{timeZoneName:'short'}",
+        "{timeZoneName:'bad'}",
+        "{timeZoneName:'Short'}",
         "{dateStyle:'tiny'}",
         "{timeStyle:'tiny'}",
         "{timeZone:'America/New_York'}",
@@ -26645,10 +26691,11 @@ fn intl_date_time_format_callbacks_wait_collect_and_migrate() {
              get timeZone(){log+='z';__rt.need(3,1);return {toString(){log+='x';__rt.need(4,1);return '+01';}};},
              get month(){log+='m';__rt.need(5,1);return {toString(){log+='s';__rt.need(6,1);return 'long';}};},day:'numeric',year:'numeric',
              get hour(){log+='h';__rt.need(10,1);return {toString(){log+='u';__rt.need(11,1);return 'numeric';}};},
-             minute:'numeric',second:'numeric',fractionalSecondDigits:{valueOf(){log+='f';__rt.need(12,1);return 3;}}});
+             minute:'numeric',second:'numeric',fractionalSecondDigits:{valueOf(){log+='f';__rt.need(12,1);return 3;}},
+             get timeZoneName(){log+='q';__rt.need(13,1);return {toString(){log+='v';__rt.need(14,1);return 'short';}};}});
         let f=d.format; let same=f === d.format; d=null;
         let result=f({valueOf(){log+='n';__rt.need(7,1);return Date.UTC(2017,11,11,23);}});
-        same && result === 'December 12, 2017, 12:00:00.000 AM' && log === 'ltbczxmshufn'
+        same && result === 'December 12, 2017, 12:00:00.000 AM GMT+1' && log === 'ltbczxmshufqvn'
     "#;
     let mut task = rt.spawn(&exe(source), &[]).unwrap();
     let mut waited = 0;
@@ -26668,7 +26715,7 @@ fn intl_date_time_format_callbacks_wait_collect_and_migrate() {
             }
             RunOutcome::Waiting(_) => {
                 waited += 1;
-                assert!(waited <= 12);
+                assert!(waited <= 14);
                 rt.collect().unwrap();
                 let request = task.take_producer_requests().pop().unwrap();
                 let value = rt.root(Primitive::Number(0.0));
@@ -26681,7 +26728,7 @@ fn intl_date_time_format_callbacks_wait_collect_and_migrate() {
             }
             RunOutcome::Complete(value) => {
                 assert_eq!(value.view(), ValueView::Bool(true));
-                assert_eq!(waited, 12);
+                assert_eq!(waited, 14);
                 return;
             }
             other => panic!("{other:?}"),

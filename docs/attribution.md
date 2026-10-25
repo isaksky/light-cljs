@@ -1652,3 +1652,16 @@ Semantic reference: `research/quickjs/quickjs.c`, `js_reflect_funcs`,
 functions, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (2026-06-04).
 No upstream code or tests copied; `tests/reflect.rs` contains synthetic fixtures,
 not light-cljs output.
+
+### Intl.DateTimeFormat timeZoneName components (clj-quickjs-307)
+
+Semantic reference: `research/quickjs/intl/datetimeformat.c` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, specifically
+`dtf_format_date`, `dtf_get_embedded_tz_long_name`,
+`dtf_sec_to_offset_str`, `dtf_format_offset_timezone` and resolved options.
+Native Rust extends the existing zone renderer and manual-field pattern;
+no C implementation or upstream tests were copied. Tests in `js_source.rs`
+and `sim_host.rs` are synthetic fixtures, not light-cljs output. The existing
+snapshot timezone tables, notices and provenance are unchanged. Exact English
+names, GMT fallback and short handling for the four Offset/Generic options
+follow that snapshot's finite implementation rather than inferred CLDR data.

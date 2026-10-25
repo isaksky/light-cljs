@@ -1575,3 +1575,107 @@ fn string_locale_case_uses_host_default() {
         assert!(complete, "{locale}: instruction bound");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Explicit components use the
+/// snapshot's GMT fallbacks and Vienna names at the formatted instant.
+#[test]
+fn intl_date_time_format_component_zone_names() {
+    use clj_quickjs::{
+        Budget, RunOutcome,
+        host::{TimeZone, sim::SimTimeHost},
+    };
+    for (name, source) in [
+        (
+            "America/New_York",
+            r#"
+            let f=new Intl.DateTimeFormat('en-GB',{hour:'numeric',minute:'numeric',second:'numeric',timeZoneName:'short'});
+            if (f.format(1489301999999) !== '01:59:59 GMT-5') throw 'before spring';
+            if (f.format(1489302000000) !== '03:00:00 GMT-4') throw 'after spring';
+            if (f.format(Date.UTC(2017,10,5,6)-1) !== '01:59:59 GMT-4') throw 'before fall';
+            if (f.format(Date.UTC(2017,10,5,6)) !== '01:00:00 GMT-5') throw 'after fall';
+            let a=new Intl.DateTimeFormat('en',{timeZone:'us/eastern',year:'numeric',timeZoneName:'long'});
+            if (a.resolvedOptions().timeZone !== 'America/New_York' || a.format(0) !== '1969, GMT-05:00') throw 'alias';
+            true
+        "#,
+        ),
+        (
+            "Europe/Vienna",
+            r#"
+            let d=Date.UTC(2023,0,15), s=Date.UTC(2023,6,15);
+            let f=new Intl.DateTimeFormat('de',{year:'numeric',timeZoneName:'long'});
+            if (f.format(d) !== '2023, Central European Standard Time') throw 'winter';
+            if (f.format(s) !== '2023, Central European Summer Time') throw 'summer';
+            for (let n of ['short','shortOffset','longOffset','shortGeneric','longGeneric']) {
+                let g=new Intl.DateTimeFormat('de',{year:'numeric',timeZoneName:n});
+                if (g.resolvedOptions().timeZoneName !== n || g.format(d) !== '2023, GMT+1' || g.format(s) !== '2023, GMT+2') throw n;
+            }
+            true
+        "#,
+        ),
+        (
+            "Asia/Kolkata",
+            r#"
+            let f=new Intl.DateTimeFormat('ja',{year:'numeric',timeZoneName:'long'});
+            if (f.format(Date.UTC(2023,0,1)) !== '2023, GMT+05:30') throw 'minutes';
+            if (f.format(Date.UTC(1900,0,1)) !== '1900, GMT+05:21') throw 'historical seconds';
+            true
+        "#,
+        ),
+        (
+            "Africa/Monrovia",
+            r#"
+            let f=new Intl.DateTimeFormat('en',{year:'numeric',timeZoneName:'short'});
+            if (f.format(Date.UTC(1900,0,1)) !== '1899, GMT-0:43') throw 'negative minutes';
+            true
+        "#,
+        ),
+        (
+            "Europe/London",
+            r#"
+            for (let n of ['short','long','shortOffset','longOffset','shortGeneric','longGeneric']) {
+                let f=new Intl.DateTimeFormat('en',{year:'numeric',timeZoneName:n});
+                if (f.format(Date.UTC(2023,0,1)) !== '2023, GMT') throw n;
+            }
+            true
+        "#,
+        ),
+    ] {
+        let rt = Runtime::new();
+        let mut host = SimTimeHost::new(0.0, TimeZone::named(name).unwrap());
+        let code = clj_quickjs::frontend::compile_script("dtf-component-zone", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let mut completed = false;
+        for _ in 0..10000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{name}");
+                    completed = true;
+                    break;
+                }
+                RunOutcome::Yielded => continue,
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        assert!(completed, "{name}: instruction bound exceeded");
+        assert!(task.dependency_log().edges().is_empty());
+        assert_eq!(host.clock_reads(), 0);
+    }
+    for seconds in [3630, -3630] {
+        let rt = Runtime::new();
+        let zone = TimeZone::fixed_offset_seconds(seconds).unwrap();
+        let mut host = SimTimeHost::new(0.0, zone);
+        let expected = if seconds > 0 {
+            "1970, +01:00:30"
+        } else {
+            "1969, -01:00:30"
+        };
+        let source = format!(
+            "new Intl.DateTimeFormat('en',{{year:'numeric',timeZoneName:'long'}}).format(0) === '{expected}'"
+        );
+        let code = clj_quickjs::frontend::compile_script("dtf-second-zone", &source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        assert!(
+            matches!(task.run_with(Budget::instructions(10000),&mut host).unwrap(),RunOutcome::Complete(value) if value.view()==ValueView::Bool(true))
+        );
+    }
+}

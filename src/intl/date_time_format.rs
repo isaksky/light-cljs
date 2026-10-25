@@ -20,6 +20,7 @@ pub(crate) enum Field {
     Second,
     Fraction,
     DayPeriod,
+    TimeZoneName,
 }
 #[derive(Clone, Debug)]
 pub(crate) enum PatternItem {
@@ -132,11 +133,6 @@ impl DateTimeFormat {
             }
             return Ok(());
         }
-        if self.time_zone_name.is_some() {
-            return Err(Fault::RangeError(
-                "DateTimeFormat timeZoneName formatting is not supported yet".into(),
-            ));
-        }
         // Era alone does not suppress ToDateTimeOptions' numeric date defaults.
         if self.weekday.is_none()
             && self.year.is_none()
@@ -183,7 +179,12 @@ impl DateTimeFormat {
             }
         }
         let has_time = self.hour.is_some() || self.minute.is_some() || self.second.is_some();
-        if has_time || self.fractional_second_digits.is_some() {
+        let has_date = !p.is_empty();
+        // Explicit zone components follow the snapshot's manual path: fractions
+        // require seconds, and standalone day periods follow the zone directly.
+        let has_fraction = self.fractional_second_digits.is_some()
+            && (self.time_zone_name.is_none() || self.second.is_some());
+        if has_time || has_fraction {
             if !p.is_empty() {
                 p.push(L(", "));
             }
@@ -203,14 +204,16 @@ impl DateTimeFormat {
                     has_field = true;
                 }
             }
-            if self.fractional_second_digits.is_some() {
+            if has_fraction {
                 if has_field {
                     p.push(L(if self.numbering == "arab" { "٫" } else { "." }));
                 }
                 p.push(F(Fraction));
             }
         }
-        if self.day_period.is_some() || (self.hour.is_some() && self.is_12_hour()) {
+        if (self.day_period.is_some() || (self.hour.is_some() && self.is_12_hour()))
+            && (self.time_zone_name.is_none() || has_time)
+        {
             if !p.is_empty() {
                 p.push(L(if self.locale == "en-US" {
                     "\u{202f}"
@@ -219,6 +222,17 @@ impl DateTimeFormat {
                 }));
             }
             p.push(F(DayPeriod));
+        }
+        if self.time_zone_name.is_some() {
+            if has_time {
+                p.push(L(" "));
+            } else if has_date {
+                p.push(L(", "));
+            }
+            p.push(F(TimeZoneName));
+            if !has_time && !has_date && self.day_period.is_some() {
+                p.push(F(DayPeriod));
+            }
         }
         self.pattern = p;
         Ok(())
@@ -409,7 +423,7 @@ impl DateTimeFormat {
                     continue;
                 }
                 'z' | 'Z' | 'v' | 'V' => {
-                    result.push_str(&self.style_zone_name(time, width >= 4));
+                    result.push_str(&self.zone_name(time, width >= 4, true));
                     continue;
                 }
                 _ => {
@@ -426,9 +440,10 @@ impl DateTimeFormat {
         }
         result
     }
-    fn style_zone_name(&self, time: f64, long: bool) -> String {
-        // Snapshot style patterns use English UTC/Vienna names, raw explicit
-        // offsets, and GMT offsets for the remaining embedded named zones.
+    fn zone_name(&self, time: f64, long: bool, style: bool) -> String {
+        // Snapshot names are English, independently of the selected locale.
+        // Style patterns retain raw fixed-offset identifiers; components use
+        // GMT offsets. The reference leaves second-precision host IDs raw.
         if self.time_zone == "UTC" {
             return if long {
                 "Coordinated Universal Time"
@@ -437,7 +452,7 @@ impl DateTimeFormat {
             }
             .into();
         }
-        if self.time_zone.starts_with(['+', '-']) {
+        if self.time_zone.starts_with(['+', '-']) && (style || self.time_zone.len() != 6) {
             return self.time_zone.clone();
         }
         let offset = self.zone.offset_seconds(date::time_clip(time));
@@ -553,6 +568,16 @@ impl DateTimeFormat {
             match item {
                 PatternItem::Literal(text) => result.push_str(text),
                 PatternItem::Field(field) => {
+                    if matches!(field, Field::TimeZoneName) {
+                        // QuickJS treats all five other widths as short,
+                        // including longOffset and longGeneric.
+                        result.push_str(&self.zone_name(
+                            time,
+                            self.time_zone_name == Some("long"),
+                            false,
+                        ));
+                        continue;
+                    }
                     if let Some(name) = self.name(*field, &fields, None) {
                         result.push_str(name);
                         continue;
@@ -666,6 +691,9 @@ impl DateTimeFormat {
         }
         if let Some(digits) = self.fractional_second_digits {
             fields.push(("fractionalSecondDigits", Value::Number(f64::from(digits))));
+        }
+        if let Some(name) = self.time_zone_name {
+            fields.push(("timeZoneName", string(name)));
         }
         service::resolved_options(heap, task, fields)
     }
