@@ -611,6 +611,109 @@ Validation at `78e0ccf9` used Homebrew Rust/Cargo **1.99.1**, with
   Adding `-A` for only those three categories passes; no source suppressions
   were added.
 
+## Shapes and named-property caches (2026-10-25)
+
+light-cljs-473 adds immutable ordinary-object layouts, per-instruction atomic
+shape/slot caches, and named constants classified at executable load. Runtime
+keys bind lazily because `Executable::load` is runtime independent; the binding
+includes a runtime/collection stamp so reclaimed key slots cannot alias a stale
+cache. Cache hits read live descriptors, and prototype reads still walk the live
+chain. Bounded worker-local transition caches and local owning shape handles
+avoid global locks/reference-count writes during repeated construction. See
+[the object/cache contract](architecture.md#ordinary-objects-and-named-property-caches).
+
+The baseline is **`d26073c8`**, including the preceding allocation, access and
+call-ownership work. The measured implementation is **`ffab5053`**. Both used
+`CARGO_BUILD_JOBS=3 cargo build --locked --release -p big-boy-pants-js --example bench`
+and saved binaries, on the same Apple M3 Ultra (Virtual), macOS 15.7.3 aarch64
+host with 24 reported CPUs and Homebrew Rust/Cargo 1.99.1. No concurrent build,
+test or other worker benchmark ran during the timing/profile windows. Host
+background activity was not controlled.
+
+Three interleaved baseline/implementation pairs ran `bench kernels --rounds 5`
+at full sizes, with one discarded warmup and five measured rounds per row.
+These are medians of the three per-run medians; the last column shows the range
+of the three paired percentage changes. Load averages were `2.98 3.65 3.64`
+at the first baseline's start and `2.98 3.46 3.56` at the last implementation's end.
+
+| Kernel | Before ns/iteration | After ns/iteration | Change | Paired changes |
+|---|---:|---:|---:|---:|
+| arithmetic (control) | 335.1 | 338.3 | +0.95% | +0.42%..+1.14% |
+| allocate | 3549346.9 | 3437718.0 | -3.15% | -3.37%..-2.71% |
+| properties | 1044.1 | 907.1 | -13.12% | -13.64%..-13.10% |
+| cljs_map | 5875324.5 | 5728587.0 | -2.50% | -3.19%..-2.29% |
+| cljs_protocol | 666217.7 | 669277.6 | +0.46% | -0.60%..+0.46% |
+
+The following separate baseline/implementation `bench scaling --rounds 5`
+pair used full sizes and four tasks per thread. Load averages were
+`2.98 3.46 3.56` → `5.10 3.99 3.75` before and
+`5.10 3.99 3.75` → `4.79 4.11 3.81` after.
+
+| Kernel | Threads | Before ns/iteration median [min..max] | After ns/iteration median [min..max] | Before scaling | After scaling |
+|---|---:|---:|---:|---:|---:|
+| arithmetic | 1 | 334.3 [333.6..347.1] | 334.6 [333.7..337.7] | 1.000x | 1.000x |
+| arithmetic | 2 | 170.5 [169.5..171.1] | 170.1 [169.7..172.6] | 1.960x | 1.967x |
+| arithmetic | 4 | 86.6 [85.9..86.9] | 85.9 [85.8..86.0] | 3.860x | 3.894x |
+| arithmetic | 8 | 43.5 [43.3..46.8] | 43.3 [43.1..45.7] | 7.683x | 7.731x |
+| allocate | 1 | 3515224.0 [3487753.4..3539073.4] | 3416861.7 [3393259.6..3436401.3] | 1.000x | 1.000x |
+| allocate | 2 | 1915297.5 [1871655.2..2015674.0] | 1789652.7 [1780443.6..1808765.5] | 1.835x | 1.909x |
+| allocate | 4 | 1134613.3 [1122712.1..1158471.7] | 1007772.5 [954205.3..1037512.0] | 3.098x | 3.391x |
+| allocate | 8 | 829520.1 [817311.8..853489.7] | 626034.5 [607629.6..652319.8] | 4.238x | 5.458x |
+| properties | 1 | 1043.4 [1040.7..1089.8] | 906.4 [905.8..910.3] | 1.000x | 1.000x |
+| properties | 2 | 674.8 [641.7..728.4] | 460.9 [457.1..465.9] | 1.546x | 1.967x |
+| properties | 4 | 669.2 [627.7..719.3] | 232.0 [230.9..232.3] | 1.559x | 3.907x |
+| properties | 8 | 991.9 [959.4..1044.5] | 126.6 [116.8..134.2] | 1.052x | 7.158x |
+| cljs_map | 1 | 5908490.9 [5874848.7..5938452.1] | 5682248.7 [5660056.8..5711738.5] | 1.000x | 1.000x |
+| cljs_map | 2 | 3104429.2 [3066865.5..3144851.2] | 2963928.9 [2948061.7..2993671.6] | 1.903x | 1.917x |
+| cljs_map | 4 | 1679671.0 [1667076.8..1727339.3] | 1573317.8 [1559218.5..1596236.7] | 3.518x | 3.612x |
+| cljs_map | 8 | 971862.2 [966463.9..990853.5] | 891196.8 [881893.3..901006.4] | 6.080x | 6.376x |
+| cljs_protocol | 1 | 674785.7 [671043.0..683121.6] | 666353.1 [663665.6..670429.2] | 1.000x | 1.000x |
+| cljs_protocol | 2 | 362722.9 [360180.6..406245.7] | 361193.1 [358171.5..458797.9] | 1.860x | 1.845x |
+| cljs_protocol | 4 | 198264.4 [193584.2..202722.9] | 201024.0 [198821.5..204179.4] | 3.403x | 3.315x |
+| cljs_protocol | 8 | 124068.7 [121283.4..127777.5] | 123775.4 [122334.3..126507.5] | 5.439x | 5.384x |
+
+**The local acceptance wording is not fully met.** Allocation, property-heavy
+and emitted-map single-thread rows improve, but the paired protocol result does
+not demonstrate improvement. Its four-thread scaling median is 1.39% slower,
+with overlapping ranges; a strict all-row nonregression claim is not supported.
+Arithmetic is a control, not an optimization result. The earlier 6x allocation
+gate also remains missed at 5.458x. No control-based normalization turns these
+misses into successes.
+
+A separate final-binary `bench kernels --rounds 20` supplied a protocol profile.
+Immediately after the emitted-map row, `sample <pid> 2 1 -file <output>` sampled
+the protocol phase for two seconds at one-millisecond intervals. Those timings
+are excluded above. Subtracting direct-child counts from the call tree and
+excluding the main thread gave **1,339 worker self samples**:
+
+| Frame | Self samples | Share |
+|---|---:|---:|
+| `execute_budgeted` | 131 | 9.78% |
+| `Fault` drop glue | 77 | 5.75% |
+| `step_instruction` | 77 | 5.75% |
+| `memmove` | 62 | 4.63% |
+| `native::start_conversion` | 41 | 3.06% |
+| `property::lookup_cached` | 22 | 1.64% |
+
+The bbp-integration group's numeric-miss rule calls for numbers, remaining top
+frames and a focused follow-up. Existing **light-cljs-474**, "Cut per-instruction
+interpreter overhead to within 3x of V8's interpreter", explicitly covers
+`execute_budgeted`, `step_instruction`, success-path `Fault` drops and native
+conversion startup. It is the nonduplicate follow-up for these remaining
+dispatch costs; this change does not alter its budgets, safepoints or native
+call setup, and does not claim the protocol target is achieved.
+
+Validation of the final implementation used `CARGO_BUILD_JOBS=3` and
+`--test-threads=3`: **2,001 engine tests across 60 result groups passed**, with
+no failures or ignored tests, including the QuickJS-derived corpus. The six
+cache regressions cover shape/deletion/order changes, dictionary fallback,
+current descriptors/accessors, prototype/method replacement, concurrent tasks
+on different noninitial slots, concurrent runtimes, and forced GC/key reuse.
+The final concurrent-layout fixture was also rerun separately (six passed).
+All six doctests and the formatter passed. Strict Clippy retains the nine pre-existing diagnostics in
+`deprecated`, `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`;
+allowing only those categories passes, with no source suppressions.
+
 ## Method and limits of the measurements
 
 `examples/bench/main.rs` handles timing, a counting allocator and reports;

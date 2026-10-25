@@ -218,8 +218,10 @@ Each instruction has a monomorphic atomic shape/slot cache, shared by concurrent
 tasks running the same executable. A single atomic word prevents torn pairs;
 replacement only changes hit rate. Hits validate the live slot key as well as
 the shape. They read the current value, accessor and flags, so descriptor
-changes and freezing need no stale-descriptor invalidation protocol. Prototype
-lookups still walk the current chain and check each receiver's ownership and
+changes and freezing need no stale-descriptor invalidation protocol. The first
+slot's live key directly proves a hit without consulting the cache, including
+for a single-property record. Prototype lookups still walk the current chain
+and check each receiver's ownership and
 exotic behavior; they can use the same slot cache when reaching the defining
 ordinary store. This also accelerates the named read preceding a method call.
 No cache holds a value, prototype or object handle, and no validation takes a
