@@ -966,6 +966,7 @@ fn realm_intrinsics_retain() {
         "Symbol.prototype.valueOf",
         "Object.getOwnPropertyDescriptor(Symbol.prototype, 'description').get",
         "Symbol.prototype[Symbol.toPrimitive]",
+        "Date.prototype[Symbol.toPrimitive]",
         "isNaN",
         "isFinite",
         "Number.isNaN",
@@ -1191,7 +1192,8 @@ fn realm_intrinsics_retain() {
     // Five Object statics add five built-ins (-318).
     // RegExp symbol protocols add ten built-ins and one iterator prototype (-301).
     // The remaining Math methods add twenty-seven built-ins (-319).
-    assert_eq!(rt.heap_usage().objects.builtin, 405);
+    // Date's Symbol.toPrimitive adds one built-in (-310).
+    assert_eq!(rt.heap_usage().objects.builtin, 406);
     assert_eq!(rt.heap_usage().objects.plain, 65);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

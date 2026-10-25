@@ -1048,7 +1048,8 @@ fn realm_intrinsics_reclaim_with_their_heap() {
     // Fourteen String methods (-300), six Promise methods, species getter, and AggregateError's pair (-317).
     // Ten RegExp/String protocol built-ins and one iterator prototype (-301).
     // The remaining Math methods add 27 intrinsics (-319).
-    assert_eq!(ids.len(), 470);
+    // Date's Symbol.toPrimitive adds one built-in (-310).
+    assert_eq!(ids.len(), 471);
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

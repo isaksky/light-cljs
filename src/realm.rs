@@ -1443,6 +1443,8 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
             Builtin::BooleanPrototypeValueOf,
         ],
     )?;
+    // Append after existing allocations to preserve intrinsic identities.
+    date_symbol_intrinsic(&mut b, date_prototype)?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -2075,6 +2077,25 @@ fn intl_locale_intrinsics(
     })?
     .then_some(())?;
     Some(prototype)
+}
+
+// Realm initialization can start inside JSON-module native frames on 64 KiB
+// workers. Keep registration temporaries off the encompassing build frame.
+#[inline(never)]
+fn date_symbol_intrinsic(b: &mut Build<'_>, prototype: ObjectId) -> Option<()> {
+    let method = b.function(Builtin::DateToPrimitive, &[])?;
+    let key = b
+        .heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toPrimitive"))?;
+    b.heap
+        .with_object_mut(prototype, |object| {
+            let HeapObject::Plain(o) = object else {
+                return false;
+            };
+            o.define_with(key, Value::Object(method), PropertyFlags::FUNCTION_INFO)
+        })?
+        .then_some(())
 }
 
 /// Date.prototype is ordinary and unbranded; only constructed Dates have a slot.
@@ -3395,7 +3416,8 @@ mod tests {
         // Fourteen String methods (-300), six Promise methods, species getter, and AggregateError's pair (-317).
         // Ten RegExp/String protocol built-ins and one iterator prototype (-301).
         // The remaining Math methods add 27 intrinsics (-319).
-        assert_eq!(first.all.len(), 470);
+        // Date's Symbol.toPrimitive adds one built-in (-310).
+        assert_eq!(first.all.len(), 471);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

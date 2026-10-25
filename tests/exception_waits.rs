@@ -2256,6 +2256,42 @@ fn cancelling_to_primitive_runs_finally_and_discards_the_conversion() {
     );
 }
 
+/// Synthetic fixtures, not light-cljs output. Both GetMethod and the exotic
+/// callback unwind through the saved operator frame on failure/cancellation.
+#[test]
+fn symbol_to_primitive_failure_and_cancellation_unwind() {
+    for method in [
+        "get [Symbol.toPrimitive]() {try {return __rt.need(5,3);} finally {__rt.effect(1,1);}}",
+        "[Symbol.toPrimitive](hint) {try {return __rt.need(5,3);} finally {__rt.effect(1,1);}}",
+    ] {
+        for cancel in [false, true] {
+            let rt = Runtime::new();
+            let source = format!(
+                "let result=0; try {{ ({{{method},valueOf(){{__rt.effect(1,99); return 1;}}}}) * 2; }} catch(e) {{result=7;}} finally {{__rt.effect(1,2);}} result+1"
+            );
+            let task = spawn(&rt, &source);
+            let mut log = Log::default();
+            assert_eq!(waiting(run(&task, &mut log)), key(&rt, A));
+            rt.collect().unwrap();
+            let resumed = if cancel {
+                cancel_parked(&task)
+            } else {
+                let error = rt.root(Primitive::String("conversion failed".into()));
+                fail(&rt, &task, &error)
+            };
+            let (outcome, log) = run_elsewhere(resumed, log);
+            if cancel {
+                cancelled(outcome);
+            } else {
+                assert_eq!(number(outcome), 8.0);
+            }
+            assert_eq!(log.0, [1.0, 2.0]);
+            rt.collect().unwrap();
+            assert_eq!(rt.heap_usage().objects.function, 0);
+        }
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Pending constructor conversions
 /// share the native unwind rules, including nested built-in callbacks.
 #[test]

@@ -1605,3 +1605,15 @@ were independently measured from the same system libm operations that
 QuickJS registers, with C compiler builtin folding disabled. The new random
 source is task-local SplitMix64, rather than QuickJS's clock-seeded
 per-context xorshift64*.
+
+## Symbol.toPrimitive and Date conversion (clj-quickjs-310)
+
+Semantic references: `research/quickjs/quickjs.c::JS_ToPrimitiveFree` and
+`js_date_Symbol_toPrimitive`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The Rust change extends the
+existing traced task-owned conversion continuation. No upstream source or
+fixtures were copied; new tests are original synthetic JavaScript, not
+light-cljs output. The Date hint strings follow ECMAScript (`number`, `string`,
+`default`); QuickJS's additional `integer` hint is deliberately rejected.
+UTC local-format output includes the pellet's requested ` (UTC)` annotation,
+extending the pinned QuickJS numeric-offset format.

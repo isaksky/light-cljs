@@ -576,6 +576,8 @@ pub(crate) enum Builtin {
     MathCbrt,
     MathClz32,
     MathF16round,
+
+    DateToPrimitive,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -817,7 +819,9 @@ impl Builtin {
             Builtin::SymbolPrototypeToString => "toString",
             Builtin::SymbolPrototypeValueOf => "valueOf",
             Builtin::SymbolPrototypeDescription => "get description",
-            Builtin::SymbolPrototypeToPrimitive => "[Symbol.toPrimitive]",
+            Builtin::SymbolPrototypeToPrimitive | Builtin::DateToPrimitive => {
+                "[Symbol.toPrimitive]"
+            }
             Builtin::StringPrototypeSplit => "split",
             Builtin::Object => "Object",
             Builtin::ObjectIs => "is",
@@ -1157,7 +1161,7 @@ impl Builtin {
             Builtin::SymbolPrototypeToString
             | Builtin::SymbolPrototypeValueOf
             | Builtin::SymbolPrototypeDescription => 0,
-            Builtin::SymbolPrototypeToPrimitive => 1,
+            Builtin::SymbolPrototypeToPrimitive | Builtin::DateToPrimitive => 1,
             Builtin::ObjectIs => 2,
             Builtin::ObjectPrototypeToString
             | Builtin::ObjectPrototypeValueOf
@@ -1604,6 +1608,7 @@ pub(crate) fn call(
         | Builtin::DateGetLocalField(_)
         | Builtin::DateNow
         | Builtin::DateTimezoneOffset
+        | Builtin::DateToPrimitive
         | Builtin::DateToLocalString(_) => Err(Fault::Internal(
             "Date conversion requires a resumable frame",
         )),

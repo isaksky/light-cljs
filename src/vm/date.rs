@@ -946,7 +946,8 @@ pub(crate) fn calendar_fields(time: f64) -> Option<UtcFields> {
     })
 }
 
-/// Non-locale QuickJS formats. `zone` selects local formatting with date/time
+/// Non-locale formats, with an explicit UTC name annotation (clj-quickjs-310).
+/// `zone` selects local formatting with date/time
 /// part bits 1/2; without a zone the complete UTC format is used. Like QuickJS's
 /// get_date_fields, truncate the offset to minutes before decomposing the time.
 /// This intentionally differs from the second-precision local field getters.
@@ -970,7 +971,16 @@ pub(crate) fn format_string(time: f64, zone: Option<crate::host::TimeZone>, part
         let date = format!("{day} {month} {:02} {year}", fields.date);
         let sign = if offset < 0 { '-' } else { '+' };
         let minutes = offset.abs();
-        let time = format!("{clock} GMT{sign}{:02}{:02}", minutes / 60, minutes % 60);
+        let annotation = if zone == Some(crate::host::TimeZone::UTC) {
+            " (UTC)"
+        } else {
+            ""
+        };
+        let time = format!(
+            "{clock} GMT{sign}{:02}{:02}{annotation}",
+            minutes / 60,
+            minutes % 60
+        );
         match part {
             1 => date,
             2 => time,

@@ -1377,6 +1377,7 @@ Executed, with JavaScript semantics:
 | `a + b * (yield c)` and yields in try/catch/finally (clj-quickjs-244) | pending operands stay on the saved activation's value stack without compiler spills. Handlers and normal/return/throw/jump completions are saved relative to the activation and rebased on next, preserving their values across GC and calls from different depths. Finally runs once when resumed control leaves the protected block; a yielding finally continues its pending completion after its last yield or dependency wait. |
 | `function* g(x) { yield x; }`, generator expressions/methods and `next(value)` (clj-quickjs-243) | calls evaluate defaults and bind arguments before creating a generator; the body starts at first next. Yield suspends a traced task-owned activation and produces `{value, done: false}`; the next argument becomes the yield result. Return/fallthrough produces a done result, uncaught throw completes and propagates, and later next calls return undefined/done. Generators inherit the shared iterator identity and support for-of. Dependency waits, budgets, GC, cancellation and worker migration use ordinary attached VM frames. Re-entrant calls and incompatible receivers throw TypeError; publication and foreign-task access fail. Generator return/throw methods execute, including cleanup and yield* forwarding (clj-quickjs-293); async generators execute (clj-quickjs-313). |
 | `var a = 1, b;` (clj-quickjs-94) | one binding per name per function body (or script), wherever the `var` statements are (nested blocks, loop and `if` bodies, `try`/`catch`/`finally` blocks and `switch` clauses included, nested functions excluded); hoisted: it exists and is `undefined` from function entry, with no temporal dead zone (`x; var x = 1;` reads `undefined`); repeating `var` is allowed and `var x;` does nothing (it does not reset an assigned value); an initializer is an assignment that runs when the statement does; a `var` named like a parameter, or like a function declaration at the top of the same body, is that binding; a `var` statement has no completion value. Closures capture a `var` under the rule of every binding: by value if it is never assigned, otherwise through one cell for the whole call, so closures made in different loop iterations share it (unlike a `let` in the loop body). A `var` in a catch block may repeat the simple catch parameter (ECMAScript Annex B, as QuickJS does): it declares the function's binding, and its initializer assigns the parameter |
+| ToPrimitive protocol (clj-quickjs-310) | GetMethod of `Symbol.toPrimitive` precedes ordinary conversion for every object. Call with the original receiver and one hint string (`default`, `number`, `string`); non-callable methods and object results throw TypeError. Nullish methods fall back to OrdinaryToPrimitive. Lookup/calls can yield, wait, collect and migrate. Date's generic method maps default to string-first ordinary conversion |
 | OrdinaryToPrimitive on object operands (clj-quickjs-70) | arithmetic, bitwise, unary and update operators use hint number; `+` and object/primitive `==` use hint default; templates and computed property keys use hint string. Number/default tries `valueOf`, then `toString`; string reverses that order. Non-callable methods are skipped; each method is called at most once with the original object as `this` and no arguments. The first primitive result wins; otherwise a catchable TypeError "cannot convert object to primitive value". Method exceptions propagate. Left conversion finishes before right conversion begins, after both expressions are evaluated. Equality between two objects uses identity; nullish equality never converts. Object.prototype.valueOf returns the object and Object.prototype.toString returns "[object Object]" for plain objects. A task-owned native continuation retains operands and progress across budget yields, dependency waits, GC and migration; cancellation drops it through the usual finally unwinding. No Rust interpreter recursion |
 | `+` | when either operand is a string: ToString of both, concatenated (a new string; a result over 2^30 - 1 code units throws catchable `InternalError`, "string too long"). ToString gives `"undefined"`, `"null"`, `"true"`/`"false"`, and for numbers Number::toString in radix 10: shortest round-trip digits (ties to the even digit), plain decimal for `1e-6 <= \|x\| < 1e21` (`"0.000001"`, `"19686109595169230000"`), otherwise exponent form (`"1e+21"`, `"1e-7"`), `"0"` for `-0`, `"NaN"`, `"Infinity"` (clj-quickjs-66). Otherwise ToNumber of both, then IEEE addition. Object operands first use resumable ToPrimitive (clj-quickjs-70), left before right, with hint default. Lowered to `add` when both operands are statically numbers, otherwise to `plus`, which decides at run time |
 | `` `a${x}b${y}c` `` untagged template literals (clj-quickjs-57) | a new string: the cooked text parts and the ToString of each substitution, in order (ECMAScript TemplateLiteral evaluation, QuickJS `js_parse_template`); the substitutions are evaluated left to right, each converted right after it is evaluated and before the next runs. ToString is that of `+` (`"undefined"`, `"null"`, `"true"`/`"false"`, Number::toString); an object substitution first uses resumable ToPrimitive with hint string (clj-quickjs-70). Lowered to the first text part as a constant, then per substitution its code, the `to_string` opcode (`0x55`) and `plus`, then the next text part (when not empty) and `plus`; a result over 2^30 - 1 code units throws catchable `InternalError`, "string too long" |
@@ -1557,8 +1558,8 @@ absent), with `get ` or `set ` prefixes for accessors. Named functions and
 other expressions retain their names. Rejected forms include `{[key]}`
 shorthand and unparenthesized comma expressions inside the brackets.
 Async generators execute (-313). Object spread executes (-315). Key conversion
-uses the shared OrdinaryToPrimitive path; `Symbol.toPrimitive` protocol
-dispatch remains the existing conversion gap described below.
+uses the shared ToPrimitive path, including `Symbol.toPrimitive` dispatch
+(clj-quickjs-310).
 
 ```js accept
 let k = "x"; ({[k]: 1}).x === 1;
@@ -1969,7 +1970,7 @@ Gaps specific to execution:
   JSON output, error formatting, and function-name construction (clj-quickjs-231).
   Existing per-feature argument, property-count and work limits still apply.
 - **Conversion gaps.** Symbols are primitives (clj-quickjs-127);
-  `Symbol.toPrimitive` protocol dispatch (clj-quickjs-128) remains deferred.
+  `Symbol.toPrimitive` protocol dispatch executes (clj-quickjs-310).
   Number radix formatting supports every radix 2..36, including fractions
   (clj-quickjs-149); localized and fixed-precision Number methods remain deferred.
   `Function.prototype.toString` is absent: conversion uses the available
@@ -3808,8 +3809,8 @@ TypeError. Source positions use the existing operator-token convention.
 
 Symbol.prototype, primitive property reads and wrappers are supported below
 (clj-quickjs-129). Explicit gaps: additional well-known symbols and general
-protocol dispatch remain deferred. Symbol wrappers consult Symbol.toPrimitive;
-other objects and instanceof do not yet consult the corresponding protocols.
+protocols beyond those documented remain deferred. All objects consult
+Symbol.toPrimitive (clj-quickjs-310); instanceof retains its existing limits.
 Computed keys in object literals execute (clj-quickjs-233).
 
 Synthetic fixtures, not light-cljs output:
@@ -4308,13 +4309,12 @@ the shared leaf StringToNumber scan/rope flatten until clj-quickjs-265 supplies
 budgeted primitive numeric parsing. Constructor strings fail explicitly as
 the parsing gap below, without scanning their contents.
 
-Explicit gaps: `Date()` calls fail with UnsupportedOperand pending formatting.
-String construction/parsing, non-ISO formatting and Date's
-Symbol.toPrimitive/default conversion remain
-separate Date/protocol work. A value lookup reaching Date.prototype for its
-deferred toString/toJSON fails explicitly rather than using Object.prototype's
-tag or silently serializing a Date as an ordinary JSON object. Presence checks
-for these standard methods return true without running formatting. An own
+String construction/parsing and non-ISO formatting execute in later Date pellets;
+Date's Symbol.toPrimitive/default conversion executes (clj-quickjs-310).
+Explicit gaps: toJSON and locale formatting. A value lookup reaching
+Date.prototype for its deferred toJSON fails explicitly rather than silently
+serializing a Date as an ordinary JSON object. Presence checks for toJSON
+return true without running formatting. An own
 toJSON override (including a getter or non-callable value) remains observable.
 Host clock/zone integration is documented at `src/vm/date.rs`:
 unrecorded leaf host clock effect, one rule-table zone per runtime, UTC when
@@ -4775,12 +4775,13 @@ and return `Invalid Date` for an invalid slot. Local formats use English
 three-letter day/month names and the runtime zone's `GMT±hhmm` offset; UTC
 uses `Day, dd Mon yyyy hh:mm:ss GMT`. Negative years have a minus sign and
 at least four digits. The two UTC names reference the same function object.
+Local-format UTC strings include a trailing ` (UTC)` (clj-quickjs-310).
 `Date()` ignores its arguments and returns the current host time in the local
 `toString` format. Its hostless clock failure is RangeError. These replace
 earlier explicit formatting gaps; `String(date)` now uses the Date formatter.
 
-Explicit gaps: parsing, default Date coercion, `toJSON`, and `toLocale*String`
-remain deferred. Whole-minute truncation of the offset and local fields in
+Parsing and default Date coercion execute in later pellets. Explicit gaps:
+`toJSON` and `toLocale*String`. Whole-minute truncation of the offset and local fields in
 these strings follows QuickJS, while local field getters retain offset seconds.
 
 ### Unicode RegExp ignore-case execution (clj-quickjs-191)
@@ -5529,8 +5530,8 @@ conversion. Implicit ToString/ToNumber of a symbol, including the symbol
 returned by default wrapper conversion, throws catchable TypeError at the
 existing operator-token position.
 
-Explicit gaps: general object Symbol.toPrimitive dispatch and general
-Object.prototype.toString Symbol.toStringTag consumption remain deferred.
+General object Symbol.toPrimitive dispatch executes (clj-quickjs-310).
+General Object.prototype.toString Symbol.toStringTag consumption remains deferred.
 Sloppy-function receiver boxing remains deferred.
 
 Synthetic fixture, not light-cljs output:
@@ -6651,8 +6652,8 @@ the frontend's existing limits. Explicit gaps: GeneratorFunction and
 AsyncFunction constructors and Function.prototype.toString remain deferred.
 Function subclass allocation executes (-309). Sloppy receiver substitution
 retains the existing explicit UnsupportedOperand limit. Object argument
-conversion uses the shared OrdinaryToPrimitive path; general object
-Symbol.toPrimitive dispatch remains deferred to clj-quickjs-128.
+conversion uses the shared ToPrimitive path, including general object
+Symbol.toPrimitive dispatch (clj-quickjs-310).
 
 Synthetic fixtures, not light-cljs output. Each script evaluates to true:
 
@@ -6936,7 +6937,7 @@ JSON.stringify uses Boolean/BigInt wrapper internal data after toJSON, ignoring 
 conversion overrides: booleans serialize normally and BigInts throw TypeError.
 Wrappers have ordinary task-owned properties and cannot publish; immutable intrinsic
 objects remain shared. No new size cap: BigInt retains its 1 Mbit magnitude cap.
-Built-in subclass construction executes (-309); general Symbol.toPrimitive dispatch remains deferred separately.
+Built-in subclass construction executes (-309); general Symbol.toPrimitive dispatch executes (-310).
 Object.prototype.toString still rejects BigInt primitives/wrappers with UnsupportedOperand
 until general Symbol.toStringTag consumption is implemented.
 
@@ -6989,3 +6990,29 @@ Replacement retains its 65,536-unit argument and 1,000,000-unit work limits,
 with built-in capture storage charged before allocation/replacer calls.
 Every matcher search retains its independent existing bound. Limits produce
 catchable RangeError. Plain-string split keeps incremental 256-unit work.
+
+### Symbol.toPrimitive and Date conversion (clj-quickjs-310)
+
+Every existing ToPrimitive path reads `@@toPrimitive` before ordinary methods.
+GetMethod treats null/undefined as absent, rejects other non-callables, and
+calls a present method with the receiver and exactly one hint string:
+`"default"`, `"number"` or `"string"`. An object result throws TypeError without
+ordinary fallback. Getter/callback exceptions propagate. These lookups/calls
+are resumable across budget yields, dependency waits, collection and migration;
+ordinary exception/cancellation unwinding discards the continuation.
+
+`Date.prototype[Symbol.toPrimitive]` (name `[Symbol.toPrimitive]`, length 1,
+non-writable/non-enumerable/configurable) accepts any object receiver. Only
+primitive string hints are accepted: `number` performs number-first ordinary
+conversion; `string`/`default` perform string-first ordinary conversion. It
+never re-reads `@@toPrimitive`. Date concatenation uses the existing formatter,
+including its host zone (UTC by default). UTC local-format output now includes
+` (UTC)` for `toString`, `toTimeString` and `Date()`; other zones retain their
+numeric-offset output. `toDateString` and `toUTCString` keep their formats.
+`Symbol.prototype[Symbol.toPrimitive]` retains its existing branded unboxing.
+
+The same protocol applies to shared intrinsics and published functions.
+Publication of task-owned ordinary objects or function property records still
+fails; freezing does not change ownership. Foreign object access remains an
+explicit error. Persistent collections without conversion methods throw TypeError.
+No new limits: existing property lookup/native frame limits apply.

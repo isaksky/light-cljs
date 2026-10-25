@@ -2392,6 +2392,39 @@ The `Array` global exposes its constructor and prototype (clj-quickjs-153);
 Deferred: primitive receiver wrappers for push fail explicitly; other array
 methods retain their existing support status.
 
+### Symbol.toPrimitive and Date default conversion (clj-quickjs-310)
+
+All existing resumable ToPrimitive paths first read `Symbol.toPrimitive`,
+including inherited accessors, and call a present method with the original
+receiver and one `"default"`, `"number"` or `"string"` argument. Null/undefined
+methods select OrdinaryToPrimitive; other non-callable methods and object
+results throw TypeError. Arithmetic, comparisons, concatenation, templates,
+String/Number/BigInt conversions, computed keys, Date construction and JSON's
+existing coercion paths share this protocol. JSON's internal Boolean/BigInt
+wrapper unboxing retains its standard behavior without ToPrimitive.
+
+`Date.prototype[Symbol.toPrimitive]` is a non-writable, non-enumerable,
+configurable generic method of length 1. It requires an object receiver and
+an exact string hint, maps `default`/`string` to string-first ordinary conversion
+and `number` to number-first conversion, and skips a second protocol lookup.
+Date concatenation now uses the existing host-zone formatter (UTC without a
+host): `'' + new Date(0)` is `"Thu Jan 01 1970 00:00:00 GMT+0000 (UTC)"`.
+UTC formatting includes the `(UTC)` annotation for `toString`, `toTimeString`
+and `Date()`; other zones retain their existing numeric-offset output.
+
+Getter/callback progress and operands remain traced task state across budget
+yields, dependency waits, collection, migration, exceptions and cancellation.
+No new limits are introduced; existing property lookup and native frame depth
+limits apply. Shared intrinsics and published functions take the same protocol
+path. Objects and functions with task-owned property records still cannot
+publish, including frozen objects; foreign access fails explicitly. Persistent
+runtime collections with no conversion methods throw TypeError.
+
+Synthetic fixtures, not light-cljs output. Checks:
+`cargo test --test js_source symbol_to_primitive`,
+`cargo test --test exception_waits symbol_to_primitive`, and
+`cargo test --test gc_roots realm_intrinsics_retain`.
+
 ### Object operands and OrdinaryToPrimitive (clj-quickjs-70)
 
 Supported (`cargo test --test js_source objects_convert_with_to_primitive`,
@@ -2410,7 +2443,8 @@ Supported (`cargo test --test js_source objects_convert_with_to_primitive`,
   yields, `__rt.need` waits, GC and migration. Exceptions propagate and
   cancellation runs finally blocks without restarting a conversion.
 
-Deferred: Symbol.toPrimitive and Function.prototype.toString.
+Symbol.toPrimitive executes before this ordinary fallback (clj-quickjs-310 above).
+Deferred: Function.prototype.toString.
 Functions use the available Object.prototype default (`"[object Function]"`);
 runtime collections with no conversion methods throw TypeError. Leaf built-ins
 still reject object conversion arguments (for example descriptor keys,
@@ -3297,13 +3331,15 @@ Date non-locale string formats (clj-quickjs-183): `toString`, `toDateString`,
 `toTimeString`, `toUTCString` and its identical-function `toGMTString` alias
 are supported, superseding the earlier formatting deferrals. Local strings use
 the runtime's host-selected zone and QuickJS's `GMT+hhmm` / `GMT-hhmm` suffix
-without a zone-name annotation; UTC strings end in `GMT`. Years have at least
+without a zone-name annotation except for the UTC `(UTC)` annotation added
+by clj-quickjs-310; `toUTCString` output ends in `GMT`. Years have at least
 four digits, with a minus sign for negative years, and invalid dates return
 `Invalid Date`. QuickJS truncates historical offsets to whole minutes before
 formatting both fields and suffix; the existing local getters retain seconds.
 `Date()` ignores its arguments and formats the host's current time; without a
 host clock it raises RangeError. Explicit `String(date)` uses `toString`.
-Parsing, default Date coercion, `toJSON`, and locale variants remain deferred.
+Parsing and default Date coercion execute in later pellets; `toJSON` and
+locale variants remain deferred.
 Tests: `CARGO_BUILD_JOBS=3 cargo test --test js_source date_ -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 cargo test --test date_host -- --test-threads=3`.
 
@@ -3391,8 +3427,8 @@ time forms without an offset use the runtime's frozen host zone (UTC without a h
 existing DST gap/overlap rules. Fields are range-checked, `24:00` advances to
 the next day, and invalid or TimeClip-out-of-range input returns NaN (an invalid
 Date on construction). This supersedes earlier ISO parsing gaps. For non-ISO
-fallback grammar see clj-quickjs-185 below; Date default coercion,
-`toJSON`, and locale formatting remain deferred.
+fallback grammar see clj-quickjs-185 below; Date default coercion executes
+(clj-quickjs-310). `toJSON` and locale formatting remain deferred.
 Tests: `CARGO_BUILD_JOBS=3 cargo test --test js_source date_ -- --test-threads=3`,
 `CARGO_BUILD_JOBS=3 cargo test --test date_host -- --test-threads=3`, and
 `CARGO_BUILD_JOBS=3 cargo test --lib vm::date:: -- --test-threads=3`.
@@ -3409,7 +3445,8 @@ round-trip whole-second dates, including negative/expanded years. Scans are
 budgeted without an input-length cap; malformed fields, unmatched parentheses,
 NUL and extraneous trailing tokens return NaN. The fallback keeps QuickJS's
 nine-digit fractional-field grammar. This supersedes earlier fallback parsing
-gaps; Date default coercion, `toJSON` and locale formatting remain deferred.
+gaps; Date default coercion executes (clj-quickjs-310).
+`toJSON` and locale formatting remain deferred.
 
 ### Array and argument spread (clj-quickjs-130)
 
@@ -3822,9 +3859,8 @@ participates in precise GC, including WeakMap key liveness.
 `String(symbol)` gives `"Symbol(description)"`. Implicit symbol string/numeric
 conversion and `String(Object(symbol))` throw TypeError. Symbol wrappers consult
 `[Symbol.toPrimitive]` before ordinary conversion methods, using resumable getter
-and callback frames. General object protocol dispatch, generic
-`Object.prototype.toString` tag consumption remains
-explicit gaps.
+and callback frames. General object dispatch executes (clj-quickjs-310).
+Generic `Object.prototype.toString` tag consumption remains an explicit gap.
 
 Tests: `cargo test --test js_source symbol_`,
 `cargo test --test js_source primitive_wrappers_survive_wait_collection_and_migration`,
@@ -4365,7 +4401,7 @@ search, callback and copying methods (-296 to -299), the plain RegExp `i` flag
 (-303), Script property escapes (-304), v-flag string properties (-305),
 NumberFormat unit style (-306), DateTimeFormat timeZoneName (-307),
 `Symbol.toPrimitive`
-dispatch, which today silently yields NaN (-310), `Object.prototype.toString`
+dispatch (implemented by -310), `Object.prototype.toString`
 tags (-311), eval SyntaxError stacks (-312), async generators (-313), `??` and
 logical assignment (-314), rest parameters/object spread/destructuring loop
 heads (-315), numeric separators (-316), Promise combinators (-317), Object
@@ -4678,7 +4714,7 @@ survive collection/waits/migration, and cannot be published across tasks. Intrin
 retain the shared immutable realm policy. BigInt payloads share immutable limb storage
 without heap edges and sit behind a pointer to keep every ordinary object compact
 on small VM workers. No new size limit is imposed; the existing 1 Mbit BigInt cap applies.
-Built-in subclass construction executes (-309); general Symbol.toPrimitive dispatch remains separate work.
+Built-in subclass construction executes (-309); general Symbol.toPrimitive dispatch executes (-310).
 Object.prototype.toString on BigInt primitives/wrappers retains the explicit
 UnsupportedOperand gap for Symbol.toStringTag consumption.
 

@@ -397,8 +397,7 @@ pub(crate) enum Action {
 }
 
 /// ToPrimitive's preferred primitive type. Number and default share ordinary
-/// method order; Date's default conversion fails explicitly until formatting
-/// and its Symbol.toPrimitive protocol are implemented.
+/// method order; Date's @@toPrimitive maps default to string itself.
 #[derive(Clone, Copy, Debug)]
 enum Hint {
     Default,
@@ -406,8 +405,7 @@ enum Hint {
     String,
 }
 
-/// Symbol wrappers and property-key conversion for fromEntries/computed super
-/// consult @@toPrimitive first. Other general conversions remain deferred.
+/// Resumable GetMethod/Call of @@toPrimitive, before ordinary conversion.
 #[derive(Clone, Copy, Debug)]
 enum SymbolMethod {
     Pending,
@@ -2656,6 +2654,25 @@ fn start_builtin_conversion(
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
     let (target, operands, hint) = match which {
+        Builtin::DateToPrimitive if !construct => {
+            if !matches!(this, Value::Object(_)) {
+                return Err(Fault::TypeError(
+                    "Date @@toPrimitive requires an object".into(),
+                ));
+            }
+            // Validate without coercing the hint. Equality against these short
+            // strings is bounded even for a long or rope-valued argument.
+            let hint = match args.first() {
+                Some(Value::String(s)) if s.len() == 6 && *s == "number" => Hint::Number,
+                Some(Value::String(s))
+                    if (s.len() == 6 && *s == "string") || (s.len() == 7 && *s == "default") =>
+                {
+                    Hint::String
+                }
+                _ => return Err(Fault::TypeError("invalid primitive conversion hint".into())),
+            };
+            (ConvertTarget::PrimitiveValue, vec![this.clone()], hint)
+        }
         Builtin::ArrayBuffer if construct => (
             ConvertTarget::ArrayBuffer(which),
             vec![
@@ -3101,7 +3118,13 @@ fn start_builtin_conversion(
             hint,
             method: 0,
             method_get: false,
-            symbol_method: SymbolMethod::Pending,
+            // Date's method performs OrdinaryToPrimitive directly, including
+            // when borrowed by an object with its own @@toPrimitive method.
+            symbol_method: if which == Builtin::DateToPrimitive {
+                SymbolMethod::Ordinary
+            } else {
+                SymbolMethod::Pending
+            },
         },
     });
     Ok(true)
@@ -4902,48 +4925,30 @@ impl NativeState {
                     }
                     if matches!(symbol_method, SymbolMethod::Pending) {
                         *symbol_method = SymbolMethod::Ordinary;
-                        if matches!(
-                            target,
-                            ConvertTarget::Instruction(
-                                Instr::ToSuperKey | Instr::PutSuperElem | Instr::PutSuperElemStrict
-                            )
-                        ) || matches!(
-                            builtin::wrapper_data(heap, task, receiver)?,
-                            Some(crate::object::PrimitiveData::Symbol(_))
-                        ) {
-                            let key = property::Key::Symbol(crate::value::symbol::well_known(
-                                "toPrimitive",
-                            ));
-                            match property::read(heap, task, receiver, &key)? {
-                                Some(property::Read::Getter(callee)) => {
-                                    *symbol_method = SymbolMethod::Getter;
-                                    return Ok(Action::Call {
-                                        callee,
-                                        this: receiver.clone(),
-                                        args: vec![],
-                                    });
-                                }
-                                Some(property::Read::Value(callee)) => {
-                                    return call_symbol_method(
-                                        heap,
-                                        symbol_method,
-                                        callee,
-                                        receiver.clone(),
-                                        *hint,
-                                    );
-                                }
-                                None => {}
+                        let key =
+                            property::Key::Symbol(crate::value::symbol::well_known("toPrimitive"));
+                        match property::read(heap, task, receiver, &key)? {
+                            Some(property::Read::Getter(callee)) => {
+                                *symbol_method = SymbolMethod::Getter;
+                                return Ok(Action::Call {
+                                    callee,
+                                    this: receiver.clone(),
+                                    args: vec![],
+                                });
                             }
+                            Some(property::Read::Value(callee)) => {
+                                return call_symbol_method(
+                                    heap,
+                                    symbol_method,
+                                    callee,
+                                    receiver.clone(),
+                                    *hint,
+                                );
+                            }
+                            None => {}
                         }
                     }
                     while *method < 2 {
-                        if matches!(hint, Hint::Default)
-                            && super::date::time_value(heap, task, receiver)?.is_some()
-                        {
-                            return Err(Fault::Unsupported(
-                                "Date default conversion requires formatting/Symbol.toPrimitive support".into(),
-                            ));
-                        }
                         let names = if matches!(hint, Hint::String) {
                             ["toString", "valueOf"]
                         } else {

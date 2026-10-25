@@ -5361,7 +5361,7 @@ fn date_to_string_formats() {
             0,
             946684800000.0,
             "Sat Jan 01 2000",
-            "00:00:00 GMT+0000",
+            "00:00:00 GMT+0000 (UTC)",
             "Sat, 01 Jan 2000 00:00:00 GMT",
         ),
         // QuickJS truncates its offset to whole minutes before decomposition.
@@ -5411,10 +5411,10 @@ fn date_to_string_formats() {
         assert!(task.dependency_log().edges().is_empty());
     }
     for src in [
-        "new Date(-62198755200000).toString() === 'Fri Jan 01 -0001 00:00:00 GMT+0000' && new Date(-62198755200000).toUTCString() === 'Fri, 01 Jan -0001 00:00:00 GMT'",
+        "new Date(-62198755200000).toString() === 'Fri Jan 01 -0001 00:00:00 GMT+0000 (UTC)' && new Date(-62198755200000).toUTCString() === 'Fri, 01 Jan -0001 00:00:00 GMT'",
         "new Date(-62167219200000).toDateString() === 'Sat Jan 01 0000' && new Date(253402300800000).toDateString() === 'Sat Jan 01 10000'",
-        "new Date(8.64e15).toString() === 'Sat Sep 13 275760 00:00:00 GMT+0000' && new Date(-8.64e15).toString() === 'Tue Apr 20 -271821 00:00:00 GMT+0000'",
-        "new Date(-1).toUTCString() === 'Wed, 31 Dec 1969 23:59:59 GMT' && String(new Date(0)) === 'Thu Jan 01 1970 00:00:00 GMT+0000'",
+        "new Date(8.64e15).toString() === 'Sat Sep 13 275760 00:00:00 GMT+0000 (UTC)' && new Date(-8.64e15).toString() === 'Tue Apr 20 -271821 00:00:00 GMT+0000 (UTC)'",
+        "new Date(-1).toUTCString() === 'Wed, 31 Dec 1969 23:59:59 GMT' && String(new Date(0)) === 'Thu Jan 01 1970 00:00:00 GMT+0000 (UTC)'",
     ] {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
@@ -5546,8 +5546,7 @@ fn date_slots_and_coercion() {
             assert_eq!(eval(&src), ValueView::Bool(true), "{src}");
         }
     }
-    // ISO construction is supported by clj-quickjs-184; default coercion
-    // still awaits Date's Symbol.toPrimitive protocol.
+    // ISO construction is supported by clj-quickjs-184.
     assert_eq!(
         eval("new Date('2017-09-22').getTime()"),
         ValueView::Number(1506038400000.0)
@@ -5561,8 +5560,8 @@ fn date_slots_and_coercion() {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
     assert_eq!(
-        failure("'' + new Date(0)").kind(),
-        VmErrorKind::UnsupportedOperand
+        string("'' + new Date(0)"),
+        "Thu Jan 01 1970 00:00:00 GMT+0000 (UTC)"
     );
     // Calling Date now uses the host clock; a hostless runtime has none.
     for src in ["Date()", "Date(1)"] {
@@ -18641,6 +18640,262 @@ fn objects_convert_with_to_primitive() {
         ),
         8.0
     );
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn symbol_to_primitive_general_dispatch() {
+    assert_eq!(
+        eval("const o = {[Symbol.toPrimitive]() { return 42; }}; +o"),
+        ValueView::Number(42.0)
+    );
+    assert_eq!(
+        eval("'' + new Date(0) === 'Thu Jan 01 1970 00:00:00 GMT+0000 (UTC)'"),
+        ValueView::Bool(true)
+    );
+    for (expression, hint) in [
+        ("+o === 42", "number"),
+        ("o - 2 === 40", "number"),
+        ("o < 43", "number"),
+        ("o + 1 === 43", "default"),
+        ("o == 42", "default"),
+        ("42 == o", "default"),
+        ("`${o}` === '42'", "string"),
+        ("String(o) === '42'", "string"),
+        ("Number(o) === 42", "number"),
+        ("BigInt(o) === 42n", "number"),
+        ("new Date(o).getTime() === 42", "default"),
+        ("({[o]: 7})['42'] === 7", "string"),
+        (
+            "let a = {}; a[o] = 7; a[42] === 7 && o in a && delete a[o]",
+            "string",
+        ),
+        (
+            "Object.defineProperty({}, o, {value: 7})[42] === 7",
+            "string",
+        ),
+    ] {
+        let source = format!(
+            "let o = {{[Symbol.toPrimitive](hint) {{ if (hint !== '{hint}' || this !== o || arguments.length !== 1) throw 'hint'; return 42; }}, valueOf() {{throw 'valueOf';}}, toString() {{throw 'toString';}}}}; {expression}"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{expression}");
+    }
+    for source in [
+        "let o = Object.create({[Symbol.toPrimitive](h) {return h;}}); String(o) === 'string' && o + '' === 'default'",
+        "let o = {[Symbol.toPrimitive]: null, valueOf() {return 7;}}; +o === 7",
+        "let o = {get [Symbol.toPrimitive]() {return undefined;}, toString() {return 's';}}; String(o) === 's'",
+        "let n=0, o={get [Symbol.toPrimitive]() {n++; return function(h){return undefined;};}}; o + '' === 'undefined' && n === 1",
+        "let log='', a={[Symbol.toPrimitive](h){log+='a'+h; return 8;}}, b={[Symbol.toPrimitive](h){log+='b'+h; return 2;}}; a-b===6 && log==='anumberbnumber'",
+        "let n=0, o={[Symbol.toPrimitive]() {n++; return 1;}}; o===o && o==o && o!=null && o!=undefined && o!={} && n===0",
+        "let s=Symbol(), k={[Symbol.toPrimitive](h){return s;}}; ({[k]:7})[s]===7",
+        "let o={[Symbol.toPrimitive]:function(h){return this.n+h;}.bind({n:'bound'})}; String(o)==='boundstring'",
+        "let f=()=>0; f[Symbol.toPrimitive]=h=>h; String(f)==='string' && f+''==='default'",
+        "let a=[]; a[Symbol.toPrimitive]=h=>42; Number(a)===42 && a+1===43",
+        "JSON.parse({[Symbol.toPrimitive](h){if(h!=='string')throw 0; return '42';}})===42",
+        "let n=new Number(0); n[Symbol.toPrimitive]=function(h){if(h!=='number')throw 0; return 42;}; JSON.stringify(n)==='42'",
+        "let o=new String('old'); o[Symbol.toPrimitive]=function(h){if(h!=='string')throw 0; return 'new';}; JSON.stringify(o)==='\"new\"'",
+        "let n=0; let o={get [Symbol.toPrimitive](){n++; throw 7;},valueOf(){throw 8;}}; try{+o;}catch(e){n+=e;} n===8",
+        "let n=0; let o={[Symbol.toPrimitive](){throw 7;},valueOf(){throw 8;}}; try{+o;}catch(e){n=e;} n===7",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for source in [
+        "+({[Symbol.toPrimitive]: 1})",
+        "+({[Symbol.toPrimitive]: {}})",
+        "+({[Symbol.toPrimitive]() {return {};}, valueOf() {return 42;}})",
+        "String({[Symbol.toPrimitive]() {return function() {};}})",
+        "`${{[Symbol.toPrimitive]() {return Symbol();}}}`",
+    ] {
+        assert_eq!(failure(source).kind(), VmErrorKind::TypeError, "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Date's method is generic and
+/// invokes OrdinaryToPrimitive without looking up @@toPrimitive recursively.
+#[test]
+fn date_symbol_to_primitive() {
+    for source in [
+        "let d=Object.getOwnPropertyDescriptor(Date.prototype,Symbol.toPrimitive); !d.writable && !d.enumerable && d.configurable && d.value.name==='[Symbol.toPrimitive]' && d.value.length===1",
+        "let d=new Date(0); d[Symbol.toPrimitive]('number')===0 && d[Symbol.toPrimitive]('default')===d.toString() && d[Symbol.toPrimitive]('string')===d.toString() && +d===0 && d==d.toString()",
+        "let d=new Date(NaN); d+''==='Invalid Date' && Number.isNaN(+d)",
+        "let d=new Date(0); Object.defineProperty(d,Symbol.toPrimitive,{value:null}); d+''==='0'",
+        "let d=new Date(0); Object.defineProperty(d,Symbol.toPrimitive,{value(h){return h==='default'?42:17;}}); d+1===43 && +d===17 && new Date(d).getTime()===0",
+        "let f=Date.prototype[Symbol.toPrimitive], log='', o={get [Symbol.toPrimitive](){throw 9;},toString(){log+='s';return {};},valueOf(){log+='v';return 7;}}; f.call(o,'default')===7 && log==='sv' && f.call(o,'number')===7 && log==='svv'",
+        "let f=Date.prototype[Symbol.toPrimitive], o={toString:1,valueOf(){return 7;}}; f.call(o,'string')===7",
+        "let s=Symbol(), o={toString(){return s;}}; Date.prototype[Symbol.toPrimitive].call(o,'default')===s",
+        "let d=new Date(0); d.toString=function(){throw 9;}; let n; try{d+'';}catch(e){n=e;} n===9",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for receiver in ["null", "undefined", "1", "'s'", "Symbol()", "1n", "true"] {
+        assert_eq!(
+            failure(&format!(
+                "Date.prototype[Symbol.toPrimitive].call({receiver},'number')"
+            ))
+            .kind(),
+            VmErrorKind::TypeError,
+            "{receiver}"
+        );
+    }
+    for hint in [
+        "undefined",
+        "null",
+        "1",
+        "'integer'",
+        "'bad'",
+        "new String('number')",
+        "{toString(){throw 9;}}",
+    ] {
+        let source = format!("Date.prototype[Symbol.toPrimitive].call({{}},{hint})");
+        assert_eq!(failure(&source).kind(), VmErrorKind::TypeError, "{source}");
+    }
+    assert_eq!(
+        failure("Date.prototype[Symbol.toPrimitive].call({toString(){return {};},valueOf(){return {};}} ,'default')").kind(),
+        VmErrorKind::TypeError
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output. Each conversion parks in both
+/// GetMethod and Call, with collection and worker migration at every slice.
+#[test]
+fn symbol_to_primitive_waits_yields_collects_and_migrates() {
+    let mut sources = Vec::new();
+    for (expression, hint, result) in [
+        ("+o === 42", "number", "42"),
+        ("o - 2 === 40", "number", "42"),
+        ("o < 43", "number", "42"),
+        ("o + 1 === 43", "default", "42"),
+        ("o == 42", "default", "42"),
+        ("`${o}` === '42'", "string", "42"),
+        ("String(o) === '42'", "string", "42"),
+        ("Number(o) === 42", "number", "42"),
+        ("BigInt(o) === 42n", "number", "42"),
+        ("new Date(o).getTime() === 42", "default", "42"),
+        ("({[o]: 7})[42] === 7", "string", "42"),
+        ("JSON.parse(o) === 42", "string", "'42'"),
+    ] {
+        sources.push(format!(
+            "let log='', o={{child:{{n:42}},get [Symbol.toPrimitive](){{log+='g'; __rt.need(310,1); return function(h){{log+=h; __rt.need(310,2); if(this.child.n!==42 || h!=='{hint}')throw 9; return {result};}};}},valueOf(){{throw 8;}},toString(){{throw 7;}}}}; ({expression}) && log==='g{hint}'"
+        ));
+    }
+    for receiver in [
+        "new Number(0)",
+        "new String('old')",
+        "Object(true)",
+        "Object(1n)",
+    ] {
+        sources.push(format!(
+            "let log='', o={receiver}; o.child={{n:42}}; Object.defineProperty(o,Symbol.toPrimitive,{{get(){{log+='g'; __rt.need(310,1); return function(h){{log+=h; __rt.need(310,2); return this.child.n;}};}}}}); Number(o)===42 && log==='gnumber'"
+        ));
+    }
+    sources.push("let log='', o=new Number(0); Object.defineProperty(o,Symbol.toPrimitive,{get(){log+='g'; __rt.need(310,1); return function(h){log+=h; __rt.need(310,2); return 42;};}}); JSON.stringify(o)==='42' && log==='gnumber'".into());
+    sources.push("let log='', o; let p={get [Symbol.toPrimitive](){if(this!==o || this.child.n!==42 || arguments.length!==0)throw 9; log+='g'; __rt.need(310,1); if(this!==o || this.child.n!==42)throw 8; return function(h){if(this!==o || this.child.n!==42 || h!=='number')throw 7; log+=h; __rt.need(310,2); if(this!==o || this.child.n!==42)throw 6; return this.child.n;};}}; o=Object.create(p); o.child={n:42}; Number(o)===42 && log==='gnumber'".into());
+    // Date's generic method must force ordinary conversion. The getter and
+    // callback below can both suspend without revisiting @@toPrimitive.
+    sources.push("let log='', o={get [Symbol.toPrimitive](){throw 9;},get toString(){log+='g'; __rt.need(310,1); return function(){log+='s'; __rt.need(310,2); return this.child.n;};},child:{n:42}}; Date.prototype[Symbol.toPrimitive].call(o,'default')===42 && log==='gs'".into());
+    sources.push("let log='', d=new Date(0); Object.defineProperty(d,'toString',{get(){log+='g'; __rt.need(310,1); return function(){log+='s'; __rt.need(310,2); return 'date';};}}); d+''==='date' && log==='gs'".into());
+    for source in sources {
+        let expression = source.as_str();
+        let rt = Runtime::new();
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..1000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            match outcome {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert!(waits <= 2, "{expression}: callback replay");
+                    rt.collect().unwrap();
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Null);
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{expression}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{expression}: {other:?}"),
+            }
+        }
+        assert!(complete && waits == 2, "{expression}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Publication preserves the
+/// existing task ownership boundary while shared intrinsics use the protocol.
+#[test]
+fn symbol_to_primitive_publication() {
+    let rt = Runtime::new();
+    for source in [
+        "({[Symbol.toPrimitive](){return 42;}})",
+        "Object.freeze({[Symbol.toPrimitive](){return 42;}})",
+        "let f=()=>0; f[Symbol.toPrimitive]=()=>42; f",
+    ] {
+        let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!()
+        };
+        assert!(rt.publish(&value).is_err(), "{source}");
+        let invoke = compile_function("function invoke(o){return +o;}").unwrap();
+        let RunOutcome::Failed(error) = rt.spawn(&invoke, &[&value]).unwrap().run().unwrap() else {
+            panic!()
+        };
+        assert!(
+            matches!(error.kind(), VmErrorKind::ForeignObject { .. }),
+            "{source}"
+        );
+    }
+    for (source, expression) in [
+        (
+            "Date.prototype",
+            "let caught; try { o+''; } catch(e) {caught=e instanceof TypeError;} return caught;",
+        ),
+        (
+            "Symbol.prototype",
+            "let caught; try { +o; } catch(e) {caught=e instanceof TypeError;} return caught;",
+        ),
+        ("Object.prototype", "return o+''==='[object Object]';"),
+        ("(function(){})", "return o+''==='[object Function]';"),
+        (
+            "(function(){}).bind(null)",
+            "return o+''==='[object Function]';",
+        ),
+        (
+            "Date.prototype[Symbol.toPrimitive]",
+            "return o.call({toString(){return 42;}},'default')===42;",
+        ),
+    ] {
+        let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!()
+        };
+        rt.publish(&value).unwrap();
+        rt.collect().unwrap();
+        let invoke = compile_function(&format!("function invoke(o){{{expression}}}")).unwrap();
+        let outcome = rt.spawn(&invoke, &[&value]).unwrap().run().unwrap();
+        assert!(
+            matches!(outcome, RunOutcome::Complete(v) if v.view()==ValueView::Bool(true)),
+            "{source}"
+        );
+    }
 }
 
 #[test]
