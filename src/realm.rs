@@ -1040,7 +1040,9 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         object_prototype,
     ))))?;
     b.all.push(math);
-    for which in [
+    // Borrow promoted tables instead of reserving their full arrays in the
+    // large realm-construction frame (also reached on 64 KiB module workers).
+    for &which in &[
         Builtin::MathFloor,
         Builtin::MathCeil,
         Builtin::MathAbs,
@@ -1082,7 +1084,7 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         let method = b.function(which, &[])?;
         b.add(math, which.name(), method, PropertyFlags::METHOD)?;
     }
-    for (name, value) in [
+    for &(name, value) in &[
         ("E", std::f64::consts::E),
         ("LN10", std::f64::consts::LN_10),
         ("LN2", std::f64::consts::LN_2),
