@@ -632,7 +632,9 @@ impl Trace for Intrinsics {
 /// The realm slot of a heap.
 #[derive(Debug, Default)]
 pub(crate) struct Realm {
-    intrinsics: OnceLock<Intrinsics>,
+    // Keep construction/installation moves pointer-sized as the registry grows:
+    // JSON modules may initialize the realm deep on a 64 KiB worker stack.
+    intrinsics: OnceLock<Box<Intrinsics>>,
     /// Serializes building; held only while no realm exists (module docs).
     build: Mutex<()>,
 }
@@ -640,13 +642,13 @@ pub(crate) struct Realm {
 impl Realm {
     /// The installed intrinsics, if the realm was built.
     pub(crate) fn get(&self) -> Option<&Intrinsics> {
-        self.intrinsics.get()
+        self.intrinsics.get().map(Box::as_ref)
     }
 
     /// Drop the realm (tests: its objects become unreachable).
     #[cfg(test)]
     pub(crate) fn take(&mut self) -> Option<Intrinsics> {
-        self.intrinsics.take()
+        self.intrinsics.take().map(|intrinsics| *intrinsics)
     }
 }
 
@@ -668,7 +670,7 @@ pub(crate) fn intrinsics(heap: &Heap) -> Option<&Intrinsics> {
     }
     let built = build(heap)?;
     heap.mark_shareable(&built.all);
-    Some(realm.intrinsics.get_or_init(|| built))
+    Some(realm.intrinsics.get_or_init(|| built).as_ref())
 }
 
 /// A task's mutable global object. Intrinsics stay shared and immutable;
@@ -805,7 +807,7 @@ pub(crate) fn check_global_declaration(
 /// The order follows the prototype edges: `Object.prototype` first (its
 /// methods are added once they exist), then `Function.prototype`, the
 /// prototype of every built-in function created after it.
-fn build(heap: &Heap) -> Option<Intrinsics> {
+fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
     let mut b = Build {
         heap,
         all: Vec::new(),
@@ -1359,7 +1361,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             .flatten()
         })
         .collect::<Option<Vec<_>>>()?;
-    Some(Intrinsics {
+    Some(Box::new(Intrinsics {
         proxy,
         array_iterator_prototype,
         string_iterator_prototype,
@@ -1444,7 +1446,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         intl_segments_prototype,
         intl_segment_iterator_prototype,
         intl_display_names_prototype,
-    })
+    }))
 }
 
 /// `Number.prototype` or `String.prototype` (clj-quickjs-73) and its

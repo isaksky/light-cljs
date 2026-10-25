@@ -8991,3 +8991,10 @@ checks live object/symbol keys, weak-key collection and independent property
 retention. `set_frames_survive_collection_and_migration` collects on every
 single-instruction yield through construction, forEach and entries. The native
 consumer tests additionally cover cached add getters, waits and thrown close.
+
+The realm registry is boxed inside its OnceLock. Installing the additional
+Set handles therefore moves a pointer instead of copying the growing registry
+through cold initialization frames. The existing 64 KiB
+`json_module_instances_survive_budgets_collection_and_migration` regression
+covers initializing the realm beneath the module JSON parser; it passes with
+this representation while preserving lazy initialization and intrinsic roots.
