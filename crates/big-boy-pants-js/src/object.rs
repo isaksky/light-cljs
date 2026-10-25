@@ -76,7 +76,9 @@ pub(crate) mod weak_map;
 pub(crate) mod weak_ref;
 
 pub(crate) mod array_buffer;
+mod shape;
 pub(crate) mod typed_array;
+pub(crate) use shape::InlineCache;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -120,6 +122,12 @@ pub(crate) struct PropertyKeys {
     table: RwLock<KeyTable>,
     identity: u64,
     epoch: AtomicU64,
+    binding_stamp: AtomicU64,
+}
+
+fn next_binding_stamp() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 impl Default for PropertyKeys {
@@ -129,6 +137,7 @@ impl Default for PropertyKeys {
             table: RwLock::default(),
             identity: NEXT.fetch_add(1, Ordering::Relaxed),
             epoch: AtomicU64::new(0),
+            binding_stamp: AtomicU64::new(next_binding_stamp()),
         }
     }
 }
@@ -185,6 +194,21 @@ impl KeyTable {
 }
 
 impl PropertyKeys {
+    /// Runtime/collection identity in one word. Overflow disables caching;
+    /// it never aliases a previous runtime or a reclaimed key slot.
+    pub(crate) fn bind_name(&self, name: &JsString, cache: &AtomicU64) -> Option<PropertyKey> {
+        let stamp = self.binding_stamp.load(Ordering::Acquire);
+        let cached = cache.load(Ordering::Relaxed);
+        if stamp <= u64::from(u32::MAX) && cached >> 32 == stamp {
+            return Some(PropertyKey(cached as u32, None));
+        }
+        let key = self.intern(name)?;
+        if stamp <= u64::from(u32::MAX) {
+            cache.store((stamp << 32) | u64::from(key.0), Ordering::Relaxed);
+        }
+        Some(key)
+    }
+
     /// The key of `name` if it is currently interned: from this thread's
     /// cache when valid (type docs), otherwise under a shared read lock.
     pub(crate) fn lookup(&self, name: &JsString) -> Option<PropertyKey> {
@@ -288,6 +312,8 @@ impl PropertyKeys {
         let mut table = self.table.write().unwrap_or_else(PoisonError::into_inner);
         // Invalidate every thread's cached names before any is removed.
         self.epoch.fetch_add(1, Ordering::Release);
+        self.binding_stamp
+            .store(next_binding_stamp(), Ordering::Release);
         for index in 0..table.names.len() {
             let Some(entry) = &table.names[index] else {
                 continue;
@@ -444,6 +470,7 @@ pub(crate) struct OrdinaryObject {
     prototype: Option<ObjectId>,
     extensible: bool,
     entries: Vec<(PropertyKey, Property)>,
+    shape: Option<std::sync::Arc<shape::ShapeHandle>>,
     /// Key to position in `entries`; present once there are more than
     /// [`INDEX_THRESHOLD`] entries.
     index: Option<HashMap<PropertyKey, u32>>,
@@ -562,6 +589,7 @@ impl OrdinaryObject {
             prototype: None,
             extensible: true,
             entries: Vec::new(),
+            shape: Some(shape::Shape::empty()),
             index: None,
             primitive_data: None,
             error_data: false,
@@ -885,6 +913,28 @@ impl OrdinaryObject {
         }
     }
 
+    fn cached_position(&self, key: PropertyKey, cache: &InlineCache) -> Option<usize> {
+        let Some(shape) = &self.shape else {
+            return self.position(key);
+        };
+        if let Some(slot) = cache.slot(shape.id)
+            && self.entries.get(slot).is_some_and(|(k, _)| *k == key)
+        {
+            return Some(slot);
+        }
+        let slot = self.position(key)?;
+        cache.remember(shape.id, slot);
+        Some(slot)
+    }
+
+    pub(crate) fn get_own_cached(
+        &self,
+        key: PropertyKey,
+        cache: &InlineCache,
+    ) -> Option<&Property> {
+        self.cached_position(key, cache).map(|i| &self.entries[i].1)
+    }
+
     /// The own property `key`, if any.
     pub(crate) fn get_own(&self, key: PropertyKey) -> Option<&Property> {
         self.position(key).map(|i| &self.entries[i].1)
@@ -896,6 +946,7 @@ impl OrdinaryObject {
     }
 
     fn push(&mut self, key: PropertyKey, property: Property) {
+        self.shape = self.shape.as_ref().and_then(|shape| shape.append(key));
         let at = self.entries.len();
         self.entries.push((key, property));
         if let Some(index) = &mut self.index {
@@ -947,7 +998,20 @@ impl OrdinaryObject {
     /// property, or add a new one to an extensible object with a null
     /// prototype.
     pub(crate) fn set(&mut self, key: PropertyKey, value: Value) -> SetOutcome {
-        match self.position(key) {
+        self.set_at(key, value, self.position(key))
+    }
+
+    pub(crate) fn set_cached(
+        &mut self,
+        key: PropertyKey,
+        value: Value,
+        cache: &InlineCache,
+    ) -> SetOutcome {
+        self.set_at(key, value, self.cached_position(key, cache))
+    }
+
+    fn set_at(&mut self, key: PropertyKey, value: Value, position: Option<usize>) -> SetOutcome {
+        match position {
             Some(i) => {
                 let property = &mut self.entries[i].1;
                 if let Some((_, setter)) = &property.accessor {
@@ -1004,6 +1068,7 @@ impl OrdinaryObject {
             return DeleteOutcome::NonConfigurable;
         }
         self.entries.remove(i);
+        self.shape = None;
         if let Some(index) = &mut self.index {
             index.remove(&key);
             for position in index.values_mut() {

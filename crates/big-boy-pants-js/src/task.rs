@@ -1917,6 +1917,8 @@ mod tests {
         let rt = Runtime::new();
         for instrs in programs {
             let code = Code {
+                property_names: Box::new([]),
+                property_caches: Box::new([]),
                 regexps: std::collections::HashMap::new(),
                 eval_sites: std::collections::HashMap::new(),
                 name: "corrupt".into(),

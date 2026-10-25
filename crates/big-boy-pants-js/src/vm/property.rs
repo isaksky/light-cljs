@@ -157,8 +157,8 @@ use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::object::array::{ArrayObject, array_index, number_index};
 use crate::object::{
-    DefineOutcome, DeleteOutcome, OrdinaryObject, Property, PropertyDescriptor, PropertyFlags,
-    PropertyKey, SetOutcome,
+    DefineOutcome, DeleteOutcome, InlineCache, OrdinaryObject, Property, PropertyDescriptor,
+    PropertyFlags, PropertyKey, SetOutcome,
 };
 use crate::realm;
 use crate::value::string::number_to_string;
@@ -166,6 +166,50 @@ use crate::value::{JsString, JsSymbol, Value};
 use crate::vm::dispatch::Fault;
 use crate::vm::function::{self, FunctionRead};
 use crate::vm::promise::Promise;
+
+/// Classified once at executable load; runtime-owned atom IDs bind lazily.
+/// The atomic binding includes the table/GC generation, so this immutable
+/// executable can safely run in several heaps without retaining their keys.
+#[derive(Debug)]
+pub(crate) struct NamedProperty {
+    pub(crate) key: Key,
+    name: JsString,
+    binding: std::sync::atomic::AtomicU64,
+}
+
+impl NamedProperty {
+    pub(crate) fn new(name: &JsString) -> Self {
+        Self {
+            key: Key::from_name(name),
+            name: name.clone(),
+            binding: Default::default(),
+        }
+    }
+
+    fn intern(&self, heap: &Heap) -> Result<PropertyKey, Fault> {
+        heap.keys()
+            .bind_name(&self.name, &self.binding)
+            .ok_or(Fault::OutOfMemory("property-key table exhausted"))
+    }
+}
+
+pub(crate) fn read_named(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    name: &NamedProperty,
+    cache: &InlineCache,
+) -> Result<Option<Read>, Fault> {
+    lookup_cached(
+        heap,
+        task,
+        base,
+        &name.key,
+        false,
+        false,
+        Some((name.intern(heap)?, cache)),
+    )
+}
 
 /// A property key after ToPropertyKey: an array index, or any other name.
 #[derive(Clone, Debug, PartialEq)]
@@ -552,6 +596,7 @@ fn read_store(
     key: &Key,
     interned: Interned,
     has: bool,
+    cache: Option<&InlineCache>,
 ) -> Result<Lookup, Fault> {
     if let Some(property) = string_wrapper_property(o, key) {
         return Ok(Lookup::Found(Read::Value(property.value)));
@@ -559,7 +604,10 @@ fn read_store(
     let Some(k) = interned else {
         return Ok(Lookup::NeedsName);
     };
-    match k.and_then(|k| o.get_own(k)) {
+    match k.and_then(|k| match cache {
+        Some(cache) => o.get_own_cached(k, cache),
+        None => o.get_own(k),
+    }) {
         Some(property) => Ok(Lookup::Found(Read::property(property, has))),
         None => Ok(Lookup::Next(o.prototype())),
     }
@@ -678,6 +726,18 @@ fn lookup(
     has: bool,
     conversion: bool,
 ) -> Result<Option<Read>, Fault> {
+    lookup_cached(heap, task, base, key, has, conversion, None)
+}
+
+fn lookup_cached(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    key: &Key,
+    has: bool,
+    conversion: bool,
+    cache: Option<(PropertyKey, &InlineCache)>,
+) -> Result<Option<Read>, Fault> {
     // A primitive base reads its wrapper's own properties, then its
     // wrapper's prototype without allocating a wrapper. Accessors receive
     // the original base through the VM's generic call path.
@@ -690,10 +750,10 @@ fn lookup(
     };
     // A name that was never interned is no object's property; the owner
     // and kind checks below still apply.
-    let mut interned: Interned = match key {
+    let mut interned: Interned = cache.map(|(key, _)| Some(key)).or_else(|| match key {
         Key::Name(_) | Key::Symbol(_) => Some(key.lookup(heap)),
         Key::Index(_) => None,
-    };
+    });
     let mut realm = heap.realm().get();
     let mut remaining = 4096usize;
     loop {
@@ -745,7 +805,9 @@ fn lookup(
                     return Ok(Lookup::Exotic(route));
                 }
                 match visit(object, task)? {
-                    Visit::Store(o) => read_store(o, key, interned, has),
+                    Visit::Store(o) => {
+                        read_store(o, key, interned, has, cache.map(|(_, cache)| cache))
+                    }
                     Visit::Array(a) => match key {
                         Key::Index(index) => Ok(match a.element(*index) {
                             Some(property) => Lookup::Found(Read::property(&property, has)),
@@ -754,7 +816,13 @@ fn lookup(
                         _ if key.is_length() => Ok(Lookup::Found(Read::Value(Value::Number(
                             f64::from(a.length()),
                         )))),
-                        Key::Name(_) | Key::Symbol(_) => read_store(a.object(), key, interned, has),
+                        Key::Name(_) | Key::Symbol(_) => read_store(
+                            a.object(),
+                            key,
+                            interned,
+                            has,
+                            cache.map(|(_, cache)| cache),
+                        ),
                     },
                     Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                         Ok(Lookup::Function)
@@ -888,6 +956,7 @@ fn store(
     key: &Key,
     interned: Option<PropertyKey>,
     value: &Value,
+    cache: Option<&InlineCache>,
 ) -> Result<Stored, Fault> {
     if let Some(route) = exotic(object, task, key)? {
         return Ok(Stored::Exotic(route));
@@ -900,7 +969,11 @@ fn store(
             return Ok(Stored::NeedsName);
         };
         let prototype = o.prototype();
-        stored(o.set(k, value.clone()), key, prototype)
+        let outcome = match cache {
+            Some(cache) => o.set_cached(k, value.clone(), cache),
+            None => o.set(k, value.clone()),
+        };
+        stored(outcome, key, prototype)
     };
     match object {
         HeapObject::Plain(o) if o.is_intrinsic() => Err(immutable(key)),
@@ -1042,6 +1115,38 @@ pub(crate) fn prepare_write(
     value: Value,
     strict: bool,
 ) -> Result<Write, Fault> {
+    prepare_write_cached(heap, task, base, key, value, strict, None)
+}
+
+pub(crate) fn prepare_write_named(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    name: &NamedProperty,
+    value: Value,
+    strict: bool,
+    cache: &InlineCache,
+) -> Result<Write, Fault> {
+    prepare_write_cached(
+        heap,
+        task,
+        base,
+        &name.key,
+        value,
+        strict,
+        Some((name.intern(heap)?, cache)),
+    )
+}
+
+fn prepare_write_cached(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    key: &Key,
+    value: Value,
+    strict: bool,
+    cache: Option<(PropertyKey, &InlineCache)>,
+) -> Result<Write, Fault> {
     let Value::Object(mut id) = *base else {
         if matches!(
             base,
@@ -1063,10 +1168,10 @@ pub(crate) fn prepare_write(
     };
     // Existing names need one key lookup. A new name is interned only when
     // ordinary storage requests it, after exotic and ownership checks.
-    let mut interned = match key {
+    let mut interned = cache.map(|(key, _)| key).or_else(|| match key {
         Key::Name(_) | Key::Symbol(_) => key.lookup(heap),
         Key::Index(_) => None,
-    };
+    });
     // Accessor calls precede data-property mutation rules. An intrinsic
     // setter may accept a no-op even on a shared receiver; a function's
     // inherited setter must run without creating a property record.
@@ -1096,7 +1201,16 @@ pub(crate) fn prepare_write(
     };
     let prototype = loop {
         let outcome = heap
-            .with_object_mut(id, |object| store(object, task, key, interned, &value))
+            .with_object_mut(id, |object| {
+                store(
+                    object,
+                    task,
+                    key,
+                    interned,
+                    &value,
+                    cache.map(|(_, cache)| cache),
+                )
+            })
             .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
         match outcome {
             Stored::Exotic(Exotic::Proxy) => {
@@ -1549,13 +1663,33 @@ pub(crate) fn define_field(
     name: &JsString,
     value: Value,
 ) -> Result<(), Fault> {
+    define_field_interned(heap, task, object, name, value, intern(heap, name)?)
+}
+
+pub(crate) fn define_named(
+    heap: &Heap,
+    task: TaskId,
+    object: &Value,
+    name: &NamedProperty,
+    value: Value,
+) -> Result<(), Fault> {
+    define_field_interned(heap, task, object, &name.name, value, name.intern(heap)?)
+}
+
+fn define_field_interned(
+    heap: &Heap,
+    task: TaskId,
+    object: &Value,
+    name: &JsString,
+    value: Value,
+    key: PropertyKey,
+) -> Result<(), Fault> {
     let Value::Object(id) = *object else {
         return Err(Fault::Unsupported(format!(
             "define_field needs an object, got {}",
             object.type_name()
         )));
     };
-    let key = intern(heap, name)?;
     heap.with_object_mut(id, |target| match target {
         HeapObject::Plain(o) if o.owner() != Some(task) => Err(foreign(o.owner(), task)),
         HeapObject::Plain(o) => {

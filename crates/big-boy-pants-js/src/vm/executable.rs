@@ -190,6 +190,8 @@ pub(crate) struct Code {
     pub(crate) function_name: JsString,
     pub(crate) locals: u16,
     pub(crate) constants: Box<[Value]>,
+    pub(crate) property_names: Box<[Option<super::property::NamedProperty>]>,
+    pub(crate) property_caches: Box<[crate::object::InlineCache]>,
     pub(crate) regexps: std::collections::HashMap<
         u16,
         Result<Arc<crate::regexp::object::Compiled>, crate::regexp::object::CompileError>,
@@ -855,7 +857,24 @@ impl Executable {
                     .or_insert_with(|| crate::regexp::object::compile_literal(encoded));
             }
         }
+        let mut property_names: Vec<_> = (0..constants.len()).map(|_| None).collect();
+        for instr in &instrs {
+            if let Instr::GetField(i)
+            | Instr::PutField(i)
+            | Instr::PutFieldStrict(i)
+            | Instr::DefineField(i) = instr
+                && let Primitive::String(name) = &constants[usize::from(*i)]
+            {
+                property_names[usize::from(*i)]
+                    .get_or_insert_with(|| super::property::NamedProperty::new(name));
+            }
+        }
+        let property_caches = (0..instrs.len())
+            .map(|_| crate::object::InlineCache::default())
+            .collect();
         Ok(Executable(Arc::new(Code {
+            property_names: property_names.into(),
+            property_caches,
             regexps,
             function_length: function_length.unwrap_or(params),
             function_name: function_name.unwrap_or_else(|| JsString::from(name.as_str())),

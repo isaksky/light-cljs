@@ -5705,7 +5705,19 @@ pub(crate) fn write_property(
     value: Value,
     strict: bool,
 ) -> Result<(), Fault> {
-    match property::prepare_write(heap, state.diag.task, &base, key, value.clone(), strict)? {
+    let write = property::prepare_write(heap, state.diag.task, &base, key, value.clone(), strict)?;
+    finish_property_write(state, base, key, value, strict, write)
+}
+
+pub(crate) fn finish_property_write(
+    state: &mut VmState,
+    base: Value,
+    key: &property::Key,
+    value: Value,
+    strict: bool,
+    write: property::Write,
+) -> Result<(), Fault> {
+    match write {
         property::Write::Complete(setter) => write_result(state, setter, base, value),
         property::Write::Proxy(target) => start_proxy(
             state,

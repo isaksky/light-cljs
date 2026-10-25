@@ -192,6 +192,42 @@ interpreter lock and no lock held across ordinary bytecode execution or a wait.
 Automatic collection triggers and moving/generational/concurrent GC are
 deferred. Embedders must schedule collection explicitly.
 
+## Ordinary objects and named property caches
+
+Ordinary objects retain their creation-ordered property vector and its existing
+large-object dictionary index. They also carry a shared immutable shape describing
+the sequence of slot keys. Adding a property follows a shared shape transition;
+deletion or more than 64 properties switches that object to dictionary mode.
+Bounded worker-local transition caches avoid locking on repeated construction.
+Each local shape handle wraps the shared shape in a second owning `Arc`, so
+repeated allocation does not update a global reference count. Both layers are
+safe to migrate between workers. The bounded shared transition table holds weak
+references; none of these caches makes heap values or property keys live.
+
+`Executable::load` classifies named property constants once. Executables remain
+runtime independent, so each constant's runtime key is interned lazily at first
+use. Its atomic binding packs the key with a globally unique runtime/collection
+stamp. The stopped collector changes that stamp before key slots can be reused.
+Subsequent named reads, writes and literal definitions neither encode nor hash
+the name. Reusing an executable in another runtime or after collection safely
+rebinds it. Exhausting the stamp space disables binding-cache hits.
+
+Each instruction has a monomorphic atomic shape/slot cache, shared by concurrent
+tasks running the same executable. A single atomic word prevents torn pairs;
+replacement only changes hit rate. Hits validate the live slot key as well as
+the shape. They read the current value, accessor and flags, so descriptor
+changes and freezing need no stale-descriptor invalidation protocol. Prototype
+lookups still walk the current chain and check each receiver's ownership and
+exotic behavior; they can use the same slot cache when reaching the defining
+ordinary store. This also accelerates the named read preceding a method call.
+No cache holds a value, prototype or object handle, and no validation takes a
+cache lock. Deletion invalidates the shape; prototype mutation cannot bypass
+the live chain walk. Computed properties retain the generic path.
+
+`tests/property_caches.rs` exercises shape changes, dictionary fallback,
+deletion/order, accessors and freezing, prototype/method replacement, concurrent
+tasks with different shapes, and repeated collection/runtime key rebinding.
+
 ## Publication and native values
 
 `Runtime::publish` walks the transitive graph and reports a path on rejection;

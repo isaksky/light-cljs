@@ -725,6 +725,8 @@ fn spawn_with_constant(rt: &crate::Runtime, constant: ObjectId) -> crate::Task {
     use crate::vm::executable::Code;
     use crate::vm::instr::Instr;
     let code = Code {
+        property_names: Box::new([]),
+        property_caches: Box::new([]),
         regexps: std::collections::HashMap::new(),
         eval_sites: std::collections::HashMap::new(),
         name: "object-constant".into(),

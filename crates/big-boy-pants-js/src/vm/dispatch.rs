@@ -512,6 +512,13 @@ fn name_constant(code: &Code, i: u16) -> Result<&JsString, Fault> {
     }
 }
 
+fn named_property(code: &Code, i: u16) -> Result<&property::NamedProperty, Fault> {
+    code.property_names
+        .get(usize::from(i))
+        .and_then(Option::as_ref)
+        .ok_or(Fault::Internal("property name was not classified"))
+}
+
 /// What a callable value runs.
 pub(crate) enum Callee<C = super::executable::ConstructorKind> {
     /// A function object: its code runs in a new VM frame.
@@ -1091,13 +1098,13 @@ fn property_step(
             }
         }
         Instr::GetField(i) => {
-            let name = name_constant(code, i)?;
             let base = state.pop()?;
-            let read = property::read(
+            let read = property::read_named(
                 heap,
                 state.diag.task,
                 &base,
-                &property::Key::from_name(name),
+                named_property(code, i)?,
+                &code.property_caches[state.top().pc - 1],
             )?;
             super::native::read_result(state, read, base)?;
         }
@@ -1113,14 +1120,18 @@ fn property_step(
             let object = state.pop()?;
             let task = state.diag.task;
             if matches!(instr, Instr::PutField(_) | Instr::PutFieldStrict(_)) {
-                native::write_property(
+                let named = named_property(code, i)?;
+                let strict = code.strict || matches!(instr, Instr::PutFieldStrict(_));
+                let write = property::prepare_write_named(
                     heap,
-                    state,
-                    object,
-                    &property::Key::from_name(name),
-                    v,
-                    code.strict || matches!(instr, Instr::PutFieldStrict(_)),
+                    task,
+                    &object,
+                    named,
+                    v.clone(),
+                    strict,
+                    &code.property_caches[state.top().pc - 1],
                 )?;
+                native::finish_property_write(state, object, &named.key, v, strict, write)?;
             } else if matches!(instr, Instr::DefineGetter(_) | Instr::DefineSetter(_)) {
                 property::define_accessor(
                     heap,
@@ -1132,7 +1143,7 @@ fn property_step(
                 )?;
                 state.push(object);
             } else {
-                property::define_field(heap, task, &object, name, v)?;
+                property::define_named(heap, task, &object, named_property(code, i)?, v)?;
                 state.push(object);
             }
         }
@@ -1524,8 +1535,19 @@ fn property_read_step(
     if native::start_conversion(state, instr)? {
         return Ok(Flow::Next);
     }
+    if let Instr::GetField(i) = instr {
+        let base = state.pop()?;
+        let read = property::read_named(
+            heap,
+            state.diag.task,
+            &base,
+            named_property(code, i)?,
+            &code.property_caches[state.top().pc - 1],
+        )?;
+        native::read_result(state, read, base)?;
+        return Ok(Flow::Next);
+    }
     let key = match instr {
-        Instr::GetField(i) => property::Key::from_name(name_constant(code, i)?),
         Instr::GetElem => {
             let raw = state.pop()?;
             let base = state
@@ -3931,6 +3953,8 @@ mod tests {
         let heap = Heap::default();
         for (instrs, functions) in programs {
             let code = Code {
+                property_names: Box::new([]),
+                property_caches: Box::new([]),
                 regexps: std::collections::HashMap::new(),
                 eval_sites: std::collections::HashMap::new(),
                 name: "corrupt".into(),

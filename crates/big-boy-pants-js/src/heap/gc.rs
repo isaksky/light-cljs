@@ -2121,6 +2121,8 @@ mod tests {
     /// exercise the constant-pool edge.
     fn spawn_with_constant(rt: &Runtime, constant: ObjectId, args: &[&Rooted]) -> crate::Task {
         let code = Code {
+            property_names: Box::new([]),
+            property_caches: Box::new([]),
             regexps: std::collections::HashMap::new(),
             eval_sites: std::collections::HashMap::new(),
             name: "object-constant".into(),
