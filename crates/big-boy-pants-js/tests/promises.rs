@@ -348,6 +348,7 @@ fn binary_reports_unhandled_rejections_and_exits_nonzero() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join(format!("rejection-cli-{}.js", std::process::id()));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     for (source, status, expected) in [
         (
             "Promise.reject(1); 42;",
