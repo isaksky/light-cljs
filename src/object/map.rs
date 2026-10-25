@@ -1,11 +1,11 @@
 //! Task-owned JavaScript Map storage (clj-quickjs-169).
 //!
-//! Entries keep insertion positions for the lifetime of the Map. Deletion
-//! and clear empty slots, releasing their edges; reinsertion appends. No
-//! compaction occurs, so live iteration can retain a slot cursor.
+//! Entries have monotonic logical insertion positions, independent of storage.
+//! Deletion and clear reclaim entries eagerly; a live cursor finds the first
+//! remaining position at or after its next position, including later appends.
 //! Hashing and equality are private, never calling JavaScript.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::collections::map::{canonical_key, key_eq, key_hash};
 use crate::heap::ObjectId;
@@ -17,19 +17,19 @@ use crate::value::Value;
 #[derive(Debug)]
 pub(crate) struct MapObject {
     object: OrdinaryObject,
-    entries: Vec<Option<(Value, Value)>>,
+    entries: BTreeMap<u64, (Value, Value)>,
     // Hash collisions are resolved by SameValueZero, never hash alone.
-    index: HashMap<u64, Vec<usize>>,
-    size: usize,
+    index: HashMap<u64, Vec<u64>>,
+    next_position: u64,
 }
 
 impl MapObject {
     pub(crate) fn new(owner: TaskId, prototype: ObjectId) -> Self {
         Self {
             object: OrdinaryObject::with_prototype(owner, prototype),
-            entries: Vec::new(),
+            entries: BTreeMap::new(),
             index: HashMap::new(),
-            size: 0,
+            next_position: 0,
         }
     }
 
@@ -42,41 +42,50 @@ impl MapObject {
     }
 
     pub(crate) fn size(&self) -> usize {
-        self.size
+        self.entries.len()
     }
 
-    /// None is the current end; Some(None) is a tombstone. Callers re-read
-    /// on every step so appends and deletions during callbacks stay visible.
-    pub(crate) fn entry(&self, index: u64) -> Option<&Option<(Value, Value)>> {
-        usize::try_from(index)
-            .ok()
-            .and_then(|i| self.entries.get(i))
+    /// Return the next live entry and the cursor to save before calling JS.
+    /// Positions are never reused, even after clear, so independent suspended
+    /// cursors need neither registration nor remapping when storage is freed.
+    pub(crate) fn entry(&self, position: u64) -> Option<(u64, &(Value, Value))> {
+        self.entries
+            .range(position..)
+            .next()
+            .map(|(&position, entry)| (position + 1, entry))
     }
 
-    fn find(&self, key: &Value) -> Option<usize> {
-        self.index.get(&key_hash(key))?.iter().copied().find(|&i| {
-            self.entries[i]
-                .as_ref()
-                .is_some_and(|(k, _)| key_eq(k, key))
-        })
+    fn find(&self, key: &Value) -> Option<u64> {
+        self.index
+            .get(&key_hash(key))?
+            .iter()
+            .copied()
+            .find(|&i| self.entries.get(&i).is_some_and(|(k, _)| key_eq(k, key)))
     }
 
     pub(crate) fn get(&self, key: &Value) -> Option<&Value> {
-        self.entries[self.find(key)?].as_ref().map(|(_, v)| v)
+        self.entries.get(&self.find(key)?).map(|(_, v)| v)
     }
 
-    pub(crate) fn set(&mut self, key: Value, value: Value) {
+    pub(crate) fn set(&mut self, key: Value, value: Value) -> Result<(), &'static str> {
         if let Some(i) = self.find(&key) {
-            self.entries[i].as_mut().expect("indexed live entry").1 = value;
+            self.entries.get_mut(&i).expect("indexed live entry").1 = value;
         } else {
+            // Reserve u64::MAX as an end cursor; never wrap into an older
+            // iteration. Exhaustion leaves both stores unchanged.
+            let next = self
+                .next_position
+                .checked_add(1)
+                .ok_or("Map insertion positions exhausted")?;
             let key = canonical_key(key);
             self.index
                 .entry(key_hash(&key))
                 .or_default()
-                .push(self.entries.len());
-            self.entries.push(Some((key, value)));
-            self.size += 1;
+                .push(self.next_position);
+            self.entries.insert(self.next_position, (key, value));
+            self.next_position = next;
         }
+        Ok(())
     }
 
     pub(crate) fn delete(&mut self, key: &Value) -> bool {
@@ -88,25 +97,28 @@ impl MapObject {
         bucket.retain(|&position| position != i);
         if bucket.is_empty() {
             self.index.remove(&hash);
+        } else if bucket.capacity() > bucket.len().saturating_mul(4) {
+            bucket.shrink_to_fit();
         }
-        self.entries[i] = None;
-        self.size -= 1;
+        self.entries.remove(&i);
+        // Bound retained hash capacity as well as tree storage. Shrinking
+        // geometrically keeps the rebuild cost amortized over deletions.
+        if self.index.capacity() > self.index.len().saturating_mul(4) {
+            self.index.shrink_to_fit();
+        }
         true
     }
 
     pub(crate) fn clear(&mut self) {
-        for entry in &mut self.entries {
-            *entry = None;
-        }
-        self.index.clear();
-        self.size = 0;
+        self.entries.clear();
+        self.index = HashMap::new();
     }
 }
 
 impl Trace for MapObject {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.object.trace(visit);
-        for (key, value) in self.entries.iter().flatten() {
+        for (key, value) in self.entries.values() {
             key.trace(visit);
             value.trace(visit);
         }
@@ -119,23 +131,89 @@ mod tests {
     use crate::heap::Heap;
 
     #[test]
+    fn churn_compacts_without_live_cursors() {
+        let heap = Heap::default();
+        let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
+        for clear in [false, true] {
+            let mut map = MapObject::new(TaskId::from_raw(1), prototype);
+            for i in 0..10_000 {
+                map.set(Value::Number(0.0), Value::Number(i as f64))
+                    .unwrap();
+                if clear {
+                    map.clear();
+                } else {
+                    assert!(map.delete(&Value::Number(0.0)));
+                }
+                assert_eq!(map.size(), 0);
+                assert!(map.entries.is_empty());
+                assert_eq!(map.index.capacity(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn deletion_reclaims_storage_with_live_cursors() {
+        let heap = Heap::default();
+        let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
+        let mut map = MapObject::new(TaskId::from_raw(1), prototype);
+        for i in 0..1000 {
+            map.set(Value::Number(i as f64), Value::Null).unwrap();
+        }
+        let (early, _) = map.entry(0).unwrap();
+        let (late, _) = map.entry(899).unwrap();
+        for i in 0..999 {
+            assert!(map.delete(&Value::Number(i as f64)));
+        }
+        assert_eq!(map.entries.len(), 1);
+        assert!(map.index.capacity() <= 4);
+        assert_eq!(map.entry(early), map.entry(late));
+        assert_eq!(map.entry(early).unwrap().1.0, Value::Number(999.0));
+        map.clear();
+        assert_eq!(map.entries.len(), 0);
+        map.set(Value::Number(3.0), Value::Null).unwrap();
+        assert_eq!(map.entry(early).unwrap().1.0, Value::Number(3.0));
+        assert_eq!(map.entry(early), map.entry(late));
+    }
+
+    #[test]
+    fn insertion_position_exhaustion_never_wraps_or_partially_inserts() {
+        let heap = Heap::default();
+        let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
+        let mut map = MapObject::new(TaskId::from_raw(1), prototype);
+        map.next_position = u64::MAX - 1;
+        map.set(Value::Null, Value::Bool(false)).unwrap();
+        let (cursor, _) = map.entry(0).unwrap();
+        assert_eq!(cursor, u64::MAX);
+        assert!(map.set(Value::Undefined, Value::Null).is_err());
+        assert_eq!(map.size(), 1);
+        assert_eq!(map.index.len(), 1);
+        map.set(Value::Null, Value::Bool(true)).unwrap();
+        assert_eq!(map.get(&Value::Null), Some(&Value::Bool(true)));
+        assert!(map.entry(cursor).is_none());
+        map.clear();
+        assert!(map.set(Value::Null, Value::Null).is_err());
+        assert!(map.entry(0).is_none());
+        assert!(map.index.is_empty());
+    }
+
+    #[test]
     fn insertion_positions_survive_updates_deletes_and_clear() {
         let heap = Heap::default();
         let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
         let mut map = MapObject::new(TaskId::from_raw(1), prototype);
         let n = Value::Number;
-        map.set(n(-0.0), n(1.0));
-        map.set(n(2.0), n(2.0));
-        map.set(n(0.0), n(3.0));
+        map.set(n(-0.0), n(1.0)).unwrap();
+        map.set(n(2.0), n(2.0)).unwrap();
+        map.set(n(0.0), n(3.0)).unwrap();
         assert_eq!(map.entries.len(), 2);
-        assert!(matches!(&map.entries[0], Some((Value::Number(k), _)) if k.to_bits() == 0));
+        assert!(matches!(&map.entries[&0], (Value::Number(k), _) if k.to_bits() == 0));
         assert!(map.delete(&n(0.0)));
-        map.set(n(-0.0), n(4.0));
-        assert!(map.entries[0].is_none());
+        map.set(n(-0.0), n(4.0)).unwrap();
+        assert!(!map.entries.contains_key(&0));
         assert_eq!(map.find(&n(0.0)), Some(2));
         map.clear();
-        map.set(n(2.0), n(5.0));
-        assert!(map.entries[..3].iter().all(Option::is_none));
+        map.set(n(2.0), n(5.0)).unwrap();
+        assert_eq!(map.entries.len(), 1);
         assert_eq!(map.find(&n(2.0)), Some(3));
         assert_eq!(map.size(), 1);
     }
@@ -151,13 +229,13 @@ mod tests {
         let b = Value::Number(f64::from_bits(0x6e75_6d62_6572_0002));
         assert_eq!(key_hash(&a), key_hash(&b));
         assert!(!key_eq(&a, &b));
-        map.set(a.clone(), Value::Bool(false));
-        map.set(b.clone(), Value::Bool(true));
+        map.set(a.clone(), Value::Bool(false)).unwrap();
+        map.set(b.clone(), Value::Bool(true)).unwrap();
         assert_eq!(map.size(), 2);
         assert_eq!(map.get(&a), Some(&Value::Bool(false)));
         assert_eq!(map.get(&b), Some(&Value::Bool(true)));
-        map.set(a.clone(), Value::Number(1.0));
-        map.set(b.clone(), Value::Number(2.0));
+        map.set(a.clone(), Value::Number(1.0)).unwrap();
+        map.set(b.clone(), Value::Number(2.0)).unwrap();
         assert_eq!(map.size(), 2);
         assert_eq!(map.get(&a), Some(&Value::Number(1.0)));
         assert_eq!(map.get(&b), Some(&Value::Number(2.0)));
@@ -166,7 +244,7 @@ mod tests {
         assert_eq!(map.size(), 1);
         assert!(map.get(&a).is_none());
         assert_eq!(map.get(&b), Some(&Value::Number(2.0)));
-        map.set(a.clone(), Value::Number(3.0));
+        map.set(a.clone(), Value::Number(3.0)).unwrap();
         assert_eq!(map.size(), 2);
         assert_eq!(map.find(&a), Some(2));
         assert!(map.delete(&b));
@@ -176,11 +254,11 @@ mod tests {
         assert!(map.delete(&a));
         assert_eq!(map.size(), 0);
         assert!(map.index.is_empty());
-        map.set(a, Value::Undefined);
-        map.set(b, Value::Undefined);
+        map.set(a, Value::Undefined).unwrap();
+        map.set(b, Value::Undefined).unwrap();
         map.clear();
         assert_eq!(map.size(), 0);
         assert!(map.index.is_empty());
-        assert!(map.entries.iter().all(Option::is_none));
+        assert!(map.entries.is_empty());
     }
 }

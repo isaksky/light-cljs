@@ -289,22 +289,22 @@ impl State {
     ) -> Result<Action, Fault> {
         match self.stage {
             Stage::MapEntry => {
-                // One slot per budgeted step, including tombstones. The
-                // stable cursor advances before reentry, and the heap read
+                // One live entry per budgeted step. The logical cursor
+                // advances before reentry, and the heap read
                 // ends before invoking JavaScript or reaching a safepoint.
-                let entry = map(heap, task, &self.source, |m| m.entry(self.index).cloned())?;
-                let Some(entry) = entry else {
+                let entry = map(heap, task, &self.source, |m| {
+                    m.entry(self.index)
+                        .map(|(next, entry)| (next, entry.clone()))
+                })?;
+                let Some((next, (key, value))) = entry else {
                     return Ok(Action::Return(Value::Undefined));
                 };
-                self.index += 1;
-                match entry {
-                    Some((key, value)) => Ok(Action::Call {
-                        callee: self.callback.clone(),
-                        this: self.this_arg.clone(),
-                        args: vec![value, key, self.source.clone()],
-                    }),
-                    None => Ok(Action::Continue),
-                }
+                self.index = next;
+                Ok(Action::Call {
+                    callee: self.callback.clone(),
+                    this: self.this_arg.clone(),
+                    args: vec![value, key, self.source.clone()],
+                })
             }
             Stage::KnownMethod => {
                 let method = self.iterator.clone();

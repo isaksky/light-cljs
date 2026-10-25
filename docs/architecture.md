@@ -4866,10 +4866,10 @@ protocol integration remains separate work.
 
 `HeapObject::JsMap` holds a boxed `object::map::MapObject`, distinct from
 `HeapObject::Map` (the immutable persistent HAMT). It embeds an ordinary
-object for ownership, prototype, own properties and extensibility, plus an
-insertion-ordered vector of optional key/value entries and a private hash
-index from hash to entry positions. Only the owning task reads or mutates
-it, under the same short object-table lock as ordinary objects; publication
+object for ownership, prototype, own properties and extensibility, plus a
+tree of live key/value entries ordered by logical insertion position and a
+private hash index from hash to entry positions. Only the owning task reads
+or mutates it, under the same short object-table lock as ordinary objects; publication
 classifies it as `TaskOwned`, including after `Object.freeze`. Freezing
 properties does not freeze the Map's internal entries.
 
@@ -4892,13 +4892,10 @@ existing 1 Mbit cap, within a leaf Map call; there is no per-limb budget
 charge or yield poll. The persistent HAMT key contract is unchanged.
 Keys of future primitive kinds must extend those helpers consistently.
 
-Updating an existing key preserves its slot. Deletion empties the slot;
-reinserting appends a new one. `clear` empties every slot without truncating
-the vector. There is deliberately no compaction: positions remain stable
-for later live iteration, including deletions, clearing and appends during
-a callback. Tombstones hold no key/value edges, though their slot storage
-lasts until the Map dies. `Trace` reports the ordinary object's edges and
-both key and value of every live entry. The root inventory test
+Updating an existing key preserves its logical insertion position;
+reinserting receives a new position. The reclamation policy below
+(clj-quickjs-287) replaces permanent tombstone slots. `Trace` reports the
+ordinary object's edges and both key and value of every live entry. The root inventory test
 `map_entries_are_traced` covers result-only retention and reclamation.
 `map_properties_and_prototype_are_traced` checks the independent ordinary
 property and custom-prototype edges with only the Map result rooted.
@@ -4921,26 +4918,63 @@ is exposed on `Symbol`.
 `MapForEach` appends a built-in identity and a non-enumerable, writable,
 configurable method (length 1) to `Map.prototype`. Its native uses the
 existing `vm::native::iterator::State` and native trampoline, with a Map
-entry stage and a stable entry index rather than a separate cursor object.
+entry stage and a stable logical insertion cursor rather than a separate
+cursor object.
 The receiver is validated before the callback's callability, even for an
 empty Map. The state traces the Map, callback and `thisArg` through the
 existing native-frame root path.
 
-Each budgeted step reads exactly one current entry slot under a short heap
+Each budgeted step reads at most one live entry under a short heap
 read, advances the index, and releases the read before returning a callback
-action. Tombstones consume a step but invoke nothing. Current keys/values
+action. Current keys/values
 move to the ordinary callback arguments; callback return values are ignored.
 After a callback, the next native step re-reads the Map, observing changed
-values, deleted entries and appends. `clear` leaves tombstones, so pending
-entries disappear while later appends are visited. No entry compaction ever
-occurs, including while a cursor is suspended; no cursor remapping or active
-iteration counter is needed. The Map retains tombstone slot storage until it
-dies. Exceptions and cancellation use the existing native unwind/drop path.
+values, deleted entries and appends. `clear` removes pending entries while
+later appends are visited. Exceptions and cancellation use the existing
+native unwind/drop path.
 
 `map_for_each_live_iteration` covers live mutation and the adapted 1000-entry
 deletion loop. `map_for_each_suspends_in_callback` waits on the second entry,
 collects while parked, migrates to a new thread, and finishes under one-step
 budgets without replaying effects, including an entry appended after resume.
+
+### Map storage reclamation (clj-quickjs-287)
+
+`MapObject` stores live entries in a `BTreeMap` keyed by monotonic private
+`u64` insertion positions. A hash index still resolves keys by SameValueZero,
+including collisions; its positions refer to the tree. Deletion eagerly
+removes a tree entry, and `clear` releases all entries and hash storage.
+There are no tombstones to compact or trace. Hash-table and collision-bucket
+capacity shrink when capacity exceeds four times the remaining length,
+amortizing rebuilds over deletions. Storage is O(live entries), independent
+of lifetime mutation count. Clear and tracing visit O(live entries), and
+ordered entry lookup/removal costs O(log(live entries)); key hashing and
+collision comparison costs remain as described above.
+
+A cursor saves the position after its last visited entry. Its next step
+selects the first live position at or after that cursor, in O(log(live
+entries)). Positions are never reset by clear or storage reclamation, so
+multiple nested or suspended cursors see appends and reinsertion without
+repeating earlier entries. No registration, drop cleanup or remapping of
+native frames is required. `u64::MAX` is reserved as an end cursor; exhausting
+positions throws RangeError on new insertion before changing storage,
+while existing-key updates still succeed.
+
+Reclamation runs only inside the existing task-owner-checked Map mutation
+boundary under the heap object-table lock, without callbacks or safepoints.
+Mutable JavaScript Maps remain unpublishable, including when frozen.
+Persistent HAMT maps use separate immutable storage and are unchanged.
+WeakMap uses a separate ephemeron table whose existing deletion/GC policy
+shrinks capacity; it has no public enumeration. Map entries/keys/values,
+Map for-of and JavaScript Set remain deferred. Future Map iterators must
+save logical positions and latch completion rather than retain tree nodes.
+
+`churn_compacts_without_live_cursors` reproduces both delete and clear churn;
+`deletion_reclaims_storage_with_live_cursors` checks retained hash capacity
+and two cursors after mass deletion. The synthetic source test
+`map_for_each_compaction_preserves_suspended_cursor` checks nested cursors,
+churn, deletion, update, clear and later appends across a dependency wait,
+collection, one-step budgets and migration.
 
 ## Rope strings (clj-quickjs-146)
 

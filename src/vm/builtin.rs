@@ -2121,7 +2121,8 @@ fn map_operation(
         let key = args.first().cloned().unwrap_or(Value::Undefined);
         Ok(match which {
             Builtin::MapSet => {
-                map.set(key, args.get(1).cloned().unwrap_or(Value::Undefined));
+                map.set(key, args.get(1).cloned().unwrap_or(Value::Undefined))
+                    .map_err(|message| Fault::RangeError(message.into()))?;
                 this.clone()
             }
             Builtin::MapGet => map.get(&key).cloned().unwrap_or(Value::Undefined),

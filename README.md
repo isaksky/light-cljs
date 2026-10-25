@@ -2788,6 +2788,12 @@ allows deleting the current entry or clearing the Map. The callback runs in
 a resumable VM frame: dependency waits, collection, yields and migration
 preserve its position. Invalid receivers and non-callable callbacks throw
 TypeError, including on empty Maps.
+Map storage reclamation (clj-quickjs-287): delete and clear eagerly reclaim
+entries, and geometric hash-index shrinking keeps storage proportional to
+live entries. Logical insertion positions preserve nested and suspended
+forEach cursors through reclamation, clear and reinsertion. New insertion
+throws RangeError if the private 64-bit position space is exhausted.
+Persistent maps and WeakMap use separate stores.
 
 ### Regular expression pattern parser (clj-quickjs-186)
 

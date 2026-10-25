@@ -217,6 +217,87 @@ fn map_for_each_suspends_in_callback() {
     assert_eq!(task.dependency_log().edges(), &[dependency]);
 }
 
+/// Synthetic fixture, not light-cljs output. Two independently suspended
+/// cursors survive reclamation, deletion of their next entry, and clear.
+#[test]
+fn map_for_each_compaction_preserves_suspended_cursor() {
+    for clear in [false, true] {
+        let rt = Runtime::new();
+        let exe = compile_function(
+            r#"function iterate(clear) {
+                let m = new Map();
+                for (let i = 0; i < 100; i++) m.set(i, {n: i});
+                m.forEach(function(v, k) {
+                    __rt.effect(2, k);
+                    if (k !== 0) return;
+                    m.forEach(function(v, inner) {
+                        __rt.effect(3, v.n);
+                        if (inner === 0) {
+                            for (let i = 0; i < 80; i++) m.delete(i);
+                            for (let i = 0; i < 1000; i++) {
+                                m.set(1000, {n: i}); m.delete(1000);
+                            }
+                            __rt.need(287, 0);
+                            m.delete(80);
+                            m.set(81, {n: 181});
+                            m.set(100, {n: 100});
+                            if (clear) {
+                                m.clear();
+                                m.set(200, {n: 200});
+                            }
+                        }
+                    });
+                });
+                return m.size;
+            }"#,
+        )
+        .unwrap();
+        let flag = rt.root(Primitive::Bool(clear));
+        let task = rt.spawn(&exe, &[&flag]).unwrap();
+        let mut host = Recorder::default();
+        let dependency = key(&rt, 287, 0);
+        assert_eq!(
+            waiting(task.run_with(Budget::UNLIMITED, &mut host).unwrap()),
+            dependency
+        );
+        assert_eq!(host.op(2), [0.0]);
+        assert_eq!(host.op(3), [0.0]);
+        let request = one_request(&task, dependency);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 0.0));
+        let resumed_rt = rt.clone();
+        let (outcome, host) = thread::spawn(move || {
+            for _ in 0..10_000 {
+                let outcome = resumed
+                    .run_with(Budget::instructions(1), &mut host)
+                    .unwrap();
+                if !matches!(outcome, RunOutcome::Yielded) {
+                    return (outcome, host);
+                }
+                resumed_rt.collect().unwrap();
+            }
+            panic!("Map cursors failed to finish within 10000 instructions");
+        })
+        .join()
+        .unwrap();
+        let mut outer = vec![0.0];
+        let mut inner = vec![0.0];
+        if clear {
+            outer.push(200.0);
+            inner.push(200.0);
+        } else {
+            outer.extend((81..=100).map(|i| i as f64));
+            inner.push(181.0);
+            inner.extend((82..=100).map(|i| i as f64));
+        }
+        assert_eq!(host.op(2), outer);
+        assert_eq!(host.op(3), inner);
+        assert_eq!(number(&complete(outcome)), if clear { 1.0 } else { 20.0 });
+        assert_eq!(task.status(), TaskStatus::Finished);
+        assert_eq!(task.dependency_log().edges(), &[dependency]);
+    }
+}
+
 /// Acceptance 1: native → JavaScript callback → dependency wait → callback
 /// resume → native continuation. The fold's first callback captures the
 /// live local `seen`, performs its effect, and needs a helper nobody has
