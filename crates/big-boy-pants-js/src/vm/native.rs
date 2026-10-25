@@ -1239,6 +1239,17 @@ fn typed_array_write_result(
     if crate::object::typed_array::view(heap, state.diag.task, *id)?.is_none() {
         return Ok(false);
     }
+    start_typed_array_write(state, base, value, result, index)?;
+    Ok(true)
+}
+
+fn start_typed_array_write(
+    state: &mut VmState,
+    base: &Value,
+    value: &Value,
+    result: &Value,
+    index: f64,
+) -> Result<(), Fault> {
     push_native(
         state,
         NativeState::Convert {
@@ -1258,8 +1269,7 @@ fn typed_array_write_result(
             method_get: false,
             symbol_method: SymbolMethod::Pending,
         },
-    )?;
-    Ok(true)
+    )
 }
 
 /// The top `N` operands of the running frame, oldest first, not popped.
@@ -3662,20 +3672,7 @@ fn apply_action(
             strict,
         } => {
             set_awaiting(state, Awaiting::CallResult)?;
-            if proxy_write(heap, state, &this, &key, &value, strict)? {
-                return Ok(Flow::Next);
-            }
-            if !typed_array_write(heap, state, &this, &key, &value)? {
-                let setter = property::prepare_put(
-                    heap,
-                    state.diag.task,
-                    &this,
-                    &key,
-                    value.clone(),
-                    strict,
-                )?;
-                write_result(state, setter, this, value)?;
-            }
+            write_property(heap, state, this, &key, value, strict)?;
             Ok(Flow::Next)
         }
         Action::Instruction { instr, operands } => {
@@ -5692,33 +5689,33 @@ pub(crate) fn start_proxy(
     )
 }
 
-/// OrdinarySet keeps the original proxy receiver while forwarding its target
-/// lookup, so the receiver's supported descriptor trap remains observable.
-pub(crate) fn proxy_write(
+/// Complete an ordinary write or resume the exotic operation identified by
+/// the same property-table access. Proxy receivers retain descriptor traps;
+/// typed arrays convert object values before checking index validity.
+pub(crate) fn write_property(
     heap: &Heap,
     state: &mut VmState,
-    base: &Value,
+    base: Value,
     key: &property::Key,
-    value: &Value,
+    value: Value,
     strict: bool,
-) -> Result<bool, Fault> {
-    let Value::Object(target) = base else {
-        return Ok(false);
-    };
-    if super::proxy::inspect(heap, state.diag.task, *target)?.is_none() {
-        return Ok(false);
+) -> Result<(), Fault> {
+    match property::prepare_write(heap, state.diag.task, &base, key, value.clone(), strict)? {
+        property::Write::Complete(setter) => write_result(state, setter, base, value),
+        property::Write::Proxy(target) => start_proxy(
+            state,
+            super::proxy::Mode::Set {
+                target,
+                key: key.clone(),
+                value,
+                strict,
+            },
+            0,
+        ),
+        property::Write::Typed(_, index) => {
+            start_typed_array_write(state, &base, &value, &value, index)
+        }
     }
-    start_proxy(
-        state,
-        super::proxy::Mode::Set {
-            target: *target,
-            key: key.clone(),
-            value: value.clone(),
-            strict,
-        },
-        0,
-    )?;
-    Ok(true)
 }
 
 // Promise ownership failures construct errors on migrated 64 KiB workers.

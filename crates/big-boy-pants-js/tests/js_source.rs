@@ -3,6 +3,23 @@
 //! (`tests/fixtures/js/`, not light-cljs output) and inline snippets. The
 //! bytecode-corruption tests start from compiled code and edit its bytes.
 
+#[test]
+fn fused_property_dispatch_preserves_exotic_inheritance() {
+    // Synthetic fixtures: ordinary, intrinsic, function, proxy and integer-
+    // indexed stores share a walk, but keep their distinct receiver rules.
+    for source in [
+        "let a = new Uint8Array([7]); let p = new Proxy(a, {}); let o = Object.create(p); o[0] === 7 && !(1 in o) && Object.getPrototypeOf(p) === Uint8Array.prototype",
+        "let a = new Uint8Array([7]); let o = Object.create(a); o[0] = 9; o[1] = 8; o['-0'] = 2; o['01'] = 3; o[0] === 9 && a[0] === 7 && Object.getOwnPropertyDescriptor(o, '1') === undefined && Object.getOwnPropertyDescriptor(o, '-0') === undefined && o['01'] === 3",
+        "let n = 0, a = new Uint8Array(1), v = {valueOf() {n++; return 9;}}; a.x = v; a[0] = v; a[-1] = v; a.x === v && a[0] === 9 && n === 2",
+        "let seen; class P {static set x(v) {seen = this; this.y = v;}} class F extends P {} F.x = 11; seen === F && F.y === 11 && Object.getOwnPropertyDescriptor(F, 'x') === undefined",
+        "let seen; let p = new Proxy({set x(v) {seen = this; this.y = v;}}, {}); let o = Object.create(p); o.x = 12; seen === o && o.y === 12 && Object.getOwnPropertyDescriptor(o, 'x') === undefined",
+        "let o = Object.create(null); o['\\ud800'] = 1; o['𐀀'] = 2; o['NaN'] = 3; o['-0'] = 4; o['01'] = 5; o['\\ud800'] + o['𐀀'] + o['NaN'] + o['-0'] + o['01'] === 15",
+        "let o = {}; o.__proto__ = null; Object.getPrototypeOf(o) === null && Object.getPrototypeOf(new Proxy(Object.prototype, {})) === null",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn rest_spread_and_iteration_patterns() {

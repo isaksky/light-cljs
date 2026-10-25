@@ -92,56 +92,66 @@ pub(crate) fn get_prototype_of(
     task: TaskId,
     id: ObjectId,
 ) -> Result<Option<ObjectId>, Fault> {
-    let id = super::proxy::forward(heap, task, id, "getPrototypeOf")?;
+    enum Step {
+        Prototype(Option<ObjectId>),
+        Function,
+        Proxy,
+    }
     if let Some(view) = heap.realm().get().and_then(|r| r.view(id)) {
         return Ok(view.prototype);
     }
-    let function = heap
+    let step = heap
         .read(id, |object| match object {
-            HeapObject::ModuleNamespace(ns) => ns.check_owner(task).map(|()| Some(None)),
-            HeapObject::Plain(o) => readable(o, task).map(|()| Some(o.prototype())),
+            HeapObject::ModuleNamespace(ns) => ns.check_owner(task).map(|()| Step::Prototype(None)),
+            HeapObject::Plain(o) => readable(o, task).map(|()| Step::Prototype(o.prototype())),
             HeapObject::Promise(Promise {
                 properties: Some(o),
                 ..
-            }) => readable(o, task).map(|()| Some(o.prototype())),
-            HeapObject::Promise(p) => p.check_owner(task).map(|()| Some(p.prototype())),
+            }) => readable(o, task).map(|()| Step::Prototype(o.prototype())),
+            HeapObject::Promise(p) => p.check_owner(task).map(|()| Step::Prototype(p.prototype())),
             HeapObject::Generator(g) => {
-                readable(&g.object, task).map(|()| Some(g.object.prototype()))
+                readable(&g.object, task).map(|()| Step::Prototype(g.object.prototype()))
             }
             HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
-                readable(m.object(), task).map(|()| Some(m.object().prototype()))
+                readable(m.object(), task).map(|()| Step::Prototype(m.object().prototype()))
             }
             HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => {
-                readable(m.object(), task).map(|()| Some(m.object().prototype()))
+                readable(m.object(), task).map(|()| Step::Prototype(m.object().prototype()))
             }
             HeapObject::WeakRef(m) => {
-                readable(m.object(), task).map(|()| Some(m.object().prototype()))
+                readable(m.object(), task).map(|()| Step::Prototype(m.object().prototype()))
             }
             HeapObject::FinalizationRegistry(m) => {
-                readable(m.object(), task).map(|()| Some(m.object().prototype()))
+                readable(m.object(), task).map(|()| Step::Prototype(m.object().prototype()))
             }
             HeapObject::DisposableStack(m) => {
-                readable(m.object(), task).map(|()| Some(m.object().prototype()))
+                readable(m.object(), task).map(|()| Step::Prototype(m.object().prototype()))
             }
             HeapObject::ArrayBuffer(b) => {
-                readable(&b.object, task).map(|()| Some(b.object.prototype()))
+                readable(&b.object, task).map(|()| Step::Prototype(b.object.prototype()))
             }
             HeapObject::TypedArray(a) => {
-                readable(&a.object, task).map(|()| Some(a.object.prototype()))
+                readable(&a.object, task).map(|()| Step::Prototype(a.object.prototype()))
             }
             HeapObject::Array(a) => {
-                readable(a.object(), task).map(|()| Some(a.object().prototype()))
+                readable(a.object(), task).map(|()| Step::Prototype(a.object().prototype()))
             }
             // Fixed: `Function.prototype` (clj-quickjs-102), read below,
             // outside the object lock, since it may build the realm.
-            HeapObject::Function(_) | HeapObject::BoundFunction(_) => Ok(None),
-            HeapObject::Builtin(f) => Ok(Some(f.properties.prototype())),
-            _ => Ok(Some(None)),
+            HeapObject::Function(_) | HeapObject::BoundFunction(_) => Ok(Step::Function),
+            HeapObject::Proxy(_) => Ok(Step::Proxy),
+            HeapObject::Builtin(f) => Ok(Step::Prototype(f.properties.prototype())),
+            _ => Ok(Step::Prototype(None)),
         })
         .unwrap_or(Err(Fault::Internal("prototype target was reclaimed")))?;
-    match function {
-        Some(prototype) => Ok(prototype),
-        None => function::inheritance_prototype(heap, id),
+    match step {
+        Step::Prototype(prototype) => Ok(prototype),
+        Step::Function => function::inheritance_prototype(heap, id),
+        Step::Proxy => get_prototype_of(
+            heap,
+            task,
+            super::proxy::forward(heap, task, id, "getPrototypeOf")?,
+        ),
     }
 }
 

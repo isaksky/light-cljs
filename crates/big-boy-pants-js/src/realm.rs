@@ -110,8 +110,8 @@
 //! [`IntrinsicView`] stored with the [`Intrinsics`]. Property reads
 //! (`crate::vm::property`) that reach an intrinsic, as a base or along a
 //! prototype chain, use the view instead of the object table: after the
-//! one atomic load of the installed realm and a scan of the few intrinsic
-//! identities, they take no lock at all, so tasks on every worker read
+//! one atomic load of the installed realm and a slot-index lookup with a
+//! complete identity check, they take no lock at all, so tasks on every worker read
 //! `Object.prototype.toString` without contending. The views are exact
 //! because nothing changes an intrinsic after installation, and they hold
 //! only intrinsics and primitives, so they need no root report of their own.
@@ -385,6 +385,8 @@ pub(crate) struct Intrinsics {
     /// instead of the object table, so they take no lock (module docs,
     /// "Lock-free reads").
     views: Vec<IntrinsicView>,
+    view_start: usize,
+    view_slots: Vec<usize>,
     /// `Number.prototype`: a property read on a number primitive starts
     /// here (clj-quickjs-73, [`Intrinsics::primitive_prototype`]).
     pub(crate) number_prototype: ObjectId,
@@ -516,10 +518,13 @@ impl Intrinsics {
         self.native_errors[kind as usize].1
     }
 
-    /// The property view of `id` if it is an intrinsic: a scan of the few
-    /// intrinsic identities, no lock.
+    /// The property view of `id` in constant time, without a lock. Slots
+    /// allocated concurrently during realm construction remain empty, and
+    /// the complete identity check rejects stale generations.
     pub(crate) fn view(&self, id: ObjectId) -> Option<&IntrinsicView> {
-        self.views.iter().find(|v| v.id == id)
+        let offset = id.slot().checked_sub(self.view_start)?;
+        let view = self.views.get(*self.view_slots.get(offset)?)?;
+        (view.id == id).then_some(view)
     }
 
     /// The prototype a property access on the primitive `v` starts at, as
@@ -1465,6 +1470,12 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
             .flatten()
         })
         .collect::<Option<Vec<_>>>()?;
+    let view_start = views.iter().map(|v| v.id.slot()).min()?;
+    let view_end = views.iter().map(|v| v.id.slot()).max()?;
+    let mut view_slots = vec![usize::MAX; view_end - view_start + 1];
+    for (index, view) in views.iter().enumerate() {
+        view_slots[view.id.slot() - view_start] = index;
+    }
     Some(Box::new(Intrinsics {
         boolean,
         boolean_prototype,
@@ -1490,6 +1501,8 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         reflect,
         all,
         views,
+        view_start,
+        view_slots,
         number_prototype,
         string_prototype,
         number,
@@ -3679,6 +3692,30 @@ mod tests {
             assert_eq!(view.prototype, expected, "{view:?}");
             assert_eq!(view.function_prototype, view.id == fp);
         }
+    }
+
+    #[test]
+    fn intrinsic_view_index_rejects_nonintrinsics_and_stale_generations() {
+        let heap = Arc::new(Heap::default());
+        let stale = heap.alloc(HeapObject::host_object()).unwrap();
+        let retained = heap.alloc(HeapObject::host_object()).unwrap();
+        let _root = crate::heap::Rooted::new(&heap, Value::Object(retained));
+        heap.alloc(HeapObject::host_object()).unwrap();
+        heap.collect().unwrap();
+        let intrinsics = intrinsics(&heap).unwrap();
+        // Realm allocation reuses the old slot with a new generation.
+        assert!(intrinsics.views.iter().any(|v| v.id.slot() == stale.slot()));
+        assert!(intrinsics.view(stale).is_none());
+        // Live nonintrinsics can occupy holes in the intrinsic slot range.
+        assert!(retained.slot() >= intrinsics.view_start);
+        assert!(retained.slot() < intrinsics.view_start + intrinsics.view_slots.len());
+        assert!(intrinsics.view(retained).is_none());
+        for view in &intrinsics.views {
+            assert_eq!(intrinsics.view(view.id).unwrap().id, view.id);
+        }
+        let ordinary = heap.alloc(HeapObject::host_object()).unwrap();
+        assert!(intrinsics.view(ordinary).is_none());
+        assert!(intrinsics.view(ObjectId::from_index(u32::MAX)).is_none());
     }
 
     #[test]

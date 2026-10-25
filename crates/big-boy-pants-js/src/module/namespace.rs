@@ -20,6 +20,22 @@ pub(crate) struct Namespace {
 }
 
 impl Namespace {
+    pub(crate) fn entry(&self, task: TaskId, key: &Key) -> Result<Option<Entry>, Fault> {
+        self.check_owner(task)?;
+        Ok(match key {
+            Key::Name(name) => self.exports.get(name).copied().map(Entry::Cell),
+            Key::Index(i) => self
+                .exports
+                .get(&JsString::from(i.to_string().as_str()))
+                .copied()
+                .map(Entry::Cell),
+            Key::Symbol(symbol) if *symbol == crate::value::symbol::well_known("toStringTag") => {
+                Some(Entry::Tag)
+            }
+            Key::Symbol(_) => None,
+        })
+    }
+
     pub fn check_owner(&self, task: TaskId) -> Result<(), Fault> {
         if self.owner == task {
             Ok(())
@@ -67,20 +83,7 @@ pub(crate) fn probe(
         let HeapObject::ModuleNamespace(ns) = o else {
             return Ok(None);
         };
-        ns.check_owner(task)?;
-        let entry = match key {
-            Key::Name(name) => ns.exports.get(name).copied().map(Entry::Cell),
-            Key::Index(i) => ns
-                .exports
-                .get(&JsString::from(i.to_string().as_str()))
-                .copied()
-                .map(Entry::Cell),
-            Key::Symbol(symbol) if *symbol == crate::value::symbol::well_known("toStringTag") => {
-                Some(Entry::Tag)
-            }
-            Key::Symbol(_) => None,
-        };
-        Ok(Some(entry))
+        ns.entry(task, key).map(Some)
     })
     .unwrap_or(Err(Fault::Internal("namespace was reclaimed")))
 }

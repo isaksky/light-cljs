@@ -468,8 +468,40 @@ fn visit<'a>(object: &'a HeapObject, task: TaskId) -> Result<Visit<'a>, Fault> {
 /// name that was never interned and so is no object's property.
 type Interned = Option<Option<PropertyKey>>;
 
+/// Snapshot exotic routing while the property store is already borrowed.
+/// Ordinary accesses do not probe the table again or parse numeric names.
+enum Exotic {
+    Proxy,
+    Namespace(Option<crate::module::namespace::Entry>),
+    Typed(crate::object::typed_array::View, f64),
+}
+
+fn exotic(object: &HeapObject, task: TaskId, key: &Key) -> Result<Option<Exotic>, Fault> {
+    Ok(match object {
+        HeapObject::Proxy(p) => {
+            if p.owner != task {
+                return Err(foreign(Some(p.owner), task));
+            }
+            Some(Exotic::Proxy)
+        }
+        HeapObject::ModuleNamespace(ns) => Some(Exotic::Namespace(ns.entry(task, key)?)),
+        HeapObject::TypedArray(a) => {
+            if let Some(index) = crate::object::typed_array::numeric_key(key) {
+                if a.object.owner() != Some(task) {
+                    return Err(foreign(a.object.owner(), task));
+                }
+                Some(Exotic::Typed(a.view, index))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    })
+}
+
 /// One step of a property read.
 enum Lookup {
+    Exotic(Exotic),
     Found(Read),
     /// Not an own property: continue at the prototype (or stop at null).
     Next(Option<ObjectId>),
@@ -665,22 +697,6 @@ fn lookup(
         remaining = remaining
             .checked_sub(1)
             .ok_or_else(|| Fault::StackOverflow("maximum property lookup depth exceeded".into()))?;
-        id = super::proxy::forward(heap, task, id, if has { "has" } else { "get" })?;
-        if let Some(entry) = crate::module::namespace::probe(heap, task, id, key)? {
-            return entry
-                .map(|entry| {
-                    if has {
-                        Ok(Read::Value(Value::Undefined))
-                    } else {
-                        crate::module::namespace::property(heap, task, entry)
-                            .map(|p| Read::Value(p.value))
-                    }
-                })
-                .transpose();
-        }
-        if let Some(element) = typed_element(heap, task, id, key)? {
-            return Ok(element.map(Read::Value));
-        }
         // An intrinsic is read from the realm's immutable view, without the
         // object-table lock (`crate::realm`, "Lock-free reads").
         if let Some(view) = realm.and_then(|r| r.view(id)) {
@@ -721,33 +737,59 @@ fn lookup(
             }
         }
         let step = heap
-            .read(id, |object| match visit(object, task)? {
-                Visit::Store(o) => read_store(o, key, interned, has),
-                Visit::Array(a) => match key {
-                    Key::Index(index) => Ok(match a.element(*index) {
-                        Some(property) => Lookup::Found(Read::property(&property, has)),
-                        None => Lookup::Next(a.object().prototype()),
-                    }),
-                    _ if key.is_length() => Ok(Lookup::Found(Read::Value(Value::Number(
-                        f64::from(a.length()),
-                    )))),
-                    Key::Name(_) | Key::Symbol(_) => read_store(a.object(), key, interned, has),
-                },
-                Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
-                    Ok(Lookup::Function)
+            .read(id, |object| {
+                if let Some(route) = exotic(object, task, key)? {
+                    return Ok(Lookup::Exotic(route));
                 }
-                Visit::Other(HeapObject::Promise(p)) => {
-                    p.check_owner(task).map(|()| Lookup::Next(p.prototype()))
+                match visit(object, task)? {
+                    Visit::Store(o) => read_store(o, key, interned, has),
+                    Visit::Array(a) => match key {
+                        Key::Index(index) => Ok(match a.element(*index) {
+                            Some(property) => Lookup::Found(Read::property(&property, has)),
+                            None => Lookup::Next(a.object().prototype()),
+                        }),
+                        _ if key.is_length() => Ok(Lookup::Found(Read::Value(Value::Number(
+                            f64::from(a.length()),
+                        )))),
+                        Key::Name(_) | Key::Symbol(_) => read_store(a.object(), key, interned, has),
+                    },
+                    Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
+                        Ok(Lookup::Function)
+                    }
+                    Visit::Other(HeapObject::Promise(p)) => {
+                        p.check_owner(task).map(|()| Lookup::Next(p.prototype()))
+                    }
+                    Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
+                        Some(fault) => Err(fault),
+                        None => Ok(Lookup::Next(None)),
+                    },
                 }
-                Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
-                    Some(fault) => Err(fault),
-                    None => Ok(Lookup::Next(None)),
-                },
             })
             // The frame keeps the base alive and every object keeps its
             // prototype alive; a stale id is reported, not trusted.
             .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
         match step {
+            Lookup::Exotic(Exotic::Proxy) => {
+                id = super::proxy::forward(heap, task, id, if has { "has" } else { "get" })?;
+                // Proxy forwarding has its own bound; do not charge its
+                // classification as an additional prototype hop.
+                remaining += 1;
+            }
+            Lookup::Exotic(Exotic::Namespace(entry)) => {
+                return entry
+                    .map(|entry| {
+                        if has {
+                            Ok(Read::Value(Value::Undefined))
+                        } else {
+                            crate::module::namespace::property(heap, task, entry)
+                                .map(|p| Read::Value(p.value))
+                        }
+                    })
+                    .transpose();
+            }
+            Lookup::Exotic(Exotic::Typed(view, index)) => {
+                return view.get(heap, index).map(|v| v.map(Read::Value));
+            }
             Lookup::Found(v) => return Ok(Some(v)),
             Lookup::Next(Some(prototype)) => id = prototype,
             Lookup::Next(None) => return Ok(None),
@@ -806,10 +848,11 @@ pub(crate) fn conversion_method(
 
 /// What the receiver's part of a write did.
 enum Stored {
+    Exotic(Exotic),
     Done,
     Setter(Value),
-    /// An index key reached an ordinary object: intern its name (outside
-    /// the object lock) and try again.
+    /// An uninterned key reached an ordinary object: intern its name
+    /// (outside the object lock) and try again.
     NeedsName,
     /// The receiver lacks the property and has this prototype: the chain
     /// decides (module docs).
@@ -843,6 +886,9 @@ fn store(
     interned: Option<PropertyKey>,
     value: &Value,
 ) -> Result<Stored, Fault> {
+    if let Some(route) = exotic(object, task, key)? {
+        return Ok(Stored::Exotic(route));
+    }
     let named = |o: &mut OrdinaryObject| {
         if string_wrapper_property(o, key).is_some() {
             return Ok(Stored::Rejected(read_only(key)));
@@ -956,7 +1002,16 @@ fn put(
     }
 }
 
-/// Apply data-property writes, or return the setter to invoke resumably.
+/// A property write can finish, request a setter, or dispatch an exotic
+/// continuation. No heap borrow survives this result.
+pub(crate) enum Write {
+    Complete(Option<Value>),
+    Proxy(ObjectId),
+    Typed(crate::object::typed_array::View, f64),
+}
+
+/// Leaf clients forward unsupported proxy traps and require primitive typed
+/// array values; VM clients use `prepare_write` to resume those operations.
 pub(crate) fn prepare_put(
     heap: &Heap,
     task: TaskId,
@@ -965,28 +1020,25 @@ pub(crate) fn prepare_put(
     value: Value,
     strict: bool,
 ) -> Result<Option<Value>, Fault> {
-    if let Value::Object(id) = base {
-        let target = super::proxy::forward(heap, task, *id, "set")?;
-        if target != *id {
-            return prepare_put(heap, task, &Value::Object(target), key, value, strict);
+    match prepare_write(heap, task, base, key, value.clone(), strict)? {
+        Write::Complete(setter) => Ok(setter),
+        Write::Proxy(id) => {
+            let target = super::proxy::forward(heap, task, id, "set")?;
+            prepare_put(heap, task, &Value::Object(target), key, value, strict)
         }
+        Write::Typed(view, index) => view.set(heap, index, &value).map(|()| None),
     }
-    if let Value::Object(id) = base
-        && crate::module::namespace::probe(heap, task, *id, key)?.is_some()
-    {
-        return if strict {
-            Err(read_only(key))
-        } else {
-            Ok(None)
-        };
-    }
-    if let Value::Object(id) = base
-        && let Some(index) = crate::object::typed_array::numeric_key(key)
-        && let Some(view) = crate::object::typed_array::view(heap, task, *id)?
-    {
-        view.set(heap, index, &value)?;
-        return Ok(None);
-    }
+}
+
+/// Apply data writes and classify exotic routing in the same table access.
+pub(crate) fn prepare_write(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    key: &Key,
+    value: Value,
+    strict: bool,
+) -> Result<Write, Fault> {
     let Value::Object(mut id) = *base else {
         if matches!(
             base,
@@ -1001,22 +1053,26 @@ pub(crate) fn prepare_put(
             if let Ok(Chain::Setter(setter)) =
                 check_inherited(heap, task, prototype, key.lookup(heap), key)
             {
-                return setter_result(setter, key, strict);
+                return setter_result(setter, key, strict).map(Write::Complete);
             }
         }
-        return put_primitive(base, key, strict).map(|()| None);
+        return put_primitive(base, key, strict).map(|()| Write::Complete(None));
     };
+    // Existing names need one key lookup. A new name is interned only when
+    // ordinary storage requests it, after exotic and ownership checks.
     let mut interned = match key {
-        Key::Name(_) | Key::Symbol(_) => Some(key.intern(heap)?),
+        Key::Name(_) | Key::Symbol(_) => key.lookup(heap),
         Key::Index(_) => None,
     };
     // Accessor calls precede data-property mutation rules. An intrinsic
     // setter may accept a no-op even on a shared receiver; a function's
     // inherited setter must run without creating a property record.
-    if heap.realm().get().is_some_and(|r| r.view(id).is_some()) || is_function(heap, id) {
+    if heap.realm().get().is_some_and(|r| r.view(id).is_some()) {
         match check_inherited(heap, task, id, interned.or_else(|| key.lookup(heap)), key) {
-            Ok(Chain::Setter(setter)) => return setter_result(setter, key, strict),
-            Ok(Chain::Ignored) => return Ok(None),
+            Ok(Chain::Setter(setter)) => {
+                return setter_result(setter, key, strict).map(Write::Complete);
+            }
+            Ok(Chain::Ignored) => return Ok(Write::Complete(None)),
             // The store below applies the receiver's data-write policy:
             // immutable intrinsics always throw; function metadata follows
             // the caller's strictness.
@@ -1028,18 +1084,50 @@ pub(crate) fn prepare_put(
         }
     }
     // `[[Set]]` returned false (module docs).
-    let rejected = |fault: Fault| if strict { Err(fault) } else { Ok(None) };
+    let rejected = |fault: Fault| {
+        if strict {
+            Err(fault)
+        } else {
+            Ok(Write::Complete(None))
+        }
+    };
     let prototype = loop {
         let outcome = heap
             .with_object_mut(id, |object| store(object, task, key, interned, &value))
             .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
         match outcome {
-            Stored::Done => return Ok(None),
-            Stored::Setter(setter) => return setter_result(setter, key, strict),
+            Stored::Exotic(Exotic::Proxy) => {
+                return Ok(Write::Proxy(id));
+            }
+            Stored::Exotic(Exotic::Namespace(_)) => return rejected(read_only(key)),
+            Stored::Exotic(Exotic::Typed(view, index)) => {
+                if matches!(value, Value::Object(_)) {
+                    return Ok(Write::Typed(view, index));
+                }
+                view.set(heap, index, &value)?;
+                return Ok(Write::Complete(None));
+            }
+            Stored::Done => return Ok(Write::Complete(None)),
+            Stored::Setter(setter) => {
+                return setter_result(setter, key, strict).map(Write::Complete);
+            }
             Stored::NeedsName => interned = Some(key.intern(heap)?),
             Stored::Inherited(prototype) => break prototype,
             Stored::Rejected(fault) => return rejected(fault),
             Stored::Function => {
+                // Functions may inherit setters before their mutable property
+                // record exists. Defer this walk until classification actually
+                // encounters a function, avoiding a separate ordinary probe.
+                match check_inherited(heap, task, id, interned.or_else(|| key.lookup(heap)), key) {
+                    Ok(Chain::Setter(setter)) => {
+                        return setter_result(setter, key, strict).map(Write::Complete);
+                    }
+                    Ok(Chain::Ignored) => return Ok(Write::Complete(None)),
+                    Ok(Chain::Add) | Err(Fault::Unsupported(_)) => {}
+                    Err(Fault::TypeError(message))
+                        if !message.starts_with("unsupported Proxy trap:") => {}
+                    Err(fault) => return Err(fault),
+                }
                 if function::rejects_metadata_write(heap, task, id, key)? {
                     return rejected(read_only(key));
                 }
@@ -1055,8 +1143,10 @@ pub(crate) fn prepare_put(
     };
     match check_inherited(heap, task, prototype, chain_key, key) {
         Ok(Chain::Add) => {}
-        Ok(Chain::Ignored) => return Ok(None),
-        Ok(Chain::Setter(setter)) => return setter_result(setter, key, strict),
+        Ok(Chain::Ignored) => return Ok(Write::Complete(None)),
+        Ok(Chain::Setter(setter)) => {
+            return setter_result(setter, key, strict).map(Write::Complete);
+        }
         // Sloppy code ignores an ordinary read-only rejection, while an
         // unsupported proxy trap remains an exception.
         Err(Fault::TypeError(message)) if !message.starts_with("unsupported Proxy trap:") => {
@@ -1112,8 +1202,8 @@ pub(crate) fn prepare_put(
         })
         .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
     match added {
-        SetOutcome::Done => Ok(None),
-        SetOutcome::Setter(setter) => setter_result(setter, key, strict),
+        SetOutcome::Done => Ok(Write::Complete(None)),
+        SetOutcome::Setter(setter) => setter_result(setter, key, strict).map(Write::Complete),
         SetOutcome::ReadOnly => rejected(read_only(key)),
         SetOutcome::NotExtensible => rejected(not_extensible(key)),
         SetOutcome::Inherited => Err(Fault::Internal("an inherited write was not decided")),
@@ -1317,17 +1407,6 @@ fn check_inherited(
 ) -> Result<Chain, Fault> {
     let mut realm = heap.realm().get();
     loop {
-        id = super::proxy::forward(heap, task, id, "set")?;
-        if crate::module::namespace::probe(heap, task, id, key)?.is_some() {
-            return Err(read_only(key));
-        }
-        if let Some(element) = typed_element(heap, task, id, key)? {
-            return Ok(if element.is_some() {
-                Chain::Add
-            } else {
-                Chain::Ignored
-            });
-        }
         // Intrinsics through their immutable view, as in `get`.
         if let Some(view) = realm.and_then(|r| r.view(id)) {
             match k.and_then(|k| view.get_own(k)) {
@@ -1362,39 +1441,53 @@ fn check_inherited(
             }
         };
         let next = heap
-            .read(id, |object| match visit(object, task)? {
-                Visit::Store(o) => in_store(o),
-                Visit::Array(a) => match key {
-                    Key::Index(index) => match a.element(*index) {
-                        Some(element) if element.accessor.is_some() => {
-                            Ok(Walk::Setter(element.accessor.unwrap().1))
-                        }
-                        Some(element) if !element.flags.writable => Err(read_only(key)),
-                        Some(_) => Ok(Walk::Next(None)),
-                        None => Ok(Walk::Next(a.object().prototype())),
+            .read(id, |object| {
+                if let Some(route) = exotic(object, task, key)? {
+                    return Ok(Walk::Exotic(route));
+                }
+                match visit(object, task)? {
+                    Visit::Store(o) => in_store(o),
+                    Visit::Array(a) => match key {
+                        Key::Index(index) => match a.element(*index) {
+                            Some(element) if element.accessor.is_some() => {
+                                Ok(Walk::Setter(element.accessor.unwrap().1))
+                            }
+                            Some(element) if !element.flags.writable => Err(read_only(key)),
+                            Some(_) => Ok(Walk::Next(None)),
+                            None => Ok(Walk::Next(a.object().prototype())),
+                        },
+                        _ if key.is_length() && !a.length_writable() => Err(read_only(key)),
+                        _ if key.is_length() => Ok(Walk::Next(None)),
+                        _ => in_store(a.object()),
                     },
-                    _ if key.is_length() && !a.length_writable() => Err(read_only(key)),
-                    _ if key.is_length() => Ok(Walk::Next(None)),
-                    _ => in_store(a.object()),
-                },
-                // A function as a prototype (`Object.create(f)`,
-                // clj-quickjs-121): its own properties are in its record
-                // (clj-quickjs-125).
-                Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
-                    Ok(Walk::Function)
+                    // A function as a prototype (`Object.create(f)`,
+                    // clj-quickjs-121): its own properties are in its record
+                    // (clj-quickjs-125).
+                    Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
+                        Ok(Walk::Function)
+                    }
+                    Visit::Other(HeapObject::Promise(p)) => {
+                        p.check_owner(task).map(|()| Walk::Next(p.prototype()))
+                    }
+                    // Another kind as a prototype: one without JavaScript
+                    // properties ends the walk.
+                    Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
+                        Some(fault) => Err(fault),
+                        None => Ok(Walk::Next(None)),
+                    },
                 }
-                Visit::Other(HeapObject::Promise(p)) => {
-                    p.check_owner(task).map(|()| Walk::Next(p.prototype()))
-                }
-                // Another kind as a prototype: one without JavaScript
-                // properties ends the walk.
-                Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
-                    Some(fault) => Err(fault),
-                    None => Ok(Walk::Next(None)),
-                },
             })
             .unwrap_or(Err(Fault::Internal("prototype was reclaimed")))?;
         match next {
+            Walk::Exotic(Exotic::Proxy) => id = super::proxy::forward(heap, task, id, "set")?,
+            Walk::Exotic(Exotic::Namespace(_)) => return Err(read_only(key)),
+            Walk::Exotic(Exotic::Typed(view, index)) => {
+                return Ok(if view.get(heap, index)?.is_some() {
+                    Chain::Add
+                } else {
+                    Chain::Ignored
+                });
+            }
             Walk::Setter(setter) => return Ok(Chain::Setter(setter)),
             Walk::Next(Some(prototype)) => id = prototype,
             Walk::Next(None) => return Ok(Chain::Add),
@@ -1432,6 +1525,7 @@ fn check_inherited(
 
 /// One step of [`check_inherited`] outside the realm's views.
 enum Walk {
+    Exotic(Exotic),
     Setter(Value),
     /// Continue at this prototype, or (`None`) stop: the receiver may add
     /// the property.
@@ -1699,46 +1793,65 @@ pub(crate) fn get_own_property(
     target: ObjectId,
     key: &Key,
 ) -> Result<Option<Property>, Fault> {
-    let target = super::proxy::forward(heap, task, target, "getOwnPropertyDescriptor")?;
-    if let Some(entry) = crate::module::namespace::probe(heap, task, target, key)? {
-        return entry
-            .map(|e| crate::module::namespace::property(heap, task, e))
-            .transpose();
+    enum Own {
+        Property(Option<Property>),
+        Exotic(Exotic),
+        Function,
     }
-    if let Some(element) = typed_element(heap, task, target, key)? {
-        return Ok(element.map(|value| Property {
-            value,
-            flags: crate::object::PropertyFlags::DATA,
-            accessor: None,
-        }));
-    }
-    if is_function(heap, target)
-        && let Some(property) = function::own_metadata(heap, task, target, key)?
-    {
-        return Ok(Some(property));
-    }
-    let target = match is_function(heap, target) {
-        true => match function::own_store(heap, task, target, key)? {
-            Some(record) => record,
-            None => return Ok(None),
-        },
-        false => target,
-    };
     let k = key.lookup(heap);
+    if let Some(view) = heap.realm().get().and_then(|r| r.view(target)) {
+        return Ok(k.and_then(|k| view.get_own(k)).cloned());
+    }
     let named = |o: &OrdinaryObject| k.and_then(|k| o.get_own(k)).cloned();
-    heap.read(target, |object| match visit(object, task)? {
-        Visit::Store(o) => Ok(string_wrapper_property(o, key).or_else(|| named(o))),
-        Visit::Array(a) => Ok(match key {
-            Key::Index(index) => a.element(*index),
-            _ if key.is_length() => Some(a.length_property()),
-            Key::Name(_) | Key::Symbol(_) => named(a.object()),
-        }),
-        Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
-            Some(fault) => Err(fault),
-            None => Ok(None),
-        },
-    })
-    .unwrap_or(Err(Fault::Internal("property target was reclaimed")))
+    let own = heap
+        .read(target, |object| {
+            if let Some(route) = exotic(object, task, key)? {
+                return Ok(Own::Exotic(route));
+            }
+            let property = match visit(object, task)? {
+                Visit::Store(o) => string_wrapper_property(o, key).or_else(|| named(o)),
+                Visit::Array(a) => match key {
+                    Key::Index(index) => a.element(*index),
+                    _ if key.is_length() => Some(a.length_property()),
+                    Key::Name(_) | Key::Symbol(_) => named(a.object()),
+                },
+                Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
+                    return Ok(Own::Function);
+                }
+                Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
+                    Some(fault) => return Err(fault),
+                    None => None,
+                },
+            };
+            Ok(Own::Property(property))
+        })
+        .unwrap_or(Err(Fault::Internal("property target was reclaimed")))?;
+    match own {
+        Own::Property(property) => Ok(property),
+        Own::Exotic(Exotic::Proxy) => {
+            let target = super::proxy::forward(heap, task, target, "getOwnPropertyDescriptor")?;
+            get_own_property(heap, task, target, key)
+        }
+        Own::Exotic(Exotic::Namespace(entry)) => entry
+            .map(|e| crate::module::namespace::property(heap, task, e))
+            .transpose(),
+        Own::Exotic(Exotic::Typed(view, index)) => {
+            Ok(view.get(heap, index)?.map(|value| Property {
+                value,
+                flags: PropertyFlags::DATA,
+                accessor: None,
+            }))
+        }
+        Own::Function => {
+            if let Some(property) = function::own_metadata(heap, task, target, key)? {
+                return Ok(Some(property));
+            }
+            match function::own_store(heap, task, target, key)? {
+                Some(record) => get_own_property(heap, task, record, key),
+                None => Ok(None),
+            }
+        }
+    }
 }
 
 /// Observe the current own enumerable flag without creating a virtual
@@ -1995,6 +2108,75 @@ mod tests {
     use crate::heap::gc::Trace;
     use crate::value::share::Shareability;
 
+    #[test]
+    fn fused_exotic_dispatch_rejects_foreign_owners() {
+        use crate::module::namespace::Namespace;
+        use crate::object::typed_array::{ElementType, TypedArray, View};
+        let heap = Heap::default();
+        let owner = TaskId::from_raw(1);
+        let caller = TaskId::from_raw(2);
+        let ordinary = heap
+            .alloc(HeapObject::Plain(OrdinaryObject::new(Some(owner))))
+            .unwrap();
+        let namespace = heap
+            .alloc(HeapObject::ModuleNamespace(Box::new(Namespace {
+                owner,
+                exports: Default::default(),
+            })))
+            .unwrap();
+        let typed = heap
+            .alloc(HeapObject::TypedArray(Box::new(TypedArray {
+                object: OrdinaryObject::new(Some(owner)),
+                view: View {
+                    kind: ElementType::Uint8,
+                    buffer: ordinary,
+                    offset: 0,
+                    length: 0,
+                },
+            })))
+            .unwrap();
+        let Value::Object(proxy) = super::super::proxy::construct(
+            &heap,
+            owner,
+            &[Value::Object(ordinary), Value::Object(ordinary)],
+        )
+        .unwrap_or_else(|_| panic!("proxy fixture failed")) else {
+            unreachable!()
+        };
+        for id in [ordinary, namespace, typed, proxy] {
+            for key in [Key::Index(0), Key::Name("x".into())] {
+                assert!(matches!(
+                    read(&heap, caller, &Value::Object(id), &key),
+                    Err(Fault::ForeignObject { .. })
+                ));
+                assert!(matches!(
+                    get_own_property(&heap, caller, id, &key),
+                    Err(Fault::ForeignObject { owner: Some(actual), caller: actual_caller })
+                        if actual == owner && actual_caller == caller
+                ));
+                assert!(matches!(
+                    prepare_put(
+                        &heap,
+                        caller,
+                        &Value::Object(id),
+                        &key,
+                        Value::Undefined,
+                        false
+                    ),
+                    Err(Fault::ForeignObject { .. })
+                ));
+                assert!(matches!(
+                    check_inherited(&heap, caller, id, key.lookup(&heap), &key),
+                    Err(Fault::ForeignObject { .. })
+                ));
+            }
+            assert!(matches!(
+                super::super::prototype::get_prototype_of(&heap, caller, id),
+                Err(Fault::ForeignObject { .. })
+            ));
+        }
+    }
+
     /// A native payload without JavaScript properties.
     #[derive(Debug)]
     struct Opaque;
@@ -2036,6 +2218,14 @@ mod tests {
                     read(&object, "prototype").is_ok_and(|v| v.same_object(&prototype)),
                     read(&object, "call").is_ok_and(|v| matches!(v, Value::Object(_))),
                     read(&object, "bind").is_ok_and(|v| matches!(v, Value::Object(_))),
+                    get_own_property(&heap, task, prototype_id(&object), &Key::Name(s("length")))
+                        .is_ok_and(|p| p.is_some_and(|p| p.value == Value::Number(1.0))),
+                    super::super::prototype::get_prototype_of(
+                        &heap,
+                        task,
+                        prototype_id(&prototype),
+                    )
+                    .is_ok_and(|p| p.is_none()),
                     check_inherited(
                         &heap,
                         task,

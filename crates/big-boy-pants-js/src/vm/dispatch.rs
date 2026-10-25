@@ -1091,34 +1091,14 @@ fn property_step(
             let object = state.pop()?;
             let task = state.diag.task;
             if matches!(instr, Instr::PutField(_) | Instr::PutFieldStrict(_)) {
-                if native::proxy_write(
+                native::write_property(
                     heap,
                     state,
-                    &object,
+                    object,
                     &property::Key::from_name(&name),
-                    &v,
-                    code.strict || matches!(instr, Instr::PutFieldStrict(_)),
-                )? {
-                    return Ok(Flow::Next);
-                }
-                if native::typed_array_write(
-                    heap,
-                    state,
-                    &object,
-                    &property::Key::from_name(&name),
-                    &v,
-                )? {
-                    return Ok(Flow::Next);
-                }
-                let setter = property::prepare_put(
-                    heap,
-                    task,
-                    &object,
-                    &property::Key::from_name(&name),
-                    v.clone(),
+                    v,
                     code.strict || matches!(instr, Instr::PutFieldStrict(_)),
                 )?;
-                super::native::write_result(state, setter, object, v)?;
             } else if matches!(instr, Instr::DefineGetter(_) | Instr::DefineSetter(_)) {
                 property::define_accessor(
                     heap,
@@ -1148,28 +1128,14 @@ fn property_step(
             let key = state.pop()?;
             let base = state.pop()?;
             let key = property::element_key(&base, &key, true)?;
-            if native::proxy_write(
+            native::write_property(
                 heap,
                 state,
-                &base,
+                base,
                 &key,
-                &v,
-                code.strict || matches!(instr, Instr::PutElemStrict),
-            )? {
-                return Ok(Flow::Next);
-            }
-            if native::typed_array_write(heap, state, &base, &key, &v)? {
-                return Ok(Flow::Next);
-            }
-            let setter = property::prepare_put(
-                heap,
-                state.diag.task,
-                &base,
-                &key,
-                v.clone(),
+                v,
                 code.strict || matches!(instr, Instr::PutElemStrict),
             )?;
-            super::native::write_result(state, setter, base, v)?;
         }
         Instr::Dup2 => {
             let ops = state.operands();

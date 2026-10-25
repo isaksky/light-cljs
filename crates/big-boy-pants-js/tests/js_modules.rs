@@ -2021,6 +2021,20 @@ fn namespace_reexport_paths_share_one_origin() {
 }
 
 #[test]
+fn namespace_property_dispatch_through_proxy_and_prototype() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; import {inc} from './m.js'; const p = new Proxy(m, {}); const o = Object.create(p); let errors = 0; try { o.n = 9; } catch (e) { if (e instanceof TypeError) errors++; } try { p.extra = 9; } catch (e) { if (e instanceof TypeError) errors++; } inc(); __rt.effect(0, errors === 2 && o.n === 2 && p.n === 2 && ('n' in o) && !('extra' in p) && Object.getPrototypeOf(p) === null && p[Symbol.toStringTag] === 'Module');",
+            ),
+            ("m.js", "export let n = 1; export function inc() { n++; }"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
 fn namespace_empty_freezes_and_inherited_writes_fail() {
     assert_effects(
         &[

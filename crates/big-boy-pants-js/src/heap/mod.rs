@@ -94,6 +94,11 @@ pub(crate) struct ObjectId {
 }
 
 impl ObjectId {
+    /// Slot address for immutable side tables; identity still includes generation.
+    pub(crate) fn slot(self) -> usize {
+        self.index as usize
+    }
+
     /// The identity as one integer: stable for the object's lifetime and
     /// never reused for another object (the slot generation differs).
     pub(crate) fn to_bits(self) -> u64 {
