@@ -882,7 +882,7 @@ fn object_property_reclaims() {
     // `String.prototype` (clj-quickjs-73), `Symbol.prototype` (clj-quickjs-129), `Reflect` (clj-quickjs-102)
     // `Math` (clj-quickjs-152), `Error.prototype` (clj-quickjs-228),
     // the seven NativeError prototypes (clj-quickjs-229),
-    // SuppressedError.prototype (clj-quickjs-234), JSON (clj-quickjs-159),
+    // SuppressedError.prototype (clj-quickjs-234), AggregateError.prototype (clj-quickjs-317), JSON (clj-quickjs-159),
     // Map.prototype (clj-quickjs-169), WeakMap.prototype (clj-quickjs-173), WeakRef.prototype (clj-quickjs-176),
     // FinalizationRegistry.prototype (clj-quickjs-177),
     // ArrayBuffer.prototype (clj-quickjs-165),
@@ -905,10 +905,10 @@ fn object_property_reclaims() {
         release,
         keep,
     } = held;
-    assert_eq!(rt.heap_usage().objects.plain, 3 + 63);
+    assert_eq!(rt.heap_usage().objects.plain, 3 + 64);
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
-    assert_eq!(rt.heap_usage().objects.plain, 63);
+    assert_eq!(rt.heap_usage().objects.plain, 64);
 }
 
 /// The realm intrinsics (clj-quickjs-117, `RootCategory::Intrinsic`):
@@ -1170,8 +1170,9 @@ fn realm_intrinsics_retain() {
     // Set and WeakSet add three prototypes and fourteen built-ins (-295).
     // Boolean adds one prototype and three built-ins (-302).
     // Fourteen String prototype methods (-300).
-    assert_eq!(rt.heap_usage().objects.builtin, 355);
-    assert_eq!(rt.heap_usage().objects.plain, 63);
+    // Promise methods, species and AggregateError add eight built-ins and one prototype (-317).
+    assert_eq!(rt.heap_usage().objects.builtin, 363);
+    assert_eq!(rt.heap_usage().objects.plain, 64);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
         assert_live(&weak);
@@ -1370,18 +1371,18 @@ fn function_properties_reclaim() {
     let held = function_properties(&rt);
     assert_retained(&rt, &held);
     // The argument, the record, the object in `x` and the prototype object
-    // go with the function; the realm's 63 ordinary objects stay (-313).
+    // go with the function; the realm's 64 ordinary objects stay (-317).
     let Held {
         weak,
         release,
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (4 + 63, 1));
+    assert_eq!((usage.plain, usage.function), (4 + 64, 1));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.function), (63, 0));
+    assert_eq!((usage.plain, usage.function), (64, 0));
 }
 
 #[test]
@@ -1400,11 +1401,11 @@ fn array_element_reclaims() {
         keep,
     } = held;
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (1 + 63, 3));
+    assert_eq!((usage.plain, usage.array), (1 + 64, 3));
     assert_reclaimed(&rt, Held::new(weak, release).keeping(keep));
     rt.request_collection().unwrap();
     let usage = rt.heap_usage().objects;
-    assert_eq!((usage.plain, usage.array), (63, 0));
+    assert_eq!((usage.plain, usage.array), (64, 0));
 }
 
 #[test]
@@ -2129,7 +2130,7 @@ fn intl_number_format_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 63);
+        assert_eq!(rt.heap_usage().objects.plain, 64);
     }
 }
 
@@ -2154,7 +2155,7 @@ fn intl_collator_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 63);
+        assert_eq!(rt.heap_usage().objects.plain, 64);
     }
 }
 
@@ -2233,7 +2234,7 @@ fn intl_date_time_format_bound_cache_retains_and_reclaims() {
         rt.collect().unwrap();
         assert!(matches!(weak.upgrade(), Err(HandleError::Reclaimed)));
         assert_eq!(rt.heap_usage().objects.bound_function, 0);
-        assert_eq!(rt.heap_usage().objects.plain, 63);
+        assert_eq!(rt.heap_usage().objects.plain, 64);
     }
 }
 
