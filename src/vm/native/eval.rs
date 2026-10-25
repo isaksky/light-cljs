@@ -111,10 +111,8 @@ impl State {
             .join()
             .map_err(|_| Fault::Internal("eval compiler panicked"))?
             .map_err(|error| Fault::CompileSyntaxError {
-                message: error.message,
                 name,
-                line: error.line as usize,
-                column: error.column as usize,
+                error: Box::new(error),
             })?;
         if dynamic_parameters.is_some() {
             return Ok(Action::DynamicFunction(executable));

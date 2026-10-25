@@ -182,11 +182,10 @@ pub(crate) enum Fault {
     StringTooLong,
     ReferenceError(String),
     /// Runtime compilation keeps its source position out of the JS message.
+    /// Box the diagnostic so Fault stays compact on 64 KiB worker stacks.
     CompileSyntaxError {
-        message: String,
         name: &'static str,
-        line: usize,
-        column: usize,
+        error: Box<crate::frontend::SyntaxError>,
     },
 }
 
@@ -1855,9 +1854,10 @@ fn return_flow(state: &mut VmState, heap: &Heap, v: Value) -> Result<Flow, Fault
 /// The error kind and message of a fault that is not an exception value.
 fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
     match fault {
-        Fault::SyntaxError(m)
-        | Fault::JsonSyntaxError { message: m, .. }
-        | Fault::CompileSyntaxError { message: m, .. } => (VmErrorKind::SyntaxError, m),
+        Fault::SyntaxError(m) | Fault::JsonSyntaxError { message: m, .. } => {
+            (VmErrorKind::SyntaxError, m)
+        }
+        Fault::CompileSyntaxError { error, .. } => (VmErrorKind::SyntaxError, error.message),
         Fault::RangeError(m) => (VmErrorKind::RangeError, m),
         Fault::StringTooLong => (VmErrorKind::StringTooLong, "string too long".into()),
         Fault::Unsupported(m) => (VmErrorKind::UnsupportedOperand, m),
@@ -3381,9 +3381,9 @@ pub(crate) fn execute_budgeted(
                     Fault::JsonSyntaxError { line, column, .. } => {
                         Some(("<input>", *line, *column))
                     }
-                    Fault::CompileSyntaxError {
-                        name, line, column, ..
-                    } => Some((*name, *line, *column)),
+                    Fault::CompileSyntaxError { name, error } => {
+                        Some((*name, error.line as usize, error.column as usize))
+                    }
                     _ => None,
                 };
                 let (kind, message) = fault_error(fault, &code, pc);

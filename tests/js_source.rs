@@ -2713,6 +2713,8 @@ fn indirect_eval_on_small_worker_stacks() {
         "(0, eval)('2')".to_string(),
         "try { (0, eval)('1 +'); } catch(e) { if (!(e instanceof SyntaxError)) throw e; } 2"
             .to_string(),
+        "try { eval('\\n 123 a'); } catch(e) { if (!(e instanceof SyntaxError) || e.stack[7] !== '<' || e.stack[14] !== '2' || e.stack[16] !== '6' || e.stack[17] !== '\\n' || e.message[0] === '<') throw e; } 2".to_string(),
+        "try { new Function('\\n 123 a'); } catch(e) { if (!(e instanceof SyntaxError) || e.stack[7] !== '<' || e.stack[18] !== '4' || e.stack[20] !== '6' || e.stack[21] !== '\\n' || e.message[0] === '<') throw e; } 2".to_string(),
     ];
     // Find the actual parser boundary; exercise successful and rejected
     // nesting, including cleanup of partially parsed trees.
