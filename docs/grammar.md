@@ -133,16 +133,27 @@ also terminate an operation. No aggregate runtime heap quota is implemented.
 | Number formatting counts | toFixed/toExponential/toPrecision count-string conversion at most 4096 units; RangeError before unbounded leaf scan; ordinary digit ranges still apply | `src/vm/builtin.rs::number_digit_count` |
 | Dynamic argument lists/spread | At most 65,535 arguments, additionally subject to VM value limits | `src/vm/dispatch.rs`, `src/frontend/lower.rs` |
 | Error stacks | Snapshot/output cap 16,384 UTF-16 units; metadata fields at most 256 units; at most 64 JS callers for eval/Function compilation errors | `src/vm/frames.rs`, `src/vm/native/eval.rs` |
-| Prototype/Proxy leaf walks | Bounded 4096-hop leaf cursors reject pathological cycles/depth | `src/vm/property.rs`, `src/vm/proxy.rs` |
+| Prototype lookup/Proxy forwarding | Leaf cursors have a 4096-step bound; Proxy forwarding counts internal cursor work, not just target hops | `src/vm/property.rs::lookup`, `src/vm/proxy.rs::forward_cursor` |
+| Proxy classification | Separate 512-step bound, including the final non-Proxy inspection; exhaustion throws TypeError. A 600-Proxy chain therefore fails tag classification even when forwarding is within its bound. | `src/vm/proxy.rs::unwrapped` |
 | Map/Set insertion positions | Monotonic u64 positions; exhaustion is a catchable RangeError even if deletions made room; no wraparound | `src/object/map.rs` |
 | Math.random | Fixed-seed per-task SplitMix64; each task starts the same deterministic sequence, no host entropy or cryptographic guarantee | `src/vm/frames.rs`, `src/vm/native.rs` |
 | Math transcendental boundary | cbrt/asinh/acosh/atanh use host C libm results; platform rounding can vary. Other numerical algorithms retain their tested signed-zero/NaN behavior. | `src/vm/builtin.rs`, `tests/math.rs` |
 | Promise diagnostics | At quiescence retain up to 30 unhandled-rejection entries; later entries increment a dropped counter. Suspended awaits are reported separately on task completion. | `src/task.rs`, `src/job.rs` |
 | Intl locales | en, en-US, en-GB, de, fr, es, ja, zh, zh-Hant, zh-Hans-CN, ar, ru, pt-BR, tr, with zh-TW resolution; default from host, en-US without host, unrecorded leaf effect | `src/intl/mod.rs`, `tests/sim_host.rs` |
+| Locale tags | Fewer than 512 ASCII bytes and fewer than 64 hyphen-separated subtags; invalid explicit tags throw RangeError in JavaScript | `src/intl/tag.rs::LanguageTag::parse` |
+| String locale casing | Only the pinned QuickJS Turkish/Azeri and Lithuanian context rules are claimed; other languages use root casing. Omitted/undefined/empty locale lists use the host default. Host locale strings of 512 or more UTF-16 units silently use root casing, including those beginning with tr. | `src/vm/native/string_methods.rs::State::language`, `case_step`, `lookahead`; [host-default test](../tests/sim_host.rs) (`string_locale_case_uses_host_default`), [String fixture expectations](../tests/fixtures/js/string_methods.js) (`tests/js_source.rs::string_methods_semantic_fixture`) |
 | NumberFormat decimal strings | Mantissa at most 100,000 ASCII bytes and exponent magnitude at most 10,000 after syntax validation; RangeError on excess | `src/number.rs::Decimal::parse` |
 | Intl options/data | Only implemented service/options and pinned test outputs are claimed. NumberFormat range methods, unsupported numbering systems/calendars/time zones and unimplemented options reject explicitly. Segmenter is the tested data-driven subset, not full UAX #29. | `src/intl/`, `tests/quickjs_intl.rs` |
 | Date clock/zone | Host clock is an unrecorded leaf effect; reruns can differ. One zone per runtime, UTC without host. Generated snapshot lists 598 names but only 59 transition records; names do not imply transition coverage. | `src/host/timezone/`, `tests/date_host.rs` |
 | Generated data | Pinned QuickJS snapshot and verified Unicode 17.0.0 inputs; no verified CLDR/tzdb release inferred from that snapshot, no runtime download/generation/C wrapper | `scripts/quickjs-data/`, provenance and licenses in [attribution.md](attribution.md) |
+
+The String locale-casing qualification refers to
+`research/quickjs/quickjs.c::js_string_toLowerCase` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, using this runtime's verified
+Unicode tables. The linked fixture fixes the expected combining-dot and
+case-ignorable behavior; it does not establish complete Unicode locale
+SpecialCasing conformance. Source attribution is in
+[attribution.md](attribution.md#string-case-and-normalization-clj-quickjs-300).
 
 Service-specific Intl boundaries are part of that same data policy:
 
