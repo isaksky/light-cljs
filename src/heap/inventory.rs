@@ -1043,7 +1043,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 404); // Boolean constructor, prototype and two methods (-302).
+    assert_eq!(ids.len(), 418); // Fourteen String prototype methods (-300).
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

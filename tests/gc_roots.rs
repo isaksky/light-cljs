@@ -1169,7 +1169,8 @@ fn realm_intrinsics_retain() {
     // Array copies, iterator modes and Array.of add nine built-ins (-299).
     // Set and WeakSet add three prototypes and fourteen built-ins (-295).
     // Boolean adds one prototype and three built-ins (-302).
-    assert_eq!(rt.heap_usage().objects.builtin, 341);
+    // Fourteen String prototype methods (-300).
+    assert_eq!(rt.heap_usage().objects.builtin, 355);
     assert_eq!(rt.heap_usage().objects.plain, 63);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
