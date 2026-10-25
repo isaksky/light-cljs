@@ -991,9 +991,6 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         Builtin::StringAt,
         Builtin::StringLocaleCompare,
         Builtin::StringNormalize,
-        Builtin::StringMatch,
-        Builtin::StringMatchAll,
-        Builtin::StringPrototypeSearch,
     ] {
         let method = b.function(which, &[])?;
         b.add(
@@ -1235,6 +1232,7 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
 
     let (date_prototype, date) = date_intrinsics(&mut b, object_prototype)?;
     let (regexp_prototype, regexp) = regexp_intrinsics(&mut b, object_prototype)?;
+    regexp_symbol_intrinsics(&mut b, regexp, regexp_prototype, string_prototype)?;
     let bigint_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
         object_prototype,
     ))))?;
@@ -2316,26 +2314,6 @@ fn regexp_intrinsics(
         &[("prototype", prototype, PropertyFlags::FIXED)],
     )?;
     b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
-    promise_species(b, constructor)?;
-    for (name, which) in [
-        ("match", Builtin::RegExpMatch),
-        ("matchAll", Builtin::RegExpMatchAll),
-        ("search", Builtin::RegExpSearch),
-        ("replace", Builtin::RegExpReplace),
-        ("split", Builtin::RegExpSplit),
-    ] {
-        let f = b.function(which, &[])?;
-        let key = b
-            .heap
-            .keys()
-            .intern_symbol(&crate::value::symbol::well_known(name))?;
-        b.heap
-            .with_object_mut(prototype, |o| match o {
-                HeapObject::Plain(o) => o.define_with(key, Value::Object(f), PropertyFlags::METHOD),
-                _ => false,
-            })?
-            .then_some(())?;
-    }
     for (name, which) in [
         ("exec", Builtin::RegExpExec),
         ("test", Builtin::RegExpTest),
@@ -2371,6 +2349,46 @@ fn regexp_intrinsics(
         }
     }
     Some((prototype, constructor))
+}
+
+// First-use realm initialization also runs deep inside JSON-module native
+// frames on 64 KiB workers. Do not grow the base RegExp registration frame.
+#[inline(never)]
+fn regexp_symbol_intrinsics(
+    b: &mut Build<'_>,
+    constructor: ObjectId,
+    prototype: ObjectId,
+    string: ObjectId,
+) -> Option<()> {
+    promise_species(b, constructor)?;
+    for (name, which) in [
+        ("match", Builtin::RegExpMatch),
+        ("matchAll", Builtin::RegExpMatchAll),
+        ("search", Builtin::RegExpSearch),
+        ("replace", Builtin::RegExpReplace),
+        ("split", Builtin::RegExpSplit),
+    ] {
+        let f = b.function(which, &[])?;
+        let key = b
+            .heap
+            .keys()
+            .intern_symbol(&crate::value::symbol::well_known(name))?;
+        b.heap
+            .with_object_mut(prototype, |o| match o {
+                HeapObject::Plain(o) => o.define_with(key, Value::Object(f), PropertyFlags::METHOD),
+                _ => false,
+            })?
+            .then_some(())?;
+    }
+    for which in [
+        Builtin::StringMatch,
+        Builtin::StringMatchAll,
+        Builtin::StringPrototypeSearch,
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(string, which.name(), method, PropertyFlags::METHOD)?;
+    }
+    Some(())
 }
 
 #[inline(never)]
