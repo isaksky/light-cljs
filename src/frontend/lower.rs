@@ -3291,9 +3291,12 @@ impl<'s> Lowerer<'s> {
             StmtKind::ForIn { head, object, body } => {
                 self.for_in_statement(head, object, body, span)?
             }
-            StmtKind::ForOf { head, object, body } => {
-                self.for_of_statement(head, object, body, span)?
-            }
+            StmtKind::ForOf {
+                asynchronous,
+                head,
+                object,
+                body,
+            } => self.for_of_statement(head, object, body, span, *asynchronous)?,
             StmtKind::Throw(e) => {
                 self.expr(e)?;
                 self.out().op(Opcode::Throw, span);
@@ -4040,6 +4043,7 @@ impl<'s> Lowerer<'s> {
         object: &Expr,
         body: &Stmt,
         span: Span,
+        asynchronous: bool,
     ) -> Result<(), SyntaxError> {
         if let ForInHead::Var(name, _) = head {
             self.check_var_not_shadowed(name)?;
@@ -4073,7 +4077,13 @@ impl<'s> Lowerer<'s> {
         let result = self.temp(span)?;
         let in_body = self.temp(span)?;
         let suppress = self.temp(span)?;
-        self.iterator_acquire(object, it, next, span)?;
+        // A separate outer handler releases protocol roots even when acquisition,
+        // next/done/value, or the close handler throws or returns from the frame.
+        let cleanup = self.out().label();
+        self.out().branch(Opcode::PushFinally, cleanup, span);
+        self.cur_mut().exits.push(Exit::Finally);
+        self.expr(object)?;
+        self.iterator_acquire_value_mode(it, next, span, asynchronous)?;
         let start = self.out().label();
         let exhausted = self.out().label();
         let close = self.out().label();
@@ -4082,7 +4092,9 @@ impl<'s> Lowerer<'s> {
         self.out().bind(start);
         self.constant(Primitive::Bool(false), span)?;
         self.out().op_u16(Opcode::SetLocal, in_body, span);
-        self.iterator_step(it, next, result, exhausted, span)?;
+        self.iterator_advance_mode(it, next, result, exhausted, span, asynchronous)?;
+        self.out().op_u16(Opcode::GetLocal, result, span);
+        self.iterator_field("value", span)?;
         self.out().op_u16(Opcode::SetLocal, result, span);
         self.constant(Primitive::Bool(true), span)?;
         self.out().op_u16(Opcode::SetLocal, in_body, span);
@@ -4094,6 +4106,7 @@ impl<'s> Lowerer<'s> {
         });
         let resources = match head {
             ForInHead::Lexical(LexicalKind::Using, name) => vec![(name.span, false)],
+            ForInHead::Lexical(LexicalKind::AwaitUsing, name) => vec![(name.span, true)],
             _ => Vec::new(),
         };
         // The per-iteration disposal handler is inside IteratorClose, and
@@ -4101,35 +4114,7 @@ impl<'s> Lowerer<'s> {
         // exits dispose before closing the iterator. Validation failures are
         // already consumer failures (`in_body` is true).
         self.disposable_scope(&resources, span, |this| {
-            this.renew_iteration_cells(&pattern_cells, span);
-            if let Some(slot) = cell {
-                this.out().op(Opcode::NewCell, span);
-                this.out().op(Opcode::Dup, span);
-                this.out().op_u16(Opcode::SetLocal, slot, span);
-            }
-            this.out().op_u16(Opcode::GetLocal, result, span);
-            match head {
-                ForInHead::Pattern(kind, target) => {
-                    this.pattern_store(target, kind.is_some(), false)?
-                }
-                ForInHead::Assignment(target) => this.pattern_store(target, false, false)?,
-                ForInHead::Lexical(kind, name) => {
-                    if *kind == LexicalKind::Using {
-                        this.register_disposable(name.span)?;
-                    }
-                    let b = this.initialize(name)?;
-                    match b.repr {
-                        Repr::Cell => this.out().op(Opcode::CellInit, name.span),
-                        Repr::Value => this.out().op_u16(Opcode::SetLocal, b.slot, name.span),
-                    }
-                }
-                ForInHead::Binding(name) | ForInHead::Var(name, _) => {
-                    let access = this.resolve_reference(&name.name);
-                    this.store(access, name.span)?;
-                    this.out().op(Opcode::Pop, name.span);
-                }
-                ForInHead::Member(target) => this.for_member_store(target)?,
-            }
+            this.for_of_binding(head, &pattern_cells, cell, result, span)?;
             this.statement(body)
         })?;
         self.cur_mut().exits.pop();
@@ -4150,7 +4135,7 @@ impl<'s> Lowerer<'s> {
         let caught = self.out().label();
         self.out().branch(Opcode::PushCatch, caught, span);
         self.out().bind(run_close);
-        self.iterator_close(it, result, span)?;
+        self.iterator_close_mode(it, result, span, asynchronous)?;
         self.out().op_u16(Opcode::GetLocal, suppress, span);
         self.out().branch(Opcode::JumpIfFalse, finished, span);
         self.out().op(Opcode::PopCatch, span);
@@ -4160,12 +4145,58 @@ impl<'s> Lowerer<'s> {
         self.out().bind(finished);
         self.out().op(Opcode::EndFinally, span);
         self.out().bind(end);
-        for slot in [it, next, result] {
+        self.out().op(Opcode::PopFinally, span);
+        self.out().bind(cleanup);
+        for slot in [it, next, result, in_body, suppress] {
             self.out().op(Opcode::Undefined, span);
             self.out().op_u16(Opcode::SetLocal, slot, span);
         }
+        self.out().op(Opcode::EndFinally, span);
+        self.cur_mut().exits.pop();
         self.cur_mut().scopes.pop();
         self.cur_mut().next_slot = saved_slot;
+        Ok(())
+    }
+
+    /// Keep binding scratch state off the recursive loop-body compiler stack.
+    #[inline(never)]
+    fn for_of_binding(
+        &mut self,
+        head: &ForInHead,
+        pattern_cells: &[u16],
+        cell: Option<u16>,
+        result: u16,
+        span: Span,
+    ) -> Result<(), SyntaxError> {
+        self.renew_iteration_cells(pattern_cells, span);
+        if let Some(slot) = cell {
+            self.out().op(Opcode::NewCell, span);
+            self.out().op(Opcode::Dup, span);
+            self.out().op_u16(Opcode::SetLocal, slot, span);
+        }
+        self.out().op_u16(Opcode::GetLocal, result, span);
+        match head {
+            ForInHead::Pattern(kind, target) => {
+                self.pattern_store(target, kind.is_some(), false)?
+            }
+            ForInHead::Assignment(target) => self.pattern_store(target, false, false)?,
+            ForInHead::Lexical(kind, name) => {
+                if matches!(kind, LexicalKind::Using | LexicalKind::AwaitUsing) {
+                    self.register_disposable(name.span)?;
+                }
+                let b = self.initialize(name)?;
+                match b.repr {
+                    Repr::Cell => self.out().op(Opcode::CellInit, name.span),
+                    Repr::Value => self.out().op_u16(Opcode::SetLocal, b.slot, name.span),
+                }
+            }
+            ForInHead::Binding(name) | ForInHead::Var(name, _) => {
+                let access = self.resolve_reference(&name.name);
+                self.store(access, name.span)?;
+                self.out().op(Opcode::Pop, name.span);
+            }
+            ForInHead::Member(target) => self.for_member_store(target)?,
+        }
         Ok(())
     }
 
@@ -4196,7 +4227,24 @@ impl<'s> Lowerer<'s> {
         next: u16,
         span: Span,
     ) -> Result<(), SyntaxError> {
-        self.out().op(Opcode::GetIterator, span);
+        self.iterator_acquire_value_mode(it, next, span, false)
+    }
+
+    fn iterator_acquire_value_mode(
+        &mut self,
+        it: u16,
+        next: u16,
+        span: Span,
+        asynchronous: bool,
+    ) -> Result<(), SyntaxError> {
+        self.out().op(
+            if asynchronous {
+                Opcode::GetAsyncIterator
+            } else {
+                Opcode::GetIterator
+            },
+            span,
+        );
         self.out().op(Opcode::Dup, span);
         self.iterator_field("next", span)?;
         self.out().op_u16(Opcode::SetLocal, next, span);
@@ -4383,9 +4431,24 @@ impl<'s> Lowerer<'s> {
         done: usize,
         span: Span,
     ) -> Result<(), SyntaxError> {
+        self.iterator_advance_mode(it, next, result, done, span, false)
+    }
+
+    fn iterator_advance_mode(
+        &mut self,
+        it: u16,
+        next: u16,
+        result: u16,
+        done: usize,
+        span: Span,
+        asynchronous: bool,
+    ) -> Result<(), SyntaxError> {
         self.out().op_u16(Opcode::GetLocal, it, span);
         self.out().op_u16(Opcode::GetLocal, next, span);
         self.out().op_u16(Opcode::CallMethod, 0, span);
+        if asynchronous {
+            self.out().op(Opcode::Await, span);
+        }
         self.out().op(Opcode::RequireObject, span);
         self.out().op_u16(Opcode::SetLocal, result, span);
         self.out().op_u16(Opcode::GetLocal, result, span);

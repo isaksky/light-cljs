@@ -1467,3 +1467,12 @@ Delegated return completion handling also follows ECMAScript
 and [AsyncGeneratorUnwrapYieldResumption](https://tc39.es/ecma262/multipage/control-abstraction-objects.html#sec-asyncgeneratorunwrapyieldresumption),
 consulted 2026-10-24: rejected return arguments become delegated throw
 completions, while values from completed delegate returns are preserved.
+
+## Async iteration statements (clj-quickjs-308)
+
+Consulted `research/quickjs/quickjs.c` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`: `js_parse_for_in_of`,
+`JS_GetIterator`, `OP_for_await_of_start` and `OP_for_await_of_next` for async
+protocol selection, loop heads and awaited advancement. Compiler changes,
+adapter argument forwarding and synthetic fixtures are independently written;
+no QuickJS source or test text is copied.

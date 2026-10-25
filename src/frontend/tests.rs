@@ -57,7 +57,6 @@ fn await_using_declarations() {
         "async function f() { if (true) await using x = r; }",
         "async function f() { switch (1) { case 1: await using x = r; } }",
         "async function f() { await\nusing x = r; }",
-        "async function f() { for (await using x of r) {} }",
     ] {
         assert!(parse_script(source).is_err(), "{source}");
     }
@@ -1289,8 +1288,19 @@ fn render_stmt(s: &Stmt) -> String {
                 render_stmt(body)
             )
         }
-        StmtKind::ForIn { head, object, body } | StmtKind::ForOf { head, object, body } => {
-            let keyword = if matches!(s.kind, StmtKind::ForOf { .. }) {
+        StmtKind::ForIn { head, object, body }
+        | StmtKind::ForOf {
+            head, object, body, ..
+        } => {
+            let keyword = if matches!(
+                s.kind,
+                StmtKind::ForOf {
+                    asynchronous: true,
+                    ..
+                }
+            ) {
+                "for-await-of"
+            } else if matches!(s.kind, StmtKind::ForOf { .. }) {
                 "for-of"
             } else {
                 "for-in"
@@ -1962,6 +1972,49 @@ fn for_using_of_heads() {
         let error = parse_script(source).expect_err(source);
         assert_eq!(error.kind, SyntaxErrorKind::Unsupported, "{source}");
     }
+}
+
+#[test]
+fn for_await_and_await_using_heads() {
+    for source in [
+        "async function f() { for await (const x of a) {} }",
+        "async function* f() { for await (let [x, ...r] of a) yield x; }",
+        "async function f() { for await (var x of a) {} }",
+        "async function f() { for await (async of a) {} }",
+        "async function f() { for await ((async) of a) {} }",
+        "async function f() { for (await using x of a) {} }",
+        "async function f() { for (await using of of a) {} }",
+        "async function f() { for await (await using x of a) {} }",
+        "async function f() { for await (using x of a) {} }",
+        "let f = async () => { for await (const x of a) {} };",
+        "({async f() { for (await using x of a) {} }})",
+        "class C { async f() { for await (const x of a) {} } }",
+        "async function f() { for\nawait (const x of a) {} }",
+    ] {
+        compile_script("async-iteration", source).unwrap_or_else(|e| panic!("{source}: {e}"));
+    }
+    for source in [
+        "for await (const x of a) {}",
+        "function f() { for await (const x of a) {} }",
+        "async function f() { function g() { for await (const x of a) {} } }",
+        "async function f() { for await (const x in a) {} }",
+        "async function f() { for await (;;) {} }",
+        "async function f() { for await (const x = 1 of a) {} }",
+        "async function f() { for await (let x, y of a) {} }",
+        "async function f() { for (await using x in a) {} }",
+        "async function f() { for (await using x = a; ;) {} }",
+        "async function f() { for (await using [x] of a) {} }",
+        "async function f() { for (await using {x} of a) {} }",
+        "async function f() { for (await\nusing x of a) {} }",
+        "async function f() { for (await using\nx of a) {} }",
+    ] {
+        assert!(
+            compile_script("async-iteration", source).is_err(),
+            "{source}"
+        );
+    }
+    assert!(super::parse_module("for await (const x of a) {}").is_err());
+    assert!(super::parse_module("for (await using x of a) {}").is_err());
 }
 
 #[test]
@@ -5625,6 +5678,18 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         // For-in heads (clj-quickjs-85).
         ("for-in", |n| format!("{}x;", "for (let k in o) ".repeat(n))),
         ("for-of", |n| format!("{}x;", "for (let k of o) ".repeat(n))),
+        ("for-await-of", |n| {
+            format!(
+                "async function f() {{ {}x; }}",
+                "for await (let k of o) ".repeat(n)
+            )
+        }),
+        ("for-await-using-of", |n| {
+            format!(
+                "async function f() {{ {}x; }}",
+                "for (await using k of o) ".repeat(n)
+            )
+        }),
         ("for-in with targets", |n| {
             format!("{}x;", "for ((k) in (a, b)) ".repeat(n))
         }),

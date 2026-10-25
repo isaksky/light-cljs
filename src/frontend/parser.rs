@@ -1156,7 +1156,12 @@ impl<'a> Parser<'a> {
                 body,
             },
             ForHead::In(head, object) => StmtKind::ForIn { head, object, body },
-            ForHead::Of(head, object) => StmtKind::ForOf { head, object, body },
+            ForHead::Of(head, object, asynchronous) => StmtKind::ForOf {
+                asynchronous,
+                head,
+                object,
+                body,
+            },
         })
     }
 
@@ -1238,18 +1243,67 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn parse_for_head(&mut self) -> PResult<ForHead> {
         let keyword = self.advance()?.span;
+        let asynchronous = self.is_keyword(Keyword::Await);
+        if asynchronous {
+            if !self.suspension.asynchronous || self.suspension.parameters {
+                return Err(self.unsupported(
+                    self.tok.span,
+                    "`for await` outside async function bodies is",
+                ));
+            }
+            self.advance()?;
+        }
+        let mut head = self.parse_for_head_inner(keyword, asynchronous)?;
+        if asynchronous {
+            match &mut head {
+                ForHead::Of(_, _, asynchronous) => *asynchronous = true,
+                _ => {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        keyword,
+                        "`for await` requires an `of` head",
+                    ));
+                }
+            }
+        }
+        Ok(head)
+    }
+
+    #[inline(never)]
+    fn parse_for_head_inner(&mut self, keyword: Span, asynchronous: bool) -> PResult<ForHead> {
         self.expect_punct(Punct::LParen)?;
         if self.is_keyword(Keyword::Await) && {
             let mut lookahead = self.lexer.clone();
             lookahead.next_token().is_ok_and(|next| {
                 matches!(&next.kind, TokenKind::Identifier(name) if name == "using")
                     && next.span.text(self.src) == "using"
+                    && !next.newline_before
             }) && lookahead.next_token().is_ok_and(|next| {
                 !next.newline_before
-                    && matches!(&next.kind, TokenKind::Identifier(name) if name != "of")
+                    && (matches!(&next.kind, TokenKind::Identifier(_))
+                        || matches!(next.kind, TokenKind::Punct(Punct::LBrace))
+                        || (matches!(next.kind, TokenKind::Punct(Punct::LBracket))
+                            && self
+                                .using_array_tail()
+                                .is_some_and(|tail| tail.span.text(self.src) == "of")))
             })
         } {
-            return Err(self.unsupported(self.tok.span, "`for (await using ...)` heads are"));
+            let start = self.advance()?.span;
+            if !self.suspension.asynchronous {
+                return Err(
+                    self.unsupported(start, "`for (await using ...)` outside async functions is")
+                );
+            }
+            self.advance()?; // contextual `using`
+            let name = self.parse_binding_identifier("an await using binding name")?;
+            if !self.is_of() {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    start,
+                    "await using iteration declarations require `of` without an initializer",
+                ));
+            }
+            return self.parse_for_of_rest(ForInHead::Lexical(LexicalKind::AwaitUsing, name));
         }
         // `of` immediately after contextual `using` is the separator of an
         // assignment head. A declaration requires a same-line binding name.
@@ -1366,7 +1420,7 @@ impl<'a> Parser<'a> {
                     return self.parse_for_in_rest(head);
                 }
                 if self.is_of() {
-                    if init.span.text(self.lexer.source()) == "async" {
+                    if !asynchronous && init.span.text(self.lexer.source()) == "async" {
                         return Err(self.error(
                             SyntaxErrorKind::Invalid,
                             init.span,
@@ -1430,7 +1484,7 @@ impl<'a> Parser<'a> {
         self.advance()?;
         let object = self.parse_assignment()?;
         self.expect_punct(Punct::RParen)?;
-        Ok(ForHead::Of(head, object))
+        Ok(ForHead::Of(head, object, false))
     }
 
     /// The current token is an `in` after a later declarator or an
@@ -4431,7 +4485,7 @@ enum ForHead {
     Classic(Option<ForInit>, Option<Expr>, Option<Expr>),
     /// `(head in object)`
     In(ForInHead, Expr),
-    Of(ForInHead, Expr),
+    Of(ForInHead, Expr, bool),
 }
 
 /// What an identifier target is used for (it selects the diagnostics).

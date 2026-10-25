@@ -4088,7 +4088,7 @@ rejection; a directly throwing async disposer continues immediately
 (clj-quickjs-285). Cleanup awaits during consumer cancellation end that scope's
 cleanup under the existing finally rules.
 
-Deferred: classic for-using heads, `for (await using x of iterable)`, module
+Deferred: classic for-using heads and module
 top-level await using (top-level await is absent).
 Script top level, switch clauses without a block, single-statement bodies,
 binding patterns and missing initializers are syntax errors.
@@ -4250,7 +4250,7 @@ Synthetic fixture, not light-cljs output.
 CARGO_BUILD_JOBS=3 cargo test --test exceptions quickjs_using -- --test-threads=3
 ```
 
-Deferred: intrinsic property mutation, `for (await using ... of ...)` and module
+Deferred: intrinsic property mutation and module
 top-level await remain outside the supported subset.
 
 ### Proxy enumeration (clj-quickjs-91)
@@ -4329,7 +4329,7 @@ repeat/search predicates (-300) and match/matchAll/search with RegExp symbol
 dispatch (-301), Boolean and BigInt wrappers (-302), the plain RegExp `i` flag
 (-303), Script property escapes (-304), v-flag string properties (-305),
 NumberFormat unit style (-306), DateTimeFormat timeZoneName (-307),
-`for await` (-308), built-in subclassing (-309), `Symbol.toPrimitive`
+built-in subclassing (-309), `Symbol.toPrimitive`
 dispatch, which today silently yields NaN (-310), `Object.prototype.toString`
 tags (-311), eval SyntaxError stacks (-312), async generators (-313), `??` and
 logical assignment (-314), rest parameters/object spread/destructuring loop
@@ -4468,7 +4468,7 @@ capabilities, handlers and native work are GC edges; neither generator objects
 nor saved activations may be published to another task. Promise settlement from
 another task queues resumption for the owning task. All steps use the existing
 instruction budget and VM limits; no separate request-count limit is imposed.
-`for await...of` remains outside this feature (clj-quickjs-308).
+`for await...of` executes through the same protocol drivers (clj-quickjs-308).
 
 Verification: `CARGO_BUILD_JOBS=3 cargo test --test async_generators -- --test-threads=3`.
 These synthetic fixtures (not light-cljs output) collect at every budget yield,
@@ -4498,3 +4498,24 @@ rejected with TypeError, as is reading another task's private receiver. Built-in
 subclassing and static blocks remain separate work.
 
 Verify: `CARGO_BUILD_JOBS=3 cargo test --test js_source private_class -- --test-threads=3`.
+
+### Async iteration statements (clj-quickjs-308)
+
+Async functions, arrows, methods and async generators support `for await (... of
+iterable)`. Acquisition prefers `Symbol.asyncIterator`, then adapts a synchronous
+iterator with the existing private CreateAsyncFromSyncIterator drivers. Each
+`next()` result is awaited before reading `done` and `value`; sync fallback also
+awaits values. Lexical, var, assignment and destructuring heads use the existing
+iteration binding semantics. `for (await using x of iterable)` and `for await
+(await using x of iterable)` await disposal per iteration, including continue.
+
+Break, return, throw and exits to outer labels dispose resources before awaiting
+AsyncIteratorClose. A pending throw wins over close errors; failures in
+next/done/value do not close. Protocol locals are cleared on every exit, even
+when closing fails. All operations use traced task-owned VM state, existing
+budgets and existing VM limits; no new worker-selected limit is imposed.
+Module top-level await and property-reference for-of heads remain deferred.
+
+Validation: `CARGO_BUILD_JOBS=3 cargo test --test async_iteration --test
+async_generators -- --test-threads=3`, plus `for_await_` cases in `gc_roots` and
+`exception_waits` (collection, dependency suspension and 64 KiB worker migration).

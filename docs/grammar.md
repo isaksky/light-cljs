@@ -538,7 +538,8 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 |------|------|
 | `using` declarations at script top level (strict or sloppy), directly in a `case`/`default` clause, as a single-statement body, with binding patterns or without initializers (clj-quickjs-236) | Invalid at `using` |
 | `for (using x in o)`, `for (using [x] of a)`, `for (using {x} of a)` (clj-quickjs-238) | Invalid at `using` |
-| classic `for (using x = r; ;)` and `for (await using x of a)` heads | Unsupported at `using` / `await` |
+| classic `for (using x = r; ;)` heads | Unsupported at `using` |
+| `for await` or `for (await using ... of ...)` outside async functions | Unsupported at `await`; module top-level await is absent |
 | a property as a for-of target (`for (a.b of o)`), `debugger` | Unsupported |
 | `with` in strict code (clj-quickjs-110) | Invalid at `with` |
 | `await using` outside async functions, including module top level; patterns, missing initializers, switch clauses or single-statement bodies | SyntaxError (Invalid or Unsupported according to the rejected token) |
@@ -574,8 +575,8 @@ object, number, string and symbol environments execute (clj-quickjs-110).
 
 Synchronous `using` executes in blocks, function bodies, module top level and
 for-of heads; DisposableStack, AsyncDisposableStack and `await using` in async
-functions are supported. Classic for-using heads,
-`for (await using x of iterable)` and module top-level await using remain
+functions and iteration heads are supported. Classic for-using heads
+and module top-level await using remain
 unsupported; top-level await is absent.
 
 The QuickJS collection fixture cases run with their original source except
@@ -6570,8 +6571,7 @@ rejected promise with TypeError. Other validation follows DisposableStack.
 Disposal continues after synchronous throws and promise rejections, combining
 errors through intrinsic SuppressedError and rejecting with the final error.
 Publication rejects both stack brands as task-owned values, even after disposal.
-Rejected forms and explicit gaps: no additional syntax is accepted;
-for-await-using heads and module top-level await using remain unsupported.
+Rejected forms and explicit gaps: module top-level await using remains unsupported.
 Realm intrinsics remain immutable.
 
 Synthetic fixtures, not light-cljs output:
@@ -6739,8 +6739,7 @@ establish async assertion success.
 `SuppressedError.prototype.constructor` writes in TypeError assertions, keeping
 all original assertions and expected values. This follows the recorded decision
 to keep realm intrinsics immutable; the fixture header lists both adaptations.
-Explicit gaps remain: intrinsic property mutation, `for (await using ... of ...)`
-and module top-level await. No new grammar examples or accepted forms are added.
+Explicit gaps remain: intrinsic property mutation and module top-level await.
 
 ### Proxy enumeration (clj-quickjs-91)
 
@@ -6784,7 +6783,7 @@ are thrown at the saved await/yield site. `yield*` supports async iterators and
 sync iterators through CreateAsyncFromSyncIterator, including return/throw
 forwarding and iterator closing. `Symbol.asyncIterator` is a well-known symbol.
 Async generator execution is no longer an Unsupported compilation error.
-Async iteration statements remain a separate feature (clj-quickjs-308).
+Async iteration statements execute as described below (clj-quickjs-308).
 
 ## Private class names (clj-quickjs-291)
 
@@ -6834,4 +6833,52 @@ counter.next() === 2 && Counter.has(counter) && !Counter.has({});
 
 ```js reject Invalid 1:21
 class C { #x; m() { delete this.#x; } }
+```
+
+
+### Async iteration statements (clj-quickjs-308)
+
+Within async function, arrow, method and async generator bodies, `for await
+(head of expression)` executes with async iteration. Heads support the same
+lexical, var, identifier assignment and destructuring forms as synchronous
+for-of. Acquisition prefers `Symbol.asyncIterator` and uses
+CreateAsyncFromSyncIterator when the async method is nullish. The next method
+is cached once. Each call supplies no arguments and its result is awaited and
+validated as an object before reading `done` and, unless done, `value`. Async
+iterator values are preserved; the sync adapter awaits its values.
+
+`for (await using name of iterable)` iterates synchronously and awaits disposal
+at each iteration boundary. `for await (await using name of iterable)` combines
+async iteration and async disposal; `for await (using name of iterable)` uses
+synchronous disposal. All using heads require one binding identifier without an
+initializer. Own-loop continue disposes without closing the iterator. Break,
+return, throw and outer-label exits dispose before closing; async iteration
+awaits `return()` and requires an object result. Pending throws take precedence
+over closing errors. Next-call, await, done and value failures do not close the
+async iterator; the sync adapter itself closes on rejected values. Protocol
+locals are cleared on every exit, including close failures.
+
+For-await requires an `of` head and an async body context. Module top-level
+await remains unsupported. Property-reference for-of assignment heads retain
+the existing Unsupported diagnostic. Existing instruction budgets, frame and
+heap limits apply, without a new iteration limit.
+
+```js accept
+async function sum(values) {
+  let total = 0;
+  for await (const x of values) total += x;
+  return total;
+}
+async function resources(values) {
+  for (await using resource of values) { await null; }
+  for await (await using resource of values) { break; }
+}
+```
+
+```js reject Invalid 1:22
+async function f() { for await (const x in a) {} }
+```
+
+```js reject Unsupported 1:5
+for await (const x of a) {}
 ```

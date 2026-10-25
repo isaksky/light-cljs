@@ -2352,3 +2352,98 @@ fn primitive_wrapper_conversion_cancellation_discards_nested_natives() {
         );
     }
 }
+
+#[test]
+fn for_await_using_protocol_waits_collect_and_migrate() {
+    let rt = Runtime::new();
+    // Initialize shared intrinsics before executing on a small worker stack.
+    spawn(&rt, "Object").run().unwrap();
+    let mut task = spawn(
+        &rt,
+        r#"
+        (async () => {
+            let it = {
+                [Symbol.asyncIterator]() { __rt.effect(1, 10); __rt.need(10, 3); return this; },
+                get next() {
+                    __rt.effect(1, 11); __rt.need(11, 3);
+                    return function() {
+                        __rt.effect(1, 12); __rt.need(12, 3);
+                        return {then(resolve) {
+                            __rt.effect(1, 13); __rt.need(13, 3);
+                            resolve({done: false, value: {
+                                get [Symbol.asyncDispose]() {
+                                    __rt.effect(1, 14); __rt.need(14, 3);
+                                    return async function() {
+                                        await null;
+                                        __rt.effect(1, 15); __rt.need(15, 3);
+                                    };
+                                }
+                            }});
+                        }};
+                    };
+                },
+                get return() {
+                    __rt.effect(1, 16); __rt.need(16, 3);
+                    return async function() {
+                        await null; __rt.effect(1, 17); __rt.need(17, 3); return {};
+                    };
+                }
+            };
+            for await (await using x of it) {
+                __rt.effect(1, 18); __rt.need(18, 3); break;
+            }
+        })().then(() => __rt.effect(1, 99));
+        42;
+    "#,
+    );
+    let expected = [10, 11, 12, 13, 14, 18, 15, 16, 17];
+    let mut log = Log::default();
+    let mut waits = 0;
+    for _ in 0..3000 {
+        let (outcome, next_log) = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn({
+                let task = task.clone();
+                move || {
+                    let outcome = task.run_with(Budget::instructions(3), &mut log).unwrap();
+                    (outcome, log)
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        log = next_log;
+        rt.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(dependency) => {
+                assert!(waits < expected.len());
+                assert_eq!(
+                    dependency,
+                    key(
+                        &rt,
+                        (DependencyId::new(expected[waits]), ResultKind::new(3))
+                    )
+                );
+                assert_eq!(
+                    log.0,
+                    expected[..=waits]
+                        .iter()
+                        .map(|n| *n as f64)
+                        .collect::<Vec<_>>()
+                );
+                waits += 1;
+                task = publish(&rt, &task, 0.0);
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Number(42.0));
+                assert_eq!(waits, expected.len());
+                assert_eq!(log.0.last(), Some(&99.0));
+                assert!(task.unhandled_rejections().entries.is_empty());
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("fixture exceeded instruction bound");
+}

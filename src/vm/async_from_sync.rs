@@ -75,9 +75,21 @@ fn driver(kind: ResumeKind) -> Executable {
         }
         a.bind(found);
     }
+    // Omitted arguments stay omitted, including AsyncIteratorClose's return().
+    // A supplied undefined is still forwarded as one argument by yield*.
+    let no_argument = a.label();
+    let called = a.label();
+    a.op(Opcode::NewArguments)
+        .constant(Primitive::String("length".into()))
+        .op(Opcode::GetElem)
+        .jump_if_false(no_argument);
     a.get_capture(0).get_local(1).get_local(0);
     method_call(&mut a, 1);
-    a.op(Opcode::RequireObject)
+    a.jump(called).bind(no_argument);
+    a.get_capture(0).get_local(1);
+    method_call(&mut a, 0);
+    a.bind(called)
+        .op(Opcode::RequireObject)
         .set_local(2)
         .get_local(2)
         .constant(Primitive::String("done".into()))

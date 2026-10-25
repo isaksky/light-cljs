@@ -2209,3 +2209,79 @@ fn intl_date_time_format_bound_cache_retains_and_reclaims() {
         assert_eq!(rt.heap_usage().objects.plain, 59);
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Protocol records must release
+/// their source while the async activation remains alive in an outer scope.
+#[test]
+fn for_await_abrupt_exit_releases_iterator() {
+    for protocol in ["asyncIterator", "iterator"] {
+        for (case, body) in [
+            (
+                "break",
+                "for await (const x of iterable) { o = 0; __rt.need(9, 1); break; }",
+            ),
+            (
+                "throw",
+                "try { for await (const x of iterable) { o = 0; __rt.need(9, 1); throw 1; } } catch(e) { if (e !== 1) throw e; }",
+            ),
+            (
+                "outer continue",
+                "out: for (let n = 0; n < 1; n++) { for await (const x of iterable) { o = 0; __rt.need(9, 1); continue out; } }",
+            ),
+            (
+                "return",
+                "try { for await (const x of iterable) { o = 0; __rt.need(9, 1); return; } } finally { __rt.need(10, 1); }",
+            ),
+            (
+                "exhaustion",
+                "for await (const x of iterable) { o = 0; __rt.need(9, 1); continue; }",
+            ),
+            (
+                "close failure",
+                "try { for await (const x of iterable) { o = 0; __rt.need(9, 1); break; } } catch(e) { if (e !== 2) throw e; }",
+            ),
+        ] {
+            let source = format!(
+                "function f(o) {{ (async () => {{
+                    function iterable() {{ return {{
+                        keep: o, n: 0,
+                        [Symbol.{protocol}]() {{ return this; }},
+                        next() {{ return {{value: 0, done: this.n++ > 0}}; }},
+                        return() {{ {} return {{}}; }}
+                    }}; }}
+                    // Only the protocol record holds the source after acquisition.
+                    {body}
+                    __rt.need(10, 1);
+                }})(); return true; }}",
+                if case == "close failure" {
+                    "throw 2;"
+                } else {
+                    ""
+                }
+            )
+            .replace("of iterable)", "of iterable())");
+            let rt = Runtime::new();
+            let (task, weak) = spawn_holding(&rt, &source);
+            assert!(
+                matches!(task.run().unwrap(), RunOutcome::Waiting(k) if k == key(&rt, 9)),
+                "{protocol}/{case}"
+            );
+            rt.collect().unwrap();
+            assert_live(std::slice::from_ref(&weak));
+            complete_requests(&rt, &task);
+            assert!(
+                matches!(task.run().unwrap(), RunOutcome::Waiting(k) if k == key(&rt, 10)),
+                "{protocol}/{case}"
+            );
+            rt.collect().unwrap();
+            assert!(
+                !weak.is_live(),
+                "{protocol}/{case}: abandoned iterator retained its source"
+            );
+            assert_stale(&rt, std::slice::from_ref(&weak));
+            complete_requests(&rt, &task);
+            assert_eq!(run_to_end(&task).view(), ValueView::Bool(true));
+            assert!(task.unhandled_rejections().entries.is_empty());
+        }
+    }
+}

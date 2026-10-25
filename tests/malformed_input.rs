@@ -289,9 +289,9 @@ fn rejected_forms_fail_with_documented_kinds() {
         ("for (using [x] of a) {}", STRICT, Invalid),
         ("for (using x = r; ;) {}", STRICT, Unsupported),
         (
-            "async function f() { for (await using x of a) {} }",
+            "async function f() { for (await using x = a; ;) {} }",
             STRICT,
-            Unsupported,
+            Invalid,
         ),
         ("await using x = r;", STRICT, Unsupported),
         // statements outside the subset

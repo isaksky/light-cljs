@@ -166,7 +166,10 @@ impl Stmt {
                     .max(update.as_ref().map_or(0, |e| e.height))
                     .max(body.height)
             }
-            StmtKind::ForIn { head, object, body } | StmtKind::ForOf { head, object, body } => {
+            StmtKind::ForIn { head, object, body }
+            | StmtKind::ForOf {
+                head, object, body, ..
+            } => {
                 let target = match head {
                     ForInHead::Member(target) => target.height,
                     ForInHead::Var(_, Some(init)) => init.height,
@@ -263,8 +266,9 @@ pub enum StmtKind {
         object: Expr,
         body: Box<Stmt>,
     },
-    /// Synchronous iteration; heads share the for-in binding representation.
+    /// Iteration; heads share the for-in binding representation.
     ForOf {
+        asynchronous: bool,
         head: ForInHead,
         object: Expr,
         body: Box<Stmt>,
