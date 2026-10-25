@@ -551,6 +551,7 @@ impl VmState {
     }
 
     fn replace_activation(&mut self, mut next: Self) {
+        next.random_state = self.random_state;
         next.module_link = self.module_link.take();
         next.sim_host = self.sim_host.take();
         next.jobs = self.jobs.clone();

@@ -2,6 +2,7 @@
 use clj_quickjs::{
     Budget, Completion, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView,
     frontend::compile_script,
+    module::{ModuleHost, ModuleKey, ModuleLoader, ModuleSource},
 };
 
 struct NoEffects;
@@ -224,6 +225,111 @@ fn math_random_is_task_local_and_deterministic() {
     values.sort_unstable();
     values.dedup();
     assert_eq!(values.len(), 16);
+}
+
+#[test]
+fn math_random_stream_survives_activation_replacement() {
+    #[derive(Default)]
+    struct Effects(Vec<Primitive>);
+    impl Host for Effects {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+
+    fn run(rt: &Runtime, mut task: clj_quickjs::Task, budget: Budget) -> Vec<Primitive> {
+        let mut host = Effects::default();
+        for _ in 0..2000 {
+            let (next, effects, result) = std::thread::spawn(move || {
+                let result = task.run_with(budget, &mut host).unwrap();
+                (task, host, result)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            host = effects;
+            match result {
+                RunOutcome::Complete(_) => return host.0,
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        panic!("random stream task did not complete");
+    }
+
+    let rt = Runtime::new();
+    let regression = compile_script(
+        "random-reaction.js",
+        "let a=Math.random(); Promise.resolve().then(()=>__rt.effect(0,Math.random()===a));",
+    )
+    .unwrap();
+    assert_eq!(
+        run(&rt, rt.spawn(&regression, &[]).unwrap(), Budget::UNLIMITED),
+        [Primitive::Bool(false)]
+    );
+
+    let reference = compile_script(
+        "random-reference.js",
+        "for(let i=0; i<6; i++) __rt.effect(0, Math.random());",
+    )
+    .unwrap();
+    let expected = run(&rt, rt.spawn(&reference, &[]).unwrap(), Budget::UNLIMITED);
+    assert_eq!(expected.len(), 6);
+
+    const JOBS: &str = "Promise.resolve().then(() => __rt.effect(0, Math.random()));
+        Promise.resolve().then((function() { __rt.effect(0, Math.random()); }).bind(null));";
+    let script = compile_script(
+        "random-jobs.js",
+        &format!("for(let i=0; i<4; i++) __rt.effect(0, Math.random()); {JOBS}"),
+    )
+    .unwrap();
+
+    struct Modules;
+    impl ModuleHost for Modules {
+        fn resolve(
+            &mut self,
+            specifier: &clj_quickjs::JsString,
+            _: Option<ModuleKey>,
+        ) -> Result<ModuleKey, String> {
+            match specifier.to_string_lossy().as_str() {
+                "entry.js" => Ok(ModuleKey::new(0)),
+                "dep.js" => Ok(ModuleKey::new(1)),
+                _ => Err("unknown module".into()),
+            }
+        }
+
+        fn fetch(&mut self, key: ModuleKey) -> Result<ModuleSource, String> {
+            let draws = "__rt.effect(0, Math.random()); __rt.effect(0, Math.random());";
+            if key == ModuleKey::new(0) {
+                Ok(ModuleSource::from_name(
+                    "entry.js".into(),
+                    format!("import 'dep.js'; {draws} {JOBS}"),
+                ))
+            } else if key == ModuleKey::new(1) {
+                Ok(ModuleSource::from_name("dep.js".into(), draws.into()))
+            } else {
+                Err("unknown module".into())
+            }
+        }
+    }
+    let graph = ModuleLoader::new()
+        .load(rt.world(), &"entry.js".into(), &mut Modules)
+        .unwrap();
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        assert_eq!(
+            run(&rt, rt.spawn(&script, &[]).unwrap(), budget),
+            expected,
+            "Promise jobs, {budget:?}"
+        );
+        assert_eq!(
+            run(&rt, rt.spawn_module(&graph), budget),
+            expected,
+            "modules and Promise jobs, {budget:?}"
+        );
+    }
 }
 
 /// Exact binary64 pins from the system libm calls used by QuickJS's
