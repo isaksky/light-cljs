@@ -2042,7 +2042,7 @@ Supported (`cargo test --test js_source new_operator_constructs_objects`,
 
 Deferred:
 
-- Private class names and static initialization blocks. Derived classes,
+- Static initialization blocks. Private names execute (clj-quickjs-291). Derived classes,
   `super` and public fields execute (clj-quickjs-137..-139). Built-in constructors such as
   `new Number(1)`, `new String("abc")` (clj-quickjs-72), `instanceof`
   (clj-quickjs-75). Spread arguments execute (clj-quickjs-130).
@@ -3846,8 +3846,8 @@ construction of other built-in subclasses is explicitly rejected. Verify with
 `cargo test --test need derived_constructor_waits_inside_super`.
 
 Lexical super properties through arrows/direct eval and constructor super calls
-from direct eval execute (-112). Public fields execute (-139); private fields
-and static initialization blocks remain deferred.
+from direct eval execute (-112). Public fields execute (-139), as do private
+members (-291); static initialization blocks remain deferred.
 
 ### Intl.ListFormat (clj-quickjs-220)
 
@@ -4171,8 +4171,8 @@ names, omitted initializers and field ASI. Instance fields define own data
 properties before base constructor parameters or immediately after derived
 `super()`; static fields run after method installation and inner-name binding.
 Initializers, super access, arrows and direct eval retain their receiver/home
-context across waits, collection and worker migration. Private names and static
-initialization blocks remain explicitly rejected. See `docs/grammar.md`,
+context across waits, collection and worker migration. Private names execute
+(-291); static initialization blocks remain explicitly rejected. See `docs/grammar.md`,
 "Public class fields", for syntax, early errors and existing exotic-property gaps.
 
 ### JSON modules (clj-quickjs-256)
@@ -4226,7 +4226,7 @@ the original helpers, assertions and script modes; adapted rows: none.
 They are synthetic fixtures, not light-cljs output. Each case runs
 independently with bounded instruction slices and collection between slices.
 
-This adds fixture coverage for existing behavior. Private names, class static
+This adds fixture coverage for existing behavior. Private names execute (-291). Class static
 blocks, subclassing built-ins other than Object, generator `return()/throw()`
 and shared-object `Symbol.toPrimitive` dispatch remain outside this coverage.
 
@@ -4321,8 +4321,8 @@ out-of-range capture/local/constant indices or an unmatched run-time handler
 instruction is rejected by the validator or fails the task with `Internal`,
 never with a panic.
 
-Gaps found by the audit are filed as pellets, not fixed here: private names
-(clj-quickjs-291), static blocks (-292), generator `return`/`throw` (-293),
+Gaps found by the audit are filed as pellets, not fixed here. Private names now
+execute (clj-quickjs-291); remaining work includes static blocks (-292), generator `return`/`throw` (-293),
 `new Map(iterable)` (-294), Set/WeakSet (-295), Array.prototype mutators,
 search, callback and copying methods (-296 to -299), String.prototype case/trim/
 repeat/search predicates (-300) and match/matchAll/search with RegExp symbol
@@ -4348,7 +4348,7 @@ perform no write, even to constants or read-only properties. Identifier
 assignments infer anonymous function and class names. Property assignments
 do not infer names. Existing instruction budgets and traced VM references
 preserve execution across yields, waits and GC; no new limits or opcodes.
-Private names remain deferred.
+Private member logical assignments execute (clj-quickjs-291).
 
 Checks: `cargo test --test js_source logical_assignment`,
 `cargo test --test need logical_assignment`, and
@@ -4473,3 +4473,28 @@ instruction budget and VM limits; no separate request-count limit is imposed.
 Verification: `CARGO_BUILD_JOBS=3 cargo test --test async_generators -- --test-threads=3`.
 These synthetic fixtures (not light-cljs output) collect at every budget yield,
 check completion after jobs drain, and check activation reclamation afterward.
+
+### Private class names (clj-quickjs-291)
+
+Instance and static private fields, methods and accessors execute, including
+`#x in object`, calls, optional access, updates, destructuring stores and logical
+assignments. Each class evaluation creates fresh lexical private identities;
+nested classes shadow outer declarations, direct eval inherits the visible
+names, and indirect eval/Function do not. Undeclared names, duplicate declarations
+(other than a same-staticness getter/setter pair), `#constructor`, deletion and
+`super.#x` are early SyntaxErrors. Foreign receivers throw TypeError; a brand
+check on an unrelated object returns false, while primitive operands throw.
+
+Private elements are traced task-owned state, hidden from public reflection and
+Proxy traps. Freezing or preventing public extensions does not freeze private
+fields. Private methods/accessors install before field initializers. Existing
+constructor/initializer frames provide budgets, waits, GC and 64 KiB worker
+migration; no new recursion or element-count limit is introduced (existing
+65,535-local/capture and bytecode limits apply). Immutable private identities can
+be captured in publishable closures; receivers and class methods keep their
+existing task-owned publication restrictions. Adding private state to shared
+intrinsics, published functions, or runtime persistent/concurrent values is
+rejected with TypeError, as is reading another task's private receiver. Built-in
+subclassing and static blocks remain separate work.
+
+Verify: `CARGO_BUILD_JOBS=3 cargo test --test js_source private_class -- --test-threads=3`.

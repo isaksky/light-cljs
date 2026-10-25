@@ -8516,8 +8516,8 @@ references. No C code or upstream test text was adapted for these additions.
 method definition, including an omitted expression represented by `undefined`.
 The parser establishes an initializer context for strictness, super properties,
 new.target and the prohibition on arguments; ordinary nested functions/methods
-reset that context while arrows inherit it. Private names and static blocks
-retain their explicit rejection.
+reset that context while arrows inherit it. Private names execute (-291); static
+blocks retain their explicit rejection.
 
 Lowering evaluates every computed key once in class-definition order. Each
 field retains its converted key in an inaccessible class-scope binding cell.
@@ -8917,3 +8917,51 @@ queue and the suspended activation. The existing native continuation roots cover
 in-flight capabilities and resolver calls. Request queues have no independent
 fixed limit; existing heap allocation policy, VM frame/value limits and per-run
 instruction budgets apply.
+
+## Private class names (clj-quickjs-291)
+
+The lexer preserves PrivateIdentifier spellings with a leading `#` in a distinct
+token. The existing member AST uses that impossible ordinary identifier spelling;
+only class-element parsing admits it as an Identifier property name (a quoted
+`"#x"` is a separate String property name). Lowering predeclares the class's
+private names after heritage evaluation and emits one fresh `JsSymbol` per name
+per evaluation. The symbols never enter public property keys. Ordinary lexical
+capture and eval-site bindings preserve them through nested functions/classes
+and direct eval; name resolution bypasses with/variable environments. Immutable
+identities normally capture by value; eval follows the existing binding-cell
+policy. Duplicate private declarations are rejected before member emission.
+
+Separate private maps in OrdinaryObject and Proxy hold symbol-to-Property entries.
+OrdinaryObject's cold internal slots share a lazy boxed allocation with engine
+diagnostics, keeping its inline size unchanged for 64 KiB allocation paths.
+Function receivers use their existing task-owned property records, attached only
+under the publication exclusion in `writable_record`. Every map key, data value
+and accessor is traced. Public descriptors, own-key iteration, prototypes and
+integrity operations never consult these maps. Private accesses validate task
+ownership and fail with TypeError on foreign receivers; they never forward
+through a Proxy. Shared intrinsic/persistent/concurrent objects cannot acquire
+private mutable state. Receiver objects remain task-owned and private-name-only
+closures can publish when all their ordinary captures are shareable.
+
+Private method closures are created once with the usual class home object and
+retained in inaccessible class bindings. Instance/static initializer closures
+install their private methods/accessors before evaluating fields, preserving
+function identity between instances and existing base/derived construction
+ordering. Getter and setter calls use the existing traced PropertyCall native
+continuation; no JavaScript runs while the private map's leaf lock is held.
+
+Append-only opcodes 0xB7–0xBE implement fresh-name creation (string name operand),
+get, put, field/method/getter/setter definition, and private-in. Their stack effects,
+operand validation, serialization and allocation polls use the ordinary bytecode
+machinery. All other operations remain existing instructions; there is no new
+heap kind, dependency or worker-chosen limit. Synthetic coverage is in
+`tests/fixtures/js/private_classes.js` and `tests/js_source.rs` (`private_class`).
+QuickJS `quickjs.c` JS_DefinePrivateField, JS_GetPrivateField,
+JS_SetPrivateField, JS_AddBrand, js_operator_private_in and js_parse_class at
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` were semantic references;
+no upstream source or test text was copied.
+
+Root inventory: `PrivateElements` is a PersistentHandle holder through ordinary
+objects or proxies. `private_elements_retain_and_reclaim` *(lib, inventory)*
+checks retention and reclamation of private data, method, getter and setter edges
+on each receiver kind, including rejection of stale handles after slot reuse.

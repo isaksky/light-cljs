@@ -12,14 +12,30 @@ use crate::object::{Property, PropertyDescriptor, validate_and_apply};
 use crate::value::{JsString, Value};
 use property::Key;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct Proxy {
+    pub(crate) private: super::private::Elements,
     pub(crate) owner: TaskId,
     pub(crate) target: ObjectId,
     handler: ObjectId,
 }
+
+/// Public Proxy operations snapshot only immutable routing metadata. Private
+/// slots stay on the receiver and are never copied into trap continuations.
+#[derive(Clone, Debug)]
+pub(crate) struct Info {
+    pub(crate) target: ObjectId,
+    handler: ObjectId,
+}
+impl Trace for Info {
+    fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
+        visit(self.target.into());
+        visit(self.handler.into());
+    }
+}
 impl Trace for Proxy {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
+        self.private.trace(visit);
         visit(self.target.into());
         visit(self.handler.into());
     }
@@ -30,6 +46,7 @@ pub(crate) fn construct(heap: &Heap, task: TaskId, args: &[Value]) -> Result<Val
         return Err(error("target and handler must be objects"));
     };
     heap.alloc(HeapObject::Proxy(Proxy {
+        private: Default::default(),
         owner: task,
         target: *target,
         handler: *handler,
@@ -37,7 +54,7 @@ pub(crate) fn construct(heap: &Heap, task: TaskId, args: &[Value]) -> Result<Val
     .map(Value::Object)
     .ok_or(Fault::OutOfMemory("heap object table exhausted"))
 }
-pub(crate) fn inspect(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Proxy>, Fault> {
+pub(crate) fn inspect(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Info>, Fault> {
     // Immutable realm views are authoritative. Intrinsic property reads must
     // retain their lock-free path, including while another worker holds the
     // object table for collection or allocation.
@@ -53,7 +70,10 @@ pub(crate) fn inspect(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<
             owner: Some(p.owner),
             caller: task,
         }),
-        HeapObject::Proxy(p) => Ok(Some(p.clone())),
+        HeapObject::Proxy(p) => Ok(Some(Info {
+            target: p.target,
+            handler: p.handler,
+        })),
         _ => Ok(None),
     })
     .ok_or(Fault::Internal("Proxy was reclaimed"))?
@@ -214,7 +234,7 @@ struct Operation {
     object: ObjectId,
     key: Option<Key>, // None: OwnPropertyKeys; Some: GetOwnProperty
     phase: Stage,
-    proxy: Option<Proxy>,
+    proxy: Option<Info>,
     value: Value,
     keys: Vec<keys::OwnKey>,
     target_keys: Vec<keys::OwnKey>,

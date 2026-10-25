@@ -166,6 +166,15 @@
 //! | `CopyDataProperties` | 0xB4 | – | target source → target | budgeted object spread |
 //! | `AsyncGeneratorStart` | 0xB5 | – | – | mark async generator code before parameter initialization |
 //! | `GetAsyncIterator` | 0xB6 | – | iterable → record | prefer @@asyncIterator, adapting a sync fallback |
+
+//! | `NewPrivateName` | 0xB7 | u16 name | → identity | fresh lexical private identity |
+//! | `GetPrivate` | 0xB8 | – | receiver identity → value | own brand check; resumable getter |
+//! | `PutPrivate` | 0xB9 | – | receiver identity value → value | own brand check; resumable setter |
+//! | `DefinePrivateField` | 0xBA | – | receiver identity value → receiver | initialize writable private field |
+//! | `DefinePrivateMethod` | 0xBB | – | receiver identity function → receiver | initialize read-only private method |
+//! | `DefinePrivateGetter` | 0xBC | – | receiver identity function → receiver | install private getter |
+//! | `DefinePrivateSetter` | 0xBD | – | receiver identity function → receiver | install private setter |
+//! | `PrivateIn` | 0xBE | – | identity receiver → boolean | own private brand; primitives throw |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -740,6 +749,16 @@ pub enum Opcode {
 
     AsyncGeneratorStart = 0xB5,
     GetAsyncIterator = 0xB6,
+
+    // Private names are fresh per class evaluation; operands never reach public keys.
+    NewPrivateName = 0xB7,
+    GetPrivate = 0xB8,
+    PutPrivate = 0xB9,
+    DefinePrivateField = 0xBA,
+    DefinePrivateMethod = 0xBB,
+    DefinePrivateGetter = 0xBC,
+    DefinePrivateSetter = 0xBD,
+    PrivateIn = 0xBE,
 }
 
 /// Operand encoding of an opcode.
@@ -953,6 +972,15 @@ impl Opcode {
 
             0xB5 => AsyncGeneratorStart,
             0xB6 => GetAsyncIterator,
+
+            0xB7 => NewPrivateName,
+            0xB8 => GetPrivate,
+            0xB9 => PutPrivate,
+            0xBA => DefinePrivateField,
+            0xBB => DefinePrivateMethod,
+            0xBC => DefinePrivateGetter,
+            0xBD => DefinePrivateSetter,
+            0xBE => PrivateIn,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1146,6 +1174,15 @@ impl Opcode {
 
             AsyncGeneratorStart => "async_generator_start",
             GetAsyncIterator => "get_async_iterator",
+
+            NewPrivateName => "new_private_name",
+            GetPrivate => "get_private",
+            PutPrivate => "put_private",
+            DefinePrivateField => "define_private_field",
+            DefinePrivateMethod => "define_private_method",
+            DefinePrivateGetter => "define_private_getter",
+            DefinePrivateSetter => "define_private_setter",
+            PrivateIn => "private_in",
             PutGlobalStrict => "put_global_strict",
             PutFieldStrict => "put_field_strict",
             PutElemStrict => "put_elem_strict",
@@ -1247,6 +1284,9 @@ impl Opcode {
             UsingDispose | UsingDisposeAsync => OperandKind::Count,
             Rest => OperandKind::Count,
             CopyDataProperties => OperandKind::None,
+            NewPrivateName => OperandKind::Name,
+            GetPrivate | PutPrivate | DefinePrivateField | DefinePrivateMethod
+            | DefinePrivateGetter | DefinePrivateSetter | PrivateIn => OperandKind::None,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }
@@ -1492,6 +1532,15 @@ pub(crate) enum Instr {
 
     AsyncGeneratorStart,
     GetAsyncIterator,
+
+    NewPrivateName(u16),
+    GetPrivate,
+    PutPrivate,
+    DefinePrivateField,
+    DefinePrivateMethod,
+    DefinePrivateGetter,
+    DefinePrivateSetter,
+    PrivateIn,
 }
 
 impl Instr {
@@ -1676,6 +1725,14 @@ impl Instr {
             Instr::UsingDisposeAsync(_) => Opcode::UsingDisposeAsync,
             Instr::Rest(_) => Opcode::Rest,
             Instr::CopyDataProperties => Opcode::CopyDataProperties,
+            Instr::NewPrivateName(_) => Opcode::NewPrivateName,
+            Instr::GetPrivate => Opcode::GetPrivate,
+            Instr::PutPrivate => Opcode::PutPrivate,
+            Instr::DefinePrivateField => Opcode::DefinePrivateField,
+            Instr::DefinePrivateMethod => Opcode::DefinePrivateMethod,
+            Instr::DefinePrivateGetter => Opcode::DefinePrivateGetter,
+            Instr::DefinePrivateSetter => Opcode::DefinePrivateSetter,
+            Instr::PrivateIn => Opcode::PrivateIn,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
             Instr::PutFieldStrict(_) => Opcode::PutFieldStrict,
             Instr::PutElemStrict => Opcode::PutElemStrict,
@@ -1759,6 +1816,10 @@ impl Instr {
             UsingDisposeAsync(n) => (3 * usize::from(n) + 3, 1),
             Rest(_) => (0, 1),
             CopyDataProperties => (2, 1),
+            NewPrivateName(_) => (0, 1),
+            GetPrivate | PrivateIn => (2, 1),
+            PutPrivate | DefinePrivateField | DefinePrivateMethod | DefinePrivateGetter
+            | DefinePrivateSetter => (3, 1),
             PendingException => (0, 1),
             PendingCancel => (0, 1),
             SuppressedError => (2, 1),
@@ -1784,6 +1845,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 182);
+        assert_eq!(assigned, 190);
     }
 }

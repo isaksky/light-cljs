@@ -8476,6 +8476,219 @@ fn eval(src: &str) -> ValueView {
     }
 }
 
+#[test]
+fn private_class_names() {
+    // Synthetic fixture, not light-cljs output.
+    assert_eq!(
+        num("class A { #x = 1; get x() { return this.#x; } } new A().x"),
+        1.0
+    );
+    assert_eq!(
+        eval(include_str!("fixtures/js/private_classes.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn private_class_early_errors() {
+    // Synthetic fixtures, not light-cljs output.
+    for source in [
+        "o.#x",
+        "#x in o",
+        "class C { m() { return this.#missing; } }",
+        "class C { #x; #x; }",
+        "class C { #x; static #x; }",
+        "class C { #x() {} #x; }",
+        "class C { get #x() {} get #x() {} }",
+        "class C { get #x() {} static set #x(v) {} }",
+        "class C { #constructor; }",
+        "class C { #constructor() {} }",
+        "class C { #x; m() { delete this.#x; } }",
+        "class C { #x; m() { delete this?.#x; } }",
+        "class C { #x; m() { return super.#x; } }",
+        "class C { #x; m() { super.#x = 1; } }",
+        "class C { #x; m() { super.#x(); } }",
+        "class C { # x; }",
+        "({ #x: 1 })",
+        "let #x = 1",
+        "class C { #x; m() { return #x; } }",
+        "class C { #x; m() { return (#x) in this; } }",
+        "class C { #x; m() { return 1 + #x in this; } }",
+        "class C { #x; m() { return !#x in this; } }",
+        "class C { #x; m() {} } (() => ({}).#x)",
+        "class C extends (class { #x; }) { m() { return this.#x; } }",
+    ] {
+        assert!(
+            compile_script("private early error", source).is_err(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn private_class_edge_cases() {
+    // Synthetic fixtures, not light-cljs output.
+    for source in [
+        "class C { #x; get() { return this.#x; } } new C().get() === undefined",
+        "class C { #x = function() {}; #m() {} get #a() {} set #a(v) {} names() { return [this.#x.name,this.#m.name]; } } new C().names().join() === '#x,#m'",
+        "class C { #x=1; m() { let n=0; this.#x ||= n++; this.#x ??= n++; this.#x &&= 3; return this.#x === 3 && n === 0; } } new C().m()",
+        "let n=0; class C { #x=2; m() { let o=()=>{n++;return this;}; return o().#x++ === 2 && n === 1 && this.#x === 3; } } new C().m()",
+        "class C { #x=1; get #only() { return this.#x; } m() { try { this.#only=2; } catch(e) { return e instanceof TypeError; } } } new C().m()",
+        "class C { #m() {} m() { try { this.#m=2; } catch(e) { return e instanceof TypeError; } } } new C().m()",
+        "class C { set #x(v) {} m() { return this.#x === undefined; } } new C().m()",
+        "class C { set #x(v) {this.y=v;} get #x() {return this.y;} m() {this.#x=4;return this.#x;} } new C().m() === 4",
+        "class C { #x=1; m(o) { return o?.#x; } } new C().m(null) === undefined && new C().m(new C()) === 1",
+        "class C { #m() {return this;} m(o) { return o?.#m() === o && this.#m?.() === this; } } let c=new C(); c.m(c)",
+        "class C { #x=0; m() { [this.#x] = [3]; for ([this.#x] of [[4],[5]]) {} return this.#x; } } new C().m() === 5",
+        "class C { #x=1; m() {return eval('eval(\"this.#x\")');} } new C().m() === 1",
+        "class C { #x=1; m() {try {Function('return this.#x');} catch(e) {return e instanceof SyntaxError;}} } new C().m()",
+        "class C { #x=1; m() {try {(0,eval)('this.#x');} catch(e) {return e instanceof SyntaxError;}} } new C().m()",
+        "class C { #x=1; m() {try {eval('class D { #x; m(o) { return o.#x; } } new D().m(this)');} catch(e) {return e instanceof TypeError;}} } new C().m()",
+        "class C { #x=1; *#g() {yield this.#x;} m() {return this.#g().next().value;} } new C().m() === 1",
+        "class C { #x=1; async #m() {return this.#x;} m() {return this.#m() instanceof Promise;} } new C().m()",
+        "class C { #if=1; #\\u0078=2; m() {return this.#if+this.#x;} } new C().m() === 3",
+        "class C { #x=1\n #y=2\n m() {return this.#x+this.#y;} } new C().m() === 3",
+        "class C { #x = (() => { try {return #x in this;} catch(e) {return 9;} })(); m() {return this.#x;} } new C().m() === false",
+        "class C { #x=1; #y=this.#later; #later=2; } let ok=false;try {new C();} catch(e) {ok=e instanceof TypeError;} ok",
+        "let n=0; class C { #x; has(o) {return #x in o;} m(o) {try {o.#x;} catch(e) {return e instanceof TypeError;}} } let c=new C(), p=new Proxy(c,{get(){n++;throw 1;},has(){n++;throw 2;}}); !c.has(p) && c.m(p) && n===0",
+        "class Base {constructor(o) {return o;}} class C extends Base { #x=1; static read(o){return o.#x;} } let o=Object.preventExtensions({});new C(o); C.read(o) === 1",
+        "class Base {constructor(o) {return o;}} class C extends Base { #x=1; static read(o){return o.#x;} } let o=[];new C(o); C.read(o) === 1 && o.length===0",
+        "class Base {constructor(o) {return o;}} class C extends Base { #x=1; static read(o){return o.#x;} } let o=function(){};new C(o); C.read(o) === 1",
+        "class Base {constructor(o) {return o;}} class C extends Base { #x=1; static read(o){return o.#x;} } let target={}, o=new Proxy(target,{defineProperty(){throw 1;}});new C(o); let ok=false;try {C.read(target);} catch(e){ok=e instanceof TypeError;} C.read(o)===1 && ok",
+        "class Base {constructor(o) {return o;}} class C extends Base { #x; } let o={};new C(o);let ok=false;try {new C(o);} catch(e){ok=e instanceof TypeError;} ok",
+        "class Base {constructor(o) {return o;}} class C extends Base { #m(){} } let o={};new C(o);let ok=false;try {new C(o);} catch(e){ok=e instanceof TypeError;} ok",
+        "class C { #x=1; static #s=2; static get #a(){return this.#s;} static set #a(v){this.#s=v;} static m(){Object.freeze(this);this.#a=4;return this.#a;} } C.m()===4",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    let source = "class C { #x=1; m() { return () => { with ({'#x': 9}) { return this.#x; } }; } } new C().m()() === 1";
+    // A class method is strict, so use an ordinary sloppy function defined outside it.
+    assert!(compile_script_with("strict with", source, ScriptOptions::SLOPPY).is_err());
+    let source = "let result; with ({'#x': 9}) { class C { #x=1; m() {return this.#x;} } result=new C().m(); } result === 1";
+    assert!(
+        matches!(run(&compile_script_with("private with", source, ScriptOptions::SLOPPY).unwrap(), &[]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+}
+
+#[test]
+fn private_class_wait_collect_migrate_and_round_trip() {
+    // Synthetic fixtures, not light-cljs output. Only private slots retain
+    // the payload object; collect at every yield and migrate on 64 KiB workers.
+    for source in [
+        "class C { #x={n:1}; get #v(){return __rt.need(291,1)+this.#x.n;} m(){return this.#v;} } new C().m()===8",
+        "class C { #x={n:1}; set #v(v){this.#x.n=__rt.need(291,1)+v;} m(){this.#v=2;return this.#x.n;} } new C().m()===9",
+        "class C { #x={n:1}; #m(){return __rt.need(291,1)+this.#x.n;} m(){return this.#m();} } new C().m()===8",
+        "class C { static #x={n:__rt.need(291,1)}; static m(){return eval('this.#x.n');} } C.m()===7",
+        "class C { #x={n:1}; m(){let o=()=>{__rt.need(291,1);return this;}; o().#x &&= {n:3};return this.#x.n;} } new C().m()===3",
+    ] {
+        let rt = Runtime::new();
+        rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
+        let code = Executable::load(exe(source).to_spec()).unwrap();
+        let mut task = rt.spawn(&code, &[]).unwrap();
+        let mut waits = 0;
+        let mut complete = false;
+        for _ in 0..2000 {
+            let (next, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task
+                        .run_with(Budget::instructions(5), &mut NoEffects)
+                        .unwrap();
+                    (task, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1);
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(7.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(complete && waits == 1, "{source}");
+    }
+}
+
+#[test]
+fn private_class_publication_and_foreign_receivers() {
+    // Synthetic fixtures, not light-cljs output.
+    let rt = Runtime::new();
+    let source = "class C { #x={n:1}; static readers(){return __rt.vector(o=>#x in o, o=>o.#x, o=>{o.#x=2;});} } __rt.vector(new C(), C.readers())";
+    let RunOutcome::Complete(pair) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    assert!(rt.publish(&pair).is_err());
+    let check = compile_function("function check(pair) {let o=__rt.nth(pair,0), readers=__rt.nth(pair,1), n=0; for(let i=0;i<3;i++){try {__rt.nth(readers,i)(o);} catch(e){if(e instanceof TypeError)n++;}}return n===3;}").unwrap();
+    assert!(
+        matches!(rt.spawn(&check, &[&pair]).unwrap().run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+    let source = "class C { #x; static predicate(){return o=>#x in o;} } C.predicate()";
+    let RunOutcome::Complete(predicate) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+    else {
+        panic!()
+    };
+    rt.publish(&predicate).unwrap();
+    rt.collect().unwrap();
+    let invoke = compile_function("function invoke(f) { return f({}); }").unwrap();
+    assert!(
+        matches!(rt.spawn(&invoke, &[&predicate]).unwrap().run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(false))
+    );
+    let RunOutcome::Complete(shared) = rt
+        .spawn(&exe("(function () {})"), &[])
+        .unwrap()
+        .run()
+        .unwrap()
+    else {
+        panic!()
+    };
+    rt.publish(&shared).unwrap();
+    let invoke = compile_function("function invoke(f,o) {return f(o);}").unwrap();
+    assert!(
+        matches!(rt.spawn(&invoke, &[&predicate, &shared]).unwrap().run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(false))
+    );
+    let source = "class C { #x=1; static reader(){return o=>o.#x;} } C.reader()";
+    let RunOutcome::Complete(reader) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    rt.publish(&reader).unwrap();
+    let source = "({})";
+    let RunOutcome::Complete(foreign) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    let invoke = compile_function("function invoke(f,o) {try {f(o);} catch(e) {return e instanceof TypeError;} return false;}").unwrap();
+    assert!(
+        matches!(rt.spawn(&invoke, &[&reader, &foreign]).unwrap().run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true))
+    );
+    for source in [
+        "class C { #x=1; } new C()",
+        "class C { static #x=1; } C",
+        "class C { #x=1; m(){return ()=>this.#x;} } new C().m()",
+    ] {
+        let RunOutcome::Complete(v) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap() else {
+            panic!()
+        };
+        assert!(rt.publish(&v).is_err());
+    }
+}
+
 fn num(src: &str) -> f64 {
     match eval(src) {
         ValueView::Number(n) => n,

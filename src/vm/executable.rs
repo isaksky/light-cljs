@@ -694,6 +694,14 @@ impl Executable {
                 Opcode::UsingDisposeAsync => Instr::UsingDisposeAsync(operand as u16),
                 Opcode::Rest => Instr::Rest(operand as u16),
                 Opcode::CopyDataProperties => Instr::CopyDataProperties,
+                Opcode::NewPrivateName => Instr::NewPrivateName(operand as u16),
+                Opcode::GetPrivate => Instr::GetPrivate,
+                Opcode::PutPrivate => Instr::PutPrivate,
+                Opcode::DefinePrivateField => Instr::DefinePrivateField,
+                Opcode::DefinePrivateMethod => Instr::DefinePrivateMethod,
+                Opcode::DefinePrivateGetter => Instr::DefinePrivateGetter,
+                Opcode::DefinePrivateSetter => Instr::DefinePrivateSetter,
+                Opcode::PrivateIn => Instr::PrivateIn,
                 Opcode::DefineGetterElem => Instr::DefineGetterElem,
                 Opcode::DefineSetterElem => Instr::DefineSetterElem,
                 Opcode::SetComputedName => Instr::SetComputedName(operand as u16),
@@ -932,6 +940,7 @@ impl Executable {
                 | Instr::DeclareGlobalConstValue(v)
                 | Instr::CheckGlobalLexicalConflict(v)
                 | Instr::TemplateObject(v)
+                | Instr::NewPrivateName(v)
                 | Instr::GetField(v)
                 | Instr::PutField(v)
                 | Instr::DefineField(v)

@@ -371,8 +371,9 @@ pub(crate) struct OrdinaryObject {
     primitive_data: Option<PrimitiveData>,
     /// `[[ErrorData]]`: independent of properties and prototype changes.
     error_data: bool,
-    /// Engine-only diagnostic and original cause, independent of properties.
-    engine_error: Option<Box<crate::vm::exception::ErrorObject>>,
+    /// Cold internal state stays boxed so allocation frames do not grow with
+    /// each new language feature (in particular on 64 KiB VM workers).
+    internal: Option<Box<InternalSlots>>,
     /// Intl.Locale's immutable internal record; contains no heap edges.
     locale_data: Option<Box<crate::intl::tag::LanguageTag>>,
 
@@ -396,6 +397,12 @@ pub(crate) struct OrdinaryObject {
     intl_service: Option<Box<IntlServiceSlots>>,
     segmenter: Option<Box<crate::intl::segmenter::Data>>,
     duration_format: Option<Box<crate::intl::duration_format::DurationFormat>>,
+}
+
+#[derive(Debug, Default)]
+struct InternalSlots {
+    engine_error: Option<Box<crate::vm::exception::ErrorObject>>,
+    private: crate::vm::private::Elements,
 }
 
 impl OrdinaryObject {
@@ -461,7 +468,7 @@ impl OrdinaryObject {
             index: None,
             primitive_data: None,
             error_data: false,
-            engine_error: None,
+            internal: None,
             locale_data: None,
 
             date_value: None,
@@ -645,12 +652,26 @@ impl OrdinaryObject {
 
     pub(crate) fn with_engine_error(mut self, error: crate::vm::exception::ErrorObject) -> Self {
         self.error_data = true;
-        self.engine_error = Some(Box::new(error));
+        self.internal
+            .get_or_insert_with(Default::default)
+            .engine_error = Some(Box::new(error));
         self
     }
 
     pub(crate) fn engine_error(&self) -> Option<&crate::vm::exception::ErrorObject> {
-        self.engine_error.as_deref()
+        self.internal.as_ref()?.engine_error.as_deref()
+    }
+
+    /// Private elements ignore public extensibility/freeze flags and are
+    /// allocated only for a receiver on which a private definition runs.
+    pub(crate) fn private_elements(
+        &mut self,
+        create: bool,
+    ) -> Option<&mut crate::vm::private::Elements> {
+        if create {
+            self.internal.get_or_insert_with(Default::default);
+        }
+        self.internal.as_mut().map(|internal| &mut internal.private)
     }
 
     /// Initialize Date's own slot before publishing its heap identity.
@@ -1031,6 +1052,9 @@ pub(crate) enum DeleteOutcome {
 /// The collector traces every property key, value and the prototype.
 impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        if let Some(internal) = &self.internal {
+            internal.private.trace(visit);
+        }
         if let Some(segmenter) = &self.segmenter {
             segmenter.trace(visit);
         }
@@ -1055,7 +1079,7 @@ impl Trace for OrdinaryObject {
         if let Some(bound) = self.collator_bound() {
             bound.trace(visit);
         }
-        if let Some(error) = &self.engine_error {
+        if let Some(error) = self.engine_error() {
             error.trace(visit);
         }
         for (key, property) in &self.entries {

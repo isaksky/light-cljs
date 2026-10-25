@@ -57,4 +57,6 @@ pub use instr::{Opcode, ThrowKind};
 
 pub(crate) mod async_from_sync;
 pub(crate) mod async_generator;
+
+pub(crate) mod private;
 pub(crate) mod proxy;

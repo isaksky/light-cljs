@@ -42,6 +42,8 @@ pub struct Token {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     Identifier(String),
+    /// Includes the leading #; cannot be a binding or an ordinary property key.
+    PrivateName(String),
     Keyword(Keyword),
     /// A numeric literal's value.
     Number(f64),
@@ -65,6 +67,7 @@ impl TokenKind {
     pub fn describe(&self) -> String {
         match self {
             TokenKind::Identifier(name) => format!("identifier `{name}`"),
+            TokenKind::PrivateName(name) => format!("private name `{name}`"),
             TokenKind::Keyword(k) => format!("keyword `{}`", k.as_str()),
             TokenKind::Number(_) => "number literal".to_string(),
             TokenKind::BigInt(_) => "BigInt literal".to_string(),
@@ -483,6 +486,27 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         let kind = match self.peek_char() {
             None => TokenKind::Eof,
+            Some('#') => {
+                self.bump();
+                if !self
+                    .peek_char()
+                    .is_some_and(|c| is_ident_start(c) || c == '\\')
+                {
+                    return Err(self.error_at(
+                        start,
+                        SyntaxErrorKind::UnknownToken,
+                        "invalid private name",
+                    ));
+                }
+                // PrivateIdentifier accepts reserved words and escaped spellings.
+                self.after_dot = true;
+                let name = match self.lex_identifier()? {
+                    TokenKind::Identifier(n) => n,
+                    TokenKind::Keyword(k) => k.as_str().into(),
+                    _ => unreachable!(),
+                };
+                TokenKind::PrivateName(format!("#{name}"))
+            }
             Some(c) if is_ident_start(c) || c == '\\' => self.lex_identifier()?,
             Some(c) if c.is_ascii_digit() => self.lex_number()?,
             Some('.') if self.peek_char_at(1).is_some_and(|c| c.is_ascii_digit()) => {

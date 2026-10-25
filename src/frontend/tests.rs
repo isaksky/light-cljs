@@ -4586,7 +4586,7 @@ fn rejects_lexically_ambiguous_input() {
     // A hashbang is a comment only at the start of the source.
     assert_eq!(ast("#!/usr/bin/env node"), "");
     rejects("x;\n#!/usr/bin/env node", UnknownToken, 2, 1);
-    rejects("x.#y", UnknownToken, 1, 3);
+    rejects("x.#y", Invalid, 1, 3);
     // Unicode identifiers and identifier escapes: `unicode_identifiers`.
 }
 

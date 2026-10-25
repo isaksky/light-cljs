@@ -524,6 +524,8 @@ enum PropertyRef {
     Field(u16, Span),
     /// `o[k]`: `o` and the converted key on the stack.
     Elem(Span),
+    /// Receiver and a lexically resolved, unobservable private identity.
+    Private(Span),
     /// `super[k]`: current receiver, lookup base and raw/converted key.
     Super(Span),
 }
@@ -1782,7 +1784,11 @@ impl<'s> Lowerer<'s> {
             level,
             name,
             self.fns[level].scopes.len(),
-            self.fns[level].with_envs.len(),
+            if name.starts_with('#') {
+                0
+            } else {
+                self.fns[level].with_envs.len()
+            },
         )
     }
 
@@ -1797,7 +1803,7 @@ impl<'s> Lowerer<'s> {
         let with_env = with_count.checked_sub(1).map(|i| ctx.with_envs[i]);
         let start = with_env.map_or_else(
             || {
-                if ctx.dynamic_env.is_some() {
+                if ctx.dynamic_env.is_some() && !name.starts_with('#') {
                     ctx.var_scope
                 } else {
                     0
@@ -1839,7 +1845,9 @@ impl<'s> Lowerer<'s> {
             let fallback = self.resolve_scopes(level, name, depth, with_count - 1);
             return self.dynamic_access(env, key, name, fallback);
         }
-        let env = self.fns[level].dynamic_env;
+        let env = self.fns[level]
+            .dynamic_env
+            .filter(|_| !name.starts_with('#'));
         let fallback = self.resolve_outside_body(level, name);
         if let Some((env, key)) = env {
             self.dynamic_access(env, key, name, fallback)
@@ -1866,7 +1874,10 @@ impl<'s> Lowerer<'s> {
             };
         }
         let fallback = self.resolve_outside_parameters(level, name);
-        if let Some((env, key)) = self.fns[level].parameter_env {
+        if let Some((env, key)) = self.fns[level]
+            .parameter_env
+            .filter(|_| !name.starts_with('#'))
+        {
             self.dynamic_access(env, key, name, fallback)
         } else {
             fallback
@@ -1899,7 +1910,13 @@ impl<'s> Lowerer<'s> {
             } else {
                 self.global_access(name)
             };
-            for &(env, key) in self.eval_environments.clone().iter().rev() {
+            for &(env, key) in self
+                .eval_environments
+                .clone()
+                .iter()
+                .rev()
+                .filter(|_| !name.starts_with('#'))
+            {
                 access = self.dynamic_access(env, key, name, access);
             }
             return access;
@@ -3009,7 +3026,7 @@ impl<'s> Lowerer<'s> {
         f: &Function,
         self_name: Option<(String, SelfKind)>,
         inferred_name: Option<JsString>,
-        fields: Option<&[(&PropertyDef, Ident)]>,
+        fields: Option<&[(&PropertyDef, Ident, bool)]>,
     ) -> Result<(), SyntaxError> {
         if f.params.len() > MAX_LOCALS {
             return Err(self.error(SyntaxErrorKind::TooLarge, f.span, "too many parameters"));
@@ -3059,13 +3076,35 @@ impl<'s> Lowerer<'s> {
             self.out().op(Opcode::Pop, f.span);
         }
         if let Some(fields) = fields {
-            for (property, key) in fields {
+            for (property, key, is_field) in fields {
                 let at = property.name_span;
                 self.out().op(Opcode::GetThis, at);
-                self.computed_property(
-                    property,
-                    &Expr::new(ExprKind::Identifier(key.name.clone()), at),
-                )?;
+                if let PropertyName::Identifier(name) = &property.name
+                    && name.starts_with('#')
+                {
+                    self.private_name(name, at)?;
+                    let op = if *is_field {
+                        self.named_expr(&property.value, JsString::from(name.as_str()))?;
+                        Opcode::DefinePrivateField
+                    } else {
+                        self.identifier(&key.name, key.span)?;
+                        match &property.value.kind {
+                            ExprKind::Function(f) if f.kind == FunctionKind::Getter => {
+                                Opcode::DefinePrivateGetter
+                            }
+                            ExprKind::Function(f) if f.kind == FunctionKind::Setter => {
+                                Opcode::DefinePrivateSetter
+                            }
+                            _ => Opcode::DefinePrivateMethod,
+                        }
+                    };
+                    self.out().op(op, at);
+                } else {
+                    self.computed_property(
+                        property,
+                        &Expr::new(ExprKind::Identifier(key.name.clone()), at),
+                    )?;
+                }
                 self.out().op(Opcode::Pop, at);
             }
         } else {
@@ -3399,6 +3438,9 @@ impl<'s> Lowerer<'s> {
                     | ExprKind::Index {
                         object, op_span, ..
                     } if matches!(object.kind, ExprKind::Super) => PropertyRef::Super(*op_span),
+                    ExprKind::Member {
+                        property, op_span, ..
+                    } if property.name.starts_with('#') => PropertyRef::Private(*op_span),
                     ExprKind::Member {
                         property, op_span, ..
                     } => PropertyRef::Field(
@@ -4877,6 +4919,7 @@ impl<'s> Lowerer<'s> {
             if super_access {
                 match link {
                     Ok(property) => {
+                        self.check_private_super(base, property)?;
                         let name = self.name_index(&property.name, property.span)?;
                         self.out().op_u16(Opcode::Const, name, op_span);
                     }
@@ -4891,8 +4934,13 @@ impl<'s> Lowerer<'s> {
             }
             match link {
                 Ok(property) => {
-                    let index = self.name_index(&property.name, property.span)?;
-                    self.out().op_u16(Opcode::GetField, index, op_span);
+                    if property.name.starts_with('#') {
+                        self.private_name(&property.name, property.span)?;
+                        self.out().op(Opcode::GetPrivate, op_span);
+                    } else {
+                        let index = self.name_index(&property.name, property.span)?;
+                        self.out().op_u16(Opcode::GetField, index, op_span);
+                    }
                 }
                 Err(index) => {
                     self.expr(index)?;
@@ -4992,6 +5040,7 @@ impl<'s> Lowerer<'s> {
                 property,
                 op_span,
             } => {
+                self.check_private_super(object, property)?;
                 if matches!(object.kind, ExprKind::Super) {
                     self.super_base(object.span, true)?;
                     let name = self.name_index(&property.name, property.span)?;
@@ -5001,6 +5050,11 @@ impl<'s> Lowerer<'s> {
                 }
                 self.expr(object)?;
                 self.out().op(Opcode::Dup, *op_span);
+                if property.name.starts_with('#') {
+                    self.private_name(&property.name, property.span)?;
+                    self.out().op(Opcode::GetPrivate, *op_span);
+                    return Ok(());
+                }
                 let index = self.name_index(&property.name, property.span)?;
                 self.out().op_u16(Opcode::GetField, index, *op_span);
             }
@@ -5102,6 +5156,11 @@ impl<'s> Lowerer<'s> {
                     }
                     match kind {
                         ChainLinkKind::Member(property) => {
+                            if property.name.starts_with('#') {
+                                self.private_name(&property.name, property.span)?;
+                                self.out().op(Opcode::GetPrivate, at);
+                                continue;
+                            }
                             let name = self.name_index(&property.name, property.span)?;
                             self.out().op_u16(
                                 if deleting {
@@ -5143,6 +5202,14 @@ impl<'s> Lowerer<'s> {
         value: &Expr,
         op_span: Span,
     ) -> Result<(), SyntaxError> {
+        self.check_private_super(object, property)?;
+        if property.name.starts_with('#') {
+            self.expr(object)?;
+            self.private_name(&property.name, property.span)?;
+            self.expr(value)?;
+            self.out().op(Opcode::PutPrivate, op_span);
+            return Ok(());
+        }
         if matches!(object.kind, ExprKind::Super) {
             self.super_base(object.span, false)?;
             let name = self.name_index(&property.name, property.span)?;
@@ -5183,6 +5250,7 @@ impl<'s> Lowerer<'s> {
                 property,
                 op_span,
             } => {
+                self.check_private_super(object, property)?;
                 if matches!(object.kind, ExprKind::Super) {
                     self.super_base(object.span, false)?;
                     let name = self.name_index(&property.name, property.span)?;
@@ -5190,6 +5258,10 @@ impl<'s> Lowerer<'s> {
                     return Ok(PropertyRef::Super(*op_span));
                 }
                 self.expr(object)?;
+                if property.name.starts_with('#') {
+                    self.private_name(&property.name, property.span)?;
+                    return Ok(PropertyRef::Private(*op_span));
+                }
                 let name = self.name_index(&property.name, property.span)?;
                 Ok(PropertyRef::Field(name, *op_span))
             }
@@ -5219,6 +5291,10 @@ impl<'s> Lowerer<'s> {
     /// `o key` → the same, then the value), reported at the `.` or `[`.
     fn reference_get(&mut self, r: PropertyRef) {
         match r {
+            PropertyRef::Private(at) => {
+                self.out().op(Opcode::Dup2, at);
+                self.out().op(Opcode::GetPrivate, at);
+            }
             PropertyRef::Super(at) => {
                 self.out().op(Opcode::Dup3, at);
                 self.out().op(Opcode::GetSuperElem, at);
@@ -5240,6 +5316,7 @@ impl<'s> Lowerer<'s> {
         let field = self.strict_op(Opcode::PutField);
         let elem = self.strict_op(Opcode::PutElem);
         match r {
+            PropertyRef::Private(at) => self.out().op(Opcode::PutPrivate, at),
             PropertyRef::Super(at) => {
                 let op = self.strict_op(Opcode::PutSuperElem);
                 self.out().op(op, at);
@@ -5657,6 +5734,29 @@ impl<'s> Lowerer<'s> {
         self.load(access, at)
     }
 
+    fn private_name(&mut self, name: &str, at: Span) -> Result<(), SyntaxError> {
+        let access = self.resolve(name);
+        if !matches!(access, Access::Found { .. }) {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                at,
+                format!("undeclared private name {name}"),
+            ));
+        }
+        self.load(access, at)
+    }
+
+    fn check_private_super(&self, object: &Expr, property: &Ident) -> Result<(), SyntaxError> {
+        if property.name.starts_with('#') && matches!(object.kind, ExprKind::Super) {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                property.span,
+                "super cannot access private names",
+            ));
+        }
+        Ok(())
+    }
+
     /// `delete operand` (clj-quickjs-124; QuickJS `js_parse_delete`): for
     /// `o.p` the base and the name as a string constant, for `o[k]` the
     /// base and the key, then `Delete`, which checks the base, converts the
@@ -5789,6 +5889,15 @@ impl<'s> Lowerer<'s> {
         right: &Expr,
         op_span: Span,
     ) -> Result<(), SyntaxError> {
+        if op == BinaryOp::In
+            && let ExprKind::Identifier(name) = &left.kind
+            && name.starts_with('#')
+        {
+            self.private_name(name, left.span)?;
+            self.expr(right)?;
+            self.out().op(Opcode::PrivateIn, op_span);
+            return Ok(());
+        }
         self.expr(left)?;
         self.expr(right)?;
         self.binary(op, is_number(left), is_number(right), op_span);
@@ -5882,7 +5991,7 @@ impl<'s> Lowerer<'s> {
             self.out().op_u16(Opcode::SetLocal, result, span);
             let depth = match r {
                 PropertyRef::Field(..) => 1,
-                PropertyRef::Elem(..) => 2,
+                PropertyRef::Elem(..) | PropertyRef::Private(..) => 2,
                 PropertyRef::Super(..) => 3,
             };
             for _ in 0..depth {
@@ -6192,6 +6301,58 @@ impl<'s> Lowerer<'s> {
         } else {
             None
         };
+        // Private names belong to the class body, not its heritage. Allocate
+        // all identities before creating any member closure (forward references).
+        let mut private_names = HashMap::new();
+        for element in &class.elements {
+            let p = &element.property;
+            let PropertyName::Identifier(name) = &p.name else {
+                continue;
+            };
+            if !name.starts_with('#') {
+                continue;
+            }
+            let kind = if element.is_field {
+                0
+            } else {
+                match &p.value.kind {
+                    ExprKind::Function(f) if f.kind == FunctionKind::Getter => 1,
+                    ExprKind::Function(f) if f.kind == FunctionKind::Setter => 2,
+                    _ => 0,
+                }
+            };
+            if let Some((previous_static, previous_kind)) = private_names.get_mut(name) {
+                if *previous_static != element.is_static
+                    || (*previous_kind | kind) != 3
+                    || *previous_kind == 3
+                    || kind == 0
+                {
+                    return Err(self.error(
+                        SyntaxErrorKind::Invalid,
+                        p.name_span,
+                        "duplicate private name",
+                    ));
+                }
+                *previous_kind = 3;
+                continue;
+            }
+            private_names.insert(name.clone(), (element.is_static, kind));
+            let ident = Ident {
+                name: name.clone(),
+                span: p.name_span,
+            };
+            self.declare(&ident, BindingKind::Const, false, false)?;
+            let binding = self.local(&ident)?;
+            if binding.repr == Repr::Cell {
+                self.out().op(Opcode::NewCell, p.name_span);
+                self.out()
+                    .op_u16(Opcode::SetLocal, binding.slot, p.name_span);
+            }
+            let index = self.name_index(name, p.name_span)?;
+            self.out()
+                .op_u16(Opcode::NewPrivateName, index, p.name_span);
+            self.pattern_store(&Pattern::ident(ident), true, false)?;
+        }
         self.closure(&class.constructor, None, Some(name))?;
         if let Some(parent) = heritage {
             self.out().op_u16(Opcode::GetLocal, parent, span);
@@ -6230,6 +6391,8 @@ impl<'s> Lowerer<'s> {
         self.out().op_u16(Opcode::SetLocal, proto, span);
         let mut instance_fields = Vec::new();
         let mut static_fields = Vec::new();
+        let mut instance_private_methods = Vec::new();
+        let mut static_private_methods = Vec::new();
         for (index, element) in class.elements.iter().enumerate() {
             let p = &element.property;
             let at = p.name_span;
@@ -6244,7 +6407,11 @@ impl<'s> Lowerer<'s> {
                     self.out().op(Opcode::ToPropertyKey, at);
                 }
                 PropertyName::Identifier(n) => {
-                    self.constant(Primitive::String(JsString::from(n.as_str())), at)?;
+                    if n.starts_with('#') {
+                        self.private_name(n, at)?;
+                    } else {
+                        self.constant(Primitive::String(JsString::from(n.as_str())), at)?;
+                    }
                 }
                 PropertyName::String(n) => {
                     self.constant(Primitive::String(n.clone()), at)?;
@@ -6258,6 +6425,25 @@ impl<'s> Lowerer<'s> {
             }
             self.out().op_u16(Opcode::SetLocal, key, at);
             if element.is_field {
+                if let PropertyName::Identifier(name) = &p.name
+                    && name.starts_with('#')
+                {
+                    self.out().op(Opcode::Pop, at); // unused home object
+                    let field = (
+                        p,
+                        Ident {
+                            name: name.clone(),
+                            span: at,
+                        },
+                        true,
+                    );
+                    if element.is_static {
+                        static_fields.push(field);
+                    } else {
+                        instance_fields.push(field);
+                    }
+                    continue;
+                }
                 let field_key = Ident {
                     name: format!("*field-key-{index}*"),
                     span: at,
@@ -6270,9 +6456,9 @@ impl<'s> Lowerer<'s> {
                 self.pattern_store(&Pattern::ident(field_key.clone()), true, false)?;
                 self.out().op(Opcode::Pop, at); // unused home object
                 if element.is_static {
-                    static_fields.push((p, field_key));
+                    static_fields.push((p, field_key, true));
                 } else {
-                    instance_fields.push((p, field_key));
+                    instance_fields.push((p, field_key, true));
                 }
                 continue;
             }
@@ -6288,6 +6474,34 @@ impl<'s> Lowerer<'s> {
                 FunctionKind::Setter => ("set ", Opcode::DefineClassSetter),
                 _ => ("", Opcode::DefineClassMethod),
             };
+            if let PropertyName::Identifier(name) = &p.name
+                && name.starts_with('#')
+            {
+                // Name metadata uses the spelling, never a public symbol name.
+                self.out().op(Opcode::Pop, at);
+                self.out().op(Opcode::Pop, at);
+                self.constant(Primitive::String(JsString::from(name.as_str())), at)?;
+                self.out().op_u16(Opcode::GetLocal, value, at);
+                let prefix = self.name_index(prefix, at)?;
+                self.out().op_u16(Opcode::SetComputedName, prefix, at);
+                let method = Ident {
+                    name: format!("*private-method-{index}*"),
+                    span: Span::new(at.end - 1, at.end),
+                };
+                self.declare(&method, BindingKind::Const, false, true)?;
+                let binding = self.local(&method)?;
+                self.out().op(Opcode::NewCell, at);
+                self.out().op_u16(Opcode::SetLocal, binding.slot, at);
+                self.pattern_store(&Pattern::ident(method.clone()), true, false)?;
+                self.out().op(Opcode::Pop, at); // spelling
+                self.out().op(Opcode::Pop, at); // home object
+                if element.is_static {
+                    static_private_methods.push((p, method, false));
+                } else {
+                    instance_private_methods.push((p, method, false));
+                }
+                continue;
+            }
             let prefix = self.name_index(prefix, at)?;
             self.out().op_u16(Opcode::SetComputedName, prefix, at);
             self.out().op(opcode, at);
@@ -6307,6 +6521,11 @@ impl<'s> Lowerer<'s> {
             span,
             true,
         );
+        // All private methods/accessors are branded before the first field.
+        instance_private_methods.append(&mut instance_fields);
+        instance_fields = instance_private_methods;
+        static_private_methods.append(&mut static_fields);
+        static_fields = static_private_methods;
         self.out().op_u16(Opcode::GetLocal, proto, span);
         self.closure_with_fields(&function, None, None, Some(&instance_fields))?;
         self.pattern_store(&Pattern::ident(initializer), true, false)?;

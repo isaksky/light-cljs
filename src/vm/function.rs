@@ -392,6 +392,24 @@ pub(crate) fn property_record(heap: &Heap, function: ObjectId) -> Result<Option<
     info(heap, function).map(|info| info.record.or(info.defaults))
 }
 
+/// Private elements use the same task-owned record, but ignore public integrity flags.
+pub(crate) fn private_record(
+    heap: &Heap,
+    task: TaskId,
+    function: ObjectId,
+    create: bool,
+) -> Result<Option<ObjectId>, Fault> {
+    let info = info(heap, function)?;
+    if info.owner != task && !info.shared {
+        return Err(Fault::TypeError("foreign private receiver".into()));
+    }
+    if create {
+        writable_record(heap, task, function, &info, &Change::Integrity).map(Some)
+    } else {
+        Ok(info.record)
+    }
+}
+
 /// Metadata has no heap store until the first property change. Once a
 /// record exists it is authoritative, including the absence of deleted keys.
 pub(crate) fn own_metadata(

@@ -1484,6 +1484,54 @@ fn class_step(
     Ok(Flow::Next)
 }
 
+/// Private access never enters public property or Proxy dispatch. Any accessor
+/// call moves its receiver/function/value into a traced native continuation.
+#[inline(never)]
+fn private_step(
+    state: &mut VmState,
+    code: &Code,
+    heap: &Heap,
+    _host: &mut dyn Host,
+    instr: Instr,
+) -> Result<Flow, Fault> {
+    let task = state.diag.task;
+    match instr {
+        Instr::NewPrivateName(i) => state.push(Value::Symbol(crate::value::JsSymbol::new(Some(
+            name_constant(code, i)?,
+        )))),
+        Instr::GetPrivate => {
+            let key = state.pop()?;
+            let base = state.pop()?;
+            let read = super::private::read(heap, task, &base, &key)?;
+            native::read_result(state, Some(read), base)?;
+        }
+        Instr::PrivateIn => {
+            let base = state.pop()?;
+            let key = state.pop()?;
+            state.push(Value::Bool(super::private::has(heap, task, &base, &key)?));
+        }
+        Instr::PutPrivate => {
+            let value = state.pop()?;
+            let key = state.pop()?;
+            let base = state.pop()?;
+            let setter = super::private::write(heap, task, &base, &key, value.clone())?;
+            native::write_result(state, setter, base, value)?;
+        }
+        Instr::DefinePrivateField
+        | Instr::DefinePrivateMethod
+        | Instr::DefinePrivateGetter
+        | Instr::DefinePrivateSetter => {
+            let value = state.pop()?;
+            let key = state.pop()?;
+            let base = state.pop()?;
+            super::private::define(heap, task, &base, &key, value, instr)?;
+            state.push(base);
+        }
+        _ => return Err(Fault::Internal("not a private instruction")),
+    }
+    Ok(Flow::Next)
+}
+
 #[inline(never)]
 fn allocation_step(
     state: &mut VmState,
@@ -2253,6 +2301,14 @@ pub(crate) fn step(
     // independent of the large temporary area of the other instruction arms, including when
     // async bookkeeping adds storage to the enclosing run frame.
     match instr {
+        Instr::NewPrivateName(_)
+        | Instr::GetPrivate
+        | Instr::PutPrivate
+        | Instr::PrivateIn
+        | Instr::DefinePrivateField
+        | Instr::DefinePrivateMethod
+        | Instr::DefinePrivateGetter
+        | Instr::DefinePrivateSetter => private_step(state, code, heap, host, instr),
         Instr::Call(argc) => call(state, heap, argc, false),
         Instr::CallMethod(argc) => call(state, heap, argc, true),
         Instr::Construct(argc) => construct(state, heap, argc),
@@ -2280,6 +2336,14 @@ fn step_instruction(
     }
     // Everything below, leaf natives included, runs to completion here.
     match instr {
+        Instr::NewPrivateName(_)
+        | Instr::GetPrivate
+        | Instr::PutPrivate
+        | Instr::PrivateIn
+        | Instr::DefinePrivateField
+        | Instr::DefinePrivateMethod
+        | Instr::DefinePrivateGetter
+        | Instr::DefinePrivateSetter => return private_step(state, code, heap, host, instr),
         Instr::CheckHeritage
         | Instr::InitHeritage
         | Instr::GetNewTarget
@@ -3098,6 +3162,8 @@ fn global_step(
 /// holds is in its frames. Exhaustive, so a new instruction must decide.
 fn polls(instr: Instr, pc: usize) -> bool {
     match instr {
+        Instr::NewPrivateName(_) | Instr::GetPrivate | Instr::PutPrivate | Instr::PrivateIn
+        | Instr::DefinePrivateField | Instr::DefinePrivateMethod | Instr::DefinePrivateGetter | Instr::DefinePrivateSetter => true,
         Instr::IsCell | Instr::IsObject => false,
         Instr::ToObject => true,
         Instr::CheckHeritage | Instr::InitHeritage | Instr::GetNewTarget | Instr::GetSuperConstructor |

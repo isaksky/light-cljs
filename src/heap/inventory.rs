@@ -111,11 +111,13 @@ enum Holder {
     ModuleNamespaceEdges,
     DisposableStackResources,
     ProxyEdges,
+    /// Private data, methods and accessor functions, separate from public properties.
+    PrivateElements,
 }
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 51] = [
+const HOLDERS: [Holder; 52] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -167,6 +169,7 @@ const HOLDERS: [Holder; 51] = [
     Holder::ModuleNamespaceEdges,
     Holder::DisposableStackResources,
     Holder::ProxyEdges,
+    Holder::PrivateElements,
 ];
 
 /// Every root category; a new one fails to compile in
@@ -243,6 +246,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             ModuleNamespaceEdges,
             DisposableStackResources,
             ProxyEdges,
+            PrivateElements,
         ],
         RootCategory::ScopeLocal => &[ScopeLocal],
         RootCategory::TaskFrame => &[
@@ -290,6 +294,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
             ObjectProperty,
             TaskGlobalObject,
             EngineErrorCause,
+            PrivateElements,
         ],
         ObjectKind::Native => &[NativePayloadEdges, EphemeronValue, WeakNotification],
         ObjectKind::Vector | ObjectKind::Map | ObjectKind::Occurrence => {
@@ -312,7 +317,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::WeakRef => &[WeakRefProperties],
         ObjectKind::FinalizationRegistry => &[FinalizationRegistryEdges],
         ObjectKind::DisposableStack => &[DisposableStackResources],
-        ObjectKind::Proxy => &[ProxyEdges],
+        ObjectKind::Proxy => &[ProxyEdges, PrivateElements],
 
         ObjectKind::ArrayBuffer => &[ArrayBufferProperty],
         ObjectKind::TypedArray => &[TypedArrayEdges],
@@ -348,6 +353,10 @@ fn coverage(holder: Holder) -> Coverage {
         reclaims: (GcRoots, reclaims),
     };
     match holder {
+        Holder::PrivateElements => Coverage {
+            retains: (Inventory, "private_elements_retain_and_reclaim"),
+            reclaims: (Inventory, "private_elements_retain_and_reclaim"),
+        },
         Holder::ProxyEdges => Coverage {
             retains: (Inventory, "proxy_edges_retain_and_reclaim"),
             reclaims: (Inventory, "proxy_edges_retain_and_reclaim"),
@@ -1265,4 +1274,65 @@ fn proxy_edges_retain_and_reclaim() {
     drop(root);
     assert_eq!(heap.request_collection().unwrap().reclaimed, 3);
     assert_stale(&heap, &[proxy, target, handler]);
+}
+
+#[test]
+fn private_elements_retain_and_reclaim() {
+    use crate::ids::TaskId;
+    use crate::object::OrdinaryObject;
+    use crate::value::JsSymbol;
+    use crate::vm::{instr::Instr, private};
+
+    // Internal GC storage test, not JavaScript source support: the leaves
+    // stand for data/method/getter/setter edges, without invoking callbacks.
+    for proxy in [false, true] {
+        let heap = Arc::new(Heap::default());
+        let task = TaskId::from_raw(1);
+        let mut ids = Vec::new();
+        let receiver = if proxy {
+            let target = plain(&heap);
+            let handler = plain(&heap);
+            ids.extend([target, handler]);
+            crate::vm::proxy::construct(
+                &heap,
+                task,
+                &[Value::Object(target), Value::Object(handler)],
+            )
+            .unwrap_or_else(|_| panic!("proxy"))
+        } else {
+            Value::Object(
+                heap.alloc(HeapObject::Plain(OrdinaryObject::new(Some(task))))
+                    .unwrap(),
+            )
+        };
+        if let Value::Object(id) = receiver {
+            ids.push(id);
+        }
+        let accessor = Value::Symbol(JsSymbol::new(None));
+        for instr in [
+            Instr::DefinePrivateField,
+            Instr::DefinePrivateMethod,
+            Instr::DefinePrivateGetter,
+            Instr::DefinePrivateSetter,
+        ] {
+            let leaf = plain(&heap);
+            ids.push(leaf);
+            let key = if matches!(
+                instr,
+                Instr::DefinePrivateGetter | Instr::DefinePrivateSetter
+            ) {
+                accessor.clone()
+            } else {
+                Value::Symbol(JsSymbol::new(None))
+            };
+            private::define(&heap, task, &receiver, &key, Value::Object(leaf), instr)
+                .unwrap_or_else(|_| panic!("private slot"));
+        }
+        let root = Rooted::new(&heap, receiver);
+        assert_eq!(heap.request_collection().unwrap().reclaimed, 0);
+        assert!(ids.iter().all(|id| heap.is_live(*id)));
+        drop(root);
+        assert_eq!(heap.request_collection().unwrap().reclaimed, ids.len());
+        assert_stale(&heap, &ids);
+    }
 }

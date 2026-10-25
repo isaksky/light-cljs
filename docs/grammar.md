@@ -543,7 +543,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | `with` in strict code (clj-quickjs-110) | Invalid at `with` |
 | `await using` outside async functions, including module top level; patterns, missing initializers, switch clauses or single-statement bodies | SyntaxError (Invalid or Unsupported according to the rejected token) |
 | static initialization blocks, `import`/`export` in scripts, dynamic `import` | Unsupported |
-| private class names (`#x`) | UnknownToken |
+| private names outside their declaring lexical class scope | Invalid |
 | module string-literal import/export names, import attributes (including `type: 'json'` and `type: 'json5'`), `import.meta`, top-level `await` | Unsupported |
 | `new.target` outside a non-arrow function, including a top-level arrow or indirect eval (clj-quickjs-99) | Invalid |
 | execution of parsed async generators | supported with task-owned queued requests (clj-quickjs-313) |
@@ -609,7 +609,7 @@ uncaught assertion Error. A synthetic host console records hello's arguments:
 adaptation are listed in each fixture header and `docs/architecture.md`.
 
 Super properties and public class fields execute (clj-quickjs-138/139);
-private names and static blocks remain rejected.
+private names execute (clj-quickjs-291); static blocks remain rejected.
 Derived classes and constructor `super()` calls execute (clj-quickjs-137).
 Source `new.target` in base and derived constructors, lexical arrows and direct
 eval uses the leaf construction target, including before `super()`.
@@ -1096,7 +1096,7 @@ for (const {length: size} in {abc: 1}) values.push(size);
 | Operators (clj-quickjs-314) | Execution |
 | --- | --- |
 | `left ?? right` | Returns the left value unless it is null or undefined; only then evaluates and returns the right. Left-associative, above the conditional operator; unparenthesized mixing with `&&` or `\|\|` is an early SyntaxError. No operand conversion. |
-| `target &&= value`, `target \|\|= value`, `target ??= value` | Identifiers, named/computed members and existing `super` properties. Resolve and read the reference once; evaluate the RHS and perform PutValue only for a truthy, falsy or nullish old value respectively. Otherwise return the old value with no write, including to constants and getter-only/non-writable properties. Computed keys convert once before the read. Selected identifier assignments infer anonymous function/arrow/generator/async/class names; property assignments do not. Sloppy with-object bindings retain the selected reference even if the RHS changes the environment. Existing instruction budgets, traced operands and resumable calls cover yields, waits and collection; no new limits or opcodes. Private names remain unavailable. Fixture: `tests/fixtures/js/logical_assignment.js`. |
+| `target &&= value`, `target \|\|= value`, `target ??= value` | Identifiers, named/computed members and existing `super` properties. Resolve and read the reference once; evaluate the RHS and perform PutValue only for a truthy, falsy or nullish old value respectively. Otherwise return the old value with no write, including to constants and getter-only/non-writable properties. Computed keys convert once before the read. Selected identifier assignments infer anonymous function/arrow/generator/async/class names; property assignments do not. Sloppy with-object bindings retain the selected reference even if the RHS changes the environment. Existing instruction budgets, traced operands and resumable calls cover yields, waits and collection; no new limits or opcodes. Private member targets also execute (clj-quickjs-291). Fixture: `tests/fixtures/js/logical_assignment.js`. |
 
 Sloppy `with (value) statement` (clj-quickjs-110) converts `value` to an
 object, throwing TypeError for null or undefined. Identifier references in
@@ -5722,9 +5722,9 @@ use resumable VM frames, including constructors and computed-key conversion.
 Rejected forms: duplicate constructors, accessor/async/generator constructors,
 and non-computed static methods/accessors named `prototype` are early `Invalid`
 SyntaxErrors. Declarations in single-statement positions are `Invalid`.
-Public fields execute as described below (-139). Private names and static
+Public fields execute as described below (-139), as do private names (-291). Static
 blocks remain explicitly unsupported.
-Explicit gaps: private fields and static initialization blocks. Derived constructors execute below (-137).
+Explicit gaps: static initialization blocks. Derived constructors execute below (-137).
 
 ```js accept
 class Point { constructor(x) { this.x = x; } get y() { return this.x; } static origin() { return new Point(0); } }
@@ -5787,7 +5787,7 @@ Rejected forms: `super()` outside a derived constructor or its lexical arrows/di
 `new super()`, are early `Invalid` SyntaxErrors. Non-constructor heritage and
 invalid parent prototypes throw TypeError at runtime. An implicit constructor
 for `extends null` throws TypeError when it tries to construct its parent.
-Explicit gaps: private fields/static blocks. Construction with the
+Explicit gaps: static blocks. Construction with the
 derived new target supports ordinary/class parents and `Object`; constructing
 other built-in subclasses is explicitly rejected with UnsupportedOperand.
 
@@ -6328,7 +6328,7 @@ a derived receiver's initialization error points to `super`.
 
 Rejected forms: super properties outside methods/accessors (including ordinary
 nested functions), bare `super`, and `super?.x` are early Invalid SyntaxErrors.
-Explicit gaps: private names and static blocks remain rejected. Lexical
+Private names execute (clj-quickjs-291). Explicit gaps: static blocks. Lexical
 arrows and direct eval inherit the method context (clj-quickjs-112).
 
 ```js accept
@@ -6417,7 +6417,7 @@ on 64 KiB worker stacks. Existing restrictions on exotic property descriptors
 Rejected forms: non-computed fields named `constructor`, static fields named
 `prototype`, and references to `arguments` in initializer code (including arrows
 and direct eval) are Invalid SyntaxErrors. `super()` is forbidden in initializers.
-Explicit gaps: private names and static blocks remain explicitly rejected.
+Private names execute (-291). Explicit gaps: static blocks.
 
 ```js accept
 class S { static x = 42; static y = S.x; static z = this.x; }
@@ -6444,7 +6444,7 @@ class R { x = arguments; }
 class R { static {} }
 ```
 
-```js reject UnknownToken 1:11
+```js accept
 class R { #x; }
 ```
 
@@ -6473,7 +6473,7 @@ SyntaxErrors; direct eval outside that context and indirect eval throw catchable
 SyntaxError. `super()` requires a derived constructor context and remains
 forbidden in ordinary methods and field initializers. Direct eval in parameter
 expressions inherits the enclosing method context (clj-quickjs-109).
-Explicit gaps: private names and static blocks remain rejected.
+Private names execute (clj-quickjs-291). Explicit gaps: static blocks.
 
 Synthetic fixtures, not light-cljs output:
 
@@ -6785,3 +6785,53 @@ sync iterators through CreateAsyncFromSyncIterator, including return/throw
 forwarding and iterator closing. `Symbol.asyncIterator` is a well-known symbol.
 Async generator execution is no longer an Unsupported compilation error.
 Async iteration statements remain a separate feature (clj-quickjs-308).
+
+## Private class names (clj-quickjs-291)
+
+Class element names may be PrivateIdentifiers (`#` immediately followed by an
+IdentifierName, including Unicode escapes and reserved words). Fields, methods,
+async/generator methods and getter/setter pairs accept instance and static forms.
+Member access accepts `receiver.#name` and `receiver?.#name`; ordinary calls,
+assignment, compound/logical assignment, updates and destructuring targets use
+that same lexical reference. `#name in expression` has relational precedence;
+its private identifier cannot be parenthesized or used as a standalone value.
+
+All names are visible throughout the class body, including nested ordinary
+functions, arrows, nested classes and direct eval. A nested class's declarations
+shadow outer private names; its heritage sees the outer environment. Names are
+fresh at every class evaluation. Indirect eval and Function have no enclosing
+private environment. Undeclared names, duplicate declarations (except one getter
+and setter with the same staticness), `#constructor`, private deletion and
+`super.#name` are early SyntaxErrors, including in unused method bodies.
+
+Each receiver owns its private slots; methods/accessors are installed before
+fields, fields initialize in source order, and access before field installation
+throws TypeError. Private fields are writable even on frozen objects; private
+methods cannot be assigned, and missing setters throw TypeError. Private access
+checks the receiver itself, without public key coercion, prototype traversal or
+Proxy traps. `#name in object` reports its own brand without calling an accessor;
+foreign brands return false, primitives throw TypeError. Cross-task receivers
+throw TypeError under the runtime ownership policy. Constructor-returned proxies
+can acquire their own private state without modifying their targets.
+
+Storage, names, initializer closures and accessor calls are precisely traced
+across instruction budgets, dependency waits, collection and worker migration.
+No new implementation limit is imposed: existing local/capture/function/bytecode
+bounds apply. Shared intrinsics, published functions, and runtime persistent or
+concurrent-reference values cannot be stamped with mutable private state.
+
+```js accept
+class Counter {
+  #value = 1;
+  #step() { return ++this.#value; }
+  get #current() { return this.#value; }
+  next() { return this.#step(); }
+  static has(o) { return #value in o; }
+}
+let counter = new Counter();
+counter.next() === 2 && Counter.has(counter) && !Counter.has({});
+```
+
+```js reject Invalid 1:21
+class C { #x; m() { delete this.#x; } }
+```

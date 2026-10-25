@@ -105,6 +105,7 @@ pub(super) struct Parser<'a> {
     super_property: bool,
     class_initializer: bool,
     class_field_asi: bool,
+    private_allowed: bool,
     suspension: SuspensionContext,
     /// Inside the body of a loop of the current function (`break` and
     /// `continue` are allowed).
@@ -183,6 +184,7 @@ impl<'a> Parser<'a> {
             super_property: false,
             class_initializer: false,
             class_field_asi: false,
+            private_allowed: false,
             suspension: SuspensionContext::default(),
             in_loop: false,
             in_switch: false,
@@ -619,6 +621,7 @@ impl<'a> Parser<'a> {
             None
         };
         let outer_field_asi = std::mem::replace(&mut self.class_field_asi, true);
+        let outer_private = std::mem::replace(&mut self.private_allowed, true);
         self.lexer.expect_property_name();
         self.expect_punct(Punct::LBrace)?;
         let no_in = std::mem::replace(&mut self.no_in, false);
@@ -700,6 +703,7 @@ impl<'a> Parser<'a> {
         self.set_strict(outer_strict);
         self.advance()?;
         self.class_field_asi = outer_field_asi;
+        self.private_allowed = outer_private;
         self.no_in = no_in;
         self.depth = saved;
         let span = self.span_from(start);
@@ -744,6 +748,7 @@ impl<'a> Parser<'a> {
                         matches!(
                             t.kind,
                             TokenKind::Identifier(_)
+                                | TokenKind::PrivateName(_)
                                 | TokenKind::Keyword(_)
                                 | TokenKind::String(_)
                                 | TokenKind::Number(_)
@@ -764,7 +769,20 @@ impl<'a> Parser<'a> {
             self.advance()?;
         }
         let name_span = self.tok.span;
-        let name = self.parse_pattern_key()?;
+        let name = if let TokenKind::PrivateName(name) = &self.tok.kind {
+            let name = name.clone();
+            if name == "#constructor" {
+                return Err(self.error(
+                    SyntaxErrorKind::Invalid,
+                    name_span,
+                    "#constructor is forbidden",
+                ));
+            }
+            self.advance()?;
+            PropertyName::Identifier(name)
+        } else {
+            self.parse_pattern_key()?
+        };
         if !self.is_punct(Punct::LParen) {
             if generator || asynchronous || accessor.is_some() {
                 return Err(self.unexpected("a method parameter list"));
@@ -829,6 +847,21 @@ impl<'a> Parser<'a> {
     pub(super) fn class_initializer_eval(&mut self, enabled: bool) {
         self.class_initializer = enabled;
         self.super_property = enabled;
+    }
+
+    pub(super) fn allow_private(&mut self, allowed: bool) {
+        self.private_allowed = allowed;
+    }
+
+    fn check_private_context(&self) -> PResult<()> {
+        if matches!(self.tok.kind, TokenKind::PrivateName(_)) && !self.private_allowed {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                self.tok.span,
+                "private name outside a class body",
+            ));
+        }
+        Ok(())
     }
 
     #[inline(never)]
@@ -3256,6 +3289,7 @@ impl<'a> Parser<'a> {
                     && matches!(
                         t.kind,
                         TokenKind::Identifier(_)
+                            | TokenKind::PrivateName(_)
                             | TokenKind::Keyword(_)
                             | TokenKind::String(_)
                             | TokenKind::Number(_)
@@ -3371,7 +3405,7 @@ impl<'a> Parser<'a> {
     /// [`Self::parse_exponent`].)
     fn parse_binary(&mut self, min_prec: u8) -> PResult<Expr> {
         let saved = self.depth;
-        let mut left = self.parse_exponent()?;
+        let mut left = self.parse_exponent(min_prec)?;
         // Parentheses start a fresh invocation. Coalesce operands stop
         // before either boolean operator, so all unparenthesized mixing
         // is seen here even though && has higher precedence than ||.
@@ -3415,6 +3449,35 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
+    /// Keep the extra private-in AST temporaries off ordinary expression
+    /// recursion's stack. Private identifiers are never primary expressions.
+    #[inline(never)]
+    fn parse_private_in(&mut self, min_prec: u8) -> PResult<Expr> {
+        self.check_private_context()?;
+        if min_prec > 7 || self.no_in {
+            return Err(self.unexpected("an expression"));
+        }
+        let TokenKind::PrivateName(name) = &self.tok.kind else {
+            unreachable!()
+        };
+        let name = name.clone();
+        let at = self.advance()?.span;
+        if !self.is_keyword(Keyword::In) {
+            return Err(self.unexpected("in after a private name"));
+        }
+        self.deeper(cost::OPERATOR)?;
+        let op_span = self.advance()?.span;
+        let right = self.parse_binary(8)?;
+        let expression = make_binary(
+            BinOrLogical::Binary(BinaryOp::In),
+            Expr::new(ExprKind::Identifier(name), at),
+            right,
+            op_span,
+        );
+        self.check_height(expression.height)?;
+        Ok(expression)
+    }
+
     /// ExponentiationExpression:
     ///   UnaryExpression | CallExpression `**` ExponentiationExpression
     ///
@@ -3423,7 +3486,10 @@ impl<'a> Parser<'a> {
     /// expression: `-a ** b` is a SyntaxError (reported by
     /// [`Self::parse_unary`] at the `**`), while `(-a) ** b`, `-(a ** b)`
     /// and `a ** -b` are valid.
-    fn parse_exponent(&mut self) -> PResult<Expr> {
+    fn parse_exponent(&mut self, min_prec: u8) -> PResult<Expr> {
+        if matches!(self.tok.kind, TokenKind::PrivateName(_)) {
+            return self.parse_private_in(min_prec);
+        }
         let base = self.parse_unary()?;
         if !self.is_punct(Punct::StarStar) {
             return Ok(base);
@@ -3431,7 +3497,7 @@ impl<'a> Parser<'a> {
         let saved = self.depth;
         self.deeper(cost::OPERATOR)?;
         let op_span = self.advance()?.span;
-        let exponent = self.parse_exponent()?;
+        let exponent = self.parse_exponent(11)?;
         self.depth = saved;
         let span = base.span.to(exponent.span);
         self.expr(
@@ -3512,6 +3578,20 @@ impl<'a> Parser<'a> {
     /// binding cannot be deleted.
     #[inline(never)]
     fn check_delete_operand(&self, operand: &mut Expr, op_span: Span) -> PResult<()> {
+        let private = match &operand.kind {
+            ExprKind::Member { property, .. } => property.name.starts_with('#'),
+            ExprKind::OptionalChain { links, .. } => {
+                matches!(links.last().map(|l| &l.kind), Some(ChainLinkKind::Member(p)) if p.name.starts_with('#'))
+            }
+            _ => false,
+        };
+        if private {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                op_span,
+                "private members cannot be deleted",
+            ));
+        }
         let identifier = match &operand.kind {
             ExprKind::Identifier(_) => true,
             // A literal operand spans one primary token (inside any
@@ -3665,8 +3745,10 @@ impl<'a> Parser<'a> {
                 ChainLinkKind::Index(index)
             } else if optional {
                 self.deeper(cost::OPERATOR)?;
+                self.check_private_context()?;
                 let name = match &self.tok.kind {
                     TokenKind::Identifier(name) => name.clone(),
+                    TokenKind::PrivateName(name) => name.clone(),
                     TokenKind::Keyword(k) => k.as_str().to_string(),
                     _ => {
                         return Err(self.error(
@@ -3811,8 +3893,10 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn parse_property_name(&mut self) -> PResult<Ident> {
         self.advance()?;
+        self.check_private_context()?;
         let name = match &self.tok.kind {
             TokenKind::Identifier(name) => name.clone(),
+            TokenKind::PrivateName(name) => name.clone(),
             TokenKind::Keyword(k) => k.as_str().to_string(),
             _ => return Err(self.unexpected("a property name after `.`")),
         };
@@ -4200,6 +4284,7 @@ impl<'a> Parser<'a> {
             operand = match &token.kind {
                 TokenKind::Keyword(_) if after_dot => false,
                 TokenKind::Identifier(_)
+                | TokenKind::PrivateName(_)
                 | TokenKind::Number(_)
                 | TokenKind::BigInt(_)
                 | TokenKind::String(_)

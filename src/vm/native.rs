@@ -1085,6 +1085,9 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
     match instr {
         Reduce | NeedAll | GetAsyncIterator | GetIterator | UsingCheck | UsingDispose(_)
         | UsingCheckAsync | UsingDisposeAsync(_) | ForInNext | Rest(_) | CopyDataProperties => true,
+
+        NewPrivateName(_) | GetPrivate | PutPrivate | PrivateIn | DefinePrivateField
+        | DefinePrivateMethod | DefinePrivateGetter | DefinePrivateSetter => false,
         PendingException | SuppressedError | PendingCancel => false,
         IsCell | IsObject | ToObject => false,
         RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add

@@ -328,6 +328,7 @@ pub(crate) fn compile_direct_eval(
     parser.allow_new_target(site.new_target.is_some());
     parser.class_initializer_eval(site.class_initializer);
     parser.allow_super(site.super_home.is_some(), site.super_fields.is_some());
+    parser.allow_private(site.bindings.iter().any(|b| b.name.starts_with('#')));
     let script = parser.parse_script()?;
     lower::lower_direct_eval(name, source, &script, site)
 }

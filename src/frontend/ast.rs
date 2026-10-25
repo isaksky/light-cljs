@@ -48,6 +48,7 @@ pub struct Script {
 /// A binding name or property name with its span.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ident {
+    /// Private member names include the leading #; ordinary bindings cannot.
     pub name: String,
     pub span: Span,
 }
@@ -926,6 +927,7 @@ impl PropertyDef {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropertyName {
     /// An IdentifierName, reserved words included (`if`, `get`, ...).
+    /// Class elements also use this variant for a leading-# PrivateIdentifier.
     Identifier(String),
     /// A string literal's cooked value (lone surrogates included).
     String(crate::value::JsString),
