@@ -2,9 +2,13 @@
 
 `bb benchmarks/native-macros.bb OUTPUT` builds the explicit native-only release
 compiler with `cargo build --locked --release --no-default-features --features
-bbp-macros` and three build jobs, then starts a fresh compiler process for every
-sample. Requires Babashka, Cargo/Rust, Node (`NODE` overrides it), and macOS or
-Linux `/usr/bin/time`. It never enables another macro backend as a fallback.
+bbp-macros --target HOST --target-dir REPO/target` and three build jobs, then starts
+a fresh compiler process for every sample. `HOST` comes from `rustc -vV`; the
+explicit target and directory override Cargo environment/configuration defaults.
+The runner executes `REPO/target/HOST/release/light-cljs` and records that path,
+target, command and binary hash together. Requires Babashka, Cargo/Rust, Node
+(`NODE` overrides it), and macOS or Linux `/usr/bin/time`. It never enables another
+macro backend as a fallback.
 
 ```sh
 # One smoke attempt per fixture/job count, including unsupported cells:
@@ -16,7 +20,7 @@ bb benchmarks/native-macros.bb target/native-macro-matrix
 # Restrict jobs or change the external per-process deadline:
 bb benchmarks/native-macros.bb target/native-macro-serial --jobs 1 --timeout-ms 120000
 
-# Pure runner validation, including a killed/reaped timeout process:
+# Runner validation, including a temporary Cargo fixture and reaped timeout:
 bb benchmarks/native-macros-test.bb
 cljfmt check benchmarks/native-macros.bb benchmarks/native-macros-test.bb
 clj-kondo --lint benchmarks/native-macros.bb benchmarks/native-macros-test.bb

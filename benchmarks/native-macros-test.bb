@@ -4,6 +4,35 @@
 ;; invoking main. Lint both files together, as documented.
 (load-file (str (.getParent (java.io.File. *file*)) "/native-macros.bb"))
 
+(deftest native-build-overrides-configured-target-and-ignores-stale-binary
+  (let [dir (fs/create-temp-dir {:dir (fs/create-dirs (fs/path repo "target")) :prefix "native-build-test-"})]
+    (try
+      (fs/create-dirs (fs/path dir ".cargo"))
+      (fs/create-dirs (fs/path dir "src"))
+      (fs/create-dirs (fs/path dir "target/release"))
+      (spit (str (fs/path dir "Cargo.toml"))
+            "[package]\nname = \"light-cljs\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[workspace]\n[features]\ndefault = [\"v8\"]\nv8 = []\nbbp-macros = []\n")
+      (spit (str (fs/path dir "Cargo.lock")) "version = 3\n[[package]]\nname = \"light-cljs\"\nversion = \"0.0.0\"\n")
+      (spit (str (fs/path dir "src/main.rs"))
+            "fn main() { assert!(cfg!(feature = \"bbp-macros\")); assert!(!cfg!(feature = \"v8\")); println!(\"native-only\"); }\n")
+      (spit (str (fs/path dir ".cargo/config.toml"))
+            "[build]\ntarget = \"invalid-configured-target\"\ntarget-dir = \"wrong-configured-directory\"\n")
+      (spit (str (fs/path dir "target/release/light-cljs")) "stale-v8-binary")
+      (with-redefs [repo (str dir)]
+        (let [{:keys [binary target target-dir] build :command} (native-build)
+              env (dissoc (into {} (System/getenv)) "CARGO_BUILD_TARGET")]
+          ;; Exercise both Cargo configuration and the environment override. The
+          ;; invalid targets ensure success requires the explicit host selection.
+          (doseq [env [env (assoc env "CARGO_BUILD_TARGET" "invalid-env-target")]]
+            (let [built (apply p/shell {:dir repo :env (assoc env "CARGO_TARGET_DIR" (str (fs/path dir "wrong-env-directory")))
+                                        :out :string :err :string :continue true} build)]
+              (is (zero? (:exit built)) (:err built))))
+          (is (= (str (fs/path dir "target")) target-dir))
+          (is (= (str (fs/path target-dir target "release/light-cljs")) binary))
+          (is (= "native-only\n" (:stdout (command [binary]))))
+          (is (= "stale-v8-binary" (slurp (str (fs/path dir "target/release/light-cljs")))))))
+      (finally (fs/delete-tree dir)))))
+
 (deftest alternating-fresh-process-plan
   (let [plan (vec (schedule {:runs 5 :jobs [1 2 4 8]} [{:name "native"} {:name "v8"}]))
         cells (group-by (juxt #(get-in % [:fixture :name]) #(get-in % [:backend :name]) :jobs) plan)]
@@ -63,6 +92,12 @@
           rows (:samples report)]
       (is (= 1 (get-in report [:options :runs])))
       (is (= 12 (count rows)))
+      (let [binary (get-in report [:backends 0 :binary])]
+        (is (= (str (fs/path (:build-target-dir report) (:build-target report) "release/light-cljs")) binary))
+        (is (= ["--target" (:build-target report) "--target-dir" (:build-target-dir report)]
+               (take-last 4 (:build-command report))))
+        (is (= (sha256 binary) (get-in report [:backends 0 :sha256])))
+        (is (every? #(= binary (nth (:command %) 2)) (filter #(= "bbp-macros" (:backend %)) rows))))
       (doseq [fixture (take 2 fixtures)
               :let [row (first (filter #(and (= (:name fixture) (:fixture %)) (= 1 (:jobs %))) rows))]]
         (is (= "ok" (:status row)))

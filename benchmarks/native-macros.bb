@@ -169,12 +169,22 @@
             :unit-matching-note "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable."
             :metrics (metrics sample darwin?) :artifacts (str dir)})))
 
+(defn native-build []
+  (let [rustc (command ["rustc" "-vV"])
+        target (second (re-find #"(?m)^host: (\S+)$" (:stdout rustc)))
+        target-dir (str (fs/path repo "target"))]
+    (when-not (and (zero? (:exit rustc)) target)
+      (throw (ex-info "Cannot determine native rustc host target" rustc)))
+    {:target target :target-dir target-dir
+     :binary (str (fs/path target-dir target "release/light-cljs"))
+     :command ["cargo" "build" "--locked" "--release" "--no-default-features" "--features" "bbp-macros"
+               "--target" target "--target-dir" target-dir]}))
+
 (defn main [args]
   (let [options (parse-options args)
         output (:output options)
         revision (str/trim (:stdout (command ["git" "rev-parse" "HEAD"])))
-        binary (str (fs/path repo "target/release/light-cljs"))
-        build ["cargo" "build" "--locked" "--release" "--no-default-features" "--features" "bbp-macros"]]
+        {:keys [binary target target-dir] build :command} (native-build)]
     (when (fs/exists? output) (throw (ex-info "Output must be a new directory" {:output output})))
     (when (and (:v8-bin options) (not= revision (:v8-revision options)))
       (throw (ex-info "--v8-revision must attest the existing V8 binary was built from this exact HEAD" {:revision revision})))
@@ -182,7 +192,7 @@
       (throw (ex-info "V8 reference must be an existing separate binary (never built by this runner)" {})))
     (fs/create-dirs output)
     (println "Building explicit native-only release backend (3 build jobs)")
-    (let [built (apply p/shell {:dir repo :extra-env {"CARGO_BUILD_JOBS" "3" "CARGO_TARGET_DIR" (str (fs/path repo "target"))} :out :string :err :string :continue true} build)]
+    (let [built (apply p/shell {:dir repo :extra-env {"CARGO_BUILD_JOBS" "3"} :out :string :err :string :continue true} build)]
       (spit (str (fs/path output "build.log")) (str (:out built) (:err built)))
       (when-not (zero? (:exit built)) (throw (ex-info "Native release build failed; see build.log" {}))))
     (let [backends (cond-> [{:name "bbp-macros" :binary binary}]
@@ -190,7 +200,7 @@
           metadata {:schema 1 :revision revision :git-status (command ["git" "status" "--porcelain"])
                     :source-diff-sha256 (do (spit (str (fs/path output "source.diff")) (:stdout (command ["git" "diff" "HEAD"]))) (sha256 (fs/path output "source.diff")))
                     :runner-sha256 (sha256 *file*) :started-at (str (java.time.Instant/now))
-                    :options options :build-command build :build-jobs 3 :build-target-dir (str (fs/path repo "target")) :profile "Cargo release (repository Cargo.toml)"
+                    :options options :build-command build :build-jobs 3 :build-target target :build-target-dir target-dir :profile "Cargo release (repository Cargo.toml)"
                     :cargo-toml-sha256 (sha256 (fs/path repo "Cargo.toml")) :lock-sha256 (sha256 (fs/path repo "Cargo.lock"))
                     :build-environment (into (sorted-map) (filter (fn [[k _]] (or (str/starts-with? k "CARGO_PROFILE_RELEASE_") (str/starts-with? k "CARGO_TARGET_") (#{"RUSTFLAGS" "CARGO_ENCODED_RUSTFLAGS" "RUSTC_WRAPPER" "RUSTUP_TOOLCHAIN" "CC" "CFLAGS"} k))) (System/getenv)))
                     :cache-policy "--no-cache; each measured compiler and Node invocation is a fresh process; OS filesystem cache is not flushed; no warmups"
