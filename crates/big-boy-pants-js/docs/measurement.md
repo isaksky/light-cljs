@@ -152,6 +152,89 @@ for this benchmark-only change. Quick scaling plus Node and single-thread
 script modes also completed successfully. The final rebase changed only an
 unrelated test setup; benchmark and measurement-test inputs were unchanged.
 
+## Property dispatch optimization (2026-10-25)
+
+Compared the landed kernel harness at `30cc71cb` with implementation
+`3b15101a7d0610bd2790aa62e1dd3a64932264ec`, in the same isolated worktree on
+the Mac/Rust 1.99.1 environment above. Both builds used the workspace release
+profile, without `RUSTFLAGS` or stack overrides. Commands from the repository
+root, separately at each revision:
+
+```sh
+CARGO_BUILD_JOBS=3 cargo build --locked --release -p big-boy-pants-js --example bench --bin big-boy-pants-js
+target/release/examples/bench kernels --rounds 5
+```
+
+These are full sizes, four tasks on one registered thread, one discarded
+warmup and five measured rounds, with identical sources, expected results and
+timing boundaries. Builds, tests and profiles were stopped during timing;
+other orchestration workers also paused their builds/tests. Background host
+activity remained uncontrolled. Before-run load averages changed from
+`3.34 3.91 4.53` to `2.83 3.72 4.44`; after-run averages changed from
+`2.53 3.43 4.26` to `2.70 3.42 4.24`.
+
+| Kernel | Before ns/iteration median [min..max] | After ns/iteration median [min..max] | Before / after |
+|---|---:|---:|---:|
+| arithmetic | 329.8 [328.0..330.1] | 336.3 [333.0..341.8] | 0.981x |
+| allocate | 12298531.8 [12152139.1..12406706.5] | 3323289.6 [3253749.7..3342961.5] | 3.701x |
+| properties | 6144.6 [6111.9..6351.5] | 1062.8 [1059.6..1064.9] | 5.782x |
+| cljs_map | 15953251.0 [15868079.7..16012860.9] | 5611864.6 [5535960.2..5714907.0] | 2.843x |
+| cljs_protocol | 1799292.7 [1791667.2..1818180.2] | 623347.4 [619620.8..626982.6] | 2.887x |
+
+The four property-using rows improve substantially. The arithmetic control
+is about 2% slower in this comparison; this change does not optimize its
+local-variable loop. No scaling or new Node comparison is claimed here.
+
+For a separate profile at each revision, the exact `Kernel::Allocate` source
+from `examples/bench/workloads.rs` was copied to an ignored script under
+`target/`, followed by `kernel(2000)` and an assertion that it returns
+2,000,000. The release CLI ran that script while
+`sample "$profile_pid" 5 1 -file profile.txt` sampled it for five seconds at
+one-millisecond intervals. Both processes completed with the expected total.
+The main thread supplied 3,782 before samples and 3,787 after samples:
+
+| Self frame | Before samples | After samples |
+|---|---:|---:|
+| `vm::proxy::inspect` | 1020 (27.0%) | 20 (0.53%) |
+| `module::namespace::probe` | 581 (15.4%) | absent from sampled stacks |
+| `vm::property::lookup` | 228 | 37 |
+| `vm::property::check_inherited` | 203 | 52 |
+
+Proxy/namespace probes were the top two self frames before (42.3% combined)
+and are no longer top frames. The leading after frames are
+`dispatch::execute_budgeted` (489), destruction of `dispatch::Fault` (275),
+`dispatch::step_instruction` (213), and `native::start_conversion` (208).
+Mutex operations, allocation, key hashing and constructor-key UTF-16
+encoding remain visible; these are sample distributions over equal wall
+intervals, not equal amounts of completed work.
+
+The implementation replaces linear intrinsic-view scans with a constant-time
+slot lookup plus full generation check. Ordinary reads, own descriptors,
+writes and prototype walks classify exotics during the access they already
+need. Namespace entries and typed-array views are copied out before any
+export-cell/buffer access; proxy and typed-value conversions resume through
+the existing VM continuations. Numeric-key parsing and its string encoding
+now run only for typed-array receivers on these paths. Named keys retain
+their existing UTF-16 strings, and read/write walks materialize array-index
+names only when ordinary storage needs them. Constructor-key synthesis and shape/key
+caching are not changed.
+
+Validation used `CARGO_BUILD_JOBS=3` and `--test-threads=3`. At `3d89c9e1`,
+`cargo test --locked -p big-boy-pants-js --all-targets` passed **1,964 tests**
+in 58 result groups, with zero failures or ignored tests, including the
+QuickJS-derived corpus; `--doc` passed all **six doctests**. After rebasing
+onto `30cc71cb`, the runtime and regression-test content was unchanged, so
+those results were reused; the changed `--test measurement` suite passed
+all **10 tests**, including the new shared-runtime kernel check. Engine
+formatting and `cargo check --locked -p big-boy-pants-js --all-targets`
+passed. Final all-targets strict Clippy still reports the same nine existing
+Rust 1.99 diagnostics; allowing only `deprecated`,
+`clippy::chunks_exact_to_as_chunks`, and `clippy::byte_char_slices` after
+`-D warnings` passes, with no source suppressions or new diagnostics.
+Focused regressions cover proxy/namespace/typed-array inheritance, function
+setters, UTF-16 names, foreign-owner faults, intrinsic lock-free access, and
+intrinsic slot holes and stale generations.
+
 ## Method and limits of the measurements
 
 `examples/bench/main.rs` handles timing, a counting allocator and reports;
