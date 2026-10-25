@@ -66,6 +66,24 @@ fn class_static_blocks_scope_and_class_context() {
 }
 
 #[test]
+fn class_static_blocks_restore_enclosing_context() {
+    for source in [
+        "function* f() { class C { static {} } yield 7; } f().next().value === 7",
+        "class B { constructor() { this.x = 7; } } class D extends B { y = 8; constructor() { class C { static {} } super(); } } const d = new D(); d.x === 7 && d.y === 8",
+        "class B { f() { return 7; } } class D extends B { f() { class C { static {} } return super.f(); } } new D().f() === 7",
+        "let n = 0; outer: while (n < 2) { n++; class C { static {} } continue outer; } n === 2",
+        "let n = 0; switch (7) { case 7: class C { static {} } n++; break; default: n = 9; } n === 1",
+    ] {
+        check(source);
+    }
+    compile_script(
+        "static-block-async-context.js",
+        "async function f() { class C { static {} } return await 7; }",
+    )
+    .unwrap();
+}
+
+#[test]
 fn class_static_blocks_early_errors() {
     for source in [
         "class C { static { return; } }",
