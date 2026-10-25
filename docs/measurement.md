@@ -543,3 +543,21 @@ as proof. Full-suite/fmt/clippy results are outside this historical catalogue.
 | 365 | `cargo test --test measurement string_concatenation_is_amortized_linear -- --test-threads=3` | 1 passed, 0 failed | 5 |
 
 </details>
+
+### Post-rebase finish checks
+
+Run at `0e5bc989`, rebased onto master `72201c8b`. Every command used the default
+target directory, with no peer workers. The later result-recording changes are
+documentation only.
+
+| Exact command | Observed result |
+| --- | --- |
+| `CARGO_BUILD_JOBS=3 nix develop -c cargo test --all-targets -- --test-threads=3` | **1940 passed, 0 failed, 0 ignored**, 57 result groups (including empty binary/example groups); 145 s wall time |
+| `CARGO_BUILD_JOBS=3 nix develop -c cargo test --doc -- --test-threads=3` | **6 passed**, including compile-fail root/scope lifetime checks |
+| `CARGO_BUILD_JOBS=3 nix develop -c cargo test --lib heap::inventory:: -- --test-threads=3` | **16 passed** |
+| `CARGO_BUILD_JOBS=3 nix develop -c cargo test --lib frontend::tests::grammar_doc_examples -- --exact --test-threads=3` | **1 passed**, 351 preserved example fences |
+| `CARGO_BUILD_JOBS=3 nix develop -c cargo fmt --all -- --check` | passed |
+| `CARGO_BUILD_JOBS=3 nix develop -c cargo clippy --all-targets -- -D warnings` | passed |
+
+No code defect follow-up was needed. This is a verification record, not a second
+backlog; future implementation work remains in Pellets.
