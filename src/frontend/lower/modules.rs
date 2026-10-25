@@ -133,6 +133,16 @@ pub(crate) fn lower_module(
         lower.cur_mut().module = true;
         lower.cur_mut().scopes.push(Scope::new());
         for (slot, b) in bindings.iter().enumerate() {
+            // A default expression can start at a real binding occurrence
+            // (for example the x in `export default x => ...`). Its hidden
+            // cell needs its own identity when eval captures visible cells.
+            let key = if b.name.name == "*default*" {
+                let key = lower.next_self_key;
+                lower.next_self_key -= 1;
+                key
+            } else {
+                b.name.span.start
+            };
             lower.cur_mut().scopes[0].insert(
                 b.name.name.clone(),
                 Binding {
@@ -142,7 +152,7 @@ pub(crate) fn lower_module(
                     slot: slot as u16,
                     initialized: true,
                     repr: Repr::Cell,
-                    key: b.name.span.start,
+                    key,
                 },
             );
         }

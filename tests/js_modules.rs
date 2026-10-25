@@ -495,6 +495,24 @@ fn default_export_declarations_and_expressions() {
 }
 
 #[test]
+fn default_arrow_eval_preserves_parameter_capture() {
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(
+            &[
+                (
+                    "entry.js",
+                    "import d from './dep.js'; __rt.effect(0, d(42)() === 42);",
+                ),
+                ("dep.js", "export default x => () => eval('x');"),
+            ],
+            budget,
+        );
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Bool(true)]);
+    }
+}
+
+#[test]
 fn default_exports_keep_live_aliases_and_expression_snapshots() {
     let sources = [
         (
