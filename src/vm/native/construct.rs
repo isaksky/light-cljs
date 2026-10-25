@@ -8,6 +8,15 @@ use crate::ids::TaskId;
 use crate::value::{JsString, Value};
 use crate::vm::{builtin::Builtin, instr::Instr, prototype};
 
+/// Boxed so ordinary constructor entry does not enlarge every VM action.
+#[derive(Debug)]
+pub(crate) struct Invocation {
+    pub(super) callee: Value,
+    pub(super) target: Value,
+    pub(super) this: Value,
+    pub(super) args: Vec<Value>,
+}
+
 #[derive(Debug)]
 pub(super) struct State {
     which: Builtin,
@@ -167,12 +176,12 @@ impl State {
                         crate::object::OrdinaryObject::with_prototype(task, prototype),
                     ))
                     .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
-                return Ok(Action::EnterConstructor {
+                return Ok(Action::EnterConstructor(Box::new(Invocation {
                     callee: callee.clone(),
                     target: self.target.clone(),
                     this: Value::Object(receiver),
                     args: std::mem::take(&mut self.args),
-                });
+                })));
             }
             return Ok(Action::InitializeBuiltin {
                 which: self.which,

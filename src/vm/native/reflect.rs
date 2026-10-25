@@ -481,7 +481,8 @@ fn ordinary(result: Result<(), Fault>) -> Result<bool, Fault> {
         Ok(()) => Ok(true),
         Err(Fault::TypeError(message))
             if !message.starts_with("unsupported Proxy trap:")
-                && !message.contains("immutable") =>
+                && !message.ends_with("built-in objects are shared by all tasks and immutable")
+                && !message.ends_with("functions shared between tasks are immutable") =>
         {
             Ok(false)
         }

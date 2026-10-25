@@ -361,12 +361,7 @@ pub(crate) enum Action {
         args: Vec<Value>,
         prototype: Option<ObjectId>,
     },
-    EnterConstructor {
-        callee: Value,
-        target: Value,
-        this: Value,
-        args: Vec<Value>,
-    },
+    EnterConstructor(Box<construct::Invocation>),
     /// Run the original instruction with its converted operands. This is
     /// one leaf instruction, never interpreter re-entry.
     Resume {
@@ -3355,7 +3350,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::Call { .. }
             | Action::Construct { .. }
             | Action::InitializeBuiltin { .. }
-            | Action::EnterConstructor { .. }
+            | Action::EnterConstructor(_)
             | Action::ToNumber(_)
             | Action::ToPrimitiveNumber(_)
             | Action::DefaultLocale
@@ -3481,7 +3476,29 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         initialize_builtin(heap, state, which, &args, prototype)?;
         return Ok(Flow::Next);
     }
+    if let Action::EnterConstructor(call) = action {
+        return enter_ordinary_constructor(state, heap, *call);
+    }
     apply_action(state, heap, host, action)
+}
+
+#[inline(never)]
+fn enter_ordinary_constructor(
+    state: &mut VmState,
+    heap: &Heap,
+    call: construct::Invocation,
+) -> Result<Flow, Fault> {
+    let Callee::Code(id, code) = dispatch::callee(heap, &call.callee)? else {
+        return Err(Fault::Internal("ordinary constructor is not code"));
+    };
+    set_awaiting(state, Awaiting::CallResult)?;
+    state.push(call.callee);
+    let argc = call.args.len();
+    call.args.into_iter().for_each(|arg| state.push(arg));
+    state.enter_constructor(code, id, call.this, argc)?;
+    state.top_mut().construct = true;
+    state.top_mut().new_target = call.target;
+    Ok(Flow::FrameChanged)
 }
 
 // Conversions can traverse properties and numeric string parsing. Keep the
@@ -3721,24 +3738,7 @@ fn apply_action(
         Action::InitializeBuiltin { .. } => {
             unreachable!("constructor entered before action dispatch")
         }
-        Action::EnterConstructor {
-            callee,
-            target,
-            this,
-            args,
-        } => {
-            let Callee::Code(id, code) = dispatch::callee(heap, &callee)? else {
-                return Err(Fault::Internal("ordinary constructor is not code"));
-            };
-            set_awaiting(state, Awaiting::CallResult)?;
-            state.push(callee);
-            let argc = args.len();
-            args.into_iter().for_each(|arg| state.push(arg));
-            state.enter_constructor(code, id, this, argc)?;
-            state.top_mut().construct = true;
-            state.top_mut().new_target = target;
-            Ok(Flow::FrameChanged)
-        }
+        Action::EnterConstructor(_) => unreachable!("constructor entered before action dispatch"),
         Action::Continue => Ok(Flow::Next),
         Action::Need { dependency, kind } => {
             set_awaiting(state, Awaiting::Dependency)?;

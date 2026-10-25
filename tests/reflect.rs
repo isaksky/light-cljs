@@ -245,3 +245,13 @@ fn validation_precedes_callbacks_and_proxy_invariants_throw() {
         "let n=0;for(let name of ['get','set','has','defineProperty','deleteProperty','getPrototypeOf','isExtensible','preventExtensions']){let h={};h[name]=()=>true;let p=new Proxy({},h);try{Reflect[name](p,'x',{});}catch(e){if(e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: '+name)>=0)n++;}}let p=new Proxy({},{setPrototypeOf(){return true;}});try{Reflect.setPrototypeOf(p,{});}catch(e){if(e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: setPrototypeOf')>=0)n++;}n===9",
     );
 }
+
+#[test]
+fn rejection_results_do_not_depend_on_property_names() {
+    check(
+        "let ok=true;for(let key of ['immutable','built-in objects are shared by all tasks and immutable','functions shared between tasks are immutable']){let o={};Object.defineProperty(o,key,{value:1});ok=ok&&!Reflect.set(o,key,2)&&!Reflect.defineProperty(o,key,{value:2})&&o[key]===1;}ok",
+    );
+    check(
+        "let n=0;for(let operation of [()=>Reflect.set(Object.prototype,'immutable',1),()=>Reflect.defineProperty(Object.prototype,'immutable',{value:1}),()=>Reflect.preventExtensions(Object.prototype),()=>Reflect.setPrototypeOf(Object.prototype,{})]){try{operation();}catch(e){if(e instanceof TypeError)n++;}}n===4",
+    );
+}
