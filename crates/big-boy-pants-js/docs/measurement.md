@@ -497,6 +497,39 @@ Validation of the final content used `CARGO_BUILD_JOBS=3` and
   `--`). It also passed the `gc`, `gc_roots`, `publication` and `atoms` binaries
   (**164 tests**). There were no race reports.
 
+## Task-local call code ownership (2026-10-25)
+
+light-cljs-486 gives frames an owning, task-local reference count around the
+shared immutable executable. A bounded identity cache reuses these owners;
+ordinary calls, native callbacks, constructors and dispatch-frame switches no
+longer clone the globally shared code handle on each transition. Callable
+probes copy constructor metadata, and repeated constructor prototype reads do
+not retain code in property snapshots. Function creation still takes a shared
+code reference. The lifetime/rooting contract is in
+[architecture.md](architecture.md#embedding); no unsafe code was added.
+
+Validation at `78e0ccf9` used Homebrew Rust/Cargo **1.99.1**, with
+`CARGO_BUILD_JOBS=3` and `--test-threads=3`:
+
+- `cargo test --locked -p big-boy-pants-js --all-targets` passed **1,977 tests**
+  in 58 result groups, with no failures or ignored tests. `--doc` passed all
+  **six doctests**.
+- Fifty iterations of the compiled `calls` (16), `gc` (51), `gc_roots` (70),
+  `cancellation` (3), `wakeup` (4), and `executor_gc` (5) binaries, plus `need`
+  filtered to `generator` (3) and the lib binary filtered to
+  `vm::frames::tests::` (7), passed **7,950 test executions** in 400 non-empty
+  runs. These cover nested calls, collection at each instruction, dependency
+  waits, migration, cancellation and detached generator/async roots. The new
+  unit regressions hold 1,000 cached handles without changing the shared code
+  count, distinguish different tasks' owners, and retain a detached
+  activation through cache eviction, owner destruction and thread migration.
+- `cargo fmt -p big-boy-pants-js -- --check` passed. Strict
+  `cargo clippy --locked -p big-boy-pants-js --all-targets -- -D warnings`
+  reports only the nine existing diagnostics in `deprecated`,
+  `clippy::chunks_exact_to_as_chunks`, and `clippy::byte_char_slices`.
+  Adding `-A` for only those three categories passes; no source suppressions
+  were added.
+
 ## Method and limits of the measurements
 
 `examples/bench/main.rs` handles timing, a counting allocator and reports;
