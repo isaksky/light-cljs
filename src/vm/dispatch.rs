@@ -488,6 +488,7 @@ fn throw_message(code: &Code, pc: usize, kind: ThrowKind) -> String {
         }
         (ThrowKind::ConstAssignment, None) => "assignment to a constant variable".to_string(),
         (ThrowKind::DeleteSuper, _) => "cannot delete a super property".to_string(),
+        (ThrowKind::YieldStarMissingThrow, _) => "yield* delegate has no throw method".to_string(),
     }
 }
 
@@ -1932,7 +1933,9 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
                 ThrowKind::Unresolvable | ThrowKind::Uninitialized | ThrowKind::DeleteSuper => {
                     VmErrorKind::ReferenceError
                 }
-                ThrowKind::ConstAssignment => VmErrorKind::TypeError,
+                ThrowKind::ConstAssignment | ThrowKind::YieldStarMissingThrow => {
+                    VmErrorKind::TypeError
+                }
             };
             (error_kind, throw_message(code, pc, kind))
         }

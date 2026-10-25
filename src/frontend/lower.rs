@@ -4088,8 +4088,28 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
-    /// Delegate with cached protocol values in traced frame locals. The raw
-    /// result is yielded without reading value until the iterator is done.
+    /// Test a saved completion kind, leaving only the boolean on the stack.
+    fn resume_kind_is(&mut self, slot: u16, kind: u8, span: Span) -> Result<(), SyntaxError> {
+        self.out().op_u16(Opcode::GetLocal, slot, span);
+        self.constant(Primitive::Number(kind as f64), span)?;
+        self.out().op(Opcode::StrictEq, span);
+        Ok(())
+    }
+
+    /// GetMethod's null/undefined case. Calls validate all other values.
+    fn branch_nullish(&mut self, slot: u16, target: usize, span: Span) -> Result<(), SyntaxError> {
+        for nullish in [Primitive::Undefined, Primitive::Null] {
+            self.out().op_u16(Opcode::GetLocal, slot, span);
+            self.constant(nullish, span)?;
+            self.out().op(Opcode::StrictEq, span);
+            self.out().op(Opcode::Not, span);
+            self.out().branch(Opcode::JumpIfFalse, target, span);
+        }
+        Ok(())
+    }
+
+    /// Delegate with cached protocol values in traced frame locals. All
+    /// observable protocol operations run as resumable bytecode calls.
     #[inline(never)]
     fn yield_star(&mut self, operand: &Expr, span: Span) -> Result<(), SyntaxError> {
         let saved_slot = self.cur().next_slot;
@@ -4097,14 +4117,54 @@ impl<'s> Lowerer<'s> {
         let next = self.temp(span)?;
         let result = self.temp(span)?;
         let received = self.temp(span)?;
+        let kind = self.temp(span)?;
+        let method = self.temp(span)?;
         self.iterator_acquire(operand, it, next, span)?;
         self.out().op(Opcode::Undefined, span);
         self.out().op_u16(Opcode::SetLocal, received, span);
+        self.constant(Primitive::Number(0.0), span)?;
+        self.out().op_u16(Opcode::SetLocal, kind, span);
         let start = self.out().label();
         let done = self.out().label();
+        let abrupt = self.out().label();
+        let throwing = self.out().label();
+        let missing_return = self.out().label();
+        let missing_throw = self.out().label();
+        let call = self.out().label();
+        let end = self.out().label();
         self.out().bind(start);
-        self.out().op_u16(Opcode::GetLocal, it, span);
+        self.resume_kind_is(kind, 0, span)?;
+        self.out().branch(Opcode::JumpIfFalse, abrupt, span);
         self.out().op_u16(Opcode::GetLocal, next, span);
+        self.out().op_u16(Opcode::SetLocal, method, span);
+        self.out().branch(Opcode::Jump, call, span);
+        self.out().bind(abrupt);
+        self.resume_kind_is(kind, 1, span)?;
+        self.out().branch(Opcode::JumpIfFalse, throwing, span);
+        self.out().op_u16(Opcode::GetLocal, it, span);
+        self.iterator_field("return", span)?;
+        self.out().op_u16(Opcode::SetLocal, method, span);
+        self.branch_nullish(method, missing_return, span)?;
+        self.out().branch(Opcode::Jump, call, span);
+        self.out().bind(missing_return);
+        self.out().op_u16(Opcode::GetLocal, received, span);
+        self.out().op(Opcode::Return, span);
+        self.out().bind(throwing);
+        self.out().op_u16(Opcode::GetLocal, it, span);
+        self.iterator_field("throw", span)?;
+        self.out().op_u16(Opcode::SetLocal, method, span);
+        self.branch_nullish(method, missing_throw, span)?;
+        self.out().branch(Opcode::Jump, call, span);
+        self.out().bind(missing_throw);
+        // IteratorClose uses no argument and validates its result, but does
+        // not inspect done/value. A close failure replaces the TypeError.
+        self.iterator_close(it, method, span)?;
+        self.throw(ThrowKind::YieldStarMissingThrow, span);
+        // ThrowError has an expression result in the verifier.
+        self.out().branch(Opcode::Jump, end, span);
+        self.out().bind(call);
+        self.out().op_u16(Opcode::GetLocal, it, span);
+        self.out().op_u16(Opcode::GetLocal, method, span);
         self.out().op_u16(Opcode::GetLocal, received, span);
         self.out().op_u16(Opcode::CallMethod, 1, span);
         self.out().op(Opcode::RequireObject, span);
@@ -4115,12 +4175,17 @@ impl<'s> Lowerer<'s> {
         self.out().branch(Opcode::JumpIfFalse, done, span);
         self.out().op_u16(Opcode::GetLocal, result, span);
         self.out().op(Opcode::GeneratorYieldStar, span);
+        self.out().op_u16(Opcode::SetLocal, kind, span);
         self.out().op_u16(Opcode::SetLocal, received, span);
         self.out().branch(Opcode::Jump, start, span);
         self.out().bind(done);
         self.out().op_u16(Opcode::GetLocal, result, span);
         self.iterator_field("value", span)?;
-        for slot in [it, next, result, received] {
+        self.resume_kind_is(kind, 1, span)?;
+        self.out().branch(Opcode::JumpIfFalse, end, span);
+        self.out().op(Opcode::Return, span);
+        self.out().bind(end);
+        for slot in [it, next, result, received, kind, method] {
             self.out().op(Opcode::Undefined, span);
             self.out().op_u16(Opcode::SetLocal, slot, span);
         }
@@ -5352,6 +5417,25 @@ impl<'s> Lowerer<'s> {
                     self.out().op(Opcode::Undefined, span);
                 }
                 self.out().op(Opcode::GeneratorYield, span);
+                // Resume supplies [value, kind]. Abrupt completions run at
+                // this yield site, under its saved catch/finally handlers.
+                let abrupt = self.out().label();
+                let throwing = self.out().label();
+                let done = self.out().label();
+                self.out().op(Opcode::Dup, span);
+                self.constant(Primitive::Number(0.0), span)?;
+                self.out().op(Opcode::StrictEq, span);
+                self.out().branch(Opcode::JumpIfFalse, abrupt, span);
+                self.out().op(Opcode::Pop, span);
+                self.out().branch(Opcode::Jump, done, span);
+                self.out().bind(abrupt);
+                self.constant(Primitive::Number(1.0), span)?;
+                self.out().op(Opcode::StrictEq, span);
+                self.out().branch(Opcode::JumpIfFalse, throwing, span);
+                self.out().op(Opcode::Return, span);
+                self.out().bind(throwing);
+                self.out().op(Opcode::Throw, span);
+                self.out().bind(done);
                 Ok(())
             }
             ExprKind::Yield {

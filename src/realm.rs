@@ -1287,6 +1287,10 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     b.all.push(generator_prototype);
     let next = b.function(Builtin::GeneratorNext, &[])?;
     b.add(generator_prototype, "next", next, PropertyFlags::METHOD)?;
+    let ret = b.function(Builtin::GeneratorReturn, &[])?;
+    b.add(generator_prototype, "return", ret, PropertyFlags::METHOD)?;
+    let throw = b.function(Builtin::GeneratorThrow, &[])?;
+    b.add(generator_prototype, "throw", throw, PropertyFlags::METHOD)?;
 
     array_mutator_intrinsics(&mut b, array_prototype, array)?;
     let array_sort = b.function(Builtin::ArrayPrototypeSort, &[])?;

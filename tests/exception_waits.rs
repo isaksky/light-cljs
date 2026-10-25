@@ -1048,6 +1048,113 @@ fn waits_in_try_catch_and_finally_run_no_handler_while_parked() {
 /// survives detached and attached collections, then a dependency wait in
 /// the resumed finally block. Effects must run once across both migrations.
 #[test]
+fn generator_abrupt_resume_cleanup_waits() {
+    // Synthetic fixture, not light-cljs output. The only holder of {n:17}
+    // is the pending completion, detached at B and attached at A/disposal.
+    for method in ["return", "throw"] {
+        let rt = Runtime::new();
+        let source = format!(
+            r#"
+            function* f() {{
+                using resource = {{[Symbol.dispose]() {{
+                    __rt.effect(1, 40); __rt.effect(1, __rt.need(7, 3)); __rt.effect(1, 50);
+                }}}};
+                try {{ yield 1; throw 'unreachable'; }}
+                finally {{
+                    __rt.effect(1, 10); yield 2;
+                    __rt.effect(1, 20); __rt.effect(1, __rt.need(5, 3)); __rt.effect(1, 30);
+                }}
+            }}
+            let g = f();
+            g.next();
+            function deep() {{ return deeper(); }}
+            function deeper() {{ return g.{method}({{n:17}}); }}
+            let a = deep(); if (a.done || a.value !== 2) throw 'cleanup yield';
+            __rt.need(6, 3);
+            let result;
+            try {{ result = g.next().value; }} catch(e) {{ result = e; }}
+            if (!g.next().done) throw 'completed';
+            __rt.effect(1, 60); result.n
+        "#
+        );
+        let task = spawn(&rt, &source);
+        let mut log = Log::default();
+        run_to_wait(&rt, &task, &mut log, B);
+        assert_eq!(log.0, [10.0]);
+        rt.collect().unwrap();
+        let (outcome, log) = run_elsewhere(publish(&rt, &task, 0.0), log);
+        assert_eq!(waiting(outcome), key(&rt, A));
+        assert_eq!(log.0, [10.0, 20.0]);
+        rt.collect().unwrap();
+        let (outcome, log) = run_elsewhere(publish(&rt, &task, 7.0), log);
+        assert_eq!(
+            waiting(outcome),
+            key(&rt, (DependencyId::new(7), ResultKind::new(3)))
+        );
+        assert_eq!(log.0, [10.0, 20.0, 7.0, 30.0, 40.0]);
+        rt.collect().unwrap();
+        let (outcome, log) = run_elsewhere(publish(&rt, &task, 8.0), log);
+        assert_eq!(number(outcome), 17.0, "{method}");
+        assert_eq!(log.0, [10.0, 20.0, 7.0, 30.0, 40.0, 8.0, 50.0, 60.0]);
+    }
+}
+
+#[test]
+fn generator_abrupt_delegate_protocol_waits() {
+    // Synthetic fixtures, not light-cljs output. Each getter/call can park
+    // below the generator boundary; neither the method nor effects replay.
+    for method in ["return", "throw", "missing-throw"] {
+        let max_stage = if method == "missing-throw" { 2 } else { 4 };
+        for stage in 1..=max_stage {
+            let rt = Runtime::new();
+            let property = if method == "missing-throw" {
+                "return"
+            } else {
+                method
+            };
+            let source = format!(
+                r#"
+                function pause(at) {{ __rt.effect(1, at); if (at === {stage}) __rt.need(5, 3); }}
+                let token = {{n:17}}, it = {{next() {{ return {{done:false, value:1}}; }},
+                    get {property}() {{ pause(1); return function(v) {{
+                        pause(2);
+                        if (this !== it || arguments.length !== {arity}) throw 'method call';
+                        return {{get done() {{ pause(3); return true; }},
+                            get value() {{ pause(4); return v; }}}};
+                    }}; }}
+                }};
+                it[Symbol.iterator] = function() {{ return this; }};
+                function* f() {{ return yield* it; }}
+                let g = f(); g.next(); let answer;
+                try {{ answer = g.{call}(token).value; }}
+                catch(e) {{ answer = {caught}; }}
+                answer === token ? 17 : 0
+            "#,
+                arity = if method == "missing-throw" { 0 } else { 1 },
+                call = if method == "return" {
+                    "return"
+                } else {
+                    "throw"
+                },
+                caught = if method == "missing-throw" {
+                    "e instanceof TypeError ? token : e"
+                } else {
+                    "e"
+                },
+            );
+            let task = spawn(&rt, &source);
+            let mut log = Log::default();
+            run_to_wait(&rt, &task, &mut log, A);
+            assert_eq!(log.0, (1..=stage).map(f64::from).collect::<Vec<_>>());
+            rt.collect().unwrap();
+            let (outcome, log) = run_elsewhere(publish(&rt, &task, 0.0), log);
+            assert_eq!(number(outcome), 17.0, "{method} stage {stage}");
+            assert_eq!(log.0, (1..=max_stage).map(f64::from).collect::<Vec<_>>());
+        }
+    }
+}
+
+#[test]
 fn generator_finally_waits_after_resume() {
     for (completion, checks) in [
         (

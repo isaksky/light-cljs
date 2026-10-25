@@ -1546,8 +1546,16 @@ pub(crate) fn start_builtin(
     ) {
         return start_promise(heap, state, which, this, args, construct, popped);
     }
-    if which == Builtin::GeneratorNext {
-        return start_generator_next(heap, state, this, args, popped);
+    if matches!(
+        which,
+        Builtin::GeneratorNext | Builtin::GeneratorReturn | Builtin::GeneratorThrow
+    ) {
+        let kind = match which {
+            Builtin::GeneratorReturn => super::generator::ResumeKind::Return,
+            Builtin::GeneratorThrow => super::generator::ResumeKind::Throw,
+            _ => super::generator::ResumeKind::Next,
+        };
+        return start_generator_resume(heap, state, this, args, popped, kind);
     }
     if let Builtin::IntegerTypedArray(kind) = which
         && construct
@@ -1694,12 +1702,13 @@ fn start_promise(
 }
 
 #[inline(never)]
-fn start_generator_next(
+fn start_generator_resume(
     heap: &Heap,
     state: &mut VmState,
     this: &Value,
     args: &[Value],
     popped: usize,
+    kind: super::generator::ResumeKind,
 ) -> Result<bool, Fault> {
     let id = super::generator::receiver(heap, state.diag.task, this)?;
     let value = args.first().cloned().unwrap_or(Value::Undefined);
@@ -1712,7 +1721,7 @@ fn start_generator_next(
         state.natives.pop();
         return Err(error);
     }
-    let resumed = match super::generator::resume(heap, state, id, value) {
+    let resumed = match super::generator::resume(heap, state, id, value.clone(), kind) {
         Ok(resumed) => resumed,
         Err(error) => {
             // A rejected attachment has not entered the body. Remove
@@ -1731,10 +1740,17 @@ fn start_generator_next(
     } else {
         state.pop_native_catch(state.natives.len() - 1);
         state.natives.pop();
+        if kind == super::generator::ResumeKind::Throw {
+            return Err(Fault::Thrown(value));
+        }
         state.push(super::generator::result(
             heap,
             state.diag.task,
-            Value::Undefined,
+            if kind == super::generator::ResumeKind::Return {
+                value
+            } else {
+                Value::Undefined
+            },
             true,
         )?);
     }

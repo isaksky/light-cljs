@@ -112,9 +112,9 @@
 //! | `ConstructSpread` | 0x79 | – | f args → result | packed constructor call |
 //! | `CheckSpreadArguments` | 0x7A | – | args → args | RangeError above 65,535 elements |
 //! | `GeneratorStart` | 0x7B | – | – | mark non-constructor generator code before parameter initialization |
-//! | `GeneratorYield` | 0x7C | – | yielded → resumed | detach activation; next supplies the resumed operand |
+//! | `GeneratorYield` | 0x7C | – | yielded → resumed kind | detach activation; resume supplies a value and completion kind |
 //! | `GeneratorInitialYield` | 0x7D | – | – | detach initialized activation and return a fresh generator to its caller |
-//! | `GeneratorYieldStar` | 0x7E | – | result object → resumed | detach activation and return the iterator result object unchanged |
+//! | `GeneratorYieldStar` | 0x7E | – | result object → resumed kind | detach activation and return the iterator result object unchanged |
 
 //! | `RequireCoercible` | 0x7F | – | value → value | TypeError for null/undefined (object patterns) |
 //! | `OwnKeys` | 0x80 | – | source → keys | private array of own keys, including symbols, before rest copying |
@@ -1246,6 +1246,8 @@ pub enum ThrowKind {
     ConstAssignment = 2,
     /// ReferenceError: delete of a super property reference.
     DeleteSuper = 3,
+    /// TypeError after closing a yield* delegate that has no throw method.
+    YieldStarMissingThrow = 4,
 }
 
 impl ThrowKind {
@@ -1256,6 +1258,7 @@ impl ThrowKind {
             1 => ThrowKind::Uninitialized,
             2 => ThrowKind::ConstAssignment,
             3 => ThrowKind::DeleteSuper,
+            4 => ThrowKind::YieldStarMissingThrow,
             _ => return None,
         })
     }
@@ -1670,7 +1673,8 @@ impl Instr {
             | GeneratorStart
             | GeneratorInitialYield
             | AsyncStart => (0, 0),
-            GeneratorYield | GeneratorYieldStar | Await => (1, 1),
+            GeneratorYield | GeneratorYieldStar => (1, 2),
+            Await => (1, 1),
             CellInit | CellSet => (2, 0),
             Dup => (1, 2),
             Add | Sub | Mul | Lt | StrictEq | Nth | Get | Dissoc | Conj | BuilderConj | Div

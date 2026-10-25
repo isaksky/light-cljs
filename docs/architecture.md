@@ -6682,8 +6682,8 @@ and `js_create_iterator_result`, revision
 `research/quickjs/tests/test_builtin.js` `test_generator` are expressed as new
 synthetic assertions in `tests/js_source.rs::generator_next_and_yield`, with let
 bindings and one combined failure check. No upstream source/test text copied.
-Generator return/throw methods remain deferred; delegated yield is implemented
-by clj-quickjs-245 below.
+Generator return/throw methods execute through clj-quickjs-293; delegated yield
+is implemented by clj-quickjs-245 below.
 
 The generator prototype inherits the existing `%IteratorPrototype%` installed by
 clj-quickjs-237, including its identity `[Symbol.iterator]`. The realm builder
@@ -6952,8 +6952,8 @@ unchanged, without reading value or wrapping it. Resuming either suspended yield
 state uses the same generic activation attach/check/rebase implementation.
 Protocol errors follow ordinary JS handlers, and every getter/call is resumable
 through existing bytecode/native frames. Locals are cleared on normal exhaustion.
-Cancellation continues to use task unwinding; generator return/throw methods
-remain absent, so forwarding those resumes remains an explicit grammar gap.
+Cancellation continues to use task unwinding; generator return/throw forwarding
+is added by clj-quickjs-293 below.
 
 `generator_yield_star_delegation` covers result identity, cached acquisition,
 receiver and argument forwarding, array iteration, return values and catchable
@@ -8859,3 +8859,31 @@ Semantic reference only: `research/quickjs/quickjs.c` (`js_array_pop`,
 `js_array_push`, `js_array_splice`, `js_array_reverse`, `js_array_fill`,
 `js_array_copyWithin`) at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
 Implementation and fixtures are original; no upstream source text was copied.
+
+## Generator abrupt resumption (clj-quickjs-293)
+
+The shared generator prototype has next/return/throw natives with task-owner,
+brand and executing-state checks. An abrupt resume of suspended-start drops
+the activation without executing it. Completed return/throw use their argument
+directly. Suspended yields reattach the traced activation and push the supplied
+value and completion kind (next=0, return=1, throw=2). Both yield instructions
+therefore have stack effect 1 -> 2. Lowered bytecode consumes the kind at the
+yield site: ordinary yields use Return/Throw, preserving existing catch/finally,
+pending-completion, disposal, cancellation and budget machinery.
+
+Delegated yields save the kind and method in traced frame locals. Next stays
+cached; return/throw are looked up anew. A non-done result suspends unchanged.
+A done return reads value and returns from the frame; a done throw reads value
+and finishes the expression. A nullish return returns the received argument.
+A nullish throw uses IteratorClose (zero arguments, object-result validation,
+no done/value reads), then the appended YieldStarMissingThrow throw kind raises
+TypeError. Getter/call/result failures propagate through ordinary handlers.
+There is no retained Rust stack, new heap kind or additional execution limit.
+
+The synthetic generator_return_throw fixture runs in one-instruction slices
+with collection after every slice. Exception-wait tests collect detached and
+attached pending completions, migrate through finally/disposal waits, and park
+at each delegate method/result getter or call without replaying effects.
+Semantic references: `research/quickjs/quickjs.c` `js_generator_next` and
+`js_parse_assign_expr2` at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
+The implementation and new tests are original; no upstream text is copied.

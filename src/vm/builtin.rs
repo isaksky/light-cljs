@@ -462,6 +462,8 @@ pub(crate) enum Builtin {
     ArrayPrototypeFill,
     ArrayPrototypeCopyWithin,
     ArraySpecies,
+    GeneratorReturn,
+    GeneratorThrow,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -620,6 +622,8 @@ impl Builtin {
             Builtin::PromiseReject => "reject",
             Builtin::PromiseThen => "then",
             Builtin::GeneratorNext => "next",
+            Builtin::GeneratorReturn => "return",
+            Builtin::GeneratorThrow => "throw",
             Builtin::PromiseCatch => "catch",
             Builtin::PromiseResolver(_, _)
             | Builtin::PromiseReaction(_)
@@ -847,7 +851,7 @@ impl Builtin {
             | Builtin::RegExpFlag(_) => 0,
 
             Builtin::PromiseThen => 2,
-            Builtin::GeneratorNext => 1,
+            Builtin::GeneratorNext | Builtin::GeneratorReturn | Builtin::GeneratorThrow => 1,
             Builtin::Promise
             | Builtin::PromiseResolve
             | Builtin::PromiseReject
@@ -1163,7 +1167,9 @@ pub(crate) fn call(
             crate::vm::native::regexp::getter(heap, task, which, this)
         }
 
-        Builtin::GeneratorNext => Err(Fault::Internal("generator next requires VM state")),
+        Builtin::GeneratorNext | Builtin::GeneratorReturn | Builtin::GeneratorThrow => {
+            Err(Fault::Internal("generator method requires VM state"))
+        }
         Builtin::Promise
         | Builtin::PromiseResolve
         | Builtin::PromiseReject

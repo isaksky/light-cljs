@@ -2892,6 +2892,52 @@ fn spread_protocol_errors_and_order() {
 }
 
 #[test]
+fn generator_return_and_throw() {
+    // Synthetic fixture, not light-cljs output. Reproduces the corpus gap.
+    assert_eq!(
+        eval("function* g(){ yield 1; yield 2; } let it=g(); it.next(); it.return(5).value"),
+        ValueView::Number(5.0)
+    );
+    assert_eq!(
+        eval(
+            "function* g(){ try { yield 1; } catch(e) { yield e; } } let it=g(); it.next(); it.throw(7).value"
+        ),
+        ValueView::Number(7.0)
+    );
+}
+
+#[test]
+fn generator_return_throw_fixture() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/generator_return_throw.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn generator_return_throw_budget_and_collection() {
+    let rt = Runtime::new();
+    let code = exe(include_str!("fixtures/js/generator_return_throw.js"));
+    let task = rt.spawn(&code, &[]).unwrap();
+    for _ in 0..100_000 {
+        match task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                return;
+            }
+            other => panic!("generator resume fixture: {other:?}"),
+        }
+    }
+    panic!("generator resume fixture exceeded its instruction bound");
+}
+
+#[test]
 fn generator_next_and_yield() {
     // QuickJS test_generator semantic adaptation, tests/test_builtin.js:
     // Copyright (c) 2017-2021 Fabrice Bellard

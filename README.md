@@ -3403,12 +3403,13 @@ Generator declarations, expressions and methods create task-owned objects with
 `next(value)`. Calls bind arguments and evaluate parameter defaults, leaving the
 body unexecuted. `yield value` returns `{value, done: false}`; the following
 `next(value)` supplies the yield expression's result. Return and fallthrough
-complete the generator, and later calls return `{value: undefined, done: true}`.
+complete the generator, and later next calls return `{value: undefined, done: true}`.
 Uncaught exceptions complete it and propagate to the caller; re-entrant next and
 incompatible receivers throw TypeError. Activations detach into traced heap
 storage between yields and reattach to ordinary VM frames, preserving dependency
 waits, budgets, collection and worker migration. Publication and foreign-task
-access are rejected. Deferred: generator `return`/`throw`, async generators.
+access are rejected. Generator `return`/`throw` execute (clj-quickjs-293);
+async generators remain deferred.
 Generator objects inherit the shared iterator identity protocol and can be
 consumed by `for...of` (clj-quickjs-237) and array/argument spread (clj-quickjs-130).
 Generator functions eagerly create their own task-owned prototype records, so
@@ -3463,7 +3464,7 @@ completions across calls from different depths. For example,
 `try { return 1; } finally { yield 2; }` yields 2, then completes with 1.
 A resumed finally block may wait on `__rt.need`, survive collection and migrate
 to another worker before finishing its pending return or throw. Generator
-`return()`/`throw()` methods and async generators remain deferred; delegated `yield*`
+`return()`/`throw()` methods execute (clj-quickjs-293); async generators remain deferred. Delegated `yield*`
 executes as described below.
 
 ### Array destructuring (clj-quickjs-131)
@@ -3502,8 +3503,24 @@ forwards `next(value)` arguments (undefined initially), returns each non-done
 iterator result object by identity, and evaluates to the final result's value.
 Invalid iterables and primitive next results throw catchable TypeErrors.
 Protocol getters and calls support task waits, budgets, GC and worker migration.
-Generator `return()`/`throw()` methods are still absent, including forwarding
-those operations through a delegate.
+Generator `return()`/`throw()` forwarding executes (clj-quickjs-293).
+
+### Generator abrupt resumption (clj-quickjs-293)
+
+Generators expose `return(value)` and `throw(error)` with receiver and running-state
+checks. At suspended start they complete without entering the body; completed
+generators return the supplied return value or throw the supplied error.
+At a suspended yield, the operation resumes at that yield site through the
+ordinary return/throw paths, including catch, yielding finally blocks and
+`using` disposal. Cleanup can wait, be collected around and migrate workers.
+`yield*` looks up the delegate's return/throw method on each abrupt resume,
+forwards one argument, and preserves non-done result identity. A done return
+returns the delegate's final value from the generator; a done throw continues
+the yield* expression. An absent return returns the supplied value. An absent
+throw closes the iterator without an argument, then throws TypeError; close
+errors take precedence. No additional execution limits are introduced.
+Verify with `CARGO_BUILD_JOBS=3 cargo test --test js_source generator_ -- --test-threads=3`
+and `CARGO_BUILD_JOBS=3 cargo test --test exception_waits generator_ -- --test-threads=3`.
 
 ### JavaScript WeakMap (clj-quickjs-173)
 
@@ -3754,8 +3771,8 @@ counter assertion is detected in both timers and Promise jobs. The GC case
 checks that its callback collects and its unreachable suspended activation
 leaves no objects above the warmed heap baseline after collection.
 
-Deferred: this async fixture coverage adds no generator `return()`/`throw()`
-support; the pinned generator case does not call those methods.
+The pinned generator case does not call `return()`/`throw()`; synthetic coverage
+for those methods is provided by clj-quickjs-293.
 Verify with `CARGO_BUILD_JOBS=3 cargo test --test quickjs_async -- --test-threads=3`.
 
 Direct eval (clj-quickjs-107): `eval(source)` uses caller bindings, lexical

@@ -1416,3 +1416,12 @@ Consulted `research/quickjs/quickjs.c` at revision
 `js_parse_assign_expr2` for mixing restrictions, single reference evaluation,
 short-circuit stores and identifier NamedEvaluation. The Rust implementation
 and synthetic tests are independently written; no QuickJS code or tests copied.
+
+## Generator return/throw and delegation (clj-quickjs-293)
+
+Consulted `research/quickjs/quickjs.c` `js_generator_next` (GEN_MAGIC_RETURN /
+GEN_MAGIC_THROW) and `js_parse_assign_expr2` (yield-star abrupt-resume lowering)
+at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` for state transitions,
+finally execution and delegate method/result handling. Rust code and the
+synthetic generator_return_throw fixture and wait tests are independently
+written; no QuickJS source or test text is copied.

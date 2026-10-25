@@ -1,5 +1,5 @@
 //! Task-owned generator objects. Suspended execution lives in a movable VM
-//! activation; `next` is a native boundary around ordinary attached frames.
+//! activation; resume methods are native boundaries around attached frames.
 use super::dispatch::{Fault, Flow};
 use super::frames::{DetachedActivation, VmState};
 use super::instr::Instr;
@@ -8,6 +8,15 @@ use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::object::{OrdinaryObject, PropertyFlags};
 use crate::value::Value;
+
+/// The completion delivered at the suspended yield. Bytecode handles abrupt
+/// completions so all cleanup uses the ordinary resumable unwind paths.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResumeKind {
+    Next = 0,
+    Return = 1,
+    Throw = 2,
+}
 
 #[derive(Debug)]
 pub(crate) enum State {
@@ -116,7 +125,7 @@ pub(crate) fn create(heap: &Heap, vm: &mut VmState) -> Result<(), Fault> {
 pub(crate) fn receiver(heap: &Heap, task: TaskId, value: &Value) -> Result<ObjectId, Fault> {
     let Value::Object(id) = value else {
         return Err(Fault::TypeError(
-            "generator next requires a generator receiver".into(),
+            "generator method requires a generator receiver".into(),
         ));
     };
     heap.read(*id, |o| match o {
@@ -129,7 +138,7 @@ pub(crate) fn receiver(heap: &Heap, task: TaskId, value: &Value) -> Result<Objec
         }
         HeapObject::Generator(_) => Ok(*id),
         _ => Err(Fault::TypeError(
-            "generator next requires a generator receiver".into(),
+            "generator method requires a generator receiver".into(),
         )),
     })
     .unwrap_or(Err(Fault::Internal("generator reclaimed")))
@@ -140,9 +149,11 @@ pub(crate) fn resume(
     vm: &mut VmState,
     id: ObjectId,
     value: Value,
+    kind: ResumeKind,
 ) -> Result<bool, Fault> {
     heap.read(id, |o| match o {
         HeapObject::Generator(g) => match &g.state {
+            State::SuspendedStart(_) if kind != ResumeKind::Next => Ok(()),
             State::SuspendedStart(a) | State::SuspendedYield(a) | State::SuspendedYieldStar(a) => {
                 vm.check_activation(a)
             }
@@ -158,10 +169,15 @@ pub(crate) fn resume(
         })
         .ok_or(Fault::Internal("generator reclaimed"))?;
     match old {
+        State::SuspendedStart(_) if kind != ResumeKind::Next => {
+            complete(heap, id);
+            return Ok(false);
+        }
         State::SuspendedStart(a) => vm.attach_activation(a),
         State::SuspendedYield(a) | State::SuspendedYieldStar(a) => {
             vm.attach_activation(a);
             vm.push(value);
+            vm.push(Value::Number(kind as u8 as f64));
         }
         State::Completed => {
             complete(heap, id);
