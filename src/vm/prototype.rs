@@ -325,6 +325,9 @@ pub(crate) fn object_get_prototype_of(
 ) -> Result<Value, Fault> {
     let v = args.first().cloned().unwrap_or(Value::Undefined);
     match v {
+        Value::Bool(_) => crate::realm::intrinsics(heap)
+            .map(|realm| Value::Object(realm.boolean_prototype))
+            .ok_or(Fault::OutOfMemory("heap object table exhausted")),
         Value::Symbol(_) => crate::realm::intrinsics(heap)
             .map(|realm| Value::Object(realm.symbol_prototype))
             .ok_or(Fault::OutOfMemory("heap object table exhausted")),

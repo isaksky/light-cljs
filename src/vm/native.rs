@@ -1477,6 +1477,12 @@ pub(crate) fn start_builtin(
     ) {
         return start_primitive_constructor(state, which, args, construct, popped);
     }
+    if which == Builtin::BigIntPrototypeToString && !construct {
+        return start_bigint_to_string(heap, state, this, args, popped);
+    }
+    if which == Builtin::JsonStringify && !construct {
+        return start_json_stringify(state, args, popped);
+    }
     if matches!(which, Builtin::Error | Builtin::NativeError(_))
         || (which == Builtin::ErrorPrototypeToString && !construct)
     {
@@ -1487,6 +1493,11 @@ pub(crate) fn start_builtin(
     if matches!(
         which,
         Builtin::ObjectGetPrototypeOf
+            | Builtin::Object
+            | Builtin::BigIntPrototypeValueOf
+            | Builtin::Boolean
+            | Builtin::BooleanPrototypeToString
+            | Builtin::BooleanPrototypeValueOf
             | Builtin::ObjectSetPrototypeOf
             | Builtin::ObjectCreate
             | Builtin::ArraySpecies
@@ -1885,6 +1896,56 @@ fn start_stack_method(
     Ok(true)
 }
 
+/// JSON wrapper serialization needs no unrelated constructor temporaries.
+#[inline(never)]
+fn start_json_stringify(state: &mut VmState, args: &[Value], popped: usize) -> Result<bool, Fault> {
+    if !matches!(args.get(1), None | Some(Value::Undefined | Value::Null)) {
+        return Err(Fault::TypeError(
+            "JSON.stringify replacer is not supported".into(),
+        ));
+    }
+    let native = NativeState::JsonStringify(Box::new(super::json::Stringifier::new(
+        args.first().cloned().unwrap_or(Value::Undefined),
+        args.get(2).cloned().unwrap_or(Value::Undefined),
+    )));
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, native)?;
+    Ok(true)
+}
+
+/// Validate branding before radix conversion, keeping wrapper access off the
+/// general dispatch frame so it fits the same small workers as other wrappers.
+#[inline(never)]
+fn start_bigint_to_string(
+    heap: &Heap,
+    state: &mut VmState,
+    this: &Value,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    let value = builtin::this_bigint_value(heap, state.diag.task, this)?;
+    let radix = args
+        .first()
+        .filter(|v| !matches!(v, Value::Undefined))
+        .cloned()
+        .unwrap_or(Value::Number(10.0));
+    let native = NativeState::Convert {
+        formatter: None,
+        number_scan: None,
+        target: ConvertTarget::BigIntToString,
+        operands: vec![radix, Value::BigInt(value)],
+        next: 0,
+        end: 1,
+        hint: Hint::Number,
+        method: 0,
+        method_get: false,
+        symbol_method: SymbolMethod::Pending,
+    };
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, native)?;
+    Ok(true)
+}
+
 /// Both primitive and object arguments need budgeted conversion, without
 /// reserving the general built-in dispatcher's temporaries on small stacks.
 #[inline(never)]
@@ -2216,16 +2277,6 @@ fn start_builtin_slow(
                     units: 0,
                 })))
             }
-            Builtin::JsonStringify => {
-                if !matches!(arg(1), Value::Undefined | Value::Null) {
-                    return Err(Fault::TypeError(
-                        "JSON.stringify replacer is not supported".into(),
-                    ));
-                }
-                Some(NativeState::JsonStringify(Box::new(
-                    super::json::Stringifier::new(arg(0), arg(2)),
-                )))
-            }
             Builtin::JsonParse => Some(NativeState::Json {
                 text: arg(0),
                 reviver: arg(1),
@@ -2433,21 +2484,6 @@ fn start_builtin_slow(
             ],
             Hint::Number,
         ),
-        Builtin::BigIntPrototypeToString if !construct => {
-            if !matches!(this, Value::BigInt(_)) {
-                return Err(Fault::TypeError("not a BigInt".into()));
-            }
-            let radix = args
-                .first()
-                .filter(|v| !matches!(v, Value::Undefined))
-                .cloned()
-                .unwrap_or(Value::Number(10.0));
-            (
-                ConvertTarget::BigIntToString,
-                vec![radix, this.clone()],
-                Hint::Number,
-            )
-        }
         Builtin::NumberPrototypeToFixed if !construct => {
             let number = builtin::this_number_value(heap, state.diag.task, this, "toFixed")?;
             let Some(digits @ Value::Object(_)) = args.first() else {
@@ -2732,14 +2768,7 @@ fn start_builtin_slow(
     ) {
         (1, 2)
     } else {
-        (
-            0,
-            if matches!(target, ConvertTarget::BigIntToString) {
-                1
-            } else {
-                operands.len()
-            },
-        )
+        (0, operands.len())
     };
     let pc = running(state).unwrap_or_else(|| state.top().pc.saturating_sub(1));
     state.truncate_operands(state.stack_len() - popped)?;

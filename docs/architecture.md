@@ -1710,7 +1710,7 @@ as for a non-extensible object without properties in strict mode. Function
 objects expose code metadata and their property record (clj-quickjs-101/-125).
 Caught engine errors use ordinary Error instance properties (clj-quickjs-230).
 Numbers and strings read through their prototypes (clj-quickjs-73,
-"Primitive bases"); booleans remain deferred (clj-quickjs-39). `undefined` and
+"Primitive bases"); booleans use Boolean.prototype (clj-quickjs-302). `undefined` and
 `null` bases throw catchable `TypeError`s (`cannot read property 'x' of
 undefined`, `cannot set property 'x' of null`) at the member expression;
 for a write the right-hand side is evaluated first (PutValue).
@@ -4336,11 +4336,10 @@ its chain; this preserves ignored assignments without mutation or lost
 publishability. An ordinary object's own data property still shadows the
 accessor, and a chain ending before `Object.prototype` has no inherited accessor.
 
-The getter uses `[[GetPrototypeOf]]`; number/string primitives return the fixed
-prototype of their wrapper without allocating it. Boolean getter receivers
-remain unsupported until `Boolean.prototype` exists. For primitive writes,
-Boolean's supported inherited setters can be found from `Object.prototype`,
-since Boolean's standard own prototype properties are data properties. The
+The getter uses `[[GetPrototypeOf]]`; primitives return the fixed
+prototype of their wrapper without allocating it, including Boolean.prototype
+(clj-quickjs-302). Primitive writes look up inherited setters from their
+respective intrinsic prototype. The
 setter requires a coercible receiver, ignores a non-object/non-null value or
 primitive receiver, and otherwise calls the existing ownership/cycle/immutability
 checked `set_prototype_of`. Neither built-in invokes JavaScript. Literal
@@ -4363,8 +4362,8 @@ snapshotted ToLength, index, stage and accumulated immutable string parts.
 Length/index getters and OrdinaryToPrimitive run as ordinary VM frames;
 ToNumber/ToString subcontinuations return into the saved stage without replay.
 The receiver and separator are traced roots; string parts own immutable Arc
-bodies without heap edges. Number/String primitive receivers are boxed using
-the existing wrapper representation. Boolean wrappers remain unsupported.
+bodies without heap edges. Primitive receivers are boxed using
+the existing wrapper representation, including Boolean/BigInt (clj-quickjs-302).
 
 Each join step processes at most one element. It checks the running UTF-16
 length as each separator/element is appended and rejects overflow above
@@ -4802,7 +4801,7 @@ and copying without changing other users of the shared ToNumber path.
 Limits throw catchable RangeError and are independent of native stack size;
 array lengths and quoted string values retain their underlying limits.
 Replacer arguments other than undefined/null fail explicitly. Boolean wrappers
-remain an absent prerequisite. Symbol primitives follow the omission rules;
+serialize their internal Boolean value (clj-quickjs-302). Symbol primitives follow the omission rules;
 enumerated symbol keys are filtered before any value read. The bounded
 property preflight includes stored symbol keys, keeping the shared leaf
 enumeration bounded even when none of those keys contribute JSON members.
@@ -6006,8 +6005,8 @@ ToString path. The primitive leaf helper can finish only a single bounded
 formatter advance; long conversions must use the native state. Its retained
 operands and all pre-existing continuation fields stay traced across yields,
 waits, collection and thread migration. Failure/cancellation drops the buffers.
-JSON still rejects BigInt serialization. Wrappers and locale-sensitive
-BigInt.prototype.toLocaleString remain deferred.
+JSON still rejects BigInt serialization, including wrappers (clj-quickjs-302).
+Locale-sensitive BigInt.prototype.toLocaleString remains deferred.
 
 ## Unicode RegExp mode (clj-quickjs-190)
 
@@ -6622,8 +6621,8 @@ Array-like lengths above the existing u32 array limit fail before reading any
 indices; arrays grow one element at a time rather than allocating the entire
 length up front. Custom/subclass and bound constructor receivers explicitly
 fail pending subclass support; Array/nonconstructor receivers create ordinary
-arrays. Boolean primitive wrappers have no prototype support yet; Symbol
-prototype access is supported (clj-quickjs-129).
+arrays. Primitive prototype access includes Boolean (clj-quickjs-302) and Symbol
+(clj-quickjs-129).
 The Array.from built-in and intrinsic allocation are appended to their existing
 registries, preserving earlier intrinsic identities.
 

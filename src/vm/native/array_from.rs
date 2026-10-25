@@ -131,13 +131,7 @@ impl State {
         stage: Stage,
     ) -> Result<Action, Fault> {
         self.stage = stage;
-        // Boolean prototypes are outside the current subset. Their
-        // wrappers have neither length nor @@iterator; no getter is lost.
-        let read = if matches!(base, Value::Bool(_)) {
-            None
-        } else {
-            property::read(heap, task, &base, &key)?
-        };
+        let read = property::read(heap, task, &base, &key)?;
         match read {
             Some(property::Read::Getter(callee)) => Ok(Action::Call {
                 callee,

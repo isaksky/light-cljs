@@ -223,11 +223,12 @@ pub(crate) enum Global {
     Proxy = 45,
     Set = 46,
     WeakSet = 47,
+    Boolean = 48,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 48] = [
+    const ALL: [Global; 49] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -276,11 +277,13 @@ impl Global {
         Global::Proxy,
         Global::Set,
         Global::WeakSet,
+        Global::Boolean,
     ];
 
     /// The JavaScript name.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Global::Boolean => "Boolean",
             Global::Proxy => "Proxy",
             Global::BigInt => "BigInt",
             Global::Promise => "Promise",
@@ -385,6 +388,9 @@ pub(crate) struct Intrinsics {
     /// `String.prototype`: a property read on a string primitive starts
     /// here (clj-quickjs-73).
     pub(crate) string_prototype: ObjectId,
+    /// `Boolean.prototype`, with immutable internal false data (clj-quickjs-302).
+    pub(crate) boolean_prototype: ObjectId,
+    boolean: ObjectId,
     /// The `Number` constructor.
     number: ObjectId,
     /// The `String` constructor.
@@ -515,12 +521,11 @@ impl Intrinsics {
     /// if on its wrapper object, which is not allocated (clj-quickjs-73;
     /// QuickJS `JS_GetPrototypePrimitive`): `Number.prototype` for a
     /// number, `String.prototype` for a string, `BigInt.prototype` for a BigInt,
-    /// `Symbol.prototype` for a symbol.
-    /// `None` for anything else
-    /// (objects, `undefined`, `null`, and booleans until `Boolean.prototype`
-    /// exists, clj-quickjs-39).
+    /// `Symbol.prototype` for a symbol, `Boolean.prototype` for a boolean.
+    /// `None` for objects, `undefined` and `null`.
     pub(crate) fn primitive_prototype(&self, v: &Value) -> Option<ObjectId> {
         match v {
+            Value::Bool(_) => Some(self.boolean_prototype),
             Value::Number(_) => Some(self.number_prototype),
             Value::String(_) => Some(self.string_prototype),
             Value::BigInt(_) => Some(self.bigint_prototype),
@@ -532,6 +537,7 @@ impl Intrinsics {
     /// The value of a built-in global.
     pub(crate) fn global(&self, global: Global) -> Value {
         match global {
+            Global::Boolean => Value::Object(self.boolean),
             Global::Proxy => Value::Object(self.proxy),
             Global::BigInt => Value::Object(self.bigint),
             Global::Promise => Value::Object(self.promise),
@@ -1339,6 +1345,15 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
     let intl_duration_format_prototype =
         intl_duration_format_intrinsics(&mut b, object_prototype, intl)?;
     let proxy = b.function(Builtin::Proxy, &[])?;
+    let (boolean_prototype, boolean) = primitive_prototype(
+        &mut b,
+        object_prototype,
+        [
+            Builtin::Boolean,
+            Builtin::BooleanPrototypeToString,
+            Builtin::BooleanPrototypeValueOf,
+        ],
+    )?;
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -1362,6 +1377,8 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         })
         .collect::<Option<Vec<_>>>()?;
     Some(Box::new(Intrinsics {
+        boolean,
+        boolean_prototype,
         proxy,
         array_iterator_prototype,
         string_iterator_prototype,
@@ -1468,6 +1485,7 @@ fn primitive_prototype(
     let value_of = b.function(value_of, &[])?;
     let mut prototype = OrdinaryObject::intrinsic(Some(object_prototype));
     prototype = prototype.with_primitive_data(match constructor {
+        Builtin::Boolean => PrimitiveData::Boolean(false),
         Builtin::Number => PrimitiveData::Number(0.0),
         Builtin::String => PrimitiveData::String(JsString::from("")),
         _ => return None,
@@ -3179,7 +3197,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 400); // Set/WeakSet: fourteen built-ins and three prototypes (-295).
+        assert_eq!(first.all.len(), 404); // Boolean constructor, prototype and two methods (-302).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -3263,7 +3281,9 @@ mod tests {
         assert_eq!(Global::from_u16(47), Some(Global::WeakSet));
         assert_eq!(Global::from_name("Set"), Some(Global::Set));
         assert_eq!(Global::from_name("WeakSet"), Some(Global::WeakSet));
-        assert_eq!(Global::from_u16(48), None);
+        assert_eq!(Global::from_u16(48), Some(Global::Boolean));
+        assert_eq!(Global::from_name("Boolean"), Some(Global::Boolean));
+        assert_eq!(Global::from_u16(49), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

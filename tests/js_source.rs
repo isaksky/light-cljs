@@ -1560,7 +1560,7 @@ fn optional_chaining() {
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
-    assert_eq!(failure("false?.x").kind(), VmErrorKind::UnsupportedOperand);
+    assert_eq!(eval("false?.x"), ValueView::Undefined);
 }
 
 /// Synthetic fixtures, not light-cljs output. Failures belong to the
@@ -4232,14 +4232,13 @@ fn bigint_comparisons_wait_yield_collect_and_migrate() {
     }
 }
 
-/// Synthetic fixtures, not light-cljs output. BigInt wrapper objects remain
-/// deferred; Number conversion is covered separately below.
+/// Synthetic fixtures, not light-cljs output. BigInt tag consumption remains
+/// deferred; wrapper and Number conversions are covered separately.
 #[test]
 fn bigint_deferred_operations_fail_explicitly() {
     for src in [
-        "Object(1n)",
-        "Object.prototype.valueOf.call(1n)",
         "Object.prototype.toString.call(1n)",
+        "Object.prototype.toString.call(Object(1n))",
     ] {
         let error = failure(src);
         assert_eq!(
@@ -14744,11 +14743,11 @@ fn object_constructor() {
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
-    // Boolean/BigInt wrappers do not exist yet; never return an unboxed primitive.
-    for source in ["new Object(true)", "new Object(1n)"] {
-        let (kind, message, ..) = failure_at(source);
-        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{source}");
-        assert!(message.contains("wrapper object"), "{source}: {message}");
+    for source in [
+        "let b = new Object(true); typeof b === 'object' && b.valueOf() === true",
+        "let b = new Object(1n); typeof b === 'object' && b.valueOf() === 1n",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
 }
 
@@ -15158,10 +15157,8 @@ fn a_constructor_suspends_at_a_need_and_completes_after_publication() {
 /// The values of the runtime that are not ordinary objects
 /// (clj-quickjs-114, `crate::vm::property`): persistent collections and
 /// builders have no JavaScript properties (reads give `undefined`, writes
-/// throw a TypeError); function objects, error objects, a string's own
-/// properties and boolean reads fail explicitly until their properties
-/// exist (numbers and strings read through their prototypes since
-/// clj-quickjs-73, `methods_on_primitive_bases`).
+/// throw a TypeError); primitive values read through their intrinsic prototypes
+/// (`methods_on_primitive_bases`, clj-quickjs-73, clj-quickjs-302).
 #[test]
 fn property_access_on_values_that_are_not_ordinary_objects() {
     assert_eq!(
@@ -15216,23 +15213,18 @@ fn property_access_on_values_that_are_not_ordinary_objects() {
             2
         )
     );
-    {
-        let (src, needle) = ("let b = true;\nb.x;", "of a boolean");
-        let (kind, message, line, _) = failure_at(src);
-        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
-        assert!(message.contains(needle), "{src}: {message}");
-        assert_eq!(line, 2, "{src}");
-    }
+    assert_eq!(eval("let b = true;\nb.x;"), ValueView::Undefined);
     assert_eq!(
         eval(
             "let e; try { null.x; } catch (c) { e = c; } e.message === \"cannot read property 'x' of null\""
         ),
         ValueView::Bool(true)
     );
-    // An unsupported operand is not catchable: no JavaScript sees a wrong
-    // answer.
-    let (kind, ..) = failure_at("let r; try { true.x; } catch (e) { r = 1; } r");
-    assert_eq!(kind, VmErrorKind::UnsupportedOperand);
+    // A missing Boolean property is undefined and does not throw.
+    assert_eq!(
+        eval("let r; try { true.x; } catch (e) { r = 1; } r"),
+        ValueView::Undefined
+    );
 }
 
 /// `Object.prototype`, the `Object` constructor and `Object.is` as realm
@@ -15434,12 +15426,9 @@ fn object_intrinsics_reject_what_they_do_not_support() {
         ),
         "caught"
     );
-    // Wrapper objects (clj-quickjs-72), missing Function.prototype methods
-    // (clj-quickjs-102) and the error tag (clj-quickjs-230).
-    for (src, needle) in [
-        ("Object(true)", "wrapper object"),
-        ("Object.is.toString()", "Function.prototype"),
-    ] {
+    // Missing Function.prototype methods (clj-quickjs-102).
+    {
+        let (src, needle) = ("Object.is.toString()", "Function.prototype");
         let (kind, message, ..) = failure_at(src);
         assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
         assert!(message.contains(needle), "{src}: {message}");
@@ -18195,15 +18184,7 @@ fn methods_on_primitive_bases() {
         other => panic!("expected Complete, got {other:?}"),
     }
 
-    // Explicitly unsupported until their pellet: boolean properties (clj-quickjs-39).
-    // Not catchable: no JavaScript sees a wrong answer.
-    {
-        let (src, needle) = ("let b = true;\nb.toString();", "of a boolean");
-        let (kind, message, line, _) = failure_at(src);
-        assert_eq!(kind, VmErrorKind::UnsupportedOperand, "{src}: {message}");
-        assert!(message.contains(needle), "{src}: {message}");
-        assert_eq!(line, 2, "{src}");
-    }
+    truth("let b = true;\nb.toString() === 'true'");
     truth("let n = 1; n.toString(2) === '1' && n.toString('10') === '1'");
     truth("let r = 0; try { (1).toString(2); } catch (e) { r = 1; } r === 0");
 

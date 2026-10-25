@@ -327,12 +327,15 @@ pub(crate) enum SetOutcome {
     Setter(Value),
 }
 
-/// Immutable internal wrapper data. Symbols report identity edges for weak-key GC.
+/// Immutable internal wrapper data. Symbols report identity edges for weak-key GC;
+/// BigInt limbs use shared immutable Rust storage and have no heap edges.
 #[derive(Clone, Debug)]
 pub(crate) enum PrimitiveData {
     Number(f64),
     String(JsString),
     Symbol(crate::value::JsSymbol),
+    Boolean(bool),
+    BigInt(crate::value::JsBigInt),
 }
 
 #[derive(Debug)]

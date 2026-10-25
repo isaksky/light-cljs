@@ -1512,3 +1512,12 @@ Semantic references only: `research/quickjs/quickjs.c` at revision
 Implementation and synthetic fixtures were written fresh over this runtime's
 existing Map storage, conditional tracing and resumable native consumer;
 no QuickJS source or tests were copied or adapted.
+
+## Boolean and BigInt wrappers (clj-quickjs-302)
+
+Read `js_boolean_constructor`, `js_thisBooleanValue`, `js_boolean_toString`,
+`js_thisBigIntValue`, `JS_ToObject`, and `js_json_to_str` in
+`research/quickjs/quickjs.c`, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), as semantic
+references. No implementation or test code was copied. Tests in
+`tests/boolean_bigint_wrappers.rs` are synthetic fixtures, not light-cljs output.

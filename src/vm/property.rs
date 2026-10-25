@@ -25,7 +25,7 @@
 //! | Error instance, including a caught engine error | ordinary object properties and prototype chain | ordinary object ownership and attributes |
 //! | `undefined`, `null` | catchable `TypeError` | catchable `TypeError` |
 //! | number, string (clj-quickjs-73) | `Number.prototype` / `String.prototype` and its chain, without a wrapper (see "Primitive bases"), after a string's own `length` and indices below it (clj-quickjs-142) | `TypeError` in strict code, nothing in sloppy code; `__proto__` does nothing |
-//! | boolean | `UnsupportedOperand` (`Boolean.prototype`, clj-quickjs-39) | as a number |
+//! | boolean | `Boolean.prototype` and its chain (clj-quickjs-302), without allocation | as a number |
 //!
 //! The non-ordinary heap kinds are this runtime's own values (or values
 //! JavaScript code never holds), not JavaScript objects with hidden
@@ -96,7 +96,7 @@
 //! so `[[Set]]` returns false (a `TypeError` in strict code, nothing in
 //! sloppy code), except that `Object.prototype`'s `__proto__` setter
 //! accepts a primitive `this` and ignores it. Booleans follow the same
-//! write rule; their reads wait for `Boolean.prototype` (clj-quickjs-39).
+//! write rule; their reads use `Boolean.prototype` (clj-quickjs-302).
 //!
 //! # Deleting properties
 //!
@@ -341,12 +341,16 @@ pub(crate) fn string_own_property(s: &JsString, key: &Key) -> Option<Property> {
 /// Where a read of `key` on the primitive `base` continues once its
 /// wrapper's own properties ([`string_own_property`]) lack it (module docs,
 /// "Primitive bases"): `Number.prototype` for a number, `String.prototype`
-/// for a string, `Symbol.prototype` for a symbol, building the realm if needed. A boolean fails with
-/// `UnsupportedOperand` until `Boolean.prototype` exists (clj-quickjs-39);
+/// for a string, `Symbol.prototype` for a symbol, `BigInt.prototype` for a BigInt,
+/// `Boolean.prototype` for a boolean, building the realm if needed;
 /// `undefined`/`null` are a catchable `TypeError`.
 fn primitive_prototype(heap: &Heap, base: &Value, key: &Key) -> Result<ObjectId, Fault> {
     let intrinsics = match base {
-        Value::Number(_) | Value::String(_) | Value::BigInt(_) | Value::Symbol(_) => {
+        Value::Number(_)
+        | Value::String(_)
+        | Value::BigInt(_)
+        | Value::Symbol(_)
+        | Value::Bool(_) => {
             realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?
         }
         _ => return Err(primitive_base(base, key, Access::Read)),
@@ -979,16 +983,7 @@ pub(crate) fn prepare_put(
                 | Value::Symbol(_)
         ) && !(matches!(base, Value::String(s) if string_own_property(s, key).is_some()))
         {
-            // Boolean.prototype is not implemented yet. Its standard own
-            // properties are data properties, so supported inherited
-            // setters can be looked up from Object.prototype for writes.
-            let prototype = if matches!(base, Value::Bool(_)) {
-                realm::intrinsics(heap)
-                    .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
-                    .object_prototype
-            } else {
-                primitive_prototype(heap, base, key)?
-            };
+            let prototype = primitive_prototype(heap, base, key)?;
             if let Ok(Chain::Setter(setter)) =
                 check_inherited(heap, task, prototype, key.lookup(heap), key)
             {

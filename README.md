@@ -1739,12 +1739,11 @@ Supported (`cargo test --lib frontend::tests::computed_member_access`,
 - Evaluation order base, key, right-hand side; an `undefined`/`null` base
   throws a catchable `TypeError`.
 
+Boolean bases read through `Boolean.prototype` (clj-quickjs-302).
+
 Deferred:
 
-- Boolean bases fail with
-  `UnsupportedOperand` (clj-quickjs-39; numbers and strings read through their prototypes since
-  clj-quickjs-73).
-  (Compound assignment and `++`/`--` of a property: clj-quickjs-260, -76.)
+- Compound assignment and `++`/`--` of a property: clj-quickjs-260, -76.
 - Interned property names are never reclaimed, so writing many distinct
   computed keys grows the runtime's key table (clj-quickjs-259;
   `docs/grammar.md`, "Explicit gaps").
@@ -1850,6 +1849,8 @@ Supported (`cargo test --test js_source object_intrinsics`,
 - New opcodes `get_builtin_global` (`0x52`), `call_method` (`0x53`) and
   `new_object_literal` (`0x54`); new heap kind `Builtin`
   (`ObjectCounts::builtin`).
+- All primitive wrappers and direct Object construction execute
+  (clj-quickjs-280, clj-quickjs-302, below).
 
 Deferred:
 
@@ -1857,9 +1858,6 @@ Deferred:
   `TypeError` (built-ins are shared and immutable; listed in
   `docs/grammar.md`, "Explicit gaps"). The `Object` global binding itself
   is writable (clj-quickjs-104).
-- Boolean and BigInt wrappers for `Object(v)` and `new Object(v)` remain
-  deferred. Number, String and Symbol wrappers and direct Object construction
-  execute (clj-quickjs-280, below).
 
 ### Untagged template literals (clj-quickjs-57)
 
@@ -1895,7 +1893,7 @@ Supported (`cargo test --test js_source tagged_template`,
   including computed keys and arguments. Parentheses end the short circuit.
   Optional chains as assignment targets, `new` callees or template tags are
   early SyntaxErrors; a parenthesized optional member can be a tag.
-- Boolean wrapper property reads remain deferred like other primitive reads.
+- Boolean primitive reads use `Boolean.prototype` (clj-quickjs-302).
 
 ### `this` in method calls (clj-quickjs-116)
 
@@ -1955,8 +1953,7 @@ Supported (`cargo test --lib frontend::tests::array_literals`,
 Deferred:
 
 - Array methods other than `push`, `join`, `toString` and `Array.isArray`.
-  Boolean receivers of the generic array
-  string methods require the deferred Boolean wrappers. Assigning `length` supports
+  Boolean receivers use task-owned wrappers (clj-quickjs-302). Assigning `length` supports
   ArraySetLength (clj-quickjs-154). Array destructuring executes since
   clj-quickjs-131; object keys convert since clj-quickjs-70.
   `__rt.vector` values stay persistent vectors, not arrays.
@@ -2306,8 +2303,7 @@ Supported (`cargo test --test js_source methods_on_primitive_bases`,
 
 Deferred:
 
-- Boolean bases (`Boolean.prototype`), radixes other
-  than 10 and the other `Number.prototype` / `String.prototype` methods (clj-quickjs-39) fail
+- Radixes other than 10 and the other `Number.prototype` / `String.prototype` methods (clj-quickjs-39) fail
   with `UnsupportedOperand` (an absent method reads `undefined`).
 
 ### `Function.prototype`, `call`, `apply` and `Reflect.apply` (clj-quickjs-102)
@@ -2435,7 +2431,7 @@ Object arguments use resumable OrdinaryToPrimitive with number / string hint.
 Wrapper equality and addition call observable valueOf / toString methods;
 conversion callbacks can yield, wait, be collected around and migrate.
 
-Deferred: Boolean wrappers, other radixes and Number constants
+Deferred: other radixes and Number constants
 remain deferred. ToObject integration for `Object(primitive)`, prototype reflection
 on primitives and sloppy-mode `this` remains unsupported.
 
@@ -2593,7 +2589,7 @@ Both functions inherit from `Function.prototype` and can be shared across tasks.
 
 Intrinsic objects remain immutable even though the descriptor is configurable:
 deleting or redefining the intrinsic property throws TypeError. Boolean getter
-receivers still need `Boolean.prototype`; literal `__proto__: value` retains its
+receivers use `Boolean.prototype` (clj-quickjs-302); literal `__proto__: value` retains its
 separate prototype-setting semantics. Checks: `cargo test --test js_source
 stored_proto_accessor`, `cargo test --test js_source prototype_reflection`,
 `cargo test --test publication built_in_proto_accessors_are_shared_across_tasks`,
@@ -2750,8 +2746,8 @@ leaf numeric parsing; ordinary quoted strings keep their normal length limit.
 Quoting values and member names visits at most 256 rope nodes/code units per
 slice without flattening the input (clj-quickjs-289). Surrogate pairs remain
 intact across rope boundaries and yields; lone surrogates use JSON escapes.
-Replacer functions/lists and Boolean wrappers remain deferred or prerequisite
-gaps. See `docs/grammar.md` for precise limits and behavior.
+Replacer functions/lists remain deferred. Boolean wrappers serialize their
+internal Boolean data (clj-quickjs-302). See `docs/grammar.md` for precise limits and behavior.
 
 Tests: `cargo test --test js_source json_stringify`.
 
@@ -3117,7 +3113,7 @@ Objects use resumable ToPrimitive with hint number. String comparison shares
 the parser. Scans and decimal limb work are budgeted, with a 1 Mbit cap and
 catchable RangeError for oversized valid input. Rope flattening may first take
 linear time. Prototype conversion methods are supported below; wrappers
-remain deferred.
+are supported by clj-quickjs-302.
 
 Validation: `CARGO_BUILD_JOBS=3 nix develop -c cargo test --test js_source bigint_ -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 nix develop -c cargo test --lib value::bigint:: -- --test-threads=3`.
@@ -3130,7 +3126,7 @@ Decimal ToString supports `String(bigint)`, templates, string `+`, computed
 property keys and built-in string coercions. Large conversions yield through
 task-owned native state, using base-10^9 chunks for decimal output and direct
 bit extraction for power-of-two radices. The 1 Mbit magnitude cap still applies.
-Deferred: BigInt wrappers and locale-sensitive `toLocaleString`.
+Deferred: locale-sensitive `toLocaleString`.
 
 Validation: `CARGO_BUILD_JOBS=3 nix develop -c cargo test --test js_source bigint_ -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 nix develop -c cargo test --lib value::bigint:: -- --test-threads=3`.
@@ -3430,8 +3426,7 @@ existing array limit. Tests: `cargo test --test js_source array_from_` and
 `cargo test --test need array_from_iterator_waits_on_dependency`.
 Deferred: custom/subclass and bound constructor receivers through
 `Array.from.call(C, ...)` explicitly fail with UnsupportedOperand. Ordinary
-`Array.from` and nonconstructor receivers produce plain arrays. Boolean
-wrappers remain unavailable; Boolean and Symbol primitives produce empty arrays.
+`Array.from` and nonconstructor receivers produce plain arrays. Boolean and Symbol primitives produce empty arrays.
 
 ### Generator execution (clj-quickjs-243)
 
@@ -3489,8 +3484,7 @@ resumable comparator, returning the receiver. Undefined values precede trailing
 holes; inherited indices are included. Comparators, coercions, getters and
 setters may wait, yield and migrate. Snapshot collection, merging, string
 flattening/comparison, writes and deletion are budgeted native steps.
-Deferred: typed-array `sort`, `toSorted`, and Boolean/BigInt receiver
-wrappers (explicit UnsupportedOperand, as for generic array string methods).
+Deferred: typed-array `sort` and `toSorted`.
 
 ### Generator operands and exception handlers (clj-quickjs-244)
 
@@ -3786,7 +3780,7 @@ participates in precise GC, including WeakMap key liveness.
 conversion and `String(Object(symbol))` throw TypeError. Symbol wrappers consult
 `[Symbol.toPrimitive]` before ordinary conversion methods, using resumable getter
 and callback frames. General object protocol dispatch, generic
-`Object.prototype.toString` tag consumption and Boolean/BigInt wrappers remain
+`Object.prototype.toString` tag consumption remains
 explicit gaps.
 
 Tests: `cargo test --test js_source symbol_`,
@@ -4122,8 +4116,8 @@ argument rules: absent, `undefined` or `null` creates an object; an object
 returns unchanged; Number, String and Symbol primitives receive their existing
 wrappers. All arguments evaluate, only the first is used, and object coercion
 hooks are never called. Derived `super()` keeps allocating from `new.target`'s
-prototype and ignores argument values. Boolean and BigInt wrappers remain
-deferred with `UnsupportedOperand`. Tests cover collection, suspension,
+prototype and ignores argument values. Boolean and BigInt wrappers are
+supported by clj-quickjs-302. Tests cover collection, suspension,
 migration, publication rejection and foreign-task access.
 
 Verify with `cargo test --test js_source object_constructor` and
@@ -4326,7 +4320,7 @@ execute (clj-quickjs-291), as do static blocks (-292) and Set/WeakSet (-295);
 remaining work includes generator `return`/`throw` (-293), Array.prototype mutators,
 search, callback and copying methods (-296 to -299), String.prototype case/trim/
 repeat/search predicates (-300) and match/matchAll/search with RegExp symbol
-dispatch (-301), Boolean and BigInt wrappers (-302), the plain RegExp `i` flag
+dispatch (-301), the plain RegExp `i` flag
 (-303), Script property escapes (-304), v-flag string properties (-305),
 NumberFormat unit style (-306), DateTimeFormat timeZoneName (-307),
 built-in subclassing (-309), `Symbol.toPrimitive`
@@ -4377,7 +4371,7 @@ arguments, saved values and removed-element results remain traced across
 collection, dependency waits and worker migration. Length shrinking releases
 removed values and properties through the existing ArraySetLength path. No new
 worker-selected size limit is imposed. Primitive receivers reuse the existing
-Number/String/Symbol wrappers; Boolean/BigInt wrappers remain unsupported.
+Number/String/Symbol/Boolean/BigInt wrappers (clj-quickjs-302).
 Other Array methods retain their existing support status.
 Tests cover native execution on 64 KiB worker stacks after shared realm setup.
 
@@ -4402,7 +4396,7 @@ Saved receiver, arguments, element and read results remain traced across
 collection, dependency waits and worker migration; no Rust stack is retained.
 No additional size limit is imposed: generic lengths use the existing
 ToLength cap of 2^53 - 1. Primitive receivers reuse the existing
-Number/String/Symbol wrappers; Boolean/BigInt wrappers remain unsupported.
+Number/String/Symbol/Boolean/BigInt wrappers (clj-quickjs-302).
 Proxy property access retains the existing property layer's trap restrictions.
 Array iteration/transformation methods retain their existing support status.
 
@@ -4435,8 +4429,8 @@ steps. All saved values and partial results are traced across collection,
 dependency waits, cancellation and migration; callbacks retain no Rust stack.
 There is no new worker-selected size limit: receiver lengths use ToLength's
 `2^53 - 1` cap; ordinary array results retain the existing `2^32 - 1` length
-bound. Primitive receivers reuse the existing Number/String/Symbol wrappers;
-Boolean/BigInt wrappers remain unsupported. Proxy property access retains the
+bound. Primitive receivers reuse the existing primitive wrappers (clj-quickjs-302).
+Proxy property access retains the
 existing property layer's trap restrictions. `flat` and other Array methods
 retain their existing support status.
 
@@ -4566,9 +4560,8 @@ Flattening stack depth uses the task's existing `VmLimits.max_call_depth`
 (default 10,000); cyclic `flat(Infinity)` inputs therefore fail with stack
 overflow instead of retaining an unbounded continuation. Generic lengths use
 ToLength's `2^53 - 1` bound; ordinary array result lengths retain the existing
-`2^32 - 1` bound. Primitive receivers reuse Number/String/Symbol wrappers;
-Boolean/BigInt wrappers and proxy traps retain the existing property layer's
-restrictions. This extends the earlier Array method sections above.
+`2^32 - 1` bound. Primitive receivers reuse all primitive wrappers (clj-quickjs-302);
+proxy traps retain the existing property layer's restrictions. This extends the earlier Array method sections above.
 
 Validation: `cargo test --test js_source array_copy` and
 `cargo test --test need array_copy`. The synthetic fixture
@@ -4627,3 +4620,25 @@ construction and ES2025 Set algebra methods remain deferred.
 
 Run the synthetic fixtures with
 `cargo test --test sets --test map_iterables -- --test-threads=3`.
+
+### Boolean constructor and Boolean/BigInt wrappers (clj-quickjs-302)
+
+`Boolean(value)` applies ToBoolean without coercion callbacks. `new Boolean(value)`
+and `Object(boolean)` create task-owned wrappers; `Boolean.prototype` holds false.
+Its `toString()` and `valueOf()` accept Boolean primitives and branded wrappers,
+rejecting other receivers with TypeError. Primitive reads use Boolean.prototype
+without allocating wrappers; `Object.getPrototypeOf(true)` returns that prototype.
+`Object(bigint)` creates a task-owned wrapper accepted by BigInt.prototype's
+budgeted `toString(radix)` and `valueOf()`; BigInt.prototype itself stays unbranded,
+and `new BigInt` still throws TypeError. Ordinary ToPrimitive calls wrapper methods
+resumably. `with` and generic ToObject consumers accept both kinds of primitive.
+JSON.stringify reads Boolean wrapper data directly and rejects BigInt wrapper data
+with TypeError after any `toJSON` callback. Wrappers keep ordinary mutable properties,
+survive collection/waits/migration, and cannot be published across tasks. Intrinsics
+retain the shared immutable realm policy. BigInt payloads share immutable limb storage
+without heap edges. No new size limit is imposed; the existing 1 Mbit BigInt cap applies.
+Built-in subclassing and general Symbol.toPrimitive dispatch remain separate work.
+Object.prototype.toString on BigInt primitives/wrappers retains the explicit
+UnsupportedOperand gap for Symbol.toStringTag consumption.
+
+Validation: `CARGO_BUILD_JOBS=3 cargo test --test boolean_bigint_wrappers -- --test-threads=3`.

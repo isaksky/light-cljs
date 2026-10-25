@@ -918,7 +918,8 @@ fn construct_target(
             return Ok(Flow::Next);
         }
         Ok(Callee::Builtin(
-            which @ (Builtin::Number
+            which @ (Builtin::Boolean
+            | Builtin::Number
             | Builtin::Function
             | Builtin::String
             | Builtin::Error
@@ -1369,6 +1370,7 @@ pub(super) fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result
                         | Builtin::DisposableStack
                         | Builtin::AsyncDisposableStack
                         | Builtin::Number
+                        | Builtin::Boolean
                         | Builtin::String
                         | Builtin::Date
                         | Builtin::Error

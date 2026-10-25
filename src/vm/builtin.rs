@@ -62,7 +62,7 @@
 //!
 //! | Built-in | Result |
 //! |----------|--------|
-//! | `Object(v)`, `new Object(v)` (clj-quickjs-280) | `undefined`/`null`/absent: a new ordinary object owned by the running task, with prototype `Object.prototype`; an object: `v` itself; a number, string or symbol: its task-owned wrapper; a boolean or BigInt: `UnsupportedOperand` (wrappers deferred) |
+//! | `Object(v)`, `new Object(v)` (clj-quickjs-280) | `undefined`/`null`/absent: a new ordinary object owned by the running task, with prototype `Object.prototype`; an object: `v` itself; any other primitive: its task-owned wrapper (clj-quickjs-302) |
 //! | `Object.is(a, b)` | SameValue: `NaN` is `NaN`, `0` is not `-0`, strings by content, objects by identity |
 //! | `Object.prototype.toString()` | `"[object Undefined]"` / `"[object Null]"` for those receivers; `"[object Function]"` for a function object or built-in function; `"[object Array]"` for an array (clj-quickjs-118); `"[object Object]"` for an ordinary object and for the runtime's other heap values (which behave as objects without properties); `"[object Error]"` for an Error instance; a primitive receiver: `UnsupportedOperand` (clj-quickjs-72/-73) |
 //! | `Object.prototype.valueOf()` | ToObject(receiver): an object is itself; `undefined`/`null` throw a catchable `TypeError`; a primitive: `UnsupportedOperand` (wrappers, clj-quickjs-72) |
@@ -506,6 +506,10 @@ pub(crate) enum Builtin {
     WeakSetAdd,
     WeakSetHas,
     WeakSetDelete,
+
+    Boolean,
+    BooleanPrototypeToString,
+    BooleanPrototypeValueOf,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -561,6 +565,10 @@ impl Builtin {
             Builtin::SetForEach => "forEach",
             Builtin::SetValues => "values",
             Builtin::SetEntries => "entries",
+
+            Builtin::Boolean => "Boolean",
+            Builtin::BooleanPrototypeToString => "toString",
+            Builtin::BooleanPrototypeValueOf => "valueOf",
             Builtin::ArrayPrototypeSlice => "slice",
             Builtin::ArrayPrototypeConcat => "concat",
             Builtin::ArrayPrototypeFlat => "flat",
@@ -1002,13 +1010,16 @@ impl Builtin {
             | Builtin::ObjectFreeze
             | Builtin::ObjectIsFrozen => 1,
             Builtin::ObjectKeys | Builtin::ObjectGetOwnPropertyNames => 1,
-            Builtin::Number
+            Builtin::Boolean
+            | Builtin::Number
             | Builtin::String
             | Builtin::NumberPrototypeToString
             | Builtin::NumberPrototypeToExponential
             | Builtin::NumberPrototypeToPrecision
             | Builtin::NumberPrototypeToFixed => 1,
-            Builtin::NumberPrototypeValueOf
+            Builtin::BooleanPrototypeToString
+            | Builtin::BooleanPrototypeValueOf
+            | Builtin::NumberPrototypeValueOf
             | Builtin::StringPrototypeToString
             | Builtin::StringPrototypeValueOf => 0,
             Builtin::FunctionPrototype => 0,
@@ -1471,7 +1482,9 @@ pub(crate) fn call(
                 this.type_name()
             ))),
             Value::Object(_) => Ok(this.clone()),
-            Value::Symbol(_) => symbol_wrapper(heap, task, this),
+            Value::Bool(_) | Value::BigInt(_) | Value::Symbol(_) => {
+                array_string_receiver(heap, task, this)
+            }
             v => Err(Fault::Unsupported(format!(
                 "valueOf on a {} needs a wrapper object, which is not supported",
                 v.type_name()
@@ -1515,9 +1528,11 @@ pub(crate) fn call(
         | Builtin::ReflectApply => {
             Err(Fault::Internal("a forwarding built-in was called directly"))
         }
-        Builtin::Number | Builtin::String | Builtin::Symbol | Builtin::BigInt => {
-            primitive_constructor(heap, task, which, args, false)
-        }
+        Builtin::Boolean
+        | Builtin::Number
+        | Builtin::String
+        | Builtin::Symbol
+        | Builtin::BigInt => primitive_constructor(heap, task, which, args, false),
         Builtin::SymbolFor => {
             let key = to_js_string(&arg(0))?;
             Ok(Value::Symbol(heap.symbols.symbol_for(key)))
@@ -1547,10 +1562,15 @@ pub(crate) fn call(
         Builtin::BigIntAsIntN | Builtin::BigIntAsUintN => Err(Fault::Internal(
             "BigInt wrapping requires a resumable frame",
         )),
-        Builtin::BigIntPrototypeValueOf => match this {
-            Value::BigInt(_) => Ok(this.clone()),
-            _ => Err(Fault::TypeError("not a BigInt".into())),
-        },
+        Builtin::BigIntPrototypeValueOf => this_bigint_value(heap, task, this).map(Value::BigInt),
+        Builtin::BooleanPrototypeValueOf => this_boolean_value(heap, task, this).map(Value::Bool),
+        Builtin::BooleanPrototypeToString => Ok(Value::String(JsString::from(
+            if this_boolean_value(heap, task, this)? {
+                "true"
+            } else {
+                "false"
+            },
+        ))),
         Builtin::NumberPrototypeToString => {
             let n = this_number_value(heap, task, this, "toString")?;
             number_to_string(n, &arg(0))
@@ -2014,6 +2034,31 @@ fn symbol_descriptive_string(symbol: &crate::value::JsSymbol) -> Result<JsString
         .ok_or(Fault::StringTooLong)
 }
 
+/// Brand checks inspect only the receiver's own immutable internal data.
+fn this_boolean_value(heap: &Heap, task: TaskId, this: &Value) -> Result<bool, Fault> {
+    if let Value::Bool(value) = this {
+        return Ok(*value);
+    }
+    match wrapper_data(heap, task, this)? {
+        Some(PrimitiveData::Boolean(value)) => Ok(value),
+        _ => Err(Fault::TypeError("not a boolean".into())),
+    }
+}
+
+pub(crate) fn this_bigint_value(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+) -> Result<crate::value::JsBigInt, Fault> {
+    if let Value::BigInt(value) = this {
+        return Ok(value.clone());
+    }
+    match wrapper_data(heap, task, this)? {
+        Some(PrimitiveData::BigInt(value)) => Ok(value),
+        _ => Err(Fault::TypeError("not a BigInt".into())),
+    }
+}
+
 /// thisSymbolValue accepts a symbol or its own branded wrapper, never a prototype slot.
 fn this_symbol_value(
     heap: &Heap,
@@ -2104,6 +2149,7 @@ pub(crate) fn primitive_constructor(
     construct: bool,
 ) -> Result<Value, Fault> {
     let value = match which {
+        Builtin::Boolean => Value::Bool(args.first().is_some_and(Value::truthy)),
         Builtin::BigInt if !construct => match args.first().unwrap_or(&Value::Undefined) {
             Value::Number(n) => Value::BigInt(
                 crate::value::JsBigInt::from_integral_number(*n).ok_or_else(|| {
@@ -2142,6 +2188,7 @@ pub(crate) fn primitive_constructor(
     let (prototype, data) = match value {
         Value::Number(n) => (realm.number_prototype, PrimitiveData::Number(n)),
         Value::String(s) => (realm.string_prototype, PrimitiveData::String(s)),
+        Value::Bool(b) => (realm.boolean_prototype, PrimitiveData::Boolean(b)),
         _ => return Err(Fault::Internal("not a wrapper primitive")),
     };
     let object = OrdinaryObject::with_prototype(task, prototype).with_primitive_data(data);
@@ -2150,8 +2197,8 @@ pub(crate) fn primitive_constructor(
         .ok_or_else(exhausted)
 }
 
-/// ToObject for the generic array string methods. Boolean wrappers remain
-/// unsupported until Boolean.prototype exists; never give them a wrong tag.
+/// ToObject for generic built-ins and object environments. Primitive payloads
+/// are immutable; the wrapper's ordinary properties belong to the task.
 pub(crate) fn array_string_receiver(
     heap: &Heap,
     task: TaskId,
@@ -2174,13 +2221,23 @@ pub(crate) fn array_string_receiver(
             "cannot convert {} to object",
             this.type_name()
         ))),
-        Value::Bool(_) => Err(Fault::Unsupported(
-            "Boolean wrapper objects are not supported".into(),
-        )),
+        Value::Bool(_) => primitive_constructor(
+            heap,
+            task,
+            Builtin::Boolean,
+            std::slice::from_ref(this),
+            true,
+        ),
         Value::Symbol(_) => symbol_wrapper(heap, task, this),
-        Value::BigInt(_) => Err(Fault::Unsupported(
-            "BigInt wrapper objects are not supported".into(),
-        )),
+        Value::BigInt(value) => {
+            let realm =
+                realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+            let object = OrdinaryObject::with_prototype(task, realm.bigint_prototype)
+                .with_primitive_data(PrimitiveData::BigInt(value.clone()));
+            heap.alloc(HeapObject::Plain(object))
+                .map(Value::Object)
+                .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+        }
     }
 }
 
@@ -2237,7 +2294,7 @@ fn callable(heap: &Heap, v: &Value) -> Result<(), Fault> {
 }
 
 /// Object's call and direct construction share argument rules. ToObject does
-/// not call user coercion hooks: reuse the existing Number/String/Symbol
+/// not call user coercion hooks: reuse the existing primitive
 /// wrappers, retaining object arguments by identity. Operands stay traced in
 /// the caller until replacement, before the next safepoint.
 pub(crate) fn object_constructor(
@@ -2247,10 +2304,6 @@ pub(crate) fn object_constructor(
 ) -> Result<Value, Fault> {
     match args.first().unwrap_or(&Value::Undefined) {
         Value::Undefined | Value::Null => new_object(heap, task),
-        v @ (Value::Bool(_) | Value::BigInt(_)) => Err(Fault::Unsupported(format!(
-            "Object() of a {} needs a wrapper object, which is not supported",
-            v.type_name()
-        ))),
         value => array_string_receiver(heap, task, value),
     }
 }
@@ -2425,7 +2478,7 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
     match this {
         Value::Undefined => Ok("Undefined"),
         Value::Null => Ok("Null"),
-        Value::Bool(_) => unsupported("a boolean"),
+        Value::Bool(_) => Ok("Boolean"),
         Value::Number(_) => unsupported("a number"),
         Value::String(_) => unsupported("a string"),
         Value::Symbol(_) => unsupported("a symbol"),
@@ -2451,12 +2504,20 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 HeapObject::Plain(o) if o.is_error() => Ok("Error"),
                 HeapObject::Plain(o) if o.date_value().is_some() => Ok("Date"),
                 HeapObject::Plain(o) if o.regexp().is_some() => Ok("RegExp"),
+                // BigInt's standard tag comes from @@toStringTag. Keep the
+                // existing explicit protocol gap, including newly boxed values.
+                HeapObject::Plain(o)
+                    if matches!(o.primitive_data(), Some(PrimitiveData::BigInt(_))) =>
+                {
+                    unsupported("a BigInt")
+                }
                 HeapObject::Plain(o) => Ok(match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",
                     Some(PrimitiveData::String(_)) => "String",
+                    Some(PrimitiveData::Boolean(_)) => "Boolean",
                     // Symbol wrappers get their tag from @@toStringTag;
                     // without it, their builtinTag is Object.
-                    None | Some(PrimitiveData::Symbol(_)) => "Object",
+                    None | Some(PrimitiveData::Symbol(_) | PrimitiveData::BigInt(_)) => "Object",
                 }),
                 HeapObject::Vector(_)
                 | HeapObject::Map(_)
@@ -2500,7 +2561,12 @@ pub(crate) fn call_in_state(
     // Primitive constructor callbacks and prototype forwarding can execute on
     // small workers. Keep the large leaf dispatcher's unrelated storage out.
     match which {
-        Builtin::Number | Builtin::String | Builtin::Symbol | Builtin::BigInt => {
+        Builtin::Object => return object_constructor(heap, state.diag.task, args),
+        Builtin::Boolean
+        | Builtin::Number
+        | Builtin::String
+        | Builtin::Symbol
+        | Builtin::BigInt => {
             return primitive_constructor(heap, state.diag.task, which, args, false);
         }
         Builtin::ObjectSetPrototypeOf => {
@@ -2899,14 +2965,11 @@ mod tests {
         assert_eq!(tag(&heap, &object), "[object Function]");
         let vector = crate::collections::new_vector(&heap, &[]).unwrap();
         assert_eq!(tag(&heap, &vector), "[object Object]");
-        for primitive in [
-            Value::Bool(true),
-            Value::Number(1.0),
-            Value::String(JsString::from("s")),
-        ] {
+        for primitive in [Value::Number(1.0), Value::String(JsString::from("s"))] {
             assert_eq!(tag(&heap, &primitive), "unsupported");
         }
         assert_eq!(tag(&heap, &Value::Null), "[object Null]");
+        assert_eq!(tag(&heap, &Value::Bool(true)), "[object Boolean]");
     }
 
     #[test]
@@ -2915,6 +2978,11 @@ mod tests {
         let owner = TaskId::from_raw(1);
         let caller = TaskId::from_raw(2);
         for (constructor, method, argument) in [
+            (
+                Builtin::Boolean,
+                Builtin::BooleanPrototypeValueOf,
+                Value::Bool(true),
+            ),
             (
                 Builtin::Number,
                 Builtin::NumberPrototypeValueOf,
@@ -2934,5 +3002,15 @@ mod tests {
             ));
             assert!(call(&heap, owner, method, &wrapper, &[]).is_ok());
         }
+        let wrapper = array_string_receiver(&heap, owner, &Value::BigInt(7.into()))
+            .unwrap_or_else(|_| panic!("boxing failed"));
+        assert!(matches!(
+            this_bigint_value(&heap, caller, &wrapper),
+            Err(Fault::ForeignObject { owner: Some(id), caller: task }) if id == owner && task == caller
+        ));
+        assert_eq!(
+            this_bigint_value(&heap, owner, &wrapper).unwrap_or_else(|_| panic!("unboxing failed")),
+            7.into()
+        );
     }
 }
