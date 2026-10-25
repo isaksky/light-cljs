@@ -1842,7 +1842,11 @@ pub(crate) fn start_builtin(
     {
         return start_typed_array_constructor(heap, state, kind, args, popped);
     }
-    start_builtin_slow(heap, state, which, this, args, construct, popped)
+    if start_builtin_slow(heap, state, which, this, args, construct, popped)? {
+        return Ok(true);
+    }
+    // Release unrelated native-start temporaries before entering conversion.
+    start_builtin_conversion(heap, state, which, this, args, construct, popped)
 }
 
 /// Keep the protocol state and argument temporaries off the general built-in
@@ -2067,8 +2071,9 @@ fn initialize_intl_constructor(
     push_native(state, native)
 }
 
-// Each constructor creates its temporary state on a separate stack frame.
-// Debug builds otherwise reserve all Intl state temporaries in the dispatcher.
+// Construct and box each large state on a separate stack frame. Debug builds
+// otherwise reserve every unrelated state's temporaries in the dispatcher,
+// including the Intl state embedded by string methods.
 #[inline(never)]
 fn box_constructor_state<T>(make: impl FnOnce() -> Result<T, Fault>) -> Result<Box<T>, Fault> {
     make().map(Box::new)
@@ -2498,9 +2503,9 @@ fn start_builtin_slow(
         return Ok(true);
     }
     if string_methods::handles(which) && !construct {
-        let native = string_methods::State::new(which, this, args)?;
+        let native = box_constructor_state(|| string_methods::State::new(which, this, args))?;
         state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::StringMethods(Box::new(native)))?;
+        push_native(state, NativeState::StringMethods(native))?;
         return Ok(true);
     }
     if which == Builtin::SimGc {
@@ -2514,9 +2519,11 @@ fn start_builtin_slow(
         Builtin::IntlCollator | Builtin::IntlCollatorBound | Builtin::IntlCollatorSupportedLocales
     ) && (!construct || which == Builtin::IntlCollator)
     {
-        let native = collator::State::new(which, this, args, heap, state.diag.task)?;
+        let native = box_constructor_state(|| {
+            collator::State::new(which, this, args, heap, state.diag.task)
+        })?;
         state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::Collator(Box::new(native)))?;
+        push_native(state, NativeState::Collator(native))?;
         return Ok(true);
     }
     if matches!(
@@ -2526,9 +2533,11 @@ fn start_builtin_slow(
             | Builtin::IntlDateTimeFormatSupportedLocales
     ) && (!construct || which == Builtin::IntlDateTimeFormat)
     {
-        let native = date_time_format::State::new(which, this, args, heap, state.diag.task)?;
+        let native = box_constructor_state(|| {
+            date_time_format::State::new(which, this, args, heap, state.diag.task)
+        })?;
         state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::DateTimeFormat(Box::new(native)))?;
+        push_native(state, NativeState::DateTimeFormat(native))?;
         return Ok(true);
     }
     if (which == Builtin::IntlDisplayNames && construct)
@@ -2538,9 +2547,11 @@ fn start_builtin_slow(
                 Builtin::IntlDisplayNamesOf | Builtin::IntlDisplayNamesSupportedLocales
             ))
     {
-        let native = display_names::State::new(which, this, args, heap, state.diag.task)?;
+        let native = box_constructor_state(|| {
+            display_names::State::new(which, this, args, heap, state.diag.task)
+        })?;
         state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::DisplayNames(Box::new(native)))?;
+        push_native(state, NativeState::DisplayNames(native))?;
         return Ok(true);
     }
     if (which == Builtin::IntlRelativeTimeFormat && construct)
@@ -2552,9 +2563,11 @@ fn start_builtin_slow(
                     | Builtin::IntlRelativeTimeFormatSupportedLocales
             ))
     {
-        let native = relative_time_format::State::new(which, this, args, heap, state.diag.task)?;
+        let native = box_constructor_state(|| {
+            relative_time_format::State::new(which, this, args, heap, state.diag.task)
+        })?;
         state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::RelativeTimeFormat(Box::new(native)))?;
+        push_native(state, NativeState::RelativeTimeFormat(native))?;
         return Ok(true);
     }
     if (which == Builtin::IntlPluralRules && construct)
@@ -2563,9 +2576,11 @@ fn start_builtin_slow(
             Builtin::IntlPluralRulesSelect | Builtin::IntlPluralRulesSupportedLocales
         ) && !construct)
     {
-        let native = plural_rules::State::new(which, this, args, heap, state.diag.task)?;
+        let native = box_constructor_state(|| {
+            plural_rules::State::new(which, this, args, heap, state.diag.task)
+        })?;
         state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::PluralRules(Box::new(native)))?;
+        push_native(state, NativeState::PluralRules(native))?;
         return Ok(true);
     }
     if (which == Builtin::IntlSegmenter && construct)
@@ -2577,9 +2592,11 @@ fn start_builtin_slow(
                 | Builtin::IntlSegmentIteratorNext
         ) && !construct)
     {
-        let native = segmenter::State::new(which, this, args, heap, state.diag.task)?;
+        let native = box_constructor_state(|| {
+            segmenter::State::new(which, this, args, heap, state.diag.task)
+        })?;
         state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::Segmenter(Box::new(native)))?;
+        push_native(state, NativeState::Segmenter(native))?;
         return Ok(true);
     }
     if (which == Builtin::IntlListFormat && construct)
@@ -2590,17 +2607,19 @@ fn start_builtin_slow(
                 | Builtin::IntlListFormatSupportedLocales
         ) && !construct)
     {
-        let native = list_format::State::new(which, this, args, heap, state.diag.task)?;
+        let native = box_constructor_state(|| {
+            list_format::State::new(which, this, args, heap, state.diag.task)
+        })?;
         state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::ListFormat(Box::new(native)))?;
+        push_native(state, NativeState::ListFormat(native))?;
         return Ok(true);
     }
     if (which == Builtin::IntlLocale && construct)
         || (which == Builtin::IntlGetCanonicalLocales && !construct)
     {
-        let native = intl::Intl::new(args, construct)?;
+        let native = box_constructor_state(|| intl::Intl::new(args, construct))?;
         state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::Intl(Box::new(native)))?;
+        push_native(state, NativeState::Intl(native))?;
         return Ok(true);
     }
     if !construct {
@@ -2699,7 +2718,7 @@ fn start_builtin_slow(
             return Ok(true);
         }
     }
-    start_builtin_conversion(heap, state, which, this, args, construct, popped)
+    Ok(false)
 }
 
 #[inline(never)]

@@ -3829,6 +3829,13 @@ tagged raw values), regexp literals and comments for eval and Function
 (clj-quickjs-279); identifier positions reject them. See `docs/grammar.md`, "Indirect
 eval", for limits. Verification: `cargo test --test js_source indirect_eval`.
 
+Native startup (clj-quickjs-323) keeps large Intl and string-method construction
+temporaries in separate helper frames and returns from general native startup
+before entering conversion. String `indexOf`, `lastIndexOf` and `slice` are
+covered during indirect eval on migrating 64 KiB workers with one-instruction
+budgets and collection between slices. Verification:
+`cargo test --test js_source indirect_eval_on_small_worker_stacks -- --exact`.
+
 ### Exact iterable summation (clj-quickjs-158)
 
 Supported: `Math.sumPrecise(iterable)` returns the correctly rounded exact sum

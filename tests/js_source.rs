@@ -2735,6 +2735,10 @@ fn indirect_eval_on_small_worker_stacks() {
     let mut sources = vec![
         "1 + 1".to_string(),
         "(0, eval)('2')".to_string(),
+        "try { eval('\\n 123 a'); } catch(e) { if (!(e instanceof SyntaxError) || e.stack.indexOf('at') < 0 || e.message.indexOf('expected') < 0) throw e; } 2"
+            .to_string(),
+        "if ('a😀babc'.lastIndexOf('ab') !== 4 || 'a😀babc'.slice({valueOf() { return 1; }}, 3) !== '😀') throw 0; 2"
+            .to_string(),
         "try { (0, eval)('1 +'); } catch(e) { if (!(e instanceof SyntaxError)) throw e; } 2"
             .to_string(),
         "try { eval('\\n 123 a'); } catch(e) { if (!(e instanceof SyntaxError) || e.stack[7] !== '<' || e.stack[14] !== '2' || e.stack[16] !== '6' || e.stack[17] !== '\\n' || e.message[0] === '<') throw e; } 2".to_string(),
