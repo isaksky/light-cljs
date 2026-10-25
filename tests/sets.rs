@@ -140,3 +140,47 @@ fn set_iterable_construction_on_small_worker_stack() {
         .unwrap();
     assert!(matches!(outcome, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)));
 }
+
+#[test]
+fn set_iterator_next_enforces_brands() {
+    check(
+        r#"
+        let sn = Object.getPrototypeOf(new Set().values()).next;
+        let an = Object.getPrototypeOf([].values()).next;
+        let n = 0;
+        for (let exhausted of [false,true]) {
+            let s = new Set([7]).values(), a = [9].values();
+            if (exhausted) {s.next(); s.next(); a.next(); a.next();}
+            for (let pair of [[an,s],[sn,a],[sn,{}],[sn,null]]) {
+                try {pair[0].call(pair[1]);} catch(e) {if (e instanceof TypeError) n++;}
+            }
+            if (!exhausted && (s.next().value !== 7 || a.next().value !== 9)) throw 99;
+        }
+        let s = new Set([3]), values = s.values(), entries = s.entries();
+        let v = sn.call(values), e = sn.call(entries);
+        n === 8 && v.value === 3 && !v.done && !e.done && e.value[0] === 3 && e.value[1] === 3 && sn.call(values).done && sn.call(entries).done
+    "#,
+    );
+}
+
+#[test]
+fn sets_preserve_ordinary_object_protocols() {
+    for kind in ["Set", "WeakSet"] {
+        check(&format!(
+            r#"
+            let s = new {kind}([{{hidden:17}}]);
+            s.a = 1; s.b = {{n:2}}; s[Symbol()] = 99;
+            Object.defineProperty(s,'secret',{{value:99}});
+            let ok = JSON.stringify(s) === '{{"a":1,"b":{{"n":2}}}}';
+            let p = {{tag:7}};
+            Object.setPrototypeOf(s,p);
+            ok = ok && Object.getPrototypeOf(s) === p && s.tag === 7;
+            let k = {{}}; {kind}.prototype.add.call(s,k);
+            class Base {{constructor(o) {{return o;}}}}
+            class Stamp extends Base {{#data = {{n:23}}; static read(o) {{return o.#data.n;}}}}
+            let stamped = new Stamp(s);
+            ok && stamped === s && Stamp.read(s) === 23 && {kind}.prototype.has.call(s,k) && {kind}.prototype.delete.call(s,k)
+        "#
+        ));
+    }
+}

@@ -1512,3 +1512,48 @@ fn sets_are_task_owned_at_publication_boundaries() {
         }
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Borrowed intrinsics bypass
+/// property lookup on the receiver, so their own owner guards must reject it.
+#[test]
+fn sets_reject_foreign_task_access() {
+    let rt = Runtime::new();
+    for kind in ["Set", "WeakSet"] {
+        for source in [format!("new {kind}()"), format!("new {kind}([{{}}])")] {
+            let owner = rt
+                .spawn(&compile_script("set-owner", &source).unwrap(), &[])
+                .unwrap();
+            let set = complete(owner.run().unwrap());
+            let mut bodies = vec![
+                format!("{kind}.prototype.add.call(s, {{}})"),
+                format!("{kind}.prototype.has.call(s, {{}})"),
+                format!("{kind}.prototype.delete.call(s, {{}})"),
+                "s.x = 1".into(),
+                "Object.keys(s)".into(),
+                "Object.getPrototypeOf(s)".into(),
+                "Object.freeze(s)".into(),
+            ];
+            if kind == "Set" {
+                bodies.extend(
+                    [
+                        "Set.prototype.clear.call(s)",
+                        "Object.getOwnPropertyDescriptor(Set.prototype, 'size').get.call(s)",
+                        "Set.prototype.forEach.call(s, function() {throw 99;})",
+                        "Set.prototype.values.call(s)",
+                        "Set.prototype.entries.call(s)",
+                    ]
+                    .map(str::to_owned),
+                );
+            }
+            for body in bodies {
+                let code =
+                    compile_function(&format!("function read(s) {{return {body};}}")).unwrap();
+                let task = rt.spawn(&code, &[&set]).unwrap();
+                assert!(
+                    matches!(task.run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { owner: Some(id), caller } if id == owner.id() && caller == task.id())),
+                    "{source}: {body}"
+                );
+            }
+        }
+    }
+}

@@ -1289,11 +1289,11 @@ fn private_elements_retain_and_reclaim() {
 
     // Internal GC storage test, not JavaScript source support: the leaves
     // stand for data/method/getter/setter edges, without invoking callbacks.
-    for proxy in [false, true] {
+    for kind in ["plain", "proxy", "set", "weak-set"] {
         let heap = Arc::new(Heap::default());
         let task = TaskId::from_raw(1);
         let mut ids = Vec::new();
-        let receiver = if proxy {
+        let receiver = if kind == "proxy" {
             let target = plain(&heap);
             let handler = plain(&heap);
             ids.extend([target, handler]);
@@ -1303,6 +1303,19 @@ fn private_elements_retain_and_reclaim() {
                 &[Value::Object(target), Value::Object(handler)],
             )
             .unwrap_or_else(|_| panic!("proxy"))
+        } else if kind == "set" || kind == "weak-set" {
+            let prototype = plain(&heap);
+            ids.push(prototype);
+            let object = if kind == "set" {
+                HeapObject::JsSet(Box::new(crate::object::map::MapObject::new(
+                    task, prototype,
+                )))
+            } else {
+                HeapObject::WeakSet(Box::new(crate::object::weak_map::WeakMapObject::new(
+                    task, prototype,
+                )))
+            };
+            Value::Object(heap.alloc(object).unwrap())
         } else {
             Value::Object(
                 heap.alloc(HeapObject::Plain(OrdinaryObject::new(Some(task))))
