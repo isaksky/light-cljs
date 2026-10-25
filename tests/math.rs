@@ -136,7 +136,10 @@ fn remaining_math_waits_collects_and_migrates() {
         "Math.f16round(v(1.5,319)) === 1.5",
         "Math.clz32(v(1,319)) === 31",
         "Math.atan2(v(0,319),v(1,320)) === 0",
-        "Math.min(NaN,v(1,319),v(2,320)) !== 0",
+        "Number.isNaN(Math.min(NaN,v(1,319),v(2,320)))",
+        "Number.isNaN(Math.max(NaN,v(1,319),v(2,320)))",
+        "Math.min(-7,v(2,319)) === -7",
+        "Math.max(7,v(2,319)) === 7",
         "Math.max(v(1,319),v(2,320)) === 2",
     ] {
         let rt = Runtime::new();
@@ -286,19 +289,25 @@ fn math_libm_pinned_bits() {
 fn math_min_max_primitive_work_is_budgeted() {
     const COUNT: usize = 512;
     const SLICE: u64 = 32;
-    for (method, result) in [("min", -7.0), ("max", 7.0)] {
+    for (method, result, winner_first) in [
+        ("min", -7.0, false),
+        ("min", -7.0, true),
+        ("max", 7.0, false),
+        ("max", 7.0, true),
+    ] {
         let rt = Runtime::new();
         // All but the last argument are already on the VM operand stack
         // while need waits. Resuming pushes its result then calls min/max.
-        let source = format!(
-            "Math.{method}({}, __rt.need(319,1))",
-            vec!["0"; COUNT].join(",")
-        );
+        let mut arguments = vec!["0"; COUNT];
+        if winner_first {
+            arguments[0] = if method == "min" { "-7" } else { "7" };
+        }
+        let source = format!("Math.{method}({}, __rt.need(319,1))", arguments.join(","));
         let code = compile_script("math-budget.js", &source).unwrap();
         let mut task = rt.spawn(&code, &[]).unwrap();
         assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
         let request = task.take_producer_requests().pop().unwrap();
-        let value = rt.root(Primitive::Number(result));
+        let value = rt.root(Primitive::Number(if winner_first { 0.0 } else { result }));
         task = rt
             .complete(request.key(), request.producer(), Completion::Ready(&value))
             .unwrap()

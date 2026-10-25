@@ -3504,7 +3504,7 @@ the same Number::exponentiate helper as `**`: `Math.pow(NaN, 0)` is 1,
 `Math.pow(1, Infinity)` is NaN, `Math.pow(-0, -1)` is -Infinity and
 `Math.pow(-0, 3)` is -0. Its method descriptor is non-enumerable, writable
 and configurable; its length is 2 and its name is `"pow"`.
-Explicit gaps: other Math methods/constants remain in their own pellets;
+The remaining Math methods/constants are supported by clj-quickjs-319;
 the shared intrinsic mutation restriction described above still applies.
 
 ### Global object bindings (clj-quickjs-104)
@@ -3757,8 +3757,8 @@ Math.ceil(2000 * Math.log2(10)) === 6644;
 Explicit gaps: non-power-of-two `log2` uses Rust's platform math operation;
 its precision can vary by platform and Rust version and is not guaranteed
 correctly rounded. The value for 10 and the digit-sizing expression above
-are pinned by source tests on the tested platform. Other Math methods and
-constants remain tracked by their own pellets. The existing shared realm
+are pinned by source tests on the tested platform. All remaining standard
+Math members are supported by clj-quickjs-319. The existing shared realm
 immutability policy also applies to these methods.
 Tagged templates (clj-quickjs-58) evaluate the tag reference, obtain the
 site's template array, evaluate substitutions left to right without coercion,
@@ -4349,7 +4349,7 @@ are preserved, overflow becomes signed infinity, and stores select a positive
 quiet NaN representation. Loads widen exactly to Number. The backing bytes
 are little-endian; all existing exotic operations and detachment rules apply.
 
-Explicit gaps: `Math.f16round`, BigInt views, other typed-array methods,
+Explicit gaps: BigInt views, other typed-array methods,
 resizable buffers and species construction remain deferred. Source
 construction and set/fill/join/toString are described under clj-quickjs-168 below.
 
@@ -5456,7 +5456,7 @@ errors propagate without closing; a pending validation error wins over close
 errors. At 2^53 elements a RangeError closes the iterator, per the
 [Math.sumPrecise specification](https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-math.sumprecise).
 Explicit gaps: async iterables are not accepted by this synchronous method.
-Other Math methods/constants retain their existing supported/deferred status.
+All remaining standard Math methods/constants are supported by clj-quickjs-319.
 
 ### Execution: optional simulated host facilities (clj-quickjs-175)
 
