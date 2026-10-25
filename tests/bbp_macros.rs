@@ -84,6 +84,53 @@ fn preloaded_real_helper_and_ordinary_js_interop() {
 }
 
 #[test]
+fn javascript_interop_unwraps_input_scalars_and_preserves_javascript_objects() {
+    for (source, expected) in [
+        (
+            "(defmacro maximum [x] (js/Math.max x 2)) (js/console.log (maximum 40))",
+            "40\n",
+        ),
+        (
+            "(defmacro part [s n] (.substring s n)) (js/console.log (part \"hello\" 2))",
+            "llo\n",
+        ),
+        (
+            "(defmacro size [s] (.-length s)) (js/console.log (size \"hello\"))",
+            "5\n",
+        ),
+        (
+            "(defmacro stamp [n] (.getTime (js/Date. n))) (js/console.log (stamp 42))",
+            "42\n",
+        ),
+        (
+            "(defmacro stored [x] (let [o (js* \"({value: 0})\")] (set! (.-value o) x) (js/Math.max (.-value o) 2))) (js/console.log (stored 40))",
+            "40\n",
+        ),
+    ] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+            .unwrap_or_else(|e| panic!("{source}: {e}"));
+        let output = std::process::Command::new("node")
+            .arg("-e")
+            .arg(emit_js(&program))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            expected,
+            "{source}"
+        );
+        assert_eq!(host.native_macro_calls().len(), 1);
+    }
+}
+
+#[test]
 fn false_and_nil_input_occurrences_keep_language_truth() {
     let source =
         "(defmacro truthy [x] (if x 1 0)) (js/console.log (truthy nil) (truthy false) (truthy 0))";
@@ -259,6 +306,14 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
         (
             "(defmacro input [x] x) (input #{1 2})",
             "unsupported operation: native set forms",
+        ),
+        (
+            "(defmacro js-collection [x] (js/Object.keys x)) (js-collection [1 2])",
+            "unsupported operation: JavaScript interop with native vector form",
+        ),
+        (
+            "(defmacro js-instance [x] (instance? js/Object x)) (js-instance [1 2])",
+            "unsupported operation: JavaScript interop with native vector form",
         ),
     ] {
         let mut host = MacroHost::new();
@@ -466,6 +521,9 @@ fn native_expansions_match_the_legacy_compiler_output() {
         "(defmacro same [x] x) (same (+ 40 2))",
         "(defmacro ns-name [] (list 'quote (:name (:ns &env)))) (ns-name)",
         "(defmacro annotated [x] (with-meta x {:native true})) (annotated (+ 40 2))",
+        "(defmacro maximum [x] (js/Math.max x 2)) (maximum 40)",
+        "(defmacro part [s n] (.substring s n)) (part \"hello\" 2)",
+        "(defmacro stamp [n] (.getTime (js/Date. n))) (stamp 42)",
     ] {
         let mut host = MacroHost::new();
         host.use_native_macros();

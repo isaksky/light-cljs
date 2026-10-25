@@ -2,6 +2,11 @@
 const native = (() => {
   let gensymFloor=0;
   const val = x => __rt.formValue(x);
+  const interop = x => {
+    const value = val(x), kind = __rt.formKind(value);
+    if (kind !== null) throw new Error('unsupported operation: JavaScript interop with native ' + kind + ' form');
+    return value;
+  };
   const truth = x => val(x) !== null && val(x) !== undefined && val(x) !== false;
   const arr = x => {
     if (val(x) == null) return [];
@@ -44,6 +49,7 @@ const native = (() => {
   };
   for (const name of [/* CORE_KEYS */]) if (!(name in core)) Object.defineProperty(core,name,{get:unsupported('core.'+name)});
   const rt={core,
+    nativeInterop:interop,declarationReceiver:x=>x,
     keyword:(ns,n)=>__rt.formKeyword(ns,n),symbol:(ns,n)=>__rt.formSymbol(ns,n),get,
     vector:(...xs)=>vector(xs),vectorFromArray:vector,listFromArray:list,mapFromArray:map,arrayMapFromArray:map,constantMapFromArray:map,
     mapFromArrays:(ks,vs)=>map(ks.flatMap((k,i)=>[k,vs[i]])),

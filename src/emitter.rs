@@ -59,6 +59,7 @@ pub(crate) fn emit_application(
         module,
         mapped,
         None,
+        false,
     )
 }
 
@@ -208,21 +209,26 @@ pub(crate) fn emit_deferred_unit(program: &Program) -> String {
     emit_unit_parts(program, true, Some(&mut registration))
 }
 
-/// Native input scalars carry occurrence identity. The emitter's truth helper
-/// must inspect their underlying value, preserving Clojure nil/false semantics.
-/// Only the emitter-owned first prelude is changed, never user JavaScript.
+/// Native input scalars retain occurrence identity in form operations, and
+/// unwrap at truth tests and explicit JavaScript interop boundaries.
 #[cfg(feature = "bbp-macros")]
 pub(crate) fn emit_native_macro_unit(program: &Program, deferred: bool) -> String {
-    let source = if deferred {
-        emit_deferred_unit(program)
-    } else {
-        emit_js_unit(program)
+    let mut registration = NamespaceRegistration {
+        deferred,
+        ..Default::default()
     };
-    source.replacen(
-        PRELUDE_TRUTH,
-        "  const truth = (value) => rt.core.truth(value);\n",
-        1,
+    emit_js_mode(
+        program,
+        Some(UNIT_RUNTIME),
+        deferred,
+        None,
+        None,
+        false,
+        false,
+        deferred.then_some(&mut registration),
+        true,
     )
+    .0
 }
 
 /// The statements registering the namespaces of `tables` that `plan`
@@ -336,6 +342,7 @@ fn emit_unit_parts(
         false,
         false,
         registration,
+        false,
     )
     .0
 }
@@ -405,6 +412,7 @@ fn emit_js_mode(
     module: bool,
     mapped: bool,
     detached_registration: Option<&mut NamespaceRegistration>,
+    native_forms: bool,
 ) -> (String, EmittedRuntime, Option<SourceMapping>) {
     let application_roots = interactive.is_some();
     let entry = interactive.and_then(|interactive| interactive.entry);
@@ -442,9 +450,16 @@ fn emit_js_mode(
             register_namespaces,
         );
         emitter.brand_types = brand_types;
+        emitter.native_forms = native_forms;
         emitter.record_kits = record_kits;
         emitter.output.push_str(PRELUDE_OPEN);
-        emitter.output.push_str(PRELUDE_TRUTH);
+        if native_forms {
+            emitter.output.push_str("  const truth = (value) => ");
+            emitter.rt(RuntimeName::core("truth"));
+            emitter.output.push_str("(value);\n");
+        } else {
+            emitter.output.push_str(PRELUDE_TRUTH);
+        }
         let mut prelude_end = emitter.output.len();
         for global in 0..program.globals.len() {
             if application_roots || demand_roots {
@@ -1592,6 +1607,7 @@ enum TypeBrands {
 }
 
 struct Emitter<'a> {
+    native_forms: bool,
     registration_chunks: Vec<(String, std::ops::Range<usize>)>,
     program: &'a Program,
     demand_roots: bool,
@@ -1807,6 +1823,7 @@ impl<'a> Emitter<'a> {
             .and_then(|application| application.shapes)
             .filter(|_| direct.is_some());
         Emitter {
+            native_forms: false,
             registration_chunks: Vec::new(),
             program,
             demand_roots,
@@ -3195,6 +3212,28 @@ impl<'a> Emitter<'a> {
                 self.output.push_str(", ");
             }
             self.value(arg);
+        }
+    }
+
+    /// This adapter is emitted only for the native compile-time runtime.
+    /// It unwraps scalar occurrences and rejects native collection interop.
+    fn interop_value(&mut self, value: ExprId) {
+        if self.native_forms {
+            self.rt(RuntimeName::export("nativeInterop"));
+            self.output.push('(');
+            self.value(value);
+            self.output.push(')');
+        } else {
+            self.value(value);
+        }
+    }
+
+    fn interop_arguments(&mut self, args: &[ExprId]) {
+        for (index, &arg) in args.iter().enumerate() {
+            if index > 0 {
+                self.output.push_str(", ");
+            }
+            self.interop_value(arg);
         }
     }
 
@@ -6567,7 +6606,11 @@ impl<'a> Emitter<'a> {
                     if index > 0 {
                         self.output.push_str(", ");
                     }
-                    self.value(*arg);
+                    if host {
+                        self.interop_value(*arg);
+                    } else {
+                        self.value(*arg);
+                    }
                 }
                 self.output.push(')');
             }
@@ -6763,19 +6806,19 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::JsIndex { receiver, indices } => {
                 self.output.push('(');
-                self.value(*receiver);
+                self.interop_value(*receiver);
                 self.output.push(')');
                 for index in indices {
                     self.output.push('[');
-                    self.value(*index);
+                    self.interop_value(*index);
                     self.output.push(']');
                 }
             }
             ExprKind::JsDelete { receiver, key } => {
                 self.output.push_str("(delete (");
-                self.value(*receiver);
+                self.interop_value(*receiver);
                 self.output.push_str(")[");
-                self.value(*key);
+                self.interop_value(*key);
                 self.output.push_str("])");
             }
             ExprKind::QualifiedMethod { class, method } => {
@@ -7147,10 +7190,20 @@ impl<'a> Emitter<'a> {
                 self.output.push(')');
             }
             ExprKind::SetGlobal { target, value } => {
+                let interop = matches!(
+                    self.program.exprs[target.0].kind,
+                    ExprKind::JsGlobal(_) | ExprKind::Property { .. } | ExprKind::JsIndex { .. }
+                );
                 self.output.push('(');
                 self.assignment(
                     |emitter| emitter.assignable(*target),
-                    |emitter| emitter.value(*value),
+                    |emitter| {
+                        if interop {
+                            emitter.interop_value(*value)
+                        } else {
+                            emitter.value(*value)
+                        }
+                    },
                 );
                 self.output.push(')');
             }
@@ -7263,7 +7316,11 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::InstanceOf { class, value } => {
                 self.output.push('(');
-                self.value(*value);
+                if matches!(self.program.exprs[class.0].kind, ExprKind::JsGlobal(_)) {
+                    self.interop_value(*value);
+                } else {
+                    self.value(*value);
+                }
                 self.output.push_str(" instanceof ");
                 self.value(*class);
                 self.output.push(')');
@@ -7275,7 +7332,7 @@ impl<'a> Emitter<'a> {
                 } else {
                     self.output.push('(');
                 }
-                self.value(*receiver);
+                self.interop_value(*receiver);
                 self.output.push(')');
                 self.member(property);
             }
@@ -7290,11 +7347,11 @@ impl<'a> Emitter<'a> {
                 } else {
                     self.output.push('(');
                 }
-                self.value(*receiver);
+                self.interop_value(*receiver);
                 self.output.push(')');
                 self.member(method);
                 self.output.push('(');
-                self.arguments(args);
+                self.interop_arguments(args);
                 self.output.push(')');
             }
             ExprKind::If { test, yes, no } => {
@@ -7489,13 +7546,14 @@ impl<'a> Emitter<'a> {
                 if matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_)) {
                     // A JS path is a host invocation and retains its final receiver.
                     self.output.push_str(")(");
+                    self.interop_arguments(args);
                 } else {
                     self.output.push_str(").call(null");
                     if !args.is_empty() {
                         self.output.push_str(", ");
                     }
+                    self.arguments(args);
                 }
-                self.arguments(args);
                 self.output.push(')');
             }
         }
@@ -7618,6 +7676,7 @@ fn emit_interactive(
         false,
         mapped,
         None,
+        false,
     );
     (unit, mapping)
 }
@@ -7651,6 +7710,7 @@ pub(crate) fn emit_namespace_unit(
         false,
         true,
         None,
+        false,
     );
     (unit, mapping.expect("a mapped emission has a source map"))
 }

@@ -17,6 +17,16 @@ zero repeated imports, incremental environment imports, metadata, syntax quote,
 applications. Neither legacy engine appears in the last command's dependency
 list. Emitted application JavaScript still uses the conventional runtime.
 
+For a CLI smoke test (prints `40`):
+
+```sh
+cargo run --locked --no-default-features --features bbp-macros -- --compile --text '(defmacro maximum [x] (js/Math.max x 2)) (js/console.log (maximum 40))' | node
+```
+
+Namespace builds use the same feature flags with
+`--compile --entry app --source-root PATH --jobs 1 --stats`. The compiler emits
+ordinary application JavaScript on stdout and bridge statistics on stderr.
+
 `bbp-macros` adds an optional workspace dependency. In a build containing a
 legacy engine, call `MacroHost::use_native_macros()` to select it explicitly.
 When it is the only compiled engine it serves clean compilations automatically.
@@ -52,8 +62,14 @@ keywords, symbols, scalar occurrences, metadata, construction, lookup, basic
 finite sequence operations, equality, arithmetic addition/subtraction and native
 truth tests have first-party implementations using native form intrinsics. Plain
 JavaScript functions and ordinary interop such as `Math.max` run in the same task.
-JavaScript directly inspecting imported forms sees native values; use supported
-Clojure operations to read those forms. Core operations outside the implemented
+Direct JavaScript calls, constructors, method calls, instance checks,
+property/index access and property assignment unwrap imported scalar occurrences. For example,
+`(defmacro maximum [x] (js/Math.max x 2))` accepts a numeric input. Native
+collection, symbol and keyword interop at those boundaries fails with an explicit
+unsupported-operation diagnostic; it does not silently convert to JS objects.
+Raw `js*` templates retain their literal semantics, including assignable holes:
+direct inspection there sees native form values. Use supported Clojure operations
+or the engine's explicit `__rt.formValue` intrinsic to inspect them. Core operations outside the implemented
 runtime report their operation name and never fall back to another engine.
 
 The compiler's existing Rust core macro implementations supply the bootstrap.
