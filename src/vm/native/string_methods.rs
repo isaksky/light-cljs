@@ -51,6 +51,14 @@ enum Stage {
     Encode,
     Collator,
     Compare,
+    Discard,
+}
+#[derive(Debug)]
+enum EarlyResult {
+    Empty,
+    Undefined,
+    RepeatCountError,
+    StringTooLong,
 }
 #[derive(Debug)]
 pub(super) struct State {
@@ -95,6 +103,7 @@ pub(super) struct State {
     skip_dot: Option<usize>,
     passthrough_end: usize,
     add_dot: bool,
+    early: Option<EarlyResult>,
 }
 impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
@@ -178,6 +187,7 @@ impl State {
             skip_dot: None,
             passthrough_end: 0,
             add_dot: false,
+            early: None,
         })
     }
     fn lower(&self) -> bool {
@@ -202,6 +212,15 @@ impl State {
         self.stage = stage;
         Ok(Action::Continue)
     }
+    fn discard(&mut self, result: EarlyResult) -> Action {
+        self.early = Some(result);
+        self.cursor = Some(UnitCursor::new(std::mem::replace(
+            &mut self.text,
+            JsString::from(""),
+        )));
+        self.stage = Stage::Discard;
+        Action::Continue
+    }
     fn emit(&mut self, cp: u32) -> Result<(), Fault> {
         let len = if cp > 0xffff { 2 } else { 1 };
         if self.out.len() + len > crate::value::string::MAX_STRING_LEN {
@@ -222,7 +241,12 @@ impl State {
         )))
     }
     fn language(&mut self, locale: JsString) {
-        // CanonicalizeLocaleList and the host locale boundary already bound tags.
+        // Explicit canonical tags are already bounded. The host boundary is
+        // trusted but unvalidated; overlong host tags use root case rules.
+        if locale.len() >= 512 {
+            self.language.clear();
+            return;
+        }
         self.language = locale
             .to_string_lossy()
             .split('-')
@@ -238,6 +262,24 @@ impl State {
     ) -> Result<Action, Fault> {
         use builtin::Builtin::*;
         match self.stage {
+            Stage::Discard => {
+                for _ in 0..128 {
+                    if !self.cursor.as_mut().unwrap().discard_step() {
+                        self.cursor = None;
+                        return match self.early.take().unwrap() {
+                            EarlyResult::Empty => {
+                                Ok(Action::Return(Value::String(JsString::from(""))))
+                            }
+                            EarlyResult::Undefined => Ok(Action::Return(Value::Undefined)),
+                            EarlyResult::RepeatCountError => {
+                                Err(Fault::RangeError("invalid repeat count".into()))
+                            }
+                            EarlyResult::StringTooLong => Err(Fault::StringTooLong),
+                        };
+                    }
+                }
+                Ok(Action::Continue)
+            }
             Stage::Start => {
                 if matches!(
                     self.which,
@@ -542,13 +584,13 @@ impl State {
         let len = self.text.len();
         if self.which == StringRepeat {
             if self.number < 0.0 || !self.number.is_finite() {
-                return Err(Fault::RangeError("invalid repeat count".into()));
+                return Ok(self.discard(EarlyResult::RepeatCountError));
             }
             if self.number == 0.0 || len == 0 {
-                return Ok(Action::Return(Value::String(JsString::from(""))));
+                return Ok(self.discard(EarlyResult::Empty));
             }
             if self.number > (crate::value::string::MAX_STRING_LEN / len) as f64 {
-                return Err(Fault::StringTooLong);
+                return Ok(self.discard(EarlyResult::StringTooLong));
             }
         }
         if self.which == StringAt {
@@ -558,7 +600,7 @@ impl State {
                 self.number
             };
             if !(0.0..len as f64).contains(&index) {
-                return Ok(Action::Return(Value::Undefined));
+                return Ok(self.discard(EarlyResult::Undefined));
             }
             self.start = index as usize;
         }
@@ -843,11 +885,16 @@ mod tests {
 
     #[test]
     fn methods_release_deep_rope_nodes_in_bounded_steps() {
-        for which in [
-            builtin::Builtin::StringToUpperCase,
-            builtin::Builtin::StringNormalize,
-            builtin::Builtin::StringTrim,
-            builtin::Builtin::StringRepeat,
+        for (which, argument) in [
+            (builtin::Builtin::StringToUpperCase, 2.0),
+            (builtin::Builtin::StringNormalize, 2.0),
+            (builtin::Builtin::StringTrim, 2.0),
+            (builtin::Builtin::StringRepeat, 2.0),
+            (builtin::Builtin::StringRepeat, 0.0),
+            (builtin::Builtin::StringRepeat, f64::NAN),
+            (builtin::Builtin::StringAt, f64::INFINITY),
+            (builtin::Builtin::StringAt, -50_000.0),
+            (builtin::Builtin::StringAt, 50_000.0),
         ] {
             for prepend in [false, true] {
                 let heap = Heap::default();
@@ -862,8 +909,9 @@ mod tests {
                     }
                     .unwrap();
                 }
-                let mut native = State::new(which, &Value::String(rope), &[Value::Number(2.0)])
-                    .unwrap_or_else(|_| panic!("state"));
+                let mut native =
+                    State::new(which, &Value::String(rope), &[Value::Number(argument)])
+                        .unwrap_or_else(|_| panic!("state"));
                 if which == builtin::Builtin::StringNormalize {
                     native.args[0] = Value::Undefined;
                 }
@@ -886,7 +934,7 @@ mod tests {
                         Action::ToNumber(v) => Input::CallResult(Value::Number(
                             dispatch::to_number(&v).unwrap_or_else(|_| panic!("ToNumber")),
                         )),
-                        Action::Return(Value::String(_)) => {
+                        Action::Return(Value::String(_) | Value::Undefined) => {
                             complete = true;
                             break;
                         }

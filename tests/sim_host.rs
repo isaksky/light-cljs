@@ -1532,3 +1532,46 @@ fn intl_date_time_format_style_zone_names() {
         }
     }
 }
+
+#[test]
+fn string_locale_case_uses_host_default() {
+    use clj_quickjs::{Budget, RunOutcome};
+    let overlong = format!("tr-{}", "a".repeat(512));
+    // Synthetic fixtures, not light-cljs output. All three omitted-locale
+    // forms go through the host boundary; explicit locales override it.
+    for (locale, source) in [
+        (
+            "tr",
+            "'I'.toLocaleLowerCase()==='ı' && 'I'.toLocaleLowerCase(undefined)==='ı' && 'I'.toLocaleLowerCase([])==='ı' && 'i'.toLocaleUpperCase()==='İ' && 'i'.toLocaleUpperCase(undefined)==='İ' && 'i'.toLocaleUpperCase([])==='İ' && 'I'.toLocaleLowerCase('en')==='i' && 'i'.toLocaleUpperCase('en')==='I'",
+        ),
+        (
+            overlong.as_str(),
+            "'I'.toLocaleLowerCase()==='i' && 'i'.toLocaleUpperCase([])==='I'",
+        ),
+        (
+            "lt",
+            "'I\\u0301'.toLocaleLowerCase()==='i\\u0307\\u0301' && 'I\\u0301'.toLocaleLowerCase(undefined)==='i\\u0307\\u0301' && 'I\\u0301'.toLocaleLowerCase([])==='i\\u0307\\u0301' && 'i\\u0307'.toLocaleUpperCase()==='I' && 'i\\u0307'.toLocaleUpperCase(undefined)==='I' && 'i\\u0307'.toLocaleUpperCase([])==='I' && 'I\\u0301'.toLocaleLowerCase('en')==='i\\u0301' && 'i\\u0307'.toLocaleUpperCase('en')==='I\\u0307'",
+        ),
+    ] {
+        let rt = Runtime::new();
+        let mut host = SimHost::new(&rt);
+        host.set_default_locale(locale);
+        let code = clj_quickjs::frontend::compile_script("string-host-locale", source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let mut complete = false;
+        for _ in 0..5000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{locale}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{locale}: {other:?}"),
+            }
+        }
+        assert!(complete, "{locale}: instruction bound");
+    }
+}

@@ -4726,6 +4726,8 @@ default host). `localeCompare` uses the existing Intl.Collator constructor's
 locale/options processing and root/tailoring comparison engine, including its
 published test-locale and collation coverage limits. Replacing the JavaScript
 `Intl.Collator` property does not replace this intrinsic operation.
+Host-default case tags at or above the canonicalizer's 512-unit limit use
+root case rules, checked before decoding; explicit tags retain Intl validation.
 
 Normalization supports NFC, NFD, NFKC and NFKD with Unicode 17 recursive
 canonical/compatibility decomposition, stable combining-class ordering,
@@ -4736,6 +4738,8 @@ Rust source; normal builds use immutable Rust data and need no Unicode download.
 Rope traversal, copying, trimming, predicate scans, Unicode decoding,
 context lookahead, canonical ordering, composition and output run in batches
 of at most 128 units/scalars/comparisons or individual normalization actions.
+Zero-count repeat and out-of-range `at` also release owned rope nodes in
+bounded batches before returning; repeat validation errors use the same cleanup.
 Collation retains its existing 128-action batches. Each full case expansion
 has at most three scalars. Buffers reserve before scanning to prevent growing
 buffer copies inside a step. Allocation remains an indivisible leaf operation;

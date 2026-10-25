@@ -29882,3 +29882,29 @@ fn string_methods_wait_collect_and_migrate() {
         assert_eq!(waits, 1);
     }
 }
+
+#[test]
+fn string_repeat_result_length_limits() {
+    // Synthetic fixtures, not light-cljs output. Reject before allocating or
+    // multiplying unrepresentable finite counts, after exactly one coercion.
+    for expression in [
+        "'x'.repeat(1073741824)",
+        "'ab'.repeat(536870912)",
+        "'ab'.repeat(2 ** 63)",
+    ] {
+        let source = format!(
+            "let caught=false; try {{ {expression}; }} catch(e) {{ caught=e instanceof InternalError && e.message==='string too long'; }} caught"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{expression}");
+    }
+    assert_eq!(
+        eval("''.repeat(2 ** 63) === '' && ''.repeat(1e100) === ''"),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            "let n=0, caught=false; try { 'ab'.repeat({valueOf(){n++;return 2 ** 63;}}); } catch(e) { caught=e instanceof InternalError && e.message==='string too long'; } caught && n===1"
+        ),
+        ValueView::Bool(true)
+    );
+}
