@@ -464,6 +464,14 @@ pub(crate) enum Builtin {
     ArraySpecies,
     GeneratorReturn,
     GeneratorThrow,
+    ArrayPrototypeIndexOf,
+    ArrayPrototypeLastIndexOf,
+    ArrayPrototypeIncludes,
+    ArrayPrototypeFind,
+    ArrayPrototypeFindIndex,
+    ArrayPrototypeFindLast,
+    ArrayPrototypeFindLastIndex,
+    ArrayPrototypeAt,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -509,6 +517,14 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::ArrayPrototypeIndexOf => "indexOf",
+            Builtin::ArrayPrototypeLastIndexOf => "lastIndexOf",
+            Builtin::ArrayPrototypeIncludes => "includes",
+            Builtin::ArrayPrototypeFind => "find",
+            Builtin::ArrayPrototypeFindIndex => "findIndex",
+            Builtin::ArrayPrototypeFindLast => "findLast",
+            Builtin::ArrayPrototypeFindLastIndex => "findLastIndex",
+            Builtin::ArrayPrototypeAt => "at",
             Builtin::ArraySpecies => "get [Symbol.species]",
             Builtin::ArrayPrototypePop => "pop",
             Builtin::ArrayPrototypeShift => "shift",
@@ -768,6 +784,14 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Builtin::ArrayPrototypeIndexOf
+            | Builtin::ArrayPrototypeLastIndexOf
+            | Builtin::ArrayPrototypeIncludes
+            | Builtin::ArrayPrototypeFind
+            | Builtin::ArrayPrototypeFindIndex
+            | Builtin::ArrayPrototypeFindLast
+            | Builtin::ArrayPrototypeFindLastIndex
+            | Builtin::ArrayPrototypeAt => 1,
             Builtin::ArraySpecies => 0,
             Builtin::ArrayPrototypePop
             | Builtin::ArrayPrototypeShift
@@ -1013,6 +1037,16 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
+        Builtin::ArrayPrototypeIndexOf
+        | Builtin::ArrayPrototypeLastIndexOf
+        | Builtin::ArrayPrototypeIncludes
+        | Builtin::ArrayPrototypeFind
+        | Builtin::ArrayPrototypeFindIndex
+        | Builtin::ArrayPrototypeFindLast
+        | Builtin::ArrayPrototypeFindLastIndex
+        | Builtin::ArrayPrototypeAt => {
+            Err(Fault::Internal("array search requires a resumable frame"))
+        }
         Builtin::ArraySpecies => Ok(this.clone()),
         Builtin::SimGc | Builtin::SimSetTimeout | Builtin::SimClearTimeout => Err(Fault::Internal(
             "simulated host binding requires task state",

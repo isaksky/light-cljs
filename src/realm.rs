@@ -1584,6 +1584,14 @@ fn array_mutator_intrinsics(
         Builtin::ArrayPrototypeReverse,
         Builtin::ArrayPrototypeFill,
         Builtin::ArrayPrototypeCopyWithin,
+        Builtin::ArrayPrototypeIndexOf,
+        Builtin::ArrayPrototypeLastIndexOf,
+        Builtin::ArrayPrototypeIncludes,
+        Builtin::ArrayPrototypeFind,
+        Builtin::ArrayPrototypeFindIndex,
+        Builtin::ArrayPrototypeFindLast,
+        Builtin::ArrayPrototypeFindLastIndex,
+        Builtin::ArrayPrototypeAt,
     ] {
         let function = b.function(method, &[])?;
         b.add(prototype, method.name(), function, PropertyFlags::METHOD)?;
@@ -2934,7 +2942,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 352); // Generator return/throw (-293).
+        assert_eq!(first.all.len(), 360); // Eight array search methods (-297).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

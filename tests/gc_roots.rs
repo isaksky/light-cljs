@@ -1140,7 +1140,8 @@ fn realm_intrinsics_retain() {
     // Array unscopables adds one ordinary record (-110).
     // Seven array mutators and species getter add eight built-ins (-296).
     // Generator return/throw add two built-in methods (-293).
-    assert_eq!(rt.heap_usage().objects.builtin, 295);
+    // Eight array search methods add eight built-ins (-297).
+    assert_eq!(rt.heap_usage().objects.builtin, 303);
     assert_eq!(rt.heap_usage().objects.plain, 57);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

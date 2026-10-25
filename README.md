@@ -4348,3 +4348,28 @@ Tests cover native execution on 64 KiB worker stacks after shared realm setup.
 Validation: `cargo test --test js_source array_mutators` and
 `cargo test --test need array_mutators`. The source fixture
 `tests/fixtures/js/array_mutators.js` is synthetic, not light-cljs output.
+
+### Array searches and relative indexing (clj-quickjs-297)
+
+`Array.prototype.indexOf`, `lastIndexOf`, `includes`, `find`, `findIndex`,
+`findLast`, `findLastIndex` and `at` support generic array-like receivers,
+inherited elements, resumable length/index conversions and getters.
+`indexOf`/`lastIndexOf` skip holes and use strict equality; `includes` visits
+holes as `undefined` and uses SameValueZero, including NaN and BigInt values.
+The find methods visit holes, snapshot the initial length, and call predicates
+with `(value, index, object)` and the supplied `thisArg` through ordinary VM
+call validation. Callback mutations affect subsequent reads; a successful
+predicate returns the value read before the callback ran.
+
+Every scanned element advances through budgeted native continuation steps.
+Saved receiver, arguments, element and read results remain traced across
+collection, dependency waits and worker migration; no Rust stack is retained.
+No additional size limit is imposed: generic lengths use the existing
+ToLength cap of 2^53 - 1. Primitive receivers reuse the existing
+Number/String/Symbol wrappers; Boolean/BigInt wrappers remain unsupported.
+Proxy property access retains the existing property layer's trap restrictions.
+Array iteration/transformation methods retain their existing support status.
+
+Validation: `cargo test --test js_source array_search` and
+`cargo test --test need array_search`. The fixture
+`tests/fixtures/js/array_search.js` is synthetic, not light-cljs output.

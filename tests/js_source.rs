@@ -28745,3 +28745,93 @@ fn array_mutators_species_creates_own_data_properties() {
         assert_eq!(eval(&source), ValueView::Bool(true), "{constructor}");
     }
 }
+
+#[test]
+fn array_search() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/array_search.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn array_search_observable_order_and_errors() {
+    // Synthetic fixtures, not light-cljs output.
+    for src in [
+        "let log = ''; let o = {get length() { log += 'l'; return {valueOf() { log += 'n'; return 2; }}; }, get 0() { log += 'a'; return 7; }, get 1() { log += 'b'; return 8; }}; let f = {valueOf() { log += 'i'; return 0; }}; Array.prototype.indexOf.call(o, 8, f) === 1 && log === 'lniab'",
+        "let n = 0, f = {valueOf() { n++; return 0; }}; [].indexOf(1,f) === -1 && [].lastIndexOf(1,f) === -1 && ![].includes(1,f) && n === 0 && [].at(f) === undefined && n === 1",
+        "let n = 0; for (let method of ['find','findIndex','findLast','findLastIndex']) { let o = {get length() { n++; return 0; }}; try { Array.prototype[method].call(o, null); } catch(e) { if (!(e instanceof TypeError)) throw e; n++; } } n === 8",
+        "let n = 0; for (let method of ['indexOf','lastIndexOf','includes','find','findIndex','findLast','findLastIndex','at']) { for (let receiver of [null,undefined]) { try { Array.prototype[method].call(receiver, () => true); } catch(e) { if (e instanceof TypeError) n++; } } } n === 16",
+        "let a = [{x:1},{x:2}], n = 0; let r = a.find((v,i) => { n++; delete a[i]; return true; }); r.x === 1 && n === 1",
+        "let a = [1,2,3], seen = ''; let r = a.find((v,i,o) => { seen += String(v); if (i === 0) { o.length = 1; o.push(7); o.push(8); o.push(9); } return false; }); r === undefined && seen === '178'",
+        "let a = [1,2,3], seen = ''; a.findLast((v,i,o) => { seen += String(v); if (i === 2) delete o[1]; return false; }); seen === '3undefined1'",
+        "let n = 0; let o = {length: 3, get 0() { n++; return 1; }, get 1() { throw 42; }}; Array.prototype.includes.call(o,1) && n === 1",
+        "let n = 0; try { [1,2].find(v => { n++; throw 42; }); } catch(e) { n += e; } n === 43",
+        "let n = 0; try { [1].includes(1, Symbol()); } catch(e) { if (e instanceof TypeError) n++; } try { [1].at(1n); } catch(e) { if (e instanceof TypeError) n++; } n === 2",
+        "let o = {length: -3, get 0() { throw 99; }}; Array.prototype.at.call(o,0) === undefined && Array.prototype.indexOf.call(o,undefined) === -1",
+        "let o = {length: Infinity, 9007199254740990: 'x'}; Array.prototype.at.call(o,-1) === 'x' && Array.prototype.lastIndexOf.call(o,'x') === 9007199254740990 && Array.prototype.indexOf.call(o,'x',9007199254740990) === 9007199254740990",
+        "let a = new Uint8Array([1,2,3]); Array.prototype.includes.call(a,2) && Array.prototype.findLastIndex.call(a,x => x < 3) === 1 && Array.prototype.at.call(a,-1) === 3",
+        "let o = {x:2}; [1,2,3].find(function(v) { return v === this.x; }.bind(o)) === 2",
+        "let a = []; let result = Array.prototype.find.call('xy',function(v,i,o) { a.push(typeof o === 'object' && o[i] === v); return i === 1; }); result === 'y' && a.join() === 'true,true'",
+        "let a = [undefined]; a.indexOf(undefined) === 0 && a.lastIndexOf(undefined) === 0 && a.findIndex(v => v === undefined) === 0",
+        "let a = [1,2,3]; a.indexOf(1,-0.5) === 0 && a.lastIndexOf(1,-0.5) === 0 && a.includes(1,NaN) && a.at(-0.5) === 1",
+        "let n=0; for (let method of ['indexOf','lastIndexOf','includes','find','findIndex','findLast','findLastIndex','at']) { try { new Array.prototype[method](); } catch(e) { if (e instanceof TypeError) n++; } } n === 8",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn array_search_yield_and_collect() {
+    struct Marker(bool);
+    impl Host for Marker {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(call.arg)
+        }
+    }
+    for (operation, check) in [
+        ("a.indexOf(target)", "r === 199"),
+        (
+            "Array.prototype.indexOf.call({length:200},target)",
+            "r === -1",
+        ),
+        (
+            "Array.prototype.lastIndexOf.call({length:200},target)",
+            "r === -1",
+        ),
+        ("a.lastIndexOf(a[0])", "r === 0"),
+        ("a.includes(target)", "r === true"),
+        ("a.find(x => x === target)", "r === target"),
+        ("a.findIndex(x => x === target)", "r === 199"),
+        ("a.findLast(x => x === a[0])", "r === a[0]"),
+        ("a.findLastIndex(x => x === a[0])", "r === 0"),
+    ] {
+        let source = format!(
+            "let a = []; for (let i=0;i<200;i++) a.push({{x:i}}); let target=a[199]; __rt.effect(1,0); let r = {operation}; {check}"
+        );
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut host = Marker(false);
+        let mut yields = 0;
+        let mut completed = false;
+        for _ in 0..4000 {
+            match task.run_with(Budget::instructions(50), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    yields += usize::from(host.0);
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{operation}");
+                    completed = true;
+                    break;
+                }
+                other => panic!("{operation}: {other:?}"),
+            }
+        }
+        assert!(
+            completed && yields >= 4,
+            "{operation}: completed={completed}, yields={yields}"
+        );
+    }
+}

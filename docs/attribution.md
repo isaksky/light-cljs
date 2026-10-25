@@ -1425,3 +1425,11 @@ at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` for state transitions,
 finally execution and delegate method/result handling. Rust code and the
 synthetic generator_return_throw fixture and wait tests are independently
 written; no QuickJS source or test text is copied.
+
+## Array searches and relative indexing (clj-quickjs-297)
+
+Semantic references: `research/quickjs/quickjs.c`, `js_array_indexOf`,
+`js_array_lastIndexOf`, `js_array_includes`, `js_array_find` and `js_array_at`,
+at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The Rust continuation state and tests were written afresh; no QuickJS source
+or tests were copied. All JavaScript fixtures are synthetic, not light-cljs output.
