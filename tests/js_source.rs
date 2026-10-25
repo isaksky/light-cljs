@@ -24483,6 +24483,69 @@ fn intl_number_format_unit_identifiers_and_parts() {
     );
 }
 
+/// Synthetic fixtures, not light-cljs output. Independent expected metadata
+/// guards the existing styles and the snapshot's unadorned nonfinite results.
+#[test]
+fn intl_number_format_parts_for_existing_styles() {
+    for (locale, options, value, expected) in [
+        (
+            "en",
+            "{}",
+            "-1234.5",
+            r#"[{"type":"minusSign","value":"-"},{"type":"integer","value":"1"},{"type":"group","value":","},{"type":"integer","value":"234"},{"type":"decimal","value":"."},{"type":"fraction","value":"5"}]"#,
+        ),
+        (
+            "de",
+            "{style:'percent'}",
+            "0.5",
+            r#"[{"type":"integer","value":"50"},{"type":"literal","value":" "},{"type":"percentSign","value":"%"}]"#,
+        ),
+        (
+            "de",
+            "{style:'currency',currency:'EUR'}",
+            "2",
+            r#"[{"type":"integer","value":"2"},{"type":"decimal","value":","},{"type":"fraction","value":"00"},{"type":"literal","value":" "},{"type":"currency","value":"€"}]"#,
+        ),
+        (
+            "en",
+            "{style:'currency',currency:'USD',currencySign:'accounting'}",
+            "-2",
+            r#"[{"type":"literal","value":"("},{"type":"currency","value":"$"},{"type":"integer","value":"2"},{"type":"decimal","value":"."},{"type":"fraction","value":"00"},{"type":"literal","value":")"}]"#,
+        ),
+    ] {
+        let source = format!(
+            "JSON.stringify(new Intl.NumberFormat('{locale}',{options}).formatToParts({value})) === '{expected}'"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for options in [
+        "{}",
+        "{style:'percent'}",
+        "{style:'currency',currency:'EUR'}",
+        "{style:'unit',unit:'hour'}",
+    ] {
+        for (value, expected) in [
+            ("NaN", r#"[{"type":"nan","value":"NaN"}]"#),
+            ("Infinity", r#"[{"type":"infinity","value":"∞"}]"#),
+            (
+                "-Infinity",
+                r#"[{"type":"minusSign","value":"-"},{"type":"infinity","value":"∞"}]"#,
+            ),
+        ] {
+            let source = format!(
+                "JSON.stringify(new Intl.NumberFormat('en',{options}).formatToParts({value})) === '{expected}'"
+            );
+            assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+        }
+    }
+    assert_eq!(
+        eval(
+            "JSON.stringify(new Intl.NumberFormat('ru',{style:'unit',unit:'hour'}).formatToParts(NaN)) === '[{\"type\":\"nan\",\"value\":\"не число\"}]'"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
 /// Synthetic fixture, not light-cljs output. Unit options/coercions and partial
 /// result arrays stay rooted across waits, collection and 64 KiB migration.
 #[test]
