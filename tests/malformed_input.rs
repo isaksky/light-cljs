@@ -226,7 +226,7 @@ fn rejected_module_forms_fail_with_documented_kinds() {
         ("await 1;", Unsupported),
         ("import('s');", Unsupported),
         ("export const x = 1; x = {...o};", Unsupported),
-        ("export let a; a ??= 1;", Unsupported),
+        ("export let a; a ??= b || c ?? d;", Invalid),
         ("export const c;", Invalid),
     ];
     for (source, kind) in rows {
@@ -234,6 +234,8 @@ fn rejected_module_forms_fail_with_documented_kinds() {
         check_diagnostic(source, &error);
         assert_eq!(error.kind, kind, "{source:?}: {error}");
     }
+    // Logical assignment is accepted since clj-quickjs-314.
+    parse_module("export let a; a ??= 1;").unwrap();
     let error = parse_module("await using x = r;").expect_err("await using");
     check_diagnostic("await using x = r;", &error);
     assert!(
@@ -316,11 +318,11 @@ fn rejected_forms_fail_with_documented_kinds() {
         ("new a?.b();", STRICT, Invalid),
         ("x = {[k]};", STRICT, UnexpectedToken),
         ("x = 1_000;", STRICT, Unsupported),
-        ("x = a ?? b;", STRICT, Unsupported),
-        ("a &&= 1;", STRICT, Unsupported),
-        ("a ||= 1;", STRICT, Unsupported),
-        ("a ??= 1;", STRICT, Unsupported),
-        ("a.b &&= 1;", STRICT, Unsupported),
+        ("x = a ?? b || c;", STRICT, Invalid),
+        ("a &&= b ?? c && d;", STRICT, Invalid),
+        ("a ||= b || c ?? d;", STRICT, Invalid),
+        ("a ??= b && c ?? d;", STRICT, Invalid),
+        ("a.b &&= b ?? c || d;", STRICT, Invalid),
         ("x = super.y;", STRICT, Invalid),
         ("super();", STRICT, Invalid),
         ("x = super?.y;", STRICT, Invalid),
@@ -403,6 +405,17 @@ fn rejected_forms_fail_with_documented_kinds() {
         }
     }
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    // The former unsupported rows now compile; keep explicit acceptance
+    // checks alongside their replacement mixing errors (clj-quickjs-314).
+    for source in [
+        "x = a ?? b;",
+        "a &&= 1;",
+        "a ||= 1;",
+        "a ??= 1;",
+        "a.b &&= 1;",
+    ] {
+        compile_script_with("accepted-logical", source, STRICT).unwrap();
+    }
 }
 
 /// Hand-built bytecode: the validator's error for `code` with the given
