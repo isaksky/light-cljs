@@ -4796,7 +4796,7 @@ capture names now use the same verified Unicode 17.0.0 version. Expansion
 and matching preserve the catchable work limit and UTF-16 result offsets.
 
 Plain i and scoped i without u or v use legacy Canonicalize (clj-quickjs-303).
-Script properties and lookbehind remain deferred.
+Script properties execute (clj-quickjs-304); lookbehind remains deferred.
 
 ```js accept
 /k/iu.test('\u212A') && /[a-z]/iu.test('\u017F');

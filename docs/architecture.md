@@ -5072,7 +5072,8 @@ Scoped modifiers permit an empty removal list when additions are present.
 Quantifier counts have an explicit u64 implementation limit and overflow
 returns a positioned error. Flags `dgimsuvy` are validated, but v patterns
 fail explicitly pending clj-quickjs-194. Binary and General_Category property
-escapes execute in u mode (clj-quickjs-192); Script properties remain deferred.
+escapes execute in u mode (clj-quickjs-192); Script properties execute in u/v
+mode (clj-quickjs-304).
 This parser introduces no JavaScript RegExp objects. Literal-site
 early errors must reuse it in clj-quickjs-56. The matcher in clj-quickjs-187
 is a leaf operation with a documented step limit and an error on exhaustion,

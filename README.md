@@ -3189,8 +3189,8 @@ themselves, never half a pair. Braced escapes and astral ranges execute.
 Match/capture indices and lastIndex remain UTF-16 offsets; an initial lastIndex
 inside a pair starts at its lead surrogate. Global replacement advances empty
 matches by code point, while plain `exec` leaves empty matches at their end.
-The existing catchable step limit applies. Deferred: Script property escapes
-and lookbehind. Match indices execute with d (clj-quickjs-193). Test:
+The existing catchable step limit applies. Script property escapes execute
+(clj-quickjs-304); lookbehind remains deferred. Match indices execute with d (clj-quickjs-193). Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_unicode_mode -- --exact --test-threads=3`.
 
 ### Promise core (clj-quickjs-246)
@@ -3287,7 +3287,7 @@ boundaries, backreferences and scoped i. Classes close under folding before
 negation: `"aAbBcC".replace(/[^b]/gui, "X")` returns `"XXbBXX"`.
 Unicode 17.0.0 folding and identifier tables share verified, pinned generation;
 normal builds need only Rust. Plain `/a/i` uses legacy Canonicalize (clj-quickjs-303).
-Script properties and lookbehind remain deferred. Test:
+Script properties execute (clj-quickjs-304); lookbehind remains deferred. Test:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_case_insensitive_unicode -- --exact --test-threads=3`.
 
 ### Non-Unicode RegExp ignore-case (clj-quickjs-303)
