@@ -83,7 +83,7 @@ use storage::ObjectTable;
 
 use std::any::Any;
 use std::fmt;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 
 pub use gc::{
@@ -407,6 +407,44 @@ pub struct HeapStats {
     pub persistent_roots: usize,
     /// Completed collections.
     pub collections: u64,
+    /// Objects reachable after the last collection.
+    pub last_live_objects: usize,
+    /// Total time with all mutators stopped (excludes rendezvous and observers).
+    pub pause_total: std::time::Duration,
+    /// Longest stop-the-world pause.
+    pub pause_max: std::time::Duration,
+}
+
+/// One collection policy shared by every task and worker of a runtime.
+#[derive(Clone, Copy, Debug)]
+pub struct HeapPolicy {
+    /// Minimum allocations between automatic collections. `None` disables
+    /// automatic collection. The actual threshold grows with the live set.
+    pub allocation_threshold: Option<usize>,
+    /// Aggregate allocated-object admission limit, including unreachable
+    /// objects until swept. This is an object count, not a byte or RSS cap.
+    pub hard_limit_objects: Option<usize>,
+}
+
+impl Default for HeapPolicy {
+    fn default() -> Self {
+        Self {
+            allocation_threshold: Some(16_384),
+            hard_limit_objects: None,
+        }
+    }
+}
+
+impl HeapPolicy {
+    fn threshold(self, live: usize) -> usize {
+        let growth = self.allocation_threshold.unwrap_or(usize::MAX).max(live);
+        growth
+            .min(
+                self.hard_limit_objects
+                    .map_or(usize::MAX, |limit| limit.saturating_sub(live) / 2),
+            )
+            .max(1)
+    }
 }
 
 /// The object-table lock held by a test ([`Heap::hold_objects`]).
@@ -416,6 +454,10 @@ pub(crate) struct ObjectsHeld<'a>(#[allow(dead_code)] MutexGuard<'a, ObjectTable
 /// The heap shared by all tasks of one runtime.
 #[derive(Debug, Default)]
 pub(crate) struct Heap {
+    policy: HeapPolicy,
+    allocations_since_collection: AtomicUsize,
+    allocated_objects: AtomicUsize,
+    next_collection: AtomicUsize,
     /// Immutable host zone, shared by every task/world of this runtime.
     pub(crate) date_zone: std::sync::OnceLock<crate::host::TimeZone>,
     /// Collector state: the per-thread mutator registry, pending
@@ -467,6 +509,73 @@ fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Heap {
+    pub(crate) fn with_policy(policy: HeapPolicy) -> Self {
+        Self {
+            policy,
+            next_collection: AtomicUsize::new(policy.threshold(0)),
+            ..Self::default()
+        }
+    }
+
+    fn allocated(&self) {
+        self.allocations_since_collection
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn admit_allocation(&self) -> bool {
+        let Some(limit) = self.policy.hard_limit_objects else {
+            return true;
+        };
+        let mut current = self.allocated_objects.load(Ordering::Relaxed);
+        loop {
+            if current >= limit {
+                self.note_limit_failure();
+                return false;
+            }
+            match self.allocated_objects.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    self.take_limit_failure();
+                    return true;
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn allocate_accounted(&self, object: HeapObject, shareable: bool) -> Option<ObjectId> {
+        if !self.admit_allocation() {
+            return None;
+        }
+        let id = self.allocate(object, shareable);
+        if id.is_some() {
+            self.allocated();
+        } else if self.policy.hard_limit_objects.is_some() {
+            self.allocated_objects.fetch_sub(1, Ordering::Relaxed);
+        }
+        id
+    }
+
+    /// Allocation only records pressure. The runner releases its run token
+    /// after all new identities have reached traced frames, then rendezvous.
+    pub(crate) fn automatic_collection_due(&self) -> bool {
+        let threshold = self.next_collection.load(Ordering::Relaxed);
+        let threshold = if threshold == 0 {
+            self.policy.threshold(0)
+        } else {
+            threshold
+        };
+        if self.policy.allocation_threshold.is_none()
+            || self.allocations_since_collection.load(Ordering::Relaxed) < threshold
+        {
+            return false;
+        }
+        self.can_collect_at_point()
+    }
     /// Allocate a new object and return its identity, or `None` when the
     /// object table has no index left (2^32 slots).
     ///
@@ -477,7 +586,7 @@ impl Heap {
     /// allocation path reachable from outside the crate goes through such a
     /// registration; a released scope cannot be reached at all.
     pub(crate) fn alloc(&self, object: HeapObject) -> Option<ObjectId> {
-        self.allocate(object, false)
+        self.allocate_accounted(object, false)
     }
 
     /// [`Heap::alloc`] for a persistent object, recording at allocation
@@ -505,7 +614,7 @@ impl Heap {
                 all
             }
         };
-        self.allocate(object, shareable)
+        self.allocate_accounted(object, shareable)
     }
 
     /// Run `f` on a live object and its known-shareable bit; `None` if `id`
@@ -613,13 +722,24 @@ impl Heap {
 
     pub(crate) fn stats(&self) -> HeapStats {
         // One lock at a time (separate statements), so the lock order holds.
-        let collections = lock(&self.gc).collections;
+        let (collections, last_live_objects, pause_total, pause_max) = {
+            let gc = lock(&self.gc);
+            (
+                gc.collections,
+                gc.last_live_objects,
+                gc.pause_total,
+                gc.pause_max,
+            )
+        };
         let persistent_roots = lock(&self.roots).live();
         let objects = lock(&self.objects).live();
         HeapStats {
             objects,
             persistent_roots,
             collections,
+            last_live_objects,
+            pause_total,
+            pause_max,
         }
     }
 

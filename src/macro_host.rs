@@ -1086,6 +1086,10 @@ impl MacroHost {
                     exported: after.exported - before.exported,
                     reused: after.reused - before.reused,
                     nanos: after.nanos - before.nanos,
+                    collections: after.collections - before.collections,
+                    gc_pause_nanos: after.gc_pause_nanos - before.gc_pause_nanos,
+                    gc_pause_max_nanos: after.gc_pause_max_nanos,
+                    gc_live_objects: after.gc_live_objects,
                 },
             );
         }

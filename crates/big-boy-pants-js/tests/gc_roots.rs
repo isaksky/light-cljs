@@ -1685,6 +1685,69 @@ const CHURN: &str = "function f(n) { let i = 0; let v = __rt.vector(); \
      while (i < n) { v = __rt.conj(v, __rt.vector(i)); \
      if (__rt.count(v) > 16) { v = __rt.vector(); } i = i + 1; } return i; }";
 
+#[test]
+fn automatic_collections_retain_inventory_across_eight_workers() {
+    use big_boy_pants_js::{HeapPolicy, VmLimits};
+    let rt = Runtime::with_heap_policy(
+        VmLimits::default(),
+        HeapPolicy {
+            allocation_threshold: Some(256),
+            hard_limit_objects: Some(10_000),
+        },
+    );
+    let helds = [
+        persistent_handle(&rt),
+        persistent_collection(&rt),
+        form_edges(&rt),
+        suspended_frame(&rt),
+        pending_need(&rt),
+        atom_current(&rt),
+        atom_retained_old(&rt),
+        closure_environment(&rt),
+        binding_cell(&rt),
+        transient_builder(&rt),
+        object_property(&rt),
+        array_element(&rt),
+        function_properties(&rt),
+        method_home_object(&rt),
+        bound_function(&rt),
+        handler_completion(&rt, finally_return_across_wait),
+    ];
+    let mut published = dependency_ready(&rt, 7001);
+    published.extend(dependency_failed(&rt, 7002));
+    let code = compile_function(CHURN).unwrap();
+    let count = rt.scope(|s| s.persist(s.primitive(Primitive::Number(2_000.0))));
+    let start = std::sync::Barrier::new(8);
+    thread::scope(|threads| {
+        for _ in 0..8 {
+            let rt = &rt;
+            let code = &code;
+            let count = &count;
+            let start = &start;
+            threads.spawn(move || {
+                let _registered = rt.register_thread();
+                let task = rt.spawn(code, &[count]).unwrap();
+                start.wait();
+                assert_eq!(run_to_end(&task).view(), ValueView::Number(2_000.0));
+            });
+        }
+    });
+    let stats = rt.heap_stats();
+    assert!(stats.collections > 1);
+    assert!(
+        stats.objects < 10_000,
+        "bounded allocation churn: {stats:?}"
+    );
+    assert!(stats.last_live_objects > 0);
+    assert!(stats.pause_total >= stats.pause_max);
+    assert!(!stats.pause_max.is_zero());
+    for held in &helds {
+        assert_live(&held.weak);
+    }
+    assert_live(&published);
+    // No explicit collection is needed for either progress or retention.
+}
+
 /// Every public holder at once, while two executor workers allocate and
 /// collect: worker 0 runs an allocating spinner without a budget (its frame
 /// is a running-frame holder), worker 1 runs allocating tasks, a budgeted
@@ -1695,7 +1758,15 @@ const CHURN: &str = "function f(n) { let i = 0; let v = __rt.vector(); \
 #[test]
 fn every_holder_retains_while_other_workers_allocate_and_collect() {
     const COLLECTIONS: usize = 12;
-    let rt = Runtime::new();
+    // This fixture asserts the participants of explicitly scheduled pauses.
+    // Automatic pauses have their own eight-worker inventory test above.
+    let rt = Runtime::with_heap_policy(
+        Default::default(),
+        big_boy_pants_js::HeapPolicy {
+            allocation_threshold: None,
+            ..Default::default()
+        },
+    );
 
     let mut helds = vec![
         persistent_handle(&rt),

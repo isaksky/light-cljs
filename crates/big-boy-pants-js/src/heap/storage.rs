@@ -692,6 +692,7 @@ struct LocalAllocator {
     heap: usize,
     depth: usize,
     reservation: Option<Reservation>,
+    limit_failed: bool,
 }
 
 thread_local! {
@@ -709,6 +710,7 @@ impl Heap {
                     heap,
                     depth: 1,
                     reservation: None,
+                    limit_failed: false,
                 });
             }
         });
@@ -750,6 +752,25 @@ impl Heap {
                         .alloc(object, shareable),
                 )
             }
+        })
+    }
+
+    pub(super) fn note_limit_failure(&self) {
+        let heap = std::ptr::from_ref(self) as usize;
+        ALLOCATORS.with_borrow_mut(|allocators| {
+            if let Some(local) = allocators.iter_mut().find(|a| a.heap == heap) {
+                local.limit_failed = true;
+            }
+        });
+    }
+
+    pub(crate) fn take_limit_failure(&self) -> bool {
+        let heap = std::ptr::from_ref(self) as usize;
+        ALLOCATORS.with_borrow_mut(|allocators| {
+            allocators
+                .iter_mut()
+                .find(|a| a.heap == heap)
+                .is_some_and(|local| std::mem::take(&mut local.limit_failed))
         })
     }
 }

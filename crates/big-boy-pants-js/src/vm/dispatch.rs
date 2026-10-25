@@ -1941,6 +1941,7 @@ fn catchable(kind: VmErrorKind) -> bool {
         | VmErrorKind::TypeError
         | VmErrorKind::StackOverflow
         | VmErrorKind::StringTooLong
+        | VmErrorKind::HeapLimit
         | VmErrorKind::DependencyFailed(_)
         | VmErrorKind::DependencyCancelled(_) => true,
         VmErrorKind::UnsupportedOperand
@@ -1991,7 +1992,8 @@ pub(crate) fn raise(state: &mut VmState, exception: Exception) -> Option<Exit> {
 /// exception if it is catchable and some handler could see it: its value is
 /// a fresh Error instance with an internal diagnostic (`crate::vm::exception`).
 /// Otherwise the run fails with the original error. Allocation
-/// failure is uncatchable OutOfMemory; see [`raise`].
+/// failure is uncatchable OutOfMemory unless it is a configured HeapLimit;
+/// that resource error uses a primitive string and needs no heap object.
 ///
 /// `cause` must stay alive without this call rooting it (a published
 /// dependency result is held by its cell); the caller is a registered
@@ -2025,8 +2027,18 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
     input: Option<(&'static str, usize, usize)>,
     js_message: Option<&str>,
 ) -> Option<Exit> {
+    let error = classify_heap_failure(heap, error);
     if !catchable(error.kind) || !state.has_handlers() {
         return Some(Exit::Fail(error));
+    }
+    if error.kind == VmErrorKind::HeapLimit {
+        return raise(
+            state,
+            Exception {
+                value: Value::String(JsString::from("heap object limit exceeded")),
+                error: Box::new(error),
+            },
+        );
     }
     let pc = error.diagnostic.instruction;
     // No poll or user callback until `raise` stores the new value in the
@@ -2107,11 +2119,11 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
     let id = match object {
         Ok(id) => id,
         Err(message) => {
-            return Some(Exit::Fail(state.failure(
-                VmErrorKind::OutOfMemory,
-                message.to_string(),
-                pc,
-            )));
+            let error = state.failure(VmErrorKind::OutOfMemory, message.to_string(), pc);
+            // A quota denial while building a normal Error is itself a
+            // catchable resource failure. The HeapLimit path allocates no
+            // heap object, so it cannot recurse through this constructor.
+            return raise_failure(state, heap, error, Value::Undefined);
         }
     };
     raise(
@@ -2121,6 +2133,20 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
             error: Box::new(error),
         },
     )
+}
+
+fn classify_heap_failure(heap: &Heap, mut error: VmError) -> VmError {
+    if matches!(
+        error.kind,
+        VmErrorKind::OutOfMemory
+            | VmErrorKind::Collection(crate::collections::CollectionError::OutOfMemory)
+            | VmErrorKind::Atom(crate::AtomErrorKind::OutOfMemory)
+    ) && heap.take_limit_failure()
+    {
+        error.kind = VmErrorKind::HeapLimit;
+        error.message = "heap object limit exceeded".into();
+    }
+    error
 }
 
 // Keep compiler diagnostic temporaries off the interpreter's 64 KiB stack
@@ -3501,7 +3527,10 @@ fn module_step(state: &mut VmState, heap: &Heap) -> Result<Flow, Box<VmError>> {
     let diagnose = |state: &VmState, fault| {
         let pc = state.top().pc;
         let (kind, message) = fault_error(fault, &state.top().code, pc);
-        Box::new(state.failure(kind, message, pc))
+        Box::new(classify_heap_failure(
+            heap,
+            state.failure(kind, message, pc),
+        ))
     };
     match action.map_err(|fault| diagnose(state, fault))? {
         crate::module::LinkAction::Continue => Ok(Flow::Next),
@@ -3528,7 +3557,7 @@ pub(crate) fn execute_module_budgeted(
     budget: &mut Option<u64>,
 ) -> Exit {
     loop {
-        if std::mem::take(&mut state.collection_point) {
+        if std::mem::take(&mut state.collection_point) || heap.automatic_collection_due() {
             return Exit::CollectionPoint;
         }
         if let Some(left) = budget {
@@ -3560,7 +3589,7 @@ pub(crate) fn execute_budgeted(
     // Run entry is a poll point.
     heap.safepoint(state);
     loop {
-        if std::mem::take(&mut state.collection_point) {
+        if std::mem::take(&mut state.collection_point) || heap.automatic_collection_due() {
             return Exit::CollectionPoint;
         }
         if *budget == Some(0) {

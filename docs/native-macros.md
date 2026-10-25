@@ -26,6 +26,9 @@ cargo run --locked --no-default-features --features bbp-macros -- --compile --te
 Namespace builds use the same feature flags with
 `--compile --entry app --source-root PATH --jobs 1 --stats`. The compiler emits
 ordinary application JavaScript on stdout and bridge statistics on stderr.
+Per-macro `macro.gc.*` statistics also report collections, total pause nanoseconds,
+the runtime's maximum pause so far, and the live-object count at its last collection.
+Pauses exclude rendezvous waits, payload destruction and observer delivery.
 
 `bbp-macros` adds an optional workspace dependency. In a build containing a
 legacy engine, call `MacroHost::use_native_macros()` to select it explicitly.
@@ -107,8 +110,10 @@ Resumable helper demand belongs to the later scheduler integration.
 
 Bridge depth/node limits and the evaluator's cancellation, poll budget and
 wall-clock deadline bound work. The session keeps imported nodes until teardown,
-so repeated imports trade memory retention for stable identity. Aggregate native
-heap memory enforcement and automatic collection are not provided by this stage;
-the existing `--macro-memory-limit` does not yet cap every native engine allocation.
+so repeated imports trade memory retention for stable identity. The runtime
+automatically collects from allocation pressure. Aggregate native byte accounting
+is not yet provided: `--macro-memory-limit` does not cap native engine allocation.
+The engine's optional object-count admission limit is separate from bytes and is
+not used as a substitute for this compiler option.
 Legacy-only unit tests still require the `quickjs` feature; the dedicated
 `bbp_macros` integration target above runs without it.

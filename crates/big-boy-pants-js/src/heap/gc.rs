@@ -151,9 +151,11 @@
 //! collection completes while it runs, and its `MutatorToken::epoch` is
 //! constant.
 //!
-//! Deferred: an automatic collection trigger (allocation never requests a
-//! collection), worker-local allocation buffers, and releasing a run's
-//! access around a long host effect.
+//! Allocation records pressure for the runtime's [`super::HeapPolicy`]. At
+//! the next safe VM boundary the runner exposes its saved state and releases
+//! its run token before requesting collection. No allocation itself parks:
+//! its new identity must reach a traced frame first. Releasing a run's access
+//! around a long host effect remains deferred.
 //!
 //! QuickJS reference (edge inventory only): `JS_MarkValue` / `mark_children`
 //! in `research/quickjs/quickjs.c` and `JSClassGCMark` in
@@ -560,6 +562,9 @@ pub(crate) struct GcState {
     served: u64,
     /// Completed collections.
     pub(crate) collections: u64,
+    pub(crate) last_live_objects: usize,
+    pub(crate) pause_total: std::time::Duration,
+    pub(crate) pause_max: std::time::Duration,
 }
 
 impl GcState {
@@ -887,6 +892,17 @@ impl Drop for Stopped<'_> {
 }
 
 impl Heap {
+    pub(crate) fn can_collect_at_point(&self) -> bool {
+        if IN_POINT_REQUEST.with(std::cell::Cell::get) || IN_NOTIFICATION.with(std::cell::Cell::get)
+        {
+            return false;
+        }
+        lock(&self.gc)
+            .threads
+            .get(&thread::current().id())
+            .is_some_and(|t| t.runs == 1 && t.scopes == 0 && t.ops == 0)
+    }
+
     pub(crate) fn collection_point_ticket(&self) -> Result<PointTicket, CollectError> {
         // Post-pause observers cannot join a request whose delivery is
         // still on their own stack.
@@ -1188,6 +1204,7 @@ impl Heap {
     }
 
     fn mark_and_sweep(&self, mut world: Stopped<'_>) -> CollectStats {
+        let started = std::time::Instant::now();
         let roots = lock(&self.roots);
         let scopes = lock(&self.scopes);
         // Strong references keep sources alive while traced; they are dropped
@@ -1318,6 +1335,15 @@ impl Heap {
         // key here or reuse a slot before its last traced holder is gone.
         self.keys
             .sweep(|key| marked.contains(&TraceEdge::PropertyKey(key)));
+        self.allocations_since_collection
+            .store(0, Ordering::Relaxed);
+        self.allocated_objects.store(live, Ordering::Relaxed);
+        self.next_collection
+            .store(self.policy.threshold(live), Ordering::Relaxed);
+        world.gc.last_live_objects = live;
+        let pause = started.elapsed();
+        world.gc.pause_total += pause;
+        world.gc.pause_max = world.gc.pause_max.max(pause);
         drop(world);
         // Reclaimed payloads and possibly-last source references are dropped
         // with no heap lock held, so their destructors cannot deadlock.

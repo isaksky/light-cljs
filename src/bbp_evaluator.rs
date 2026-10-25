@@ -368,7 +368,14 @@ impl BbpEvaluator {
         Ok(this)
     }
     pub fn bridge_stats(&self) -> BridgeStats {
-        self.bridge.borrow().stats
+        let gc = self.runtime.heap_stats();
+        BridgeStats {
+            collections: gc.collections,
+            gc_pause_nanos: gc.pause_total.as_nanos(),
+            gc_pause_max_nanos: gc.pause_max.as_nanos(),
+            gc_live_objects: gc.last_live_objects,
+            ..self.bridge.borrow().stats
+        }
     }
     pub(crate) fn preload(&self, name: &str, source: &str) -> Result<(), EvalError> {
         let value = self.evaluate_unit(source)?;

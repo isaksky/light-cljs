@@ -73,6 +73,12 @@
 //! at once without running catch or finally blocks, as QuickJS's uncatchable
 //! errors do.
 //!
+//! The configured aggregate object admission limit is separate from allocator
+//! exhaustion: `HeapLimit` is catchable as the primitive string
+//! `heap object limit exceeded`. No Error object is allocated at the limit.
+//! A finally block preserves its original diagnostic; explicitly throwing the
+//! caught string again reports `Thrown`, like any other primitive exception.
+//!
 //! **Dependency failures** (clj-quickjs-27, `docs/design.md` §§7, 10). A
 //! `need` that reads a cell whose outcome is `Failed(e)` or `Cancelled`
 //! raises, at that `need`, an error object for

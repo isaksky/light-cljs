@@ -224,8 +224,39 @@ resolve a frozen body with no lock, then walk it without per-node locks.
 Strings own no GC object edges. Atom cells use a separate immutable-box lifetime
 boundary described below. Short metadata/object locks exist; there is no global
 interpreter lock and no lock held across ordinary bytecode execution or a wait.
-Automatic collection triggers and moving/generational/concurrent GC are
-deferred. Embedders must schedule collection explicitly.
+The default `HeapPolicy` requests automatic collection after 16,384 allocations.
+After each collection the threshold is the larger of that floor and the last
+live-object count. Allocation only records pressure: the next VM boundary returns
+to the task's collection driver with every identity rooted. The driver releases
+its mutator token, retaining execution ownership and its remaining instruction
+budget, and uses the same stop-the-world rendezvous as explicit collection.
+Enclosing scopes, native operations and nested runs defer automatic collection
+until a safe driver boundary. Host-only allocation still needs an explicit
+collection after its scope closes. `Runtime::with_heap_policy` configures the
+floor or disables automatic requests with `allocation_threshold: None`.
+Explicit `collect` and `request_collection` remain available.
+
+`HeapPolicy::hard_limit_objects` optionally caps allocated objects across all
+workers with one atomic admission counter. Sweeping returns capacity; unused
+slot reservations do not consume it. The automatic threshold is also capped at
+half the remaining object headroom. A rejected task allocation raises
+`VmErrorKind::HeapLimit`, catchable as the primitive string
+`heap object limit exceeded`; raising it requires no further heap object.
+Its catch block can release references and return or continue after collection.
+The operation is not replayed. The cap includes unreachable unswept objects and
+can reject a multi-allocation instruction before its next safepoint. Scope users
+can use `try_new_object` instead of the legacy panicking `new_object` API.
+This object limit does **not** bound retained payload bytes, strings, executable
+storage, allocator overhead or RSS. Aggregate managed-byte accounting remains
+unfinished; the compiler does not translate its memory-byte option to objects.
+
+`HeapStats` reports collection count, last live-object count, total pause and
+maximum pause. Pause timing covers tracing and sweeping while the world is
+stopped; it excludes waiting for mutators, deferred payload destruction and
+observer callbacks. `bench gc` reports these at one and eight workers. The
+automatic eight-worker root-inventory test retains suspended tasks, native forms,
+atoms and completed dependency outcomes without requesting collections itself.
+Moving/generational/concurrent collection remains deferred.
 
 ## Ordinary objects and named property caches
 

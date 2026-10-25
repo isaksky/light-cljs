@@ -20,13 +20,19 @@ pub const REPORT_VERSION: u32 = 1;
 /// How many namespaces the report's table lists.
 pub const REPORT_NAMESPACES: usize = 20;
 
-/// Native form bridge work for one macro expansion, excluding JavaScript time.
+/// Native form bridge work and collection diagnostics for one macro expansion.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NativeBridgeCall {
     pub imported: usize,
     pub exported: usize,
     pub reused: usize,
+    /// Bridge time, excluding JavaScript execution.
     pub nanos: u128,
+    pub collections: u64,
+    pub gc_pause_nanos: u128,
+    /// Runtime high-water pause through this call, not a per-call delta.
+    pub gc_pause_max_nanos: u128,
+    pub gc_live_objects: usize,
 }
 
 /// Wall time per phase of a compilation. The phases do not overlap; work a
@@ -530,6 +536,16 @@ impl CompileStats {
             line(&format!("macro.bridge.{i}.exported"), &call.exported);
             line(&format!("macro.bridge.{i}.reused"), &call.reused);
             line(&format!("macro.bridge.{i}.ns"), &call.nanos);
+            line(&format!("macro.gc.{i}.collections"), &call.collections);
+            line(
+                &format!("macro.gc.{i}.pause-total-ns"),
+                &call.gc_pause_nanos,
+            );
+            line(
+                &format!("macro.gc.{i}.pause-max-ns"),
+                &call.gc_pause_max_nanos,
+            );
+            line(&format!("macro.gc.{i}.live-objects"), &call.gc_live_objects);
         }
         line("macro-nodes.peak", &self.peak_macro_nodes);
         line("deferred-units.registered", &self.deferred_units.registered);
@@ -700,6 +716,22 @@ mod tests {
         assert!(!report.contains("session-load"));
         assert!(report.ends_with("[macro-calls-by-namespace]\nb 5\na 1\nc 1\n"));
         assert!(!report.contains("cache.codec"));
+    }
+
+    #[test]
+    fn report_includes_native_collection_pause_and_live_set_counters() {
+        let stats = CompileStats {
+            native_macro_calls: vec![NativeBridgeCall {
+                collections: 3,
+                gc_pause_nanos: 40,
+                gc_pause_max_nanos: 20,
+                gc_live_objects: 100,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let report = stats.report();
+        assert!(report.contains("\nmacro.gc.0.collections 3\nmacro.gc.0.pause-total-ns 40\nmacro.gc.0.pause-max-ns 20\nmacro.gc.0.live-objects 100\n"), "{report}");
     }
 
     #[test]

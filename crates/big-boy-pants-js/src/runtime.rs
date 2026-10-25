@@ -55,7 +55,12 @@ impl Runtime {
     /// A runtime whose tasks run under `limits`: a call beyond them fails the
     /// task with [`VmErrorKind::StackOverflow`](crate::VmErrorKind::StackOverflow).
     pub fn with_limits(limits: VmLimits) -> Runtime {
-        let heap = Arc::new(Heap::default());
+        Self::with_heap_policy(limits, crate::HeapPolicy::default())
+    }
+
+    /// Set the runtime-wide collection policy alongside per-task VM limits.
+    pub fn with_heap_policy(limits: VmLimits, policy: crate::HeapPolicy) -> Runtime {
+        let heap = Arc::new(Heap::with_policy(policy));
         Runtime(Arc::new(RuntimeShared {
             deps: Arc::new(DependencyTable::new(Arc::clone(&heap))),
             heap,

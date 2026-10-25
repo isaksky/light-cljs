@@ -504,16 +504,22 @@ impl<'s> Scope<'s> {
     ///
     /// # Panics
     ///
-    /// If the heap's object table is exhausted (2^32 slots).
+    /// If the heap's object table or configured object limit is exhausted.
+    /// Use [`Scope::try_new_object`] when applying a finite heap policy.
     pub fn new_object(&self) -> Local<'s> {
-        let id = self
-            .heap
-            .alloc(HeapObject::host_object())
-            .expect("heap object table exhausted");
+        self.try_new_object()
+            .expect("heap object limit or table exhausted")
+    }
+
+    /// Allocate a plain object, returning `None` at the aggregate object
+    /// limit or when the object table is exhausted. Does not collect while
+    /// the caller's scope is open.
+    pub fn try_new_object(&self) -> Option<Local<'s>> {
+        let id = self.heap.alloc(HeapObject::host_object())?;
         // No collection can run between the allocation and the push: this
         // thread is a registered mutator between safepoints (the scope is
         // open and not released).
-        self.new_local(Value::Object(id))
+        Some(self.new_local(Value::Object(id)))
     }
 
     /// Wrap a primitive as a local handle.

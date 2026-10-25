@@ -123,7 +123,8 @@ struct Options {
     node_kernels: bool,
 }
 
-const GROUPS: [&str; 10] = [
+const GROUPS: [&str; 11] = [
+    "gc",
     "kernels",
     "scaling",
     "startup",
@@ -680,6 +681,9 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     environment(&o);
+    if o.wants("gc") {
+        gc_pauses(&o);
+    }
     if o.wants("kernels") || o.wants("scaling") {
         kernels(&o);
     }
@@ -713,6 +717,63 @@ fn main() -> ExitCode {
     }
     println!("\n  load average at end: {}", load_average());
     ExitCode::SUCCESS
+}
+
+fn gc_pauses(o: &Options) {
+    use big_boy_pants_js::{HeapPolicy, VmLimits};
+    header("automatic collection pauses (excludes rendezvous and post-pause destruction)");
+    let code = big_boy_pants_js::frontend::compile_function(
+        "function churn(n) { let v = []; for (let i = 0; i < n; i++) { v = [i]; } return v[0]; }",
+    )
+    .unwrap();
+    for workers in [1, 8] {
+        let mut total = Vec::new();
+        let mut max = Vec::new();
+        let mut collections = Vec::new();
+        let mut live = Vec::new();
+        let n = if o.quick { 4_000 } else { 40_000 };
+        for round in 0..=o.rounds {
+            let rt = Runtime::with_heap_policy(
+                VmLimits::default(),
+                HeapPolicy {
+                    allocation_threshold: Some(1_024),
+                    ..Default::default()
+                },
+            );
+            let count = workloads::num(&rt, n as f64);
+            let tasks: Vec<_> = (0..workers)
+                .map(|_| rt.spawn(&code, &[&count]).unwrap())
+                .collect();
+            let start = std::sync::Barrier::new(workers);
+            std::thread::scope(|scope| {
+                for task in &tasks {
+                    let rt = &rt;
+                    let start = &start;
+                    scope.spawn(move || {
+                        let _registered = rt.register_thread();
+                        start.wait();
+                        assert_eq!(
+                            workloads::finish(task).view(),
+                            big_boy_pants_js::ValueView::Number((n - 1) as f64)
+                        );
+                    });
+                }
+            });
+            let stats = rt.heap_stats();
+            assert!(stats.collections > 0);
+            if round != 0 {
+                total.push(stats.pause_total.as_secs_f64() * 1_000.0);
+                max.push(stats.pause_max.as_secs_f64() * 1_000.0);
+                collections.push(stats.collections as f64);
+                live.push(stats.last_live_objects as f64);
+            }
+        }
+        let param = format!("{workers} threads x {n}");
+        row("gc.pause_total", &param, total, "ms/run");
+        row("gc.pause_max", &param, max, "ms/pause");
+        row("gc.collections", &param, collections, "count/run");
+        row("gc.last_live_objects", &param, live, "objects");
+    }
 }
 
 fn strings(o: &Options) {
