@@ -4519,3 +4519,43 @@ Module top-level await and property-reference for-of heads remain deferred.
 Validation: `CARGO_BUILD_JOBS=3 cargo test --test async_iteration --test
 async_generators -- --test-threads=3`, plus `for_await_` cases in `gc_roots` and
 `exception_waits` (collection, dependency suspension and 64 KiB worker migration).
+
+### Array copies, flattening and iterator modes (clj-quickjs-299)
+
+Supported: `Array.prototype.slice`, `concat`, `flat`, `keys`, `entries`,
+`toReversed`, `toSorted`, `with`, and `Array.of`. `slice` preserves holes and
+clamps relative start/end indices after resumable conversion. `concat` honours
+`Symbol.isConcatSpreadable`, spreading arrays by default, copying opted-in
+array-like objects, and preserving holes. `slice`, `concat` and `flat` use
+`Symbol.species`, including getters and custom constructors; their result
+writes define own data properties. `slice` and `concat` set the final length;
+`flat` does not. `flat` uses an explicit task-owned stack, skips holes at each
+visited level, flattens only arrays, and accepts `Infinity` depth.
+
+`toReversed`, `toSorted` and `with` return ordinary arrays, ignore species,
+materialize holes as `undefined`, and leave the receiver unchanged. `with`
+throws RangeError for an out-of-range relative index and never reads the
+replaced index. `toSorted` reuses sort's stable, budgeted merge/comparator path,
+including resumable comparison-result and default string conversions.
+`Array.of` constructs its receiver when it is a constructor (including bound
+constructors), otherwise creates an ordinary array; it defines each argument
+as an element and strictly sets length. `keys` and `entries` reuse the array
+iterator prototype and live length checks; keys never read indexed properties,
+and entries produce fresh `[index, value]` arrays, including for holes.
+
+Copies, scans, flatten stack transitions and output writes are budgeted native
+steps. All saved values, source frames and partial results are traced across
+yields, collection, dependency waits, cancellation and worker migration.
+Flattening stack depth uses the task's existing `VmLimits.max_call_depth`
+(default 10,000); cyclic `flat(Infinity)` inputs therefore fail with stack
+overflow instead of retaining an unbounded continuation. Generic lengths use
+ToLength's `2^53 - 1` bound; ordinary array result lengths retain the existing
+`2^32 - 1` bound. Primitive receivers reuse Number/String/Symbol wrappers;
+Boolean/BigInt wrappers and proxy traps retain the existing property layer's
+restrictions. This extends the earlier Array method sections above.
+
+Validation: `cargo test --test js_source array_copy` and
+`cargo test --test need array_copy`. The synthetic fixture
+`tests/fixtures/js/array_copy.js` (not light-cljs output) also executes with
+three-instruction budgets and collection at every yield. Dedicated native
+execution and wait/resume tests use one-instruction budgets on 64 KiB workers.

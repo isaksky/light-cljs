@@ -29253,6 +29253,14 @@ fn array_search_yield_and_collect() {
 
 /// Synthetic fixture, not light-cljs output.
 #[test]
+fn array_copy() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/array_copy.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn array_callbacks() {
     assert_eq!(
         eval(include_str!("fixtures/js/array_callbacks.js")),
@@ -29400,4 +29408,258 @@ fn array_callbacks_yield_and_collect() {
         }
     }
     panic!("fixture did not complete");
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_copy_order_species_and_errors() {
+    for src in [
+        "let log='',o={get length() { log+='l'; return {valueOf() { log+='n'; return 3; }}; },get 0() { log+='0'; return 1; },get 1() { log+='1'; return 2; },get 2() { log+='2'; return 3; }}; let r=Array.prototype.slice.call(o,{valueOf() { log+='s'; return 0; }},{valueOf() { log+='e'; return 2; }}); log === 'lnse01' && r.join() === '1,2'",
+        "let log='',a=[1,2]; a.constructor={get [Symbol.species]() { log+='s'; return function(n) { log+='c'+n; }; }}; let r=a.slice({valueOf() { log+='i'; return 1; }}); log === 'isc1' && r[0] === 2 && r.length === 1",
+        "let log='',a=[1,[2]]; a.constructor={get [Symbol.species]() { log+='s'; return function(n) { log+='c'+n; }; }}; let r=a.flat({valueOf() { log+='d'; return 1; }}); log === 'dsc0' && r[0] === 1 && r[1] === 2 && r.length === undefined",
+        "let log='',a=[1]; Object.defineProperty(a,'length',{writable:false}); a.constructor={get [Symbol.species]() { log+='s'; return function(n) { log+='c'+n; }; }}; Object.defineProperty(a,Symbol.isConcatSpreadable,{get() { log+='p'; return true; }}); let o={get [Symbol.isConcatSpreadable]() { log+='q'; return true; },get length() { log+='l'; return 1; },get 0() { log+='v'; return 2; }}; let r=a.concat(o); log === 'sc0pqlv' && r.length === 2 && r[0] === 1 && r[1] === 2",
+        "let log='',o={length:3,get 0() { log+='0'; return 1; },get 1() { throw 42; },get 2() { log+='2'; return 3; }}; let r=Array.prototype.with.call(o,1,7); log === '02' && r.join() === '1,7,3'",
+        "let log='',o={length:3,get 0() { log+='0'; return 1; },get 1() { log+='1'; return 2; },get 2() { log+='2'; return 3; }}; let r=Array.prototype.toReversed.call(o); log === '210' && r.join() === '3,2,1'",
+        "let a=[3,2,1],log=''; Object.defineProperty(a,0,{get() { log+='0'; delete a[1]; a[2]=9; return 3; }}); let r=a.toSorted((x,y)=>{ log+='c'; a[2]=0; return x-y; }); log[0] === '0' && r[0] === 3 && r[1] === 9 && r[2] === undefined && 2 in r",
+        "let n=0; let a=[1,2]; Object.defineProperty(a,'constructor',{get() { throw 42; }}); a.toReversed().join() === '2,1' && a.toSorted().join() === '1,2' && a.with(0,3).join() === '3,2'",
+        "let a=[1,2,3]; Object.freeze(a); a.toReversed().join() === '3,2,1' && a.toSorted().join() === '1,2,3' && a.with(0,9).join() === '9,2,3'",
+        "let n=0,o={length:2,get 0() { throw 42; },get 1() { throw 43; }}; let i=Array.prototype.keys.call(o); i.next().value === 0 && i.next().value === 1 && i.next().done",
+        "let a=[1,2],it=a.entries(); Object.defineProperty(a,0,{get() { throw 42; }}); try { it.next(); } catch(e) {} it.next().value.join() === '1,2'",
+        "let a=[1,2,3],s=a.slice({valueOf() { delete a[1]; a[2]=7; a.push(8); return 0; }}); s.length === 3 && !(1 in s) && s[2] === 7",
+        "let a=[1,2]; Object.defineProperty(a,0,{get() { delete a[1]; a.push(3); return [7]; }}); a.flat().join() === '7'",
+        "let a=[1],r; function C(n) { r=this; this.count=n; } a.constructor={[Symbol.species]:C}; let c=a.concat(new Array(2)); c === r && c.count === 0 && c.length === 3 && !(1 in c)",
+        "let seen=''; function C(n) { seen+='c'+n; return Object.create({set 0(v) { throw 42; },set length(v) { seen+='l'+v; }}); } let r=Array.of.call(C,7,8); r[0] === 7 && r[1] === 8 && seen === 'c2l2'",
+        "function C(a,b) { this.args=a+':'+b; } let r=Array.of.call(C.bind(null,9),1,2); r.args === '9:2' && r.length === 2 && r[0] === 1 && r[1] === 2",
+        "let a=Array.of.call(()=>{},3); Array.isArray(a) && a.length === 1 && a[0] === 3",
+        "Array.of.call(null,3)[0] === 3 && Array.of.call({},4)[0] === 4 && Array.of.call(Math.abs,5)[0] === 5",
+        "let a=Array.of.call(function(n) { let a=new Uint8Array(n); Object.defineProperty(a,'length',{value:n,writable:true}); return a; },257,2); a instanceof Uint8Array && a[0] === 1 && a[1] === 2",
+        "let n=0; let o={get [Symbol.isConcatSpreadable]() { n++; return 0; },get length() { throw 42; }}; let r=[].concat(o); n === 1 && r[0] === o",
+        "let n=0; let a=[2,undefined,1,undefined]; let r=a.toSorted((a,b)=>{ if(a === undefined || b === undefined) throw 42; n++; return {valueOf() { return a-b; }}; }); n > 0 && r.join() === '1,2,,' && 3 in r",
+        "let a=[3,2,1].toSorted(()=>NaN); a.join() === '3,2,1'",
+        "let a=[1],inner=[2,[3]]; inner[Symbol.isConcatSpreadable]=false; a[0]=inner; a.flat(2).join() === '2,3'",
+        "let a=new Array(2); a.constructor={[Symbol.species]:null}; a.slice().length === 2 && a.concat().length === 2 && a.flat().length === 0",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for method in ["slice", "concat", "flat"] {
+        for constructor in [
+            "null",
+            "1",
+            "{[Symbol.species]:{}}",
+            "{[Symbol.species]:()=>{}}",
+        ] {
+            let source = format!("let a=[1]; a.constructor={constructor}; a.{method}()");
+            assert_eq!(failure(&source).kind(), VmErrorKind::TypeError, "{source}");
+        }
+        let source = format!(
+            "let n=0,a=[7]; function C() {{ return Object.create({{set 0(v) {{ n++; throw 42; }}}}); }} a.constructor={{[Symbol.species]:C}}; let r=a.{method}(); let d=Object.getOwnPropertyDescriptor(r,0); n === 0 && d.value === 7 && d.writable && d.configurable && d.enumerable"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for method in [
+        "slice",
+        "concat",
+        "flat",
+        "keys",
+        "entries",
+        "toReversed",
+        "toSorted",
+        "with",
+    ] {
+        for receiver in ["null", "undefined"] {
+            let source = format!("Array.prototype.{method}.call({receiver})");
+            assert_eq!(failure(&source).kind(), VmErrorKind::TypeError, "{source}");
+        }
+        assert_eq!(
+            failure(&format!("new Array.prototype.{method}()")).kind(),
+            VmErrorKind::TypeError
+        );
+    }
+    for source in [
+        "[].toSorted(null)",
+        "[1].toSorted(3)",
+        "Array.prototype.slice.call({length:1},0n)",
+        "[1].flat(Symbol())",
+        "[1].with(0n,2)",
+        "Array.of.call(function() { return Object.freeze({}); },1)",
+        "Array.of.call(Uint8Array,1)",
+        "Array.of.call(Intl.DisplayNames)",
+    ] {
+        assert_eq!(failure(source).kind(), VmErrorKind::TypeError, "{source}");
+    }
+    for source in [
+        "[].with(0,1)",
+        "[1].with(-2,1)",
+        "[1].with(1,1)",
+        "[1].with(Infinity,1)",
+        "[1].with(-Infinity,1)",
+        "Array.prototype.toReversed.call({length:4294967296})",
+        "Array.prototype.toSorted.call({length:4294967296})",
+    ] {
+        assert_eq!(failure(source).kind(), VmErrorKind::RangeError, "{source}");
+    }
+    assert_eq!(
+        eval(
+            "let n=0; try { Array.prototype.toSorted.call({get length() { n++; return 0; }},null); } catch(e) {} n === 0"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(
+        eval(
+            "let n=0; try { Array.prototype.with.call({length:1,get 0() { n++; return 1; }},5,2); } catch(e) {} n === 0"
+        ),
+        ValueView::Bool(true)
+    );
+    assert_eq!(failure("let a=[0]; a[Symbol.isConcatSpreadable]=true; a.constructor={[Symbol.species]:function() { return {}; }}; a.concat({length:9007199254740991,[Symbol.isConcatSpreadable]:true},1)").kind(), VmErrorKind::TypeError);
+}
+
+#[test]
+fn array_copy_yield_and_collect() {
+    struct Marker(bool);
+    impl Host for Marker {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(call.arg)
+        }
+    }
+    for (operation, check) in [
+        (
+            "a.slice(1)",
+            "r.length === 199 && r[0].x === 1 && r[198].x === 199",
+        ),
+        (
+            "a.concat(a)",
+            "r.length === 400 && r[0].x === 0 && r[399].x === 199",
+        ),
+        (
+            "[a,a].flat(2)",
+            "r.length === 400 && r[0].x === 0 && r[399].x === 199",
+        ),
+        (
+            "a.toReversed()",
+            "r.length === 200 && r[0].x === 199 && r[199].x === 0",
+        ),
+        (
+            "a.toSorted((a,b)=>b.x-a.x)",
+            "r.length === 200 && r[0].x === 199 && r[199].x === 0",
+        ),
+        (
+            "a.with(100,{x:-1})",
+            "r.length === 200 && r[100].x === -1 && r[199].x === 199",
+        ),
+        (
+            "Array.of(...a)",
+            "r.length === 200 && r[0].x === 0 && r[199].x === 199",
+        ),
+        (
+            "Array.prototype.slice.call({length:200})",
+            "r.length === 200 && !(199 in r)",
+        ),
+    ] {
+        let source = format!(
+            "let a=[]; for(let i=0;i<200;i++) a.push({{x:i}}); __rt.effect(1,0); let r={operation}; {check}"
+        );
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut host = Marker(false);
+        let mut yields = 0;
+        let mut completed = false;
+        for _ in 0..5000 {
+            match task.run_with(Budget::instructions(25), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    yields += usize::from(host.0);
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{operation}");
+                    completed = true;
+                    break;
+                }
+                other => panic!("{operation}: {other:?}"),
+            }
+        }
+        assert!(
+            completed && yields >= 4,
+            "{operation}: {completed}, yields={yields}"
+        );
+    }
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(&exe(include_str!("fixtures/js/array_copy.js")), &[])
+        .unwrap();
+    for _ in 0..25000 {
+        match task
+            .run_with(Budget::instructions(3), &mut Marker(false))
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("array copy fixture did not complete");
+}
+
+#[test]
+fn array_copy_depth_limit_and_small_worker() {
+    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+        max_call_depth: 8,
+        ..clj_quickjs::VmLimits::default()
+    });
+    let task = rt.spawn(&exe("let a=[]; a[0]=a; let caught=false; try { a.flat(Infinity); } catch(e) { caught=true; } caught"), &[]).unwrap();
+    let mut completed = false;
+    for _ in 0..1000 {
+        match task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                completed = true;
+                break;
+            }
+            other => panic!("unexpected depth-limit outcome: {other:?}"),
+        }
+    }
+    assert!(completed);
+    let rt = Runtime::new();
+    assert!(matches!(
+        rt.spawn(&exe("Array"), &[]).unwrap().run().unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    // Exercise native dispatch and species construction on the small worker;
+    // descriptor reflection in the broader fixture has its own stack costs.
+    let source = "let a=[3,1,2],s=a.slice(1),c=a.concat([4]),f=[a,[4]].flat(2); let ok=s.length === 2 && s[0] === 1 && c.length === 4 && c[3] === 4 && f.length === 4 && f[3] === 4; let r=a.toReversed(),t=a.toSorted((a,b)=>a-b),w=a.with(-1,9),o=Array.of(7); ok=ok && r[0] === 2 && r[2] === 3 && t[0] === 1 && t[2] === 3 && w[2] === 9 && o.length === 1 && o[0] === 7; let k=a.keys(),e=a.entries(); ok=ok && k.next().value === 0 && e.next().value[1] === 3; a.constructor={[Symbol.species]:function(n) { this.size=n; }}; s=a.slice(1); c=a.concat(); f=a.flat(); ok && s.size === 2 && s.length === 2 && s[0] === 1 && c.length === 3 && c[0] === 3 && f.size === 0 && f[2] === 2";
+    let task = rt.spawn(&exe(source), &[]).unwrap();
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            for _ in 0..25000 {
+                match task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    RunOutcome::Complete(value) => {
+                        assert_eq!(value.view(), ValueView::Bool(true));
+                        return;
+                    }
+                    other => panic!("unexpected small-stack copy: {other:?}"),
+                }
+            }
+            panic!("copy fixture did not complete on small worker");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

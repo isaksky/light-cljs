@@ -484,6 +484,15 @@ pub(crate) enum Builtin {
     AsyncGeneratorNext,
     AsyncGeneratorReturn,
     AsyncGeneratorThrow,
+    ArrayPrototypeSlice,
+    ArrayPrototypeConcat,
+    ArrayPrototypeFlat,
+    ArrayPrototypeKeys,
+    ArrayPrototypeEntries,
+    ArrayPrototypeToReversed,
+    ArrayPrototypeToSorted,
+    ArrayPrototypeWith,
+    ArrayOf,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -529,6 +538,15 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::ArrayPrototypeSlice => "slice",
+            Builtin::ArrayPrototypeConcat => "concat",
+            Builtin::ArrayPrototypeFlat => "flat",
+            Builtin::ArrayPrototypeKeys => "keys",
+            Builtin::ArrayPrototypeEntries => "entries",
+            Builtin::ArrayPrototypeToReversed => "toReversed",
+            Builtin::ArrayPrototypeToSorted => "toSorted",
+            Builtin::ArrayPrototypeWith => "with",
+            Builtin::ArrayOf => "of",
             Builtin::ArrayPrototypeForEach => "forEach",
             Builtin::ArrayPrototypeMap => "map",
             Builtin::ArrayPrototypeFilter => "filter",
@@ -804,6 +822,13 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Builtin::ArrayPrototypeSlice | Builtin::ArrayPrototypeWith => 2,
+            Builtin::ArrayPrototypeConcat | Builtin::ArrayPrototypeToSorted => 1,
+            Builtin::ArrayPrototypeFlat
+            | Builtin::ArrayPrototypeKeys
+            | Builtin::ArrayPrototypeEntries
+            | Builtin::ArrayPrototypeToReversed
+            | Builtin::ArrayOf => 0,
             Builtin::ArrayPrototypeForEach
             | Builtin::ArrayPrototypeMap
             | Builtin::ArrayPrototypeFilter
@@ -1103,11 +1128,31 @@ pub(crate) fn call(
         | Builtin::ArrayPrototypeCopyWithin => {
             Err(Fault::Internal("array mutator requires a resumable frame"))
         }
-        Builtin::ArrayPrototypeSort => Err(Fault::Internal("sort requires a resumable frame")),
+        Builtin::ArrayPrototypeSlice
+        | Builtin::ArrayPrototypeConcat
+        | Builtin::ArrayPrototypeFlat
+        | Builtin::ArrayPrototypeToReversed
+        | Builtin::ArrayPrototypeWith
+        | Builtin::ArrayOf => Err(Fault::Internal("array copy requires a resumable frame")),
+        Builtin::ArrayPrototypeSort | Builtin::ArrayPrototypeToSorted => {
+            Err(Fault::Internal("sort requires a resumable frame"))
+        }
         Builtin::ArrayFrom => Err(Fault::Internal("Array.from requires a resumable frame")),
         Builtin::MathSumPrecise => Err(Fault::Internal("sumPrecise requires a resumable frame")),
         Builtin::ArrayValues => {
             super::native::iterator::create(heap, task, this, super::native::iterator::Kind::Array)
+        }
+        Builtin::ArrayPrototypeKeys | Builtin::ArrayPrototypeEntries => {
+            super::native::iterator::create(
+                heap,
+                task,
+                this,
+                if which == Builtin::ArrayPrototypeKeys {
+                    super::native::iterator::Kind::ArrayKeys
+                } else {
+                    super::native::iterator::Kind::ArrayEntries
+                },
+            )
         }
         Builtin::TypedArrayValues => super::native::iterator::create(
             heap,

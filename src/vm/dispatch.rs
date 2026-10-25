@@ -1337,7 +1337,7 @@ fn closure_step(
 
 type InstructionStep = fn(&mut VmState, &Code, &Heap, &mut dyn Host, Instr) -> Result<Flow, Fault>;
 
-fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result<bool, Fault> {
+pub(super) fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result<bool, Fault> {
     let mut value = value.clone();
     for _ in 0..limit {
         match callee(heap, &value) {
@@ -1373,6 +1373,8 @@ fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result<bool, Faul
                         | Builtin::IntlListFormat
                         | Builtin::IntlRelativeTimeFormat
                         | Builtin::IntlSegmenter
+                        | Builtin::IntlDisplayNames
+                        | Builtin::IntlDurationFormat
                 ));
             }
             Err(Fault::NotCallable(_)) => return Ok(false),

@@ -2806,3 +2806,134 @@ fn array_callbacks_failure_and_cancellation() {
         }
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Native reads/conversions and
+/// construction wait once, survive collection and resume on a 64 KiB worker.
+#[test]
+fn array_copy_wait_without_replay() {
+    for src in [
+        "let n=0,o={get length() { n++; __rt.effect(1,3); return __rt.need(5,3)-5; },0:{x:1},1:{x:2}}; let r=Array.prototype.slice.call(o); n === 1 && r.length === 2 && r[1].x === 2",
+        "let n=0; let r=[{x:1},{x:2}].slice({valueOf() { n++; __rt.effect(1,3); return __rt.need(5,3)-6; }}); n === 1 && r.length === 1 && r[0].x === 2",
+        "let n=0; let r=[{x:1},{x:2}].slice(0,{valueOf() { n++; __rt.effect(1,3); return __rt.need(5,3)-6; }}); n === 1 && r.length === 1 && r[0].x === 1",
+        "let n=0,a=[{x:1},{x:2}]; Object.defineProperty(a,1,{get() { n++; delete a[0]; __rt.effect(1,3); return {x:__rt.need(5,3)}; }}); let r=a.slice(); n === 1 && r[0].x === 1 && r[1].x === 7",
+        "let n=0,a=[{x:1}]; Object.defineProperty(a,'constructor',{get() { n++; __rt.effect(1,3); __rt.need(5,3); return {[Symbol.species]:function(n) { this.size=n; }}; }}); let r=a.slice(); n === 1 && r[0].x === 1 && r.size === 1",
+        "let n=0,a=[{x:1}]; a.constructor={get [Symbol.species]() { n++; __rt.effect(1,3); __rt.need(5,3); return function(n) { this.size=n; }; }}; let r=a.concat(); n === 1 && r[0].x === 1 && r.size === 0 && r.length === 1",
+        "let n=0,a=[{x:1}]; a.constructor={[Symbol.species]:function(n) { this.size=n; __rt.effect(1,3); __rt.need(5,3); }}; let r=a.flat(); r[0].x === 1 && r.size === 0",
+        "let n=0,o={get [Symbol.isConcatSpreadable]() { n++; __rt.effect(1,3); __rt.need(5,3); return true; },length:1,0:{x:7}}; let r=[{x:1}].concat(o); n === 1 && r.length === 2 && r[0].x === 1 && r[1].x === 7",
+        "let n=0,o={length:{valueOf() { n++; __rt.effect(1,3); return __rt.need(5,3)-6; }},0:{x:7},[Symbol.isConcatSpreadable]:true}; let r=[{x:1}].concat(o); n === 1 && r.length === 2 && r[1].x === 7",
+        "let n=0,a=[{x:1}]; a.constructor={[Symbol.species]:function() { return Object.create({set length(v) { n++; __rt.effect(1,3); this.size=v+__rt.need(5,3); }}); }}; let r=a.concat(); n === 1 && r[0].x === 1 && r.size === 8",
+        "let n=0; let r=[[{x:1}]].flat({valueOf() { n++; __rt.effect(1,3); return __rt.need(5,3); }}); n === 1 && r[0].x === 1",
+        "let n=0,a=[[{x:1},{x:2}]]; Object.defineProperty(a[0],1,{get() { n++; delete a[0]; __rt.effect(1,3); return {x:__rt.need(5,3)}; }}); let r=a.flat(Infinity); n === 1 && r[0].x === 1 && r[1].x === 7",
+        "let n=0,a=[{x:1},{x:2}]; Object.defineProperty(a,1,{get() { n++; delete a[1]; __rt.effect(1,3); return {x:__rt.need(5,3)}; }}); let r=a.toReversed(); n === 1 && r[0].x === 7 && r[1].x === 1",
+        "let n=0,a=[{x:1},{x:2}]; Object.defineProperty(a,0,{get() { n++; delete a[0]; __rt.effect(1,3); return {x:__rt.need(5,3)}; }}); let r=a.toSorted((a,b)=>a.x-b.x); n === 1 && r[0].x === 2 && r[1].x === 7",
+        "let n=0; let r=[{x:2},{x:1}].toSorted((a,b)=>{ n++; __rt.effect(1,3); __rt.need(5,3); return a.x-b.x; }); n === 1 && r[0].x === 1 && r[1].x === 2",
+        "let n=0; let r=[{x:2},{x:1}].toSorted((a,b)=>({valueOf() { n++; __rt.effect(1,3); __rt.need(5,3); return a.x-b.x; }})); n === 1 && r[0].x === 1 && r[1].x === 2",
+        "let n=0; let r=[{toString() { n++; __rt.effect(1,3); __rt.need(5,3); return 'b'; }},'a'].toSorted(); n === 1 && r[0] === 'a' && typeof r[1] === 'object'",
+        "let n=0; let r=[{x:1},{x:2}].with({valueOf() { n++; __rt.effect(1,3); return __rt.need(5,3)-6; }},{x:8}); n === 1 && r[0].x === 1 && r[1].x === 8",
+        "let n=0; function C(size) { n++; __rt.effect(1,3); this.size=size+__rt.need(5,3); } let r=Array.of.call(C,{x:1},{x:2}); n === 1 && r.size === 9 && r.length === 2 && r[1].x === 2",
+        "let n=0; let r=Array.of.call(function(size) { let a=new Uint8Array(size); Object.defineProperty(a,'length',{value:size,writable:true}); return a; },{valueOf() { n++; __rt.effect(1,3); return __rt.need(5,3); }}); n === 1 && r[0] === 7",
+        "let n=0,it=Array.prototype.keys.call({get length() { n++; __rt.effect(1,3); return __rt.need(5,3); }}); it.next().value === 0 && n === 1",
+        "let n=0,a=[{x:1}]; Object.defineProperty(a,0,{get() { n++; delete a[0]; __rt.effect(1,3); return {x:__rt.need(5,3)}; }}); let r=a.entries().next().value; n === 1 && r[0] === 0 && r[1].x === 7",
+    ] {
+        let rt = Runtime::new();
+        let code = compile_script("array-copy-wait", src).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let mut host = Recorder::default();
+        let expected = key(&rt, NUMBER);
+        let mut waiting_now = false;
+        for _ in 0..4000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected, "{src}");
+                    waiting_now = true;
+                    break;
+                }
+            }
+        }
+        assert!(waiting_now, "did not wait: {src}");
+        assert_eq!(host.effects, [3.0]);
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+        let worker_rt = rt.clone();
+        let (value, host) = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                for _ in 0..4000 {
+                    match resumed
+                        .run_with(Budget::instructions(1), &mut host)
+                        .unwrap()
+                    {
+                        RunOutcome::Yielded => {
+                            worker_rt.collect().unwrap();
+                        }
+                        RunOutcome::Complete(value) => return (value, host),
+                        other => panic!("unexpected resumed array copy: {other:?}"),
+                    }
+                }
+                panic!("array copy did not complete");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value.view(), ValueView::Bool(true), "{src}");
+        assert_eq!(host.effects, [3.0], "no replay: {src}");
+        assert_eq!(task.dependency_log().edges(), &[expected]);
+    }
+}
+
+#[test]
+fn array_copy_failure_and_cancellation() {
+    for operation in [
+        "a.slice()",
+        "a.concat()",
+        "a.flat()",
+        "a.toReversed()",
+        "a.toSorted()",
+        "a.with(1,8)",
+        "a.entries().next()",
+    ] {
+        let source = format!(
+            "let n=0,caught=false,a=[1,2]; Object.defineProperty(a,0,{{get() {{ n++; try {{ __rt.need(5,3); }} finally {{ __rt.effect(2,9); }} return 7; }}}}); try {{ {operation}; }} catch(e) {{ caught=e.cause === 42; }} caught && n === 1"
+        );
+        let code = compile_script("copy-failure", &source).unwrap();
+        for cancel in [false, true] {
+            let rt = Runtime::new();
+            let task = rt.spawn(&code, &[]).unwrap();
+            let mut host = Recorder::default();
+            let expected = key(&rt, NUMBER);
+            assert_eq!(waiting(run(&task, &mut host)), expected);
+            let request = one_request(&task, expected);
+            rt.collect().unwrap();
+            if cancel {
+                let Cancel::Runnable(cancelled) = task.cancel() else {
+                    panic!("runnable cancellation");
+                };
+                assert!(matches!(run(&cancelled, &mut host), RunOutcome::Cancelled));
+                assert!(
+                    publish_number(&rt, &request, 7.0)
+                        .into_runnable()
+                        .is_empty()
+                );
+            } else {
+                let error = rt.root(Primitive::Number(42.0));
+                let wakeups = rt
+                    .complete(
+                        request.key(),
+                        request.producer(),
+                        Completion::Failed(&error),
+                    )
+                    .unwrap();
+                let RunOutcome::Complete(value) = run(&only_runnable(wakeups), &mut host) else {
+                    panic!("copy did not catch failure");
+                };
+                assert_eq!(value.view(), ValueView::Bool(true), "{operation}");
+            }
+            assert_eq!(host.reports, [9.0]);
+            rt.collect().unwrap();
+        }
+    }
+}

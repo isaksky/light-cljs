@@ -1141,6 +1141,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         "asyncIterator",
         "unscopables",
         "species",
+        "isConcatSpreadable",
     ] {
         b.add_value(
             symbol,
@@ -1274,6 +1275,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     b.add(date, "parse", date_parse, PropertyFlags::METHOD)?;
     let array_from = b.function(Builtin::ArrayFrom, &[])?;
     b.add(array, "from", array_from, PropertyFlags::METHOD)?;
+    let array_of = b.function(Builtin::ArrayOf, &[])?;
+    b.add(array, "of", array_of, PropertyFlags::METHOD)?;
 
     let mut generator = OrdinaryObject::intrinsic(Some(iterator_prototype));
     let tag = heap
@@ -1661,6 +1664,14 @@ fn array_mutator_intrinsics(
         Builtin::ArrayPrototypeSome,
         Builtin::ArrayPrototypeEvery,
         Builtin::ArrayPrototypeFlatMap,
+        Builtin::ArrayPrototypeSlice,
+        Builtin::ArrayPrototypeConcat,
+        Builtin::ArrayPrototypeFlat,
+        Builtin::ArrayPrototypeKeys,
+        Builtin::ArrayPrototypeEntries,
+        Builtin::ArrayPrototypeToReversed,
+        Builtin::ArrayPrototypeToSorted,
+        Builtin::ArrayPrototypeWith,
     ] {
         let function = b.function(method, &[])?;
         b.add(prototype, method.name(), function, PropertyFlags::METHOD)?;

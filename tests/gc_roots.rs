@@ -1143,7 +1143,8 @@ fn realm_intrinsics_retain() {
     // Eight array search methods add eight built-ins (-297).
     // Eight array callback methods add eight built-ins (-298).
     // Async iteration adds two prototypes and four built-ins (-313).
-    assert_eq!(rt.heap_usage().objects.builtin, 315);
+    // Array copies, iterator modes and Array.of add nine built-ins (-299).
+    assert_eq!(rt.heap_usage().objects.builtin, 324);
     assert_eq!(rt.heap_usage().objects.plain, 59);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

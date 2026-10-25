@@ -28,6 +28,8 @@ pub(super) struct State {
     stage: Stage,
     this: Value,
     comparator: Value,
+    copy: bool,
+    result: Value,
     source: Vec<Value>,
     destination: Vec<Value>,
     length: u64,
@@ -49,6 +51,7 @@ impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.this.trace(visit);
         self.comparator.trace(visit);
+        self.result.trace(visit);
         for value in self.source.iter().chain(&self.destination) {
             value.trace(visit);
         }
@@ -56,11 +59,13 @@ impl Trace for State {
 }
 
 impl State {
-    pub(super) fn new(this: Value, args: &[Value]) -> Self {
+    pub(super) fn new(this: Value, args: &[Value], copy: bool) -> Self {
         Self {
             stage: Stage::Start,
             this,
             comparator: args.first().cloned().unwrap_or(Value::Undefined),
+            copy,
+            result: Value::Undefined,
             source: Vec::new(),
             destination: Vec::new(),
             length: 0,
@@ -149,6 +154,13 @@ impl State {
             }
             Stage::LengthNumber => {
                 self.length = to_length(&Self::value(input)?)?;
+                if self.copy {
+                    self.result = builtin::array_constructor(
+                        heap,
+                        task,
+                        &[Value::Number(self.length as f64)],
+                    )?;
+                }
                 self.stage = Stage::Scan;
                 Ok(Action::Continue)
             }
@@ -159,7 +171,7 @@ impl State {
                 }
                 let key = index_key(self.index);
                 self.index += 1;
-                if property::has_property(heap, task, &self.this, &key)? {
+                if self.copy || property::has_property(heap, task, &self.this, &key)? {
                     self.stage = Stage::Element;
                     self.read(heap, task, key)
                 } else {
@@ -271,6 +283,13 @@ impl State {
                     return Ok(Action::Continue);
                 }
                 self.stage = Stage::Written;
+                if self.copy {
+                    return Ok(Action::CreateDataProperty {
+                        this: self.result.clone(),
+                        key: Value::Number(self.index as f64),
+                        value: self.source[self.index as usize].clone(),
+                    });
+                }
                 Ok(Action::SetProperty {
                     this: self.this.clone(),
                     key: index_key(self.index),
@@ -284,6 +303,9 @@ impl State {
                 Ok(Action::Continue)
             }
             Stage::Delete => {
+                if self.copy {
+                    return Ok(Action::Return(self.result.clone()));
+                }
                 if self.index == self.length {
                     return Ok(Action::Return(self.this.clone()));
                 }

@@ -12,6 +12,8 @@ pub(crate) enum Kind {
     Array,
     TypedArray,
     String,
+    ArrayKeys,
+    ArrayEntries,
 }
 
 #[derive(Clone, Debug)]
@@ -403,7 +405,11 @@ impl State {
                 if self.done {
                     return self.result(heap, task, Value::Undefined, true);
                 }
-                if self.kind == Kind::Array && matches!(self.source, Value::Bool(_)) {
+                if matches!(
+                    self.kind,
+                    Kind::Array | Kind::ArrayKeys | Kind::ArrayEntries
+                ) && matches!(self.source, Value::Bool(_))
+                {
                     return self.result(heap, task, Value::Undefined, true);
                 }
                 if self.kind == Kind::String {
@@ -468,6 +474,9 @@ impl State {
                 cursor(heap, task, &self.iterator, |data| {
                     data.index = self.index + 1
                 })?;
+                if self.kind == Kind::ArrayKeys {
+                    return self.result(heap, task, Value::Number(self.index as f64), false);
+                }
                 self.stage = Stage::Element;
                 Ok(Action::Continue)
             }
@@ -478,7 +487,17 @@ impl State {
                 index_key(self.index),
                 Stage::ElementValue,
             ),
-            Stage::ElementValue => self.result(heap, task, Self::value(input)?, false),
+            Stage::ElementValue => {
+                let mut value = Self::value(input)?;
+                if self.kind == Kind::ArrayEntries {
+                    value = builtin::array_constructor(
+                        heap,
+                        task,
+                        &[Value::Number(self.index as f64), value],
+                    )?;
+                }
+                self.result(heap, task, value, false)
+            }
         }
     }
 }

@@ -1476,3 +1476,13 @@ Consulted `research/quickjs/quickjs.c` at revision
 protocol selection, loop heads and awaited advancement. Compiler changes,
 adapter argument forwarding and synthetic fixtures are independently written;
 no QuickJS source or test text is copied.
+
+## Array copies and iterator modes (clj-quickjs-299)
+
+Consulted `research/quickjs/quickjs.c` `js_array_of`, `js_array_slice`,
+`js_array_concat`, `js_array_with`, `JS_FlattenIntoArray`, `js_array_flatten`,
+`js_array_toSorted` and the array iterator registration table, at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04) for species,
+spreadability, depth, sparse/dense copying and constructor semantics.
+The Rust continuations and synthetic fixtures were independently written;
+no QuickJS source or test text was copied.

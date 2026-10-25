@@ -221,6 +221,7 @@ pub(crate) mod iterator;
 pub(crate) mod regexp;
 
 mod array_callbacks;
+mod array_copy;
 mod array_from;
 mod array_mutate;
 mod array_search;
@@ -669,6 +670,7 @@ enum NativeState {
     ArrayMutate(Box<array_mutate::State>),
     ArraySearch(Box<array_search::State>),
     ArrayCallbacks(Box<array_callbacks::State>),
+    ArrayCopy(Box<array_copy::State>),
 }
 
 #[derive(Debug)]
@@ -960,6 +962,7 @@ impl Trace for NativeFrame {
             NativeState::ArrayMutate(array) => array.trace(visit),
             NativeState::ArraySearch(array) => array.trace(visit),
             NativeState::ArrayCallbacks(array) => array.trace(visit),
+            NativeState::ArrayCopy(array) => array.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
             NativeState::Dispose(dispose) => dispose.trace(visit),
             NativeState::Disposal(disposal) => disposal.trace(visit),
@@ -1534,6 +1537,17 @@ pub(crate) fn start_builtin(
     }
     if !construct {
         match which {
+            Builtin::ArrayPrototypeSort | Builtin::ArrayPrototypeToSorted => {
+                return start_array_sort(state, which, this, args, popped);
+            }
+            Builtin::ArrayPrototypeSlice
+            | Builtin::ArrayPrototypeConcat
+            | Builtin::ArrayPrototypeFlat
+            | Builtin::ArrayPrototypeToReversed
+            | Builtin::ArrayPrototypeWith
+            | Builtin::ArrayOf => {
+                return start_array_copy(state, which, this, args, popped);
+            }
             Builtin::ArrayPrototypeForEach
             | Builtin::ArrayPrototypeMap
             | Builtin::ArrayPrototypeFilter
@@ -1611,6 +1625,8 @@ pub(crate) fn start_builtin(
     if !construct {
         let iterator = match which {
             Builtin::ArrayValues
+            | Builtin::ArrayPrototypeKeys
+            | Builtin::ArrayPrototypeEntries
             | Builtin::TypedArrayValues
             | Builtin::IteratorIdentity
             | Builtin::TypedArrayBuffer
@@ -1750,6 +1766,39 @@ fn start_primitive_constructor(
     };
     state.truncate_operands(state.stack_len() - popped)?;
     push_native(state, native)?;
+    Ok(true)
+}
+
+#[inline(never)]
+fn start_array_sort(
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    let native = array_sort::State::new(
+        this.clone(),
+        args,
+        which == builtin::Builtin::ArrayPrototypeToSorted,
+    );
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::ArraySort(Box::new(native)))?;
+    Ok(true)
+}
+
+#[inline(never)]
+fn start_array_copy(
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    let limit = state.forward_limits(state.stack_len() - popped).1;
+    let native = array_copy::State::new(which, this.clone(), args, limit);
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::ArrayCopy(Box::new(native)))?;
     Ok(true)
 }
 
@@ -2120,9 +2169,6 @@ fn start_builtin_slow(
                 iterator::State::map_for_each(heap, state.diag.task, this.clone(), arg(0), arg(1))?,
             ))),
 
-            Builtin::ArrayPrototypeSort => Some(NativeState::ArraySort(Box::new(
-                array_sort::State::new(this.clone(), args),
-            ))),
             Builtin::MathSumPrecise => Some(NativeState::MathSumPrecise(Box::new(
                 sum_precise::State::new(arg(0)),
             ))),
@@ -3520,6 +3566,8 @@ impl NativeState {
             NativeState::ArrayMutate(array) => array.step(heap, task, input),
             NativeState::ArraySearch(array) => array.step(heap, task, input),
             NativeState::ArrayCallbacks(array) => array.step(heap, task, input),
+            NativeState::ArrayCopy(array) => array.step(heap, task, input),
+            NativeState::ArraySort(array) => array.step(heap, task, input),
 
             NativeState::CopyProperties(copy) => copy.step(heap, task, input),
             NativeState::Rest { .. } => self.step_rest(heap, task),
@@ -3639,12 +3687,17 @@ impl NativeState {
             }
             NativeState::ArrayFrom(from) => from.step(heap, task, input),
             NativeState::MathSumPrecise(sum) => sum.step(heap, task, input),
-            NativeState::ArraySort(sort) => sort.step(heap, task, input),
+            NativeState::ArraySort(_) => {
+                unreachable!("array sort dispatched before other native arms")
+            }
             NativeState::ArraySearch(_) => {
                 unreachable!("array search dispatched before other native arms")
             }
             NativeState::ArrayCallbacks(_) => {
                 unreachable!("array callbacks dispatched before other native arms")
+            }
+            NativeState::ArrayCopy(_) => {
+                unreachable!("array copy dispatched before other native arms")
             }
             NativeState::ArrayMutate(_) => {
                 unreachable!("array mutator dispatched before other native arms")
@@ -4910,6 +4963,7 @@ impl NativeState {
                 | NativeState::ArrayMutate(_)
                 | NativeState::ArraySearch(_)
                 | NativeState::ArrayCallbacks(_)
+                | NativeState::ArrayCopy(_)
                 | NativeState::Iterator(_)
                 | NativeState::Dispose(_)
                 | NativeState::Disposal(_)
