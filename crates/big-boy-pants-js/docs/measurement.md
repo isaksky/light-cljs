@@ -78,11 +78,79 @@ same source, sizes and expected results, then runs it under `node --jitless`.
 It prints a reference column and engine/Node ratio for the one-thread rows.
 Node uses the same warmup, measured rounds and four calls per round; parsing
 and process startup are outside its timer. Node's GC policy and lack of engine
-task bookkeeping differ, so this is an end-to-end kernel reference rather
+task bookkeeping differ. Node keeps one process across rounds, so built-in
+caches may also differ. This is an end-to-end kernel reference rather
 than an isolated opcode comparison. Node is optional and never invoked by
 Rust tests. Small correctness instances run all five kernels with 1/2/4/8
 threads in `tests/measurement.rs`; neither tests nor scripts impose a speed
 threshold.
+
+### Recorded Mac run
+
+Measured on the 24-CPU Apple M3 Ultra (Virtual), 32 GiB RAM, macOS 15.7.3
+(24G419), Homebrew Rust 1.99.1 (`58cf8f9c3`), Node v26.12.1, Babashka
+v1.12.218. The workspace release profile uses thin LTO and one codegen unit;
+no `RUSTFLAGS` or `RUST_MIN_STACK` override was set. Command, from this crate:
+`CARGO_BUILD_JOBS=3 bb scripts/kernels.bb`. This ran the release `bench -- scaling`
+with its full sizes, four tasks per thread, one warmup and five measured rounds,
+then the Node reference. The tracked checkout was clean. Built/measured commit:
+`bca99ec4e783166ce1c5975538d1a61591df8597`; the same benchmark/runtime/build inputs
+are preserved at `37738cf5c076f5ca661ba13ffa4e337aa9468deb` after rebasing onto
+`3a6de453` (only an unrelated promise test's scratch-directory setup changed).
+
+Other orchestration builds/tests were stopped for the entire timing window.
+Host load averages (1/5/15 minute) were `4.82 3.97 3.22` before and
+`7.10 6.80 5.67` after the engine run; the latter includes the benchmark's own
+workers. Background host activity was not otherwise controlled.
+
+| Kernel | Threads | ns/iteration median [min..max] | Iterations/s | Speedup |
+|---|---:|---:|---:|---:|
+| arithmetic | 1 | 329.5 [322.4..330.1] | 3035320.9 | 1.000x |
+| arithmetic | 2 | 167.3 [167.0..171.9] | 5978547.3 | 1.970x |
+| arithmetic | 4 | 86.5 [85.3..87.6] | 11563903.5 | 3.810x |
+| arithmetic | 8 | 43.3 [43.2..46.0] | 23076801.7 | 7.603x |
+| allocate | 1 | 13554648.2 [13315575.0..13648202.1] | 73.8 | 1.000x |
+| allocate | 2 | 11112343.8 [10500254.0..18082029.7] | 90.0 | 1.220x |
+| allocate | 4 | 26305818.9 [26176690.6..26493554.2] | 38.0 | 0.515x |
+| allocate | 8 | 31815732.6 [31570174.3..32477078.9] | 31.4 | 0.426x |
+| properties | 1 | 6107.8 [6104.6..6173.5] | 163725.1 | 1.000x |
+| properties | 2 | 3794.0 [3760.6..3923.4] | 263574.6 | 1.610x |
+| properties | 4 | 4258.4 [3980.0..4408.3] | 234832.5 | 1.434x |
+| properties | 8 | 10486.6 [10357.4..10627.4] | 95359.4 | 0.582x |
+| cljs_map | 1 | 16264334.4 [15961063.0..16376408.9] | 61.5 | 1.000x |
+| cljs_map | 2 | 15767915.5 [14745397.8..16613702.5] | 63.4 | 1.031x |
+| cljs_map | 4 | 40901901.4 [40022752.5..41196247.4] | 24.4 | 0.398x |
+| cljs_map | 8 | 45031670.5 [44053418.6..45313605.2] | 22.2 | 0.361x |
+| cljs_protocol | 1 | 1824261.5 [1815839.1..1896904.9] | 548.2 | 1.000x |
+| cljs_protocol | 2 | 1708634.2 [1679633.6..1783499.6] | 585.3 | 1.068x |
+| cljs_protocol | 4 | 4560010.2 [4436908.8..4633556.2] | 219.3 | 0.400x |
+| cljs_protocol | 8 | 5020414.7 [4972272.2..5059423.8] | 199.2 | 0.363x |
+
+| Kernel | Node jitless ns/iteration median [min..max] | Engine / Node median |
+|---|---:|---:|
+| arithmetic | 9.4 [9.3..9.5] | 35.05x |
+| allocate | 131736.7 [131169.8..133569.8] | 102.89x |
+| properties | 34.9 [34.3..35.8] | 175.01x |
+| cljs_map | 340387.5 [331689.1..341481.5] | 47.78x |
+| cljs_protocol | 37695.6 [35213.0..42745.3] | 48.39x |
+
+The allocation kernel's **0.426x at eight threads reproduces the roughly 0.4x
+collapse** in the strategy (its earlier single-run probe reported 0.37x).
+This uses the same 40 rounds of 1000-element lists and four tasks per thread;
+barrier-based timing now excludes thread creation, and the table reports
+medians/spreads rather than one sample. Arithmetic reaches 7.603x, while both
+real-output kernels fall to about 0.36x. These measurements establish a
+baseline, not an achieved Phase 0 performance gate. The current single-thread
+ratios are recorded as measured; the strategy's coarse 30–45x process-wall-time
+estimate is not a bound on these rows, especially the property/allocate loops.
+
+Validation: all 10 `--test measurement` tests passed after the stack-safety
+integration, as did engine formatting and Clippy with only the three existing
+Rust 1.99 diagnostic categories allowed. Strict Clippy still reports the nine
+existing diagnostics described below. The full engine suite was not repeated
+for this benchmark-only change. Quick scaling plus Node and single-thread
+script modes also completed successfully. The final rebase changed only an
+unrelated test setup; benchmark and measurement-test inputs were unchanged.
 
 ## Method and limits of the measurements
 
