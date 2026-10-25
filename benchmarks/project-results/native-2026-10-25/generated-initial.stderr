@@ -1,0 +1,18 @@
+light-cljs: /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/485-1/research/project-attempt-200k/src/workload/jokoum.cljs:7:1: macro expansion: while expanding dougrorje/stipopi: /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/485-1/research/project-attempt-200k/src/workload/jokoum.cljs:7:1: macro workload.fonam/stipopi: big-boy-pants-js: UnsupportedOperand: `this` of sloppy-mode code called with undefined as its receiver is not supported (it needs the global object or a primitive wrapper) (in anonymous at instruction 9 [get_this @ byte 25], task#1, world#0) at source 10:33
+  called from native macro runtime at instruction 169 (source 93:148); definition /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/485-1/research/project-attempt-200k/macros/workload/fonam.cljc:34:1 (bytes 184..361)
+        0.18 real         0.07 user         0.04 sys
+            89243648  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                6294  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 567  voluntary context switches
+                 474  involuntary context switches
+            82789632  peak memory footprint

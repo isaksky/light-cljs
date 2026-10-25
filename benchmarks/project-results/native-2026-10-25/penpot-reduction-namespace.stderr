@@ -1,0 +1,18 @@
+light-cljs: /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/485-1/benchmarks/project-results/native-2026-10-25/reduced-penpot/app/common/math.cljs:13:1: macro expansion: while expanding max: /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/485-1/benchmarks/project-results/native-2026-10-25/reduced-penpot/app/common/math.cljs:13:1: macro app.common.math/max: big-boy-pants-js: UnsupportedOperand: `this` of sloppy-mode code called with undefined as its receiver is not supported (it needs the global object or a primitive wrapper) (in anonymous at instruction 9 [get_this @ byte 25], task#1, world#0) at source 14:33
+  called from native macro runtime at instruction 169 (source 93:148); definition /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/485-1/benchmarks/project-results/native-2026-10-25/reduced-penpot/app/common/math.cljs:9:1 (bytes 503..512)
+        0.00 real         0.00 user         0.00 sys
+            14204928  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                1164  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                  10  involuntary context switches
+             8274816  peak memory footprint

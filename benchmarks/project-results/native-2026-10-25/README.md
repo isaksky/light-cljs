@@ -61,3 +61,116 @@ does not support map flags). No smaller generated input may replace this attempt
 Both commands request `--stats-file` plus an external source map. An error can
 prevent all three of JavaScript, source map and stats trace from being emitted;
 absence will be recorded rather than treated as identity or a zero metric.
+
+## Outcomes
+
+Both full projects are **unsupported** on this pinned backend. No full-project
+success, speedup, or output-equivalence claim follows from these attempts.
+
+| Workload / attempt | Exit | Wall / user / system seconds | Peak RSS bytes |
+| --- | ---: | --- | ---: |
+| Penpot app.main, initial jobs 1 | 1 | 0.19 / 0.07 / 0.04 | 81,362,944 |
+| Generated 200k, initial jobs 1 | 1 | 0.18 / 0.07 / 0.04 | 89,243,648 |
+| Penpot reduction, namespace invocation | 1 | 0.00 / 0.00 / 0.00 | 14,204,928 |
+| Generated reduction, namespace invocation | 1 | 0.00 / 0.00 / 0.00 | 14,204,928 |
+
+These are the single raw `/usr/bin/time -l` samples, rounded by that utility,
+not medians. The runner also retains elapsed monotonic time in `*.result.edn`;
+it includes runner/process overhead and is not substituted for child wall time.
+No process reached its deadline. Every process was waited/reaped before the next.
+
+Penpot first fails at `app/common/math.cljc:217:3`, expanding `max`, defined
+at line 20. Generated first fails at `src/workload/jokoum.cljs:7:1`, expanding
+`workload.fonam/stipopi`, defined at `macros/workload/fonam.cljc:34:1`.
+Both errors report:
+
+```text
+UnsupportedOperand: `this` of sloppy-mode code called with undefined as its receiver is not supported (it needs the global object or a primitive wrapper)
+anonymous instruction 9 [get_this @ byte 25], task#1, world#0
+called from native macro runtime at instruction 169 (source 93:148)
+```
+
+`*-initial.stderr` preserves the full first diagnostic and resource counters.
+This is an emitted variadic macro calling-boundary failure; no evidence here
+attributes collection/property/call/bridge **time shares**. Both first macros
+have rest arguments. One candidate reduction per workload retained its exact
+macro body, removed unrelated definitions/requires and reduced the call:
+`reduced-penpot/app/common/math.cljs` and `reduced-generated/workload/fonam.cljs`.
+Both reproduce the same `get_this` error in namespace mode. They are not proven
+globally minimal: the macro's syntax quote, environment lookup (Penpot), and
+protocol construction (generated) remain unreduced. No second source-reduction
+pass or missing-semantics implementation was attempted.
+
+The first invocation of each reduction mistakenly used single-file CLI mode,
+which rejects `ns` before executing macros. Those raw `*-reduced.*` records are
+retained as invocation errors, not reproductions of the project failure. The
+same candidate bytes were moved into namespace-shaped directories and invoked
+correctly once; `*-reduction-namespace.*` are the actual reproductions. For example:
+
+```sh
+target/release/light-cljs --compile --entry app.common.math --source-root benchmarks/project-results/native-2026-10-25/reduced-penpot --jobs 1 --no-cache --macro-timeout-ms 120000
+target/release/light-cljs --compile --entry workload.fonam --source-root benchmarks/project-results/native-2026-10-25/reduced-generated --jobs 1 --no-cache --macro-timeout-ms 120000
+```
+
+One focused follow-up, **light-cljs-489**, covers this common receiver boundary
+and both reductions. Searches for `sloppy`, `variadic`, and `receiver` in
+`bbp-integration` returned no existing item. The existing collection (477) and
+helper-demand (463) work do not cover this first failure. Fixing it may expose
+later unsupported operations; this report does not predict full-project support.
+
+## Matrix, outputs and unavailable measurements
+
+| Workload | jobs 1 | jobs 2 | jobs 4 | jobs 8 |
+| --- | --- | --- | --- | --- |
+| Penpot | Unsupported: first attempt failed | Unsupported backend, not attempted | Unsupported backend, not attempted | Unsupported backend, not attempted |
+| Generated 200k | Unsupported: first attempt failed | Unsupported backend, not attempted | Unsupported backend, not attempted | Unsupported backend, not attempted |
+
+There are no supported cells, so no five-run matrix, median/spread, scaling ratio,
+quiet timing window or additional profile was collected. Profiling allowance:
+0 of 1 per workload used. No V8 build or reference attempt was made: optional
+references require a supported workload, which neither is.
+
+Both initial stdout files are zero bytes; neither requested map nor stats JSON
+exists. Neither macro returns a result. Thus macro-result verification and
+JavaScript/source-map identity across runs/jobs are unavailable, not passing.
+No application execution or generated oracle comparison can be made.
+
+Wall/user/system CPU and RSS are above. Runtime initialization, JS
+compilation/execution time, bridge cost and allocation metrics are unavailable:
+failure aborts before the compiler emits its requested stats trace, and the
+external timer cannot separate those phases. GC count/pauses are unavailable:
+this baseline predates automatic-GC/aggregate-budget work and exports no such
+project trace on failure. Parked tasks, help-while-waiting depth and worker
+utilization are unavailable: the native backend is serial at this revision,
+resumable helper demand/pool execution are not integrated, and no scheduler
+trace survives these failures. Page-reclaim counters are not allocation counts.
+
+**k** is unavailable for median units, longest units and critical path separately:
+there are no completed native unit traces or matched same-commit V8 unit samples.
+Longest-unit k therefore cannot be classified as <=4, >4 to <=8, or >8.
+The 0.19/0.18-second failure latencies are not native macro-unit timings and are
+not divided by historical V8 full-project measurements.
+
+## Validation
+
+The native release binary's SHA-256 is in `binary.sha256`. After all attempts,
+all 996 Penpot input hashes and all 653 entries in the generated manifest
+(including tooling's macro-loading shims) still matched. Both full-project
+stdout files were checked empty and their map/stats paths absent. The pre-attempt
+configuration was committed before either initial compile.
+
+```sh
+CARGO_BUILD_JOBS=3 cargo test --release --locked --no-default-features --features bbp-macros --test bbp_macros -- --test-threads=3
+cargo fmt --check
+clj-kondo --lint benchmarks/project-results/native-2026-10-25/attempt.bb
+git diff --check
+```
+
+Native macro integration: 17 passed, zero failures (0.55 seconds of test
+execution); formatter, diff check and script lint passed (zero lint warnings).
+The one attempt script was exercised on both projects and both reductions.
+Full compiler/engine suites and Rust Clippy were not rerun for this measurement,
+documentation and Babashka-only change. The existing deprecated
+`Atomic::fetch_update` warning appeared in the release build; it was not changed
+or suppressed. All build, test and attempt processes completed and were reaped;
+no setup symlinks or external build directories were created.

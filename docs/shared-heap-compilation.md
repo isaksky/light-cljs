@@ -264,6 +264,24 @@ per-unit scheme.
 
 ## Where the engine is today
 
+### Project attempts (October 25, 2026)
+
+The bounded real-project baseline at `b3fac889` used the native-only release
+compiler (`--no-default-features --features bbp-macros`), cache off, jobs 1,
+and a 120-second process limit. Both the pinned port of Penpot `app.main`
+(`none`) and the seeded 200k generated project (`advanced`, seed 42) failed
+at their first variadic source macro. The engine rejects a sloppy-mode `this`
+read when the emitted function is called with an undefined receiver: Penpot's
+`app.common.math/max` and generated `workload.fonam/stipopi`. One reduction
+per workload reproduces the same failure; light-cljs-489 covers it.
+
+These are unsupported full-project outcomes, not performance results. There
+are no successful JS/source maps, five-run matrix, k or profile; jobs 2/4/8
+are outside this native backend's supported boundary. This source baseline
+predates 472's automatic-GC/aggregate-budget work. Exact inputs, commands,
+timeouts, raw diagnostics/resource samples and unavailable metrics are in
+[the project-attempt report](../benchmarks/project-results/native-2026-10-25/README.md).
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with

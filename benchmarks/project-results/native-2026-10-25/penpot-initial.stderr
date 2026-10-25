@@ -1,0 +1,18 @@
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/math.cljc:217:3: macro expansion: while expanding max: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/math.cljc:217:3: macro app.common.math/max: big-boy-pants-js: UnsupportedOperand: `this` of sloppy-mode code called with undefined as its receiver is not supported (it needs the global object or a primitive wrapper) (in anonymous at instruction 9 [get_this @ byte 25], task#1, world#0) at source 14:33
+  called from native macro runtime at instruction 169 (source 93:148); definition /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/math.cljc:20:1 (bytes 4634..4662)
+        0.19 real         0.07 user         0.04 sys
+            81362944  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                5523  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 597  voluntary context switches
+                 264  involuntary context switches
+            75220288  peak memory footprint

@@ -1,0 +1,1 @@
+{:label "penpot-reduced", :command ["target/release/light-cljs" "--compile" "benchmarks/project-results/native-2026-10-25/penpot-reduced.cljs" "--no-cache" "--macro-timeout-ms" "120000"], :cwd "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/485-1", :started-at "2026-10-25T22:45:20.482310Z", :timeout-ms 120000}
