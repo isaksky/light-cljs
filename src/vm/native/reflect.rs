@@ -61,7 +61,7 @@ pub(super) struct State {
     length: usize,
     max_args: usize,
     max_hops: usize,
-    typed_set: bool,
+    typed_write: bool,
     array_length: u32,
 }
 impl Trace for State {
@@ -104,7 +104,7 @@ impl State {
             length: 0,
             max_args: max_args.min(usize::from(u16::MAX)),
             max_hops,
-            typed_set: false,
+            typed_write: false,
             array_length: 0,
         }
     }
@@ -307,14 +307,20 @@ impl State {
                 return boolean(false);
             };
             let id = proxy::forward(heap, task, id, "defineProperty")?;
+            // Forwarding has completed. A value conversion may mutate the
+            // original Proxy handler, so finish on this traced target.
+            self.receiver = Value::Object(id);
             let key = self.key()?;
             // Validate the typed-array descriptor before coercing its value.
-            if !self.typed_set
-                && !ordinary(
-                    property::typed_array_descriptor(heap, task, id, &key, &self.desc).map(|_| ()),
-                )?
-            {
-                return boolean(false);
+            if !self.typed_write {
+                match property::typed_array_descriptor(heap, task, id, &key, &self.desc) {
+                    Ok(Some(_)) if self.desc.value.is_none() => return boolean(true),
+                    // Once validated, an element definition finishes as a
+                    // write, even if conversion detaches its buffer.
+                    Ok(Some(_)) => self.typed_write = true,
+                    Ok(None) => {}
+                    Err(fault) => return boolean(ordinary(Err(fault))?),
+                }
             }
             if let Some(value) = &self.desc.value {
                 let typed = crate::object::typed_array::numeric_key(&key).is_some()
@@ -413,7 +419,7 @@ impl State {
                     && crate::object::typed_array::view(heap, task, target)?.is_some()
                 {
                     self.desc.value = Some(self.arg(2));
-                    self.typed_set = true;
+                    self.typed_write = true;
                     self.stage = Stage::Define;
                     return Ok(Action::Continue);
                 }
@@ -446,7 +452,7 @@ impl State {
             return boolean(false);
         };
         let key = self.key()?;
-        if self.typed_set {
+        if self.typed_write {
             let index = crate::object::typed_array::numeric_key(&key)
                 .ok_or(Fault::Internal("Reflect typed index"))?;
             let view = crate::object::typed_array::view(heap, task, id)?
@@ -481,6 +487,7 @@ fn ordinary(result: Result<(), Fault>) -> Result<bool, Fault> {
         Ok(()) => Ok(true),
         Err(Fault::TypeError(message))
             if !message.starts_with("unsupported Proxy trap:")
+                && !message.starts_with("Proxy:")
                 && !message.ends_with("built-in objects are shared by all tasks and immutable")
                 && !message.ends_with("functions shared between tasks are immutable") =>
         {

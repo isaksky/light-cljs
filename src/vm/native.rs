@@ -1587,6 +1587,11 @@ pub(crate) fn start_builtin(
         push_native(state, native)?;
         return Ok(true);
     }
+    // Detachment from a numeric conversion must fit on small worker stacks.
+    // Avoid reserving every unrelated slow built-in's entry temporaries.
+    if which == Builtin::ArrayBufferTransfer && !construct {
+        return start_builtin_conversion(heap, state, which, this, args, construct, popped);
+    }
     if which == Builtin::ObjectDefineProperty
         && !construct
         && !matches!(args.get(1), Some(Value::Object(_) | Value::BigInt(_)))

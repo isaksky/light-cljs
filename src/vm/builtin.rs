@@ -580,7 +580,6 @@ pub(crate) enum Builtin {
     DateToPrimitive,
     IntlNumberFormatToParts,
 
-
     ReflectConstruct,
     ReflectDefineProperty,
     ReflectDeleteProperty,

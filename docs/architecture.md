@@ -9074,6 +9074,9 @@ actions, never under a heap lock or on a retained Rust stack. Reflect reuses the
 existing property, prototype, integrity and Proxy internal methods. Ordinary
 rejection returns a boolean; unsupported Proxy traps, ownership failures and
 immutable-realm errors preserve their established runtime policy.
+Forwarded definition targets stay in the traced continuation during coercion;
+validated typed-array definitions finish as element writes without rechecking
+the index after user code may have detached the buffer.
 
 Ordinary base constructors now share the built-in GetPrototypeFromConstructor
 continuation: the new target's prototype is read resumably before receiver

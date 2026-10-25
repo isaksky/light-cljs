@@ -917,34 +917,7 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         b.add(function_prototype, name, value, PropertyFlags::METHOD)?;
     }
 
-    // Reflect methods share the immutable realm; operation state is task-owned.
-    let mut reflect = OrdinaryObject::intrinsic(Some(object_prototype));
-    for which in [
-        Builtin::ReflectApply,
-        Builtin::ReflectConstruct,
-        Builtin::ReflectDefineProperty,
-        Builtin::ReflectDeleteProperty,
-        Builtin::ReflectGet,
-        Builtin::ReflectGetOwnPropertyDescriptor,
-        Builtin::ReflectGetPrototypeOf,
-        Builtin::ReflectHas,
-        Builtin::ReflectIsExtensible,
-        Builtin::ReflectOwnKeys,
-        Builtin::ReflectPreventExtensions,
-        Builtin::ReflectSet,
-        Builtin::ReflectSetPrototypeOf,
-    ] {
-        let method = b.function(which, &[])?;
-        define(
-            heap,
-            &mut reflect,
-            which.name(),
-            method,
-            PropertyFlags::METHOD,
-        )?;
-    }
-    let reflect = heap.alloc(HeapObject::Plain(reflect))?;
-    b.all.push(reflect);
+    let reflect = reflect_namespace(&mut b, object_prototype)?;
 
     let (array_prototype, array) = array_prototype(&mut b, object_prototype)?;
     let (number_prototype, number) = primitive_prototype(
@@ -3005,6 +2978,41 @@ fn intl_display_names_intrinsics(
     })?
     .then_some(())?;
     Some(prototype)
+}
+
+// Isolate registration storage from the cold realm builder on small workers.
+#[inline(never)]
+fn reflect_namespace(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<ObjectId> {
+    let heap = b.heap;
+    // Reflect methods share the immutable realm; operation state is task-owned.
+    let mut reflect = OrdinaryObject::intrinsic(Some(object_prototype));
+    for which in [
+        Builtin::ReflectApply,
+        Builtin::ReflectConstruct,
+        Builtin::ReflectDefineProperty,
+        Builtin::ReflectDeleteProperty,
+        Builtin::ReflectGet,
+        Builtin::ReflectGetOwnPropertyDescriptor,
+        Builtin::ReflectGetPrototypeOf,
+        Builtin::ReflectHas,
+        Builtin::ReflectIsExtensible,
+        Builtin::ReflectOwnKeys,
+        Builtin::ReflectPreventExtensions,
+        Builtin::ReflectSet,
+        Builtin::ReflectSetPrototypeOf,
+    ] {
+        let method = b.function(which, &[])?;
+        define(
+            heap,
+            &mut reflect,
+            which.name(),
+            method,
+            PropertyFlags::METHOD,
+        )?;
+    }
+    let reflect = heap.alloc(HeapObject::Plain(reflect))?;
+    b.all.push(reflect);
+    Some(reflect)
 }
 
 // Keep ordinary-object allocation temporaries out of the large realm builder
