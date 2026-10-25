@@ -1000,14 +1000,14 @@ impl Builtin {
             | Builtin::StringToLocaleLowerCase
             | Builtin::StringTrim
             | Builtin::StringTrimStart
-            | Builtin::StringTrimEnd => 0,
+            | Builtin::StringTrimEnd
+            | Builtin::StringNormalize => 0,
             Builtin::StringRepeat
             | Builtin::StringStartsWith
             | Builtin::StringEndsWith
             | Builtin::StringIncludes
             | Builtin::StringAt
-            | Builtin::StringLocaleCompare
-            | Builtin::StringNormalize => 1,
+            | Builtin::StringLocaleCompare => 1,
             Builtin::RegExpExec | Builtin::RegExpTest => 1,
             Builtin::RegExpToString
             | Builtin::RegExpSource

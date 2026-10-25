@@ -62,6 +62,12 @@ for (let name of ['toUpperCase','toLowerCase','toLocaleUpperCase','toLocaleLower
 for (let form of ['nfc', '', 'NFKX']) {
     let caught = false; try { 'x'.normalize(form); } catch(e) { caught = e instanceof RangeError; } check(caught);
 }
+for (let name of ['toUpperCase','toLowerCase','toLocaleUpperCase','toLocaleLowerCase','trim','trimStart','trimEnd','normalize']) {
+    check(String.prototype[name].name === name && String.prototype[name].length === 0);
+}
+for (let name of ['repeat','startsWith','endsWith','includes','at','localeCompare']) {
+    check(String.prototype[name].name === name && String.prototype[name].length === 1);
+}
 check(String.prototype.trim.call(123) === '123');
 check(String.prototype.repeat.call(true,2) === 'truetrue');
 check(String.prototype.at.call(123,1) === '2');
