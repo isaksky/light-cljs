@@ -1530,3 +1530,14 @@ Read `js_boolean_constructor`, `js_thisBooleanValue`, `js_boolean_toString`,
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04), as semantic
 references. No implementation or test code was copied. Tests in
 `tests/boolean_bigint_wrappers.rs` are synthetic fixtures, not light-cljs output.
+
+## RegExp Script/Script_Extensions (clj-quickjs-304)
+
+The existing Unicode generator additionally uses
+`research/quickjs/libunicode.c::unicode_script` and the script name pool in
+`libunicode-table.h`, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`,
+solely as offline reference data/decoding. Generated property ranges retain
+QuickJS MIT and Unicode notices. Unicode 17 Scripts.txt, ScriptExtensions.txt
+and PropertyValueAliases.txt are independently hash-pinned in the repacker
+and recorded in `src/regexp/case_fold_provenance.txt`; the Unicode v3 notice
+is in `docs/UNICODE-LICENSE`. The script fixture is synthetic and original.

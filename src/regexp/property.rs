@@ -1,10 +1,7 @@
-//! Unicode 17 binary properties and General_Category. Script/scx are deferred.
+//! Unicode 17 binary, General_Category, Script and Script_Extensions properties.
 
 #[path = "property_data.rs"]
 mod data;
-
-#[path = "script_names.rs"]
-mod script_names;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PropertyKind {
@@ -18,16 +15,7 @@ pub(super) fn syntax_kind(name: &str) -> Option<PropertyKind> {
     if lookup(name).is_some() {
         return Some(PropertyKind::CodePoint);
     }
-    if let Some((key, value)) = name.split_once('=') {
-        if matches!(key, "Script" | "sc" | "Script_Extensions" | "scx")
-            && !value.is_empty()
-            && script_names::SCRIPT_ALIASES
-                .split(|&b| b == 0 || b == b',')
-                .any(|alias| alias == value.as_bytes())
-        {
-            return Some(PropertyKind::CodePoint);
-        }
-    } else if matches!(
+    if matches!(
         name,
         "Basic_Emoji"
             | "Emoji_Keycap_Sequence"
@@ -44,11 +32,19 @@ pub(super) fn syntax_kind(name: &str) -> Option<PropertyKind> {
 
 struct PropertyData {
     aliases: &'static str,
-    category: bool,
+    group: PropertyGroup,
     ranges: &'static [(u32, u32)],
     // Canonical targets contributed by nonidentity simple-fold sources.
     folded: &'static [(u32, u32)],
     folded_complement: &'static [(u32, u32)],
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PropertyGroup {
+    Binary,
+    Category,
+    Script,
+    ScriptExtensions,
 }
 
 /// A validated property identity into immutable generated data.
@@ -56,19 +52,27 @@ struct PropertyData {
 pub struct UnicodeProperty(usize);
 
 /// Exact ECMAScript spellings only; no UAX44 loose matching. A lone name may
-/// denote a category value or binary property. Only gc accepts `name=value`.
+/// denote a category value or binary property. Scripts require a property key.
 pub fn lookup(name: &str) -> Option<UnicodeProperty> {
-    let (name, category_only) = if let Some((key, value)) = name.split_once('=') {
-        if !matches!(key, "gc" | "General_Category") {
-            return None;
-        }
-        (value, true)
+    let (name, group) = if let Some((key, value)) = name.split_once('=') {
+        let group = match key {
+            "gc" | "General_Category" => PropertyGroup::Category,
+            "sc" | "Script" => PropertyGroup::Script,
+            "scx" | "Script_Extensions" => PropertyGroup::ScriptExtensions,
+            _ => return None,
+        };
+        (value, Some(group))
     } else {
-        (name, false)
+        (name, None)
     };
     data::PROPERTIES
         .iter()
-        .position(|p| (!category_only || p.category) && p.aliases.split(',').any(|a| a == name))
+        .position(|p| {
+            group.map_or(
+                matches!(p.group, PropertyGroup::Binary | PropertyGroup::Category),
+                |g| p.group == g,
+            ) && p.aliases.split(',').any(|a| a == name)
+        })
         .map(UnicodeProperty)
 }
 
@@ -108,16 +112,34 @@ mod tests {
 
     #[test]
     fn aliases_and_range_invariants() {
-        assert_eq!(data::PROPERTIES.len(), 91); // 53 binary and 38 GC values.
+        assert_eq!(data::PROPERTIES.len(), 91 + 2 * 176);
         for (i, p) in data::PROPERTIES.iter().enumerate() {
             for alias in p.aliases.split(',') {
-                assert_eq!(lookup(alias), Some(UnicodeProperty(i)), "{alias}");
-                if p.category {
-                    for key in ["gc", "General_Category"] {
-                        assert_eq!(lookup(&format!("{key}={alias}")), Some(UnicodeProperty(i)));
+                let keys: &[&str] = match p.group {
+                    PropertyGroup::Binary => &[""],
+                    PropertyGroup::Category => &["", "gc", "General_Category"],
+                    PropertyGroup::Script => &["sc", "Script"],
+                    PropertyGroup::ScriptExtensions => &["scx", "Script_Extensions"],
+                };
+                for key in [
+                    "",
+                    "gc",
+                    "General_Category",
+                    "sc",
+                    "Script",
+                    "scx",
+                    "Script_Extensions",
+                ] {
+                    let name = if key.is_empty() {
+                        alias.to_owned()
+                    } else {
+                        format!("{key}={alias}")
+                    };
+                    if keys.contains(&key) {
+                        assert_eq!(lookup(&name), Some(UnicodeProperty(i)), "{name}");
+                    } else {
+                        assert_ne!(lookup(&name), Some(UnicodeProperty(i)), "{name}");
                     }
-                } else {
-                    assert_eq!(lookup(&format!("gc={alias}")), None);
                 }
             }
             for ranges in [p.ranges, p.folded, p.folded_complement] {

@@ -80,7 +80,7 @@ impl Flags {
 /// Parse pattern text without literal delimiters. No lossy conversion to UTF-8
 /// occurs. The result owns its arena and has no heap/GC edges. Both parsing and
 /// dropping nested groups are iterative. Quantifier counts above u64::MAX are
-/// rejected explicitly; Script and string property escapes are deferred.
+/// rejected explicitly; string property escapes are deferred.
 pub fn parse(pattern: &JsString, flags: &JsString) -> Result<Pattern, SyntaxError> {
     let flags_value = Flags::parse(flags)?;
     Parser::new(pattern.code_units(), flags_value, false).run()
@@ -1483,7 +1483,9 @@ mod tests {
         assert!(Flags::parse(&JsString::from("v")).unwrap().unicode_sets);
         assert!(pattern("[a]", "v").is_ok());
         assert!(pattern(r"\p{ASCII}", "u").is_ok());
-        assert_eq!(pattern(r"\p{sc=Greek}", "u").unwrap_err().offset, 0);
+        assert!(pattern(r"\p{sc=Greek}", "u").is_ok());
+        assert!(pattern(r"\P{scx=Grek}", "v").is_ok());
+        assert_eq!(pattern(r"\p{sc=NoSuchScript}", "u").unwrap_err().offset, 0);
         let p = pattern("(?im-s:a)", "").unwrap();
         let [
             Node::Modifiers {

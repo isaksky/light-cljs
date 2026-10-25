@@ -6447,7 +6447,7 @@ properties and all 38 category values are exposed. Every set is independently
 compared across U+0000..U+10FFFF with pinned UnicodeData, DerivedCoreProperties,
 PropList, DerivedBinaryProperties, DerivedNormalizationProps and emoji-data.
 QuickJS range sentinels above U+10FFFF are clipped to the ECMAScript domain.
-Script/Script_Extensions remain rejected, consistently with the -191 policy.
+Script/Script_Extensions use the same pipeline and Unicode version (clj-quickjs-304).
 
 `src/regexp/property_data.rs` holds sorted inclusive ranges and exact aliases.
 Each set also stores canonical targets contributed by nonidentity folds of
@@ -8997,3 +8997,22 @@ through cold initialization frames. The existing 64 KiB
 `json_module_instances_survive_budgets_collection_and_migration` regression
 covers initializing the realm beneath the module JSON parser; it passes with
 this representation while preserving lazy initialization and intrinsic roots.
+
+## RegExp script ranges (clj-quickjs-304)
+
+The Unicode repacker expands `libunicode.c::unicode_script` offline for Script
+and Script_Extensions and independently checks all code points against pinned
+Unicode 17 Scripts.txt and ScriptExtensions.txt. It checks every alias against
+PropertyValueAliases.txt. Unknown includes unassigned code points and lone
+surrogates; Katakana_Or_Hiragana/Hrkt is recognized with an empty set.
+Explicit extensions replace default Script membership, including Common and
+Inherited. Syntax validation and matching share one property lookup.
+
+The immutable property array distinguishes binary, category, script and script
+extension identities. Sorted inclusive raw/folded/complement ranges use the
+existing binary-search consumer and u/v folding rules. Identical arrays are
+interned during generation, including empty sets and folded complements.
+Existing parser, v set compilation and matcher budgets remain unchanged; no
+new work limit, heap object or resumable native is needed. Full-domain
+verification compares the installed Rust reader, aliases, complements and iu
+images with the reference and detects a corrupted Script bit separately.

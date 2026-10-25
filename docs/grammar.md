@@ -4014,8 +4014,8 @@ non-Unicode forms, and strict u-mode parsing with surrogate-pair joining.
 Errors include messages and UTF-16 offsets (flag errors index the flags).
 Matcher parsing rejects quantifier counts above u64::MAX explicitly at runtime.
 
-Explicit gaps: v patterns and Script/Script_Extensions property escapes remain
-deferred. Binary and General_Category property escapes execute in u mode
+Script/Script_Extensions property escapes execute in u/v mode (clj-quickjs-304).
+Binary and General_Category property escapes execute in u mode
 (clj-quickjs-192). Literal sites reuse this parser for early errors
 (clj-quickjs-56): non-Unicode Annex B forms are accepted, while u/v modes
 apply strict pattern syntax. Invalid patterns produce `SyntaxError` kind
@@ -4023,8 +4023,8 @@ apply strict pattern syntax. Invalid patterns produce `SyntaxError` kind
 including in unevaluated expressions and function bodies. The AST preserves
 the raw pattern and flags; matcher compilation remains in the runtime.
 Literal validation recognizes exact Script/Script_Extensions aliases and the
-seven v-mode string properties independently of matcher support. Valid but
-unsupported properties compile in unevaluated expressions; evaluating them
+seven v-mode string properties. Scripts also execute; valid but unsupported
+string properties compile in unevaluated expressions and evaluating them
 retains the runtime's catchable SyntaxError. Invalid names/values, string
 properties in u mode or in `\P`, and complemented classes that may contain
 strings are early errors. Script aliases use the pinned Unicode 17 name pool.
@@ -4882,8 +4882,8 @@ folding. This differs from class inversion: `/\P{Lower}/iu.test('a')` is true,
 while `/[^\p{Lower}]/iu.test('a')` is false. Matching retains the catchable
 step budget and UTF-16 offsets.
 
-Explicit gaps: Script, sc, Script_Extensions and scx deliberately throw
-SyntaxError. Unicode string properties remain deferred.
+Script, sc, Script_Extensions and scx execute (clj-quickjs-304).
+Unicode string properties remain deferred.
 
 ```js accept
 /\p{General_Category=Uppercase_Letter}/u.test('A');
@@ -5094,7 +5094,7 @@ set traversal use explicit stacks; compilation and matching retain their
 catchable RangeError work limits.
 
 Explicit gaps: properties of strings such as `\p{RGI_Emoji}` deliberately
-throw SyntaxError. Script/Script_Extensions, lookbehind and symbol-based
+throw SyntaxError. Lookbehind and symbol-based
 string dispatch retain their existing deferred status.
 Literal pattern errors retain the current catchable construction-time policy.
 
@@ -6942,3 +6942,21 @@ objects remain shared. No new size cap: BigInt retains its 1 Mbit magnitude cap.
 Built-in subclassing and general Symbol.toPrimitive dispatch remain deferred separately.
 Object.prototype.toString still rejects BigInt primitives/wrappers with UnsupportedOperand
 until general Symbol.toStringTag consumption is implemented.
+
+### RegExp script properties (clj-quickjs-304)
+
+In u/v patterns, `Script`/`sc` and `Script_Extensions`/`scx` require `=Value`.
+Values use exact Unicode 17 PropertyValueAliases spellings, including long,
+short and deprecated aliases. Both `\p` and `\P` work as atoms and class
+members, including nested v operations and scoped i. Literals and constructors
+share the same sets. Unknown values are SyntaxError (early errors in literals).
+Lone script names and loose matching remain invalid. Script_Extensions replaces
+Script at explicitly listed code points and otherwise inherits its value;
+Common/Inherited need not remain members when an explicit extension applies.
+
+```js accept
+/\p{Script=Greek}/u.test('α');
+/\p{scx=Grek}/v.test('\u0342');
+/[\p{scx=Hira}&&\p{scx=Kana}]/v.test('ー');
+/\P{sc=Latin}/u.test('α');
+```

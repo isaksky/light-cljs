@@ -32,7 +32,9 @@ impl CompileError {
 }
 
 pub(crate) fn compile(source: &JsString, flags: &JsString) -> Result<Arc<Compiled>, CompileError> {
-    let pattern = parse::parse(source, flags).map_err(|e| CompileError::Syntax(e.to_string()))?;
+    let pattern = parse::parse(source, flags).map_err(|e| {
+        CompileError::Syntax(format!("{} at UTF-16 offset {}", e.message, e.offset))
+    })?;
     let program = matcher::compile(&pattern).map_err(|e| match e {
         matcher::MatchError::LimitExceeded => CompileError::Limit,
         _ => CompileError::Syntax(e.to_string()),

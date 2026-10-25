@@ -2811,7 +2811,8 @@ quantifiers, classes, Annex B escapes and strict u-mode parsing, preserving
 lone surrogates. Run `cargo test --lib regexp::parse::tests::`.
 
 Deferred: literal-site early errors,
-v grammar and Script/Script_Extensions property escapes. Quantifier counts above u64::MAX
+v grammar (subsequently added). Script/Script_Extensions
+property escapes are supported by clj-quickjs-304. Quantifier counts above u64::MAX
 return an explicit error. See `docs/architecture.md`, "Regular expression
 pattern IR", and `docs/grammar.md` for the API boundary.
 
@@ -3333,8 +3334,8 @@ aliases (`Lower`, `Lu`, `gc=Lu`, `General_Category=Uppercase_Letter`). Unicode
 verification against QuickJS and pinned UCD inputs. In iu, property complements
 are taken before folding; `/\P{Lower}/iu` matches lowercase letters too.
 Without u or v, p/P remain Annex B identity escapes. Unknown names throw SyntaxError.
-Deferred: Script/Script_Extensions (including sc/scx) and string properties
-throw SyntaxError. Run:
+Script/Script_Extensions (including sc/scx) are supported by clj-quickjs-304;
+string properties remain deferred and throw SyntaxError. Run:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_property_escapes -- --exact --test-threads=3`.
 
 ### Percent and currency NumberFormat (clj-quickjs-214)
@@ -3474,8 +3475,8 @@ both lowercase and uppercase letters. Scoped `i` works inside `v` patterns.
 
 Malformed operations, unescaped class syntax/reserved double punctuation,
 negation of classes that may contain strings, and combining `u` with `v`
-throw catchable SyntaxError. Unicode string properties (including RGI_Emoji),
-Script/Script_Extensions and lookbehind remain deferred.
+throw catchable SyntaxError. Unicode string properties (including RGI_Emoji)
+and lookbehind remain deferred. Script/Script_Extensions are supported below.
 Set compilation and string matching share the existing catchable step bounds;
 normal builds use the existing generated Unicode 17 tables without new data
 or dependencies. Run `CARGO_BUILD_JOBS=3 cargo test --lib regexp:: -- --test-threads=3`
@@ -4658,3 +4659,20 @@ Object.prototype.toString on BigInt primitives/wrappers retains the explicit
 UnsupportedOperand gap for Symbol.toStringTag consumption.
 
 Validation: `CARGO_BUILD_JOBS=3 cargo test --test boolean_bigint_wrappers -- --test-threads=3`.
+
+### RegExp Script and Script_Extensions (clj-quickjs-304)
+
+Supported: `\p{Script=Greek}`, `\p{sc=Grek}`, `\p{Script_Extensions=Greek}`
+and `\p{scx=Grek}`, plus `\P` negation, in literals and RegExp constructors
+with u or v. All 176 Unicode 17 script values accept their exact canonical
+names and PropertyValueAliases aliases, including Qaai/Qaac. Script_Extensions
+uses explicit script sets where present and Script otherwise; Common/Inherited
+characters with explicit extensions belong to those sets instead of their
+original script. Unknown values, loose casing and lone script names throw
+SyntaxError. Script properties work in character classes, scoped i and v set
+operations. Unicode string properties remain deferred (clj-quickjs-305).
+
+Tables use shared sorted inclusive ranges with no runtime decoding, new native
+continuation or GC edges. Existing parse, set compilation and matching work
+limits apply; this feature adds no work allowance or worker-chosen limit.
+Check: `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_script_property_escapes -- --exact --test-threads=3`.

@@ -22,6 +22,7 @@ perl 5.42.3
 Unicode 17.0.0: complete domain folding C/S and ID properties verified.
 Non-Unicode Canonicalize verified over all 65,536 code units against full default uppercase.
 53 ECMA-262 binary properties and 38 General_Category values verified over the complete domain.
+Script/Script_Extensions sets and all PropertyValueAliases verified against Unicode 17.0.0.
 QuickJS FB05/FB06 representative reversed to normative C/S; equivalence unchanged.
 d2da6d06a75b9e6c116c82b7a41df6bcc170c8b1779f374fa953ecf688eda647  cutils.h
 7fb4fbeffc7bc3e12c837ce602cd9f5a7e9e2b06a9bba95e23d61cdb8b6bc409  libunicode-table.h
@@ -33,7 +34,10 @@ ff8d8fefbf123574205085d6714c36149eb946d717a0c585c27f0f4ef58c4183  https://www.un
 24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08  https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
 71fd6a206a2c0cdd41feb6b7f656aa31091db45e9cedc926985d718397f9e488  https://www.unicode.org/Public/17.0.0/ucd/DerivedNormalizationProps.txt
 130dcddcaadaf071008bdfce1e7743e04fdfbc910886f017d9f9ac931d8c64dd  https://www.unicode.org/Public/17.0.0/ucd/PropList.txt
+64e9a5f76f7a1e8b5a47d6a1f9a26522a251208f5276bdfa1559dac7cf2e827a  https://www.unicode.org/Public/17.0.0/ucd/PropertyValueAliases.txt
+ec2107e58825a1586acee8e0911ce18260394ac8b87e535ca325f1ccbeb06bc6  https://www.unicode.org/Public/17.0.0/ucd/ScriptExtensions.txt
+9f5e50d3abaee7d6ce09480f325c706f485ae3240912527e651954d2d6b035bf  https://www.unicode.org/Public/17.0.0/ucd/Scripts.txt
 efc25faf19de21b92c1194c111c932e03d2a5eaf18194e33f1156e96de4c9588  https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt
 2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c  https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt
 2cb2bb9455cda83e8481541ecf5b6dfda66a3bb89efa3fa7c5297eccf607b72b  https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt
-0cdc898b6dfd71e6f31fba49061b4e25f7a300d0c8b8bfb26407a0e5d57c35af  repack-unicode.pl
+8a15209795e173f66dd205b5a17d9303d0466b288fd49268fa7fee3674417460  repack-unicode.pl

@@ -38,6 +38,9 @@ my %ucd_pins = (
     'emoji-data.txt' => '2cb2bb9455cda83e8481541ecf5b6dfda66a3bb89efa3fa7c5297eccf607b72b',
     'DerivedBinaryProperties.txt' => '13dd09d35a9377e33eb388a01e6581d4bfec6b2685316078c341982fa444071a',
     'DerivedNormalizationProps.txt' => '71fd6a206a2c0cdd41feb6b7f656aa31091db45e9cedc926985d718397f9e488',
+    'Scripts.txt' => '9f5e50d3abaee7d6ce09480f325c706f485ae3240912527e651954d2d6b035bf',
+    'ScriptExtensions.txt' => 'ec2107e58825a1586acee8e0911ce18260394ac8b87e535ca325f1ccbeb06bc6',
+    'PropertyValueAliases.txt' => '64e9a5f76f7a1e8b5a47d6a1f9a26522a251208f5276bdfa1559dac7cf2e827a',
 );
 my %ucd_paths = (
     'emoji-data.txt' => 'emoji/emoji-data.txt',
@@ -84,19 +87,44 @@ for my $category (0, 1) {
     for my $aliases (names($category ? 'unicode_gc_name_table' : 'unicode_prop_name_table')) {
         my ($name) = split /,/, $aliases;
         next unless $category || delete $binary_allowed{$name};
-        push @properties, { name => $name, aliases => $aliases, category => $category, ranges => [] };
+        push @properties, { name => $name, aliases => $aliases,
+            kind => $category ? 'Category' : 'Binary', ranges => [] };
     }
 }
 die "missing ECMAScript binary properties\n" if keys %binary_allowed;
 die "property inventory changed\n" unless @properties == 91;
+# Check every exact script alias against PropertyValueAliases, independently
+# of the QuickJS name pool. Both long names and deprecated aliases are valid.
+my %script_aliases;
+for (split /\n/, read_file("$ucd/PropertyValueAliases.txt")) {
+    s/#.*//;
+    next unless /^sc\s*;/;
+    my @fields = split /\s*;\s*/;
+    shift @fields;
+    s/^\s+|\s+$//g for @fields;
+    $script_aliases{$fields[1]} = join(',', sort @fields);
+}
+for my $kind ('Script', 'ScriptExtensions') {
+    my %remaining = %script_aliases;
+    for my $aliases (names('unicode_script_name_table')) {
+        my ($name) = split /,/, $aliases;
+        die "script aliases differ from Unicode 17: $name\n"
+            unless (delete $remaining{$name} // '') eq join(',', sort split /,/, $aliases);
+        push @properties, { name => $name, aliases => $aliases, kind => $kind, ranges => [] };
+    }
+    die "missing Unicode 17 scripts\n" if keys %remaining;
+}
 die "output exists\n" if -e $out;
 make_path($out);
 my $property_calls = '';
 for my $i (0 .. $#properties) {
     my $p = $properties[$i];
-    my $function = $p->{category} ? 'unicode_general_category' : 'unicode_prop';
+    my $function = $p->{kind} eq 'Category' ? 'unicode_general_category' :
+        $p->{kind} eq 'Binary' ? 'unicode_prop' : 'unicode_script';
+    my $ext = $p->{kind} eq 'ScriptExtensions' ? ', 1' :
+        $p->{kind} eq 'Script' ? ', 0' : '';
     $property_calls .= "    { CharRange cr; cr_init(&cr, NULL, resize);\n" .
-        "      if ($function(&cr, \"$p->{name}\")) return 1;\n" .
+        "      if ($function(&cr, \"$p->{name}\"$ext)) return 1;\n" .
         "      for (int j = 0; j < cr.len; j += 2) {\n" .
         "        if (cr.points[j] > 0x10ffff) break;\n" .
         "        unsigned end = cr.points[j + 1] - 1;\n" .
@@ -237,13 +265,47 @@ $expected_bits{C} |= $expected_bits{Cn};
 $expected_bits{LC} = $expected_bits{Lu} | $expected_bits{Ll} | $expected_bits{Lt};
 $expected_bits{Any} = ~$empty_bits;
 set_range('ASCII', 0, 0x7f);
+# Script defaults to Unknown. Script_Extensions defaults to Script, but each
+# explicit row replaces that default (including Common and Inherited).
+my %script_bits = map { $_ => $empty_bits } keys %script_aliases;
+my $assigned_scripts = $empty_bits;
+for (split /\n/, read_file("$ucd/Scripts.txt")) {
+    if (/^([0-9A-F]+)(?:\.\.([0-9A-F]+))?\s*;\s*([A-Za-z_]+)\s*#/) {
+        my ($a, $b, $name) = (hex($1), hex($2 // $1), $3);
+        die "unknown UCD script $name\n" unless exists $script_bits{$name};
+        for my $cp ($a .. $b) {
+            vec($script_bits{$name}, $cp, 1) = 1;
+            vec($assigned_scripts, $cp, 1) = 1;
+        }
+    }
+}
+$script_bits{Unknown} = ~$assigned_scripts;
+my %scx_bits = %script_bits;
+my %long_name;
+for my $name (keys %script_aliases) {
+    $long_name{$_} = $name for split /,/, $script_aliases{$name};
+}
+for (split /\n/, read_file("$ucd/ScriptExtensions.txt")) {
+    if (/^([0-9A-F]+)(?:\.\.([0-9A-F]+))?\s*;\s*([A-Za-z_ ]+?)\s*#/) {
+        my ($a, $b, $names) = (hex($1), hex($2 // $1), $3);
+        for my $name (keys %scx_bits) {
+            vec($scx_bits{$name}, $_, 1) = 0 for $a .. $b;
+        }
+        for my $alias (split ' ', $names) {
+            my $name = $long_name{$alias} // die "unknown scx alias $alias\n";
+            vec($scx_bits{$name}, $_, 1) = 1 for $a .. $b;
+        }
+    }
+}
 for my $p (@properties) {
     my $bits = $empty_bits;
     for my $range (@{$p->{ranges}}) { vec($bits, $_, 1) = 1 for $range->[0] .. $range->[1]; }
-    my $expected = $expected_bits{$p->{name}} // die "no independent UCD property $p->{name}\n";
+    my $expected = ($p->{kind} eq 'Script' ? $script_bits{$p->{name}} :
+        $p->{kind} eq 'ScriptExtensions' ? $scx_bits{$p->{name}} : $expected_bits{$p->{name}})
+        // die "no independent UCD property $p->{name}\n";
     if ($bits ne $expected) {
         for my $cp (0 .. 0x10ffff) {
-            die sprintf("$p->{name} differs from Unicode 17.0.0 at U+%X\n", $cp)
+            die sprintf("$p->{kind}=$p->{name} differs from Unicode 17.0.0 at U+%X\n", $cp)
                 if vec($bits, $cp, 1) != vec($expected, $cp, 1);
         }
     }
@@ -282,23 +344,27 @@ write_file("$out/case_fold_data.rs", $header . table('SIMPLE_FOLD', 'pub(crate) 
     table('LEGACY_UPPER', 'pub(crate) ', \@legacy));
 write_file("$out/unicode_ident.rs", $header . table('ID_START', 'pub(super) ', \@start) .
     table('ID_CONTINUE', 'pub(super) ', \@continue));
-my $property_data = $header . "use super::PropertyData;\n\npub(super) const PROPERTIES: &[PropertyData] = &[\n";
+my $property_data = $header . "use super::{PropertyData, PropertyGroup};\n\n#[rustfmt::skip]\npub(super) const PROPERTIES: &[PropertyData] = &[\n";
+my (%range_ids, @range_bits);
 for my $p (@properties) {
     $property_data .= "    PropertyData {\n        aliases: \"$p->{aliases}\",\n" .
-        '        category: ' . ($p->{category} ? 'true' : 'false') . ",\n";
+        "        group: PropertyGroup::$p->{kind},\n";
     for my $field (qw(ranges folded folded_complement)) {
-        $property_data .= "        $field: &[\n";
-        my @rows = @{bit_ranges($p->{$field eq 'ranges' ? 'bits' : $field})};
-        while (my @line = splice(@rows, 0, 4)) {
-            $property_data .= '           ' . join('', map { sprintf(" (0x%05X, 0x%05X),", @$_) } @line) . "\n";
+        my $bits = $p->{$field eq 'ranges' ? 'bits' : $field};
+        if (!exists $range_ids{$bits}) {
+            $range_ids{$bits} = scalar @range_bits;
+            push @range_bits, $bits;
         }
-        $property_data .= "        ],\n";
+        $property_data .= "        $field: RANGES_$range_ids{$bits},\n";
     }
     $property_data .= "    },\n";
 }
 $property_data .= "];\n";
-# Keep generated ranges compact and repeatable across rustfmt releases.
-$property_data =~ s/pub\(super\) const PROPERTIES/#[rustfmt::skip]\npub(super) const PROPERTIES/;
+# Intern identical range sets, especially the many empty script folding sets
+# and identical folded complements. Normal builds use only these safe ranges.
+for my $i (0 .. $#range_bits) {
+    $property_data .= "\n" . table("RANGES_$i", '', bit_ranges($range_bits[$i]));
+}
 write_file("$out/property_data.rs", $property_data);
 open my $property_binary, '>:raw', "$out/property-reference.bin" or die $!;
 print $property_binary $_->{bits} for @properties;
@@ -307,6 +373,7 @@ write_file("$out/provenance.txt", $provenance .
     "Unicode 17.0.0: complete domain folding C/S and ID properties verified.\n" .
     "Non-Unicode Canonicalize verified over all 65,536 code units against full default uppercase.\n" .
     "53 ECMA-262 binary properties and 38 General_Category values verified over the complete domain.\n" .
+    "Script/Script_Extensions sets and all PropertyValueAliases verified against Unicode 17.0.0.\n" .
     "QuickJS FB05/FB06 representative reversed to normative C/S; equivalence unchanged.\n" .
     join('', map { "$pins{$_}  $_\n" } sort keys %pins) .
     join('', map { my $path = $ucd_paths{$_} // $_;
@@ -357,8 +424,8 @@ R
 my $property_runtime = abs_path('src/regexp/property.rs');
 my $property_verifier = "#[path = \"$runtime\"] mod case_fold;\n" .
     "#[path = \"$property_runtime\"] mod property;\n" .
-    "const ALIASES: &[(&str, bool)] = &[\n" .
-    join('', map { '    ("' . $_->{aliases} . '", ' . ($_->{category} ? 'true' : 'false') . "),\n" } @properties) .
+    "const ALIASES: &[(&str, &str)] = &[\n" .
+    join('', map { '    ("' . $_->{aliases} . '", "' . $_->{kind} . "\"),\n" } @properties) .
     "];\n";
 write_file("$out/verify-properties.rs", $property_verifier . <<'R');
 fn bit(bytes: &[u8], cp: u32) -> bool {
@@ -367,13 +434,25 @@ fn bit(bytes: &[u8], cp: u32) -> bool {
 fn main() {
     let bytes = std::fs::read(std::env::args_os().nth(1).unwrap()).unwrap();
     assert_eq!(bytes.len(), ALIASES.len() * (0x110000 / 8));
-    for ((aliases, category), bits) in ALIASES.iter().zip(bytes.chunks_exact(0x110000 / 8)) {
-        let p = property::lookup(aliases.split(',').next().unwrap()).unwrap();
+    for ((aliases, kind), bits) in ALIASES.iter().zip(bytes.chunks_exact(0x110000 / 8)) {
+        let keys: &[&str] = match *kind {
+            "Binary" => &[""],
+            "Category" => &["", "gc", "General_Category"],
+            "Script" => &["sc", "Script"],
+            "ScriptExtensions" => &["scx", "Script_Extensions"],
+            _ => unreachable!(),
+        };
+        let name = |key: &str, alias: &str| if key.is_empty() { alias.to_owned() } else { format!("{key}={alias}") };
+        let p = property::lookup(&name(keys[0], aliases.split(',').next().unwrap())).unwrap();
         for alias in aliases.split(',') {
-            assert_eq!(property::lookup(alias), Some(p));
-            assert!(matches!(property::syntax_kind(alias), Some(property::PropertyKind::CodePoint)));
-            for key in ["gc", "General_Category"] {
-                assert_eq!(property::lookup(&format!("{key}={alias}")), category.then_some(p));
+            for key in ["", "gc", "General_Category", "sc", "Script", "scx", "Script_Extensions"] {
+                let lookup = property::lookup(&name(key, alias));
+                if keys.contains(&key) {
+                    assert_eq!(lookup, Some(p));
+                    assert!(matches!(property::syntax_kind(&name(key, alias)), Some(property::PropertyKind::CodePoint)));
+                } else {
+                    assert_ne!(lookup, Some(p));
+                }
             }
         }
         let mut positive = vec![false; 0x110000];
@@ -394,7 +473,7 @@ fn main() {
             assert_eq!(p.contains(folded, true, true), negative[folded as usize], "iu !{aliases} U+{cp:X}");
         }
     }
-    println!("PASS: all 91 property sets, aliases, complements and iu images match the complete-domain reference");
+    println!("PASS: all {} property sets, aliases, complements and iu images match the complete-domain reference", ALIASES.len());
 }
 R
 print "PASS: full-domain QuickJS / Unicode 17.0.0 equality; ", scalar(@fold), " simple mappings\n";

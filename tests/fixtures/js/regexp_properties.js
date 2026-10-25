@@ -52,7 +52,6 @@ try { /(\p{L}+)+b/u.test(longInput); }
 catch(e) { exhausted = e instanceof RangeError && e.message.indexOf('step limit') >= 0; }
 check(exhausted);
 let invalidNames = ['lowercase', 'Foo', 'gc=Lowercase', 'General_Category=lu',
-                  'Script=Greek', 'sc=Grek', 'Script_Extensions=Greek', 'scx=Grek',
                   'Greek', 'Lowercase=Yes', 'Lower case', '', 'gc=', '=Lu',
                   'gc=Lu=Ll', 'Hyphen', 'InCB', 'Basic_Emoji'];
 for (let i = 0; i < invalidNames.length; i++) {

@@ -62,11 +62,9 @@ The verifier builds on stable Rust with warnings denied. C is needed only to
 regenerate/validate data, not to consume the generated Rust.
 
 `generate.sh` also emits `script_names.rs`, an exact subset of the verified
-Unicode 17 `unicode_script_name_table` byte pool for regexp literal syntax
-validation (clj-quickjs-56). `verify.sh` compares repeated output and checks the
-entire subset against the C-verified pool. Install `first/script_names.rs` as
-`src/regexp/script_names.rs` after verification; retain the source notices.
-This provides alias recognition without implementing Script matching.
+Unicode 17 `unicode_script_name_table` byte pool. `verify.sh` compares repeated
+output and checks the entire subset against the C-verified pool. RegExp syntax
+validation and matching now share aliases from the repacked property tables.
 
 ## Results
 
@@ -240,7 +238,7 @@ curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt \
   -o target/ucd-17/DerivedCoreProperties.txt
 curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt \
   -o target/ucd-17/SpecialCasing.txt
-for file in UnicodeData.txt PropList.txt DerivedNormalizationProps.txt; do
+for file in UnicodeData.txt PropList.txt DerivedNormalizationProps.txt Scripts.txt ScriptExtensions.txt PropertyValueAliases.txt; do
   curl -fsSL "https://www.unicode.org/Public/17.0.0/ucd/$file" -o "target/ucd-17/$file"
 done
 curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedBinaryProperties.txt \
@@ -274,18 +272,25 @@ Run `cargo test --test js_source regexp_case_insensitive_legacy -- --exact`
 for matching semantics; no new runtime work allowance is introduced.
 
 The same command installs `src/regexp/property_data.rs`. It contains all 53
-ECMA-262 binary properties and 38 General_Category values; exact aliases come
+ECMA-262 binary properties, 38 General_Category values, and 176 values each
+for Script and Script_Extensions; exact aliases come
 from the verified NUL-separated pools. QuickJS-only binary names are filtered
-by an explicit ECMAScript allowlist. Script/Script_Extensions and v string
-properties remain rejected, with language-level tests pinning that scope.
+by an explicit ECMAScript allowlist. Script aliases are independently checked
+against PropertyValueAliases.txt, including Qaai and Qaac. Unicode string
+properties remain deferred to clj-quickjs-305.
 Every raw set (including derived binary properties) is independently compared
 with pinned Unicode 17.0.0 UCD input. The offline decoder's intervals are
 intersected with U+0000..U+10FFFF, including lone surrogates. Compact ranges
 for extra folded targets are generated separately for members and nonmembers,
 preserving u-mode complement-before-folding semantics. Verification covers
 all aliases, positive/complement membership and both iu images across the
-entire domain, and rejects an intentionally corrupted property bit. Run the
-language tests with `cargo test --test js_source regexp_property_escapes -- --exact`.
+entire domain, and rejects intentionally corrupted binary and script bits.
+Scripts.txt defaults unlisted code points to Unknown; ScriptExtensions.txt
+overrides Script membership for explicit rows, including Common/Inherited.
+Identical raw/folded range sets share a single immutable array, keeping the
+combined source smaller than the previous binary/category-only table.
+Run language tests with `cargo test --test js_source regexp_property_ -- --test-threads=3`
+and `cargo test --test js_source regexp_script_property_escapes -- --exact --test-threads=3`.
 
 ## Collator root normalization and folding (clj-quickjs-218)
 

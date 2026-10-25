@@ -63,6 +63,13 @@ if [[ $# == 3 ]]; then
     if "$output_dir/unicode-first/verify-properties" "$output_dir/unicode-first/property-corrupt.bin" > "$output_dir/property-corruption.log" 2>&1; then
         echo 'incorrect property value escaped comparison' >&2; exit 1
     fi
+    # Mutate the first Script set too, so script-specific coverage cannot
+    # disappear behind the existing binary/category reference comparison.
+    perl -e 'local $/; open my $f, "<:raw", $ARGV[0] or die $!; my $s = <$f>; my $i = 91 * (0x110000 / 8); substr($s, $i, 1) = chr(ord(substr($s, $i, 1)) ^ 1); print $s' \
+        "$output_dir/unicode-first/property-reference.bin" > "$output_dir/unicode-first/script-corrupt.bin"
+    if "$output_dir/unicode-first/verify-properties" "$output_dir/unicode-first/script-corrupt.bin" > "$output_dir/script-corruption.log" 2>&1; then
+        echo 'incorrect script value escaped comparison' >&2; exit 1
+    fi
     # A wrong decoded value must fail the runtime differential comparison.
     perl -e 'local $/; open my $f, "<:raw", $ARGV[0] or die $!; my $s = <$f>; substr($s, 65 * 5, 4) = pack("V", 65); print $s' \
         "$output_dir/unicode-first/reference.bin" > "$output_dir/unicode-first/corrupt.bin"

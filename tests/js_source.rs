@@ -22536,13 +22536,19 @@ fn regexp_unsupported_properties_remain_runtime_errors() {
         ValueView::Bool(false)
     );
     assert_eq!(eval(r"false && /\p{RGI_Emoji}/v"), ValueView::Bool(false));
-    for source in [
-        r"try { /\p{Script=Greek}/u; false } catch(e) { e instanceof SyntaxError }",
-        r"try { /\p{Script_Extensions=Grek}/u; false } catch(e) { e instanceof SyntaxError }",
-        r"try { /\p{RGI_Emoji}/v; false } catch(e) { e instanceof SyntaxError }",
-    ] {
-        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
-    }
+    assert_eq!(
+        eval(r"try { /\p{RGI_Emoji}/v; false } catch(e) { e instanceof SyntaxError }"),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn regexp_script_property_escapes() {
+    // Synthetic fixture, not light-cljs output.
+    assert_eq!(
+        eval(include_str!("fixtures/js/regexp_scripts.js")),
+        ValueView::Bool(true)
+    );
 }
 
 #[test]
