@@ -442,8 +442,13 @@ impl VmState {
         heap: &crate::heap::Heap,
         job: crate::job::Job,
     ) -> Result<(), Box<VmError>> {
+        // Only raw functions eligible for an ordinary call can start as an
+        // entry frame. Proxies must go through Call's apply validation, and
+        // class constructors must go through enter's rejection without new.
         if let Ok(crate::vm::dispatch::Callee::Code(id, code)) =
             crate::vm::dispatch::callee(heap, &job.callable)
+            && job.callable == Value::Object(id)
+            && !code.constructor_kind.is_class()
         {
             let needed = usize::from(code.locals)
                 .saturating_add(code.max_stack)

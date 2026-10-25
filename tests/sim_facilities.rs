@@ -7,6 +7,50 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+#[test]
+fn timer_callbacks_use_ordinary_call_dispatch() {
+    let mut outcomes = Vec::new();
+    for callback in [
+        "new Proxy(() => __rt.effect(1, 42), { apply() {} })",
+        "class C { constructor() { __rt.effect(1, 42); } }",
+    ] {
+        for timer in [false, true] {
+            let call = if timer {
+                "os.setTimeout(callback, 0);"
+            } else {
+                "callback();"
+            };
+            let source = format!("let callback = {callback}; {call} 7;");
+            let rt = Runtime::new();
+            let code = compile_script("timer-call-dispatch.js", &source).unwrap();
+            let task = rt.spawn(&code, &[]).unwrap();
+            task.install_sim_host_bindings().unwrap();
+            let mut effects = Vec::new();
+            struct Effects<'a>(&'a mut Vec<Primitive>);
+            impl Host for Effects<'_> {
+                fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+                    self.0.push(call.arg);
+                    Ok(Primitive::Undefined)
+                }
+            }
+            let outcome = task
+                .run_with(Budget::UNLIMITED, &mut Effects(&mut effects))
+                .unwrap();
+            let kind = match outcome {
+                RunOutcome::Failed(error) => Some(error.kind()),
+                RunOutcome::Complete(_) => None,
+                other => panic!("{source}: unexpected {other:?}"),
+            };
+            outcomes.push((kind, effects));
+        }
+    }
+    assert_eq!(
+        outcomes,
+        vec![(Some(clj_quickjs::VmErrorKind::TypeError), vec![]); 4],
+        "ordinary calls and timer callbacks must reject before running the target"
+    );
+}
+
 /// Bounded rendezvous before collection, matching the executor tests' leaf
 /// synchronization. It never waits for a collection while holding access.
 #[derive(Default)]

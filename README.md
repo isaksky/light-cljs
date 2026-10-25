@@ -3636,6 +3636,8 @@ stop-the-world collection and notification processing before the next statement;
 `os.setTimeout(callback, delay)` and `os.clearTimeout(id)` use task-local virtual
 time. Jobs drain before each timer; equal deadlines preserve registration order.
 Callbacks use ordinary resumable VM frames and remain GC roots while pending.
+Job callbacks enforce ordinary call validation, including TypeError for class
+constructors called without `new` and unsupported Proxy `apply` traps (-283).
 The task returns its body's value after jobs and timers finish. These test/host
 namespace bindings are absent unless installed. No sleeping or wall clock is used.
 
