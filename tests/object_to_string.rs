@@ -149,6 +149,9 @@ fn user_tags_and_proxy_dispatch() {
 
 #[test]
 fn intrinsic_tag_descriptors_and_fallbacks() {
+    check(
+        "let keys = Reflect.ownKeys(Reflect), symbols = 0; for (let key of keys) {if (typeof key === 'symbol') symbols++;} keys.length === 14 && symbols === 1 && keys[13] === Symbol.toStringTag",
+    );
     for (prototype, tag) in [
         ("Math", "Math"),
         ("JSON", "JSON"),
