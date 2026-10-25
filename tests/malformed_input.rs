@@ -298,7 +298,7 @@ fn rejected_forms_fail_with_documented_kinds() {
         ("for (a.b of o) {}", STRICT, Unsupported),
         ("debugger;", STRICT, Unsupported),
         ("'use strict'; with (o) {}", SLOPPY, Invalid),
-        ("class A { static { } }", STRICT, Unsupported),
+        ("class A { static { return; } }", STRICT, Invalid),
         ("class A { m() { return this.#x; } }", STRICT, Invalid),
         ("import x from 'y';", STRICT, Unsupported),
         ("export const x = 1;", STRICT, Unsupported),
