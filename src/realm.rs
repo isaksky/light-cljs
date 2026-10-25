@@ -1137,6 +1137,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         "dispose",
         "asyncDispose",
         "unscopables",
+        "species",
     ] {
         b.add_value(
             symbol,
@@ -1287,6 +1288,43 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let next = b.function(Builtin::GeneratorNext, &[])?;
     b.add(generator_prototype, "next", next, PropertyFlags::METHOD)?;
 
+    let species_getter = b.function(Builtin::ArraySpecies, &[])?;
+    let species_key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("species"))?;
+    heap.with_object_mut(array, |o| match o {
+        HeapObject::Builtin(f) => {
+            f.properties.define_own_property(
+                species_key,
+                &PropertyDescriptor {
+                    get: Some(Value::Object(species_getter)),
+                    set: Some(Value::Undefined),
+                    enumerable: Some(false),
+                    configurable: Some(true),
+                    ..Default::default()
+                },
+            ) == DefineOutcome::Done
+        }
+        _ => false,
+    })?
+    .then_some(())?;
+    for method in [
+        Builtin::ArrayPrototypePop,
+        Builtin::ArrayPrototypeShift,
+        Builtin::ArrayPrototypeUnshift,
+        Builtin::ArrayPrototypeSplice,
+        Builtin::ArrayPrototypeReverse,
+        Builtin::ArrayPrototypeFill,
+        Builtin::ArrayPrototypeCopyWithin,
+    ] {
+        let function = b.function(method, &[])?;
+        b.add(
+            array_prototype,
+            method.name(),
+            function,
+            PropertyFlags::METHOD,
+        )?;
+    }
     let array_sort = b.function(Builtin::ArrayPrototypeSort, &[])?;
     b.add(array_prototype, "sort", array_sort, PropertyFlags::METHOD)?;
     let (intl_collator_prototype, intl_collator_bound) =

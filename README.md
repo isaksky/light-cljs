@@ -2255,8 +2255,8 @@ tests only, no code change: arrays use the generic enumerator):
   skips removed indices in dense and sparse arrays; named properties
   remain enumerable even after shrinking to zero.
 
-Deferred: shrinking with `a.pop()` (`Array.prototype.pop` is not
-implemented; clj-quickjs-264 covers the available length-assignment form).
+Shrinking with `a.pop()` during enumeration is also supported
+(clj-quickjs-296); removed indices are skipped.
 
 ### `var` heads of `for` and `for`-`in` statements (clj-quickjs-89)
 
@@ -2388,9 +2388,8 @@ reject invalid writes; another task's array fails with `ForeignObject`.
 The `Array` global exposes its constructor and prototype (clj-quickjs-153);
 `Array.prototype.push.length` is 1.
 
-Deferred: primitive receiver wrappers fail explicitly; other array methods retain their
-existing gaps. The for-in adaptation clj-quickjs-264 also needs array
-string conversion and stays deferred.
+Deferred: primitive receiver wrappers for push fail explicitly; other array
+methods retain their existing support status.
 
 ### Object operands and OrdinaryToPrimitive (clj-quickjs-70)
 
@@ -4303,3 +4302,29 @@ Checks: `cargo test --test js_source logical_assignment`,
 `cargo test --lib frontend::tests::nullish_and_logical_assignment_grammar`.
 The source fixture `tests/fixtures/js/logical_assignment.js` is synthetic,
 not light-cljs output.
+
+### Array mutators (clj-quickjs-296)
+
+Supported: `Array.prototype.pop`, `shift`, `unshift`, `splice`, `reverse`,
+`fill` and `copyWithin`, on arrays and generic array-like objects. Length is
+read once through resumable ToLength; indices and delete counts use resumable
+ToIntegerOrInfinity coercion in argument order. Holes and inherited elements,
+accessors, overlapping copies, strict writes/deletes, and partial effects before
+an exception follow the ordinary property protocol. `splice` uses
+`Symbol.species` (including custom constructors); its removed-element result
+preserves holes and defines own data properties. `Array[Symbol.species]` is a
+getter returning its receiver. Result arrays have the existing `2^32 - 1`
+length bound; generic receiver lengths use the standard `2^53 - 1` bound.
+
+Each element move, swap, fill and deletion advances through native continuation
+steps, so long operations yield under the instruction budget. Receiver,
+arguments, saved values and removed-element results remain traced across
+collection, dependency waits and worker migration. Length shrinking releases
+removed values and properties through the existing ArraySetLength path. No new
+worker-selected size limit is imposed. Primitive receivers reuse the existing
+Number/String/Symbol wrappers; Boolean/BigInt wrappers remain unsupported.
+Other Array methods retain their existing support status.
+
+Validation: `cargo test --test js_source array_mutators` and
+`cargo test --test need array_mutators`. The source fixture
+`tests/fixtures/js/array_mutators.js` is synthetic, not light-cljs output.

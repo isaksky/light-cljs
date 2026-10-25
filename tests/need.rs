@@ -2452,3 +2452,108 @@ fn array_sort_comparator_failure_and_cancellation() {
         rt.collect().unwrap();
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Every mutator callback resumes
+/// once across a dependency wait, collection at each step, and migration.
+#[test]
+fn array_mutators_wait_without_replay() {
+    for src in [
+        "let n = 0, o = {get length() { n++; __rt.effect(1,3); return __rt.need(5,3) - 5; }, 0: {x:1}, 1: {x:2}}; Array.prototype.reverse.call(o); n === 1 && o[0].x === 2 && o[1].x === 1",
+        "let n = 0, a = [1,2,3]; a.fill({x:7},{valueOf() { n++; __rt.effect(1,3); __rt.need(5,3); return 1; }}); n === 1 && a[0] === 1 && a[1].x === 7 && a[2] === a[1]",
+        "let n = 0, a = [1]; Object.defineProperty(a,0,{get() { n++; __rt.effect(1,3); return {x:__rt.need(5,3)}; }, configurable:true}); let r = a.pop(); n === 1 && r.x === 7 && a.length === 0",
+        "let n = 0, a = [{x:1}, {x:2}], saved; Object.defineProperty(a,0,{get() { return {x:3}; }, set(v) { n++; delete a[0]; __rt.effect(1,3); __rt.need(5,3); saved = v; }, configurable:true}); let r = a.shift(); n === 1 && r.x === 3 && saved.x === 2 && a.length === 1",
+        "let n = 0, o = {length: 1, 0: {x:1}, set 1(v) { n++; __rt.effect(1,3); __rt.need(5,3); this.saved = v; }}; Array.prototype.unshift.call(o,{x:2}) === 2 && n === 1 && o.saved.x === 1 && o[0].x === 2",
+        "let n = 0, a = [{x:1},{x:2}], saved; Object.defineProperty(a,0,{get() { return {x:3}; }, set(v) { n++; delete a[0]; delete a[1]; __rt.effect(1,3); __rt.need(5,3); saved = v; }, configurable:true}); a.reverse(); n === 1 && saved.x === 2 && a[1].x === 3",
+        "let n = 0, a = [1,2,3]; Object.defineProperty(a,0,{get() { n++; __rt.effect(1,3); return {x:__rt.need(5,3)}; }, configurable:true}); a.copyWithin(1,0,1); n === 1 && a[1].x === 7",
+        "let n = 0, o = {0: {x:1}, get length() { return 1; }, set length(v) { n++; __rt.effect(1,3); __rt.need(5,3); }}; let r = Array.prototype.pop.call(o); n === 1 && r.x === 1 && !(0 in o)",
+        "let n = 0, a = [{x:1},{x:2},{x:3}]; Object.defineProperty(a,2,{get() { n++; __rt.effect(1,3); return {x:__rt.need(5,3)}; }, configurable:true}); let r = a.splice(0,3); n === 1 && r[0].x === 1 && r[1].x === 2 && r[2].x === 7 && a.length === 0",
+        "let n = 0, a = [1,2]; a.constructor = {get [Symbol.species]() { n++; __rt.effect(1,3); __rt.need(5,3); return Array; }}; let r = a.splice(0,1); n === 1 && r[0] === 1 && a[0] === 2",
+        "let n = 0, a = [{x:1},{x:2}]; a.constructor = {[Symbol.species]: function(length) { n++; __rt.effect(1,3); __rt.need(5,3); this.n = length; }}; let r = a.splice(0,1); n === 1 && r.n === 1 && r[0].x === 1 && r.length === 1 && a[0].x === 2",
+    ] {
+        let rt = Runtime::new();
+        let code = compile_script("array-mutator-wait", src).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let mut host = Recorder::default();
+        let expected = key(&rt, NUMBER);
+        let mut waiting_now = false;
+        for _ in 0..4000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected, "{src}");
+                    waiting_now = true;
+                    break;
+                }
+            }
+        }
+        assert!(waiting_now, "did not wait: {src}");
+        assert_eq!(host.effects, [3.0]);
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+        let worker_rt = rt.clone();
+        let (value, host) = thread::spawn(move || {
+            for _ in 0..4000 {
+                match resumed
+                    .run_with(Budget::instructions(1), &mut host)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        worker_rt.collect().unwrap();
+                    }
+                    RunOutcome::Complete(value) => return (value, host),
+                    other => panic!("unexpected resumed mutator: {other:?}"),
+                }
+            }
+            panic!("mutator did not complete");
+        })
+        .join()
+        .unwrap();
+        assert_eq!(value.view(), ValueView::Bool(true), "{src}");
+        assert_eq!(host.effects, [3.0], "no replay: {src}");
+        assert_eq!(task.dependency_log().edges(), &[expected]);
+    }
+}
+
+#[test]
+fn array_mutators_failure_and_cancellation() {
+    let src = "let a = [1,2], caught = false; let index = {valueOf() { try { __rt.need(5,3); } finally { __rt.effect(2,9); } return 0; }}; try { a.fill(7,index); } catch(e) { caught = true; } caught && a.join() === '1,2'";
+    let code = compile_script("mutator-failure", src).unwrap();
+    for cancel in [false, true] {
+        let rt = Runtime::new();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let mut host = Recorder::default();
+        let expected = key(&rt, NUMBER);
+        assert_eq!(waiting(run(&task, &mut host)), expected);
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        if cancel {
+            let Cancel::Runnable(cancelled) = task.cancel() else {
+                panic!("runnable cancellation");
+            };
+            assert!(matches!(run(&cancelled, &mut host), RunOutcome::Cancelled));
+            assert!(
+                publish_number(&rt, &request, 7.0)
+                    .into_runnable()
+                    .is_empty()
+            );
+        } else {
+            let error = rt.root(Primitive::Number(42.0));
+            let wakeups = rt
+                .complete(
+                    request.key(),
+                    request.producer(),
+                    Completion::Failed(&error),
+                )
+                .unwrap();
+            let RunOutcome::Complete(value) = run(&only_runnable(wakeups), &mut host) else {
+                panic!("mutator did not catch failure");
+            };
+            assert_eq!(value.view(), ValueView::Bool(true));
+        }
+        assert_eq!(host.reports, [9.0]);
+        rt.collect().unwrap();
+    }
+}

@@ -454,6 +454,14 @@ pub(crate) enum Builtin {
     /// Private entry called only by the internal async dispose activation.
     AsyncDisposableStackDisposeBody,
     Proxy,
+    ArrayPrototypePop,
+    ArrayPrototypeShift,
+    ArrayPrototypeUnshift,
+    ArrayPrototypeSplice,
+    ArrayPrototypeReverse,
+    ArrayPrototypeFill,
+    ArrayPrototypeCopyWithin,
+    ArraySpecies,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -499,6 +507,14 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::ArraySpecies => "get [Symbol.species]",
+            Builtin::ArrayPrototypePop => "pop",
+            Builtin::ArrayPrototypeShift => "shift",
+            Builtin::ArrayPrototypeUnshift => "unshift",
+            Builtin::ArrayPrototypeSplice => "splice",
+            Builtin::ArrayPrototypeReverse => "reverse",
+            Builtin::ArrayPrototypeFill => "fill",
+            Builtin::ArrayPrototypeCopyWithin => "copyWithin",
             Builtin::Proxy => "Proxy",
             Builtin::MathSumPrecise => "sumPrecise",
             Builtin::NumberPrototypeToExponential => "toExponential",
@@ -748,6 +764,12 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Builtin::ArraySpecies => 0,
+            Builtin::ArrayPrototypePop
+            | Builtin::ArrayPrototypeShift
+            | Builtin::ArrayPrototypeReverse => 0,
+            Builtin::ArrayPrototypeUnshift | Builtin::ArrayPrototypeFill => 1,
+            Builtin::ArrayPrototypeSplice | Builtin::ArrayPrototypeCopyWithin => 2,
             Builtin::Proxy => 2,
             Builtin::ArrayFrom | Builtin::MathSumPrecise => 1,
             Builtin::ArrayPrototypeSort => 1,
@@ -987,9 +1009,19 @@ pub(crate) fn call(
 ) -> Result<Value, Fault> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     match which {
+        Builtin::ArraySpecies => Ok(this.clone()),
         Builtin::SimGc | Builtin::SimSetTimeout | Builtin::SimClearTimeout => Err(Fault::Internal(
             "simulated host binding requires task state",
         )),
+        Builtin::ArrayPrototypePop
+        | Builtin::ArrayPrototypeShift
+        | Builtin::ArrayPrototypeUnshift
+        | Builtin::ArrayPrototypeSplice
+        | Builtin::ArrayPrototypeReverse
+        | Builtin::ArrayPrototypeFill
+        | Builtin::ArrayPrototypeCopyWithin => {
+            Err(Fault::Internal("array mutator requires a resumable frame"))
+        }
         Builtin::ArrayPrototypeSort => Err(Fault::Internal("sort requires a resumable frame")),
         Builtin::ArrayFrom => Err(Fault::Internal("Array.from requires a resumable frame")),
         Builtin::MathSumPrecise => Err(Fault::Internal("sumPrecise requires a resumable frame")),
@@ -2142,7 +2174,7 @@ fn map_operation(
 /// Array.prototype is an immutable empty-array intrinsic whose property
 /// storage remains ordinary. Its realm identity carries the array brand;
 /// prototype inheritance alone never makes an ordinary object an array.
-fn is_array(heap: &Heap, value: &Value) -> Result<bool, Fault> {
+pub(crate) fn is_array(heap: &Heap, value: &Value) -> Result<bool, Fault> {
     let Value::Object(id) = value else {
         return Ok(false);
     };

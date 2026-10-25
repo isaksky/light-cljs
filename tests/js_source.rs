@@ -10005,8 +10005,14 @@ fn for_in_over_arrays() {
     // enumerator re-checks each key as an own enumerable property. Growing
     // the array adds no keys (the indices are snapshotted when the loop
     // starts); an element deleted and put back before it is reached is
-    // visited. Array.prototype.pop is not implemented; its shrink row
-    // remains in clj-quickjs-264.
+    // visited. Pop also shrinks during enumeration (clj-quickjs-296).
+    assert_eq!(
+        keys(
+            r#"const a = [0, 1, 2, 3];
+               for (const k in a) { if (k === "0") { a.pop(); a.pop(); } s = s + k + ","; }"#
+        ),
+        "0,1,"
+    );
     assert_eq!(
         keys(
             r#"const a = [0, 1, 2, 3, 4];
@@ -28407,5 +28413,203 @@ fn proxy_bind_and_coercion_wait_gc_and_migrate() {
         }
         assert!(complete, "{source}");
         assert_eq!(waits, expected_waits, "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-296).
+#[test]
+fn array_mutators() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/array_mutators.js")),
+        ValueView::Bool(true)
+    );
+    for src in [
+        "let a = [1,2,3]; a.pop() === 3 && a.shift() === 1 && a.unshift(7,8) === 3 && a.join() === '7,8,2'",
+        "let a = []; a.pop() === undefined && a.shift() === undefined && a.unshift() === 0",
+        "let a = [1,2,3,4]; let b = a.splice(1,2,7,8,9); b.join() === '2,3' && a.join() === '1,7,8,9,4'",
+        "let a = [1,2,3,4]; let b = a.splice(-3,2); b.join() === '2,3' && a.join() === '1,4'",
+        "let a = [1,2,3]; a.splice().length === 0 && a.length === 3 && a.splice(1).join() === '2,3' && a.join() === '1'",
+        "let a = [1,2,3]; a.splice(1,undefined,4).length === 0 && a.join() === '1,4,2,3'",
+        "let a = [1,2,3]; a.reverse() === a && a.join() === '3,2,1' && a.fill(7,-2,-1) === a && a.join() === '3,7,1'",
+        "let a = [1,2,3,4,5]; a.copyWithin(1,0,4) === a && a.join() === '1,1,2,3,4'",
+        "let a = [1,2,3,4,5]; a.copyWithin(0,2).join() === '3,4,5,4,5'",
+        "let a = [1,2,3]; a.copyWithin(-2,-3,-1).join() === '1,1,2'",
+        "let a = [1,,3,]; let b = a.splice(0,2); b.length === 2 && b[0] === 1 && !(1 in b) && a.join() === '3'",
+        "let a = [,2,,4]; a.reverse(); a[0] === 4 && !(1 in a) && a[2] === 2 && !(3 in a)",
+        "let a = [,2]; a.shift() === undefined && a[0] === 2 && a.length === 1 && !(1 in a)",
+        "let a = [,2]; a.unshift(1); a[0] === 1 && !(1 in a) && a[2] === 2",
+        "let a = [1,,3,4]; a.copyWithin(2,0,2); a[2] === 1 && !(3 in a)",
+        "let a = [,,,]; a.fill(undefined); (0 in a) && (1 in a) && (2 in a)",
+        "let o = {length: '3.9', 0: 'a', 2: 'c'}; let p = Array.prototype; p.shift.call(o) === 'a' && !(0 in o) && o[1] === 'c' && !(2 in o) && o.length === 2",
+        "let o = {length: 2, 1: 8}; Array.prototype.unshift.call(o,7) === 3 && o[0] === 7 && !(1 in o) && o[2] === 8",
+        "let o = {length: 3, 0: 1, 2: 3}; let b = Array.prototype.splice.call(o,1,1,7,8); b.length === 1 && !(0 in b) && o[1] === 7 && o[2] === 8 && o[3] === 3 && o.length === 4",
+        "let o = {length: '2.9', 0: 1, 1: 2}; Array.prototype.reverse.call(o) === o && o[0] === 2 && o[1] === 1",
+        "let o = {length: 3}; Array.prototype.fill.call(o,7,-Infinity,Infinity) === o && o[0] === 7 && o[2] === 7 && o.length === 3",
+        "let o = {length: 3, 0: 1, 1: 2}; Array.prototype.copyWithin.call(o,1,0,2) === o && o[1] === 1 && o[2] === 2",
+        "let o = {length: -2}; Array.prototype.pop.call(o) === undefined && o.length === 0",
+        "let o = {length: Infinity, 9007199254740990: 7}; Array.prototype.pop.call(o) === 7 && o.length === 9007199254740990 && !(9007199254740990 in o)",
+        "let a = [1,2,3]; a.fill(7,NaN,1.9).join() === '7,2,3' && a.copyWithin(Infinity,0) === a && a.splice(-Infinity,Infinity).join() === '7,2,3'",
+        "let a = [1,2]; Object.setPrototypeOf(a,{0: 8, 2: 9}); Array.prototype.unshift.call(a,7); a[0] === 7 && a[1] === 1 && a[2] === 2",
+        "let o = Object.create({0: 8}); o.length = 2; Array.prototype.reverse.call(o); o[1] === 8 && Object.getOwnPropertyDescriptor(o,0) === undefined",
+        "let n = 0, o = {get length() { n++; return {valueOf() { n++; return 2; }}; }, 0: 1, 1: 2}; Array.prototype.reverse.call(o); n === 2 && o[0] === 2 && o[1] === 1",
+        "let log = '', a = [1,2,3]; let x = {valueOf() { log += 's'; return -2; }}, y = {valueOf() { log += 'e'; return 3; }}; a.fill(7,x,y); log === 'se' && a.join() === '1,7,7'",
+        "let log = '', o = {length: 2, get 0() { log += 'a'; return 1; }, set 0(x) { log += 'c' + x; }, get 1() { log += 'b'; return 2; }, set 1(x) { log += 'd' + x; }}; Array.prototype.reverse.call(o); log === 'abc2d1'",
+        "let a = [1,2,3]; a.splice(0,3); a.length = 3; !(0 in a) && !(1 in a) && !(2 in a)",
+        "let a = []; a[5000] = {}; a.pop(); a.length = 5001; !(5000 in a)",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for (name, length) in [
+        ("pop", 0),
+        ("shift", 0),
+        ("unshift", 1),
+        ("splice", 2),
+        ("reverse", 0),
+        ("fill", 1),
+        ("copyWithin", 2),
+    ] {
+        assert_eq!(
+            eval(&format!(
+                "let f = Array.prototype['{name}'], d = Object.getOwnPropertyDescriptor(Array.prototype,'{name}'); f.name === '{name}' && f.length === {length} && d.writable && d.configurable && !d.enumerable"
+            )),
+            ValueView::Bool(true)
+        );
+    }
+}
+
+#[test]
+fn array_mutators_errors() {
+    for src in [
+        "Array.prototype.pop.call(null)",
+        "Array.prototype.shift.call(undefined)",
+        "Object.freeze([1]).pop()",
+        "Object.freeze([]).shift()",
+        "Object.freeze([]).unshift()",
+        "Object.freeze([1,2]).reverse()",
+        "Object.freeze([1]).fill(2)",
+        "Object.freeze([1,2]).copyWithin(1,0)",
+        "Object.freeze([1]).splice()",
+        "let a = [1,2]; Object.defineProperty(a,1,{configurable:false}); a.pop()",
+        "let a = [1,2]; Object.defineProperty(a,1,{configurable:false}); a.shift()",
+        "Array.prototype.unshift.call({length:9007199254740991},1)",
+        "Array.prototype.splice.call({length:9007199254740991},0,0,1)",
+        "Array.prototype.fill.call('abc',1)",
+        "Array.prototype.pop.call('abc')",
+        "[1].fill(0,Symbol())",
+        "[1].splice(0,1n)",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+    assert_eq!(
+        eval(
+            "let a = [1,2]; Object.defineProperty(a,'length',{writable:false}); let caught = false; try { a.pop(); } catch(e) { caught = e instanceof TypeError; } caught && a.length === 2 && !(1 in a)"
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn array_mutators_species_and_observable_order() {
+    for src in [
+        "Array[Symbol.species] === Array && typeof Symbol.species === 'symbol' && Object.getOwnPropertyDescriptor(Array,Symbol.species).get.length === 0",
+        "let a = [1,2,3], n; function C(x) { n = x; this.tag = 7; } a.constructor = {[Symbol.species]: C}; let b = a.splice(1,1,8); b instanceof C && b.tag === 7 && n === 1 && b[0] === 2 && b.length === 1 && a.join() === '1,8,3'",
+        "let a = [1]; a.constructor = {[Symbol.species]: null}; let b = a.splice(0,1); Array.isArray(b) && b[0] === 1",
+        "let a = [1]; a.constructor = undefined; a.splice(0,1)[0] === 1",
+        "let log = '', a = [1,2]; Object.defineProperty(a,0,{get() { log += 'g'; return 1; }, set(v) {}, configurable:true}); Object.defineProperty(a,'constructor',{get() { log += 'c'; return {get [Symbol.species]() { log += 's'; return function(n) { log += 'n' + n; }; }}; }}); let b = a.splice({valueOf() { log += 'a'; return 0; }},{valueOf() { log += 'd'; return 1; }}); log === 'adcsn1g' && b[0] === 1",
+        "let a = [1,2,3]; let b = a.splice({valueOf() { a.length = 1; return 0; }},2); b.length === 2 && b[0] === 1 && !(1 in b) && a.length === 1 && !(0 in a)",
+        "let log = '', o = {length: 3, get 0() { log += 'a'; return 1; }, set 0(v) { log += 'd'; }, get 1() { log += 'b'; return 2; }, set 1(v) { log += 'e'; }, get 2() { log += 'c'; return 3; }, set 2(v) { log += 'f'; }}; Array.prototype.copyWithin.call(o,1,0,2); log === 'bfae'",
+        "let o = {length: 2, 1: 7}; Object.defineProperty(o,0,{value:1,writable:false}); let caught = false; try { Array.prototype.reverse.call(o); } catch(e) { caught = e instanceof TypeError; } caught && o[0] === 1 && o[1] === 7",
+        "let o = {length: 3, 0: 1}; Object.defineProperty(o,2,{value:3,configurable:false}); let caught = false; try { Array.prototype.splice.call(o,0,2); } catch(e) { caught = e instanceof TypeError; } caught && o.length === 3 && o[0] === 3 && o[2] === 3",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in [
+        "let a = [1]; a.constructor = 1; a.splice()",
+        "let a = [1]; a.constructor = {[Symbol.species]: {}}; a.splice()",
+        "let a = [1]; a.constructor = {[Symbol.species]: () => {}}; a.splice()",
+        "let a = [1]; a.constructor = {[Symbol.species]: function() { return Object.freeze({}); }}; a.splice(0,1)",
+    ] {
+        assert_eq!(failure(src).kind(), VmErrorKind::TypeError, "{src}");
+    }
+}
+
+/// Every long mutator yields after setup, even with no JavaScript callbacks.
+/// Collecting on each slice also exercises saved values and the splice result.
+#[test]
+fn array_mutators_yield_and_collect() {
+    struct Marker(bool);
+    impl Host for Marker {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(call.arg)
+        }
+    }
+    for (operation, check) in [
+        (
+            "a.shift()",
+            "a.length === 199 && a[0].x === 1 && a[198].x === 199",
+        ),
+        (
+            "a.unshift({x:-1})",
+            "a.length === 201 && a[0].x === -1 && a[200].x === 199",
+        ),
+        (
+            "a.splice(1,100,{x:-1})",
+            "a.length === 101 && a[1].x === -1 && a[2].x === 101 && r[99].x === 100",
+        ),
+        ("a.reverse()", "a[0].x === 199 && a[199].x === 0"),
+        ("a.fill({x:7})", "a[0].x === 7 && a[199] === a[0]"),
+        ("a.copyWithin(1,0,199)", "a[1].x === 0 && a[199].x === 198"),
+    ] {
+        let source = format!(
+            "let a = []; for (let i=0;i<200;i++) a.push({{x:i}}); __rt.effect(1,0); let r = {operation}; {check}"
+        );
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut host = Marker(false);
+        let mut yields = 0;
+        let mut completed = false;
+        for _ in 0..2000 {
+            match task.run_with(Budget::instructions(50), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    yields += usize::from(host.0);
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{operation}");
+                    completed = true;
+                    break;
+                }
+                other => panic!("{operation}: {other:?}"),
+            }
+        }
+        assert!(
+            completed && yields >= 4,
+            "{operation}: completed={completed}, yields={yields}"
+        );
+    }
+}
+
+#[test]
+fn array_mutators_release_removed_elements() {
+    fn retained(source: &str) -> usize {
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(source), &[]).unwrap();
+        let RunOutcome::Complete(value) = task.run().unwrap() else {
+            panic!("{source}");
+        };
+        rt.collect().unwrap();
+        let objects = rt.heap_stats().objects;
+        drop(value);
+        objects
+    }
+    let empty = retained("[]");
+    for source in [
+        "let a = [{},{}]; a.pop(); a.shift(); a",
+        "let a = [{},{}]; a.splice(0,2); a",
+        "let a = []; a[5000] = {}; a.pop(); a.length = 0; a",
+    ] {
+        assert_eq!(retained(source), empty, "{source}");
     }
 }

@@ -221,6 +221,7 @@ pub(crate) mod iterator;
 pub(crate) mod regexp;
 
 mod array_from;
+mod array_mutate;
 mod array_sort;
 mod collator;
 mod date_time_format;
@@ -322,6 +323,12 @@ pub(crate) enum Action {
     Call {
         callee: Value,
         this: Value,
+        args: Vec<Value>,
+    },
+    /// Construct through the ordinary bytecode path and deliver its result
+    /// back to this native, retaining the native across constructor waits.
+    Construct {
+        callee: Value,
         args: Vec<Value>,
     },
     /// Run the original instruction with its converted operands. This is
@@ -629,6 +636,7 @@ enum NativeState {
     Segmenter(Box<segmenter::State>),
     DisplayNames(Box<display_names::State>),
     DurationFormat(Box<duration_format::State>),
+    ArrayMutate(Box<array_mutate::State>),
 }
 
 #[derive(Debug)]
@@ -870,6 +878,7 @@ impl Trace for NativeFrame {
             NativeState::ArrayFrom(from) => from.trace(visit),
             NativeState::MathSumPrecise(sum) => sum.trace(visit),
             NativeState::ArraySort(sort) => sort.trace(visit),
+            NativeState::ArrayMutate(array) => array.trace(visit),
             NativeState::Iterator(iterator) => iterator.trace(visit),
             NativeState::Dispose(dispose) => dispose.trace(visit),
             NativeState::Disposal(disposal) => disposal.trace(visit),
@@ -1883,6 +1892,15 @@ fn start_builtin_slow(
                 iterator::State::map_for_each(heap, state.diag.task, this.clone(), arg(0), arg(1))?,
             ))),
 
+            Builtin::ArrayPrototypePop
+            | Builtin::ArrayPrototypeShift
+            | Builtin::ArrayPrototypeUnshift
+            | Builtin::ArrayPrototypeSplice
+            | Builtin::ArrayPrototypeReverse
+            | Builtin::ArrayPrototypeFill
+            | Builtin::ArrayPrototypeCopyWithin => Some(NativeState::ArrayMutate(Box::new(
+                array_mutate::State::new(which, this.clone(), args),
+            ))),
             Builtin::ArrayPrototypeSort => Some(NativeState::ArraySort(Box::new(
                 array_sort::State::new(this.clone(), args),
             ))),
@@ -2636,6 +2654,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::SimTimer { .. }
             | Action::SetProperty { .. }
             | Action::Call { .. }
+            | Action::Construct { .. }
             | Action::ToNumber(_)
             | Action::ToPrimitiveNumber(_)
             | Action::DefaultLocale
@@ -2902,6 +2921,14 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
             call.args.into_iter().for_each(|a| state.push(a));
             state.enter(code, id, call.this, argc)?;
             Ok(Flow::FrameChanged)
+        }
+        Action::Construct { callee, args } => {
+            let argc = u16::try_from(args.len())
+                .map_err(|_| Fault::StackOverflow("native constructor arguments".into()))?;
+            set_awaiting(state, Awaiting::CallResult)?;
+            state.push(callee);
+            args.into_iter().for_each(|value| state.push(value));
+            Ok(Flow::Resume(Instr::Construct(argc)))
         }
         Action::Continue => Ok(Flow::Next),
         Action::Need { dependency, kind } => {
@@ -3289,6 +3316,7 @@ impl NativeState {
             NativeState::ArrayFrom(from) => from.step(heap, task, input),
             NativeState::MathSumPrecise(sum) => sum.step(heap, task, input),
             NativeState::ArraySort(sort) => sort.step(heap, task, input),
+            NativeState::ArrayMutate(array) => array.step(heap, task, input),
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::Promise(_) => unreachable!("promise dispatched before other native arms"),
             NativeState::NumberFormat(format) => format.step(heap, task, input),
@@ -4545,6 +4573,7 @@ impl NativeState {
                 | NativeState::ArrayFrom(_)
                 | NativeState::MathSumPrecise(_)
                 | NativeState::ArraySort(_)
+                | NativeState::ArrayMutate(_)
                 | NativeState::Iterator(_)
                 | NativeState::Dispose(_)
                 | NativeState::Disposal(_)

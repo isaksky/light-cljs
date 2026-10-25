@@ -8835,3 +8835,22 @@ truncated branch operands, loop back-edge and handler-entry stack mismatches,
 oversized call/dup operands, empty capture/local/constant tables, and a
 run-time handler mismatch (`PopCatch`, `PopFinally`, `EndFinally` without a
 handler) that fails the task with `Internal` rather than panicking.
+
+### Budgeted array mutators (clj-quickjs-296)
+
+`native::array_mutate::State` implements pop, shift, unshift, splice, reverse,
+fill and copyWithin over the existing property protocol, with one element
+operation per native step. Moves visit HasProperty before Get and delete a
+missing source's destination; backward movement preserves overlapping ranges.
+Reverse saves both presence bits and values before writing either position.
+Splice copies removed values with CreateDataProperty semantics before moving
+receiver elements, and reads constructor/@@species resumably. A native
+Construct action resumes the ordinary Construct instruction while retaining its
+parent native, so species constructors use existing construction, rooting and
+exception rules. These are task-owned continuations and mutable receivers;
+publication and foreign-task checks remain in the property layer.
+
+Semantic reference only: `research/quickjs/quickjs.c` (`js_array_pop`,
+`js_array_push`, `js_array_splice`, `js_array_reverse`, `js_array_fill`,
+`js_array_copyWithin`) at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
+Implementation and fixtures are original; no upstream source text was copied.
