@@ -20,6 +20,7 @@
 pub(crate) mod bigint;
 pub(crate) mod share;
 pub(crate) mod string;
+pub(crate) mod string_unicode;
 pub(crate) mod symbol;
 
 use crate::heap::ObjectId;

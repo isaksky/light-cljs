@@ -239,6 +239,7 @@ mod number_format;
 mod plural_rules;
 mod relative_time_format;
 pub(crate) mod segmenter;
+mod string_methods;
 mod string_raw;
 mod string_replace;
 mod sum_precise;
@@ -680,6 +681,7 @@ enum NativeState {
     ArrayCallbacks(Box<array_callbacks::State>),
     ArrayCopy(Box<array_copy::State>),
     AddEntries(Box<add_entries::State>),
+    StringMethods(Box<string_methods::State>),
 }
 
 #[derive(Debug)]
@@ -1016,6 +1018,7 @@ impl Trace for NativeFrame {
             NativeState::Error(error) => error.trace(visit),
             NativeState::RegExp(re) => re.trace(visit),
             NativeState::StringReplace(replace) => replace.trace(visit),
+            NativeState::StringMethods(method) => method.trace(visit),
             NativeState::Reduce { f, vec, acc, .. } => {
                 for v in [f, vec, acc] {
                     v.trace(visit);
@@ -2363,6 +2366,12 @@ fn start_builtin_slow(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if string_methods::handles(which) && !construct {
+        let native = string_methods::State::new(which, this, args)?;
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::StringMethods(Box::new(native)))?;
+        return Ok(true);
+    }
     if which == Builtin::SimGc {
         state.truncate_operands(state.stack_len() - popped)?;
         state.push(Value::Undefined);
@@ -4137,6 +4146,7 @@ impl NativeState {
             NativeState::Error(error) => error.step(heap, task, input),
             NativeState::RegExp(_) => unreachable!("RegExp dispatched before other native arms"),
             NativeState::StringReplace(replace) => replace.step(heap, task, input),
+            NativeState::StringMethods(method) => method.step(heap, task, input),
             NativeState::Bind {
                 target,
                 args,
@@ -5309,6 +5319,7 @@ impl NativeState {
                 | NativeState::Error(_)
                 | NativeState::RegExp(_)
                 | NativeState::StringReplace(_)
+                | NativeState::StringMethods(_)
                 | NativeState::PropertyCall { .. }
                 | NativeState::DefineProperty(_)
                 | NativeState::Proxy(_)

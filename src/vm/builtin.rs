@@ -510,6 +510,21 @@ pub(crate) enum Builtin {
     Boolean,
     BooleanPrototypeToString,
     BooleanPrototypeValueOf,
+
+    StringToUpperCase,
+    StringToLowerCase,
+    StringToLocaleUpperCase,
+    StringToLocaleLowerCase,
+    StringTrim,
+    StringTrimStart,
+    StringTrimEnd,
+    StringRepeat,
+    StringStartsWith,
+    StringEndsWith,
+    StringIncludes,
+    StringAt,
+    StringLocaleCompare,
+    StringNormalize,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -768,6 +783,20 @@ impl Builtin {
             Builtin::StringPrototypeConcat => "concat",
             Builtin::StringPrototypePadStart => "padStart",
             Builtin::StringPrototypePadEnd => "padEnd",
+            Builtin::StringToUpperCase => "toUpperCase",
+            Builtin::StringToLowerCase => "toLowerCase",
+            Builtin::StringToLocaleUpperCase => "toLocaleUpperCase",
+            Builtin::StringToLocaleLowerCase => "toLocaleLowerCase",
+            Builtin::StringTrim => "trim",
+            Builtin::StringTrimStart => "trimStart",
+            Builtin::StringTrimEnd => "trimEnd",
+            Builtin::StringRepeat => "repeat",
+            Builtin::StringStartsWith => "startsWith",
+            Builtin::StringEndsWith => "endsWith",
+            Builtin::StringIncludes => "includes",
+            Builtin::StringAt => "at",
+            Builtin::StringLocaleCompare => "localeCompare",
+            Builtin::StringNormalize => "normalize",
             Builtin::GlobalIsNaN | Builtin::NumberIsNaN => "isNaN",
             Builtin::GlobalIsFinite | Builtin::NumberIsFinite => "isFinite",
             Builtin::NumberIsInteger => "isInteger",
@@ -965,6 +994,20 @@ impl Builtin {
             | Builtin::IntlLocaleMinimize => 0,
             Builtin::RegExp => 2,
             Builtin::StringPrototypeReplace | Builtin::StringPrototypeReplaceAll => 2,
+            Builtin::StringToUpperCase
+            | Builtin::StringToLowerCase
+            | Builtin::StringToLocaleUpperCase
+            | Builtin::StringToLocaleLowerCase
+            | Builtin::StringTrim
+            | Builtin::StringTrimStart
+            | Builtin::StringTrimEnd => 0,
+            Builtin::StringRepeat
+            | Builtin::StringStartsWith
+            | Builtin::StringEndsWith
+            | Builtin::StringIncludes
+            | Builtin::StringAt
+            | Builtin::StringLocaleCompare
+            | Builtin::StringNormalize => 1,
             Builtin::RegExpExec | Builtin::RegExpTest => 1,
             Builtin::RegExpToString
             | Builtin::RegExpSource
@@ -1327,6 +1370,22 @@ pub(crate) fn call(
         | Builtin::TypedArrayByteLength
         | Builtin::TypedArrayByteOffset => {
             crate::object::typed_array::inspect(heap, task, this, which)
+        }
+        Builtin::StringToUpperCase
+        | Builtin::StringToLowerCase
+        | Builtin::StringToLocaleUpperCase
+        | Builtin::StringToLocaleLowerCase
+        | Builtin::StringTrim
+        | Builtin::StringTrimStart
+        | Builtin::StringTrimEnd
+        | Builtin::StringRepeat
+        | Builtin::StringStartsWith
+        | Builtin::StringEndsWith
+        | Builtin::StringIncludes
+        | Builtin::StringAt
+        | Builtin::StringLocaleCompare
+        | Builtin::StringNormalize => {
+            Err(Fault::Internal("string method requires resumable frame"))
         }
         Builtin::RegExp
         | Builtin::StringPrototypeReplace

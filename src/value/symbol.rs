@@ -60,6 +60,7 @@ pub(crate) fn well_known(name: &str) -> JsSymbol {
     static UNSCOPABLES: OnceLock<JsSymbol> = OnceLock::new();
     static SPECIES: OnceLock<JsSymbol> = OnceLock::new();
     static IS_CONCAT_SPREADABLE: OnceLock<JsSymbol> = OnceLock::new();
+    static MATCH: OnceLock<JsSymbol> = OnceLock::new();
     let slot = match name {
         "iterator" => &ITERATOR,
         "asyncIterator" => &ASYNC_ITERATOR,
@@ -71,6 +72,7 @@ pub(crate) fn well_known(name: &str) -> JsSymbol {
         "unscopables" => &UNSCOPABLES,
         "species" => &SPECIES,
         "isConcatSpreadable" => &IS_CONCAT_SPREADABLE,
+        "match" => &MATCH,
         _ => unreachable!("unknown well-known symbol"),
     };
     slot.get_or_init(|| JsSymbol::new(Some(JsString::from(format!("Symbol.{name}").as_str()))))

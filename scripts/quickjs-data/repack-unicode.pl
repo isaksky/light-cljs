@@ -23,6 +23,7 @@ my %pins = (
     'libunicode.c' => '4393c6f495a2e98c3b83fc17cdb2174134328d795148ddc7172cb87a28408878',
     'libunicode.h' => '645fd5fc7f7268da025b717653a37b1b1dfe1d917f8f2ed270397db771cbf3da',
     'libunicode-table.h' => '7fb4fbeffc7bc3e12c837ce602cd9f5a7e9e2b06a9bba95e23d61cdb8b6bc409',
+    'cutils.c' => 'b73a403a59da30726257ddbdf5e399298941c1def997782ee0d4d33f796a80a2',
     'cutils.h' => 'd2da6d06a75b9e6c116c82b7a41df6bcc170c8b1779f374fa953ecf688eda647',
     'quickjs.h' => '09d208759171634a5b1e60aa314fd00da5d088ac28621b7ae4682ba2fb103415',
 );
@@ -139,7 +140,48 @@ my $export = <<'C';
 static void *resize(void *opaque, void *ptr, size_t size) {
     (void)opaque; return realloc(ptr, size);
 }
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc > 2) {
+        FILE *input = fopen(argv[2], "r");
+        unsigned pair[2];
+        if (!input) return 1;
+        while (fscanf(input, "%X %X", &pair[0], &pair[1]) == 2) {
+            unsigned *dst;
+            int n = unicode_normalize(&dst, pair, 2, UNICODE_NFC, NULL, resize);
+            if (n != 1) return 1;
+            printf("P %X %X %X\n", pair[0], pair[1], dst[0]);
+            free(dst);
+        }
+        fclose(input);
+        return 0;
+    }
+    if (argc > 1) {
+        for (unsigned cp = 0; cp <= 0x10ffff; cp++) {
+            unsigned buf[3];
+            for (int dir = 0; dir < 2; dir++) {
+                int n = lre_case_conv(buf, cp, dir);
+                if (n != 1 || buf[0] != cp) {
+                    printf("%c %X", dir ? 'D' : 'U', cp);
+                    for (int j = 0; j < n; j++) printf(" %X", buf[j]);
+                    puts("");
+                }
+            }
+            for (int compat = 0; compat < 2; compat++) {
+                unsigned *dst;
+                int n = unicode_normalize(&dst, &cp, 1, compat ? UNICODE_NFKD : UNICODE_NFD, NULL, resize);
+                if (n < 1) return 1;
+                if (n != 1 || dst[0] != cp) {
+                    printf("%c %X", compat ? 'K' : 'N', cp);
+                    for (int j = 0; j < n; j++) printf(" %X", dst[j]);
+                    puts("");
+                }
+                free(dst);
+            }
+            unsigned cc = unicode_get_cc(cp);
+            if (cc) printf("B %X %X\n", cp, cc);
+        }
+        return 0;
+    }
     for (unsigned cp = 0; cp <= 0xffff; cp++) {
         unsigned upper = lre_canonicalize(cp, 0);
         if (cp != upper) printf("L %X %X\n", cp, upper);
@@ -160,7 +202,7 @@ C
 write_file("$out/export.c", $export . $property_calls . "    return 0;\n}\n");
 system($ENV{CC} // 'cc', '-std=c11', '-O2',
        '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections', '-I', $source,
-       "$out/export.c", "$source/libunicode.c", '-o', "$out/export") == 0 or die "compile reference\n";
+       "$out/export.c", "$source/libunicode.c", "$source/cutils.c", '-o', "$out/export") == 0 or die "compile reference\n";
 open my $pipe, '-|', "$out/export" or die $!;
 my (@fold, @legacy, @start, @continue);
 while (<$pipe>) {
@@ -477,3 +519,154 @@ fn main() {
 }
 R
 print "PASS: full-domain QuickJS / Unicode 17.0.0 equality; ", scalar(@fold), " simple mappings\n";
+
+# String methods: independently decode the pinned normative UCD, then compare
+# every nonidentity mapping against QuickJS's offline decoder. Hangul is
+# algorithmic at runtime; keep its 11,172 syllables out of immutable tables.
+my (%lower, %canonical, %compatibility, %ccc, %excluded);
+for (split /\n/, read_file("$ucd/UnicodeData.txt")) {
+    my @f = split /;/;
+    my $cp = hex($f[0]);
+    $lower{$cp} = [hex($f[13])] if $f[13];
+    $ccc{$cp} = 0 + $f[3] if $f[3];
+    if ($f[5]) {
+        my $decomp = $f[5];
+        my $compat = $decomp =~ s/^<[^>]+> //;
+        my $parts = [map { hex } split ' ', $decomp];
+        $canonical{$cp} = $parts unless $compat;
+        $compatibility{$cp} = $parts;
+    }
+}
+for (split /\n/, read_file("$ucd/SpecialCasing.txt")) {
+    s/#.*//;
+    if (/^([0-9A-F]+);\s*([0-9A-F ]+);[^;]*;[^;]*;\s*$/) {
+        $lower{hex($1)} = [map { hex } split ' ', $2];
+    }
+}
+for (split /\n/, read_file("$ucd/DerivedNormalizationProps.txt")) {
+    if (/^([0-9A-F]+)(?:\.\.([0-9A-F]+))?\s*; Full_Composition_Exclusion\s*#/) {
+        $excluded{$_} = 1 for hex($1) .. hex($2 // $1);
+    }
+}
+sub expanded {
+    my ($cp, $table) = @_;
+    if ($cp >= 0xac00 && $cp <= 0xd7a3) {
+        my $n = $cp - 0xac00;
+        return [0x1100 + int($n / 588), 0x1161 + int($n % 588 / 28),
+            ($n % 28 ? 0x11a7 + $n % 28 : ())];
+    }
+    return [$cp] unless exists $table->{$cp};
+    my @result = map { @{expanded($_, $table)} } @{$table->{$cp}};
+    # Stable canonical ordering, also across recursive expansion boundaries.
+    for my $i (1 .. $#result) {
+        my $j = $i;
+        while ($j && ($ccc{$result[$j]} // 0) &&
+            ($ccc{$result[$j-1]} // 0) > ($ccc{$result[$j]} // 0)) {
+            @result[$j-1, $j] = @result[$j, $j-1]; --$j;
+        }
+    }
+    return \@result;
+}
+for my $map (\%upper, \%lower) {
+    for my $cp (keys %$map) {
+        delete $map->{$cp} if @{$map->{$cp}} == 1 && $map->{$cp}[0] == $cp;
+    }
+}
+my %nfd = map { $_ => expanded($_, \%canonical) } keys %canonical;
+my %nfkd = map { $_ => expanded($_, \%compatibility) } keys %compatibility;
+for my $spec ([\%upper, 3], [\%lower, 3], [\%nfd, 18], [\%nfkd, 18]) {
+    my ($map, $max) = @$spec;
+    for my $cp (keys %$map) {
+        my $units = 0; $units += $_ > 0xffff ? 2 : 1 for @{$map->{$cp}};
+        die "String expansion exceeds runtime reserve bound\n" if $units > $max * ($cp > 0xffff ? 2 : 1);
+    }
+}
+my %string_maps = (U => \%upper, D => \%lower, N => \%nfd, K => \%nfkd,
+    B => {map { $_ => [$ccc{$_}] } keys %ccc});
+my %seen;
+open my $strings, '-|', "$out/export", 'strings' or die $!;
+my $reference = '';
+while (<$strings>) {
+    $reference .= $_;
+    /^([UDNKB]) ([0-9A-F]+)((?: [0-9A-F]+)+)\n$/ or die "string reference output\n";
+    my ($kind, $cp, $values) = ($1, hex($2), $3);
+    my @values = map { hex } split ' ', $values;
+    my $expected = $kind =~ /^[NK]$/ && $cp >= 0xac00 && $cp <= 0xd7a3
+        ? expanded($cp, {}) : $string_maps{$kind}{$cp};
+    die sprintf("string %s mismatch U+%X\n", $kind, $cp)
+        unless $expected && "@values" eq "@$expected";
+    $seen{"$kind:$cp"} = 1;
+}
+close $strings or die "string reference failed\n";
+for my $kind (keys %string_maps) {
+    die "missing $kind reference\n" if grep { !$seen{"$kind:$_"} } keys %{$string_maps{$kind}};
+}
+my $string_data = "// Generated from pinned Unicode 17.0.0; do not edit.\n" .
+    "// Unicode data license: docs/UNICODE-LICENSE; see string_provenance.txt.\n";
+for my $spec (['UPPER', \%upper], ['LOWER', \%lower], ['NFD', \%nfd], ['NFKD', \%nfkd]) {
+    my ($name, $map) = @$spec;
+    $string_data .= "pub(super) static $name: &[(u32, &[u32])] = &[\n";
+    for my $cp (sort { $a <=> $b } keys %$map) {
+        $string_data .= sprintf("(0x%X,&[%s]),\n", $cp,
+            join(',', map { sprintf '0x%X', $_ } @{$map->{$cp}}));
+    }
+    $string_data .= "];\n";
+}
+$string_data .= "pub(super) static CCC: &[(u32, u8)] = &[\n" .
+    join('', map { sprintf "(0x%X,%d),\n", $_, $ccc{$_} } sort { $a <=> $b } keys %ccc) . "];\n";
+my @composition = sort { $a->[0] <=> $b->[0] || $a->[1] <=> $b->[1] }
+    map { [@{$canonical{$_}}, $_] }
+    grep { !$excluded{$_} && @{$canonical{$_}} == 2 } keys %canonical;
+$string_data .= "pub(super) static COMPOSE: &[((u32, u32), u32)] = &[\n" .
+    join('', map { sprintf "((0x%X,0x%X),0x%X),\n", @$_ } @composition) . "];\n";
+write_file("$out/string_data.rs", $string_data);
+write_file("$out/compose-input.txt", join('', map { sprintf "%X %X\n", @$_[0,1] } @composition));
+open my $pairs, '-|', "$out/export", 'compose', "$out/compose-input.txt" or die $!;
+my $i = 0;
+while (<$pairs>) {
+    /^P ([0-9A-F]+) ([0-9A-F]+) ([0-9A-F]+)\n$/ or die "compose reference\n";
+    my @row = map { hex } ($1, $2, $3);
+    die "composition differs from QuickJS\n" unless "@row" eq "@{$composition[$i++]}";
+    $reference .= $_;
+}
+close $pairs or die "compose reference failed\n";
+die "incomplete composition reference\n" unless $i == @composition;
+write_file("$out/string-reference.txt", $reference);
+write_file("$out/provenance.txt", read_file("$out/provenance.txt") .
+    "String full upper/lower, NFD/NFKD, CCC: full-domain C/UCD equality; 961 canonical composition pairs; algorithmic Hangul.\n");
+my $string_runtime = abs_path('src/value/string_unicode.rs');
+write_file("$out/verify-strings.rs", "#[path = \"$string_runtime\"] mod unicode;\n" . <<'R');
+use std::collections::BTreeMap;
+fn main() {
+    let input = std::fs::read_to_string(std::env::args_os().nth(1).unwrap()).unwrap();
+    let mut maps: [BTreeMap<u32, Vec<u32>>; 5] = std::array::from_fn(|_| BTreeMap::new());
+    let mut pairs = 0;
+    for line in input.lines() {
+        let (kind, row) = line.split_once(' ').unwrap();
+        let row: Vec<u32> = row.split(' ').map(|s| u32::from_str_radix(s, 16).unwrap()).collect();
+        if kind == "P" {
+            assert_eq!(unicode::compose(row[0], row[1]), Some(row[2])); pairs += 1;
+        } else {
+            let k = ["U", "D", "N", "K", "B"].iter().position(|&s| s == kind).unwrap();
+            assert!(maps[k].insert(row[0], row[1..].to_vec()).is_none());
+        }
+    }
+    assert_eq!(pairs, 961);
+    for cp in 0..=0x10ffff {
+        for (kind, map) in maps[..4].iter().enumerate() {
+            if kind >= 2 && (0xac00..=0xd7a3).contains(&cp) { continue; }
+            let identity = [cp];
+            assert_eq!(unicode::mapping(cp, kind).unwrap_or(&identity), map.get(&cp).map_or(identity.as_slice(), Vec::as_slice), "kind {kind} U+{cp:X}");
+        }
+        assert_eq!(unicode::cc(cp) as u32, maps[4].get(&cp).map_or(0, |v| v[0]), "CCC U+{cp:X}");
+    }
+    for cp in 0xac00..=0xd7a3 {
+        let n = cp-0xac00;
+        let lv = unicode::compose(0x1100+n/588, 0x1161+n%588/28).unwrap();
+        assert_eq!(if n%28 == 0 { lv } else { unicode::compose(lv, 0x11a7+n%28).unwrap() }, cp);
+    }
+    assert_eq!(unicode::compose(0x0308, 0x0301), None); // Composition exclusion.
+    println!("PASS: installed String readers match full-domain C case, NFD/NFKD, CCC, all 961 composition pairs and Hangul");
+}
+R
+print "PASS: full Unicode 17 string case/decomposition/CCC equality; ", scalar(@composition), " composition pairs\n";

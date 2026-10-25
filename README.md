@@ -2303,8 +2303,12 @@ Supported (`cargo test --test js_source methods_on_primitive_bases`,
 
 Deferred:
 
-- Radixes other than 10 and the other `Number.prototype` / `String.prototype` methods (clj-quickjs-39) fail
+- Radixes other than 10 and the other `Number.prototype` methods (clj-quickjs-39) fail
   with `UnsupportedOperand` (an absent method reads `undefined`).
+- The String methods added below include case conversion, trim, repeat,
+  predicates, `at`, collation and normalization (clj-quickjs-300). Remaining
+  absent methods read `undefined`; match/matchAll/search dispatch is tracked in
+  clj-quickjs-301.
 
 ### `Function.prototype`, `call`, `apply` and `Reflect.apply` (clj-quickjs-102)
 
@@ -4334,8 +4338,7 @@ never with a panic.
 Gaps found by the audit are filed as pellets, not fixed here. Private names now
 execute (clj-quickjs-291), as do static blocks (-292) and Set/WeakSet (-295);
 remaining work includes generator `return`/`throw` (-293), Array.prototype mutators,
-search, callback and copying methods (-296 to -299), String.prototype case/trim/
-repeat/search predicates (-300) and match/matchAll/search with RegExp symbol
+search, callback and copying methods (-296 to -299), and match/matchAll/search with RegExp symbol
 dispatch (-301), the plain RegExp `i` flag
 (-303), Script property escapes (-304), v-flag string properties (-305),
 NumberFormat unit style (-306), DateTimeFormat timeZoneName (-307),
@@ -4706,3 +4709,42 @@ the supported Proxy trap subset. `Reflect.construct`, Promise subclass
 capabilities/species, and existing method-specific species gaps remain deferred.
 
 Validation: `CARGO_BUILD_JOBS=3 cargo test --test builtin_subclasses -- --test-threads=3`.
+
+### String case, trim, repeat, predicates and normalization (clj-quickjs-300)
+
+`String.prototype` supports `toUpperCase`, `toLowerCase`, their `toLocale*`
+variants, `trim`, `trimStart`, `trimEnd`, `repeat`, `startsWith`, `endsWith`,
+`includes`, `at`, `localeCompare`, and `normalize`. They accept coercible
+receivers; observable coercions and `Symbol.match` reads resume through VM
+frames. Search predicates reject RegExp arguments unless `Symbol.match` is
+false. `at` indexes UTF-16 code units, including individual surrogate halves.
+
+Case mapping uses pinned Unicode 17 full SpecialCasing, final sigma, and the
+QuickJS snapshot's Turkish/Azeri and Lithuanian locale rules. Locale lists
+use the existing Intl canonicalizer and the host default locale (en-US in the
+default host). `localeCompare` uses the existing Intl.Collator constructor's
+locale/options processing and root/tailoring comparison engine, including its
+published test-locale and collation coverage limits. Replacing the JavaScript
+`Intl.Collator` property does not replace this intrinsic operation.
+
+Normalization supports NFC, NFD, NFKC and NFKD with Unicode 17 recursive
+canonical/compatibility decomposition, stable combining-class ordering,
+composition exclusions, and algorithmic Hangul decomposition/composition.
+Lone surrogates are preserved. Generated String tables occupy about 280 KB of
+Rust source; normal builds use immutable Rust data and need no Unicode download.
+
+Rope traversal, copying, trimming, predicate scans, Unicode decoding,
+context lookahead, canonical ordering, composition and output run in batches
+of at most 128 units/scalars/comparisons or individual normalization actions.
+Collation retains its existing 128-action batches. Each full case expansion
+has at most three scalars. Buffers reserve before scanning to prevent growing
+buffer copies inside a step. Allocation remains an indivisible leaf operation;
+case output reserves up to 3 times the input's UTF-16 length, normalization
+up to 18 times (plus a scalar scratch buffer), capped by the existing
+1,073,741,823-unit String length limit. There is no smaller per-method input
+limit. Descending combining marks can require quadratic total reordering work,
+with each swap charged to a resumable step.
+
+Checks: `CARGO_BUILD_JOBS=3 cargo test --test js_source string_ -- --test-threads=3`
+and `CARGO_BUILD_JOBS=3 cargo test --lib string_methods:: -- --test-threads=3`.
+The fixtures are synthetic JavaScript, not light-cljs output.

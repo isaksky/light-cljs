@@ -434,3 +434,20 @@ The snapshot contains no locale display-pattern, separator or variant-name
 tables. The runtime documents its en/fr composition punctuation and retains
 canonical codes for unnamed components. All styles use the snapshot language
 pool; its `-alt-short` metadata keys are not language identifiers.
+
+### String case and normalization (clj-quickjs-300)
+
+The Unicode repacker also emits `string_data.rs` from pinned Unicode 17
+UnicodeData, unconditional SpecialCasing, and Full_Composition_Exclusion rows.
+It recursively expands canonical/compatibility decompositions, applies stable
+CCC ordering, and emits 961 canonical composition pairs; Hangul stays
+algorithmic. The same offline C decoder independently checks all nonidentity
+upper/lower/NFD/NFKD/CCC mappings and every emitted pair. `verify-strings.rs`
+checks the installed safe Rust readers against the full-domain reference,
+all composition pairs, composition exclusion and all Hangul syllables.
+`verify.sh` repeats generation and corrupts a String mapping to prove detection.
+The existing third UCD-directory argument enables these checks. Install
+`string_data.rs` and `provenance.txt` as `src/value/string_data.rs` and
+`src/value/string_provenance.txt`; `scripts/gen-unicode-ident.sh` does this too.
+The input acquisition and worktree-local verification commands above apply.
+Runtime context rules and resumable normalization are tested in `js_source`.

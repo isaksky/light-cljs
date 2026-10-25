@@ -51,13 +51,19 @@ echo 'PASS: repeatable generation, edge cases, mutation detection, and input pin
 if [[ $# == 3 ]]; then
     perl "$script_dir/repack-unicode.pl" "$output_dir/first" "$source_dir" "$3" "$output_dir/unicode-first"
     perl "$script_dir/repack-unicode.pl" "$output_dir/second" "$source_dir" "$3" "$output_dir/unicode-second"
-    for file in case_fold_data.rs unicode_ident.rs property_data.rs provenance.txt reference.bin legacy-reference.bin property-reference.bin; do
+    for file in case_fold_data.rs unicode_ident.rs property_data.rs string_data.rs string-reference.txt provenance.txt reference.bin legacy-reference.bin property-reference.bin; do
         cmp "$output_dir/unicode-first/$file" "$output_dir/unicode-second/$file"
     done
     rustc --edition=2024 -D warnings "$output_dir/unicode-first/verify.rs" -o "$output_dir/unicode-first/verify"
     "$output_dir/unicode-first/verify" "$output_dir/unicode-first/reference.bin" "$output_dir/unicode-first/legacy-reference.bin"
     rustc --edition=2024 -O -D warnings "$output_dir/unicode-first/verify-properties.rs" -o "$output_dir/unicode-first/verify-properties"
     "$output_dir/unicode-first/verify-properties" "$output_dir/unicode-first/property-reference.bin"
+    rustc --edition=2024 -O -D warnings "$output_dir/unicode-first/verify-strings.rs" -o "$output_dir/unicode-first/verify-strings"
+    "$output_dir/unicode-first/verify-strings" "$output_dir/unicode-first/string-reference.txt"
+    sed '0,/^U 61 41/s//U 61 40/' "$output_dir/unicode-first/string-reference.txt" > "$output_dir/unicode-first/string-corrupt.txt"
+    if "$output_dir/unicode-first/verify-strings" "$output_dir/unicode-first/string-corrupt.txt" > "$output_dir/string-corruption.log" 2>&1; then
+        echo 'incorrect String mapping escaped comparison' >&2; exit 1
+    fi
     perl -e 'local $/; open my $f, "<:raw", $ARGV[0] or die $!; my $s = <$f>; substr($s, 0, 1) = chr(ord(substr($s, 0, 1)) ^ 1); print $s' \
         "$output_dir/unicode-first/property-reference.bin" > "$output_dir/unicode-first/property-corrupt.bin"
     if "$output_dir/unicode-first/verify-properties" "$output_dir/unicode-first/property-corrupt.bin" > "$output_dir/property-corruption.log" 2>&1; then

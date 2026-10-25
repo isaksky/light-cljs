@@ -1543,3 +1543,21 @@ QuickJS MIT and Unicode notices. Unicode 17 Scripts.txt, ScriptExtensions.txt
 and PropertyValueAliases.txt are independently hash-pinned in the repacker
 and recorded in `src/regexp/case_fold_provenance.txt`; the Unicode v3 notice
 is in `docs/UNICODE-LICENSE`. The script fixture is synthetic and original.
+
+## String case and normalization (clj-quickjs-300)
+
+Semantic references: `research/quickjs/quickjs.c::js_string_toLowerCase`,
+`test_final_sigma`, `js_get_locale_lang`, `js_string_trim`, `js_string_repeat`,
+`js_string_includes`, `js_string_at`, `js_string_localeCompare`, and
+`js_string_normalize`, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
+The native state machine and synthetic fixtures are original implementations.
+
+`src/value/string_data.rs` is generated from Unicode 17.0.0 UnicodeData.txt,
+SpecialCasing.txt and DerivedNormalizationProps.txt with the existing
+`scripts/quickjs-data/repack-unicode.pl` pipeline. `string_provenance.txt`
+records pinned input hashes. Full case mappings, recursive NFD/NFKD and CCC
+are independently compared over the entire domain with the pinned QuickJS
+`libunicode.c` offline decoder; every canonical composition pair is also
+checked against its NFC result. Unicode v3 terms are in `docs/UNICODE-LICENSE`;
+the QuickJS MIT notice remains in the verified import and provenance. Runtime
+builds never compile or link C or invoke data generation.

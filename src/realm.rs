@@ -969,6 +969,20 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         Builtin::StringPrototypeSplit,
         Builtin::StringPrototypeReplace,
         Builtin::StringPrototypeReplaceAll,
+        Builtin::StringToUpperCase,
+        Builtin::StringToLowerCase,
+        Builtin::StringToLocaleUpperCase,
+        Builtin::StringToLocaleLowerCase,
+        Builtin::StringTrim,
+        Builtin::StringTrimStart,
+        Builtin::StringTrimEnd,
+        Builtin::StringRepeat,
+        Builtin::StringStartsWith,
+        Builtin::StringEndsWith,
+        Builtin::StringIncludes,
+        Builtin::StringAt,
+        Builtin::StringLocaleCompare,
+        Builtin::StringNormalize,
     ] {
         let method = b.function(which, &[])?;
         b.add(
@@ -1163,6 +1177,7 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         "unscopables",
         "species",
         "isConcatSpreadable",
+        "match",
     ] {
         b.add_value(
             symbol,

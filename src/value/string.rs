@@ -582,6 +582,13 @@ pub(crate) struct StringSearch {
 }
 
 impl StringSearch {
+    /// Reserve before a new consumer starts scanning, so prefix-table growth
+    /// never copies an input-sized buffer inside a charged comparison step.
+    pub(crate) fn reserve_prefix(&mut self) -> Result<(), std::collections::TryReserveError> {
+        self.prefix
+            .try_reserve_exact(self.needle.len().saturating_sub(self.prefix.len()))
+    }
+
     /// Resume after a consumed match without rebuilding the prefix table.
     /// Split/replacement consume non-overlapping matches, so no partial match survives.
     pub(crate) fn restart(&mut self, position: usize) {

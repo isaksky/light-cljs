@@ -18793,7 +18793,7 @@ fn primitive_wrappers_string_properties() {
         "let s = new String('ab'); s['01'] = 7; s[2] = 'c'; delete s[2] && delete s['01'] && s[2] === undefined && s.length === 2",
         "let s = ''; for (let k in new String('abc')) { s = s + k; } s === '012'",
         "let k = Object.getOwnPropertyNames(new String('')); k.length === 1 && k[0] === 'length'",
-        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k[7] === 'indexOf' && k[8] === 'lastIndexOf' && k[9] === 'substring' && k[10] === 'slice' && k[11] === 'concat' && k[12] === 'padStart' && k[13] === 'padEnd' && k[14] === 'split' && k[15] === 'replace' && k[16] === 'replaceAll' && k.length === 17",
+        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k[7] === 'indexOf' && k[8] === 'lastIndexOf' && k[9] === 'substring' && k[10] === 'slice' && k[11] === 'concat' && k[12] === 'padStart' && k[13] === 'padEnd' && k[14] === 'split' && k[15] === 'replace' && k[16] === 'replaceAll' && k[17] === 'toUpperCase' && k[18] === 'toLowerCase' && k[19] === 'toLocaleUpperCase' && k[20] === 'toLocaleLowerCase' && k[21] === 'trim' && k[22] === 'trimStart' && k[23] === 'trimEnd' && k[24] === 'repeat' && k[25] === 'startsWith' && k[26] === 'endsWith' && k[27] === 'includes' && k[28] === 'at' && k[29] === 'localeCompare' && k[30] === 'normalize' && k.length === 31",
         "'length' in new String('abc') && 0 in new String('abc') && !(3 in new String('abc'))",
         "let s = new String('abc'); Object.setPrototypeOf(s, null); s.length === 3 && s[1] === 'b' && s.toString === undefined",
         "Object.create(new String('abc')).length === 3 && Object.create(new String('abc'))[1] === 'b'",
@@ -29718,5 +29718,167 @@ fn class_heritage_recognizes_intl_constructors() {
             "class C extends Intl.{name} {{}} Object.getPrototypeOf(C) === Intl.{name} && Object.getPrototypeOf(C.prototype) === Intl.{name}.prototype"
         );
         assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output (clj-quickjs-300).
+#[test]
+fn string_case_trim_repeat_predicates_at_normalize() {
+    for source in [
+        "'abc'.toUpperCase() === 'ABC' && 'ABC'.toLowerCase() === 'abc'",
+        "'  a '.trim() === 'a' && 'ab'.repeat(2) === 'abab'",
+        "'abc'.startsWith('a') && 'abc'.endsWith('c') && 'abc'.includes('b')",
+        "'abc'.at(-1) === 'c' && 'abc'.at(3) === undefined",
+        "'é'.normalize('NFD') === 'e\\u0301' && 'e\\u0301'.normalize() === 'é'",
+        "'straße'.toUpperCase() === 'STRASSE' && 'ΟΣ'.toLowerCase() === 'ος'",
+        "'a'.localeCompare('b') < 0 && 'é'.localeCompare('e\\u0301') === 0",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn string_methods_semantic_fixture() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/string_methods.js")),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
+fn string_methods_budget_and_gc() {
+    // Synthetic fixtures, not light-cljs output. Inputs enter as already rooted
+    // primitives, so yields below measure native work rather than input creation.
+    for (body, input) in [
+        ("s.toUpperCase().length === s.length * 2", "ß".repeat(4096)),
+        (
+            "s.toLowerCase().at(-1) === 'ς'",
+            format!("{}Σ", "Α".repeat(4096)),
+        ),
+        (
+            "s.trim() === 'x'",
+            format!("{}x{}", " ".repeat(4096), " ".repeat(4096)),
+        ),
+        ("s.repeat(8).length === s.length * 8", "ab".repeat(4096)),
+        (
+            "s.startsWith(s) && s.endsWith(s) && s.includes(s)",
+            "a".repeat(4096),
+        ),
+        ("s.at(-1) === 'a'", "a".repeat(4096)),
+        (
+            "s.normalize() === s.normalize('NFC')",
+            "a\u{0315}\u{0300}".repeat(1024),
+        ),
+        (
+            "s.normalize('NFKD').length === s.length * 3",
+            "ﬃ".repeat(4096),
+        ),
+        ("s.localeCompare(s) === 0", "a".repeat(4096)),
+        (
+            "s.toLocaleLowerCase('tr').length === s.length - 1",
+            format!("I{}\u{0307}", "\u{0323}".repeat(4096)),
+        ),
+    ] {
+        let rt = Runtime::new();
+        let input = rt.root(Primitive::String(input.as_str().into()));
+        let code = compile_function(&format!("function test(s) {{ return {body}; }}")).unwrap();
+        let task = rt.spawn(&code, &[&input]).unwrap();
+        let mut yields = 0;
+        let mut complete = false;
+        for _ in 0..50_000 {
+            match task
+                .run_with(Budget::instructions(3), &mut NoEffects)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    yields += 1;
+                    if yields % 31 == 0 {
+                        rt.collect().unwrap();
+                    }
+                }
+                RunOutcome::Complete(v) => {
+                    assert_eq!(v.view(), ValueView::Bool(true), "{body}");
+                    complete = true;
+                    break;
+                }
+                other => panic!("{body}: {other:?}"),
+            }
+        }
+        assert!(
+            complete && yields > 8,
+            "{body}: complete={complete}, yields={yields}"
+        );
+    }
+}
+
+#[test]
+fn string_search_predicates_symbol_match() {
+    // Synthetic fixtures, not light-cljs output. Symbol.match dispatch itself
+    // belongs to clj-quickjs-301; these predicates only implement IsRegExp.
+    for source in [
+        "let x = {[Symbol.match]:true, toString(){throw 77;}}; let caught=false; try {'a'.includes(x);} catch(e){caught=e instanceof TypeError;} caught",
+        "let x=/a/; x[Symbol.match]=false; '/a/'.startsWith(x) && '/a/'.endsWith(x) && '/a/'.includes(x)",
+        "let log=''; let x={get [Symbol.match](){log+='m';return false;},toString(){log+='s';return 'a';}}; 'a'.startsWith(x,{valueOf(){log+='p';return 0;}}) && log==='msp'",
+        "let log=''; let x=new Proxy({get [Symbol.match](){log+='m';return false;},toString(){log+='s';return 'a';}}, {}); 'a'.includes(x) && log==='ms'",
+        "let x={get [Symbol.match](){throw 77;},toString(){throw 88;}}; let caught; try {'a'.endsWith(x);}catch(e){caught=e;} caught===77",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn string_methods_wait_collect_and_migrate() {
+    // Synthetic fixtures, not light-cljs output. Every callback increments once
+    // before waiting; moving each run to a fresh executor catches saved-state bugs.
+    for expression in [
+        "String.prototype.toUpperCase.call({get toString(){count++; __rt.need(300,1); return ()=>'ß';}}) === 'SS'",
+        "'abc'.startsWith({get [Symbol.match](){count++; __rt.need(300,1); return false;},toString(){return 'a';}})",
+        "'abc'.includes({toString(){count++; __rt.need(300,1); return 'b';}})",
+        "'abc'.at({valueOf(){count++; __rt.need(300,1); return -1;}}) === 'c'",
+        "'ab'.repeat({valueOf(){count++; __rt.need(300,1); return 2;}}) === 'abab'",
+        "'é'.normalize({toString(){count++; __rt.need(300,1); return 'NFD';}}) === 'e\\u0301'",
+        "'i'.toLocaleUpperCase({length:1,get 0(){count++; __rt.need(300,1); return 'tr';}}) === 'İ'",
+        "'A'.localeCompare('a','en',{get sensitivity(){count++; __rt.need(300,1); return 'base';}}) === 0",
+    ] {
+        let rt = Runtime::new();
+        let source = format!("let count=0; let result=({expression}); result && count===1");
+        let mut task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut waits = 0;
+        let mut done = false;
+        for _ in 0..2000 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            rt.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => (),
+                RunOutcome::Waiting(_) => {
+                    waits += 1;
+                    assert_eq!(waits, 1, "callback replay: {source}");
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = rt.root(Primitive::Number(0.0));
+                    task = rt
+                        .complete(request.key(), request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(v) => {
+                    assert_eq!(v.view(), ValueView::Bool(true), "{source}");
+                    done = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(done, "instruction bound: {source}");
+        assert_eq!(waits, 1);
     }
 }
