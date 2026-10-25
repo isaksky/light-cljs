@@ -34,8 +34,8 @@ fn async_disposable_stack() {
         "class S extends AsyncDisposableStack {} let s = new S(); return s instanceof S && s instanceof AsyncDisposableStack && Object.getPrototypeOf(s.move()) === AsyncDisposableStack.prototype;",
         "let n = 0; for (let value of [42, {}, {[Symbol.asyncDispose]: 42, [Symbol.dispose]() {}}]) { try { new AsyncDisposableStack().use(value); } catch(e) { if (e instanceof TypeError) n++; } } try { DisposableStack.prototype.use.call(new AsyncDisposableStack(), null); } catch(e) { if (e instanceof TypeError) n++; } try { AsyncDisposableStack.prototype.use.call(new DisposableStack(), null); } catch(e) { if (e instanceof TypeError) n++; } return n === 5;",
         "let s = new AsyncDisposableStack(), caught, log = ''; s.defer(() => { log += 'a'; throw 1; }); s.defer(() => { log += 'b'; return Promise.reject(2); }); s.defer(() => { throw undefined; }); try { await s.disposeAsync(); } catch(e) { caught = e; } return log === 'ba' && caught.error === 1 && caught.suppressed.error === 2 && caught.suppressed.suppressed === undefined;",
-        "let log = '', s = new AsyncDisposableStack(); s.defer(() => { log += 'a'; }); s.use(null); let p = s.disposeAsync(); log += 'b'; await p; return log === 'ba';",
-        "let log = '', s = new AsyncDisposableStack(); s.defer(() => { log += 'a'; }); s.use(undefined); let p = s.disposeAsync(); log += 'b'; await p; return log === 'ba';",
+        "let log = '', s = new AsyncDisposableStack(); s.defer(() => { log += 'a'; }); s.use(null); let p = s.disposeAsync(); log += 'b'; await p; return log === 'ab';",
+        "let log = '', s = new AsyncDisposableStack(); s.defer(() => { log += 'a'; }); s.use(undefined); let p = s.disposeAsync(); log += 'b'; await p; return log === 'ab';",
         "let s = new AsyncDisposableStack(), log = '', returned = Promise.reject(99); returned.catch(() => {}); s.use({[Symbol.dispose]() { log += 'd'; return returned; }}); await s.disposeAsync(); return log === 'd';",
         "let s = new AsyncDisposableStack(), log = '', caught; s.defer(() => { log += 'a'; }); s.defer(() => { log += 't'; throw 42; }); let p = s.disposeAsync(); log += 'b'; try { await p; } catch(e) { caught = e; } return caught === 42 && log === 'tba';",
         "let s = new AsyncDisposableStack(), n = 0; s.defer(() => { s.disposeAsync(); if (s.disposed) n++; }); await s.disposeAsync(); return n === 1;",
@@ -93,6 +93,96 @@ fn await_using_declarations() {
         let out = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
         assert!(matches!(out, RunOutcome::Complete(_)), "{source}: {out:?}");
         assert_eq!(host.0, vec![Primitive::Bool(true)], "{source}");
+        assert!(task.suspended_async_activations().is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn await_using_nullish_records_share_await_boundary() {
+    // Synthetic fixtures, not light-cljs output. Observe disposal awaits using
+    // a two-job promise chain, without relying on wall-clock timing.
+    #[derive(Default)]
+    struct Log(Vec<Primitive>);
+    impl Host for Log {
+        fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+            self.0.push(call.arg);
+            Ok(Primitive::Undefined)
+        }
+    }
+    for (declarations, expected) in [
+        ("await using a = null, b = null;", "tbu"),
+        ("await using a = undefined, b = undefined;", "tbu"),
+        ("await using a = null, b = undefined;", "tbu"),
+        // Nullish records share the await of a real async or fallback method,
+        // whether they precede or follow that method in disposal order.
+        (
+            "await using a = {[Symbol.asyncDispose]() { log += 'a'; }}, b = null, c = undefined;",
+            "atbu",
+        ),
+        (
+            "await using a = null, b = undefined, c = {[Symbol.asyncDispose]() { log += 'a'; }};",
+            "atbu",
+        ),
+        (
+            "await using a = {[Symbol.dispose]() { log += 'd'; }}, b = null, c = undefined;",
+            "dtbu",
+        ),
+        (
+            "await using a = null, b = undefined, c = {[Symbol.dispose]() { log += 'd'; }};",
+            "dtbu",
+        ),
+        // A synchronous resource after nullish records needs a boundary first.
+        (
+            "using a = {[Symbol.dispose]() { log += 's'; }}; await using b = null, c = undefined;",
+            "tsbu",
+        ),
+        (
+            "await using a = null, b = undefined; using c = {[Symbol.dispose]() { log += 's'; }};",
+            "stbu",
+        ),
+        // Boundary-only awaits do not count as an awaited async disposer.
+        (
+            "using a = {[Symbol.dispose]() { log += 'r'; }}; await using b = null; using c = {[Symbol.dispose]() { log += 's'; }}; await using d = undefined;",
+            "tsurb",
+        ),
+        // An awaited async disposer also covers later nullish/sync mixtures.
+        (
+            "using a = {[Symbol.dispose]() { log += 's'; }}; await using b = null, c = {[Symbol.asyncDispose]() { log += 'a'; }};",
+            "atsbu",
+        ),
+        (
+            "try { await using a = null, b = undefined, c = {[Symbol.asyncDispose]() { log += 'a'; return Promise.reject(7); }}; } catch(e) { if (e !== 7) throw e; log += 'e'; }",
+            "atebu",
+        ),
+        (
+            "let s = new AsyncDisposableStack(); s.defer(() => { log += 'a'; }); s.use(null); s.use(undefined); let p = s.disposeAsync(); log += 's'; await p;",
+            "astub",
+        ),
+    ] {
+        let source = format!(
+            "let log = ''; Promise.resolve().then(() => {{ log += 't'; }}).then(() => {{ log += 'u'; }}); \
+             (async () => {{ {{ {declarations} }} log += 'b'; }})().then(() => __rt.effect(0, log), e => __rt.effect(0, String(e)));"
+        );
+        let rt = Runtime::new();
+        let task = rt.spawn(&exe(&source), &[]).unwrap();
+        let mut host = Log::default();
+        // Collection at every instruction yield also exercises the pending
+        // synchronous resource retained across a nullish boundary await.
+        let mut completed = false;
+        for _ in 0..5000 {
+            let out = task.run_with(Budget::instructions(1), &mut host).unwrap();
+            rt.collect().unwrap();
+            match out {
+                RunOutcome::Yielded => {}
+                RunOutcome::Complete(_) => {
+                    completed = true;
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+        assert!(completed, "instruction bound exceeded: {source}");
+        assert_eq!(host.0, vec![Primitive::String(expected.into())], "{source}");
         assert!(task.suspended_async_activations().is_empty(), "{source}");
     }
 }

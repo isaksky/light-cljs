@@ -163,6 +163,10 @@ pub(super) struct Run {
     // synchronous throws before invoking the next disposer.
     await_all: bool,
     await_failure: bool,
+    // DisposeResources coalesces nullish async records with a later async
+    // call, or awaits once before the next sync record / the end of the run.
+    needs_await: bool,
+    has_awaited: bool,
     stack: JsString,
 }
 impl Trace for Run {
@@ -195,6 +199,8 @@ impl Run {
             await_call: None,
             await_all: false,
             await_failure: false,
+            needs_await: false,
+            has_awaited: false,
             stack,
         }
     }
@@ -222,6 +228,7 @@ impl Run {
             let Input::CallResult(value) = input else {
                 return Err(Fault::Internal("async disposer expected call result"));
             };
+            self.has_awaited = true;
             self.calling = true;
             return Ok(Action::Await(if fallback {
                 Value::Undefined
@@ -238,6 +245,21 @@ impl Run {
             });
             self.changed = true;
         }
+        if self.needs_await
+            && !self.has_awaited
+            && !self.await_all
+            && self.resources.last().is_some_and(|resource| {
+                !matches!(
+                    resource.hint,
+                    ResourceHint::Async | ResourceHint::AsyncFallback
+                )
+            })
+        {
+            // Keep the pending sync resource traced until the boundary resumes.
+            self.needs_await = false;
+            self.calling = true;
+            return Ok(Action::Await(Value::Undefined));
+        }
         if let Some(resource) = self.resources.pop() {
             if matches!(resource.method, Value::Undefined) {
                 if self.await_all
@@ -246,8 +268,7 @@ impl Run {
                         ResourceHint::Async | ResourceHint::AsyncFallback
                     )
                 {
-                    self.calling = true;
-                    return Ok(Action::Await(Value::Undefined));
+                    self.needs_await = true;
                 }
                 return Ok(Action::Continue);
             }
@@ -269,6 +290,11 @@ impl Run {
                 this,
                 args,
             });
+        }
+        if self.needs_await && !self.has_awaited {
+            self.needs_await = false;
+            self.calling = true;
+            return Ok(Action::Await(Value::Undefined));
         }
         if self.changed && !self.cancelling {
             return Err(Fault::Thrown(

@@ -3993,8 +3993,10 @@ disposal errors suppress pending body throws with intrinsic `SuppressedError`.
 
 Supported (clj-quickjs-240): `await using` in async functions, arrows and
 methods snapshots `Symbol.asyncDispose`, falling back to `Symbol.dispose`.
-The shared disposal loop awaits each resource in reverse order, including an
-await for null/undefined, and combines errors with intrinsic SuppressedError.
+The shared disposal loop visits resources in reverse order and combines errors
+with intrinsic SuppressedError. Null/undefined records coalesce into one await
+unless an async disposer provides it; a pending boundary runs before the next
+synchronous disposer (clj-quickjs-284).
 Sync fallback return values are discarded. Cleanup awaits during consumer
 cancellation end that scope's cleanup under the existing finally rules.
 
@@ -4009,8 +4011,8 @@ registration and move operations, with async/sync disposal-method lookup and
 once, calls the first disposer synchronously, then awaits each LIFO callback.
 It resolves to undefined or rejects with intrinsic SuppressedError chains.
 Callbacks may wait, migrate and survive collection; `await using` composes with
-the stack at scope exit. Nullish resources await undefined and sync fallback
-return values are discarded.
+the stack at scope exit. Nullish resources share an await boundary with other
+nullish records or async callbacks, and sync fallback return values are discarded.
 
 ```sh
 CARGO_BUILD_JOBS=3 cargo test --test js_source using_declarations -- --exact --test-threads=3
