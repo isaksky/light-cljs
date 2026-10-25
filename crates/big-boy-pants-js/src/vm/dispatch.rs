@@ -512,7 +512,7 @@ fn name_constant(code: &Code, i: u16) -> Result<&JsString, Fault> {
 }
 
 /// What a callable value runs.
-pub(crate) enum Callee<C = Arc<Code>> {
+pub(crate) enum Callee<C = super::executable::ConstructorKind> {
     /// A function object: its code runs in a new VM frame.
     Code(ObjectId, C),
     /// A built-in function: Rust code run inside the call instruction
@@ -525,7 +525,9 @@ pub(crate) enum Callee<C = Arc<Code>> {
 /// The callee of a `Call`/`CallMethod` (or of a native's callback): what it
 /// runs, or the name of what was found instead.
 pub(crate) fn callee(heap: &Heap, callee: &Value) -> Result<Callee, Fault> {
-    callee_code(heap, callee, Arc::clone)
+    // Callable/constructor probes need only immutable metadata, not a code
+    // owner. In particular the bound-constructor probe runs for every `new`.
+    callee_code(heap, callee, |code| code.constructor_kind)
 }
 
 pub(crate) fn cached_callee(
@@ -1234,7 +1236,7 @@ pub(super) fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result
     for _ in 0..limit {
         match callee(heap, &value) {
             Ok(Callee::Bound(bound)) => value = bound.callee,
-            Ok(Callee::Code(_, code)) => return Ok(code.constructor_kind.is_constructor()),
+            Ok(Callee::Code(_, kind)) => return Ok(kind.is_constructor()),
             Ok(Callee::Builtin(which)) => {
                 return Ok(matches!(
                     which,

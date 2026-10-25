@@ -542,7 +542,7 @@ impl VmState {
         // entry frame. Proxies must go through Call's apply validation, and
         // class constructors must go through enter's rejection without new.
         if let Ok(crate::vm::dispatch::Callee::Code(id, code)) =
-            crate::vm::dispatch::callee(heap, &job.callable)
+            crate::vm::dispatch::cached_callee(heap, &job.callable, &self.code_cache)
             && job.callable == Value::Object(id)
             && !code.constructor_kind.is_class()
         {
@@ -560,7 +560,7 @@ impl VmState {
                     self.top().pc,
                 )));
             }
-            let mut next = Self::new(&code, &job.args, self.diag, self.limits);
+            let mut next = Self::new(&code.shared(), &job.args, self.diag, self.limits);
             next.entry.callee = Some(id);
             self.replace_activation(next);
             return Ok(());

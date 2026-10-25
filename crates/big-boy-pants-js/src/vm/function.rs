@@ -356,6 +356,8 @@ struct Info {
     /// Known shareable: published, so its properties are immutable.
     shared: bool,
     defaults: Option<ObjectId>,
+    /// Needed only for virtual metadata before a property record exists.
+    /// Repeated constructor prototype reads must not clone shared code.
     code: Option<Arc<Code>>,
     computed_name: Option<JsString>,
 }
@@ -368,7 +370,7 @@ fn info(heap: &Heap, function: ObjectId) -> Result<Info, Fault> {
             constructor: f.code.constructor_kind.is_constructor() || f.code.is_generator(),
             shared: known,
             defaults: None,
-            code: Some(f.code.clone()),
+            code: f.properties.is_none().then(|| f.code.clone()),
             computed_name: f.computed_name.clone(),
         }),
         HeapObject::BoundFunction(f) => Ok(Info {
@@ -979,10 +981,17 @@ fn materialize(
     }
     let constructor = intern(heap, "constructor")?;
     let prototype_key = intern(heap, "prototype")?;
-    let code = info(heap, function)?.code;
-    let generator = code.as_ref().is_some_and(|c| c.is_generator());
-    let class = code.as_ref().is_some_and(|c| c.constructor_kind.is_class());
-    let parent = if code.as_ref().is_some_and(|c| c.is_async_generator()) {
+    let (generator, class, asynchronous) = heap
+        .read(function, |object| match object {
+            HeapObject::Function(f) => (
+                f.code.is_generator(),
+                f.code.constructor_kind.is_class(),
+                f.code.is_async_generator(),
+            ),
+            _ => (false, false, false),
+        })
+        .ok_or(Fault::Internal("function object was reclaimed"))?;
+    let parent = if asynchronous {
         super::async_generator::prototype(heap)?
     } else if generator {
         super::generator::prototype(heap)?

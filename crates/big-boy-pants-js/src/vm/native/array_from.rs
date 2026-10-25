@@ -147,7 +147,7 @@ impl State {
         // Classes/subclassing are unavailable. Reject custom constructors
         // explicitly rather than silently returning an array of the wrong brand.
         let custom = match dispatch::callee(heap, &self.constructor) {
-            Ok(Callee::Code(_, code)) => code.constructor_kind.is_constructor(),
+            Ok(Callee::Code(_, kind)) => kind.is_constructor(),
             Ok(Callee::Bound(bound)) => {
                 // One bound target per step; bound nonconstructors still
                 // select the ordinary array fallback.
