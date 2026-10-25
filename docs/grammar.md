@@ -3626,6 +3626,9 @@ the JS callers. The input location shares the existing 16,384 UTF-16-unit
 snapshot bound with the caller text (also for JSON's `<input>` location).
 Function positions refer to its generated wrapper source. Function
 `lineNumber`/`columnNumber` properties remain an intended QuickJS-only omission.
+The Error object's internal host diagnostic retains the positioned frontend
+message, so uncaught and rethrown errors still report their input location
+through `RunOutcome::Failed` and the CLI; JavaScript `e.message` stays plain.
 
 ```js accept
 Error('hello').stack.indexOf('    at <anonymous> (') === 0;

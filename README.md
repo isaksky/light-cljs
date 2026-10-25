@@ -4423,10 +4423,12 @@ metadata section (upstream lines 1131-1137, including its four statements)
 remains an explicit intended omission: QuickJS's non-standard function
 `lineNumber`/`columnNumber` properties are not implemented, so the complete
 case is not claimed as unmodified. Direct/indirect eval and Function
-compilation errors have plain SyntaxError messages and begin their stacks
+compilation errors have plain JavaScript `e.message` values and begin their stacks
 with `    at <eval>:line:column` or `    at <Function>:line:column`, followed
 by callers. Input locations and callers share the existing 16,384 UTF-16-unit
 stack snapshot cap; at most 64 JS caller frames are retained.
+Host-facing failures retain the positioned compiler diagnostic, including
+after JavaScript catches and rethrows the error.
 `test_std.js`, `test_worker.js`, `test_rw_handler.js` and
 `test_bjson.js` need the QuickJS shell modules (`std`, `os`, `bjson`) and stay
 outside the corpus beyond the two adapted async cases; `test_intl.js` lines

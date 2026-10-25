@@ -2495,6 +2495,30 @@ fn runtime_compile_syntax_errors_have_plain_messages_and_input_stacks() {
 }
 
 #[test]
+fn runtime_compile_syntax_errors_preserve_host_input_positions() {
+    // Synthetic fixtures, not light-cljs output. Both direct failures and
+    // rethrows must retain the input diagnostic independently of JS .message.
+    for (call, position) in [
+        ("eval('\\n 123 a')", "<eval>:2:6"),
+        ("(0, eval)('\\n 123 a')", "<eval>:2:6"),
+        ("new Function('\\n 123 a')", "<Function>:4:6"),
+        ("Function('a b', '')", "<Function>:1:22"),
+    ] {
+        for source in [
+            call.to_string(),
+            format!("try {{ {call}; }} catch(e) {{ throw e; }}"),
+        ] {
+            let RunOutcome::Failed(error) = run(&exe(&source), &[]) else {
+                panic!("expected a SyntaxError: {source}");
+            };
+            assert_eq!(error.kind(), VmErrorKind::SyntaxError);
+            assert!(error.message().contains(position), "{error:?}");
+            assert!(error.to_string().contains(position), "{error}");
+        }
+    }
+}
+
+#[test]
 fn indirect_eval() {
     for (source, expected) in [
         (r#"(0, eval)("1 + 1")"#, ValueView::Number(2.0)),

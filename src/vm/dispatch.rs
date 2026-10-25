@@ -1857,7 +1857,9 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
         Fault::SyntaxError(m) | Fault::JsonSyntaxError { message: m, .. } => {
             (VmErrorKind::SyntaxError, m)
         }
-        Fault::CompileSyntaxError { error, .. } => (VmErrorKind::SyntaxError, error.message),
+        Fault::CompileSyntaxError { name, error } => {
+            (VmErrorKind::SyntaxError, format!("{name}:{error}"))
+        }
         Fault::RangeError(m) => (VmErrorKind::RangeError, m),
         Fault::StringTooLong => (VmErrorKind::StringTooLong, "string too long".into()),
         Fault::Unsupported(m) => (VmErrorKind::UnsupportedOperand, m),
@@ -1981,7 +1983,7 @@ pub(crate) fn raise_failure(
     cause: Value,
 ) -> Option<Exit> {
     raise_failure_with_input::<{ crate::value::string::MAX_STRING_LEN }>(
-        state, heap, error, cause, None,
+        state, heap, error, cause, None, None,
     )
 }
 
@@ -2000,6 +2002,7 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
     error: VmError,
     cause: Value,
     input: Option<(&'static str, usize, usize)>,
+    js_message: Option<&str>,
 ) -> Option<Exit> {
     if !catchable(error.kind) || !state.has_handlers() {
         return Some(Exit::Fail(error));
@@ -2039,7 +2042,9 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
         let message = if error.kind == VmErrorKind::StackOverflow {
             "stack overflow"
         } else {
-            &error.message
+            // The internal VmError retains its positioned host diagnostic,
+            // including after a catch/rethrow. JS sees only the plain message.
+            js_message.unwrap_or(&error.message)
         };
         // Diagnostic text can exceed the limit even when its property name
         // fits. Check UTF-16 length before allocating the conversion buffer.
@@ -2094,6 +2099,39 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
             value: Value::Object(id),
             error: Box::new(error),
         },
+    )
+}
+
+// Keep compiler diagnostic temporaries off the interpreter's 64 KiB stack
+// frame. A failing instruction leaves the JS frame at its initiating call.
+#[inline(never)]
+fn raise_fault(
+    state: &mut VmState,
+    heap: &Heap,
+    fault: Fault,
+    code: &Code,
+    pc: usize,
+) -> Option<Exit> {
+    let input = match &fault {
+        Fault::JsonSyntaxError { line, column, .. } => Some(("<input>", *line, *column)),
+        Fault::CompileSyntaxError { name, error } => {
+            Some((*name, error.line as usize, error.column as usize))
+        }
+        _ => None,
+    };
+    let js_message = match &fault {
+        Fault::CompileSyntaxError { error, .. } => Some(error.message.clone()),
+        _ => None,
+    };
+    let (kind, message) = fault_error(fault, code, pc);
+    let error = state.failure(kind, message, pc);
+    raise_failure_with_input::<{ crate::value::string::MAX_STRING_LEN }>(
+        state,
+        heap,
+        error,
+        Value::Undefined,
+        input,
+        js_message.as_deref(),
     )
 }
 
@@ -3373,29 +3411,7 @@ pub(crate) fn execute_budgeted(
                 raise(state, Exception { value: v, error })
             }
             Err(Fault::Rethrow(exception)) => raise(state, exception),
-            Err(fault) => {
-                // A failed instruction leaves the running frame as it was (a
-                // failing `Call` pushes no frame), so the failure names it
-                // and its callers.
-                let input = match &fault {
-                    Fault::JsonSyntaxError { line, column, .. } => {
-                        Some(("<input>", *line, *column))
-                    }
-                    Fault::CompileSyntaxError { name, error } => {
-                        Some((*name, error.line as usize, error.column as usize))
-                    }
-                    _ => None,
-                };
-                let (kind, message) = fault_error(fault, &code, pc);
-                let error = state.failure(kind, message, pc);
-                raise_failure_with_input::<{ crate::value::string::MAX_STRING_LEN }>(
-                    state,
-                    heap,
-                    error,
-                    Value::Undefined,
-                    input,
-                )
-            }
+            Err(fault) => raise_fault(state, heap, fault, &code, pc),
         };
         match raised {
             None => {
@@ -3513,6 +3529,7 @@ mod tests {
                     &heap,
                     original.clone(),
                     Value::Undefined,
+                    None,
                     None,
                 );
                 if message_len > LIMIT {
