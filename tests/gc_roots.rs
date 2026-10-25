@@ -1141,7 +1141,8 @@ fn realm_intrinsics_retain() {
     // Seven array mutators and species getter add eight built-ins (-296).
     // Generator return/throw add two built-in methods (-293).
     // Eight array search methods add eight built-ins (-297).
-    assert_eq!(rt.heap_usage().objects.builtin, 303);
+    // Eight array callback methods add eight built-ins (-298).
+    assert_eq!(rt.heap_usage().objects.builtin, 311);
     assert_eq!(rt.heap_usage().objects.plain, 57);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);
