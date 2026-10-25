@@ -8535,7 +8535,9 @@ fn private_class_edge_cases() {
         "let n=0; class C { #x=2; m() { let o=()=>{n++;return this;}; return o().#x++ === 2 && n === 1 && this.#x === 3; } } new C().m()",
         "class C { #x=1; get #only() { return this.#x; } m() { try { this.#only=2; } catch(e) { return e instanceof TypeError; } } } new C().m()",
         "class C { #m() {} m() { try { this.#m=2; } catch(e) { return e instanceof TypeError; } } } new C().m()",
-        "class C { set #x(v) {} m() { return this.#x === undefined; } } new C().m()",
+        "class C { set #x(v) {} m() {try {this.#x;} catch(e) {return e instanceof TypeError;} return false;} } new C().m()",
+        "class C { static set #x(v) {} static m() {try {this.#x;} catch(e) {return e instanceof TypeError;} return false;} } C.m()",
+        "let writes=0; class C { set #x(v) {writes++;} m() {let n=0;try {this.#x+=(writes++,1);} catch(e) {if(e instanceof TypeError)n++;} try {this.#x++;} catch(e) {if(e instanceof TypeError)n++;} try {this.#x??=2;} catch(e) {if(e instanceof TypeError)n++;} return n===3 && writes===0 && #x in this;} } new C().m()",
         "class C { set #x(v) {this.y=v;} get #x() {return this.y;} m() {this.#x=4;return this.#x;} } new C().m() === 4",
         "class C { #x=1; m(o) { return o?.#x; } } new C().m(null) === undefined && new C().m(new C()) === 1",
         "class C { #m() {return this;} m(o) { return o?.#m() === o && this.#m?.() === this; } } let c=new C(); c.m(c)",
@@ -8664,6 +8666,25 @@ fn private_class_publication_and_foreign_receivers() {
     assert!(
         matches!(rt.spawn(&invoke, &[&predicate, &shared]).unwrap().run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(false))
     );
+    let stamp = compile_function("function stamp(o) {class Base {constructor() {return o;}} class C extends Base {#x=1;static has(o){return #x in o;}} try {new C();} catch(e) {return e instanceof TypeError && !C.has(o);} return false;}").unwrap();
+    for source in [
+        "(function () {})",
+        "(function () {}).bind(null)",
+        "Object.prototype",
+        "__rt.vector(1)",
+    ] {
+        let RunOutcome::Complete(receiver) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!()
+        };
+        rt.publish(&receiver).unwrap();
+        assert!(
+            matches!(rt.spawn(&stamp, &[&receiver]).unwrap().run().unwrap(), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)),
+            "{source}"
+        );
+        rt.collect().unwrap();
+        rt.publish(&receiver).unwrap();
+    }
     let source = "class C { #x=1; static reader(){return o=>o.#x;} } C.reader()";
     let RunOutcome::Complete(reader) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap() else {
         panic!()

@@ -6807,7 +6807,7 @@ and setter with the same staticness), `#constructor`, private deletion and
 Each receiver owns its private slots; methods/accessors are installed before
 fields, fields initialize in source order, and access before field installation
 throws TypeError. Private fields are writable even on frozen objects; private
-methods cannot be assigned, and missing setters throw TypeError. Private access
+methods cannot be assigned, and missing getters or setters throw TypeError. Private access
 checks the receiver itself, without public key coercion, prototype traversal or
 Proxy traps. `#name in object` reports its own brand without calling an accessor;
 foreign brands return false, primitives throw TypeError. Cross-task receivers

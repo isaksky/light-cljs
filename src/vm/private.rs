@@ -107,6 +107,11 @@ pub(crate) fn read(heap: &Heap, task: TaskId, base: &Value, key: &Value) -> Resu
     let key = symbol(key)?;
     storage(heap, task, base, false, |s| {
         let p = s.and_then(|s| s.0.get(key)).ok_or_else(error)?;
+        // PrivateGet differs from ordinary [[Get]]: a setter-only private
+        // accessor cannot be read, even for a skipped logical assignment.
+        if matches!(&p.accessor, Some((Value::Undefined, _))) {
+            return Err(Fault::TypeError("private accessor has no getter".into()));
+        }
         Ok(Read::property(p, false))
     })
 }
