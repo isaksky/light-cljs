@@ -2782,8 +2782,8 @@ JavaScript Map (clj-quickjs-169): `new Map()` (also null/undefined), `set`,
 Keys use SameValueZero, string content and object identity, with stable
 insertion positions; Maps are task-owned and rejected by atom publication.
 Own properties and prototype/integrity operations follow ordinary objects.
-Deferred: iterable construction (non-nullish arguments throw TypeError),
-iteration methods.
+Iterable construction is supported (clj-quickjs-294 below).
+Deferred: iteration methods.
 BigInt keys compare and hash by value, distinct from Number keys, with coverage
 for fresh inline and larger-than-128-bit keys and forEach deletion loops
 (clj-quickjs-171). Hashing is
@@ -3570,8 +3570,8 @@ traced identity reachability rather than Arc counts or intern-table retention.
 WeakMaps are task-owned and reject publication, even when empty or frozen;
 foreign tasks cannot use borrowed methods to bypass ownership.
 
-Deferred: non-nullish iterable construction (explicit TypeError, as for Map),
-WeakSet and generic symbol-tag consumption by
+Iterable construction is supported (clj-quickjs-294 below).
+Deferred: WeakSet and generic symbol-tag consumption by
 Object.prototype.toString. WeakMap intentionally has no size or enumeration
 API. Targeted checks: `CARGO_BUILD_JOBS=3 cargo test --test js_source weak_map -- --test-threads=3`,
 `CARGO_BUILD_JOBS=3 cargo test --test gc weak_map_ -- --test-threads=3`, and
@@ -4323,7 +4323,7 @@ never with a panic.
 
 Gaps found by the audit are filed as pellets, not fixed here. Private names now
 execute (clj-quickjs-291), as do static blocks (-292); remaining work includes generator `return`/`throw` (-293),
-`new Map(iterable)` (-294), Set/WeakSet (-295), Array.prototype mutators,
+Set/WeakSet (-295), Array.prototype mutators,
 search, callback and copying methods (-296 to -299), String.prototype case/trim/
 repeat/search predicates (-300) and match/matchAll/search with RegExp symbol
 dispatch (-301), Boolean and BigInt wrappers (-302), the plain RegExp `i` flag
@@ -4575,3 +4575,25 @@ Validation: `cargo test --test js_source array_copy` and
 `tests/fixtures/js/array_copy.js` (not light-cljs output) also executes with
 three-instruction budgets and collection at every yield. Dedicated native
 execution and wait/resume tests use one-instruction budgets on 64 KiB workers.
+
+### Map and WeakMap iterable construction (clj-quickjs-294)
+
+`new Map(iterable)` and `new WeakMap(iterable)` consume synchronous iterables
+of entry objects, including generators. Nullish arguments create empty maps
+without reading `set` or acquiring an iterator. The shared resumable
+AddEntriesFromIterable consumer reads `target.set` once before GetIterator,
+then reads each entry's `0` and `1` properties and calls the saved method
+with the target as `this`. Entries need not be arrays; primitive entries
+throw TypeError. Entry getter and adder failures close the iterator once;
+iterator acquisition/next/done/value failures propagate directly. The original
+exception wins over errors or primitive results from `return()`.
+
+Each entry and callback runs through budgeted native steps, retaining traced
+state across dependency waits, collection, and worker migration. No additional
+entry-count limit is imposed; existing heap, stack and collection limits apply.
+Realm prototypes remain shared and immutable, and built-in subclasses remain
+outside this slice (-309). Custom adder lookup/calls are covered by VM tests
+using task-owned targets; constructor source tests preserve that boundary.
+Tests: `cargo test --test map_iterables`,
+`cargo test --test need map_iterable_constructors_wait_collect_and_migrate`,
+and `cargo test --lib vm::native::add_entries::tests`.

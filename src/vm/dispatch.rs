@@ -882,9 +882,14 @@ fn construct_target(
             return Ok(Flow::Next);
         }
         Ok(Callee::Code(id, code)) if code.constructor_kind.is_constructor() => (id, code),
-        Ok(Callee::Builtin(Builtin::WeakMap)) => {
-            let result = builtin::weak_map_constructor(heap, task, &args)?;
-            state.replace(argc + 1, result)?;
+        Ok(Callee::Builtin(which @ (Builtin::Map | Builtin::WeakMap))) => {
+            let result = if which == Builtin::Map {
+                builtin::map_constructor(heap, task)?
+            } else {
+                builtin::weak_map_constructor(heap, task)?
+            };
+            let items = args.first().cloned().unwrap_or(Value::Undefined);
+            super::native::start_add_entries(state, result, items, argc + 1)?;
             return Ok(Flow::Next);
         }
         Ok(Callee::Builtin(Builtin::WeakRef)) => {
@@ -894,11 +899,6 @@ fn construct_target(
         }
         Ok(Callee::Builtin(Builtin::FinalizationRegistry)) => {
             let result = builtin::finalization_registry_constructor(heap, state, &args)?;
-            state.replace(argc + 1, result)?;
-            return Ok(Flow::Next);
-        }
-        Ok(Callee::Builtin(Builtin::Map)) => {
-            let result = builtin::map_constructor(heap, task, &args)?;
             state.replace(argc + 1, result)?;
             return Ok(Flow::Next);
         }

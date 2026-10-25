@@ -2281,6 +2281,94 @@ fn array_from_iterator_waits_on_dependency() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Every iterator/entry callback
+/// can wait, with collection at each budget boundary and thread migration.
+#[test]
+fn map_iterable_constructors_wait_collect_and_migrate() {
+    for constructor in ["Map", "WeakMap"] {
+        for iterator in [
+            "({get [Symbol.iterator]() { calls++; __rt.need(5,3); return function() { return [[k, {n:7}]].values(); }; }})",
+            "({[Symbol.iterator]() { calls++; __rt.need(5,3); return [[k, {n:7}]].values(); }})",
+            "({[Symbol.iterator]() { return this; }, get next() { calls++; __rt.need(5,3); let it = [[k, {n:7}]].values(); return it.next.bind(it); }})",
+            "({[Symbol.iterator]() { return this; }, next() { calls++; __rt.need(5,3); return {value:[k, {n:7}], done:calls > 1}; }})",
+            "({[Symbol.iterator]() { return this; }, next() { return {get done() { calls++; __rt.need(5,3); return calls > 1; }, value:[k, {n:7}]}; }})",
+            "({[Symbol.iterator]() { return this; }, next() { if (calls) return {done:true}; return {get value() { calls++; __rt.need(5,3); return [k, {n:7}]; }}; }})",
+            "([{get 0() { calls++; __rt.need(5,3); return k; }, 1:{n:7}}])",
+            "([{0:k, get 1() { calls++; __rt.need(5,3); return {n:7}; }}])",
+        ] {
+            let source = format!(
+                "let k = {{}}, calls = 0; let m = new {constructor}({iterator}); m.get(k).n === 7 && calls === {calls}",
+                calls = if iterator.contains("calls > 1") { 2 } else { 1 }
+            );
+            check_map_iterable_wait(&source);
+        }
+        for close in [
+            "return() { closed++; __rt.need(5,3); throw 99; }",
+            "get return() { closed++; __rt.need(5,3); return function() { throw 99; }; }",
+        ] {
+            let source = format!(
+                r#"
+                let closed = 0, original = {{n:17}}, ok = false;
+                let it = {{[Symbol.iterator]() {{ return this; }}, next() {{ return {{value:{{get 0() {{throw original;}} }} }}; }}, {close} }};
+                try {{ new {constructor}(it); }} catch(e) {{ ok = e === original && e.n === 17; }}
+                ok && closed === 1
+            "#
+            );
+            check_map_iterable_wait(&source);
+        }
+    }
+}
+
+fn check_map_iterable_wait(source: &str) {
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(&compile_script("map-wait", source).unwrap(), &[])
+        .unwrap();
+    let expected = key(&rt, NUMBER);
+    let mut waited = false;
+    for _ in 0..3000 {
+        match task
+            .run_with(Budget::instructions(1), &mut Recorder::default())
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            outcome => {
+                assert_eq!(waiting(outcome), expected, "{source}");
+                waited = true;
+                break;
+            }
+        }
+    }
+    assert!(waited);
+    let request = one_request(&task, expected);
+    rt.collect().unwrap();
+    let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+    rt.collect().unwrap();
+    let result = thread::spawn(move || {
+        for _ in 0..3000 {
+            match resumed
+                .run_with(Budget::instructions(1), &mut Recorder::default())
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => return outcome,
+            }
+        }
+        panic!("bounded Map construction completion");
+    })
+    .join()
+    .unwrap();
+    assert!(
+        matches!(result, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)),
+        "{source}"
+    );
+    assert_eq!(task.dependency_log().edges(), &[expected]);
+}
+
 /// Synthetic fixture, not light-cljs output. Dependency failure is an
 /// exception from the mapper; consumer cancellation discards the native
 /// boundary and executes only the callback's ordinary finally cleanup.

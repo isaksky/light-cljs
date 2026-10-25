@@ -581,7 +581,7 @@ unsupported; top-level await is absent.
 
 The QuickJS collection fixture cases run with their original source except
 for the documented WeakRef kept-object adaptation (clj-quickjs-178).
-They do not cover iterable Map/WeakMap construction, which remains rejected.
+Iterable Map/WeakMap construction has separate synthetic coverage (clj-quickjs-294).
 
 The QuickJS Date/RegExp fixture cases execute without source adaptations
 (clj-quickjs-195). Their direct eval is strict and does not require the
@@ -3985,8 +3985,8 @@ objects remain distinct. `Map.prototype[Symbol.toStringTag]` is "Map"
 Updating a key preserves insertion position; deleting and reinserting
 moves it to the end. No user conversion or comparison code is invoked.
 
-Explicit gaps: non-nullish constructor arguments throw TypeError instead of
-consuming iterables. Map iteration methods are deferred.
+Iterable construction is supported (clj-quickjs-294 below).
+Explicit gaps: Map iteration methods are deferred.
 Fresh equal BigInt lookup/update/has/delete and forEach callback deletion
 loops are covered for 1000 inline and 1000 larger-than-128-bit keys
 (clj-quickjs-171), with each loop leaving an empty Map.
@@ -4005,8 +4005,7 @@ reinserted entries are visited later. A callback can delete its current
 entry. `clear()` removes all pending entries; entries appended afterward
 are still visited. Callback exceptions propagate to the caller, ending the
 iteration. Callbacks may yield or wait on `__rt.need`, including across GC
-and worker migration. Explicit gaps: Map iterator methods and iterable
-construction remain deferred.
+and worker migration. Explicit gap: Map iterator methods remain deferred.
 
 ## Regular expression pattern parsing API (clj-quickjs-186)
 
@@ -5246,8 +5245,8 @@ otherwise unreachable values disappear in the same collection, including
 self cycles and cycles between tables. WeakMaps cannot be published across
 tasks, directly or through persistent values or captures.
 
-Explicit gaps: non-nullish iterable construction throws TypeError, matching
-Map's current constructor boundary. WeakSet remains deferred; FinalizationRegistry
+Iterable construction is supported (clj-quickjs-294 below).
+Explicit gaps: WeakSet remains deferred; FinalizationRegistry
 is supported (-177 below). WeakMap has no enumeration, size, clear or iterator API;
 the host-only entry-count test hook is not a JavaScript property. Generic
 Object.prototype.toString symbol-tag consumption remains deferred.
@@ -6913,3 +6912,19 @@ async function f() { for await (const x in a) {} }
 ```js reject Unsupported 1:5
 for await (const x of a) {}
 ```
+
+### Execution: Map and WeakMap iterable construction (clj-quickjs-294)
+
+`new Map(iterable)` / `new WeakMap(iterable)` allocate task-owned maps and
+use a shared resumable AddEntriesFromIterable consumer. Nullish input skips
+adder lookup; otherwise `set` is read and validated once before GetIterator.
+Every entry must be an object. Its `0` and `1` properties are read in order,
+then the saved adder is called with `(key, value)` and the new map as `this`.
+Missing properties yield undefined; ordinary Map/WeakMap key rules apply.
+Entry validation/getter and adder failures perform IteratorClose with the
+original exception preserved. GetIterator and IteratorStepValue errors do
+not close. Native state traces the target, cached method, iterator record,
+entry/key, and pending exception across budgets, waits and collection.
+There is no new entry-count cap. Shared realm prototype immutability and
+unsupported built-in subclass construction (-309) still apply; the shared
+consumer supports task-owned overridden adders when supplied such a target.

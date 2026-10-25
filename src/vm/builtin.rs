@@ -2238,14 +2238,8 @@ pub(crate) fn array_constructor(heap: &Heap, task: TaskId, args: &[Value]) -> Re
         .ok_or_else(exhausted)
 }
 
-/// Nullish arguments create an empty Map. Iterable construction needs a
-/// resumable iterator frame and is deliberately rejected until supported.
-pub(crate) fn map_constructor(heap: &Heap, task: TaskId, args: &[Value]) -> Result<Value, Fault> {
-    if !matches!(args.first(), None | Some(Value::Undefined | Value::Null)) {
-        return Err(Fault::TypeError(
-            "Map iterable construction is not supported".to_string(),
-        ));
-    }
+/// Allocate the task-owned target before the resumable iterable consumer.
+pub(crate) fn map_constructor(heap: &Heap, task: TaskId) -> Result<Value, Fault> {
     let prototype = realm::intrinsics(heap)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
         .map_prototype;
@@ -2419,17 +2413,8 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
     }
 }
 
-/// Same explicit iterable gap as Map: no iterator callbacks in a leaf native.
-pub(crate) fn weak_map_constructor(
-    heap: &Heap,
-    task: TaskId,
-    args: &[Value],
-) -> Result<Value, Fault> {
-    if !matches!(args.first(), None | Some(Value::Undefined | Value::Null)) {
-        return Err(Fault::TypeError(
-            "WeakMap iterable construction is not supported".into(),
-        ));
-    }
+/// Allocate an empty WeakMap; AddEntriesFromIterable performs user calls.
+pub(crate) fn weak_map_constructor(heap: &Heap, task: TaskId) -> Result<Value, Fault> {
     let prototype = realm::intrinsics(heap)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
         .weak_map_prototype;

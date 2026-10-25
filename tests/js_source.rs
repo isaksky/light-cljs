@@ -21424,10 +21424,8 @@ fn map_receivers_properties_and_explicit_gaps() {
         );
     }
     for src in [
-        "new Map([])",
         "new Map(1)",
         "new Map({})",
-        "new Map('')",
         "Map.prototype.size",
         "Object.getOwnPropertyDescriptor(Map.prototype, 'size').get.call({})",
         "'use strict'; let m = new Map(); m.size = 2",
@@ -25927,7 +25925,7 @@ fn weak_map_operations() {
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
-    for source in ["WeakMap()", "new WeakMap([])", "new WeakMap(1)"] {
+    for source in ["WeakMap()", "new WeakMap(1)"] {
         assert_eq!(failure(source).kind(), VmErrorKind::TypeError, "{source}");
     }
     for (method, length) in [("set", 2), ("get", 1), ("has", 1), ("delete", 1)] {

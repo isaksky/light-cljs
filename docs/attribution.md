@@ -1494,3 +1494,11 @@ Consulted `research/quickjs/quickjs.c` `js_array_of`, `js_array_slice`,
 spreadability, depth, sparse/dense copying and constructor semantics.
 The Rust continuations and synthetic fixtures were independently written;
 no QuickJS source or test text was copied.
+
+## Map and WeakMap iterable construction (clj-quickjs-294)
+
+Semantic reference: `research/quickjs/quickjs.c::js_map_constructor` and its
+`JS_IteratorClose` failure path, revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The Rust continuation and synthetic source fixtures were written afresh;
+no QuickJS implementation or test source was copied.

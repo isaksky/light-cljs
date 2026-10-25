@@ -220,6 +220,7 @@ mod intl;
 pub(crate) mod iterator;
 pub(crate) mod regexp;
 
+mod add_entries;
 mod array_callbacks;
 mod array_copy;
 mod array_from;
@@ -671,6 +672,7 @@ enum NativeState {
     ArraySearch(Box<array_search::State>),
     ArrayCallbacks(Box<array_callbacks::State>),
     ArrayCopy(Box<array_copy::State>),
+    AddEntries(Box<add_entries::State>),
 }
 
 #[derive(Debug)]
@@ -957,6 +959,7 @@ impl Trace for NativeFrame {
             NativeState::Eval(eval) => eval.trace(visit),
             NativeState::DynamicFunction(function) => function.trace(visit),
             NativeState::ArrayFrom(from) => from.trace(visit),
+            NativeState::AddEntries(entries) => entries.trace(visit),
             NativeState::MathSumPrecise(sum) => sum.trace(visit),
             NativeState::ArraySort(sort) => sort.trace(visit),
             NativeState::ArrayMutate(array) => array.trace(visit),
@@ -1487,6 +1490,10 @@ pub(crate) fn start_builtin(
             | Builtin::ObjectSetPrototypeOf
             | Builtin::ObjectCreate
             | Builtin::ArraySpecies
+            | Builtin::MapSet
+            | Builtin::WeakMapSet
+            | Builtin::MapGet
+            | Builtin::WeakMapGet
     ) {
         return Ok(false);
     }
@@ -3011,6 +3018,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     if match &state.natives[native_index].state {
         NativeState::AsyncGenerator(a) => a.catches_step(),
         NativeState::ArrayFrom(from) => from.catches_step(),
+        NativeState::AddEntries(entries) => entries.catches_step(),
         NativeState::ListFormat(format) => format.catches_step(),
         NativeState::MathSumPrecise(sum) => sum.catches_step(),
         _ => false,
@@ -3317,6 +3325,7 @@ pub(crate) fn catch(
         NativeState::Disposal(disposal) if disposal.catches() => disposal.failed(exception),
         NativeState::Promise(promise) if promise.catches() => promise.failed(exception.value),
         NativeState::ArrayFrom(from) if from.catches() => from.failed(exception),
+        NativeState::AddEntries(entries) if entries.catches() => entries.failed(exception),
         NativeState::ListFormat(format) if format.catches() => format.failed(exception),
         NativeState::MathSumPrecise(sum) if sum.catches() => sum.failed(exception),
         NativeState::Generator { failed, .. } => *failed = Some(exception),
@@ -3536,6 +3545,7 @@ impl NativeState {
             Self::Disposal(disposal) => disposal.catches(),
             Self::Promise(promise) => promise.catches(),
             Self::ArrayFrom(from) => from.catches(),
+            Self::AddEntries(entries) => entries.catches(),
             Self::ListFormat(format) => format.catches(),
             Self::MathSumPrecise(sum) => sum.catches(),
             _ => false,
@@ -3558,6 +3568,7 @@ impl NativeState {
             // conversion helpers. Keep the unrelated native arms' stack
             // storage out of spread execution on 64 KiB workers.
             NativeState::Iterator(iterator) => iterator.step(heap, task, input),
+            NativeState::AddEntries(entries) => entries.step(heap, task, input),
             NativeState::Dispose(dispose) => dispose.step(heap, task, input),
             NativeState::Disposal(disposal) => disposal.step(heap, task, input),
             NativeState::Promise(promise) => promise.step(heap, task, jobs, input),
@@ -3686,6 +3697,9 @@ impl NativeState {
                 unreachable!("iterator dispatched before other native arms")
             }
             NativeState::ArrayFrom(from) => from.step(heap, task, input),
+            NativeState::AddEntries(_) => {
+                unreachable!("entry consumer dispatched before other native arms")
+            }
             NativeState::MathSumPrecise(sum) => sum.step(heap, task, input),
             NativeState::ArraySort(_) => {
                 unreachable!("array sort dispatched before other native arms")
@@ -4958,6 +4972,7 @@ impl NativeState {
                 | NativeState::DynamicFunction(_)
                 | NativeState::Reduce { .. }
                 | NativeState::ArrayFrom(_)
+                | NativeState::AddEntries(_)
                 | NativeState::MathSumPrecise(_)
                 | NativeState::ArraySort(_)
                 | NativeState::ArrayMutate(_)
@@ -5061,9 +5076,18 @@ pub(crate) fn assert_no_borrow(operation: &'static str) {
     let _ = operation;
 }
 
-/// Early VM tests (hand-assembled bytecode, not JavaScript source support)
-/// of the leaf/resumable split; the embedding-level tests, from source, are
-/// in `tests/native_fold.rs`.
+/// Fill an allocated task-owned target through its observable `set` method.
+pub(crate) fn start_add_entries(
+    state: &mut VmState,
+    target: Value,
+    items: Value,
+    popped: usize,
+) -> Result<(), Fault> {
+    let native = add_entries::State::new(target, items);
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::AddEntries(Box::new(native)))
+}
+
 pub(crate) fn start_disposable_stack_constructor(
     state: &mut VmState,
     target: Value,
