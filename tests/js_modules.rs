@@ -423,6 +423,307 @@ fn assert_effects(sources: &[(&str, &str)], expected: Vec<Primitive>) {
     assert_eq!(effects, expected);
 }
 
+#[test]
+fn default_export_declarations_and_expressions() {
+    let cases = [
+        ("export default 42;", "d === 42"),
+        (
+            "export default function f(){return f;}",
+            "d.name === 'f' && d() === d",
+        ),
+        (
+            "export default function(){return 42;}",
+            "d.name === 'default' && d() === 42",
+        ),
+        (
+            "export default function*(){yield 42;}",
+            "d.name === 'default' && d().next().value === 42",
+        ),
+        (
+            "export default async function() {return 42;}",
+            "d.name === 'default' && typeof d() === 'object'",
+        ),
+        (
+            "export default async function* g(){yield 42;}",
+            "d.name === 'g' && typeof d().next() === 'object'",
+        ),
+        (
+            "export default async function*(){yield 42;}",
+            "d.name === 'default' && typeof d().next() === 'object'",
+        ),
+        (
+            "export default () => 42;",
+            "d.name === 'default' && d() === 42",
+        ),
+        (
+            "export default (function(){return 42;});",
+            "d.name === 'default' && d() === 42",
+        ),
+        (
+            "export default (function inner(){return inner;});",
+            "d.name === 'inner' && d() === d",
+        ),
+        (
+            "export default class Named {static self(){return Named;}}",
+            "d.name === 'Named' && d.self() === d",
+        ),
+        (
+            "export default class {static self(){return this;}}",
+            "d.name === 'default' && d.self() === d",
+        ),
+        ("export default (class {});", "d.name === 'default'"),
+        ("export default (class Inner {});", "d.name === 'Inner'"),
+        (
+            "export default class extends Array { #x = 42; value(){return this.#x;} static {this.tag = this.name;} }",
+            "d.name === 'default' && d.tag === 'default' && new d().value() === 42",
+        ),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        for (source, check) in cases {
+            let entry = format!(
+                "import d, * as ns from './dep.js'; import {{default as alias}} from './dep.js'; __rt.effect(0, d === ns.default && alias === d && ({check}));"
+            );
+            let (outcome, effects) =
+                execute_modules(&[("entry.js", &entry), ("dep.js", source)], budget);
+            assert!(
+                matches!(outcome, RunOutcome::Complete(_)),
+                "{source}: {outcome:?}"
+            );
+            assert_eq!(effects, vec![Primitive::Bool(true)], "{source}");
+        }
+    }
+}
+
+#[test]
+fn default_exports_keep_live_aliases_and_expression_snapshots() {
+    let sources = [
+        (
+            "entry.js",
+            r#"
+            import d, {original, replace} from './barrel.js';
+            import same, * as ns from './dep.js';
+            import {default as alias, renamed} from './barrel.js';
+            import snapshot, {n, bump} from './snapshot.js';
+            const first = d;
+            __rt.effect(0, d === original && d === same && d === ns.default && alias === d && renamed === d && d() === 1);
+            replace(); bump();
+            __rt.effect(0, d === original && d === same && d === ns.default && alias === d && renamed === d && d() === 2 && first() === 2 && n === 2 && snapshot === 1);
+            let caught = false; try {d = 0;} catch(e) {caught = e instanceof TypeError;}
+            __rt.effect(0, caught && Object.keys(ns).join(',') === 'default,original,replace');
+        "#,
+        ),
+        (
+            "barrel.js",
+            "export {default} from './relay.js'; export {default as renamed} from './dep.js'; export * from './dep.js';",
+        ),
+        (
+            "relay.js",
+            "import d from './dep.js'; export {d as default};",
+        ),
+        (
+            "dep.js",
+            include_str!("fixtures/modules/default_exports.js"),
+        ),
+        (
+            "snapshot.js",
+            "let n = 1; export default n; export {n}; export function bump(){n++;}",
+        ),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Bool(true); 3]);
+    }
+}
+
+#[test]
+fn cyclic_default_function_declarations_are_hoisted() {
+    for declaration in ["function f(){return 42;}", "function(){return 42;}"] {
+        let entry =
+            format!("import d from './dep.js'; export default {declaration} __rt.effect(0, d());");
+        let sources = [
+            ("entry.js", entry.as_str()),
+            (
+                "dep.js",
+                "import d from './entry.js'; const n = d(); export default function(){return n;}",
+            ),
+        ];
+        for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+            let (outcome, effects) = execute_modules(&sources, budget);
+            assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+            assert_eq!(effects, vec![Primitive::Number(42.0)]);
+        }
+    }
+}
+
+#[test]
+fn default_expressions_and_classes_remain_in_tdz() {
+    for declaration in [
+        "42;",
+        "() => 42;",
+        "(function(){return 42;});",
+        "class {}",
+        "class Named {}",
+    ] {
+        let entry = format!("import './dep.js'; export default {declaration}");
+        let sources = [
+            ("entry.js", entry.as_str()),
+            (
+                "dep.js",
+                "import d, * as ns from './entry.js'; let errors=0; try{d;}catch(e){if(e instanceof ReferenceError)errors++;} try{ns.default;}catch(e){if(e instanceof ReferenceError)errors++;} __rt.effect(0, errors === 2);",
+            ),
+        ];
+        for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+            let (outcome, effects) = execute_modules(&sources, budget);
+            assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+            assert_eq!(effects, vec![Primitive::Bool(true)], "{declaration}");
+        }
+    }
+}
+
+#[test]
+fn default_export_initializers_dispose_module_resources_on_throw() {
+    for declaration in ["(function(){throw 42;})();", "class {static {throw 42;}}"] {
+        let source = format!(
+            "using resource = {{[Symbol.dispose](){{__rt.effect(0, 'disposed');}}}}; export default {declaration} __rt.effect(0, 'unreachable');"
+        );
+        let (outcome, effects) = execute_modules(&[("entry.js", &source)], Budget::instructions(1));
+        assert!(
+            matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::Thrown),
+            "{outcome:?}"
+        );
+        assert_eq!(effects, vec![Primitive::String("disposed".into())]);
+    }
+}
+
+#[test]
+fn default_class_declaration_keeps_outer_and_inner_bindings() {
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(
+            &[
+                (
+                    "entry.js",
+                    "import d, {C, replace} from './dep.js'; import * as star from './star.js'; const first=d; __rt.effect(0, d === C && first.self() === first && !Object.keys(star).includes('default')); replace(); __rt.effect(0, d === C && d === 42 && first.self() === first && first.immutable());",
+                ),
+                (
+                    "dep.js",
+                    "export default class C {static self(){return C;} static immutable(){try{C=0;}catch(e){return e instanceof TypeError;} return false;}} export {C}; export function replace(){C=42;}",
+                ),
+                ("star.js", "export * from './dep.js';"),
+            ],
+            budget,
+        );
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Bool(true); 2]);
+    }
+}
+
+#[test]
+fn default_exports_wait_collect_migrate_and_keep_task_instances_separate() {
+    use clj_quickjs::Completion;
+    let runtime = Runtime::new();
+    let world = runtime.new_world();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import d, * as ns from './dep.js'; d.n++; __rt.effect(0, d === ns.default && d.n === 43 && d.self() === d);");
+    host.add(
+        "dep.js",
+        "__rt.effect(0, 'once'); export default {n: __rt.need(71, 0), self(){return this;}};",
+    );
+    let graph = ModuleLoader::new()
+        .load(world, &"entry.js".into(), &mut host)
+        .unwrap();
+    let mut waits = 0;
+    // Each task evaluates the default expression afresh, using the same cached
+    // record and dependency value. Imports themselves add no dependency edges.
+    for _ in 0..2 {
+        let mut task = runtime.spawn_module(&graph);
+        let mut done = false;
+        for _ in 0..2000 {
+            let (next_task, next_host, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task.run_with(Budget::instructions(1), &mut host).unwrap();
+                    (task, host, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next_task;
+            host = next_host;
+            runtime.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(key) => {
+                    waits += 1;
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = runtime.root(Primitive::Number(42.0));
+                    task = runtime
+                        .complete(key, request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Undefined);
+                    done = true;
+                    break;
+                }
+                outcome => panic!("{outcome:?}"),
+            }
+        }
+        assert!(done, "default export did not finish");
+        assert_eq!(task.dependency_log().edges().len(), 1);
+    }
+    assert_eq!(waits, 1);
+    assert_eq!(
+        host.effects,
+        vec![
+            Primitive::String("once".into()),
+            Primitive::Bool(true),
+            Primitive::String("once".into()),
+            Primitive::Bool(true)
+        ]
+    );
+    assert_eq!(host.fetches().len(), 2);
+}
+
+#[test]
+fn quickjs_cyclic_import_adapted_to_defaults() {
+    // Upstream entry line 9: named import -> default import. Fixture line 2:
+    // named function export -> named default function export. Assertions and
+    // executable bodies are unchanged; the fixtures retain the MIT notices.
+    let entry = QUICKJS_CYCLIC_ENTRY.replace(
+        "import {f} from \"./fixture_cyclic_import.js\"",
+        "import f from \"./fixture_cyclic_import.js\"",
+    );
+    let fixture =
+        QUICKJS_CYCLIC_FIXTURE.replace("export function f(", "export default function f(");
+    assert_ne!(entry, QUICKJS_CYCLIC_ENTRY);
+    assert_ne!(fixture, QUICKJS_CYCLIC_FIXTURE);
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(
+            &[
+                (
+                    "observer.js",
+                    "import './tests/test_cyclic_import.js'; __rt.effect(0, 'default cyclic assertion completed');",
+                ),
+                ("tests/test_cyclic_import.js", &entry),
+                ("tests/fixture_cyclic_import.js", &fixture),
+                ("tests/assert.js", QUICKJS_MODULE_ASSERT),
+            ],
+            budget,
+        );
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(
+            effects,
+            vec![Primitive::String(
+                "default cyclic assertion completed".into()
+            )]
+        );
+    }
+}
+
 const QUICKJS_CYCLIC_ENTRY: &str =
     include_str!("fixtures/js/quickjs_modules/test_cyclic_import.js");
 const QUICKJS_CYCLIC_FIXTURE: &str =

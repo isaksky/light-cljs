@@ -1693,3 +1693,19 @@ in `research/quickjs/quickjs.c`,
 revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
 The Rust builtin classification, resumable tag read and synthetic JavaScript
 fixtures were written afresh; no QuickJS source or tests were copied.
+
+## Module default exports (clj-quickjs-321)
+
+`src/frontend/lower/modules.rs` is original Rust code informed by
+`research/quickjs/quickjs.c::js_parse_export` and `js_parse_import` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+`tests/js_modules.rs::quickjs_cyclic_import_adapted_to_defaults` reuses the
+existing fully attributed fixtures in `tests/fixtures/js/quickjs_modules/`:
+`test_cyclic_import.js` upstream line 9 changes its named import to a default
+import, and `fixture_cyclic_import.js` upstream line 2 changes its named
+function export to a named default function export, in memory. Assertions and
+executable bodies are unchanged; the existing metadata adaptation still
+expects successful cyclic evaluation. The fixtures retain the complete QuickJS
+copyright and MIT notices. Other new module test sources, including
+`tests/fixtures/modules/default_exports.js`, are synthetic fixtures, not
+light-cljs output.

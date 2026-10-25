@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::frontend::ModuleRecord;
-use crate::frontend::ast::ModuleItem;
+use crate::frontend::ast::{DefaultExport, ModuleItem};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ModuleBinding {
@@ -31,6 +31,23 @@ impl ModuleBinding {
     }
 }
 
+/// Default declarations share their named local binding. Expressions and
+/// anonymous declarations use a cell that cannot be spelled in JavaScript.
+fn default_binding(export: &DefaultExport) -> ModuleBinding {
+    let (name, span, kind) = match export {
+        DefaultExport::Function(f) => (&f.name, f.span, BindingKind::Function),
+        DefaultExport::Class(c) => (&c.name, c.span, BindingKind::Let),
+        DefaultExport::Expression(e) => (&None, e.span, BindingKind::Const),
+    };
+    ModuleBinding {
+        name: name.clone().unwrap_or_else(|| Ident {
+            name: "*default*".into(),
+            span,
+        }),
+        kind,
+    }
+}
+
 pub(crate) fn module_bindings(
     source: &str,
     record: &ModuleRecord,
@@ -47,13 +64,12 @@ pub(crate) fn module_bindings(
     }
     let mut body = Vec::new();
     for item in record.body() {
-        let ModuleItem::Statement(stmt) = item else {
-            return Err(SyntaxError::new(
-                source,
-                SyntaxErrorKind::Unsupported,
-                record.span(),
-                "default exports cannot be executed yet",
-            ));
+        let stmt = match item {
+            ModuleItem::Statement(stmt) => stmt,
+            ModuleItem::DefaultExport(export) => {
+                bindings.push(default_binding(export));
+                continue;
+            }
         };
         match &stmt.kind {
             StmtKind::Lexical(decl) => {
@@ -134,25 +150,62 @@ pub(crate) fn lower_module(
         lower.cur_mut().max_slots = bindings.len();
         let mut body = Vec::new();
         for item in record.body() {
-            let ModuleItem::Statement(stmt) = item else {
-                unreachable!("checked bindings")
-            };
-            if instantiate {
-                if let StmtKind::FunctionDecl(f) = &stmt.kind {
-                    let name = lower.declaration_name(f)?;
-                    let b = lower.local(name)?;
-                    lower.out().op_u16(Opcode::GetLocal, b.slot, f.span);
-                    // Always capture the mutable module cell, even for self
-                    // recursion: the exporter may replace the function binding.
-                    lower.closure(f, None, None)?;
-                    lower.out().op(Opcode::CellInit, f.span);
+            if !instantiate {
+                if let ModuleItem::Statement(stmt) = item {
+                    body.push(stmt.clone());
                 }
-            } else {
-                body.push(stmt.clone());
+                continue;
             }
+            let (f, name, inferred) = match item {
+                ModuleItem::Statement(Stmt {
+                    kind: StmtKind::FunctionDecl(f),
+                    ..
+                }) => (f, lower.declaration_name(f)?.clone(), None),
+                ModuleItem::DefaultExport(export @ DefaultExport::Function(f)) => (
+                    f,
+                    default_binding(export).name,
+                    Some(JsString::from("default")),
+                ),
+                _ => continue,
+            };
+            let b = lower.local(&name)?;
+            lower.out().op_u16(Opcode::GetLocal, b.slot, f.span);
+            // Always capture the mutable module cell, even for self
+            // recursion: the exporter may replace the function binding.
+            lower.closure(f, None, inferred)?;
+            lower.out().op(Opcode::CellInit, f.span);
         }
         if !instantiate {
-            lower.disposable_body(&body)?;
+            // Ordinary statements supply resource declarations; all module
+            // items still execute in source order inside the disposal scope.
+            lower.disposable_body_with(&body, |lower| {
+                for item in record.body() {
+                    let export = match item {
+                        ModuleItem::Statement(stmt) => {
+                            lower.statement(stmt)?;
+                            continue;
+                        }
+                        ModuleItem::DefaultExport(DefaultExport::Function(_)) => continue,
+                        ModuleItem::DefaultExport(export) => export,
+                    };
+                    let binding = default_binding(export);
+                    let b = lower.local(&binding.name)?;
+                    let span = binding.name.span;
+                    lower.out().op_u16(Opcode::GetLocal, b.slot, span);
+                    match export {
+                        DefaultExport::Expression(e) => {
+                            lower.named_expr(e, JsString::from("default"))?;
+                        }
+                        DefaultExport::Class(c) => {
+                            lower
+                                .class_expr(c, Some(ClassName::Known(JsString::from("default"))))?;
+                        }
+                        DefaultExport::Function(_) => unreachable!("instantiated above"),
+                    }
+                    lower.out().op(Opcode::CellInit, span);
+                }
+                Ok(())
+            })?;
         }
         lower.out().op(Opcode::Undefined, record.span());
         lower.out().op(Opcode::Return, record.span());

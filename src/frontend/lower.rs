@@ -1152,8 +1152,23 @@ impl<'s> Lowerer<'s> {
     /// declared after an abrupt initializer are therefore never disposed.
     #[inline(never)]
     fn disposable_body(&mut self, body: &[Stmt]) -> Result<(), SyntaxError> {
+        self.disposable_body_with(body, |this| {
+            for stmt in body {
+                this.statement(stmt)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Modules mix ordinary statements with default-export initializers, but
+    /// use the same resource lifetime and finally protocol as statement lists.
+    fn disposable_body_with(
+        &mut self,
+        body: &[Stmt],
+        emit: impl FnOnce(&mut Self) -> Result<(), SyntaxError>,
+    ) -> Result<(), SyntaxError> {
         let Some(first) = body.first() else {
-            return Ok(());
+            return emit(self);
         };
         let resources: Vec<_> = body
             .iter()
@@ -1171,12 +1186,7 @@ impl<'s> Lowerer<'s> {
                     .map(|d| (d.span, decl.kind == LexicalKind::AwaitUsing))
             })
             .collect();
-        self.disposable_scope(&resources, first.span, |this| {
-            for stmt in body {
-                this.statement(stmt)?;
-            }
-            Ok(())
-        })
+        self.disposable_scope(&resources, first.span, emit)
     }
 
     /// Shared disposal scope for statement lists and for-using-of iterations.

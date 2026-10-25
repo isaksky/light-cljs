@@ -596,7 +596,7 @@ loads complete static graphs before task execution. Cyclic and acyclic
 graphs link and evaluate with live imports and re-exports (clj-quickjs-253/255).
 Namespace imports and re-exports execute, including cyclic TDZ checks
 (clj-quickjs-254). Host-classified JSON modules expose one default export
-(clj-quickjs-256). Default-export declarations remain deferred; the CLI and
+(clj-quickjs-256). Default-export declarations execute (clj-quickjs-321); the CLI and
 `compile_script` take scripts only.
 
 The complete adapted QuickJS `test_cyclic_import.js` and `hello_module.js`
@@ -5939,8 +5939,8 @@ Exported declarations include functions (ordinary, generator and async), classes
 an assignment expression, or a named/anonymous function or class declaration. A named
 default declaration binds its name locally; an expression or anonymous
 declaration has the inaccessible `*default*` record binding. Default function
-declarations remain distinct from default expressions in the body AST so a
-later linker can apply their hoisting semantics.
+declarations remain distinct from default expressions in the body AST so
+module instantiation can apply their hoisting semantics.
 
 ```js module-accept
 export function f(x) { return x + 1; }
@@ -7079,3 +7079,32 @@ Shared intrinsics remain immutable. Existing unsupported Proxy get traps,
 512-target Proxy classification bound, and absent DataView/SharedArrayBuffer,
 Map iterator and separate generator/async function prototype intrinsics remain
 unchanged. Synthetic fixtures: tests/object_to_string.rs.
+
+### Module default execution (clj-quickjs-321)
+
+`export default AssignmentExpression`, `export default function [name](...)`,
+and `export default class [name] ...` execute through the embedding API. Async,
+generator and async-generator function defaults use the existing function
+machinery. Named declarations export the same mutable local cell as their
+name. Anonymous declarations use an inaccessible `*default*` cell and receive
+function/class name `default`; anonymous function/class expressions, including
+arrows, also receive that name. Named expressions retain their own name and
+scope. An expression captures its value once, rather than aliasing an identifier
+used in that expression; `export {x as default}` remains a live alias to x.
+
+Default function declarations initialize during module instantiation before
+any body in a cyclic graph. Class declarations and expression defaults stay
+in TDZ until their source position executes; reading through an import or
+namespace throws ReferenceError before initialization. Named default classes
+retain their separate immutable inner class-name binding. Initializers run
+inside the module's ordinary resource disposal scope, and their continuations
+survive budgets, dependency waits, collection and worker migration.
+
+All default import forms (`import d from`, `import d, {x} from`,
+`import d, * as ns from`, `import {default as d} from`) use existing immutable
+live import cells. `export {default} from` and `export {default as x} from`
+resolve the same origin, including through cycles. Namespaces expose default;
+star exports omit it. JSON modules retain their existing single default cell.
+Records remain cached per world/version, instances per task, and imports do
+not create dependency edges. No new execution limits apply; top-level await
+and the module CLI remain deferred.

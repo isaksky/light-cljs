@@ -4278,7 +4278,7 @@ and `CARGO_BUILD_JOBS=3 cargo test --lib module::namespace:: -- --test-threads=3
 Cyclic namespaces resolve before bodies execute, preserve hoisted function calls
 and throw catchable ReferenceErrors for lexical exports still in TDZ
 (clj-quickjs-255). JSON instances are supported (clj-quickjs-256);
-default-export declarations remain deferred. The CLI remains script-only.
+default-export declarations execute (clj-quickjs-321). The CLI remains script-only.
 
 ### Public class fields (clj-quickjs-139)
 
@@ -4458,7 +4458,7 @@ async generators (-313), `??` and
 logical assignment (-314), rest parameters/object spread/destructuring loop
 heads (-315), numeric separators (-316), Promise combinators (-317), Object
 statics (-318), the remaining Math functions (-319) and
-module default exports (-321). No engine behaviour changes in this pellet.
+module default exports (implemented by -321). No engine behaviour changes in this pellet.
 
 ### Nullish coalescing and logical assignment (clj-quickjs-314)
 
@@ -5037,3 +5037,22 @@ the existing property machinery; absent traps forward normally, with the existin
 separate GeneratorFunction/AsyncFunction prototype intrinsics do not yet exist.
 
 Check: `CARGO_BUILD_JOBS=3 cargo test --test object_to_string -- --test-threads=3`.
+
+### Module default exports (clj-quickjs-321)
+
+Supported through the embedding API: `export default` expressions, function
+and class declarations (named or anonymous), default imports alone or combined
+with named/namespace imports, `import {default as d}`, and explicit re-exports
+of default. Named declarations export their mutable local binding; default
+expressions capture their evaluated value. Anonymous functions/classes receive
+the name `default`. Default function declarations are hoisted across cycles;
+classes and expressions remain in TDZ until evaluation. Namespaces expose the
+live default binding, while `export *` excludes it. Existing JSON default
+exports use the same linker. Default initializers preserve ordinary resource
+disposal, budgets, waits, GC and worker migration; instances remain task-owned.
+No new limits apply. Top-level await remains deferred; the CLI takes scripts.
+
+Verification: `CARGO_BUILD_JOBS=3 cargo test --test js_modules -- --test-threads=3`.
+The synthetic `tests/fixtures/modules/default_exports.js` and the QuickJS cyclic
+case adapted to default import/export both execute through `ModuleLoader` and
+`Runtime::spawn_module`.
