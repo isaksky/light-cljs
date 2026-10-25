@@ -3,7 +3,7 @@
 //!
 //! # Embedding boundary
 //!
-//! * [`Runtime`]: shared heap and execution machinery; owns no threads.
+//! * [`Runtime`]: shared heap and execution machinery; owns no execution pool.
 //! * [`Executable`]: immutable, validated code shared by all tasks running it.
 //! * [`Task`]: task-owned VM state, driven by the embedder via [`Task::run`] or
 //!   [`Task::run_with`] (instruction [`Budget`] plus leaf [`Host`] effects)
@@ -67,11 +67,11 @@
 //! # Status
 //!
 //! JavaScript source in the documented subset is parsed and compiled to
-//! validated bytecode ([`frontend::compile_script`]): straight-line code,
-//! conditionals, loops, locals, functions, calls, closures and the
-//! compiler-reserved intrinsic binding `__rt`, and string values
-//! ([`JsString`]: immutable UTF-16 code units, compared by content); property
-//! access cannot be compiled yet. Executables can also be built from hand-assembled bytecode
+//! validated bytecode ([`frontend::compile_script`]), including functions,
+//! closures, objects, classes, generators, async execution and static modules.
+//! `docs/grammar.md` defines the supported native APIs, explicit gaps,
+//! compiler-reserved `__rt` binding and resource limits. Executables can also
+//! be built from hand-assembled bytecode
 //! ([`Assembler`]), which is an early VM test tool, not JavaScript source
 //! support; at that level the VM runs nested calls and recursion in explicit
 //! task-owned frames, bounded by [`VmLimits`] instead of the Rust stack.
@@ -80,7 +80,9 @@
 //! reach VM poll points and for scopes to close or be released
 //! ([`Scope::released`]); see [`heap::gc`].
 //! An optional reference executor ([`exec`]) drives tasks on worker threads
-//! with a ready queue; the runtime itself owns no threads.
+//! with a ready queue; the runtime itself owns no execution worker pool.
+//! Runtime eval/Function compilation uses a bounded, joined compiler thread;
+//! JavaScript execution and continuations stay on the embedder's workers.
 
 pub mod atom;
 pub mod collections;

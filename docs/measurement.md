@@ -1,304 +1,145 @@
-# Measurement
+# Measurement and command verification
 
-Reproducible cost measurements of this standalone runtime (`docs/design.md`
-§15; pellet clj-quickjs-15). They measure this implementation only. Nothing
-here is compared with light-cljs, QuickJS or V8: no matched comparison has
-been performed, and upstream figures (for example the "Main Features"
-section of `research/quickjs/doc/quickjs.texi`) are not results of this
-project. `research/quickjs/tests/microbench.js` (revision 7d1c13c5d8f8)
-informed only the reporting style (named per-operation rows, an empty-loop
-reference row); none of its workloads, code or scores are used.
+These measurements describe this standalone runtime only. There is no matched
+comparison with QuickJS, V8 or the unavailable compiler. The source-driven
+architectural proofs and their limitations are mapped in
+[architecture.md](architecture.md#requirement-map).
 
-## Commands
+## Reproduce
+
+Inside the pinned `nix develop` environment, use `CARGO_BUILD_JOBS=3` throughout.
+Test commands use `--test-threads=3`. Release measurements:
 
 ```sh
-cargo run --release --example bench              # full run: about 30 s on a quiet machine
-cargo run --release --example bench -- --quick   # smaller sizes, 3 rounds: about 2 s
-cargo run --release --example bench -- memory    # one row group (startup, reads, park,
-                                                 # persistent, memory, work, overhead, strings)
+cargo run --release --example bench
+cargo run --release --example bench -- --quick
+cargo run --release --example bench -- memory
 cargo run --release --example bench -- work --workers 4 --rounds 9
-cargo test --test measurement                    # the workloads at small sizes, asserted
+cargo run --release --example bench -- strings --rounds 3
+cargo test --test measurement -- --test-threads=3
 ```
 
-The harness is `examples/bench/main.rs` (timing, counting allocator,
-report) and `examples/bench/workloads.rs` (the workloads, shared with
-`tests/measurement.rs`). The JavaScript is the synthetic fixtures
-`examples/bench/*.js` and `examples/e2e/work.js`, not light-cljs output.
-It is std only: no benchmark framework or other dependency.
+The full invocation runs every row group; quick uses smaller sizes. The
+`memory` and `strings` selectors isolate those groups. The work selector above
+uses four executor workers and nine measured rounds; tests still use three
+test threads. The benchmark owns its default target output only.
 
-## Method
+## Method and limits of the measurements
 
-- **Rounds.** Each timing row runs one warmup round (discarded), then
-  `--rounds` measured rounds (5 full, 3 quick), each in a fresh `Runtime`
-  created outside the timed interval. It prints the median and the
-  `[min .. max]` over the measured rounds, per operation. The spread is the
-  variance to read; nothing is averaged away.
-- **Setup is outside the timed interval.** Compilation, input building,
-  spawning (except in the startup row), completing cells for ready reads
-  and building the collections that lookups read all happen before the
-  clock starts.
-- **Work cannot disappear.** Every task's result is checked against a
-  value computed in Rust (sums, counts, identities); the checks run after
-  the timed interval.
-- **Baseline loops.** JavaScript rows that run one intrinsic per loop
-  iteration are paired with `loop.js`, the same loop with the intrinsic
-  replaced by arithmetic; the `_minus_baseline` rows subtract it. The
-  difference is an estimate, not an isolated instruction cost.
-- **Threads.** Rows run on one embedder thread except the `work.*` rows,
-  which use the reference executor with `--workers` workers (default 2).
-- **Environment.** The report starts with the build profile, target,
-  available parallelism, CPU model, mode, rounds and worker count, and
-  prints the load average at start and end. Wall-clock times on a shared
-  machine are noisy; a debug build says so in its header and is not
-  representative.
+`examples/bench/main.rs` handles timing, a counting allocator and reports;
+`examples/bench/workloads.rs` supplies workloads shared with
+`tests/measurement.rs`. JavaScript in `examples/bench/` and `examples/e2e/work.js`
+is synthetic fixture code, not light-cljs output. No benchmark dependency or
+C-engine wrapper is used. QuickJS `tests/microbench.js` at the attributed
+revision informed only the named-row/empty-loop reporting style; no workload
+or score is copied from it.
 
-### Memory figures and what they separate
+Timing rows use one discarded warmup, then five measured rounds (three in quick
+mode), reporting median and [min..max]. Each round uses a fresh Runtime, with
+setup outside the interval: compilation, input building, task spawning except
+in startup rows, and pre-completion of ready cells. Results are checked against
+Rust-computed values after timing. Rows pairing a JS intrinsic loop with an
+arithmetic baseline report the difference as an estimate, not isolated opcode
+cost. Most rows run on one embedder thread; `work` uses the reference executor.
 
-| Figure | Source | Meaning |
-|--------|--------|---------|
-| `input_B`, `input_ob` | counting allocator, `HeapStats` | Shared input: building and rooting one form (3001 heap objects; persistent trie bodies included) |
-| `code_B` | counting allocator | Shared code: compiling `consumer.js` once |
-| `spawn_B/t`, `park_B/t`, `allocs/t` | counting allocator | Per consumer: spawning, then running to the park. Includes task-owned VM state (frames, native continuations), the task's root-source registration, its waiter entry in the cell, its own heap objects (a builder in `consumer.js`, the fold callback in `consumer_fold.js`) and its share of object-table growth |
-| `kept_B/t` | counting allocator | Per consumer: runtime storage not given back after the tasks are dropped and a collection runs (object-table and registry capacity). Host storage is allocated before and kept after this interval, so it is excluded |
-| `heap_ob`, `heap_ob/t` | `HeapStats`, `HeapUsage` | Live heap objects while every consumer is parked, and the increase per consumer |
-| `vm_est_B` | `Task::stats` | Shallow lower-bound estimate of one parked task's VM state (lengths times type sizes) |
-| `Vec<Task>` | computed | Host-owned storage: the harness's task handles, allocated before the spawn phase and excluded from it |
-| RSS, high-water | `/proc/self/status` | Process resident memory, including allocator caching and everything that ran before |
-| `overhead.*` | timed | Instrumentation cost: counting allocator on vs off, `Instant::now`, `heap_usage`, `Task::stats` |
+The counting allocator is enabled only for memory/count passes; it counts
+requested bytes rather than allocator overhead. Memory rows run once. Shared
+input/code are measured once; per-task spawn and park bytes include task state,
+root registration, waiter entries, private heap objects and table growth.
+`kept_B/t` is capacity retained after task drop and collection. Host `Vec<Task>`
+storage is excluded from per-task figures. `HeapUsage` snapshots count live
+objects/table capacity and shallow owned bytes, excluding trie bodies, code,
+atom cells and task/native state. `TaskStats` gives shallow saved-state estimates,
+not total retained memory. RSS includes previous row groups, allocator caching
+and everything else in the process. A memory-only run avoids earlier update
+rows dominating high-water RSS.
 
-The counting allocator counts requested bytes (not allocator overhead) and
-is switched on only for the memory rows and the counted update pass. It
-uses relaxed atomics read by the measuring thread after the phase it
-measured, which ran on that thread. Allocator figures are deterministic
-for a given build; the memory rows run once.
+Statistics are read-only and not free: heap_usage walks object slots under the
+object lock; Task::stats briefly locks saved task state and returns None while
+a run holds it. The report records CPU/profile/parallelism and start/end load.
+Variation on a shared machine prevents close performance comparisons. Counting
+allocation changes timing, so ordinary timing rows leave it off.
 
-### Read-only stats API
+Not isolated here: cross-thread wake latency, heavily contended heap/cell/atom
+operations, collection pauses under load, needAll retained memory, actual compiler
+startup/workloads or comparisons with another engine. Explicit GC means persistent
+update garbage remains allocated until collection. First rope flattening is
+synchronous; the following unit reads reuse the cache. Rope release is outside
+the timing interval. Runtime resource/policy caps are in
+[grammar.md](grammar.md#resource-and-policy-limits).
 
-- `Runtime::heap_usage() -> HeapUsage`: live objects by kind
-  (`ObjectCounts`), known-shareable objects, object-table slots and free
-  slots, and shallow bytes the object table owns (slot and free-list
-  capacity, one boxed object per live object). It excludes persistent trie
-  bodies, atom cells, native payloads, executable code, task state and
-  dependency cells. It walks every slot under the object lock: O(slots),
-  for tests and measurement only.
-- `Task::stats() -> Option<TaskStats>`: a suspended or unstarted task's
-  saved frames, value-stack length, resumable native frames, whether a need
-  is pending, and a shallow byte estimate. `None` while a run holds the
-  task or after it finished. Like `Task::source_location`, it holds the
-  task body for an instant.
+## Current representative run
 
-Both are additive snapshots: they change no state, take no new locks
-beyond the object lock and the task body, and do not alter `HeapStats`.
+Recorded 2026-10-25 UTC at code baseline `72201c8b`, before this documentation
+rewrite; no runtime code changed. Linux 6.18.57 x86_64, AMD Ryzen 7 9850X3D,
+Rust 1.95.0, optimized release build. The harness reports 14 available logical
+CPUs; this pass had no peer workers and capped Cargo jobs at three. Full mode,
+one warmup plus five measured rounds, two executor workers. Load averages at
+start/end: 2.32/1.68 (one-minute values). Full invocation including its cold
+release compilation took 66 seconds. Historical numbers from earlier layouts
+are superseded by this run, not treated as a matched performance comparison.
 
-## Representative results
+| Row | Median [min..max] | Unit / workload |
+| --- | ---: | --- |
+| startup.spawn | 124.3 [124.2..125.1] | ns/task, 20,000 tasks |
+| startup.first_run_to_complete | 232.0 [230.9..232.3] | ns/task |
+| reads.js_need_loop | 472.9 [472.7..474.8] | ns/iteration, 1,000,000 reads |
+| reads.js_baseline_loop | 325.8 [323.2..326.7] | ns/iteration |
+| reads.js_need_minus_baseline | 146.9 [146.2..151.6] | ns/read estimate |
+| reads.rust_runguard_need | 90.6 [90.6..91.2] | ns/read |
+| park.full_cycle | 924.7 [915.5..925.2] | ns/cycle, 100,000 cycles |
+| park.complete_and_wake | 122.9 [122.6..123.1] | ns/cycle |
+| persistent.vec_nth_minus_baseline | 68.1 [67.8..73.4] / 71.9 [67.9..74.0] | ns/op at 32 / 32,768 elements |
+| persistent.map_get_minus_baseline | 83.9 [82.6..87.1] / 132.8 [127.9..139.1] | ns/op at 32 / 32,768 entries |
+| persistent.vec_conj_loop | 586.3 [585.0..589.1] | ns/iteration, 100,000 updates |
+| persistent.map_assoc_loop | 1260.0 [1245.3..1273.9] | ns/iteration, 100,000 updates |
+| work.alone | 1188.7 [1099.5..1207.1] | us/task, 64 tasks |
+| work.while_consumers_parked | 1289.6 [1225.3..1470.7] | us/task, plus 1000 parked consumers |
+| work.publish_to_all_resumed | 1352.9 [1314.0..1977.3] | ns/consumer, including executor queueing |
+| strings.build, append 10k / 100k | 1465.1 [1435.4..1489.7] / 1426.6 [1417.3..1438.8] | ns/unit |
+| strings.build, prepend 10k / 100k | 1458.2 [1445.3..1480.1] / 1411.8 [1403.0..1440.1] | ns/unit |
+| strings.flatten, append 100k | 5.0 [4.4..5.3] | ns/unit, first contiguous read |
+| overhead.startup_counting_off / on | 395.8 [395.1..396.3] / 437.1 [435.9..437.7] | ns/task; instrumentation changes cost |
 
-One full run, recorded as printed (`cargo run --release --example bench`,
-2026-10-24). Environment: Linux 6.18.57, x86_64, AMD Ryzen 7 9850X3D (4
-available threads), rustc 1.95.0, release profile. Two other workers were
-building and testing on this machine during the session; the load average
-rose from 0.84 to 1.06 during this run, and the `work.*` rows show it (see
-below).
+Every parked consumer remained parked until useful work completed. Timing alone
+does not establish equal throughput or scaling; the asserted still-parked count
+establishes that waiting did not occupy those workers.
 
-```text
-clj-quickjs measurement harness (examples/bench)
-  build profile: release (debug_assertions off)
-  target: linux x86_64; available parallelism: 4; cpu: AMD Ryzen 7 9850X3D 8-Core Processor
-  mode: full; rounds: 1 warmup + 5 measured per row; executor workers: 2
-  load average at start: 0.84 0.40 0.40
-  RSS 2644 kB, high-water 2644 kB
-  times: median [min .. max] over measured rounds, wall clock, single embedder thread unless a row says workers
+Shared input stayed **3001 objects / 1,428,020 requested bytes** from 1 to 10,000
+consumers. Code was shared once: 2226 bytes for consumer.js, 3080 for
+consumer_fold.js. Each consumer added one live heap object (builder or callback),
+every returned input subtree kept identity, and only the 3001 input objects
+remained after task drop and collection. Selected memory rows:
 
-task startup: spawn N tasks of identity.js, then run each to completion
-  startup.spawn                  n=20000                     131.2 [124.0 .. 135.9] ns/task
-  startup.first_run_to_complete  n=20000                     185.7 [183.2 .. 193.4] ns/task
+| Fixture / consumers | Spawn B/task | Park B/task | Shallow VM B/task | Live heap objects | Retained capacity B/task |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| consumer / 1 | 1192.0 | 1252.0 | 912 | 3002 | 444.0 |
+| consumer / 10,000 | 1154.2 | 712.0 | 912 | 13001 | 85.2 |
+| fold / 1 | 1216.0 | 2644.0 | 1304 | 3002 | 444.0 |
+| fold / 10,000 | 1178.2 | 2104.0 | 1304 | 13001 | 52.5 |
 
-already-ready dependency reads (cell completed before the timed run)
-  reads.js_need_loop             reads=1000000               389.2 [388.2 .. 391.4] ns/iteration
-  reads.js_baseline_loop         reads=1000000               248.8 [248.5 .. 251.0] ns/iteration
-  reads.js_need_minus_baseline   reads=1000000               140.0 [138.2 .. 142.9] ns/read
-  reads.rust_runguard_need       reads=1000000                99.7 [98.3 .. 100.3] ns/read
+The update counting pass retained 1494.0 B/conj and 5732.4 B/assoc until explicit
+collection, which released 717,396,504 requested bytes after both workloads.
+Full-run RSS high-water reached 1,030,120 kB, dominated by those preceding updates;
+it is not a suspended-task memory estimate.
 
-suspension and wake-up: one task needs N pending cells in turn, host completes each
-  park.full_cycle                cycles=100000               835.7 [832.7 .. 848.8] ns/cycle
-  park.resume_need_park          cycles=100000               687.7 [684.7 .. 700.9] ns/cycle
-  park.complete_and_wake         cycles=100000               119.7 [119.5 .. 119.7] ns/cycle
+## Verification run
 
-native persistent operations from JavaScript (per loop iteration)
-  persistent.vec_nth_loop        size=32 ops=1000000         301.2 [299.8 .. 303.4] ns/iteration
-  persistent.vec_nth_minus_baseline size=32 ops=1000000          44.2 [41.6 .. 47.6] ns/op
-  persistent.map_get_loop        size=32 ops=1000000         307.5 [305.3 .. 307.7] ns/iteration
-  persistent.map_get_minus_baseline size=32 ops=1000000          50.8 [46.6 .. 51.8] ns/op
-  persistent.baseline_loop       size=32 ops=1000000         255.9 [255.6 .. 258.7] ns/iteration
-  persistent.vec_conj_loop       from empty, ops=100000      473.3 [469.8 .. 476.2] ns/iteration
-  persistent.map_assoc_loop      from empty, ops=100000     1172.3 [1162.0 .. 1191.9] ns/iteration
-  persistent.update_garbage_objects from empty, ops=100000   200002.0 [200002.0 .. 200002.0] objects left until a collection
-  persistent.update_reclaimed    from empty, ops=100000   200064.0 [200064.0 .. 200064.0] objects reclaimed by it
-  persistent.vec_nth_loop        size=1024 ops=1000000       300.5 [299.8 .. 304.7] ns/iteration
-  persistent.vec_nth_minus_baseline size=1024 ops=1000000        47.1 [45.7 .. 50.0] ns/op
-  persistent.map_get_loop        size=1024 ops=1000000       310.3 [309.1 .. 315.7] ns/iteration
-  persistent.map_get_minus_baseline size=1024 ops=1000000        56.6 [55.5 .. 61.0] ns/op
-  persistent.baseline_loop       size=1024 ops=1000000       253.9 [252.9 .. 254.8] ns/iteration
-  persistent.vec_nth_loop        size=32768 ops=1000000      302.4 [302.1 .. 304.4] ns/iteration
-  persistent.vec_nth_minus_baseline size=32768 ops=1000000       50.3 [48.7 .. 52.0] ns/op
-  persistent.map_get_loop        size=32768 ops=1000000      340.0 [338.6 .. 348.6] ns/iteration
-  persistent.map_get_minus_baseline size=32768 ops=1000000       89.6 [85.4 .. 97.4] ns/op
-  persistent.baseline_loop       size=32768 ops=1000000      253.2 [250.4 .. 254.1] ns/iteration
-  counted pass, ops=100000 from empty: vec_conj 1013.2 B/op (9.32 allocs/op), map_assoc 4005.9 B/op (9.14 allocs/op) still allocated at the end of each run; the collection after both changed allocated bytes by -496666952
-  RSS 665880 kB, high-water 699296 kB
+The command catalogue below records the old README/docs command inventory and
+its results in this worktree. Wrappers were normalized to the pinned development
+shell and `CARGO_BUILD_JOBS=3`; each test invocation includes
+`-- --test-threads=3` (or appends that flag to its existing harness options).
+Placeholder script paths (`path/to/script.js`, `file.js`, `<file>`) were replaced
+with `examples/demo.js`; they were notation, not runnable files. The revised
+README uses the concrete path. Duplicate invocations caused by flag/wrapper
+variants were still run. Build/test/example/measurement commands no longer live
+in hundreds of feature paragraphs; the maintained entry points are README and
+this document.
 
-memory: N consumers parked on one pending cell, sharing one input form and one executable (counting allocator; deterministic, one round per row)
-  consumer.js: parks at a need in its only frame, holding a builder
-  consumers     input_B input_ob     code_B   spawn_B/t    park_B/t  allocs/t   heap_ob  heap_ob/t  vm_est_B   identical after_drop  kept_B/t
-          1      611788     3001       1924       664.0       980.0     15.00      3002       1.00       552         1/1       3001     372.0
-         10      611788     3001       1924       625.6       470.0     10.20      3011       1.00       552       10/10       3001      67.6
-        100      611788     3001       1924       620.5       415.1      9.21      3101       1.00       552     100/100       3001      33.6
-       1000      611788     3001       1924       616.4       416.0      9.03      4001       1.00       552   1000/1000       3001      90.4
-      10000      611788     3001       1924       626.2       448.0      9.00     13001       1.00       552 10000/10000       3001      85.2
-  at 10000 consumers: heap objects by kind ObjectCounts { plain: 0, native: 0, vector: 2001, map: 1000, occurrence: 0, builder: 10000, function: 0, cell: 0, atom: 0 }; known-shareable 3001; table slots 13001 (0 free); shallow table+object bytes 782184 (excludes trie bodies, code, task state); host-owned Vec<Task> 80000 B (excluded above); first consumer TaskStats { frames: 1, stack_values: 6, native_frames: 0, pending_need: true, shallow_bytes: 552 }
-  consumer_fold.js: parks in a __rt.reduce callback: a native continuation plus a callback frame
-  consumers     input_B input_ob     code_B   spawn_B/t    park_B/t  allocs/t   heap_ob  heap_ob/t  vm_est_B   identical after_drop  kept_B/t
-          1      611788     3001       2540       680.0      1588.0     17.00      3002       1.00       736         1/1       3001     372.0
-         10      611788     3001       2540       641.6      1078.0     12.20      3011       1.00       736       10/10       3001      61.2
-        100      611788     3001       2540       636.5      1023.1     11.21      3101       1.00       736     100/100       3001      28.5
-       1000      611788     3001       2540       632.4      1024.0     11.03      4001       1.00       736   1000/1000       3001      20.8
-      10000      611788     3001       2540       642.2      1056.0     11.00     13001       1.00       736 10000/10000       3001      52.5
-  at 10000 consumers: heap objects by kind ObjectCounts { plain: 0, native: 0, vector: 2001, map: 1000, occurrence: 0, builder: 0, function: 10000, cell: 0, atom: 0 }; known-shareable 13001; table slots 13001 (0 free); shallow table+object bytes 782184 (excludes trie bodies, code, task state); host-owned Vec<Task> 80000 B (excluded above); first consumer TaskStats { frames: 2, stack_values: 9, native_frames: 1, pending_need: true, shallow_bytes: 736 }
-  RSS 665884 kB, high-water 699296 kB
-
-useful work while consumers wait: 2 executor workers run work.js tasks alone, then while consumers are parked on one pending cell
-  work.alone                     tasks=64 n=2000            1396.1 [863.7 .. 1507.6] us/work task (wall / tasks)
-  work.while_consumers_parked    same, +1000 parked         1011.9 [967.6 .. 1097.6] us/work task (wall / tasks)
-  work.consumers_still_parked    same, +1000 parked         1000.0 [1000.0 .. 1000.0] consumers after the work
-  work.publish_to_all_resumed    same, +1000 parked         1282.6 [1209.2 .. 2017.4] ns/consumer (wall / consumers)
-
-instrumentation overhead
-  overhead.startup_counting_off  n=20000                     275.4 [274.2 .. 276.1] ns/task
-  overhead.startup_counting_on   n=20000                     311.1 [311.0 .. 311.5] ns/task
-  overhead.instant_now                                        18.2 [18.2 .. 18.2] ns/call
-  overhead.heap_usage_snapshot   3001 objects               2680.2 [2662.5 .. 2690.3] ns/call
-  overhead.task_stats_snapshot   unstarted task                8.8 [8.8 .. 8.9] ns/call
-
-  load average at end: 1.06 0.49 0.43
-```
-
-The memory rows alone (`-- memory`, same build) print the same allocator
-and object figures with an RSS high-water mark of about 22 MB: the RSS in
-the full run above is dominated by the update rows that ran before it. An
-earlier full run of the same harness on a quieter machine (load 0.2 to 0.5)
-gave timing medians within about 10% of these, except `work.alone`
-(890 us there).
-
-## What these runs show, and what they do not
-
-- **Consumers share the input and the code.** From 1 to 10,000 parked
-  consumers the input stays 3001 objects and 611,788 bytes and the code
-  1924 bytes (`consumer.js`) or 2540 bytes (`consumer_fold.js`), built
-  once. Each consumer adds exactly one heap object of its own (its
-  transient builder, or its fold callback function), and every consumer
-  returned the input's entry with its identity. After dropping the tasks
-  and collecting, only the 3001 input objects remain. `tests/measurement.rs`
-  asserts these object-count facts (not the bytes) at 1, 8 and 64
-  consumers for both fixtures.
-- **Retained memory of a suspended task.** A consumer parked in its only
-  frame costs about 1.04 to 1.07 KB of allocations once amortized (spawn
-  about 620 B, run-to-park about 415 to 450 B), of which `Task::stats`
-  accounts 552 B as VM state (one frame, six stack values). A consumer
-  parked inside an `__rt.reduce` callback (a native continuation plus the
-  callback frame: two frames, nine stack values, one native frame) costs
-  about 1.67 to 1.70 KB, of which 736 B is VM state by the shallow
-  estimate. The rest is per-task runtime bookkeeping (root-source
-  registration, cell waiter entry, object slot, dependency log) and
-  allocator granularity. The single-consumer rows also pay first-use
-  growth. After the tasks are dropped and collected, 20 to 90 B per
-  consumer stays allocated (`kept_B/t`: object-table and registry
-  capacity, not returned).
-- **Ready reads** cost about 140 ns each from JavaScript above the
-  baseline loop, and about 100 ns through `RunGuard::need` from Rust (which
-  also creates and drops a persistent root per read).
-- **Suspension and wake-up**: one need-park-complete-wake-resume cycle on
-  one thread is about 840 ns, of which completing the cell and delivering
-  the wake is about 120 ns. Cross-thread handoff is not isolated here; the
-  `work.publish_to_all_resumed` row (about 1.3 us per consumer with 2
-  workers, including executor queueing and each consumer's run to
-  completion) is the closest figure.
-- **Useful work while consumers wait**: with 1000 consumers parked, all
-  1000 were still parked after two workers finished the 64 `work.js` tasks,
-  so waiting consumers occupied no worker. The throughput rows are noisy
-  on this shared machine: in this run `work.alone` spread from 864 to
-  1508 us per task, wider than the difference between the two rows, so this
-  run supports "no worse with consumers parked", not any finer claim. On
-  the quieter earlier run the two medians were 890 and 894 us.
-- **Persistent operations**: vector `nth` costs about 44 to 50 ns above
-  the baseline at every size measured; map `get` grows from about 51 ns (32
-  entries) to about 90 ns (32,768). Updates are much more expensive in
-  memory than in time: every `conj` keeps about 1.0 KB and every `assoc`
-  about 4.0 KB allocated until the next collection, because each
-  intermediate version is a heap object and the collector runs only on
-  request (no automatic trigger yet; README "Garbage collection"). The
-  collection after the update rows reclaimed them, but the process RSS
-  stayed high (allocator caching).
-- **Instrumentation**: the counting allocator adds about 13% to task
-  startup, so timing rows run with it off; `heap_usage` costs about 2.7 us
-  at 3001 objects (linear in slots) and `Task::stats` about 9 ns.
-- **Not measured**: contention between many workers on one cell or on the
-  heap's object lock, collection pause times under load, cross-thread
-  wake latency in isolation, `__rt.needAll` continuations (the fold row
-  stands for resumable natives), and any comparison with another engine.
-
-## Repeated string concatenation (clj-quickjs-146)
-
-Run `CARGO_BUILD_JOBS=2 nix develop -c cargo run --release --example bench -- strings --rounds 3`
-(or omit `nix develop -c` with the toolchain on PATH). The `strings` group
-uses synthetic JavaScript, not light-cljs output. It builds increasing UTF-16
-units by append or prepend, times the first contiguous read separately, then
-times a JavaScript `charCodeAt` pass that checks every unit. Compilation,
-runtime creation and spawning are outside the intervals; task/rope release
-is also outside them. `--quick` uses 1k/2k/10k instead of 10k/20k/100k units.
-Each row has one discarded warmup and three measured rounds.
-
-Measured on 2026-10-24, release, Rust 1.95.0, Linux x86_64, AMD Ryzen 7
-9850X3D (14 available logical CPUs), single embedder thread, other workers
-active. Flat baseline was `8623520` with only the new benchmark workload
-added; the final rope run includes the rebase onto `49708e2` and the review
-fixes. Intervening Symbol/parser merges may also affect timings, so this is
-not an isolated estimate of cache overhead. Load averages at start/end:
-flat 3.27/3.27, rope 2.62/2.62 (one-minute values).
-Medians [min..max], **ns per unit**:
-
-| Direction / units | Flat build | Rope build | Rope first flatten |
-| --- | ---: | ---: | ---: |
-| append / 10,000 | 690.5 [681.8..692.3] | 684.9 [681.6..704.2] | 5.3 [3.8..6.8] |
-| prepend / 10,000 | 730.1 [728.0..733.1] | 710.9 [709.3..724.0] | 3.5 [3.4..3.7] |
-| append / 20,000 | 794.0 [792.5..794.2] | 696.3 [682.1..720.9] | 6.8 [5.2..7.7] |
-| prepend / 20,000 | 841.9 [840.5..852.8] | 709.5 [706.2..805.9] | 4.1 [3.9..5.1] |
-| append / 100,000 | 2428.6 [2412.0..2431.2] | 725.4 [702.1..733.1] | 11.8 [11.7..12.7] |
-| prepend / 100,000 | 2481.8 [2480.2..2500.8] | 736.3 [718.9..750.7] | 6.0 [5.9..6.0] |
-
-Flat first reads round to 0.0 ns/unit because their buffers already exist.
-At 100k units, build plus first flatten was about 73.7 ms append / 74.2 ms
-prepend, versus 242.9 / 248.2 ms for flat construction. The small append
-case was essentially flat after including its first flatten. Cached JavaScript reads regressed in this
-sample: append 474.2 [473.2..476.5] flat versus 545.4 [512.3..573.4] rope,
-prepend 475.1 [474.3..475.4] versus 514.2 [502.8..549.2] ns/unit at 100k.
-These are noisy wall-clock observations, not complexity assertions.
-
-`cargo test --test measurement string_concatenation_is_amortized_linear`
-checks complexity deterministically: each direction constructs 100,000 units,
-collects while the task is suspended partway through construction, flattens,
-and checks every unit through JavaScript. Concat copies 527 short-string
-units, then the first flatten copies 100,000; the asserted bound is 2N.
-Subsequent indexed reads add zero copies. The thread-local diagnostic
-`JsString::copied_code_units()` counts concat, lazy flatten and incremental
-native-builder copies, excluding input construction and single-unit index
-results. Differences must be taken on the thread doing the work. Tests also
-exercise method concat, template interpolation, shared cache initialization,
-retained prefixes and deep-chain flatten/drop on a 64 KiB native stack.
-
-Ropes allocate a node per large concatenation. Flattened operands are reused
-as flat leaves in later concatenations, releasing their obsolete graphs when
-no caller retains them. The requested rope still retains its own children
-after flattening. A regression test bounds reachable code-unit storage by
-2N when every growing prefix is read; this run does not quantify allocator
-overhead. First flatten
-and final release remain synchronous; neither is an instruction-budgeted
-latency measurement. No comparison with another JavaScript engine was made.
+One stale test filter, `frontend::tests::delete_of_identifiers_is_rejected`,
+exited successfully while selecting zero tests. It is retired; the correct
+filter is `frontend::tests::delete_of_identifiers_follows_strictness` (one passing
+test). An inventory run during the architecture rewrite saw the temporarily
+missing Root inventory section and failed; after the table was restored its
+16 tests passed. This was an editing-order documentation failure, not a runtime
+defect. No assertions or fixture bodies were changed.

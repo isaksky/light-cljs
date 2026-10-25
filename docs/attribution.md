@@ -1,5 +1,89 @@
 # Attribution
 
+## Verified source and license inventory
+
+Verified in the clj-quickjs-32 documentation pass against the local read-only
+checkout: Bellard upstream `https://github.com/bellard/quickjs.git`, commit
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `VERSION` **2026-06-04**.
+All `research/quickjs/` paths below refer to that commit, not a system QuickJS.
+Normal builds do not compile/link QuickJS or generate/download data.
+
+`research/quickjs/LICENSE` is MIT, Copyright (c) 2017–2021 Fabrice Bellard and
+Charlie Gordon. Both retained copies, `src/intl/data/QUICKJS-LICENSE` and
+`src/host/timezone/QUICKJS-LICENSE`, were compared byte-for-byte with it.
+The permission, inclusion condition and full warranty/liability text were
+checked after stripping comment prefixes in all **59 source/test files** that
+carry a full notice. **15 generated Rust files** identify their revision and
+retained license. All eleven source/header hashes in
+`scripts/quickjs-data/inputs.sha256` match the reference checkout. The ten
+whole-file module JavaScript bodies and `message.json` match upstream bytes.
+Per-file original copyright years (including libunicode's 2017–2018 Bellard
+notice) remain in generated headers. Unicode License v3 is retained in
+[UNICODE-LICENSE](UNICODE-LICENSE); snapshot provenance does not establish a
+particular CLDR or tzdb release.
+
+This inventory covers adapted files; the sections below retain case/range and
+algorithm details. Semantic references are distinguished from copied/adapted
+material. A retained fixture rewrite is not reported as an unmodified test.
+
+| Destination | QuickJS source under `research/quickjs/` | Retained notice / adaptation |
+| --- | --- | --- |
+| `src/intl/segmenter.rs` | `intl/segmenter.c` | Full MIT in file; adapted segmentation heuristics with corrected regional-indicator pairing; not full UAX #29 |
+| `src/intl/likely.rs` | `tests/test_intl.js::test_locale` | Full MIT in file; adapted likely-subtag test rows, independent runtime implementation |
+| `src/intl/number_format.rs` | `intl/numberformat.c` unit identifier and pattern algorithms | Full MIT in file; unit validation/pattern adaptations documented below |
+| `src/frontend/tests.rs` | `tests/test_language.js`, `tests/test_builtin.js`, module sources below | Full MIT notices in file; selected parser assertions/fixtures, not C parser code |
+| `src/number.rs` | `tests/test_builtin.js::test_number` | Full MIT; five adapted formatting rows; independent runtime implementation |
+| `src/vm/date.rs` | `tests/test_builtin.js::test_date` | Full MIT; Date.UTC rows; independent time arithmetic |
+| `src/regexp/parse.rs`, `src/regexp/matcher/tests.rs` | `tests/test_builtin.js::test_regexp` | Full MIT; parser/matcher test rows; independent parser/IR/matcher |
+| `tests/calls.rs` | `tests/test_closure.js::test_closure2`, `test_closure3` | Full MIT; early hand-built-bytecode adaptations of mutual recursion/fib |
+| `tests/closures.rs` | `tests/test_closure.js` top-level f and test_closure1 | Full MIT; early bytecode adaptations, vector replacing closure object and numeric host effects replacing log |
+| `tests/js_functions.rs` | `tests/test_language.js`, `tests/test_builtin.js`, `tests/test_closure.js` | Full MIT; named-function/default-parameter/arguments/call/bind cases and attributed fixtures |
+| `tests/js_source.rs` | `tests/test_language.js`, `tests/test_builtin.js`, `tests/test_closure.js`, `tests/test_intl.js`, `tests/test_bigint.js` | Full MIT; case-specific comments and sections below identify selections and changes |
+| `tests/error_stacks.rs` | `tests/test_builtin.js::test_line_column_numbers` | Full MIT; marker-location technique adapted to this runtime's diagnostics |
+| `tests/exceptions.rs` | `tests/test_loop.js::test_try_catch5` and the using/loop fixtures below | Full MIT; retained inline exception adaptation plus fixture drivers |
+| `tests/promises.rs` | `tests/test_std.js` rejection-counter case | Full MIT; synthetic host replaces shell services |
+| `tests/gc.rs` | `tests/test_std.js::test_async_gc` | Full MIT; optional simulated GC/timer host |
+| `tests/sim_host.rs` | `tests/test_intl.js::test_dateTimeFormat` | Full MIT; date/time/style/component rows with explicit host clock/zone |
+| `tests/js_modules.rs` inline JSON | `examples/message.json` | Full MIT beside inline data; source is also retained in the module fixture directory |
+| `tests/fixtures/js/quickjs_closure.js` | `tests/test_closure.js` | Full MIT; numeric log, vector closure pair, failure flag and selected cases; historical reduced fixture, not current language limits |
+| `tests/fixtures/js/quickjs_op1_while.js` | `tests/test_language.js::test_op1`, `tests/test_loop.js::test_while` | Full MIT; let, expanded updates, failure flag and selected operators |
+| `tests/fixtures/js/quickjs_super_arrow.js` | `tests/test_closure.js::test_arrow_function` | Full MIT; assert replaced by boolean completion |
+| `tests/fixtures/js/quickjs_rope.js` | `tests/test_builtin.js::rope_concat`, `test_rope` | Full MIT; unchanged functions with minimal assert and invocation |
+| `tests/fixtures/js/regexp_{objects,unicode,case_fold,properties,indices,sets}.js` | `tests/test_builtin.js::test_regexp` and relevant string rows | Full MIT in each; selected adapted assertions mixed with explicitly synthetic coverage |
+| `tests/fixtures/js/quickjs_test_language_{operators,parsing,functions,objects,labels,using}.js` | `tests/test_language.js` | Full MIT in each; exact source ranges in headers/below. Only using rewrites prototype-constructor writes to expect immutable-intrinsic TypeError. |
+| `tests/fixtures/js/quickjs_test_closure.js` | `tests/test_closure.js` | Full MIT; whole body unchanged |
+| `tests/fixtures/js/quickjs_test_loop_{statements,try_catch}.js` | `tests/test_loop.js` | Full MIT in each; selected helpers/functions unchanged; cyclic-label function uncalled as upstream |
+| `tests/fixtures/js/quickjs_test_builtin_{builtins,objects,functions,date_regexp,collections,positions}.js` | `tests/test_builtin.js` | Full MIT in each; selected functions unchanged except WeakRef job-lifetime adaptation; positions intentionally omits non-standard function location metadata |
+| `tests/fixtures/js/quickjs_test_generator.js` | `tests/test_builtin.js::test_generator` | Full MIT; unchanged helper/case excerpts with invocation |
+| `tests/fixtures/js/quickjs_test_async_{gc,promise_rejection}.js` | `tests/test_std.js` | Full MIT in each; unchanged case bodies with simulated std/os instead of shell imports |
+| `tests/fixtures/js/quickjs_test_intl.js` | `tests/test_intl.js` lines 1–470 | Full MIT; ten unchanged case bodies/expected strings, host locale en-US in UTC and UTC+05:30 |
+| `tests/fixtures/js/quickjs_test_bigint.js`, `quickjs_pi_bigint.js` | `tests/test_bigint.js`, `examples/pi_bigint.js` | Full MIT in each; whole bodies unchanged; pi print provided by host-effect shim |
+| Both `tests/fixtures/modules/` and `tests/fixtures/js/quickjs_modules/`: `assert.js`, `test_cyclic_import.js`, `fixture_cyclic_import.js`, `hello_module.js`, `fib_module.js` | `tests/{assert,test_cyclic_import,fixture_cyclic_import}.js`, `examples/{hello_module,fib_module}.js` | Full MIT in each; bodies unchanged. First directory began as parse fixtures; second executes with synthetic console and adapted cyclic expectation. |
+| `tests/fixtures/js/quickjs_modules/message.json` | `examples/message.json` | Bytes unchanged; MIT supplied by companion headers and `tests/js_modules.rs`, since JSON cannot contain comments |
+| `src/intl/data/{numbers,dates,locale,display_names,likely_subtags,preferences,relative_time,units}.rs` | `intl/locale-data.c`, `intl/intl_private.h` and service-specific inputs pinned in provenance | MIT and Unicode pointers; `provenance.txt`, `unit_provenance.txt`; generated/repacked data, not runtime C |
+| `src/intl/data/lists.rs` | `intl/locale-data.c`, `intl/listformat.c` | MIT/Unicode pointers; `list_provenance.txt` |
+| `src/intl/data/collation.rs` | `libunicode.c`, `libunicode-table.h` | Original Bellard copyright and MIT/Unicode pointers; `collation_provenance.txt` |
+| `src/host/timezone/tables.rs` | `temporal/tzdata_generated.c`, `temporal/timezone.h` | MIT/Unicode pointers; timezone `provenance.txt` |
+| `src/frontend/unicode_ident.rs`, `src/regexp/{case_fold_data,property_data,string_property_data}.rs` | `libunicode.c`, `libunicode-table.h`, independently checked Unicode 17.0.0 inputs | Bellard copyright and MIT/Unicode pointers; `src/regexp/case_fold_provenance.txt` |
+| `src/value/string_data.rs` | Unicode 17.0.0 UnicodeData.txt, SpecialCasing.txt, DerivedNormalizationProps.txt; QuickJS offline reference | Unicode-derived data, checked against QuickJS offline; Unicode notice and `src/value/string_provenance.txt` |
+
+All generated representations retain their importer/repacker provenance. No
+regeneration was needed for this documentation-only pass.
+
+Architectural semantic references also include `quickjs.c` (`JS_CallInternal`,
+`JSAsyncFunctionState`, `JS_MarkValue`, `mark_children`, `js_same_value`),
+`quickjs.h` (`JSClassGCMark`, `JSClassDef`, `JSCFunction`), `quickjs-opcode.h` and
+`doc/quickjs.texi` (calls, GC, runtime/context boundaries). This runtime replaces
+C-stack continuations/reference counting/per-worker runtimes with explicit
+frames, tracing and shared heap access. QuickJS `JSAtom` is an interned name,
+not this project's atomic reference. No ABI or bytecode compatibility is claimed.
+
+## Detailed adaptation notes
+
+These notes identify source selections and modifications. Historical reduced
+fixtures keep those reductions even when the full source cases now pass;
+[grammar.md](grammar.md) is the current feature/limit contract.
+
 ## RegExp properties of strings (clj-quickjs-305)
 
 `research/quickjs/libunicode.c::unicode_sequence_prop` and
@@ -52,7 +136,7 @@ bodies in `test_parse_semicolon` and the two async arrow ASI cases in
 `test_parse_arrow_function`, from `research/quickjs/tests/test_language.js`
 at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
 The bodies use `let` instead of `var` and assert parsing plus explicit
-compilation rejection, since execution is deferred. The QuickJS MIT
+compilation and execution support. The QuickJS MIT
 copyright and permission notice is retained with that test; see
 `research/quickjs/LICENSE`. Other new fixtures are synthetic, not light-cljs
 output. `js_parse_unary`, `js_parse_assign_expr2` and
@@ -63,7 +147,7 @@ were semantic references; the Rust implementation was written afresh.
 
 `src/frontend/tests.rs::regexp_literals` adapts the two default assignments
 in `research/quickjs/tests/test_language.js::test_regexp_skip` to call
-arguments and array elements, since destructuring assignment is deferred.
+arguments and array elements as a retained reduced parser fixture.
 `docs/grammar.md` repeats those spellings. The QuickJS MIT copyright and
 permission notice is retained with the test (`research/quickjs/LICENSE`).
 Reference revision: `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`
@@ -153,7 +237,7 @@ charCodeAt, codePointAt, fromCharCode and fromCodePoint assertions from
 UTF-16 unit range checked by `rope_concat`, at revision
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
 The latter uses a flat construction through `apply` and per-unit round trips
-instead of a quadratic concatenation loop in this runtime's flat storage.
+instead of a quadratic concatenation loop in the original flat storage fixture.
 The QuickJS MIT copyright and permission notice is retained with the test
 (`research/quickjs/LICENSE`). Other edge cases are synthetic fixtures,
 not light-cljs output. `js_string_charAt`, `js_string_charCodeAt`,
@@ -473,8 +557,8 @@ Semantic references: `research/quickjs/quickjs.c` (`js_bigint_new`,
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
 The arbitrary-precision literal examples use the upstream mathematical
 constants; Rust code and synthetic source test bodies were written afresh,
-without copying QuickJS code or test bodies. The 1 Mbit size policy follows
-the user decision recorded in `docs/architecture.md`.
+without copying QuickJS code or test bodies. The size policy follows the user decision recorded in the run and is
+listed with other current limits in `docs/grammar.md`.
 
 ## BigInt comparisons (clj-quickjs-197)
 
@@ -502,12 +586,11 @@ in [UNICODE-LICENSE](UNICODE-LICENSE) from the
 [Unicode license](https://www.unicode.org/license.txt).
 
 `intl.c::js_intl_find_locale_data`, `gen-locale-data.js`, `tests/test_intl.js`
-and the service source files listed in the architecture coverage table were
+and the service source files identified below were
 read as semantic/data-coverage references at the same revision. Runtime code
 and new source tests are written afresh (synthetic fixtures, not light-cljs
-output); no QuickJS runtime is linked or wrapped. Identifiers retain their
-existing Unicode 16.0.0 policy; imported snapshot Unicode decoders and full
-collation/break tables are not introduced by this pellet.
+output); no QuickJS runtime is linked or wrapped. Identifiers now use verified Unicode 17.0.0 tables; the folding, property,
+collation and string-data adaptations are recorded below.
 
 ## Regular expression matching (clj-quickjs-187)
 
@@ -563,7 +646,7 @@ are synthetic fixtures, not light-cljs output.
 `tests/js_source.rs::integer_typed_array_elements`,
 `typed_array_views_share_buffer` and `typed_array_after_transfer` adapt the
 integer element, buffer-view and detached-read rows in
-`research/quickjs/tests/test_builtin.js::test_typed_array`, replacing deferred
+`research/quickjs/tests/test_builtin.js::test_typed_array`, replacing the fixture's then-unimplemented
 join/toString checks with individual element assertions. The QuickJS MIT
 copyright/permission notice is retained alongside these fixtures.
 `js_typed_array_constructor`, `typed_array_init`, `JS_ToUint8ClampFree`,
@@ -629,7 +712,7 @@ and remaining tests were written afresh in Rust.
 `tests/js_source.rs::float_typed_array_byte_layout` adapts the shared-buffer
 sequence in `research/quickjs/tests/test_builtin.js::test_typed_array`
 (lines 484-506), asserting individual little-endian bytes instead of the
-deferred typed-array `toString` method. The full QuickJS copyright/MIT notice
+fixture's then-unimplemented typed-array `toString` method. The full QuickJS copyright/MIT notice
 is retained on the test. Other fixtures are synthetic, not light-cljs output.
 Semantic references: `js_TA_get_float16`, `js_TA_get_float32` and
 `js_TA_get_float64` in `research/quickjs/quickjs.c`, and `tofp16`/`fromfp16` in
@@ -645,7 +728,7 @@ no upstream conversion code was copied. License: `research/quickjs/LICENSE`.
 revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
 The full QuickJS copyright and MIT license notice precedes the fixture.
 The eval raw-NUL row uses RegExp construction and an actual-NUL literal
-because eval remains unavailable. Additional assertions are synthetic.
+as a retained reduction from the original pre-eval fixture. Additional assertions are synthetic.
 `js_regexp_constructor`, `js_regexp_get_source`, `js_regexp_get_flag`,
 `js_regexp_get_flags`, `js_regexp_exec`, `js_regexp_test` and
 `js_regexp_toString` in `research/quickjs/quickjs.c` at that revision were
@@ -729,7 +812,8 @@ independently; no C engine implementation was copied or linked.
 revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The timer uses the optional
 simulated-host bindings; the QuickJS LICENSE copyright and permission notice
 is retained in the test file. The Rust implementation is written fresh, consulting the
-Promise routines in `research/quickjs/quickjs.c` listed in architecture.md.
+Promise routines in `research/quickjs/quickjs.c` (js_promise_then and
+js_promise_resolve_function_call).
 
 ## Date host rule tables (clj-quickjs-182)
 

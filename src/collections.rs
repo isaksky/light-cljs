@@ -118,10 +118,11 @@
 //!   plain object or a builder, and is then rejected only when published
 //!   (`crate::value::share`; collections built from shareable parts are
 //!   marked known shareable at allocation).
-//! * Strings, keywords and symbols (no string values exist yet), structural
-//!   (value-based) map keys, sorted or insertion-ordered maps, sets, lists,
-//!   slicing, iteration protocols, and JavaScript property access on
-//!   collections.
+//! * Keywords, structural (value-based) map keys, sorted or insertion-ordered
+//!   persistent maps, persistent sets/lists, slicing, iteration protocols and
+//!   JavaScript property access on persistent collections. Strings, symbols
+//!   and BigInts are supported values/keys. JavaScript's mutable Map/Set
+//!   are separate from these native persistent types.
 
 pub(crate) mod builder;
 pub(crate) mod map;

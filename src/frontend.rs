@@ -7,9 +7,9 @@
 //!
 //! * [`compile_script`] / [`compile_function`]: source text to a validated
 //!   [`Executable`], via binding resolution and lowering (`frontend/lower.rs`;
-//!   `docs/grammar.md`, "Execution"). Forms that parse but cannot execute yet
-//!   (strings, property access) are compile errors. Functions, calls,
-//!   closures and the compiler-reserved intrinsic binding `__rt`
+//!   `docs/grammar.md`, "Supported syntax and execution"). Unsupported forms
+//!   fail explicitly. Functions, calls, closures, properties and the
+//!   compiler-reserved intrinsic binding `__rt`
 //!   (`frontend/intrinsics.rs`; `docs/grammar.md`, "Reserved intrinsic
 //!   binding") compile to VM instructions.
 //! * [`ScriptOptions`] and the `_with` entry points ([`parse_script_with`],
@@ -21,7 +21,8 @@
 //!   form; the error names the form and its position.
 //! * [`parse_module`]: always-strict module source to an immutable, shareable
 //!   [`ModuleRecord`] containing its parsed body and static import/export tables.
-//!   [`crate::module`] loads static graphs; acyclic graphs link and execute through `Runtime::spawn_module`.
+//!   [`crate::module`] loads static graphs, including cycles, for execution
+//!   through `Runtime::spawn_module`.
 //! * [`lexer::Lexer`]: on-demand tokenizer used by the parser. It never
 //!   decides between division and a regular expression literal; the parser
 //!   requests the regexp lexical goal from grammatical context and validates
