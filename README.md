@@ -3213,7 +3213,7 @@ JavaScript or waking a dependency wait. Task-owned results remain confined
 to their settling task; foreign reactions reject with TypeError.
 
 Deferred: Promise subclass
-capabilities/species, arbitrary own-property mutation on promises, async generators,
+capabilities/species, arbitrary own-property mutation on promises,
 combinators and finally. Test with
 `cargo test --test promises -- --test-threads=3`.
 Thenable adoption: `cargo test --test js_source promise_thenable_adoption -- --exact`.
@@ -3445,7 +3445,7 @@ incompatible receivers throw TypeError. Activations detach into traced heap
 storage between yields and reattach to ordinary VM frames, preserving dependency
 waits, budgets, collection and worker migration. Publication and foreign-task
 access are rejected. Generator `return`/`throw` execute (clj-quickjs-293);
-async generators remain deferred.
+async generators execute (clj-quickjs-313).
 Generator objects inherit the shared iterator identity protocol and can be
 consumed by `for...of` (clj-quickjs-237) and array/argument spread (clj-quickjs-130).
 Generator functions eagerly create their own task-owned prototype records, so
@@ -3500,7 +3500,7 @@ completions across calls from different depths. For example,
 `try { return 1; } finally { yield 2; }` yields 2, then completes with 1.
 A resumed finally block may wait on `__rt.need`, survive collection and migrate
 to another worker before finishing its pending return or throw. Generator
-`return()`/`throw()` methods execute (clj-quickjs-293); async generators remain deferred. Delegated `yield*`
+`return()`/`throw()` methods execute (clj-quickjs-293); async generators execute (clj-quickjs-313). Delegated `yield*`
 executes as described below.
 
 ### Array destructuring (clj-quickjs-131)
@@ -3664,7 +3664,7 @@ itself never reports Waiting. A task drains its jobs and completes even with
 unsettled awaits. `Task::suspended_async_activations()` reports their function
 names after completion without retaining them. Detached states are task-owned,
 reachable through promise reactions, and collectable in unreachable cycles.
-Async generators and top-level await remain deferred.
+Top-level await remains deferred.
 
 ### Computed object property names (clj-quickjs-233)
 
@@ -4448,3 +4448,28 @@ yield and migrate pending operations to 64 KiB workers.
 Direct primitive-constructor callbacks (`map(Number)`, `map(String)`,
 `map(BigInt)`, `map(Symbol)`) use the same continuation routing, including
 conversions that wait before returning to the array iteration.
+
+### Async generators (clj-quickjs-313)
+
+Async generator declarations, expressions and methods execute on detachable,
+traced task-owned activations. Their `next`, `return` and `throw` methods return
+Promises and service a FIFO request queue, including calls made while the body
+is awaiting and reentrant calls from the body. Yield operands, explicit return
+expressions and return-request arguments are awaited; a delegate's completed
+return value is preserved. Rejections throw under the saved catch/finally handlers.
+`return()` before entry or after completion awaits its argument without entering
+the body. `Symbol.asyncIterator` and the shared async iterator identity exist.
+
+`yield*` prefers `Symbol.asyncIterator`, awaits protocol results, forwards abrupt
+requests and falls back to a private CreateAsyncFromSyncIterator wrapper. Its
+methods use ordinary async bytecode activations to await synchronous iterator
+values and close on rejected values when required. Pending requests, arguments,
+capabilities, handlers and native work are GC edges; neither generator objects
+nor saved activations may be published to another task. Promise settlement from
+another task queues resumption for the owning task. All steps use the existing
+instruction budget and VM limits; no separate request-count limit is imposed.
+`for await...of` remains outside this feature (clj-quickjs-308).
+
+Verification: `CARGO_BUILD_JOBS=3 cargo test --test async_generators -- --test-threads=3`.
+These synthetic fixtures (not light-cljs output) collect at every budget yield,
+check completion after jobs drain, and check activation reclamation afterward.

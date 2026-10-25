@@ -600,6 +600,7 @@ impl Emitter {
 
 /// One function being lowered.
 struct FnCtx {
+    async_generator: bool,
     /// Object environments interleaved with lexical statement-list scopes.
     /// Depth is the number of scopes outside the with body. Objects are
     /// captured directly; variable environments remain private binding cells.
@@ -934,6 +935,7 @@ impl<'s> Lowerer<'s> {
             own_arguments: false,
             class_initializer: false,
             constructor_kind: ConstructorKind::None,
+            async_generator: false,
             instance_fields: None,
             lexical_this: false,
             this_capture: None,
@@ -2746,17 +2748,13 @@ impl<'s> Lowerer<'s> {
     /// ECMAScript FunctionDeclarationInstantiation and QuickJS
     /// `js_parse_function_decl2` (`has_parameter_expressions`).
     fn function_body(&mut self, f: &Function) -> Result<(), SyntaxError> {
-        if f.asynchronous && f.generator {
-            return Err(self.error(
-                SyntaxErrorKind::Unsupported,
-                f.span,
-                "async generators cannot be executed yet",
-            ));
-        }
-        if f.asynchronous {
+        self.cur_mut().async_generator = f.asynchronous && f.generator;
+        if self.cur().async_generator {
+            self.out().op(Opcode::AsyncGeneratorStart, f.span);
+        } else if f.asynchronous {
             self.out().op(Opcode::AsyncStart, f.span);
         }
-        if f.generator {
+        if f.generator && !f.asynchronous {
             self.out().op(Opcode::GeneratorStart, f.span);
         }
         // Collect before NewArguments can release the original actuals, and
@@ -3167,6 +3165,9 @@ impl<'s> Lowerer<'s> {
                 match value {
                     Some(e) => self.expr(e)?,
                     None => self.out().op(Opcode::Undefined, span),
+                }
+                if self.cur().async_generator && value.is_some() {
+                    self.out().op(Opcode::Await, span);
                 }
                 self.out().op(Opcode::Return, span);
             }
@@ -4186,6 +4187,15 @@ impl<'s> Lowerer<'s> {
     /// observable protocol operations run as resumable bytecode calls.
     #[inline(never)]
     fn yield_star(&mut self, operand: &Expr, span: Span) -> Result<(), SyntaxError> {
+        // Compile nested operands without retaining the protocol emitter's
+        // large scratch frame on the compiler's bounded Rust stack.
+        self.expr(operand)?;
+        self.yield_star_protocol(span)
+    }
+
+    #[inline(never)]
+    fn yield_star_protocol(&mut self, span: Span) -> Result<(), SyntaxError> {
+        let asynchronous = self.cur().async_generator;
         let saved_slot = self.cur().next_slot;
         let it = self.temp(span)?;
         let next = self.temp(span)?;
@@ -4193,7 +4203,16 @@ impl<'s> Lowerer<'s> {
         let received = self.temp(span)?;
         let kind = self.temp(span)?;
         let method = self.temp(span)?;
-        self.iterator_acquire(operand, it, next, span)?;
+        if asynchronous {
+            self.out().op(Opcode::GetAsyncIterator, span);
+        } else {
+            self.out().op(Opcode::GetIterator, span);
+        }
+        self.out().op(Opcode::Dup, span);
+        self.iterator_field("next", span)?;
+        self.out().op_u16(Opcode::SetLocal, next, span);
+        self.iterator_field("iterator", span)?;
+        self.out().op_u16(Opcode::SetLocal, it, span);
         self.out().op(Opcode::Undefined, span);
         self.out().op_u16(Opcode::SetLocal, received, span);
         self.constant(Primitive::Number(0.0), span)?;
@@ -4215,6 +4234,24 @@ impl<'s> Lowerer<'s> {
         self.out().bind(abrupt);
         self.resume_kind_is(kind, 1, span)?;
         self.out().branch(Opcode::JumpIfFalse, throwing, span);
+        if asynchronous {
+            // AsyncGeneratorUnwrapYieldResumption turns a rejected return
+            // argument into a throw completion consumed by yield* itself.
+            let rejected = self.out().label();
+            let unwrapped = self.out().label();
+            self.out().branch(Opcode::PushCatch, rejected, span);
+            self.out().op_u16(Opcode::GetLocal, received, span);
+            self.out().op(Opcode::Await, span);
+            self.out().op(Opcode::PopCatch, span);
+            self.out().op_u16(Opcode::SetLocal, received, span);
+            self.out().branch(Opcode::Jump, unwrapped, span);
+            self.out().bind(rejected);
+            self.out().op_u16(Opcode::SetLocal, received, span);
+            self.constant(Primitive::Number(2.0), span)?;
+            self.out().op_u16(Opcode::SetLocal, kind, span);
+            self.out().branch(Opcode::Jump, throwing, span);
+            self.out().bind(unwrapped);
+        }
         self.out().op_u16(Opcode::GetLocal, it, span);
         self.iterator_field("return", span)?;
         self.out().op_u16(Opcode::SetLocal, method, span);
@@ -4222,6 +4259,9 @@ impl<'s> Lowerer<'s> {
         self.out().branch(Opcode::Jump, call, span);
         self.out().bind(missing_return);
         self.out().op_u16(Opcode::GetLocal, received, span);
+        if asynchronous {
+            self.out().op(Opcode::Await, span);
+        }
         self.out().op(Opcode::Return, span);
         self.out().bind(throwing);
         self.out().op_u16(Opcode::GetLocal, it, span);
@@ -4232,7 +4272,7 @@ impl<'s> Lowerer<'s> {
         self.out().bind(missing_throw);
         // IteratorClose uses no argument and validates its result, but does
         // not inspect done/value. A close failure replaces the TypeError.
-        self.iterator_close(it, method, span)?;
+        self.iterator_close_mode(it, method, span, asynchronous)?;
         self.throw(ThrowKind::YieldStarMissingThrow, span);
         // ThrowError has an expression result in the verifier.
         self.out().branch(Opcode::Jump, end, span);
@@ -4241,6 +4281,9 @@ impl<'s> Lowerer<'s> {
         self.out().op_u16(Opcode::GetLocal, method, span);
         self.out().op_u16(Opcode::GetLocal, received, span);
         self.out().op_u16(Opcode::CallMethod, 1, span);
+        if asynchronous {
+            self.out().op(Opcode::Await, span);
+        }
         self.out().op(Opcode::RequireObject, span);
         self.out().op_u16(Opcode::SetLocal, result, span);
         self.out().op_u16(Opcode::GetLocal, result, span);
@@ -4248,7 +4291,12 @@ impl<'s> Lowerer<'s> {
         self.out().op(Opcode::Not, span);
         self.out().branch(Opcode::JumpIfFalse, done, span);
         self.out().op_u16(Opcode::GetLocal, result, span);
-        self.out().op(Opcode::GeneratorYieldStar, span);
+        if asynchronous {
+            self.iterator_field("value", span)?;
+            self.out().op(Opcode::GeneratorYield, span);
+        } else {
+            self.out().op(Opcode::GeneratorYieldStar, span);
+        }
         self.out().op_u16(Opcode::SetLocal, kind, span);
         self.out().op_u16(Opcode::SetLocal, received, span);
         self.out().branch(Opcode::Jump, start, span);
@@ -4257,6 +4305,8 @@ impl<'s> Lowerer<'s> {
         self.iterator_field("value", span)?;
         self.resume_kind_is(kind, 1, span)?;
         self.out().branch(Opcode::JumpIfFalse, end, span);
+        // A delegate's completed return is already a return completion;
+        // unlike an explicit return expression, its value is kept intact.
         self.out().op(Opcode::Return, span);
         self.out().bind(end);
         for slot in [it, next, result, received, kind, method] {
@@ -4305,6 +4355,16 @@ impl<'s> Lowerer<'s> {
 
     #[inline(never)]
     fn iterator_close(&mut self, it: u16, method: u16, span: Span) -> Result<(), SyntaxError> {
+        self.iterator_close_mode(it, method, span, false)
+    }
+
+    fn iterator_close_mode(
+        &mut self,
+        it: u16,
+        method: u16,
+        span: Span,
+        asynchronous: bool,
+    ) -> Result<(), SyntaxError> {
         self.out().op_u16(Opcode::GetLocal, it, span);
         self.iterator_field("return", span)?;
         self.out().op_u16(Opcode::SetLocal, method, span);
@@ -4319,6 +4379,9 @@ impl<'s> Lowerer<'s> {
         self.out().op_u16(Opcode::GetLocal, it, span);
         self.out().op_u16(Opcode::GetLocal, method, span);
         self.out().op_u16(Opcode::CallMethod, 0, span);
+        if asynchronous {
+            self.out().op(Opcode::Await, span);
+        }
         self.out().op(Opcode::RequireObject, span);
         self.out().op(Opcode::Pop, span);
         self.out().bind(done);
@@ -5496,6 +5559,9 @@ impl<'s> Lowerer<'s> {
                 } else {
                     self.out().op(Opcode::Undefined, span);
                 }
+                if self.cur().async_generator {
+                    self.out().op(Opcode::Await, span);
+                }
                 self.out().op(Opcode::GeneratorYield, span);
                 // Resume supplies [value, kind]. Abrupt completions run at
                 // this yield site, under its saved catch/finally handlers.
@@ -5512,6 +5578,9 @@ impl<'s> Lowerer<'s> {
                 self.constant(Primitive::Number(1.0), span)?;
                 self.out().op(Opcode::StrictEq, span);
                 self.out().branch(Opcode::JumpIfFalse, throwing, span);
+                if self.cur().async_generator {
+                    self.out().op(Opcode::Await, span);
+                }
                 self.out().op(Opcode::Return, span);
                 self.out().bind(throwing);
                 self.out().op(Opcode::Throw, span);

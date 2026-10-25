@@ -127,6 +127,8 @@ pub(crate) fn create(
 
 #[derive(Debug)]
 enum Stage {
+    AsyncMethod,
+    AsyncInvoke,
     Method,
     KnownMethod,
     Invoke,
@@ -143,6 +145,7 @@ enum Stage {
 
 #[derive(Debug)]
 pub(crate) struct State {
+    fallback: bool,
     stage: Stage,
     source: Value,
     iterator: Value,
@@ -163,6 +166,12 @@ impl Trace for State {
 }
 
 impl State {
+    pub(crate) fn get_async_iterator(source: Value) -> Self {
+        Self {
+            stage: Stage::AsyncMethod,
+            ..Self::get_iterator(source)
+        }
+    }
     /// GetIterator with an already observed @@iterator method. Consumers
     /// such as Array.from must select their fallback without reading twice.
     pub(crate) fn with_method(source: Value, method: Value) -> Self {
@@ -176,6 +185,7 @@ impl State {
     /// cache the returned record, then call its `next` with `iterator` as this.
     pub(crate) fn get_iterator(source: Value) -> Self {
         Self {
+            fallback: false,
             stage: Stage::Method,
             source,
             iterator: Value::Undefined,
@@ -227,6 +237,7 @@ impl State {
             return Err(Fault::TypeError("incompatible iterator receiver".into()));
         }
         Ok(Self {
+            fallback: false,
             stage: Stage::Length,
             source: data.source,
             iterator: iterator.clone(),
@@ -288,6 +299,24 @@ impl State {
         input: Input,
     ) -> Result<Action, Fault> {
         match self.stage {
+            Stage::AsyncMethod => self.read(
+                heap,
+                task,
+                self.source.clone(),
+                property::Key::Symbol(crate::value::symbol::well_known("asyncIterator")),
+                Stage::AsyncInvoke,
+            ),
+            Stage::AsyncInvoke => {
+                let method = Self::value(input)?;
+                if matches!(method, Value::Null | Value::Undefined) {
+                    self.fallback = true;
+                    self.stage = Stage::Method;
+                    Ok(Action::Continue)
+                } else {
+                    self.stage = Stage::Invoke;
+                    self.step(heap, task, Input::CallResult(method))
+                }
+            }
             Stage::MapEntry => {
                 // One live entry per budgeted step. The logical cursor
                 // advances before reentry, and the heap read
@@ -346,15 +375,23 @@ impl State {
                     Stage::Record,
                 )
             }
-            Stage::Record => object(
-                heap,
-                task,
-                &[
-                    ("iterator", self.iterator.clone()),
-                    ("next", Self::value(input)?),
-                ],
-            )
-            .map(Action::Return),
+            Stage::Record => {
+                let mut next = Self::value(input)?;
+                if self.fallback {
+                    (self.iterator, next) = super::super::async_from_sync::create(
+                        heap,
+                        task,
+                        self.iterator.clone(),
+                        next,
+                    )?;
+                }
+                object(
+                    heap,
+                    task,
+                    &[("iterator", self.iterator.clone()), ("next", next)],
+                )
+                .map(Action::Return)
+            }
             Stage::StringConvert => {
                 self.stage = Stage::StringCreate;
                 Ok(Action::ToString(self.source.clone()))

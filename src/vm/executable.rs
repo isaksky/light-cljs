@@ -216,8 +216,15 @@ pub(crate) struct Code {
 }
 
 impl Code {
+    pub(crate) fn is_async_generator(&self) -> bool {
+        matches!(self.instrs.first(), Some(Instr::AsyncGeneratorStart))
+    }
+
     pub(crate) fn is_generator(&self) -> bool {
-        matches!(self.instrs.first(), Some(Instr::GeneratorStart))
+        matches!(
+            self.instrs.first(),
+            Some(Instr::GeneratorStart | Instr::AsyncGeneratorStart)
+        )
     }
 }
 
@@ -639,6 +646,8 @@ impl Executable {
                 Opcode::GeneratorInitialYield => Instr::GeneratorInitialYield,
                 Opcode::GeneratorYieldStar => Instr::GeneratorYieldStar,
                 Opcode::AsyncStart => Instr::AsyncStart,
+                Opcode::AsyncGeneratorStart => Instr::AsyncGeneratorStart,
+                Opcode::GetAsyncIterator => Instr::GetAsyncIterator,
                 Opcode::Await => Instr::Await,
                 Opcode::CheckDirectEval => Instr::CheckDirectEval,
                 Opcode::GetRawThis => Instr::GetRawThis,

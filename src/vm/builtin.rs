@@ -480,6 +480,10 @@ pub(crate) enum Builtin {
     ArrayPrototypeSome,
     ArrayPrototypeEvery,
     ArrayPrototypeFlatMap,
+
+    AsyncGeneratorNext,
+    AsyncGeneratorReturn,
+    AsyncGeneratorThrow,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -653,9 +657,9 @@ impl Builtin {
             Builtin::PromiseResolve => "resolve",
             Builtin::PromiseReject => "reject",
             Builtin::PromiseThen => "then",
-            Builtin::GeneratorNext => "next",
-            Builtin::GeneratorReturn => "return",
-            Builtin::GeneratorThrow => "throw",
+            Builtin::GeneratorNext | Builtin::AsyncGeneratorNext => "next",
+            Builtin::GeneratorReturn | Builtin::AsyncGeneratorReturn => "return",
+            Builtin::GeneratorThrow | Builtin::AsyncGeneratorThrow => "throw",
             Builtin::PromiseCatch => "catch",
             Builtin::PromiseResolver(_, _)
             | Builtin::PromiseReaction(_)
@@ -899,7 +903,12 @@ impl Builtin {
             | Builtin::RegExpFlag(_) => 0,
 
             Builtin::PromiseThen => 2,
-            Builtin::GeneratorNext | Builtin::GeneratorReturn | Builtin::GeneratorThrow => 1,
+            Builtin::GeneratorNext
+            | Builtin::GeneratorReturn
+            | Builtin::GeneratorThrow
+            | Builtin::AsyncGeneratorNext
+            | Builtin::AsyncGeneratorReturn
+            | Builtin::AsyncGeneratorThrow => 1,
             Builtin::Promise
             | Builtin::PromiseResolve
             | Builtin::PromiseReject
@@ -1235,7 +1244,12 @@ pub(crate) fn call(
             crate::vm::native::regexp::getter(heap, task, which, this)
         }
 
-        Builtin::GeneratorNext | Builtin::GeneratorReturn | Builtin::GeneratorThrow => {
+        Builtin::GeneratorNext
+        | Builtin::GeneratorReturn
+        | Builtin::GeneratorThrow
+        | Builtin::AsyncGeneratorNext
+        | Builtin::AsyncGeneratorReturn
+        | Builtin::AsyncGeneratorThrow => {
             Err(Fault::Internal("generator method requires VM state"))
         }
         Builtin::Promise

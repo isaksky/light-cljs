@@ -25,6 +25,8 @@ pub(crate) enum State {
     Executing,
     Completed,
     SuspendedYieldStar(DetachedActivation),
+    Awaiting(DetachedActivation),
+    AwaitingReturn,
 }
 
 #[derive(Debug)]
@@ -32,13 +34,17 @@ pub(crate) struct Generator {
     pub(crate) owner: TaskId,
     pub(crate) object: OrdinaryObject,
     pub(crate) state: State,
+    pub(crate) asynchronous: Option<super::async_generator::Data>,
 }
 
 impl Trace for Generator {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         self.object.trace(visit);
-        if let State::SuspendedStart(a) | State::SuspendedYield(a) | State::SuspendedYieldStar(a) =
-            &self.state
+        self.asynchronous.iter().for_each(|a| a.trace(visit));
+        if let State::SuspendedStart(a)
+        | State::SuspendedYield(a)
+        | State::SuspendedYieldStar(a)
+        | State::Awaiting(a) = &self.state
         {
             a.trace(visit);
         }
@@ -88,6 +94,7 @@ pub(crate) fn step(heap: &Heap, vm: &mut VmState, instr: Instr) -> Result<Flow, 
 
 /// Called after normal argument binding, before the body executes.
 pub(crate) fn create(heap: &Heap, vm: &mut VmState) -> Result<(), Fault> {
+    let asynchronous = vm.top().code.is_async_generator();
     let function = match vm.top().callee {
         Some(id) => id,
         None => {
@@ -108,6 +115,7 @@ pub(crate) fn create(heap: &Heap, vm: &mut VmState) -> Result<(), Fault> {
     let key = super::property::Key::Name("prototype".into());
     let parent = match super::function::read(heap, vm.diag.task, function, &key)? {
         super::function::FunctionRead::Found(Value::Object(id)) => id,
+        _ if asynchronous => super::async_generator::prototype(heap)?,
         _ => prototype(heap)?,
     };
     let activation = vm.detach_activation()?;
@@ -116,6 +124,7 @@ pub(crate) fn create(heap: &Heap, vm: &mut VmState) -> Result<(), Fault> {
             owner: vm.diag.task,
             object: OrdinaryObject::with_prototype(vm.diag.task, parent),
             state: State::SuspendedStart(activation),
+            asynchronous: asynchronous.then(super::async_generator::Data::default),
         })))
         .ok_or(Fault::OutOfMemory("generator object"))?;
     vm.push(Value::Object(id));
@@ -133,6 +142,9 @@ pub(crate) fn receiver(heap: &Heap, task: TaskId, value: &Value) -> Result<Objec
             owner: g.owner,
             caller: task,
         }),
+        HeapObject::Generator(g) if g.asynchronous.is_some() => {
+            Err(Fault::TypeError("incompatible generator receiver".into()))
+        }
         HeapObject::Generator(g) if matches!(g.state, State::Executing) => {
             Err(Fault::TypeError("cannot invoke a running generator".into()))
         }
@@ -183,7 +195,7 @@ pub(crate) fn resume(
             complete(heap, id);
             return Ok(false);
         }
-        State::Executing => {
+        State::Executing | State::Awaiting(_) | State::AwaitingReturn => {
             return Err(Fault::TypeError("cannot invoke a running generator".into()));
         }
     }

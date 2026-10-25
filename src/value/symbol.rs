@@ -51,6 +51,7 @@ impl SymbolRegistry {
 /// them. These immutable bodies live until process exit.
 pub(crate) fn well_known(name: &str) -> JsSymbol {
     static ITERATOR: OnceLock<JsSymbol> = OnceLock::new();
+    static ASYNC_ITERATOR: OnceLock<JsSymbol> = OnceLock::new();
     static TO_PRIMITIVE: OnceLock<JsSymbol> = OnceLock::new();
     static HAS_INSTANCE: OnceLock<JsSymbol> = OnceLock::new();
     static TO_STRING_TAG: OnceLock<JsSymbol> = OnceLock::new();
@@ -60,6 +61,7 @@ pub(crate) fn well_known(name: &str) -> JsSymbol {
     static SPECIES: OnceLock<JsSymbol> = OnceLock::new();
     let slot = match name {
         "iterator" => &ITERATOR,
+        "asyncIterator" => &ASYNC_ITERATOR,
         "toPrimitive" => &TO_PRIMITIVE,
         "hasInstance" => &HAS_INSTANCE,
         "toStringTag" => &TO_STRING_TAG,

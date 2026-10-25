@@ -8823,7 +8823,7 @@ a span inside the source at character boundaries with a real line/column, and
 a compiled prefix runs for a bounded slice (any outcome, no panic). A table of
 the `docs/grammar.md` "Rejected forms" rows, including every reserved-binding
 misuse of `__rt`, is checked through `compile_script_with` so compile-time
-rejections (async generators) are covered as well as parse-time ones; the
+rejections are covered as well as parse-time ones; the
 module-only rows (string-literal names, import attributes, `import.meta`,
 top-level `await`) go through `parse_module`, and over-deep sources through
 compilation (`TooDeep`). The character sweep asserts its two seeds (strict and
@@ -8887,3 +8887,33 @@ at each delegate method/result getter or call without replaying effects.
 Semantic references: `research/quickjs/quickjs.c` `js_generator_next` and
 `js_parse_assign_expr2` at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
 The implementation and new tests are original; no upstream text is copied.
+
+### Async generator requests and sync adapters (clj-quickjs-313)
+
+Async generators reuse the task-owned `Generator` heap payload, ordinary property
+store and detachable activation. An optional async record owns a traced FIFO of
+completion kinds, request arguments and Promise capabilities. A native boundary
+runs one activation or settlement step at a time, retaining the current request
+while invoking its resolver. The busy bit covers both execution and settlement,
+so reentry enqueues work. An awaited activation or completed-generator return
+keeps the current request at the front until its owner-bound Promise reaction
+runs. Jobs never execute on the settling task; private foreign-task results are
+rejected using the existing Promise ownership checks. Cancellation discards the
+boundary and completes the generator through the existing unwind machinery.
+
+`AsyncGeneratorStart` (0xB5) marks code without establishing an async-function
+Promise boundary. Argument defaults run at invocation; `GeneratorInitialYield`
+creates the lazy object afterward. `GetAsyncIterator` (0xB6) returns the same
+private cached iterator/next record as GetIterator, preferring @@asyncIterator.
+The sync fallback creates a task-owned wrapper with captured iterator/next
+methods. Its three small shared bytecode drivers use AsyncStart/Await and saved
+catch handlers, so even rejected-value IteratorClose and dependency waits can
+suspend without Rust recursion. This also keeps independent adapter calls on
+independent async activations. Async generator delegation wraps yielded values
+in new iterator results rather than exposing a delegate's result object.
+
+No heap kind was added: the generator trace covers both the optional request
+queue and the suspended activation. The existing native continuation roots cover
+in-flight capabilities and resolver calls. Request queues have no independent
+fixed limit; existing heap allocation policy, VM frame/value limits and per-run
+instruction budgets apply.

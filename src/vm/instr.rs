@@ -164,6 +164,8 @@
 //! | `UsingDisposeAsync` | 0xB2 | u16 count | (value method hint)* has-error error cancelling → undefined | shared disposal with awaits |
 //! | `Rest` | 0xB3 | u16 first argument | → array | budgeted rest argument collection |
 //! | `CopyDataProperties` | 0xB4 | – | target source → target | budgeted object spread |
+//! | `AsyncGeneratorStart` | 0xB5 | – | – | mark async generator code before parameter initialization |
+//! | `GetAsyncIterator` | 0xB6 | – | iterable → record | prefer @@asyncIterator, adapting a sync fallback |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -735,6 +737,9 @@ pub enum Opcode {
     Rest = 0xB3,
     /// target source → target: CopyDataProperties, skipping nullish sources.
     CopyDataProperties = 0xB4,
+
+    AsyncGeneratorStart = 0xB5,
+    GetAsyncIterator = 0xB6,
 }
 
 /// Operand encoding of an opcode.
@@ -945,6 +950,9 @@ impl Opcode {
             0xB2 => UsingDisposeAsync,
             0xB3 => Rest,
             0xB4 => CopyDataProperties,
+
+            0xB5 => AsyncGeneratorStart,
+            0xB6 => GetAsyncIterator,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1135,6 +1143,9 @@ impl Opcode {
             UsingDisposeAsync => "using_dispose_async",
             Rest => "rest",
             CopyDataProperties => "copy_data_properties",
+
+            AsyncGeneratorStart => "async_generator_start",
+            GetAsyncIterator => "get_async_iterator",
             PutGlobalStrict => "put_global_strict",
             PutFieldStrict => "put_field_strict",
             PutElemStrict => "put_elem_strict",
@@ -1208,16 +1219,16 @@ impl Opcode {
             | CompareLe | CompareGe | Typeof | NewObjectLiteral | ToString | GetThis | NewArray
             | AppendElement | AppendHole | GetElem | PutElem | Dup2 | ToPropertyKey | SetProto
             | Instanceof | Delete | In | ForInStart | ForInNext | NewArguments => OperandKind::None,
-            GetIterator | RequireObject | PendingThrow | GetGlobalObject | ToNumeric | Inc
-            | Dec | CallSpread | CallMethodSpread | ConstructSpread | CheckSpreadArguments => {
-                OperandKind::None
-            }
+            GetAsyncIterator | GetIterator | RequireObject | PendingThrow | GetGlobalObject
+            | ToNumeric | Inc | Dec | CallSpread | CallMethodSpread | ConstructSpread
+            | CheckSpreadArguments => OperandKind::None,
 
             RequireCoercible => OperandKind::None,
             OwnKeys => OperandKind::None,
             IsEnumerable => OperandKind::None,
             DefineElem => OperandKind::None,
-            GeneratorStart
+            AsyncGeneratorStart
+            | GeneratorStart
             | GeneratorYield
             | GeneratorInitialYield
             | GeneratorYieldStar
@@ -1478,6 +1489,9 @@ pub(crate) enum Instr {
     UsingDisposeAsync(u16),
     Rest(u16),
     CopyDataProperties,
+
+    AsyncGeneratorStart,
+    GetAsyncIterator,
 }
 
 impl Instr {
@@ -1597,6 +1611,8 @@ impl Instr {
             Instr::OwnKeys => Opcode::OwnKeys,
             Instr::RequireCoercible => Opcode::RequireCoercible,
             Instr::AsyncStart => Opcode::AsyncStart,
+            Instr::AsyncGeneratorStart => Opcode::AsyncGeneratorStart,
+            Instr::GetAsyncIterator => Opcode::GetAsyncIterator,
             Instr::Await => Opcode::Await,
             Instr::CheckDirectEval => Opcode::CheckDirectEval,
             Instr::GetRawThis => Opcode::GetRawThis,
@@ -1688,7 +1704,8 @@ impl Instr {
             | CheckGlobalLexicalConflict(_)
             | GeneratorStart
             | GeneratorInitialYield
-            | AsyncStart => (0, 0),
+            | AsyncStart
+            | AsyncGeneratorStart => (0, 0),
             GeneratorYield | GeneratorYieldStar => (1, 2),
             Await => (1, 1),
             CellInit | CellSet => (2, 0),
@@ -1697,7 +1714,7 @@ impl Instr {
             | Rem | Gt | Le | Ge | LooseEq | Need | NeedAll | BitAnd | BitOr | BitXor | Shl
             | Sar | UShr | Pow | Plus | CompareLt | CompareGt | CompareLe | CompareGe
             | Instanceof | In => (2, 1),
-            ForInStart | GetIterator | RequireObject => (1, 1),
+            ForInStart | GetAsyncIterator | GetIterator | RequireObject => (1, 1),
             PendingThrow => (0, 1),
             RequireCoercible | OwnKeys => (1, 1),
             IsEnumerable => (2, 1),
@@ -1767,6 +1784,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 180);
+        assert_eq!(assigned, 182);
     }
 }

@@ -970,7 +970,9 @@ fn materialize(
     let code = info(heap, function)?.code;
     let generator = code.as_ref().is_some_and(|c| c.is_generator());
     let class = code.as_ref().is_some_and(|c| c.constructor_kind.is_class());
-    let parent = if generator {
+    let parent = if code.as_ref().is_some_and(|c| c.is_async_generator()) {
+        super::async_generator::prototype(heap)?
+    } else if generator {
         super::generator::prototype(heap)?
     } else {
         object_prototype(heap)?

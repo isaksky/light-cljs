@@ -55,4 +55,6 @@ pub use executable::{
 pub use frames::VmLimits;
 pub use instr::{Opcode, ThrowKind};
 
+pub(crate) mod async_from_sync;
+pub(crate) mod async_generator;
 pub(crate) mod proxy;

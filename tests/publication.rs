@@ -1440,3 +1440,20 @@ fn disposable_stacks_are_task_owned_at_publication_boundaries() {
         assert_eq!((found, owner), ("DisposableStack", Some(task.id())));
     }
 }
+
+#[test]
+fn async_generators_are_task_owned() {
+    // Synthetic fixture, not light-cljs output. Even the initial activation
+    // is mutable owner state and cannot be sent to a different task.
+    let rt = Runtime::new();
+    let exe = compile_function("async function* g() { throw 'body must stay lazy'; }").unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let g = complete(task.run().unwrap());
+    let (_, found, owner) = not_shareable(rt.publish(&g).unwrap_err());
+    assert_eq!(found, "generator");
+    assert_eq!(owner, Some(task.id()));
+    let caller = compile_function("function use(g) { return g.next(); }").unwrap();
+    assert!(
+        matches!(rt.spawn(&caller, &[&g]).unwrap().run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. }))
+    );
+}

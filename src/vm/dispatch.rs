@@ -2562,7 +2562,9 @@ fn step_instruction(
         | Instr::UsingDisposeAsync(_) => {
             return Err(Fault::Internal("using_check is resumable"));
         }
-        Instr::GetIterator => return Err(Fault::Internal("get_iterator is resumable")),
+        Instr::GetIterator | Instr::GetAsyncIterator => {
+            return Err(Fault::Internal("get_iterator is resumable"));
+        }
         Instr::ForInNext => return Err(Fault::Internal("for-in next is resumable")),
         Instr::StrictEq => {
             let b = state.pop()?;
@@ -2637,7 +2639,7 @@ fn step_instruction(
         }
         Instr::AsyncStart => return super::asynchronous::start(heap, state),
         Instr::Await => return super::asynchronous::await_value(heap, state),
-        Instr::GeneratorStart => {}
+        Instr::GeneratorStart | Instr::AsyncGeneratorStart => {}
         Instr::GeneratorInitialYield | Instr::GeneratorYield | Instr::GeneratorYieldStar => {
             return super::generator::step(heap, state, instr);
         }
@@ -3100,7 +3102,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         Instr::ToObject => true,
         Instr::CheckHeritage | Instr::InitHeritage | Instr::GetNewTarget | Instr::GetSuperConstructor |
         Instr::ConstructSuper(_) | Instr::ConstructSuperSpread | Instr::BindThis | Instr::ResolveThis | Instr::ForwardArguments => true,
-        Instr::GeneratorStart | Instr::GeneratorYield | Instr::GeneratorInitialYield | Instr::GeneratorYieldStar | Instr::AsyncStart | Instr::Await => true,
+        Instr::GetAsyncIterator | Instr::AsyncGeneratorStart | Instr::GeneratorStart | Instr::GeneratorYield | Instr::GeneratorInitialYield | Instr::GeneratorYieldStar | Instr::AsyncStart | Instr::Await => true,
         Instr::SuppressedError => true,
         Instr::Jump(target) | Instr::JumpIfFalse(target) => target as usize <= pc,
         // `CallFinally` may enter a finally block before it, and every cycle

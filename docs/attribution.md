@@ -1451,3 +1451,19 @@ at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04)
 for parameter restrictions, data copying and per-iteration binding semantics.
 The Rust implementation and synthetic fixtures (not light-cljs output) were
 written independently; no QuickJS source or test text was copied.
+
+## Async generators and async-from-sync iteration (clj-quickjs-313)
+
+Consulted `research/quickjs/quickjs.c` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`: `js_async_generator_next`,
+`js_async_generator_resume_next`, `js_async_from_sync_iterator_next`,
+`js_parse_assign_expr2` and `emit_return` for request ordering, awaited return
+values, delegation and rejected-value closing. Rust code, internal bytecode
+drivers and synthetic fixtures are independently written; no QuickJS source or
+test text is copied.
+
+Delegated return completion handling also follows ECMAScript
+[YieldExpression evaluation](https://tc39.es/ecma262/multipage/ecmascript-language-functions-and-classes.html#sec-generator-function-definitions-runtime-semantics-evaluation)
+and [AsyncGeneratorUnwrapYieldResumption](https://tc39.es/ecma262/multipage/control-abstraction-objects.html#sec-asyncgeneratorunwrapyieldresumption),
+consulted 2026-10-24: rejected return arguments become delegated throw
+completions, while values from completed delegate returns are preserved.

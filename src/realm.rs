@@ -438,6 +438,8 @@ pub(crate) struct Intrinsics {
 
     pub(crate) intl_plural_rules_prototype: ObjectId,
     pub(crate) generator_prototype: ObjectId,
+    pub(crate) async_generator_prototype: ObjectId,
+    pub(crate) async_iterator_prototype: ObjectId,
     pub(crate) intl_collator_prototype: ObjectId,
     pub(crate) intl_collator_bound: ObjectId,
     pub(crate) intl_date_time_format_prototype: ObjectId,
@@ -1136,6 +1138,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         "toStringTag",
         "dispose",
         "asyncDispose",
+        "asyncIterator",
         "unscopables",
         "species",
     ] {
@@ -1292,6 +1295,9 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let throw = b.function(Builtin::GeneratorThrow, &[])?;
     b.add(generator_prototype, "throw", throw, PropertyFlags::METHOD)?;
 
+    let (async_iterator, async_generator_prototype) =
+        async_generator_intrinsics(&mut b, object_prototype)?;
+
     array_mutator_intrinsics(&mut b, array_prototype, array)?;
     let array_sort = b.function(Builtin::ArrayPrototypeSort, &[])?;
     b.add(array_prototype, "sort", array_sort, PropertyFlags::METHOD)?;
@@ -1398,6 +1404,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         intl_number_format_bound,
         intl_plural_rules_prototype,
         generator_prototype,
+        async_generator_prototype,
+        async_iterator_prototype: async_iterator,
         intl_collator_prototype,
         intl_collator_bound,
         intl_date_time_format_prototype,
@@ -1545,6 +1553,59 @@ fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
     let is_array = b.function(Builtin::ArrayIsArray, &[])?;
     b.add(array, "isArray", is_array, PropertyFlags::METHOD)?;
     Some((id, array))
+}
+
+// Keep async iterator construction storage off cold realm initialization paths.
+#[inline(never)]
+fn async_generator_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+) -> Option<(ObjectId, ObjectId)> {
+    let heap = b.heap;
+    let tag = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    let mut async_iterator = OrdinaryObject::intrinsic(Some(object_prototype));
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("asyncIterator"))?;
+    let identity = b.function(Builtin::IteratorIdentity, &[])?;
+    b.add_value(
+        identity,
+        "name",
+        Value::String("[Symbol.asyncIterator]".into()),
+        PropertyFlags::FUNCTION_INFO,
+    )?;
+    async_iterator
+        .define_with(key, Value::Object(identity), PropertyFlags::METHOD)
+        .then_some(())?;
+    let async_iterator = heap.alloc(HeapObject::Plain(async_iterator))?;
+    b.all.push(async_iterator);
+    let mut generator = OrdinaryObject::intrinsic(Some(async_iterator));
+    generator
+        .define_with(
+            tag,
+            Value::String("AsyncGenerator".into()),
+            PropertyFlags::FUNCTION_INFO,
+        )
+        .then_some(())?;
+    let async_generator_prototype = heap.alloc(HeapObject::Plain(generator))?;
+    b.all.push(async_generator_prototype);
+    for method in [
+        Builtin::AsyncGeneratorNext,
+        Builtin::AsyncGeneratorReturn,
+        Builtin::AsyncGeneratorThrow,
+    ] {
+        let function = b.function(method, &[])?;
+        b.add(
+            async_generator_prototype,
+            method.name(),
+            function,
+            PropertyFlags::METHOD,
+        )?;
+    }
+
+    Some((async_iterator, async_generator_prototype))
 }
 
 // Keep the new registration's allocation temporaries out of the large realm
@@ -2950,7 +3011,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 368); // Eight array callback methods (-298).
+        assert_eq!(first.all.len(), 374); // Array callbacks (-298) plus async iteration (-313).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

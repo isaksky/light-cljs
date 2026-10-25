@@ -387,7 +387,7 @@ Notes on the grammar:
   Protocol getters/calls can wait, be collected around and migrate like any
   other VM call; non-iterables and non-object next results throw TypeError.
   Async functions and await execute through promise jobs (clj-quickjs-248);
-  async generators still fail compilation at the function's first token.
+  async generators execute (clj-quickjs-313).
 - The comma operator (clj-quickjs-61) appears only where the grammar has
   Expression: expression statements, parentheses, `if`/`while`/`do`-`while` tests,
   the parts of a `for` head (other than a declaration list) and
@@ -526,7 +526,7 @@ Every form below is rejected where it starts. Error kinds:
 
 Yield expressions, including delegated `yield*`, inside generator bodies are executable,
 including binary operands and try/catch/finally bodies (clj-quickjs-244).
-Async functions and await execute (clj-quickjs-248); async generators remain rejected.
+Async functions and await execute (clj-quickjs-248); async generators execute (clj-quickjs-313).
 `new` on a generator, async function, concise method, accessor or arrow is valid
 syntax and throws a catchable TypeError at execution (clj-quickjs-135).
 
@@ -546,7 +546,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | private class names (`#x`) | UnknownToken |
 | module string-literal import/export names, import attributes (including `type: 'json'` and `type: 'json5'`), `import.meta`, top-level `await` | Unsupported |
 | `new.target` outside a non-arrow function, including a top-level arrow or indirect eval (clj-quickjs-99) | Invalid |
-| execution of parsed async generators | Unsupported at the function during compilation |
+| execution of parsed async generators | supported with task-owned queued requests (clj-quickjs-313) |
 | initialized for-in heads in strict code or with `let`/`const` or a binding pattern; initialized for-of heads in either mode (clj-quickjs-90) | Invalid |
 | an optional chain as an assignment/update target (`a?.b = 1`, `a?.b++`), a `new` callee (`new a?.b()`), or before a tagged template in the same chain | Invalid |
 | in object literals: computed shorthand `{[k]}` | UnexpectedToken |
@@ -1373,9 +1373,9 @@ Executed, with JavaScript semantics:
 | Number, `true`/`false`, `null`, `undefined`, `NaN`, `Infinity` literals | IEEE-754 doubles; `-0` is preserved; no constant folding |
 | String literals `"..."`, `'...'` (clj-quickjs-65) | immutable string values loaded from the constant pool, one constant per distinct content; a string is a primitive: publishable to other tasks and usable as a persistent map key, compared by content. A string is a sequence of UTF-16 code units, lone surrogates included (clj-quickjs-141): `"\u{10ffff}" === "\u{dbff}\u{dfff}"` and `"\u{dbff}" + "\u{dfff}" === "\u{10ffff}"` are true, a lone surrogate equals only itself (not U+FFFD), and equality, map keys and `<` compare code units. The embedder reads the exact code units (`JsString::code_units`, or `Debug`, which writes a lone surrogate as `\u{d800}`; `cargo run` prints a string result that way) or lossy text (`Display`, `to_string_lossy`: U+FFFD) |
 | `let`, `const`, parameters, block scoping and shadowing | one frame local per live binding; `let x;` sets `undefined` each time it runs (loop bodies included) |
-| Async functions and `await` (clj-quickjs-248) | synchronous entry returns a Promise at the first await or completion; intrinsic PromiseResolve and internal reactions resume the detachable activation in the owning task. Rejections throw at await; return adopts values and thenables. Pending operands and handlers are traced; dependency reads remain whole-task waits. Empty queues complete and report suspended function names without retaining their activations. Async generators remain deferred. |
+| Async functions and `await` (clj-quickjs-248) | synchronous entry returns a Promise at the first await or completion; intrinsic PromiseResolve and internal reactions resume the detachable activation in the owning task. Rejections throw at await; return adopts values and thenables. Pending operands and handlers are traced; dependency reads remain whole-task waits. Empty queues complete and report suspended function names without retaining their activations. Async generators execute (clj-quickjs-313). |
 | `a + b * (yield c)` and yields in try/catch/finally (clj-quickjs-244) | pending operands stay on the saved activation's value stack without compiler spills. Handlers and normal/return/throw/jump completions are saved relative to the activation and rebased on next, preserving their values across GC and calls from different depths. Finally runs once when resumed control leaves the protected block; a yielding finally continues its pending completion after its last yield or dependency wait. |
-| `function* g(x) { yield x; }`, generator expressions/methods and `next(value)` (clj-quickjs-243) | calls evaluate defaults and bind arguments before creating a generator; the body starts at first next. Yield suspends a traced task-owned activation and produces `{value, done: false}`; the next argument becomes the yield result. Return/fallthrough produces a done result, uncaught throw completes and propagates, and later next calls return undefined/done. Generators inherit the shared iterator identity and support for-of. Dependency waits, budgets, GC, cancellation and worker migration use ordinary attached VM frames. Re-entrant calls and incompatible receivers throw TypeError; publication and foreign-task access fail. Generator return/throw methods execute, including cleanup and yield* forwarding (clj-quickjs-293); async generators remain deferred. |
+| `function* g(x) { yield x; }`, generator expressions/methods and `next(value)` (clj-quickjs-243) | calls evaluate defaults and bind arguments before creating a generator; the body starts at first next. Yield suspends a traced task-owned activation and produces `{value, done: false}`; the next argument becomes the yield result. Return/fallthrough produces a done result, uncaught throw completes and propagates, and later next calls return undefined/done. Generators inherit the shared iterator identity and support for-of. Dependency waits, budgets, GC, cancellation and worker migration use ordinary attached VM frames. Re-entrant calls and incompatible receivers throw TypeError; publication and foreign-task access fail. Generator return/throw methods execute, including cleanup and yield* forwarding (clj-quickjs-293); async generators execute (clj-quickjs-313). |
 | `var a = 1, b;` (clj-quickjs-94) | one binding per name per function body (or script), wherever the `var` statements are (nested blocks, loop and `if` bodies, `try`/`catch`/`finally` blocks and `switch` clauses included, nested functions excluded); hoisted: it exists and is `undefined` from function entry, with no temporal dead zone (`x; var x = 1;` reads `undefined`); repeating `var` is allowed and `var x;` does nothing (it does not reset an assigned value); an initializer is an assignment that runs when the statement does; a `var` named like a parameter, or like a function declaration at the top of the same body, is that binding; a `var` statement has no completion value. Closures capture a `var` under the rule of every binding: by value if it is never assigned, otherwise through one cell for the whole call, so closures made in different loop iterations share it (unlike a `let` in the loop body). A `var` in a catch block may repeat the simple catch parameter (ECMAScript Annex B, as QuickJS does): it declares the function's binding, and its initializer assigns the parameter |
 | OrdinaryToPrimitive on object operands (clj-quickjs-70) | arithmetic, bitwise, unary and update operators use hint number; `+` and object/primitive `==` use hint default; templates and computed property keys use hint string. Number/default tries `valueOf`, then `toString`; string reverses that order. Non-callable methods are skipped; each method is called at most once with the original object as `this` and no arguments. The first primitive result wins; otherwise a catchable TypeError "cannot convert object to primitive value". Method exceptions propagate. Left conversion finishes before right conversion begins, after both expressions are evaluated. Equality between two objects uses identity; nullish equality never converts. Object.prototype.valueOf returns the object and Object.prototype.toString returns "[object Object]" for plain objects. A task-owned native continuation retains operands and progress across budget yields, dependency waits, GC and migration; cancellation drops it through the usual finally unwinding. No Rust interpreter recursion |
 | `+` | when either operand is a string: ToString of both, concatenated (a new string; a result over 2^30 - 1 code units throws catchable `InternalError`, "string too long"). ToString gives `"undefined"`, `"null"`, `"true"`/`"false"`, and for numbers Number::toString in radix 10: shortest round-trip digits (ties to the even digit), plain decimal for `1e-6 <= \|x\| < 1e21` (`"0.000001"`, `"19686109595169230000"`), otherwise exponent form (`"1e+21"`, `"1e-7"`), `"0"` for `-0`, `"NaN"`, `"Infinity"` (clj-quickjs-66). Otherwise ToNumber of both, then IEEE addition. Object operands first use resumable ToPrimitive (clj-quickjs-70), left before right, with hint default. Lowered to `add` when both operands are statically numbers, otherwise to `plus`, which decides at run time |
@@ -1556,7 +1556,7 @@ inside brackets (`[d]`, `[]` for an empty description, an empty name when
 absent), with `get ` or `set ` prefixes for accessors. Named functions and
 other expressions retain their names. Rejected forms include `{[key]}`
 shorthand and unparenthesized comma expressions inside the brackets.
-Async generators remain an explicit gap. Object spread executes (-315). Key conversion
+Async generators execute (-313). Object spread executes (-315). Key conversion
 uses the shared OrdinaryToPrimitive path; `Symbol.toPrimitive` protocol
 dispatch remains the existing conversion gap described below.
 
@@ -3010,7 +3010,7 @@ let x = 1;
 
 ## Generator and async syntax examples (clj-quickjs-54)
 
-These synthetic fixtures cover executable generators, delegation and async functions; async generators remain deferred.
+These synthetic fixtures cover executable generators, delegation and async functions; async generators execute (clj-quickjs-313).
 
 ```js accept
 function* g() { yield 1; yield* xs; }
@@ -3020,7 +3020,7 @@ function* g() { yield 1; yield* xs; }
 async function f() { await 1; }
 ```
 
-```js compile-reject Unsupported 1:1
+```js accept
 async function* g() { yield await 1; }
 ```
 
@@ -3048,7 +3048,7 @@ async (x) => { return await x; }
 ({async m() { await 1; }})
 ```
 
-```js compile-reject Unsupported 1:3
+```js accept
 ({async *m() { yield await 1; }})
 ```
 
@@ -4615,7 +4615,7 @@ fulfilled Promise adopted by `new Promise(r => r(inner))` adds two jobs before
 the outer reaction: the adoption call and the inner forwarding reaction.
 Thenable calls can yield, wait, migrate and survive collection like reactions.
 
-Rejected forms: async generators and construction of Promise subclasses retain
+Rejected forms: construction of Promise subclasses retains
 explicit rejections. Explicit gaps: subclass capabilities,
 species, combinators, `finally` and arbitrary Promise own properties are
 deferred. Only the intrinsic Promise constructor is
@@ -5348,7 +5348,7 @@ Dependency reads remain whole-task VM waits and run no jobs while Waiting.
 Await never parks a task. Once its inbox is empty, a task completes and reports
 suspended function names through `Task::suspended_async_activations()`. This list
 contains diagnostic strings only and does not retain saved activations.
-Explicit gaps: async generators and top-level await are unsupported.
+Explicit gaps: top-level await is unsupported.
 
 ```js accept
 (async () => 2 + await 3)().then(x => __rt.effect(0, x));
@@ -6773,3 +6773,15 @@ let p = new Proxy({}, {
 let names = ''; for (let key in p) names += key;
 names === 'ab';
 ```
+
+### Async generator execution (clj-quickjs-313)
+
+Parsed `async function*` declarations/expressions and `async *` methods execute.
+Calls bind parameters and return lazy, task-owned async generators. `next`,
+`return` and `throw` enqueue requests and return Promises; `yield` awaits its
+operand and `return` awaits its expression before finally cleanup. Rejections
+are thrown at the saved await/yield site. `yield*` supports async iterators and
+sync iterators through CreateAsyncFromSyncIterator, including return/throw
+forwarding and iterator closing. `Symbol.asyncIterator` is a well-known symbol.
+Async generator execution is no longer an Unsupported compilation error.
+Async iteration statements remain a separate feature (clj-quickjs-308).

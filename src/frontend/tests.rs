@@ -2661,7 +2661,7 @@ fn calls_and_member_chains() {
 /// the other cases are written for this project.
 #[test]
 fn object_literals() {
-    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, Unsupported};
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken};
     assert_eq!(ast("({});"), "(object)");
     assert_eq!(
         ast(r#"({a: 1, "b": 2, 3: 4,});"#),
@@ -2717,13 +2717,7 @@ fn object_literals() {
     parse_script("({...o});").unwrap();
     for src in ["({async m() {}});", "({*g() {}});"] {
         parse_script(src).unwrap();
-        if src.contains("async *") || src.contains("async function*") {
-            let e = compile_script("method", src).unwrap_err();
-            assert_eq!(e.kind, Unsupported);
-            assert_eq!(e.span.start, 2);
-        } else {
-            compile_script("method", src).unwrap();
-        }
+        compile_script("method", src).unwrap();
     }
     // `__proto__: value` sets the prototype (clj-quickjs-121): only one per
     // literal, whether written as a name or a string.
@@ -5241,14 +5235,8 @@ fn generator_async_context_and_precedence() {
             (generator, asynchronous),
             "{src}"
         );
-        if !(generator && asynchronous) {
-            compile_script("syntax", src).unwrap();
-        } else {
-            let e = compile_script("syntax", src).unwrap_err();
-            assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
-            assert_eq!(e.span.start, start, "{src}: {e}");
-            assert!(e.message.contains("async"));
-        }
+        assert_eq!(f.span.start, start, "{src}");
+        compile_script("syntax", src).unwrap();
     }
     for src in [
         "function* g(x = yield 1) {}",
@@ -5380,17 +5368,7 @@ fn generator_async_review_regressions() {
         r"(x = {async *\u0069f() {}}) => x",
     ] {
         parse_script(src).unwrap_or_else(|e| panic!("{src}: {e}"));
-        if !src.contains("async *") && !src.contains("async function*") {
-            compile_script("syntax", src).unwrap();
-            continue;
-        }
-        let e = compile_script("syntax", src).unwrap_err();
-        assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{src}: {e}");
-        let start = src
-            .find("async *")
-            .or_else(|| src.find("async function*"))
-            .unwrap();
-        assert_eq!(e.span.start, start, "{src}: {e}");
+        compile_script("syntax", src).unwrap();
     }
 }
 
@@ -5816,7 +5794,7 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
         .stack_size(2 << 20)
         .spawn(move || {
             // Generator functions, including delegation, compile at every
-            // accepted depth; async generators remain explicitly unsupported.
+            // accepted depth, including async generators.
             for (name, make) in syntax_makers {
                 let mut deepest = 0;
                 for n in 1..=MAX_NESTING {
@@ -5824,13 +5802,7 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
                     match parse_script(&src) {
                         Ok(_) => {
                             deepest = n;
-                            if src.contains("async *") || src.contains("async function*") {
-                                let e = compile_script(name, &src).unwrap_err();
-                                assert_eq!(e.kind, SyntaxErrorKind::Unsupported, "{name}: {e}");
-                            } else {
-                                compile_script(name, &src)
-                                    .unwrap_or_else(|e| panic!("{name}: {e}"));
-                            }
+                            compile_script(name, &src).unwrap_or_else(|e| panic!("{name}: {e}"));
                         }
                         Err(e) if e.kind == SyntaxErrorKind::TooDeep => break,
                         Err(e) => panic!("{name} at depth {n}: {e}"),

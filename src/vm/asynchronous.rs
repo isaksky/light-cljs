@@ -128,6 +128,12 @@ pub(crate) fn await_value(heap: &Heap, vm: &mut VmState) -> Result<Flow, Fault> 
 
 pub(crate) fn suspend(heap: &Heap, vm: &mut VmState, source: ObjectId) -> Result<Flow, Fault> {
     let id = super::native::async_id(vm).ok_or(Fault::Internal("await outside async function"))?;
+    if heap
+        .read(id, |o| matches!(o, HeapObject::Generator(_)))
+        .unwrap_or(false)
+    {
+        return super::async_generator::suspend(heap, vm, source, id);
+    }
     // Register while still attached. There is no safepoint until the saved
     // activation is installed below. Even an already fulfilled source queues.
     super::promise::await_then(heap, &vm.jobs, source, id)?;
@@ -151,6 +157,12 @@ pub(crate) fn resume(
     rejected: bool,
     value: Value,
 ) -> Result<Flow, Fault> {
+    if heap
+        .read(id, |o| matches!(o, HeapObject::Generator(_)))
+        .unwrap_or(false)
+    {
+        return super::async_generator::resume(heap, vm, id, rejected, value);
+    }
     heap.read(id, |o| match o {
         HeapObject::AsyncState(a) if a.owner == vm.diag.task => a
             .activation

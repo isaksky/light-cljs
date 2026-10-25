@@ -372,6 +372,14 @@ pub(crate) enum Action {
         rejected: bool,
         value: Value,
     },
+    ResumeGenerator {
+        id: ObjectId,
+        value: Value,
+        kind: super::generator::ResumeKind,
+    },
+    AwaitGeneratorReturn {
+        value: Value,
+    },
 }
 
 /// ToPrimitive's preferred primitive type. Number and default share ordinary
@@ -513,6 +521,7 @@ enum NativeState {
         next: usize,
         out: Value,
     },
+    AsyncGenerator(Box<super::async_generator::Boundary>),
     Proxy(Box<super::proxy::State>),
     Dispose(dispose::State),
     Disposal(Box<dispose::Stack>),
@@ -851,6 +860,7 @@ pub(crate) fn reattach(natives: &mut [NativeFrame], depth: usize, base: usize) {
 pub(crate) fn generator_boundary(state: &VmState) -> Option<ObjectId> {
     state.natives.last().and_then(|n| match n.state {
         NativeState::Generator { id, .. } if n.depth + 1 == state.depth() => Some(id),
+        NativeState::AsyncGenerator(ref a) if n.depth + 1 == state.depth() => a.id,
         _ => None,
     })
 }
@@ -865,8 +875,46 @@ pub(crate) fn async_id(state: &VmState) -> Option<ObjectId> {
         .find(|n| n.depth < state.depth())
         .and_then(|n| match &n.state {
             NativeState::Async(a) if n.depth + 1 == state.depth() => Some(a.id),
+            NativeState::AsyncGenerator(a) if n.depth + 1 == state.depth() => a.id,
             _ => None,
         })
+}
+
+pub(crate) fn async_generator_boundary(
+    state: &mut VmState,
+    boundary: super::async_generator::Boundary,
+) -> Result<(), Fault> {
+    push_native(state, NativeState::AsyncGenerator(Box::new(boundary)))?;
+    let index = state.natives.len() - 1;
+    // A queue may only be claimed after both boundary resources exist.
+    // A handler-limit failure must leave the lazy generator resumable.
+    if let Err(error) =
+        state.push_handler(super::exception::HandlerKind::NativeCatch { native: index })
+    {
+        state.natives.pop();
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(crate) fn generator_awaiting(state: &mut VmState) -> Result<(), Fault> {
+    let index = state.natives.len() - 1;
+    state.pop_native_catch(index);
+    state.push_handler(super::exception::HandlerKind::NativeCatch { native: index })?;
+    state.natives[index].awaiting = Awaiting::CallResult;
+    Ok(())
+}
+
+pub(crate) fn suspend_generator_return(state: &mut VmState) -> Result<(), Fault> {
+    let Some(frame) = state.natives.last_mut() else {
+        return Err(Fault::Internal("async generator boundary missing"));
+    };
+    let NativeState::AsyncGenerator(a) = &mut frame.state else {
+        return Err(Fault::Internal("async generator boundary missing"));
+    };
+    a.suspended();
+    frame.awaiting = Awaiting::CallResult;
+    Ok(())
 }
 
 pub(crate) fn async_boundary(
@@ -903,6 +951,7 @@ impl Trace for NativeFrame {
                 out.trace(visit);
             }
             NativeState::Async(a) => a.trace(visit),
+            NativeState::AsyncGenerator(a) => a.trace(visit),
             NativeState::Eval(eval) => eval.trace(visit),
             NativeState::DynamicFunction(function) => function.trace(visit),
             NativeState::ArrayFrom(from) => from.trace(visit),
@@ -1034,8 +1083,8 @@ impl Trace for NativeFrame {
 pub(crate) fn is_resumable(instr: Instr) -> bool {
     use Instr::*;
     match instr {
-        Reduce | NeedAll | GetIterator | UsingCheck | UsingDispose(_) | UsingCheckAsync
-        | UsingDisposeAsync(_) | ForInNext | Rest(_) | CopyDataProperties => true,
+        Reduce | NeedAll | GetAsyncIterator | GetIterator | UsingCheck | UsingDispose(_)
+        | UsingCheckAsync | UsingDisposeAsync(_) | ForInNext | Rest(_) | CopyDataProperties => true,
         PendingException | SuppressedError | PendingCancel => false,
         IsCell | IsObject | ToObject => false,
         RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add
@@ -1054,7 +1103,8 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | Instanceof | Delete | In | ForInStart | NewArguments | Method(..) | DefineGetter(_)
         | DefineSetter(_) | RequireObject | PendingThrow | CallSpread | CallMethodSpread
         | ConstructSpread | CheckSpreadArguments => false,
-        GeneratorStart
+        AsyncGeneratorStart
+        | GeneratorStart
         | GeneratorYield
         | GeneratorInitialYield
         | GeneratorYieldStar
@@ -1418,6 +1468,11 @@ pub(crate) fn start_builtin(
     ) {
         return start_primitive_constructor(state, which, args, construct, popped);
     }
+    if matches!(which, Builtin::Error | Builtin::NativeError(_))
+        || (which == Builtin::ErrorPrototypeToString && !construct)
+    {
+        return start_error(heap, state, which, this, args, popped);
+    }
     // These leaves never coerce operands; avoid reserving the slow built-in
     // conversion frame before a proxy/prototype walk on a 64 KiB worker.
     if matches!(
@@ -1596,6 +1651,25 @@ pub(crate) fn start_builtin(
             | Builtin::PromiseResolveThenable(_)
     ) {
         return start_promise(heap, state, which, this, args, construct, popped);
+    }
+    if matches!(
+        which,
+        Builtin::AsyncGeneratorNext | Builtin::AsyncGeneratorReturn | Builtin::AsyncGeneratorThrow
+    ) {
+        let kind = match which {
+            Builtin::AsyncGeneratorReturn => super::generator::ResumeKind::Return,
+            Builtin::AsyncGeneratorThrow => super::generator::ResumeKind::Throw,
+            _ => super::generator::ResumeKind::Next,
+        };
+        super::async_generator::enqueue(
+            heap,
+            state,
+            this,
+            args.first().cloned().unwrap_or(Value::Undefined),
+            kind,
+            popped,
+        )?;
+        return Ok(true);
     }
     if matches!(
         which,
@@ -2034,29 +2108,6 @@ fn start_builtin_slow(
     if let Some(native) = regexp::start(heap, state.diag.task, which, this, args, construct)? {
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::RegExp(native))?;
-        return Ok(true);
-    }
-    let error = match which {
-        Builtin::Error => Some(error::ErrorState::constructor(
-            heap,
-            state.diag.task,
-            args,
-            None,
-            state.error_stack(state.top().pc.saturating_sub(1))?,
-        )?),
-        Builtin::NativeError(kind) => Some(error::ErrorState::constructor(
-            heap,
-            state.diag.task,
-            args,
-            Some(kind),
-            state.error_stack(state.top().pc.saturating_sub(1))?,
-        )?),
-        Builtin::ErrorPrototypeToString if !construct => Some(error::ErrorState::to_string(this)?),
-        _ => None,
-    };
-    if let Some(native) = error {
-        state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::Error(native))?;
         return Ok(true);
     }
     if !construct {
@@ -2734,6 +2785,12 @@ pub(crate) fn start(
                 operands::<1>(state)?[0].clone(),
             )),
         ),
+        Instr::GetAsyncIterator => (
+            1,
+            NativeState::Iterator(Box::new(iterator::State::get_async_iterator(
+                operands::<1>(state)?[0].clone(),
+            ))),
+        ),
         Instr::GetIterator => (
             1,
             NativeState::Iterator(Box::new(iterator::State::get_iterator(
@@ -2815,6 +2872,8 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             Action::Continue
             | Action::SuspendAsync(_)
             | Action::ResumeAsync { .. }
+            | Action::ResumeGenerator { .. }
+            | Action::AwaitGeneratorReturn { .. }
             | Action::Eval(..)
             | Action::DynamicFunction(..)
             | Action::SimTimer { .. }
@@ -2848,6 +2907,11 @@ pub(crate) fn discard(natives: &mut Vec<NativeFrame>, frame: usize, heap: &Heap)
     let kept = natives.partition_point(|n| n.depth <= frame);
     for native in &natives[kept..] {
         if let NativeState::Generator { id, .. } = native.state {
+            super::generator::complete(heap, id);
+        }
+        if let NativeState::AsyncGenerator(a) = &native.state
+            && let Some(id) = a.id
+        {
             super::generator::complete(heap, id);
         }
     }
@@ -2896,6 +2960,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     // These steps begin without a delivered operand, so the handler's
     // height is exactly the native base. Other boundaries catch only calls.
     if match &state.natives[native_index].state {
+        NativeState::AsyncGenerator(a) => a.catches_step(),
         NativeState::ArrayFrom(from) => from.catches_step(),
         NativeState::ListFormat(format) => format.catches_step(),
         NativeState::MathSumPrecise(sum) => sum.catches_step(),
@@ -2928,10 +2993,46 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     };
     state.pop_native_catch(native_index);
     state.truncate_operands(base)?;
+    apply_action(state, heap, host, action)
+}
+
+// Conversions can traverse properties and numeric string parsing. Keep the
+// action dispatcher's call/activation temporaries off that Rust stack path.
+#[inline(never)]
+fn apply_action(
+    state: &mut VmState,
+    heap: &Heap,
+    host: &mut dyn Host,
+    action: Action,
+) -> Result<Flow, Fault> {
     match action {
         Action::SuspendAsync(source) => {
             state.natives.pop();
+            if let Some(NativeFrame {
+                depth,
+                state: NativeState::AsyncGenerator(a),
+                ..
+            }) = state.natives.last()
+                && *depth == state.depth()
+                && let Some(id) = a.id
+            {
+                return super::async_generator::suspend(heap, state, source, id);
+            }
             super::asynchronous::suspend(heap, state, source)
+        }
+        Action::ResumeGenerator { id, value, kind } => {
+            generator_awaiting(state)?;
+            if !super::generator::resume(heap, state, id, value, kind)? {
+                return Err(Fault::Internal("async generator unexpectedly completed"));
+            }
+            Ok(Flow::FrameChanged)
+        }
+        Action::AwaitGeneratorReturn { value } => {
+            state.push_handler(super::exception::HandlerKind::NativeCatch {
+                native: state.natives.len() - 1,
+            })?;
+            await_promise(state, super::promise::await_state(heap, value)?)?;
+            Ok(Flow::FrameChanged)
         }
         Action::ResumeAsync {
             id,
@@ -3163,6 +3264,7 @@ pub(crate) fn catch(
     let frame = natives.get_mut(index).ok_or("native catch frame missing")?;
     match &mut frame.state {
         NativeState::Async(a) => a.failed = Some(exception.value),
+        NativeState::AsyncGenerator(a) => a.failed = Some(exception.value),
         NativeState::Disposal(disposal) if disposal.catches() => disposal.failed(exception),
         NativeState::Promise(promise) if promise.catches() => promise.failed(exception.value),
         NativeState::ArrayFrom(from) if from.catches() => from.failed(exception),
@@ -3381,6 +3483,7 @@ impl NativeState {
     fn catches(&self) -> bool {
         match self {
             Self::Async(_) => true,
+            Self::AsyncGenerator(a) => a.catches(),
             Self::Disposal(disposal) => disposal.catches(),
             Self::Promise(promise) => promise.catches(),
             Self::ArrayFrom(from) => from.catches(),
@@ -3409,6 +3512,7 @@ impl NativeState {
             NativeState::Dispose(dispose) => dispose.step(heap, task, input),
             NativeState::Disposal(disposal) => disposal.step(heap, task, input),
             NativeState::Promise(promise) => promise.step(heap, task, jobs, input),
+            NativeState::AsyncGenerator(generator) => generator.step(heap, task, input),
             NativeState::DurationFormat(format) => format.step(heap, task, input),
             NativeState::ArrayMutate(array) => array.step(heap, task, input),
             NativeState::ArraySearch(array) => array.step(heap, task, input),
@@ -3454,6 +3558,9 @@ impl NativeState {
             NativeState::Async(a) => a.step(heap, input),
             NativeState::CopyProperties(_) | NativeState::Rest { .. } => {
                 Err(Fault::Internal("copy native bypassed dispatch"))
+            }
+            NativeState::AsyncGenerator(_) => {
+                unreachable!("async generator dispatched before other native arms")
             }
             NativeState::Eval(eval) => eval.step(),
             NativeState::DynamicFunction(function) => function.step(input),
@@ -4805,6 +4912,7 @@ impl NativeState {
                 | NativeState::Disposal(_)
                 | NativeState::Generator { .. }
                 | NativeState::Async(_)
+                | NativeState::AsyncGenerator(_)
                 | NativeState::TypedArray(_)
                 | NativeState::Promise(_)
                 | NativeState::Error(_)
@@ -4955,6 +5063,43 @@ pub(crate) fn proxy_write(
         0,
     )?;
     Ok(true)
+}
+
+// Promise ownership failures construct errors on migrated 64 KiB workers.
+#[inline(never)]
+fn start_error(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    use builtin::Builtin;
+    let error = match which {
+        Builtin::Error => Some(error::ErrorState::constructor(
+            heap,
+            state.diag.task,
+            args,
+            None,
+            state.error_stack(state.top().pc.saturating_sub(1))?,
+        )?),
+        Builtin::NativeError(kind) => Some(error::ErrorState::constructor(
+            heap,
+            state.diag.task,
+            args,
+            Some(kind),
+            state.error_stack(state.top().pc.saturating_sub(1))?,
+        )?),
+        Builtin::ErrorPrototypeToString => Some(error::ErrorState::to_string(this)?),
+        _ => None,
+    };
+    if let Some(native) = error {
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::Error(native))?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 #[cfg(test)]

@@ -1455,3 +1455,156 @@ fn async_settlement_overflow_rejects_instead_of_stalling() {
     assert_eq!(host.0, [Primitive::Number(99.)]);
     assert!(task.suspended_async_activations().is_empty());
 }
+
+#[test]
+fn async_generator_resume_jobs_belong_to_the_owning_task() {
+    for result in ["2", "({private:2})"] {
+        let rt = Runtime::new();
+        let pair = finish(&function(
+            &rt,
+            "function make() { let resolve; let p=new Promise(r => { resolve=r; }); return __rt.vector(p,resolve); }",
+            &[],
+        ));
+        rt.publish(&pair).unwrap();
+        let get = |i| {
+            finish(&function(
+                &rt,
+                &format!("function get(pair) {{ return __rt.nth(pair,{i}); }}"),
+                std::slice::from_ref(&pair),
+            ))
+        };
+        let p = get(0);
+        let resolve = get(1);
+        let consumer = function(
+            &rt,
+            r#"function consume(p) {
+            async function* g() { yield await p; yield* [Promise.resolve(4)]; }
+            let it = g();
+            it.next().then(r => __rt.effect(0,r.value), e => __rt.effect(0,e instanceof TypeError ? 3 : 99));
+            it.next().then(r => __rt.effect(0,r.value));
+            __rt.need(248,5);
+            return 42;
+        }"#,
+            &[p],
+        );
+        let mut host = Effects::default();
+        assert!(matches!(
+            consumer.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+            RunOutcome::Waiting(_)
+        ));
+        finish(&function(
+            &rt,
+            &format!("function settle(resolve) {{ resolve({result}); }}"),
+            &[resolve],
+        ));
+        assert!(host.0.is_empty());
+        assert_eq!(consumer.status(), clj_quickjs::TaskStatus::Waiting);
+        rt.collect().unwrap();
+        satisfy(&rt, &consumer);
+        let (outcome, host) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = consumer.run_with(Budget::UNLIMITED, &mut host).unwrap();
+                (outcome, host)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(matches!(outcome, RunOutcome::Complete(_)));
+        assert_eq!(
+            host.0,
+            if result == "2" {
+                vec![Primitive::Number(2.), Primitive::Number(4.)]
+            } else {
+                vec![Primitive::Number(3.), Primitive::Undefined]
+            }
+        );
+    }
+}
+
+#[test]
+fn async_generator_settlement_overflow_rejects_instead_of_stalling() {
+    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+        max_call_depth: 2,
+        ..clj_quickjs::VmLimits::DEFAULT
+    });
+    let task = rt.spawn(&compile_script("async-generator-overflow", "let it=(async function*() { yield 1; })(); it.next().then(x => __rt.effect(0,x.value), e => __rt.effect(0,e instanceof Error ? 99 : 98)); 42;").unwrap(), &[]).unwrap();
+    let mut host = Effects::default();
+    let out = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+    assert!(matches!(out,RunOutcome::Complete(v) if v.view()==ValueView::Number(42.)));
+    assert_eq!(host.0, [Primitive::Number(99.)]);
+}
+
+#[test]
+fn async_generator_handler_overflow_preserves_driver() {
+    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+        max_stack_values: 16,
+        ..clj_quickjs::VmLimits::DEFAULT
+    });
+    let nested = format!(
+        "{}it.next();{}",
+        "try {".repeat(16),
+        "} catch {}".repeat(16)
+    );
+    let source = format!(
+        "let started=false; async function* g() {{ started=true; yield 7; }} let it=g(); {nested} if (started) throw 'started early'; it.next().then(r => __rt.effect(0,r.value)); 42;"
+    );
+    let task = rt
+        .spawn(
+            &compile_script("generator-handler-limit", &source).unwrap(),
+            &[],
+        )
+        .unwrap();
+    let mut host = Effects::default();
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    assert_eq!(host.0, [Primitive::Number(7.)]);
+}
+
+#[test]
+fn async_generator_cancellation_unwinds_attached_finally_and_discards_requests() {
+    for suspension in ["yield 0", "await 0"] {
+        let rt = Runtime::new();
+        let object = rt.scope(|s| s.persist(s.new_object()));
+        let weak = object.downgrade();
+        let task = function(
+            &rt,
+            &format!(
+                r#"function body(o) {{
+            async function* g() {{
+                await 0;
+                try {{
+                    try {{ __rt.need(313, 1); __rt.effect(0, 98); }}
+                    finally {{ __rt.effect(0, 1); {suspension}; __rt.effect(0, 99); }}
+                }} finally {{ __rt.effect(0, 2); }}
+                yield 3;
+            }}
+            let it = g();
+            it.next().then(() => __rt.effect(0, 3));
+            it.next(o).then(() => __rt.effect(0, 4));
+            return 42;
+        }}"#
+            ),
+            &[object],
+        );
+        let mut host = Effects::default();
+        assert!(matches!(
+            task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+            RunOutcome::Waiting(_)
+        ));
+        rt.collect().unwrap();
+        assert!(weak.is_live());
+        assert!(matches!(task.cancel(), clj_quickjs::Cancel::Runnable(_)));
+        assert!(matches!(
+            task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+            RunOutcome::Cancelled
+        ));
+        assert_eq!(host.0, [Primitive::Number(1.), Primitive::Number(2.)]);
+        rt.collect().unwrap();
+        assert!(!weak.is_live());
+        assert_eq!(rt.heap_usage().objects.generator, 0);
+        assert_eq!(rt.heap_usage().objects.async_state, 0);
+    }
+}

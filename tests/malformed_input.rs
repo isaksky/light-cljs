@@ -272,7 +272,7 @@ fn overdeep_sources_fail_with_too_deep() {
 
 /// The documented rejected forms (`docs/grammar.md`, "Rejected forms") fail
 /// at compilation with the documented error kind. Each row is a complete
-/// script; rows that reach the compiler (async generators) are exercised
+/// script; all rows are exercised
 /// through `compile_script_with`, not the parser alone.
 #[test]
 fn rejected_forms_fail_with_documented_kinds() {
@@ -305,7 +305,6 @@ fn rejected_forms_fail_with_documented_kinds() {
         ("x = import('y');", STRICT, Unsupported),
         ("x = import.meta;", STRICT, Unsupported),
         ("() => new.target", STRICT, Invalid),
-        ("async function* g() {}", STRICT, Unsupported),
         ("'use strict'; for (var k = 1 in o) {}", SLOPPY, Invalid),
         ("for (let k = 1 in o) {}", SLOPPY, Invalid),
         ("for (var k = 1 of o) {}", SLOPPY, Invalid),
