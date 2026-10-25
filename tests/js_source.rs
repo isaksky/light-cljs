@@ -1754,6 +1754,43 @@ fn sloppy_eval_environment_lifetime_and_validation() {
 }
 
 #[test]
+fn proxy_eval_is_indirect() {
+    // Synthetic fixtures, not light-cljs output.
+    for call in ["eval('typeof local')", "eval(...['typeof local'])"] {
+        for source in [
+            format!(
+                "function f(eval) {{ let local=42; return {call}; }} f(new Proxy(globalThis.eval, {{}}))"
+            ),
+            format!(
+                "function f() {{ let local=42; with ({{eval:new Proxy(globalThis.eval, {{}})}}) {{ return {call}; }} }} f()"
+            ),
+            format!(
+                "globalThis.eval=new Proxy(globalThis.eval, {{}}); function f() {{ let local=42; return {call}; }} f()"
+            ),
+        ] {
+            assert_eq!(
+                sloppy_eval(&format!("{source} === 'undefined'")),
+                ValueView::Bool(true),
+                "{source}"
+            );
+        }
+
+        let source = format!(
+            "function f(eval) {{ let local=42; return {call}; }} let caught; try {{ f(new Proxy(globalThis.eval, {{apply() {{ throw 99; }}}})); }} catch(e) {{ caught=e; }} caught instanceof TypeError && caught.message.indexOf('unsupported Proxy trap: apply')>=0"
+        );
+        assert_eq!(sloppy_eval(&source), ValueView::Bool(true), "{source}");
+
+        let source =
+            format!("function f(eval) {{ let local=42; return {call}; }} f(globalThis.eval)");
+        assert_eq!(
+            sloppy_eval(&format!("{source} === 'number'")),
+            ValueView::Bool(true),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn strict_direct_eval() {
     for source in [
         r#"eval('1+1;') === 2 && eval('if (1) 2; else 3;') === 2 && eval('if (0) 2; else 3;') === 3"#,

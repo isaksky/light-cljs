@@ -3721,6 +3721,8 @@ Direct eval (clj-quickjs-107): `eval(source)` uses caller bindings, lexical
 TDZ checks apply, loop closures capture each iteration, and strict eval
 declarations stay local. Eval-visible bindings use cells, so closures over them
 cannot be published. Ordinary functions without eval retain value captures.
+Proxies wrapping eval use indirect evaluation for ordinary and spread calls,
+including through shadowed bindings, and retain Proxy trap checks (clj-quickjs-282).
 Eval frames can yield, wait, collect, and migrate on 64 KiB stacks.
 Direct eval inherits `new.target` from the enclosing function (-99).
 Sloppy var/function hoisting (-108) and parameter-expression eval (-109)

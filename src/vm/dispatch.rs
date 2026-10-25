@@ -578,7 +578,13 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
         .code
         .eval_sites
         .get(&state.top().pc.saturating_sub(1))
-        && matches!(callee(heap, f)?, Callee::Builtin(Builtin::Eval))
+        // Direct eval requires the original intrinsic, not a Proxy target.
+        && let Value::Object(id) = f
+        && heap
+            .read(*id, |object| {
+                matches!(object, HeapObject::Builtin(f) if f.which == Builtin::Eval)
+            })
+            .ok_or(Fault::Internal("callee was reclaimed"))?
     {
         let site = site.clone();
         let args = args.to_vec();
