@@ -493,12 +493,12 @@
 //! `this` (`crate::vm::frames`): the receiver of the `CallMethod` that
 //! entered it, otherwise `undefined` (a plain `Call`, a native's callback,
 //! a task's entry frame). The compiler emits it for `this` inside a
-//! non-arrow function. In strict code the value is pushed as is; in sloppy
-//! code an `undefined`, `null` or primitive `this` would be replaced by the
-//! global object or wrapped (ToObject), neither of which exists yet
-//! (clj-quickjs-104, clj-quickjs-72), so it fails the task with
-//! `UnsupportedOperand` instead of pushing a wrong value. It never
-//! allocates and is not a poll point.
+//! non-arrow function. In strict code the value is pushed as is. In sloppy
+//! code an `undefined` or `null` receiver is replaced by the task's rooted
+//! global object, allocating it lazily on first use; object receivers are
+//! pushed as is. Other primitive receivers still require unsupported
+//! boxing (ToObject, clj-quickjs-72), so they fail the task with
+//! `UnsupportedOperand`. Because it may allocate, `GetThis` is a poll point.
 //!
 //! Opcode `0x5E`, `Construct` (clj-quickjs-71), is `new f(args)` (QuickJS
 //! `OP_call_constructor`, `JS_CallConstructorInternal`, revision
