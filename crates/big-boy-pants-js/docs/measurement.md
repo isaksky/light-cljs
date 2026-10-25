@@ -53,6 +53,35 @@ can cause additional collections; counts are not allocations divided by the
 threshold. Values are rounded by the harness. Object admission is an aggregate
 object-count budget only; these rows do not establish a managed-byte/RSS bound.
 
+Verification of this partial collection checkpoint used the same Rust 1.99.1
+toolchain, `CARGO_BUILD_JOBS=3`, and three test threads/jobs:
+
+- `cargo test --locked -p big-boy-pants-js --all-targets -- --test-threads=3`:
+  2,011 passed at `84ac7c0e`. After integrating numeric fusion from `b3fac889`,
+  792 affected tests passed at `4688f73a`: the full library plus `automatic_gc`,
+  `gc_roots`, `cancellation`, `need`, `native_fold`, `wakeup`, `exceptions`,
+  `exception_waits`, `malformed_input` and `measurement`. The other full-suite
+  results were reused because the integration changed only primitive VM
+  dispatch/frame code and documentation. Engine doctests: seven passed.
+- Native-only `--no-default-features --features bbp-macros --test bbp_macros`:
+  17 passed on the combined engine. Compiler `cargo nextest run --locked -j 3`:
+  2,120 passed, 109 existing skips; with `--no-default-features --features quickjs`:
+  2,043 passed, 108 existing skips. The feature matrices ran sequentially so
+  subprocess tests used the matching `target/debug/light-cljs` binary.
+- Workspace and engine formatting passed. Compiler strict Clippy passed for
+  default and QuickJS-only features. Engine strict Clippy retained the nine
+  pre-existing Rust 1.99.1 diagnostics (`deprecated`,
+  `clippy::chunks_exact_to_as_chunks`, `clippy::byte_char_slices`); allowing only
+  those categories after `-D warnings` passed for all targets at `4688f73a`.
+  Plain engine-free `--no-default-features --all-targets` cannot compile legacy
+  compiler tests referencing `rquickjs`; the QuickJS-only feature selection above
+  is the supported legacy matrix.
+
+The rebase to `6969769e` (`134ee3e7`) added only project measurement artifacts and
+documentation, so source/build checks were reused. This checkpoint does not
+complete aggregate managed-byte accounting or `--macro-memory-limit` mapping;
+receiver changes after that base remain for the continuation's combined checks.
+
 ## Compiler-shaped kernel baseline (2026-10-25)
 
 Run from this crate directory (or add `-p big-boy-pants-js` from the repository
