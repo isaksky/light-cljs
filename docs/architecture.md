@@ -17,8 +17,10 @@ Spawn checks runtime membership, not publication: the embedder must call
 `Runtime::publish` before handing values across tasks.
 See `src/runtime.rs`, `src/task.rs`, and runnable `examples/resumable_counter.rs`.
 
-`Task::run(Budget)` or `run_with(Budget, &mut dyn Host)` claims exclusive execution
-without blocking. A second claimant receives `RunError::AlreadyRunning`; a
+`Task::run()` claims exclusive execution with an unlimited budget and no host;
+host effects then fail the task. Use `Task::run_with(budget, &mut host)` for
+bounded execution with a `Host`, as in `examples/resumable_counter.rs`.
+Claiming never blocks. A second claimant receives `RunError::AlreadyRunning`; a
 finished task receives `Finished`. A run releases its Rust stack and reports:
 
 | Outcome | Embedder responsibility |
@@ -155,8 +157,18 @@ locks. Enqueue returned `Wakeups` through the scheduler; publication executes no
 JavaScript or host callbacks. Acquire/Release result publication and a per-cell
 pending lock implement read-or-subscribe. Task state/park epochs deduplicate
 notifications and cover completion before subscription, during registration and
-before parking ends. Cancellation withdraws a consumer's active waiter while
-retaining its dependency record; it does not cancel a producer needed by others.
+before parking ends. Consumer cancellation does not cancel a producer needed
+by others and retains the consumer's recorded dependency.
+
+`Task::cancel()` only requests cancellation. If it returns
+`Cancel::Runnable(task)`, the task was parked and the caller **must enqueue it**
+for cleanup. `Cancel::Requested` means its existing runner/queue will observe the
+request; no extra enqueue is needed. `AlreadyRequested` and `Finished` change
+nothing. `Executor::cancel` performs this handoff for its tasks. Ordinary wake
+handles become stale once cancellation is requested; later cell completion
+cannot substitute for that required enqueue. The task's subsequent run removes
+the active waiter and releases saved roots as it performs terminal cleanup.
+See `src/task/cancel_tests.rs::cancelled_parked_consumer_leaves_the_cell_when_its_run_cleans_up`.
 
 A dependency wait preserves handler and finally state; it is neither an exception
 nor an await checkpoint. Completed dependency failure/cancellation raises at the

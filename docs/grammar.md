@@ -30,7 +30,7 @@ identified in [attribution.md](attribution.md).
 | Lexical forms | Unicode/escaped identifiers, decimal/binary/octal/hex numbers and numeric separators, BigInt, quoted strings and escapes, templates/tagged templates, RegExp lexical goal, ASI | `tests/quickjs_language.rs`, `src/frontend/tests.rs`, `tests/js_source.rs` |
 | Expressions | Arithmetic/bitwise/shift/exponentiation, comparisons/equality, coercions, comma/conditional/logical/nullish, assignments including logical and compound, updates, `typeof`, `void`, `delete`, `in`, `instanceof`, optional chains | `tests/quickjs_language.rs`; `tests/fixtures/js/logical_assignment.js`; `tests/js_source.rs` |
 | Statements and bindings | Blocks, lexical/var hoisting and TDZ, if/switch, while/do/for, labels and abrupt completion, for-in/prototype enumeration, for-of and async iteration, patterns/defaults/rest in supported binding heads | `tests/js_source.rs`, `tests/quickjs_functions.rs`, `tests/async_iteration.rs`, `tests/exception_waits.rs` |
-| Functions and scope | Declarations/expressions/arrows, nested calls/recursion/closures, parameters/defaults/rest, lexical this/super/new.target, arguments, call/apply/bind, strict/sloppy globals, sloppy with, direct/indirect eval and Function compilation | `tests/js_functions.rs`, `tests/quickjs_functions.rs`, `tests/closures.rs`, `tests/quickjs_objects.rs` |
+| Functions and scope | Declarations/expressions/arrows, nested calls/recursion/closures, parameters/defaults/rest, lexical this/super/new.target, unmapped arguments, call/apply/bind, strict/sloppy globals, sloppy with, direct/indirect eval and Function compilation; sloppy receiver limits below | `tests/js_functions.rs`, `tests/quickjs_functions.rs`, `tests/closures.rs`, `tests/quickjs_objects.rs` |
 | Objects | Named/computed/string/symbol keys, literals/methods/accessors/spread, descriptors, prototypes, extensibility, freeze/seal, own/inherited enumeration, reflection, resumable coercion including Symbol.toPrimitive and Symbol.toStringTag | `tests/quickjs_objects.rs`, `tests/object_statics.rs`, `tests/object_to_string.rs`, `tests/reflect.rs`, `tests/need.rs` |
 | Classes | Base/derived construction, super calls/properties, public fields, private fields/methods/accessors and private-in, static blocks, supported built-in subclasses | `tests/fixtures/js/private_classes.js`, `tests/class_static_blocks.rs`, `tests/builtin_subclasses.rs`, `tests/js_source.rs` |
 | Exceptions and disposal | throw/try/catch/finally, completion across waits, Error/NativeError/AggregateError/SuppressedError, captured stacks, using/await using, DisposableStack/AsyncDisposableStack | `tests/exceptions.rs`, `tests/exception_waits.rs`, `tests/error_stacks.rs`, `tests/native_unwind.rs` |
@@ -48,7 +48,7 @@ identified in [attribution.md](attribution.md).
 | Primitive wrappers | Number, String, Boolean, Symbol, BigInt conversion/boxing, including ordinary property lookup and with environments | `tests/boolean_bigint_wrappers.rs`, `tests/js_source.rs`; Symbol/BigInt reject construction |
 | Numbers/BigInt/Math | Predicates/constants, parseInt/parseFloat, number radix/fixed/exponential/precision formatting; in-tree BigInt arithmetic, bitwise/shift/width wrapping and formatting; Math standard numeric surface, sumPrecise, random | `tests/quickjs_bigint.rs`, `tests/math.rs`, `tests/js_source.rs`; numerical policy below |
 | Strings | UTF-16 indexing, char/code-point access/construction, search/extraction/combination/padding/repeat/raw, casing/locale casing, normalization/well-formedness, trim/start/end/includes, split/replace/replaceAll and RegExp symbol protocols | `tests/fixtures/js/string_methods.js`, `tests/fixtures/js/regexp_symbols.js`, `tests/js_source.rs`; first rope flatten may run synchronously |
-| RegExp | In-tree parser/IR/backtracking matcher, flags d/g/i/m/s/u/v/y, captures/backreferences/lookaround, indices, Unicode folding and binary/category/script/string properties, v sets; exec/test/source/flags and symbol methods | `tests/js_source.rs`, `tests/fixtures/js/regexp_*.js`, `src/regexp/*` tests; bounded leaf matching |
+| RegExp | In-tree parser/IR/backtracking matcher, flags d/g/i/m/s/u/v/y, captures/backreferences, positive/negative lookahead, indices, Unicode folding and binary/category/script/string properties, v sets; exec/test/source/flags and symbol methods | `tests/js_source.rs`, `tests/fixtures/js/regexp_*.js`, `src/regexp/*` tests; bounded leaf matching; lookbehind creation is rejected |
 | Binary data | ArrayBuffer detach/slice, integer/float typed-array construction from length/buffer/array-like/iterables, indexed reads/writes and supported set/subarray/slice | `tests/quickjs_builtins.rs`, `tests/js_source.rs`; no shared buffers, Atomics or DataView |
 | JSON | parse with positioned errors; stringify with getters/toJSON/wrappers/arrays/objects/indentation/cycles | `tests/js_source.rs`, `tests/js_modules.rs`; callable reviver and non-nullish replacers explicitly rejected |
 | Date | Time clipping, UTC/local fields and setters, host clock/zone, ISO and pinned fallback parsing, non-locale formats | `tests/date_host.rs`, `tests/js_source.rs`; clock/zone and conversion policy below |
@@ -88,6 +88,22 @@ Non-standard QuickJS function lineNumber/columnNumber properties are absent;
 error diagnostics/stacks retain source locations. Accepted syntax can still
 raise a catchable unsupported-API error at execution (for example Proxy traps,
 JSON revivers/replacers and unsupported Intl options).
+
+Sloppy receiver substitution/boxing is absent: a sloppy call that needs `this`
+requires an object receiver; an omitted/nullish/primitive receiver fails with
+UnsupportedOperand rather than substituting the global object or boxing it.
+Strict functions retain their supplied receiver unchanged. `arguments` is always
+an unmapped copy, even in sloppy functions: parameter writes and indexed argument
+writes do not alias each other. These are deliberate subset boundaries, not full
+sloppy-mode semantics. Implementation: `src/vm/dispatch.rs::checked_this` and
+`new_arguments`; evidence: `tests/js_functions.rs::call_apply_and_reflect_apply`
+and `arguments_object_holds_every_argument`.
+
+Lookbehind patterns parse into RegExp IR but are rejected during RegExp creation
+(including literal execution) with a catchable SyntaxError. Only positive and
+negative lookahead execute. The native matcher reports Unsupported("lookbehind");
+`src/regexp/matcher/tests.rs::unsupported_features_fail_explicitly` asserts this
+boundary.
 
 ## Resource and policy limits
 

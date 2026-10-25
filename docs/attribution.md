@@ -139,8 +139,9 @@ are synthetic, not light-cljs output. No QuickJS implementation code was copied.
 bodies in `test_parse_semicolon` and the two async arrow ASI cases in
 `test_parse_arrow_function`, from `research/quickjs/tests/test_language.js`
 at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
-The bodies use `let` instead of `var` and assert parsing plus explicit
-compilation and execution support. The QuickJS MIT
+The bodies use `let` instead of `var` and assert parsing plus successful
+compilation. Execution coverage is separate in the source integration suites.
+The QuickJS MIT
 copyright and permission notice is retained with that test; see
 `research/quickjs/LICENSE`. Other new fixtures are synthetic, not light-cljs
 output. `js_parse_unary`, `js_parse_assign_expr2` and

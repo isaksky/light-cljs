@@ -561,3 +561,23 @@ documentation only.
 
 No code defect follow-up was needed. This is a verification record, not a second
 backlog; future implementation work remains in Pellets.
+
+### Review corrections
+
+The required Sol review returned fix_first with five documentation findings.
+The full-suite record was committed while review ran; the remaining corrections
+restore sloppy receiver/unmapped-arguments limitations, restrict RegExp execution
+to lookahead, document cancellation's required enqueue and correct Task::run's
+unlimited-budget/no-host signature. No runtime code or assertion changed.
+The root inventory (16) and grammar examples (1) passed again, as did these
+focused checks, each with CARGO_BUILD_JOBS=3 inside nix develop:
+
+| Exact command | Result |
+| --- | --- |
+| `cargo test --lib regexp::matcher::tests::unsupported_features_fail_explicitly -- --exact --test-threads=3` | 1 passed |
+| `cargo test --test js_functions call_apply_and_reflect_apply -- --exact --test-threads=3` | 1 passed |
+| `cargo test --test js_functions arguments_object_holds_every_argument -- --exact --test-threads=3` | 1 passed |
+| `cargo test --lib task::cancel_tests::cancelled_parked_consumer_leaves_the_cell_when_its_run_cleans_up -- --exact --test-threads=3` | 1 passed |
+
+Formatter check and warnings-denied Clippy passed again after these corrections.
+All five findings were fixed; no runtime follow-up was filed.
