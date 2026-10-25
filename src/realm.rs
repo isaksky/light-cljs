@@ -844,6 +844,11 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
     let is_frozen = b.function(Builtin::ObjectIsFrozen, &[])?;
     let keys = b.function(Builtin::ObjectKeys, &[])?;
     let get_own_property_names = b.function(Builtin::ObjectGetOwnPropertyNames, &[])?;
+    let assign = b.function(Builtin::ObjectAssign, &[])?;
+    let entries = b.function(Builtin::ObjectEntries, &[])?;
+    let values = b.function(Builtin::ObjectValues, &[])?;
+    let from_entries = b.function(Builtin::ObjectFromEntries, &[])?;
+    let define_properties = b.function(Builtin::ObjectDefineProperties, &[])?;
     let object = b.function(
         Builtin::Object,
         &[
@@ -867,6 +872,11 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
             ("freeze", freeze, PropertyFlags::METHOD),
             ("isFrozen", is_frozen, PropertyFlags::METHOD),
             ("keys", keys, PropertyFlags::METHOD),
+            ("assign", assign, PropertyFlags::METHOD),
+            ("entries", entries, PropertyFlags::METHOD),
+            ("values", values, PropertyFlags::METHOD),
+            ("fromEntries", from_entries, PropertyFlags::METHOD),
+            ("defineProperties", define_properties, PropertyFlags::METHOD),
             (
                 "getOwnPropertyNames",
                 get_own_property_names,
@@ -3251,8 +3261,8 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        // Fourteen String methods (-300), six Promise methods, species getter, and AggregateError's pair (-317).
-        assert_eq!(first.all.len(), 427);
+        // Five Object statics (-318), following the String and Promise additions.
+        assert_eq!(first.all.len(), 432);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

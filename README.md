@@ -4777,3 +4777,30 @@ with each swap charged to a resumable step.
 Checks: `CARGO_BUILD_JOBS=3 cargo test --test js_source string_ -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 cargo test --lib string_methods:: -- --test-threads=3`.
 The fixtures are synthetic JavaScript, not light-cljs output.
+
+### Object copy, enumeration and descriptor statics (clj-quickjs-318)
+
+`Object.assign(target, ...sources)`, `Object.entries(value)`, `Object.values(value)`,
+`Object.fromEntries(iterable)` and `Object.defineProperties(target, properties)` execute
+as resumable natives. Copy/enumeration uses a snapshot of own keys in integer-index-first
+order, then rechecks each descriptor before reading its value. `assign` includes symbols,
+skips nullish sources, boxes primitive targets, and uses strict `Set`, including inherited
+setters. `entries`/`values` skip symbols and non-enumerable properties. Proxy `ownKeys` and
+`getOwnPropertyDescriptor` use the existing descriptor continuation; other traps retain
+this runtime's named TypeError policy. Immutable realm intrinsics reject assignment.
+
+`fromEntries` accepts the existing synchronous iterable protocol (including generators,
+arrays and Sets), converts entry keys with string hint while preserving symbols, and
+creates own writable/enumerable/configurable properties. Entry read/key conversion errors
+close the iterator, preserving the original exception; iterator step failures do not close.
+Unary property-key conversion (also used for computed `super` keys) consults
+`Symbol.toPrimitive` before ordinary conversion methods, including resumable lookup/calls.
+`defineProperties` converts every enumerable own descriptor, including symbols, before
+writing any target property, and then applies descriptors in order. Conversion failure
+leaves the target untouched; a later definition failure retains earlier definitions.
+The existing `Object.create` second-argument restriction remains deferred.
+
+Getters, setters, Proxy traps, iterator callbacks and key/typed-array conversions can yield,
+wait, collect and migrate without replay. Results are task-owned; snapshot/array sizes use
+the existing object/array limits, with no additional method-specific cap. Validate with
+`cargo test --test object_statics` and `cargo test --test need object_statics_wait_collect_and_migrate`.

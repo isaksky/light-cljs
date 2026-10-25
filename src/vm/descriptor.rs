@@ -216,6 +216,16 @@ impl Trace for DefineProperty {
 }
 
 impl DefineProperty {
+    /// Apply an already converted descriptor without re-reading user fields.
+    pub(crate) fn prepared(target: Value, key: Key, desc: PropertyDescriptor) -> Self {
+        Self {
+            target,
+            key,
+            attributes: Value::Undefined,
+            desc,
+            next: 6,
+        }
+    }
     pub(crate) fn reader(attributes: Value) -> Result<Self, Fault> {
         if !matches!(attributes, Value::Object(_)) {
             return Err(Fault::TypeError(

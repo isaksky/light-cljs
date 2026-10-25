@@ -1,7 +1,15 @@
-//! CopyDataProperties for object literals. Each descriptor check, read and
-//! definition is a separate budgeted instruction; Proxy traps and getters
-//! return through the ordinary trampoline. All intermediate values are traced.
+//! Own enumerable property traversal for object spread, assign, entries and
+//! values. Each descriptor check, read and write is a budgeted step; Proxy
+//! traps, getters and setters return through the ordinary trampoline.
 use super::*;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Mode {
+    Spread,
+    Assign,
+    Values,
+    Entries,
+}
 
 #[derive(Debug)]
 enum Stage {
@@ -15,6 +23,7 @@ enum Stage {
 
 #[derive(Debug)]
 pub(super) struct State {
+    mode: Mode,
     target: Value,
     source: Value,
     keys: Value,
@@ -35,6 +44,7 @@ impl Trace for State {
 impl State {
     pub(super) fn new(target: Value, source: Value) -> Self {
         Self {
+            mode: Mode::Spread,
             target,
             source,
             keys: Value::Undefined,
@@ -42,6 +52,13 @@ impl State {
             index: 0,
             length: 0,
             stage: Stage::Start,
+        }
+    }
+
+    pub(super) fn with_mode(target: Value, source: Value, mode: Mode) -> Self {
+        Self {
+            mode,
+            ..Self::new(target, source)
         }
     }
 
@@ -90,6 +107,11 @@ impl State {
                 self.key =
                     property::get(heap, task, &self.keys, &property::Key::Index(self.index))?;
                 self.index += 1;
+                if matches!(self.mode, Mode::Values | Mode::Entries)
+                    && matches!(self.key, Value::Symbol(_))
+                {
+                    return Ok(Action::Continue);
+                }
                 self.stage = Stage::Enumerable;
                 Ok(Action::Instruction {
                     instr: Instr::IsEnumerable,
@@ -109,10 +131,38 @@ impl State {
             }
             Stage::Value => {
                 self.stage = Stage::Defined;
+                let value = result()?;
+                if matches!(self.mode, Mode::Assign) {
+                    return Ok(Action::SetProperty {
+                        this: self.target.clone(),
+                        key: property::to_property_key(&self.key)?,
+                        value,
+                        strict: true,
+                    });
+                }
+                if matches!(self.mode, Mode::Values | Mode::Entries) {
+                    let value = if matches!(self.mode, Mode::Entries) {
+                        // OwnKeys uses numeric indices internally; entries exposes strings.
+                        let key = match &self.key {
+                            Value::Number(n) => {
+                                Value::String(JsString::from(n.to_string().as_str()))
+                            }
+                            key => key.clone(),
+                        };
+                        let pair = property::new_array(heap, task)?;
+                        property::append(heap, task, &pair, Some(key))?;
+                        property::append(heap, task, &pair, Some(value))?;
+                        pair
+                    } else {
+                        value
+                    };
+                    property::append(heap, task, &self.target, Some(value))?;
+                    return Ok(Action::Continue);
+                }
                 Ok(Action::CreateDataProperty {
                     this: self.target.clone(),
                     key: self.key.clone(),
-                    value: result()?,
+                    value,
                 })
             }
             Stage::Defined => {

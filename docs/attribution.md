@@ -1573,3 +1573,12 @@ as semantic references. The Rust implementation uses traced task-owned native
 continuations and private closure environments rather than C frames or
 reference counting. No source was copied; new cases in `tests/promises.rs`
 are original synthetic JavaScript fixtures, not light-cljs output.
+
+## Object statics (clj-quickjs-318)
+
+Semantic references: `research/quickjs/quickjs.c` functions `js_object_assign`,
+`js_object_keys`, `js_object_fromEntries`, `js_object_defineProperties` and
+`JS_ObjectDefineProperties`, revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`.
+The implementation composes this runtime's traced copy/descriptor/iterator continuations;
+no upstream source or tests were copied. Tests are original synthetic fixtures, not
+light-cljs output. IteratorClose follows AddEntriesFromIterable's entry-error boundary.

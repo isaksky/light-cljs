@@ -3141,3 +3141,66 @@ fn array_copy_failure_and_cancellation() {
         }
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. Native cursors, converted
+/// descriptors and pending IteratorClose throws survive waits and migration.
+#[test]
+fn object_statics_wait_collect_and_migrate() {
+    for source in [
+        "let n=0; let o=Object.assign({}, {get a(){n++; __rt.effect(1,1); return __rt.need(5,3);}}); o.a+n-1",
+        "let n=0, t={set a(v){n++; __rt.effect(1,1); this.b=v+__rt.need(5,3);}}; Object.assign(t,{a:0}); t.b+n-1",
+        "let n=0; let o=Object.values({get a(){n++; __rt.effect(1,1); return __rt.need(5,3);}}); o[0]+n-1",
+        "let n=0; let o=Object.entries({get a(){n++; __rt.effect(1,1); return __rt.need(5,3);}}); o[0][1]+n-1",
+        "let n=0, p=new Proxy({a:7},{ownKeys(){n++; __rt.effect(1,1); __rt.need(5,3); return ['a'];}}); Object.assign({},p).a+n-1",
+        "let n=0, p=new Proxy({a:7},{getOwnPropertyDescriptor(){n++; __rt.effect(1,1); __rt.need(5,3); return {enumerable:true,configurable:true};}}); Object.values(p)[0]+n-1",
+        "let n=0; let t=Object.defineProperties({}, {get a(){n++; __rt.effect(1,1); return {value:{x:__rt.need(5,3)}};}}); t.a.x+n-1",
+        "let n=0; let t=Object.defineProperties({}, {a:{value:{x:7}},b:{get value(){n++; __rt.effect(1,1); return __rt.need(5,3);}}}); t.a.x+t.b+n-8",
+        "let n=0, t=new Int32Array(1); Object.defineProperties(t,{'0':{value:{valueOf(){n++; __rt.effect(1,1); return __rt.need(5,3);}}}}); t[0]+n-1",
+        "let n=0; function* it(){n++; __rt.effect(1,1); yield ['a',{x:__rt.need(5,3)}];} Object.fromEntries(it()).a.x+n-1",
+        "let n=0; let k={toString(){n++; __rt.effect(1,1); __rt.need(5,3); return 'a';}}; Object.fromEntries([[k,{x:7}]]).a.x+n-1",
+        "let n=0, s=Symbol(); let k={get [Symbol.toPrimitive](){n++; __rt.effect(1,1); __rt.need(5,3); return function(hint){if(hint!=='string')throw 99; return s;};}}; Object.fromEntries([[k,{x:7}]] )[s].x+n-1",
+        "let n=0, closed=0; function* it(){try{yield {get 0(){return 'a';},get 1(){n++; __rt.effect(1,1); return __rt.need(5,3);}};}finally{closed++;}} let o=Object.fromEntries(it()); o.a+n-1+closed-1",
+        "let closed=0, ok=0; function* it(){try{yield {get 0(){throw {tag:7};}};}finally{closed++; __rt.effect(1,1); __rt.need(5,3); throw 99;}} try{Object.fromEntries(it());}catch(e){ok=e.tag;} ok+closed-1",
+    ] {
+        let rt = Runtime::new();
+        let task = rt
+            .spawn(&compile_script("object-statics-wait", source).unwrap(), &[])
+            .unwrap();
+        let expected = key(&rt, NUMBER);
+        let mut host = Recorder::default();
+        for steps in 0..3000 {
+            match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                outcome => {
+                    assert_eq!(waiting(outcome), expected, "{source}");
+                    break;
+                }
+            }
+            assert!(steps < 2999);
+        }
+        assert_eq!(host.effects, [1.0]);
+        let request = one_request(&task, expected);
+        rt.collect().unwrap();
+        let resumed = only_runnable(publish_number(&rt, &request, 7.0));
+        let (result, host) = thread::spawn(move || {
+            for _ in 0..3000 {
+                match resumed
+                    .run_with(Budget::instructions(1), &mut host)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    outcome => return (number(outcome), host),
+                }
+            }
+            panic!("bounded object statics completion")
+        })
+        .join()
+        .unwrap();
+        assert_eq!(result, 7.0, "{source}");
+        assert_eq!(host.effects, [1.0], "callbacks must not replay: {source}");
+    }
+}

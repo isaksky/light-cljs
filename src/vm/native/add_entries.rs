@@ -1,6 +1,6 @@
-//! Iterable consumer shared by Map/WeakMap entries and Set/WeakSet values. Each
-//! observable read/call resumes through the trampoline; entry validation is
-//! a separate budgeted step so IteratorStepValue failures do not close.
+//! Iterable consumer shared by Map/WeakMap, Set/WeakSet and Object.fromEntries.
+//! Each observable read/call resumes through the trampoline; entry validation
+//! is a separate budgeted step so IteratorStepValue failures do not close.
 use super::*;
 use crate::vm::exception::Exception;
 
@@ -17,6 +17,7 @@ enum Stage {
     Key,
     EntryValue,
     Add,
+    PropertyKey,
     Added,
     Close,
     CloseMethod,
@@ -28,6 +29,7 @@ enum Stage {
 pub(super) struct State {
     stage: Stage,
     values: bool,
+    from_entries: bool,
     target: Value,
     items: Value,
     adder: Value,
@@ -66,6 +68,7 @@ impl State {
         Self {
             stage: Stage::Start,
             values: false,
+            from_entries: false,
             target,
             items,
             adder: Value::Undefined,
@@ -82,6 +85,13 @@ impl State {
         self.values = true;
     }
 
+    pub(super) fn from_entries(target: Value, items: Value) -> Self {
+        Self {
+            from_entries: true,
+            ..Self::new(target, items)
+        }
+    }
+
     pub(super) fn catches(&self) -> bool {
         matches!(
             self.stage,
@@ -89,6 +99,7 @@ impl State {
                 | Stage::Key
                 | Stage::EntryValue
                 | Stage::Add
+                | Stage::PropertyKey
                 | Stage::Added
                 | Stage::Close
                 | Stage::CloseMethod
@@ -148,6 +159,12 @@ impl State {
     ) -> Result<Action, Fault> {
         match self.stage {
             Stage::Start => {
+                if self.from_entries {
+                    self.acquisition = Some(iterator::State::get_iterator(self.items.clone()));
+                    self.items = Value::Undefined;
+                    self.stage = Stage::Iterator;
+                    return Ok(Action::Continue);
+                }
                 if matches!(self.items, Value::Null | Value::Undefined) {
                     return Ok(Action::Return(self.target.clone()));
                 }
@@ -257,10 +274,27 @@ impl State {
             Stage::Add => {
                 let value = Self::value(input)?;
                 self.stage = Stage::Added;
+                if self.from_entries {
+                    self.result = value;
+                    self.stage = Stage::PropertyKey;
+                    return Ok(Action::Instruction {
+                        // Unary ToPropertyKey, preserving Symbols and using string hint.
+                        instr: Instr::ToSuperKey,
+                        operands: vec![self.key.clone()],
+                    });
+                }
                 Ok(Action::Call {
                     callee: self.adder.clone(),
                     this: self.target.clone(),
                     args: vec![self.key.clone(), value],
+                })
+            }
+            Stage::PropertyKey => {
+                self.key = Self::value(input)?;
+                self.stage = Stage::Added;
+                Ok(Action::Instruction {
+                    instr: Instr::DefineElem,
+                    operands: vec![self.target.clone(), self.key.clone(), self.result.clone()],
                 })
             }
             Stage::Added => {

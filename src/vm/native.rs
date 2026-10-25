@@ -259,6 +259,7 @@ use crate::vm::{descriptor, property, prototype};
 
 mod copy_properties;
 pub(crate) mod error;
+mod object_statics;
 
 /// What a native frame is waiting for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -326,6 +327,9 @@ pub(crate) enum Action {
         key: Value,
         value: Value,
     },
+    /// Apply a converted descriptor through the existing typed-array and
+    /// property-definition continuation, returning to the parent native.
+    DefineProperty(Box<descriptor::DefineProperty>),
 
     ToNumber(Value),
     ToPrimitiveNumber(Value),
@@ -401,8 +405,8 @@ enum Hint {
     String,
 }
 
-/// Symbol wrappers consult @@toPrimitive before the ordinary method pair.
-/// General shared-object protocol dispatch remains deferred.
+/// Symbol wrappers and unary property-key conversion consult @@toPrimitive
+/// before the ordinary method pair. Other general conversions remain deferred.
 #[derive(Clone, Copy, Debug)]
 enum SymbolMethod {
     Pending,
@@ -682,6 +686,7 @@ enum NativeState {
     ArrayCopy(Box<array_copy::State>),
     AddEntries(Box<add_entries::State>),
     StringMethods(Box<string_methods::State>),
+    ObjectStatics(Box<object_statics::State>),
 }
 
 #[derive(Debug)]
@@ -961,6 +966,7 @@ impl Trace for NativeFrame {
         match &self.state {
             NativeState::BuiltinConstruct(constructor) => constructor.trace(visit),
             NativeState::CopyProperties(copy) => copy.trace(visit),
+            NativeState::ObjectStatics(object) => object.trace(visit),
             NativeState::Rest { values, out, .. } => {
                 for value in values {
                     value.trace(visit);
@@ -1485,6 +1491,19 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if !construct
+        && matches!(
+            which,
+            Builtin::ObjectAssign
+                | Builtin::ObjectEntries
+                | Builtin::ObjectValues
+                | Builtin::ObjectFromEntries
+                | Builtin::ObjectDefineProperties
+        )
+    {
+        object_statics::start(heap, state, which, args, popped)?;
+        return Ok(true);
+    }
     if matches!(
         which,
         Builtin::Number | Builtin::String | Builtin::Symbol | Builtin::BigInt
@@ -3244,6 +3263,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::SimTimer { .. }
             | Action::SetProperty { .. }
             | Action::CreateDataProperty { .. }
+            | Action::DefineProperty(_)
             | Action::Instruction { .. }
             | Action::Call { .. }
             | Action::Construct { .. }
@@ -3514,6 +3534,11 @@ fn apply_action(
             state.push(key);
             state.push(value);
             Ok(Flow::Resume(Instr::DefineElem))
+        }
+        Action::DefineProperty(descriptor) => {
+            set_awaiting(state, Awaiting::CallResult)?;
+            push_native(state, NativeState::DefineProperty(*descriptor))?;
+            Ok(Flow::Next)
         }
         Action::ToNumber(_)
         | Action::ToNumberLimited(_, _)
@@ -3930,6 +3955,7 @@ impl NativeState {
             NativeState::ArraySort(array) => array.step(heap, task, input),
 
             NativeState::CopyProperties(copy) => copy.step(heap, task, input),
+            NativeState::ObjectStatics(object) => object.step(heap, task, input),
             NativeState::Rest { .. } => self.step_rest(heap, task),
             _ => self.step_other(heap, task, input, host),
         }
@@ -3968,7 +3994,9 @@ impl NativeState {
         match self {
             NativeState::BuiltinConstruct(_) => unreachable!("constructor dispatched separately"),
             NativeState::Async(a) => a.step(heap, input),
-            NativeState::CopyProperties(_) | NativeState::Rest { .. } => {
+            NativeState::CopyProperties(_)
+            | NativeState::Rest { .. }
+            | NativeState::ObjectStatics(_) => {
                 Err(Fault::Internal("copy native bypassed dispatch"))
             }
             NativeState::AsyncGenerator(_) => {
@@ -4868,10 +4896,12 @@ impl NativeState {
                     }
                     if matches!(symbol_method, SymbolMethod::Pending) {
                         *symbol_method = SymbolMethod::Ordinary;
-                        if matches!(
-                            builtin::wrapper_data(heap, task, receiver)?,
-                            Some(crate::object::PrimitiveData::Symbol(_))
-                        ) {
+                        if matches!(target, ConvertTarget::Instruction(Instr::ToSuperKey))
+                            || matches!(
+                                builtin::wrapper_data(heap, task, receiver)?,
+                                Some(crate::object::PrimitiveData::Symbol(_))
+                            )
+                        {
                             let key = property::Key::Symbol(crate::value::symbol::well_known(
                                 "toPrimitive",
                             ));
@@ -5318,6 +5348,7 @@ impl NativeState {
                 NativeState::Eval(_)
                 | NativeState::BuiltinConstruct(_)
                 | NativeState::CopyProperties(_)
+                | NativeState::ObjectStatics(_)
                 | NativeState::Rest { .. }
                 | NativeState::DynamicFunction(_)
                 | NativeState::Reduce { .. }

@@ -533,6 +533,11 @@ pub(crate) enum Builtin {
     PromiseWithResolvers,
     PromiseFinally,
     PromiseCallback(ObjectId, super::promise::standard::Callback),
+    ObjectAssign,
+    ObjectEntries,
+    ObjectValues,
+    ObjectFromEntries,
+    ObjectDefineProperties,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -581,6 +586,11 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::ObjectAssign => "assign",
+            Builtin::ObjectEntries => "entries",
+            Builtin::ObjectValues => "values",
+            Builtin::ObjectFromEntries => "fromEntries",
+            Builtin::ObjectDefineProperties => "defineProperties",
             Builtin::Set => "Set",
             Builtin::WeakSet => "WeakSet",
             Builtin::SetAdd | Builtin::WeakSetAdd => "add",
@@ -1077,7 +1087,12 @@ impl Builtin {
             | Builtin::ObjectIsExtensible
             | Builtin::ObjectFreeze
             | Builtin::ObjectIsFrozen => 1,
-            Builtin::ObjectKeys | Builtin::ObjectGetOwnPropertyNames => 1,
+            Builtin::ObjectKeys
+            | Builtin::ObjectGetOwnPropertyNames
+            | Builtin::ObjectEntries
+            | Builtin::ObjectValues
+            | Builtin::ObjectFromEntries => 1,
+            Builtin::ObjectAssign | Builtin::ObjectDefineProperties => 2,
             Builtin::Boolean
             | Builtin::Number
             | Builtin::String
@@ -1591,7 +1606,12 @@ pub(crate) fn call(
         )),
         Builtin::Array => array_constructor(heap, task, args),
         Builtin::ArrayIsArray => is_array(heap, &arg(0)).map(Value::Bool),
-        Builtin::ObjectDefineProperty => Err(Fault::Internal(
+        Builtin::ObjectDefineProperty
+        | Builtin::ObjectAssign
+        | Builtin::ObjectEntries
+        | Builtin::ObjectValues
+        | Builtin::ObjectFromEntries
+        | Builtin::ObjectDefineProperties => Err(Fault::Internal(
             "defineProperty must run through the native trampoline",
         )),
         Builtin::ObjectGetOwnPropertyDescriptor => {
