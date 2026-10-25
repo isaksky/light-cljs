@@ -801,7 +801,7 @@ impl State {
                 let proto = crate::realm::intrinsics(heap)
                     .ok_or(Fault::OutOfMemory("RegExp realm"))?
                     .regexp_iterator_prototype;
-                let o = OrdinaryObject::with_prototype(task, proto).with_regexp_iterator(
+                let o = OrdinaryObject::with_prototype(heap, task, proto).with_regexp_iterator(
                     IteratorData {
                         regexp: self.rx.clone(),
                         text: self.text.clone(),

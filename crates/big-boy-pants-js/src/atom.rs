@@ -161,7 +161,7 @@ pub(crate) fn same_value(a: &Value, b: &Value) -> bool {
 struct Retired {
     /// Collection epoch of the writer that replaced it.
     epoch: u64,
-    ptr: *mut Value,
+    ptr: *mut AtomValue,
 }
 
 // SAFETY: `ptr` is a `Box<Value>` allocation that has been unlinked from its
@@ -174,13 +174,30 @@ unsafe impl Send for Retired {}
 /// ordering and the reclamation protocol.
 pub(crate) struct AtomCell {
     /// Always a valid `Box<Value>` allocation owned by the cell.
-    current: AtomicPtr<Value>,
+    current: AtomicPtr<AtomValue>,
     /// Single-writer mode: changed only by its [`Publisher`].
     single_writer: bool,
     /// Replaced boxes not yet known unreachable. Taken by writers of this
     /// atom (after their store), by `Drop`, and by the collector while the
     /// world is stopped ([`AtomCell::take_retired`]); never by readers.
     retired: Mutex<Retirement>,
+}
+
+struct AtomValue {
+    value: Value,
+    _reservation: crate::heap::budget::ByteReservation,
+}
+
+impl AtomValue {
+    fn new(heap: &Heap, value: Value) -> Result<Self, AtomError> {
+        // Includes the value box and its share of retire-list capacity. The
+        // first box also covers the cell's fixed Arc/mutex metadata.
+        let reservation = heap.reserve_bytes(256).ok_or(AtomError::HeapLimit)?;
+        Ok(Self {
+            value,
+            _reservation: reservation,
+        })
+    }
 }
 
 /// The retire list of one atom.
@@ -206,17 +223,17 @@ impl fmt::Debug for AtomCell {
 }
 
 impl AtomCell {
-    fn new(initial: Value, single_writer: bool) -> AtomCell {
-        AtomCell {
-            current: AtomicPtr::new(Box::into_raw(Box::new(initial))),
+    fn new(heap: &Heap, initial: Value, single_writer: bool) -> Result<AtomCell, AtomError> {
+        Ok(AtomCell {
+            current: AtomicPtr::new(Box::into_raw(Box::new(AtomValue::new(heap, initial)?))),
             single_writer,
             retired: Mutex::new(Retirement::default()),
-        }
+        })
     }
 
     /// Read the value behind `ptr`, a pointer loaded from `current` during
     /// the caller's mutator registration (module docs).
-    fn read(ptr: *mut Value) -> Value {
+    fn read(ptr: *mut AtomValue) -> Value {
         // SAFETY: `ptr` was loaded from `current`, which only ever holds
         // live `Box<Value>` allocations. A box is freed only after it was
         // unlinked and a collection completed since; collections cannot run
@@ -228,7 +245,7 @@ impl AtomCell {
         // `Release` store that installed it. The read clones the value (for a
         // string, an atomic increment of its immutable body's `Arc`); the box
         // keeps its own reference until it is freed.
-        unsafe { (*ptr).clone() }
+        unsafe { (*ptr).value.clone() }
     }
 
     /// The current value. Caller: registered mutator (`Access`).
@@ -239,8 +256,14 @@ impl AtomCell {
     /// Install `new` if the current value is SameValue to `expected`:
     /// `Ok(old)` on success, `Err(current)` on conflict (nothing changed).
     /// Caller: registered mutator at `epoch`.
-    fn compare_and_set(&self, epoch: u64, expected: Value, new: Value) -> Result<Value, Value> {
-        let fresh = Box::into_raw(Box::new(new));
+    fn compare_and_set(
+        &self,
+        heap: &Heap,
+        epoch: u64,
+        expected: Value,
+        new: Value,
+    ) -> Result<Result<Value, Value>, AtomError> {
+        let fresh = Box::into_raw(Box::new(AtomValue::new(heap, new)?));
         let mut seen = self.current.load(Ordering::Acquire);
         loop {
             let current = Self::read(seen);
@@ -248,7 +271,7 @@ impl AtomCell {
                 // SAFETY: `fresh` came from `Box::into_raw` above and was
                 // never installed, so this is its only owner.
                 drop(unsafe { Box::from_raw(fresh) });
-                return Err(current);
+                return Ok(Err(current));
             }
             match self
                 .current
@@ -256,7 +279,7 @@ impl AtomCell {
             {
                 Ok(old) => {
                     self.retire(epoch, old);
-                    return Ok(current);
+                    return Ok(Ok(current));
                 }
                 // Another writer installed a box in between: compare again
                 // against what it installed. No caller code reruns.
@@ -267,16 +290,17 @@ impl AtomCell {
 
     /// Unconditionally install `new` (single-writer publication). Caller:
     /// registered mutator at `epoch`.
-    fn store(&self, epoch: u64, new: Value) {
-        let fresh = Box::into_raw(Box::new(new));
+    fn store(&self, heap: &Heap, epoch: u64, new: Value) -> Result<(), AtomError> {
+        let fresh = Box::into_raw(Box::new(AtomValue::new(heap, new)?));
         let old = self.current.swap(fresh, Ordering::AcqRel);
         self.retire(epoch, old);
+        Ok(())
     }
 
     /// Retire a box this writer just unlinked, and free every box retired
     /// before the last completed collection. Scans only when a collection
     /// has completed since the last scan, so the work is linear in writes.
-    fn retire(&self, epoch: u64, old: *mut Value) {
+    fn retire(&self, epoch: u64, old: *mut AtomValue) {
         let mut retired = self.retired.lock().unwrap_or_else(PoisonError::into_inner);
         let retired = &mut *retired;
         if epoch > retired.scanned {
@@ -302,6 +326,9 @@ impl AtomCell {
                     true
                 }
             });
+            if retired.boxes.capacity() > retired.boxes.len().saturating_mul(4) {
+                retired.boxes.shrink_to_fit();
+            }
         }
         retired.boxes.push(Retired { epoch, ptr: old });
     }
@@ -314,15 +341,14 @@ impl AtomCell {
     /// later: only the current box is reachable from the cell).
     pub(crate) fn take_retired(&self) -> Vec<Value> {
         let mut retired = self.retired.lock().unwrap_or_else(PoisonError::into_inner);
-        retired
-            .boxes
-            .drain(..)
+        std::mem::take(&mut retired.boxes)
+            .into_iter()
             // SAFETY: each retired box was unlinked from `current` and is
             // owned by the list (taken under its lock, so no writer frees it
             // concurrently). The caller guarantees the world is stopped, so
             // no operation that loaded the pointer before it was unlinked
             // is still running; the value moves out and the box is freed.
-            .map(|r| *unsafe { Box::from_raw(r.ptr) })
+            .map(|r| unsafe { Box::from_raw(r.ptr) }.value)
             .collect()
     }
 
@@ -369,6 +395,8 @@ impl Drop for AtomCell {
 /// Why an atom operation was rejected. The atom is unchanged.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AtomError {
+    /// The aggregate managed-byte budget cannot admit another atom value.
+    HeapLimit,
     /// A handle belongs to a different runtime.
     Handle(HandleError),
     /// The value used as an atom is not one; names what it is.
@@ -387,6 +415,7 @@ impl AtomError {
     /// The error's category, as reported by a failed VM atom intrinsic.
     pub fn kind(&self) -> AtomErrorKind {
         match self {
+            AtomError::HeapLimit => AtomErrorKind::HeapLimit,
             AtomError::Handle(_) => AtomErrorKind::ForeignRuntime,
             AtomError::NotAnAtom { found } => AtomErrorKind::NotAnAtom { found },
             AtomError::NotShareable(_) => AtomErrorKind::NotShareable,
@@ -399,6 +428,7 @@ impl AtomError {
 impl fmt::Display for AtomError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            AtomError::HeapLimit => f.write_str("heap byte limit exceeded"),
             AtomError::Handle(e) => write!(f, "atom operation: {e}"),
             AtomError::NotAnAtom { found } => write!(f, "expected an atom, got {found}"),
             AtomError::NotShareable(e) => write!(f, "atom operation: {e}"),
@@ -417,6 +447,8 @@ impl std::error::Error for AtomError {}
 /// the details (for example the path to a task-owned object).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AtomErrorKind {
+    /// See [`AtomError::HeapLimit`].
+    HeapLimit,
     /// See [`AtomError::Handle`].
     ForeignRuntime,
     /// See [`AtomError::NotAnAtom`].
@@ -481,7 +513,7 @@ pub(crate) fn new_atom<R>(
 ) -> Result<R, AtomError> {
     let _mutator = heap.enter_mutator(crate::heap::gc::Access::Op);
     share::check(heap, &initial).map_err(AtomError::NotShareable)?;
-    let cell = Arc::new(AtomCell::new(initial, single_writer));
+    let cell = Arc::new(AtomCell::new(heap, initial, single_writer)?);
     let id = heap
         .alloc(HeapObject::Atom(cell))
         .ok_or(AtomError::OutOfMemory)?;
@@ -513,7 +545,10 @@ pub(crate) fn compare_and_set<R>(
         return Err(AtomError::SingleWriter);
     }
     share::check(heap, &new).map_err(AtomError::NotShareable)?;
-    match access.cell.compare_and_set(access.epoch, expected, new) {
+    match access
+        .cell
+        .compare_and_set(heap, access.epoch, expected, new)?
+    {
         Ok(_) => Ok(Ok(())),
         Err(current) => Ok(Err(keep(current))),
     }
@@ -542,7 +577,7 @@ impl Publisher {
         let atom = self.atom.value_in(heap).map_err(AtomError::Handle)?;
         let access = access(heap, atom)?;
         share::check(heap, &value).map_err(AtomError::NotShareable)?;
-        access.cell.store(access.epoch, value);
+        access.cell.store(heap, access.epoch, value)?;
         Ok(())
     }
 }
@@ -696,9 +731,9 @@ mod tests {
     fn a_stale_object_id_never_matches_the_slot_s_new_occupant() {
         let rt = Runtime::new();
         let heap = rt.heap();
-        let old = heap.alloc(HeapObject::host_object()).unwrap();
+        let old = heap.alloc(HeapObject::host_object(heap)).unwrap();
         rt.collect().unwrap();
-        let new = heap.alloc(HeapObject::host_object()).unwrap();
+        let new = heap.alloc(HeapObject::host_object(heap)).unwrap();
         assert_eq!(new.to_bits() >> 32, old.to_bits() >> 32, "slot reused");
         assert!(!same_value(&Value::Object(old), &Value::Object(new)));
     }

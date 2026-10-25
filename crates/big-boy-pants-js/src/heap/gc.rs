@@ -1489,7 +1489,7 @@ mod tests {
     }
 
     fn plain(heap: &Heap) -> ObjectId {
-        heap.alloc(HeapObject::host_object()).unwrap()
+        heap.alloc(HeapObject::host_object(heap)).unwrap()
     }
 
     #[test]

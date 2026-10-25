@@ -2266,6 +2266,7 @@ pub(crate) fn is_string_build(which: Builtin) -> bool {
 /// bounded copying. Undefined ends default to length; padding checks its
 /// empty filler before the engine length limit, including an infinite target.
 pub(crate) fn string_build(
+    heap: &Heap,
     which: Builtin,
     operands: &[Value],
 ) -> Result<crate::value::string::StringBuild, Fault> {
@@ -2334,12 +2335,11 @@ pub(crate) fn string_build(
             .filter(|total| *total <= crate::value::string::MAX_STRING_LEN)
             .ok_or(Fault::StringTooLong)
     })?;
-    (if which == StringPrototypeConcat {
-        crate::value::string::StringBuild::concatenation(parts)
+    if which == StringPrototypeConcat {
+        crate::value::string::StringBuild::concatenation_accounted(heap, parts)
     } else {
-        crate::value::string::StringBuild::new(parts)
-    })
-    .ok_or(Fault::OutOfMemory("string output buffer"))
+        crate::value::string::StringBuild::new_accounted(heap, parts)
+    }
 }
 
 /// Receiver validation precedes radix coercion; the continuation retains only
@@ -2520,7 +2520,7 @@ fn symbol_wrapper(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fau
         return Err(Fault::Internal("not a symbol primitive"));
     };
     let realm = realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
-    let object = OrdinaryObject::with_prototype(task, realm.symbol_prototype)
+    let object = OrdinaryObject::with_prototype(heap, task, realm.symbol_prototype)
         .with_primitive_data(PrimitiveData::Symbol(symbol.clone()));
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
@@ -2631,7 +2631,7 @@ pub(crate) fn primitive_constructor(
         Value::Bool(b) => (realm.boolean_prototype, PrimitiveData::Boolean(b)),
         _ => return Err(Fault::Internal("not a wrapper primitive")),
     };
-    let object = OrdinaryObject::with_prototype(task, prototype).with_primitive_data(data);
+    let object = OrdinaryObject::with_prototype(heap, task, prototype).with_primitive_data(data);
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
         .ok_or_else(exhausted)
@@ -2672,7 +2672,7 @@ pub(crate) fn array_string_receiver(
         Value::BigInt(value) => {
             let realm =
                 realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
-            let object = OrdinaryObject::with_prototype(task, realm.bigint_prototype)
+            let object = OrdinaryObject::with_prototype(heap, task, realm.bigint_prototype)
                 .with_primitive_data(PrimitiveData::BigInt(std::sync::Arc::new(value.clone())));
             heap.alloc(HeapObject::Plain(object))
                 .map(Value::Object)
@@ -2755,7 +2755,7 @@ pub(crate) fn new_object(heap: &Heap, task: TaskId) -> Result<Value, Fault> {
     let prototype = realm::intrinsics(heap)
         .ok_or_else(exhausted)?
         .object_prototype;
-    let object = OrdinaryObject::with_prototype(task, prototype);
+    let object = OrdinaryObject::with_prototype(heap, task, prototype);
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
         .ok_or_else(exhausted)
@@ -2776,13 +2776,11 @@ pub(crate) fn array_constructor(heap: &Heap, task: TaskId, args: &[Value]) -> Re
         if f64::from(length) != *number {
             return Err(Fault::RangeError("invalid array length".to_string()));
         }
-        ArrayObject::with_length(task, prototype, length)
+        ArrayObject::with_length(heap, task, prototype, length)
     } else {
-        let mut array = ArrayObject::with_prototype(task, prototype);
+        let mut array = ArrayObject::with_prototype(heap, task, prototype);
         for value in args {
-            if !array.push(Some(value.clone())) {
-                return Err(Fault::RangeError("invalid array length".to_string()));
-            }
+            array.push(Some(value.clone()))?;
         }
         array
     };
@@ -2796,7 +2794,7 @@ pub(crate) fn map_constructor(heap: &Heap, task: TaskId) -> Result<Value, Fault>
     let prototype = realm::intrinsics(heap)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
         .map_prototype;
-    let map = crate::object::map::MapObject::new(task, prototype);
+    let map = crate::object::map::MapObject::new(heap, task, prototype);
     heap.alloc(HeapObject::JsMap(Box::new(map)))
         .map(Value::Object)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))
@@ -2923,7 +2921,7 @@ pub(crate) fn weak_map_constructor(heap: &Heap, task: TaskId) -> Result<Value, F
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
         .weak_map_prototype;
     heap.alloc(HeapObject::WeakMap(Box::new(
-        crate::object::weak_map::WeakMapObject::new(task, prototype),
+        crate::object::weak_map::WeakMapObject::new(heap, task, prototype),
     )))
     .map(Value::Object)
     .ok_or(Fault::OutOfMemory("heap object table exhausted"))
@@ -3008,7 +3006,13 @@ pub(crate) fn weak_ref_constructor(
         .weak_ref_prototype;
     let id = heap
         .alloc(HeapObject::WeakRef(Box::new(
-            crate::object::weak_ref::WeakRefObject::new(state.diag.task, prototype, target, edge),
+            crate::object::weak_ref::WeakRefObject::new(
+                heap,
+                state.diag.task,
+                prototype,
+                target,
+                edge,
+            ),
         )))
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
     state
@@ -3076,6 +3080,7 @@ pub(crate) fn finalization_registry_constructor(
         .finalization_registry_prototype;
     heap.alloc(HeapObject::FinalizationRegistry(Box::new(
         crate::object::finalization_registry::FinalizationRegistryObject::new(
+            heap,
             state.diag.task,
             prototype,
             callback.clone(),
@@ -3178,7 +3183,7 @@ fn disposable_stack_method(
         Builtin::DisposableStackMove | Builtin::AsyncDisposableStackMove
     ) {
         let prototype = kind.prototype(heap)?;
-        let mut moved = stack::DisposableStack::new(task, prototype, kind);
+        let mut moved = stack::DisposableStack::new(heap, task, prototype, kind);
         moved.resources = stack::access(heap, task, this, kind, true, |s| {
             s.disposed = true;
             std::mem::take(&mut s.resources)
@@ -3212,7 +3217,7 @@ pub(crate) fn set_constructor(heap: &Heap, task: TaskId) -> Result<Value, Fault>
     let prototype = realm::intrinsics(heap)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
         .set_prototype;
-    let map = crate::object::map::MapObject::new(task, prototype);
+    let map = crate::object::map::MapObject::new(heap, task, prototype);
     heap.alloc(HeapObject::JsSet(Box::new(map)))
         .map(Value::Object)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))
@@ -3271,7 +3276,7 @@ pub(crate) fn weak_set_constructor(heap: &Heap, task: TaskId) -> Result<Value, F
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
         .weak_set_prototype;
     heap.alloc(HeapObject::WeakSet(Box::new(
-        crate::object::weak_map::WeakMapObject::new(task, prototype),
+        crate::object::weak_map::WeakMapObject::new(heap, task, prototype),
     )))
     .map(Value::Object)
     .ok_or(Fault::OutOfMemory("heap object table exhausted"))

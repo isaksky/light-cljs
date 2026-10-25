@@ -629,7 +629,7 @@ fn assert_stale(heap: &Arc<Heap>, ids: &[ObjectId]) {
         .map(|_| {
             Rooted::new(
                 heap,
-                Value::Object(heap.alloc(HeapObject::host_object()).unwrap()),
+                Value::Object(heap.alloc(HeapObject::host_object(heap)).unwrap()),
             )
         })
         .collect();
@@ -638,7 +638,7 @@ fn assert_stale(heap: &Arc<Heap>, ids: &[ObjectId]) {
 }
 
 fn plain(heap: &Heap) -> ObjectId {
-    heap.alloc(HeapObject::host_object()).unwrap()
+    heap.alloc(HeapObject::host_object(heap)).unwrap()
 }
 
 #[test]
@@ -680,7 +680,7 @@ fn segmenter_slots_retain_and_reclaim() {
         let task = crate::ids::TaskId::from_raw(1);
         let service = heap
             .alloc(HeapObject::Plain(
-                OrdinaryObject::new(Some(task)).with_segmenter(Data::Segmenter {
+                OrdinaryObject::new(&heap, Some(task)).with_segmenter(Data::Segmenter {
                     locale: "en".into(),
                     word: false,
                 }),
@@ -703,7 +703,7 @@ fn segmenter_slots_retain_and_reclaim() {
         };
         let holder = heap
             .alloc(HeapObject::Plain(
-                OrdinaryObject::new(Some(task)).with_segmenter(data),
+                OrdinaryObject::new(&heap, Some(task)).with_segmenter(data),
             ))
             .unwrap();
         let root = Rooted::new(&heap, Value::Object(holder));
@@ -961,7 +961,7 @@ fn engine_error_cause_retains_and_reclaims() {
         };
         let prototype = crate::realm::intrinsics(&heap).unwrap().error_prototype;
         let mut object =
-            OrdinaryObject::with_prototype(task, prototype).with_engine_error(ErrorObject {
+            OrdinaryObject::with_prototype(&heap, task, prototype).with_engine_error(ErrorObject {
                 error: original.clone(),
                 cause: cause.clone(),
             });
@@ -1066,7 +1066,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
     // Object.getOwnPropertyDescriptors, seal and isSealed add three built-ins.
     assert_eq!(ids.len(), 493);
     let task = crate::ids::TaskId::from_raw(1);
-    let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
+    let object = crate::object::OrdinaryObject::with_prototype(&heap, task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();
     assert_eq!(heap.request_collection().unwrap().reclaimed, 1);
     assert!(!heap.is_live(child), "an inheriting object does not stay");
@@ -1247,12 +1247,16 @@ fn disposable_stack_resources_retain_and_reclaim() {
     use crate::object::disposable_stack::{DisposableStack, Hint, Resource};
     let heap = Arc::new(Heap::default());
     let task = crate::ids::TaskId::from_raw(1);
-    let prototype = heap.alloc(HeapObject::host_object()).unwrap();
-    let value = heap.alloc(HeapObject::host_object()).unwrap();
-    let method = heap.alloc(HeapObject::host_object()).unwrap();
-    let property = heap.alloc(HeapObject::host_object()).unwrap();
-    let mut stack =
-        DisposableStack::new(task, prototype, crate::object::disposable_stack::Kind::Sync);
+    let prototype = heap.alloc(HeapObject::host_object(&heap)).unwrap();
+    let value = heap.alloc(HeapObject::host_object(&heap)).unwrap();
+    let method = heap.alloc(HeapObject::host_object(&heap)).unwrap();
+    let property = heap.alloc(HeapObject::host_object(&heap)).unwrap();
+    let mut stack = DisposableStack::new(
+        &heap,
+        task,
+        prototype,
+        crate::object::disposable_stack::Kind::Sync,
+    );
     stack.resources.push(Resource {
         value: Value::Object(value),
         method: Value::Object(method),
@@ -1280,8 +1284,8 @@ fn disposable_stack_resources_retain_and_reclaim() {
 fn proxy_edges_retain_and_reclaim() {
     let heap = Arc::new(Heap::default());
     let task = crate::ids::TaskId::from_raw(1);
-    let target = heap.alloc(HeapObject::host_object()).unwrap();
-    let handler = heap.alloc(HeapObject::host_object()).unwrap();
+    let target = heap.alloc(HeapObject::host_object(&heap)).unwrap();
+    let handler = heap.alloc(HeapObject::host_object(&heap)).unwrap();
     let value = crate::vm::proxy::construct(
         &heap,
         task,
@@ -1329,17 +1333,17 @@ fn private_elements_retain_and_reclaim() {
             ids.push(prototype);
             let object = if kind == "set" {
                 HeapObject::JsSet(Box::new(crate::object::map::MapObject::new(
-                    task, prototype,
+                    &heap, task, prototype,
                 )))
             } else {
                 HeapObject::WeakSet(Box::new(crate::object::weak_map::WeakMapObject::new(
-                    task, prototype,
+                    &heap, task, prototype,
                 )))
             };
             Value::Object(heap.alloc(object).unwrap())
         } else {
             Value::Object(
-                heap.alloc(HeapObject::Plain(OrdinaryObject::new(Some(task))))
+                heap.alloc(HeapObject::Plain(OrdinaryObject::new(&heap, Some(task))))
                     .unwrap(),
             )
         };

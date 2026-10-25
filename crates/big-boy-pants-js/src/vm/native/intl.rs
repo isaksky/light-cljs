@@ -297,7 +297,7 @@ impl Intl {
                 let proto = crate::realm::intrinsics(heap)
                     .ok_or(Fault::OutOfMemory("realm exhausted"))?
                     .intl_locale_prototype;
-                let object = OrdinaryObject::with_prototype(task, proto)
+                let object = OrdinaryObject::with_prototype(heap, task, proto)
                     .with_locale_data(self.tag.take().unwrap());
                 let value = heap
                     .alloc(HeapObject::Plain(object))

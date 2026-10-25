@@ -4470,7 +4470,7 @@ impl NativeState {
             | NativeState::ListFormat(_)
             | NativeState::Segmenter(_) => unreachable!("Intl dispatched before other native arms"),
             NativeState::StringRaw(raw) => {
-                if let Some(build) = raw.finish()? {
+                if let Some(build) = raw.finish(heap)? {
                     *self = NativeState::StringBuild(build);
                     return Ok(Action::Continue);
                 }
@@ -4498,11 +4498,11 @@ impl NativeState {
             NativeState::Join(join) => {
                 if matches!(join.stage, JoinStage::Element) && join.next == join.len {
                     *self = NativeState::StringBuild(
-                        crate::value::string::StringBuild::with_length(
+                        crate::value::string::StringBuild::with_length_accounted(
+                            heap,
                             std::mem::take(&mut join.parts),
                             join.units,
-                        )
-                        .ok_or(Fault::OutOfMemory("join output buffer"))?,
+                        )?,
                     );
                     return Ok(Action::Continue);
                 }
@@ -5507,7 +5507,8 @@ impl NativeState {
             return builtin::string_from_codes(which, operands).map(Action::Return);
         }
         if builtin::is_string_build(which) {
-            *self = NativeState::StringBuild(builtin::string_build(which, &operands[..*end])?);
+            *self =
+                NativeState::StringBuild(builtin::string_build(heap, which, &operands[..*end])?);
             return Ok(Action::Continue);
         }
         if matches!(
@@ -5902,7 +5903,7 @@ mod tests {
         let prototype = crate::realm::intrinsics(&heap).unwrap().object_prototype;
         let later = Value::Object(
             heap.alloc(crate::heap::HeapObject::Plain(
-                crate::object::OrdinaryObject::with_prototype(task, prototype),
+                crate::object::OrdinaryObject::with_prototype(&heap, task, prototype),
             ))
             .unwrap(),
         );

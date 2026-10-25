@@ -64,13 +64,19 @@ impl StringRaw {
         })
     }
 
-    pub(super) fn finish(&mut self) -> Result<Option<crate::value::string::StringBuild>, Fault> {
+    pub(super) fn finish(
+        &mut self,
+        heap: &Heap,
+    ) -> Result<Option<crate::value::string::StringBuild>, Fault> {
         if self.stage != Stage::Done {
             return Ok(None);
         }
-        crate::value::string::StringBuild::with_length(std::mem::take(&mut self.parts), self.units)
-            .map(Some)
-            .ok_or(Fault::OutOfMemory("String.raw output buffer"))
+        crate::value::string::StringBuild::with_length_accounted(
+            heap,
+            std::mem::take(&mut self.parts),
+            self.units,
+        )
+        .map(Some)
     }
 
     fn append(&mut self, text: JsString) -> Result<Action, Fault> {

@@ -178,6 +178,9 @@ impl PMap {
         value: Value,
         eq: KeyEq<'_>,
     ) -> Result<Option<PMap>, super::CollectionError> {
+        if !heap.has_byte_limit() {
+            return Ok(self.assoc_with(hash, key, value, eq));
+        }
         let old = self.get_with(hash, &key, eq);
         if old.as_ref().is_some_and(|old| identical(old, &value)) {
             return Ok(None);
@@ -208,6 +211,9 @@ impl PMap {
         key: &Value,
         eq: KeyEq<'_>,
     ) -> Result<Option<PMap>, super::CollectionError> {
+        if !heap.has_byte_limit() {
+            return Ok(self.dissoc_with(hash, key, eq));
+        }
         if self.get_with(hash, key, eq).is_none() {
             return Ok(None);
         }

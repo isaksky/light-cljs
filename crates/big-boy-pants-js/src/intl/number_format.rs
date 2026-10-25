@@ -566,7 +566,7 @@ pub(crate) fn get_format(heap: &Heap, task: TaskId, this: &Value) -> Result<Valu
         return Ok(cached);
     }
     let realm = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("realm exhausted"))?;
-    let mut metadata = OrdinaryObject::intrinsic(Some(realm.function_prototype));
+    let mut metadata = OrdinaryObject::intrinsic(heap, Some(realm.function_prototype));
     for (name, value) in [
         ("name", Value::String(JsString::from(""))),
         ("length", Value::Number(1.0)),

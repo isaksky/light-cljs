@@ -47,7 +47,7 @@ fn environment(heap: &Heap, task: TaskId, fields: &[(&str, Value)]) -> Result<Va
     let prototype = crate::realm::intrinsics(heap)
         .ok_or(Fault::OutOfMemory("realm exhausted"))?
         .object_prototype;
-    let mut object = OrdinaryObject::with_prototype(task, prototype);
+    let mut object = OrdinaryObject::with_prototype(heap, task, prototype);
     for (name, value) in fields {
         let key = heap
             .keys()

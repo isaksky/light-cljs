@@ -147,6 +147,8 @@ struct Slot {
     /// The access word of a mutable body (module docs, rule 3).
     locked: AtomicBool,
     object: UnsafeCell<Option<Box<HeapObject>>>,
+    // Same initialization/reclamation exclusion as object (rules 1 and 5).
+    reservation: UnsafeCell<super::budget::ByteReservation>,
 }
 
 // SAFETY: the only non-atomic field is accessed under the module rules:
@@ -238,6 +240,7 @@ impl Drop for SlotGuard<'_> {
 struct Segment {
     slots: Box<[Slot]>,
     live: AtomicUsize,
+    _reservation: super::budget::ByteReservation,
 }
 
 impl Default for Segment {
@@ -247,6 +250,7 @@ impl Default for Segment {
             // build copies would exhaust the VM's supported 64 KiB stacks.
             slots: (0..SEGMENT_SIZE).map(|_| Slot::default()).collect(),
             live: AtomicUsize::new(0),
+            _reservation: Default::default(),
         }
     }
 }
@@ -462,7 +466,12 @@ pub(super) struct ObjectTable {
 }
 
 impl ObjectTable {
-    fn reserve(&mut self, directory: &Directory, count: usize) -> Option<Reservation> {
+    fn reserve(
+        &mut self,
+        directory: &Directory,
+        count: usize,
+        budget: &Arc<super::budget::ByteBudget>,
+    ) -> Option<Reservation> {
         let mut indices = [0; BATCH_SIZE];
         let mut len = 0;
         let segment_index;
@@ -483,7 +492,22 @@ impl ObjectTable {
             let first = u32::try_from(self.high_water).ok()? as usize;
             segment_index = first / SEGMENT_SIZE;
             if segment_index == self.segments.len() {
-                let segment = Arc::new(Segment::default());
+                // Covers the stable slots, free-list/segment Vec capacity,
+                // and conservatively three new directory pages per segment.
+                let bytes = size_of::<Segment>()
+                    + SEGMENT_SIZE
+                        * (size_of::<Slot>()
+                            + 2 * size_of::<u32>()
+                            + 2 * size_of::<Arc<Segment>>())
+                    + 3 * 256 * size_of::<OnceLock<Box<Page>>>();
+                let Some(reservation) = budget.reserve(bytes) else {
+                    budget.note_denial();
+                    return None;
+                };
+                let segment = Arc::new(Segment {
+                    _reservation: reservation,
+                    ..Segment::default()
+                });
                 directory.install(segment_index, segment.clone());
                 self.segments.push(segment);
             }
@@ -581,6 +605,9 @@ impl ObjectTable {
                 // unreachable body, and no mutator can be reading it.
                 let object = unsafe { (*slot.object.get()).take().unwrap() };
                 garbage.push(*object);
+                // SAFETY: the same stopped-world/access-word exclusion as
+                // the body above; its Box storage has now been released.
+                drop(unsafe { std::mem::take(&mut *slot.reservation.get()) });
                 reclaimed += 1;
                 let generation = state as u32;
                 let next = if let Some(next) = generation.checked_add(1) {
@@ -656,7 +683,12 @@ struct Reservation {
 }
 
 impl Reservation {
-    fn alloc(&mut self, object: HeapObject, shareable: bool) -> ObjectId {
+    fn alloc(
+        &mut self,
+        object: HeapObject,
+        shareable: bool,
+        reservation: super::budget::ByteReservation,
+    ) -> ObjectId {
         self.len -= 1;
         let offset = self.indices[self.len];
         let slot = &self.segment.slots[usize::from(offset)];
@@ -670,6 +702,7 @@ impl Reservation {
         // registration (or fallback table lock) excludes GC.
         unsafe {
             *slot.object.get() = Some(Box::new(object));
+            *slot.reservation.get() = reservation;
         }
         self.segment.live.fetch_add(1, Ordering::Relaxed);
         slot.state.store(
@@ -724,6 +757,9 @@ impl Heap {
                 .position(|a| a.heap == heap)
                 .expect("registered allocator");
             allocators[index].depth -= 1;
+            if allocators[index].depth == 0 {
+                self.take_byte_denial();
+            }
             if allocators[index].depth == 0
                 && let Some(reservation) = allocators.swap_remove(index).reservation
                 && reservation.len > 0
@@ -733,23 +769,36 @@ impl Heap {
         });
     }
 
-    pub(super) fn allocate(&self, object: HeapObject, shareable: bool) -> Option<ObjectId> {
+    pub(super) fn allocate(
+        &self,
+        object: HeapObject,
+        shareable: bool,
+        reservation: super::budget::ByteReservation,
+    ) -> Option<ObjectId> {
         let heap = std::ptr::from_ref(self) as usize;
         ALLOCATORS.with_borrow_mut(|allocators| {
             if let Some(local) = allocators.iter_mut().find(|a| a.heap == heap) {
                 if local.reservation.as_ref().is_none_or(|r| r.len == 0) {
-                    local.reservation =
-                        lock(&self.objects).reserve(&self.slot_directory, BATCH_SIZE);
+                    local.reservation = lock(&self.objects).reserve(
+                        &self.slot_directory,
+                        BATCH_SIZE,
+                        &self.byte_budget,
+                    );
                 }
-                Some(local.reservation.as_mut()?.alloc(object, shareable))
+                Some(
+                    local
+                        .reservation
+                        .as_mut()?
+                        .alloc(object, shareable, reservation),
+                )
             } else {
                 // Internal setup/tests without a mutator keep the original
                 // table-lock exclusion. Every public allocation has a token.
                 let mut table = lock(&self.objects);
                 Some(
                     table
-                        .reserve(&self.slot_directory, 1)?
-                        .alloc(object, shareable),
+                        .reserve(&self.slot_directory, 1, &self.byte_budget)?
+                        .alloc(object, shareable, reservation),
                 )
             }
         })
@@ -795,6 +844,7 @@ mod tests {
             let id = reservation.alloc(
                 HeapObject::Vector(crate::collections::PVector::from_values(&[])),
                 true,
+                Default::default(),
             );
             directory.install(index, segment);
             assert_eq!(id.index, (index * SEGMENT_SIZE + 255) as u32);
@@ -811,7 +861,7 @@ mod tests {
     #[test]
     fn slots_whose_generation_would_wrap_are_retired() {
         let heap = Heap::default();
-        let id = heap.alloc(HeapObject::host_object()).unwrap();
+        let id = heap.alloc(HeapObject::host_object(&heap)).unwrap();
         lock(&heap.objects)
             .slot(id)
             .unwrap()
@@ -823,7 +873,7 @@ mod tests {
         };
         assert!(heap.is_live(worn));
         assert_eq!(heap.collect().unwrap().reclaimed, 1);
-        let next = heap.alloc(HeapObject::host_object()).unwrap();
+        let next = heap.alloc(HeapObject::host_object(&heap)).unwrap();
         assert_ne!(next.index, id.index, "a retired slot is never reused");
         assert!(!heap.is_live(worn));
         assert!(lock(&heap.objects).free.is_empty());
@@ -855,7 +905,7 @@ mod tests {
         held_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         for i in 1..BATCH_SIZE {
             if i % 2 == 0 {
-                heap.alloc(HeapObject::host_object()).unwrap();
+                heap.alloc(HeapObject::host_object(&heap)).unwrap();
             } else {
                 let id = heap
                     .alloc_persistent(
@@ -1006,7 +1056,7 @@ mod tests {
     const OTHER: TaskId = TaskId::from_raw(2);
 
     fn owned(heap: &Heap, owner: TaskId) -> ObjectId {
-        heap.alloc(HeapObject::Plain(OrdinaryObject::new(Some(owner))))
+        heap.alloc(HeapObject::Plain(OrdinaryObject::new(&heap, Some(owner))))
             .unwrap()
     }
 

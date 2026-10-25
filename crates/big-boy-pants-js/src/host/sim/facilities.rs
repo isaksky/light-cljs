@@ -121,11 +121,12 @@ pub(crate) fn install(heap: &Heap, state: &mut VmState) -> Option<()> {
         ),
     ] {
         let mut namespace =
-            OrdinaryObject::with_prototype(state.diag.task, intrinsics.object_prototype);
+            OrdinaryObject::with_prototype(heap, state.diag.task, intrinsics.object_prototype);
         for &which in methods {
             // Builtin objects have immutable property storage, matching the
             // engine's existing native-function representation.
-            let mut properties = OrdinaryObject::intrinsic(Some(intrinsics.function_prototype));
+            let mut properties =
+                OrdinaryObject::intrinsic(heap, Some(intrinsics.function_prototype));
             for (key, value) in [
                 ("name", Value::String(JsString::from(which.name()))),
                 ("length", Value::Number(f64::from(which.length()))),

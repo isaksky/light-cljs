@@ -279,7 +279,7 @@ impl State {
                 let prototype = crate::realm::intrinsics(heap)
                     .ok_or(Fault::OutOfMemory("realm exhausted"))?
                     .intl_list_format_prototype;
-                let object = OrdinaryObject::with_prototype(task, prototype)
+                let object = OrdinaryObject::with_prototype(heap, task, prototype)
                     .with_list_format(self.slots.take().unwrap());
                 heap.alloc(HeapObject::Plain(object))
                     .map(Value::Object)

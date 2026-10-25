@@ -54,6 +54,9 @@ impl PVector {
         heap: &crate::heap::Heap,
         len: usize,
     ) -> Result<Option<Arc<crate::heap::budget::ByteReservation>>, super::CollectionError> {
+        if !heap.has_byte_limit() {
+            return Ok(None);
+        }
         let bytes = len
             .checked_mul(4 * std::mem::size_of::<Value>() + 64)
             .and_then(|bytes| bytes.checked_add(128))

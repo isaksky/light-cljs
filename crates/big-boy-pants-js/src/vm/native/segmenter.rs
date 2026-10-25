@@ -173,7 +173,7 @@ impl State {
     }
     fn alloc(heap: &Heap, task: TaskId, proto: ObjectId, data: Data) -> Result<Value, Fault> {
         heap.alloc(HeapObject::Plain(
-            OrdinaryObject::with_prototype(task, proto).with_segmenter(data),
+            OrdinaryObject::with_prototype(heap, task, proto).with_segmenter(data),
         ))
         .map(Value::Object)
         .ok_or(Fault::OutOfMemory("Segmenter object"))
@@ -336,10 +336,10 @@ impl State {
                     self.scan = Some(Scan::new(&self.text, scan.end, self.word));
                     return Ok(Action::Continue);
                 }
-                self.copy = Some(
-                    StringBuild::new(vec![(self.text.clone(), scan.start, scan.end - scan.start)])
-                        .ok_or(Fault::OutOfMemory("segment copy"))?,
-                );
+                self.copy = Some(StringBuild::new_accounted(
+                    heap,
+                    vec![(self.text.clone(), scan.start, scan.end - scan.start)],
+                )?);
                 self.stage = Stage::Copy;
                 Ok(Action::Continue)
             }

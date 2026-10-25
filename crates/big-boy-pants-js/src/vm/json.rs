@@ -1175,10 +1175,11 @@ impl Stringifier {
             S::Next => {
                 self.value = Value::Undefined;
                 let Some(top) = self.stack.last_mut() else {
-                    self.stage = S::Build(
-                        StringBuild::with_length(std::mem::take(&mut self.parts), self.units)
-                            .ok_or(Fault::OutOfMemory("JSON.stringify output buffer"))?,
-                    );
+                    self.stage = S::Build(StringBuild::with_length_accounted(
+                        heap,
+                        std::mem::take(&mut self.parts),
+                        self.units,
+                    )?);
                     return Ok(A::Continue);
                 };
                 let (key, comma) = match &mut top.members {

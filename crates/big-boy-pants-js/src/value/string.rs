@@ -99,6 +99,7 @@ struct Body {
     len: usize,
     flat: OnceLock<JsString>,
     storage: Storage,
+    reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 enum Storage {
@@ -112,6 +113,7 @@ impl Body {
             len: units.len(),
             flat: OnceLock::new(),
             storage: Storage::Flat(units),
+            reservation: None,
         }
     }
 
@@ -148,6 +150,55 @@ impl Drop for Body {
 }
 
 impl JsString {
+    fn with_reservation(
+        mut self,
+        reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
+    ) -> Self {
+        if let Some(body) = Arc::get_mut(&mut self.0) {
+            body.reservation = reservation;
+        }
+        self
+    }
+
+    fn reserve(
+        heap: &crate::heap::Heap,
+        units: usize,
+        bodies: usize,
+    ) -> Result<Option<Arc<crate::heap::budget::ByteReservation>>, crate::vm::dispatch::Fault> {
+        let bytes = units
+            .checked_mul(2)
+            .and_then(|n| bodies.checked_mul(256).and_then(|b| n.checked_add(b)))
+            .ok_or(crate::vm::dispatch::Fault::HeapLimit)?;
+        let reservation = heap
+            .reserve_bytes(bytes)
+            .ok_or(crate::vm::dispatch::Fault::HeapLimit)?;
+        Ok(reservation.is_charged().then(|| Arc::new(reservation)))
+    }
+
+    pub(crate) fn concat_accounted(
+        &self,
+        heap: &crate::heap::Heap,
+        other: &Self,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        if self.is_empty() {
+            return Ok(other.clone());
+        }
+        if other.is_empty() {
+            return Ok(self.clone());
+        }
+        let len = self
+            .len()
+            .checked_add(other.len())
+            .filter(|&n| n <= MAX_STRING_LEN)
+            .ok_or(crate::vm::dispatch::Fault::StringTooLong)?;
+        // Include the possible flattened body now: code_units, equality and
+        // hashing are infallible and cannot attempt a later quota admission.
+        let reservation = Self::reserve(heap, len, 2)?;
+        Ok(self
+            .concat(other)
+            .expect("checked length")
+            .with_reservation(reservation))
+    }
     /// Transfer a preallocated, incrementally filled UTF-16 buffer without
     /// shrinking or copying its contents at a native step boundary.
     pub(crate) fn from_owned_code_units(units: Vec<u16>) -> Option<JsString> {
@@ -206,7 +257,9 @@ impl JsString {
             }
             debug_assert_eq!(units.len(), self.len());
             record_copies(units.len());
-            Self::from_owned_code_units(units).expect("checked string length")
+            Self::from_owned_code_units(units)
+                .expect("checked string length")
+                .with_reservation(self.0.reservation.clone())
         });
         let Storage::Flat(units) = &flat.0.storage else {
             unreachable!("the cache always holds a flat leaf")
@@ -272,6 +325,7 @@ impl JsString {
                 len,
                 flat: OnceLock::new(),
                 storage: Storage::Rope(Some((self.concat_operand(), other.concat_operand()))),
+                reservation: None,
             })));
         }
         let mut units = Vec::with_capacity(len);
@@ -468,9 +522,52 @@ pub(crate) struct StringBuild {
     offset: usize,
     units: Vec<u16>,
     concatenated: Option<JsString>,
+    reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 impl StringBuild {
+    pub(crate) fn new_accounted(
+        heap: &crate::heap::Heap,
+        parts: Vec<(JsString, usize, usize)>,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        let len = parts
+            .iter()
+            .try_fold(0usize, |n, (_, _, len)| n.checked_add(*len))
+            .ok_or(crate::vm::dispatch::Fault::StringTooLong)?;
+        Self::with_length_accounted(heap, parts, len)
+    }
+
+    pub(crate) fn with_length_accounted(
+        heap: &crate::heap::Heap,
+        parts: Vec<(JsString, usize, usize)>,
+        len: usize,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        if len > MAX_STRING_LEN {
+            return Err(crate::vm::dispatch::Fault::StringTooLong);
+        }
+        let reservation = JsString::reserve(heap, len, 1)?;
+        let mut build = Self::with_length(parts, len).ok_or(
+            crate::vm::dispatch::Fault::OutOfMemory("string output buffer"),
+        )?;
+        build.reservation = reservation;
+        Ok(build)
+    }
+
+    pub(crate) fn concatenation_accounted(
+        heap: &crate::heap::Heap,
+        parts: Vec<(JsString, usize, usize)>,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        let len = parts
+            .iter()
+            .try_fold(0usize, |n, (_, _, len)| n.checked_add(*len))
+            .filter(|&n| n <= MAX_STRING_LEN)
+            .ok_or(crate::vm::dispatch::Fault::StringTooLong)?;
+        let reservation = JsString::reserve(heap, len, parts.len().saturating_add(2))?;
+        let mut build =
+            Self::concatenation(parts).ok_or(crate::vm::dispatch::Fault::StringTooLong)?;
+        build.reservation = reservation;
+        Ok(build)
+    }
     /// Whole-source concatenation keeps ropes rather than copying prefixes.
     /// Conversion has already completed in observable order in the VM.
     pub(crate) fn concatenation(parts: Vec<(JsString, usize, usize)>) -> Option<Self> {
@@ -486,6 +583,7 @@ impl StringBuild {
             offset: 0,
             units: Vec::new(),
             concatenated: Some(JsString::from("")),
+            reservation: None,
         })
     }
 
@@ -513,6 +611,7 @@ impl StringBuild {
             offset: 0,
             units,
             concatenated: None,
+            reservation: None,
         })
     }
 
@@ -524,7 +623,10 @@ impl StringBuild {
                 let Some((text, _, _)) = self.parts.next() else {
                     return Some(result.clone());
                 };
-                *result = result.concat(&text).expect("checked concatenation length");
+                *result = result
+                    .concat(&text)
+                    .expect("checked concatenation length")
+                    .with_reservation(self.reservation.clone());
             }
             return None;
         }
@@ -537,7 +639,8 @@ impl StringBuild {
         }
         for _ in 0..budget {
             let Some((text, start, len)) = self.parts.as_slice().first() else {
-                return JsString::from_owned_code_units(std::mem::take(&mut self.units));
+                return JsString::from_owned_code_units(std::mem::take(&mut self.units))
+                    .map(|text| text.with_reservation(self.reservation.clone()));
             };
             if self.offset == *len {
                 // Release each consumed body in a bounded step, rather than

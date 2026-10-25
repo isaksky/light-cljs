@@ -77,7 +77,10 @@ impl Runtime {
 
     #[cfg(test)]
     pub(crate) fn with_byte_limit(bytes: usize) -> Runtime {
-        Self::with_heap(VmLimits::DEFAULT, Arc::new(Heap::with_byte_limit(bytes)))
+        Self::with_heap(
+            VmLimits::DEFAULT,
+            Arc::new(Heap::with_test_byte_headroom(bytes, true)),
+        )
     }
 
     /// The initial world: where [`Runtime::spawn`] runs tasks.

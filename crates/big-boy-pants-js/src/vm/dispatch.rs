@@ -333,17 +333,20 @@ pub(crate) fn to_js_string(v: &Value) -> Result<JsString, Fault> {
 /// `js_add_slow`) on primitives: when either operand is a string, the
 /// ToString of both concatenate; otherwise matching ToNumeric values add.
 /// native::Convert handles objects with hint default before this helper.
-fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
+fn plus(heap: &Heap, a: &Value, b: &Value) -> Result<Value, Fault> {
     match (a, b) {
-        (Value::BigInt(x), Value::BigInt(y)) => bigint_result(x.checked_add(y)),
+        (Value::BigInt(x), Value::BigInt(y)) => {
+            bigint_result(heap, x.bit_length().max(y.bit_length()) + 1, || {
+                x.checked_add(y)
+            })
+        }
         (Value::Number(x), Value::Number(y)) => Ok(Value::Number(x + y)),
         (Value::Object(_), _) | (_, Value::Object(_)) => {
             Err(Fault::Internal("object reached primitive plus"))
         }
         (Value::String(_), _) | (_, Value::String(_)) => to_js_string(a)?
-            .concat(&to_js_string(b)?)
-            .map(Value::String)
-            .ok_or(Fault::StringTooLong),
+            .concat_accounted(heap, &to_js_string(b)?)
+            .map(Value::String),
         _ => {
             reject_mixed_bigint(a, b)?;
             Ok(Value::Number(to_number(a)? + to_number(b)?))
@@ -352,11 +355,11 @@ fn plus(a: &Value, b: &Value) -> Result<Value, Fault> {
 }
 
 fn bigint_result(
-    result: Result<JsBigInt, crate::value::bigint::BigIntError>,
+    heap: &Heap,
+    bits: usize,
+    operation: impl FnOnce() -> Result<JsBigInt, crate::value::bigint::BigIntError>,
 ) -> Result<Value, Fault> {
-    result
-        .map(Value::BigInt)
-        .map_err(|error| Fault::RangeError(error.to_string()))
+    JsBigInt::accounted(heap, bits, operation).map(Value::BigInt)
 }
 
 fn to_numeric(v: Value) -> Result<Value, Fault> {
@@ -1388,11 +1391,10 @@ fn class_step(
             let prototype = realm::intrinsics(heap)
                 .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
                 .array_prototype;
-            let mut array = crate::object::array::ArrayObject::with_prototype(task, prototype);
+            let mut array =
+                crate::object::array::ArrayObject::with_prototype(heap, task, prototype);
             for value in args {
-                if !array.push(Some(value.clone())) {
-                    return Err(Fault::RangeError("too many forwarded arguments".into()));
-                }
+                array.push(Some(value.clone()))?;
             }
             let id = heap
                 .alloc(HeapObject::Array(Box::new(array)))
@@ -1783,7 +1785,7 @@ fn require_iterator_object(state: &VmState) -> Result<(), Fault> {
 /// Keep its construction off the stack used by every bytecode instruction.
 #[inline(never)]
 fn new_null_object(heap: &Heap, task: crate::ids::TaskId) -> Result<Value, Fault> {
-    heap.alloc(HeapObject::Plain(OrdinaryObject::new(Some(task))))
+    heap.alloc(HeapObject::Plain(OrdinaryObject::new(heap, Some(task))))
         .map(Value::Object)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))
 }
@@ -1897,6 +1899,7 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
         Fault::Builder(e) => (VmErrorKind::Builder(e), e.to_string()),
         Fault::NotCallable(what) => (VmErrorKind::TypeError, format!("{what} is not a function")),
         Fault::StackOverflow(m) => (VmErrorKind::StackOverflow, m),
+        Fault::Atom(crate::AtomErrorKind::HeapLimit, m) => (VmErrorKind::HeapLimit, m),
         Fault::Atom(kind, m) => (VmErrorKind::Atom(kind), m),
         Fault::ForeignBinding { owner, caller } => (
             VmErrorKind::ForeignBinding { owner, caller },
@@ -2065,7 +2068,7 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
         let prototype = kind.map_or(intrinsics.error_prototype, |k| {
             intrinsics.native_error_prototype(k)
         });
-        let mut object = OrdinaryObject::with_prototype(state.diag.task, prototype)
+        let mut object = OrdinaryObject::with_prototype(heap, state.diag.task, prototype)
             .with_engine_error(ErrorObject {
                 error: error.clone(),
                 cause: cause.clone(),
@@ -2142,6 +2145,11 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
 }
 
 fn classify_heap_failure(heap: &Heap, mut error: VmError) -> VmError {
+    if heap.take_byte_denial() {
+        error.kind = VmErrorKind::HeapLimit;
+        error.message = "heap byte limit exceeded".into();
+        return error;
+    }
     if matches!(
         error.kind,
         VmErrorKind::OutOfMemory
@@ -2202,7 +2210,7 @@ fn new_arguments(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
         .as_ref()
         .ok_or(Fault::Internal("arguments already materialized"))?;
     let mut object =
-        OrdinaryObject::with_prototype(state.diag.task, prototype).with_arguments_data();
+        OrdinaryObject::with_prototype(heap, state.diag.task, prototype).with_arguments_data();
     let intern = |name: &str| {
         heap.keys()
             .intern(&JsString::from(name))
@@ -2247,8 +2255,8 @@ fn template_object(state: &mut VmState, heap: &Heap, n: u16) -> Result<(), Fault
         return state.replace(2 * n, Value::Object(id));
     }
     let prototype = realm.array_prototype;
-    let mut cooked = crate::object::array::ArrayObject::template(prototype);
-    let mut raw = crate::object::array::ArrayObject::template(prototype);
+    let mut cooked = crate::object::array::ArrayObject::template(heap, prototype);
+    let mut raw = crate::object::array::ArrayObject::template(heap, prototype);
     let operands = state.operands();
     for pair in operands[operands.len() - 2 * n..].chunks_exact(2) {
         if !matches!(pair[0], Value::String(_) | Value::Undefined)
@@ -2256,8 +2264,8 @@ fn template_object(state: &mut VmState, heap: &Heap, n: u16) -> Result<(), Fault
         {
             return Err(Fault::Internal("template parts must be string primitives"));
         }
-        cooked.push(Some(pair[0].clone()));
-        raw.push(Some(pair[1].clone()));
+        cooked.push(Some(pair[0].clone()))?;
+        raw.push(Some(pair[1].clone()))?;
     }
     raw.freeze();
     let raw = heap
@@ -2393,15 +2401,31 @@ fn step_instruction(
             let a = state.pop()?;
             if let (Value::BigInt(x), Value::BigInt(y)) = (&a, &b) {
                 let result = match instr {
-                    Instr::Add => Some(x.checked_add(y)),
-                    Instr::Sub => Some(x.checked_sub(y)),
-                    Instr::Mul => Some(x.checked_mul(y)),
-                    Instr::Div => Some(x.checked_div_rem(y).map(|(q, _)| q)),
-                    Instr::Rem => Some(x.checked_div_rem(y).map(|(_, r)| r)),
+                    Instr::Add => Some(bigint_result(
+                        heap,
+                        x.bit_length().max(y.bit_length()) + 1,
+                        || x.checked_add(y),
+                    )),
+                    Instr::Sub => Some(bigint_result(
+                        heap,
+                        x.bit_length().max(y.bit_length()) + 1,
+                        || x.checked_sub(y),
+                    )),
+                    Instr::Mul => {
+                        Some(bigint_result(heap, x.bit_length() + y.bit_length(), || {
+                            x.checked_mul(y)
+                        }))
+                    }
+                    Instr::Div => Some(bigint_result(heap, x.bit_length(), || {
+                        x.checked_div_rem(y).map(|(q, _)| q)
+                    })),
+                    Instr::Rem => Some(bigint_result(heap, x.bit_length(), || {
+                        x.checked_div_rem(y).map(|(_, r)| r)
+                    })),
                     _ => None,
                 };
                 if let Some(result) = result {
-                    state.push(bigint_result(result)?);
+                    state.push(result?);
                     return Ok(Flow::Next);
                 }
             }
@@ -2424,19 +2448,30 @@ fn step_instruction(
             let b = state.pop()?;
             let a = state.pop()?;
             if let (Value::BigInt(x), Value::BigInt(y)) = (&a, &b) {
-                let result = match instr {
+                if instr == Instr::UShr {
+                    return Err(Fault::TypeError(
+                        "BigInt has no unsigned right shift".into(),
+                    ));
+                }
+                let bits = if matches!(instr, Instr::Shl | Instr::Sar) {
+                    x.bit_length().saturating_add(
+                        y.to_number()
+                            .abs()
+                            .min(crate::value::bigint::MAX_BIGINT_BITS as f64)
+                            as usize,
+                    )
+                } else {
+                    x.bit_length().max(y.bit_length()) + 1
+                };
+                let result = bigint_result(heap, bits, || match instr {
                     Instr::BitAnd => x.checked_and(y),
                     Instr::BitOr => x.checked_or(y),
                     Instr::BitXor => x.checked_xor(y),
                     Instr::Shl => x.checked_shl(y),
                     Instr::Sar => x.checked_shr(y),
-                    _ => {
-                        return Err(Fault::TypeError(
-                            "BigInt has no unsigned right shift".into(),
-                        ));
-                    }
-                };
-                state.push(bigint_result(result)?);
+                    _ => unreachable!(),
+                })?;
+                state.push(result);
                 return Ok(Flow::Next);
             }
             let (x, y) = numbers(instr.opcode(), &a, &b)?;
@@ -2456,7 +2491,9 @@ fn step_instruction(
             }));
         }
         Instr::BitNot => match state.pop()? {
-            Value::BigInt(x) => state.push(bigint_result(x.checked_not())?),
+            Value::BigInt(x) => {
+                state.push(bigint_result(heap, x.bit_length() + 1, || x.checked_not())?)
+            }
             Value::Number(x) => state.push(Value::Number(f64::from(!to_int32(x)))),
             v => {
                 return Err(Fault::Unsupported(format!(
@@ -2469,7 +2506,13 @@ fn step_instruction(
             let b = state.pop()?;
             let a = state.pop()?;
             if let (Value::BigInt(x), Value::BigInt(y)) = (&a, &b) {
-                state.push(bigint_result(x.checked_pow(y))?);
+                let bits = x.bit_length().saturating_mul(
+                    y.to_number()
+                        .max(0.0)
+                        .min(crate::value::bigint::MAX_BIGINT_BITS as f64)
+                        as usize,
+                );
+                state.push(bigint_result(heap, bits, || x.checked_pow(y))?);
                 return Ok(Flow::Next);
             }
             let (x, y) = numbers(instr.opcode(), &a, &b)?;
@@ -2478,7 +2521,7 @@ fn step_instruction(
         Instr::Plus => {
             let b = state.pop()?;
             let a = state.pop()?;
-            state.push(plus(&a, &b)?);
+            state.push(plus(heap, &a, &b)?);
         }
         Instr::CompareLt | Instr::CompareGt | Instr::CompareLe | Instr::CompareGe => {
             let b = state.pop()?;
@@ -2639,7 +2682,9 @@ fn step_instruction(
         }
         Instr::Neg => match state.pop()? {
             Value::Number(x) => state.push(Value::Number(-x)),
-            Value::BigInt(x) => state.push(Value::BigInt(x.negated())),
+            Value::BigInt(x) => {
+                state.push(bigint_result(heap, x.bit_length() + 1, || Ok(x.negated()))?)
+            }
             v => {
                 return Err(Fault::Unsupported(format!(
                     "neg supports number operands only, got {}",
@@ -2659,9 +2704,9 @@ fn step_instruction(
             let v = state.pop()?;
             let increment = matches!(instr, Instr::Inc);
             state.push(match v {
-                Value::BigInt(x) => {
-                    bigint_result(x.checked_add(&JsBigInt::from(if increment { 1 } else { -1 })))?
-                }
+                Value::BigInt(x) => bigint_result(heap, x.bit_length() + 1, || {
+                    x.checked_add(&JsBigInt::from(if increment { 1 } else { -1 }))
+                })?,
                 Value::Number(x) => Value::Number(if increment { x + 1.0 } else { x - 1.0 }),
                 _ => {
                     return Err(Fault::Unsupported(
@@ -3668,9 +3713,16 @@ pub(crate) fn execute_budgeted(
                 (pc, result)
             }
         };
-        let mut result = result;
+        let mut result = if heap.take_byte_denial() {
+            Err(Fault::HeapLimit)
+        } else {
+            result
+        };
         while let Ok(Flow::Resume(instr)) = result {
             result = instruction_step(instr)(state, &code, heap, host, instr);
+        }
+        if heap.take_byte_denial() {
+            result = Err(Fault::HeapLimit);
         }
         let raised = match result {
             Ok(Flow::Resume(_)) => unreachable!("resume was dispatched above"),
@@ -3745,7 +3797,11 @@ mod tests {
         for _ in 0..29 {
             text = text.concat(&text).unwrap();
         }
-        let fault = match plus(&Value::String(text.clone()), &Value::String(text)) {
+        let fault = match plus(
+            &Heap::default(),
+            &Value::String(text.clone()),
+            &Value::String(text),
+        ) {
             Err(fault) => fault,
             Ok(_) => panic!("overlong rope concatenation succeeded"),
         };
@@ -4099,9 +4155,10 @@ mod tests {
         let code = asm.finish("template", 2, 2).unwrap();
         let heap = Heap::default();
         let object = heap
-            .alloc(HeapObject::Plain(OrdinaryObject::new(Some(
-                TaskId::from_raw(1),
-            ))))
+            .alloc(HeapObject::Plain(OrdinaryObject::new(
+                &heap,
+                Some(TaskId::from_raw(1)),
+            )))
             .unwrap();
         for position in 0..2 {
             for invalid in [

@@ -385,7 +385,7 @@ impl State {
                     .ok_or(Fault::OutOfMemory("realm exhausted"))?
                     .intl_date_time_format_prototype;
                 heap.alloc(HeapObject::Plain(
-                    OrdinaryObject::with_prototype(task, proto).with_date_time_format(slots),
+                    OrdinaryObject::with_prototype(heap, task, proto).with_date_time_format(slots),
                 ))
                 .map(Value::Object)
                 .map(Action::Return)

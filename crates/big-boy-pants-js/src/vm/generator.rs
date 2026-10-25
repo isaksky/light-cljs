@@ -122,7 +122,7 @@ pub(crate) fn create(heap: &Heap, vm: &mut VmState) -> Result<(), Fault> {
     let id = heap
         .alloc(HeapObject::Generator(Box::new(Generator {
             owner: vm.diag.task,
-            object: OrdinaryObject::with_prototype(vm.diag.task, parent),
+            object: OrdinaryObject::with_prototype(heap, vm.diag.task, parent),
             state: State::SuspendedStart(activation),
             asynchronous: asynchronous.then(super::async_generator::Data::default),
         })))
@@ -233,7 +233,7 @@ pub(crate) fn result(heap: &Heap, task: TaskId, value: Value, done: bool) -> Res
     let parent = crate::realm::intrinsics(heap)
         .ok_or(Fault::OutOfMemory("realm"))?
         .object_prototype;
-    let mut o = OrdinaryObject::with_prototype(task, parent);
+    let mut o = OrdinaryObject::with_prototype(heap, task, parent);
     for (name, value) in [("value", value), ("done", Value::Bool(done))] {
         let key = heap
             .keys()

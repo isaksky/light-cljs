@@ -60,9 +60,14 @@ pub(crate) struct DisposableStack {
     pub(crate) resources: Vec<Resource>,
 }
 impl DisposableStack {
-    pub(crate) fn new(owner: TaskId, prototype: ObjectId, kind: Kind) -> Self {
+    pub(crate) fn new(
+        heap: &crate::heap::Heap,
+        owner: TaskId,
+        prototype: ObjectId,
+        kind: Kind,
+    ) -> Self {
         Self {
-            object: OrdinaryObject::with_prototype(owner, prototype),
+            object: OrdinaryObject::with_prototype(heap, owner, prototype),
             kind,
             disposed: false,
             resources: vec![],

@@ -21,15 +21,17 @@ pub(crate) struct MapObject {
     // Hash collisions are resolved by SameValueZero, never hash alone.
     index: HashMap<u64, Vec<u64>>,
     next_position: u64,
+    reservation: crate::heap::budget::ByteReservation,
 }
 
 impl MapObject {
-    pub(crate) fn new(owner: TaskId, prototype: ObjectId) -> Self {
+    pub(crate) fn new(heap: &crate::heap::Heap, owner: TaskId, prototype: ObjectId) -> Self {
         Self {
-            object: OrdinaryObject::with_prototype(owner, prototype),
+            object: OrdinaryObject::with_prototype(heap, owner, prototype),
             entries: BTreeMap::new(),
             index: HashMap::new(),
             next_position: 0,
+            reservation: Default::default(),
         }
     }
 
@@ -77,6 +79,11 @@ impl MapObject {
                 .next_position
                 .checked_add(1)
                 .ok_or("Map insertion positions exhausted")?;
+            let Some(additional) = self.object.budget.reserve(2048) else {
+                self.object.budget.note_denial();
+                return Err("heap byte limit exceeded");
+            };
+            self.reservation.merge(additional);
             let key = canonical_key(key);
             self.index
                 .entry(key_hash(&key))
@@ -106,12 +113,14 @@ impl MapObject {
         if self.index.capacity() > self.index.len().saturating_mul(4) {
             self.index.shrink_to_fit();
         }
+        self.reservation.refund(2048);
         true
     }
 
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.index = HashMap::new();
+        self.reservation = Default::default();
     }
 }
 
@@ -133,9 +142,11 @@ mod tests {
     #[test]
     fn churn_compacts_without_live_cursors() {
         let heap = Heap::default();
-        let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
+        let prototype = heap
+            .alloc(crate::heap::HeapObject::host_object(&heap))
+            .unwrap();
         for clear in [false, true] {
-            let mut map = MapObject::new(TaskId::from_raw(1), prototype);
+            let mut map = MapObject::new(&heap, TaskId::from_raw(1), prototype);
             for i in 0..10_000 {
                 map.set(Value::Number(0.0), Value::Number(i as f64))
                     .unwrap();
@@ -154,8 +165,10 @@ mod tests {
     #[test]
     fn deletion_reclaims_storage_with_live_cursors() {
         let heap = Heap::default();
-        let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
-        let mut map = MapObject::new(TaskId::from_raw(1), prototype);
+        let prototype = heap
+            .alloc(crate::heap::HeapObject::host_object(&heap))
+            .unwrap();
+        let mut map = MapObject::new(&heap, TaskId::from_raw(1), prototype);
         for i in 0..1000 {
             map.set(Value::Number(i as f64), Value::Null).unwrap();
         }
@@ -178,8 +191,10 @@ mod tests {
     #[test]
     fn collision_bucket_capacity_shrinks_after_deletion() {
         let heap = Heap::default();
-        let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
-        let mut map = MapObject::new(TaskId::from_raw(1), prototype);
+        let prototype = heap
+            .alloc(crate::heap::HeapObject::host_object(&heap))
+            .unwrap();
+        let mut map = MapObject::new(&heap, TaskId::from_raw(1), prototype);
         let first = Value::Null;
         let survivor = Value::Number(f64::from_bits(0x6e75_6d62_6572_0002));
         let hash = key_hash(&first);
@@ -206,8 +221,10 @@ mod tests {
     #[test]
     fn insertion_position_exhaustion_never_wraps_or_partially_inserts() {
         let heap = Heap::default();
-        let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
-        let mut map = MapObject::new(TaskId::from_raw(1), prototype);
+        let prototype = heap
+            .alloc(crate::heap::HeapObject::host_object(&heap))
+            .unwrap();
+        let mut map = MapObject::new(&heap, TaskId::from_raw(1), prototype);
         map.next_position = u64::MAX - 1;
         map.set(Value::Null, Value::Bool(false)).unwrap();
         let (cursor, _) = map.entry(0).unwrap();
@@ -227,8 +244,10 @@ mod tests {
     #[test]
     fn insertion_positions_survive_updates_deletes_and_clear() {
         let heap = Heap::default();
-        let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
-        let mut map = MapObject::new(TaskId::from_raw(1), prototype);
+        let prototype = heap
+            .alloc(crate::heap::HeapObject::host_object(&heap))
+            .unwrap();
+        let mut map = MapObject::new(&heap, TaskId::from_raw(1), prototype);
         let n = Value::Number;
         map.set(n(-0.0), n(1.0)).unwrap();
         map.set(n(2.0), n(2.0)).unwrap();
@@ -249,8 +268,10 @@ mod tests {
     #[test]
     fn colliding_keys_remain_independent() {
         let heap = Heap::default();
-        let prototype = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
-        let mut map = MapObject::new(TaskId::from_raw(1), prototype);
+        let prototype = heap
+            .alloc(crate::heap::HeapObject::host_object(&heap))
+            .unwrap();
+        let mut map = MapObject::new(&heap, TaskId::from_raw(1), prototype);
         // Both raw hashes are 2 before the shared finalizer. These are
         // distinct JS keys: a null and a finite nonzero number.
         let a = Value::Null;

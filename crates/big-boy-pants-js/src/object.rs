@@ -120,6 +120,7 @@ impl Trace for PropertyKey {
 /// cached entry; interning only adds names, which a cache never denies.
 #[derive(Debug)]
 pub(crate) struct PropertyKeys {
+    budget: std::sync::Arc<crate::heap::budget::ByteBudget>,
     table: RwLock<KeyTable>,
     identity: u64,
     epoch: AtomicU64,
@@ -135,6 +136,7 @@ impl Default for PropertyKeys {
     fn default() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         PropertyKeys {
+            budget: Default::default(),
             table: RwLock::default(),
             identity: NEXT.fetch_add(1, Ordering::Relaxed),
             epoch: AtomicU64::new(0),
@@ -164,6 +166,7 @@ struct KeyTable {
     names: Vec<Option<StoredKey>>,
     symbols: HashMap<JsSymbol, PropertyKey>,
     free: Vec<u32>,
+    reservation: crate::heap::budget::ByteReservation,
 }
 
 #[derive(Debug)]
@@ -173,7 +176,18 @@ enum StoredKey {
 }
 
 impl KeyTable {
-    fn insert(&mut self, entry: StoredKey) -> Option<PropertyKey> {
+    fn insert(
+        &mut self,
+        entry: StoredKey,
+        budget: &std::sync::Arc<crate::heap::budget::ByteBudget>,
+    ) -> Option<PropertyKey> {
+        if self.free.is_empty() {
+            let Some(additional) = budget.reserve(512) else {
+                budget.note_denial();
+                return None;
+            };
+            self.reservation.merge(additional);
+        }
         let index = match self.free.pop() {
             Some(index) => index,
             None => u32::try_from(self.names.len()).ok()?,
@@ -195,6 +209,12 @@ impl KeyTable {
 }
 
 impl PropertyKeys {
+    pub(crate) fn with_budget(budget: std::sync::Arc<crate::heap::budget::ByteBudget>) -> Self {
+        Self {
+            budget,
+            ..Self::default()
+        }
+    }
     /// Runtime/collection identity in one word. Overflow disables caching;
     /// it never aliases a previous runtime or a reclaimed key slot.
     pub(crate) fn bind_name(&self, name: &JsString, cache: &AtomicU64) -> Option<PropertyKey> {
@@ -262,7 +282,7 @@ impl PropertyKeys {
         if let Some(&key) = table.ids.get(name) {
             return Some(key);
         }
-        let key = table.insert(StoredKey::Name(name.clone()))?;
+        let key = table.insert(StoredKey::Name(name.clone()), &self.budget)?;
         table.ids.insert(name.clone(), key);
         Some(key)
     }
@@ -285,7 +305,7 @@ impl PropertyKeys {
         if let Some(&key) = table.symbols.get(symbol) {
             return Some(key);
         }
-        let key = table.insert(StoredKey::Symbol(symbol.clone()))?;
+        let key = table.insert(StoredKey::Symbol(symbol.clone()), &self.budget)?;
         table.symbols.insert(symbol.clone(), key);
         Some(key)
     }
@@ -414,6 +434,7 @@ pub(crate) const INDEX_THRESHOLD: usize = 8;
 /// What [`OrdinaryObject::set`] did.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SetOutcome {
+    HeapLimit,
     /// An own writable property was updated, or a new one was added.
     Done,
     /// The own property is not writable (strict mode: TypeError).
@@ -465,6 +486,8 @@ struct CollatorSlots {
 /// Storage of an ordinary object, optionally with immutable primitive data.
 #[derive(Debug)]
 pub(crate) struct OrdinaryObject {
+    budget: std::sync::Arc<crate::heap::budget::ByteBudget>,
+    charged_entries: usize,
     owner: Option<TaskId>,
     /// A realm intrinsic (module docs): ownerless, shared and immutable.
     intrinsic: bool,
@@ -507,6 +530,7 @@ pub(crate) struct OrdinaryObject {
     intl_service: Option<Box<IntlServiceSlots>>,
     segmenter: Option<Box<crate::intl::segmenter::Data>>,
     duration_format: Option<Box<crate::intl::duration_format::DurationFormat>>,
+    reservation: crate::heap::budget::ByteReservation,
 }
 
 #[derive(Debug, Default)]
@@ -583,8 +607,18 @@ impl OrdinaryObject {
 
     /// An empty, extensible object with a null prototype, owned by `owner`
     /// (`None`: created by the embedder).
-    pub(crate) fn new(owner: Option<TaskId>) -> OrdinaryObject {
+    pub(crate) fn new(heap: &crate::heap::Heap, owner: Option<TaskId>) -> OrdinaryObject {
+        Self::with_budget(heap.byte_budget(), owner)
+    }
+
+    fn with_budget(
+        budget: std::sync::Arc<crate::heap::budget::ByteBudget>,
+        owner: Option<TaskId>,
+    ) -> OrdinaryObject {
         OrdinaryObject {
+            budget,
+            reservation: Default::default(),
+            charged_entries: 0,
             owner,
             intrinsic: false,
             prototype: None,
@@ -645,27 +679,34 @@ impl OrdinaryObject {
             date_value: self.date_value,
             regexp: self.regexp.clone(),
             number_format_bound: self.number_format_bound.clone(),
-            ..OrdinaryObject::new(None)
+            ..OrdinaryObject::with_budget(self.budget.clone(), None)
         })
     }
 
     /// An empty, extensible object owned by `owner` whose prototype is
     /// `prototype` (`Object.prototype` for literals and `Object()`).
-    pub(crate) fn with_prototype(owner: TaskId, prototype: ObjectId) -> OrdinaryObject {
+    pub(crate) fn with_prototype(
+        heap: &crate::heap::Heap,
+        owner: TaskId,
+        prototype: ObjectId,
+    ) -> OrdinaryObject {
         OrdinaryObject {
             prototype: Some(prototype),
-            ..OrdinaryObject::new(Some(owner))
+            ..OrdinaryObject::new(heap, Some(owner))
         }
     }
 
     /// An empty realm intrinsic with `prototype` (`crate::realm`). The realm
     /// defines its properties with [`OrdinaryObject::define_with`] before
     /// any task can reach it; nothing changes it afterwards.
-    pub(crate) fn intrinsic(prototype: Option<ObjectId>) -> OrdinaryObject {
+    pub(crate) fn intrinsic(
+        heap: &crate::heap::Heap,
+        prototype: Option<ObjectId>,
+    ) -> OrdinaryObject {
         OrdinaryObject {
             intrinsic: true,
             prototype,
-            ..OrdinaryObject::new(None)
+            ..OrdinaryObject::new(heap, None)
         }
     }
 
@@ -952,7 +993,17 @@ impl OrdinaryObject {
         self.entries.iter().map(|(k, p)| (*k, p))
     }
 
-    fn push(&mut self, key: PropertyKey, property: Property) {
+    fn push(&mut self, key: PropertyKey, property: Property) -> bool {
+        // Include geometric property Vec capacity, the optional key index,
+        // and bounded shape metadata. Keep the capacity charge after deletes.
+        if self.entries.len() >= self.charged_entries {
+            let Some(additional) = self.budget.reserve(512) else {
+                self.budget.note_denial();
+                return false;
+            };
+            self.reservation.merge(additional);
+            self.charged_entries += 1;
+        }
         self.shape = match &self.shape {
             Some(shape) => shape.append(key),
             None if self.entries.is_empty() => shape::Shape::append_empty(key),
@@ -971,6 +1022,7 @@ impl OrdinaryObject {
                 .collect();
             self.index = Some(index);
         }
+        true
     }
 
     /// CreateDataProperty as an object literal uses it: define `key` as a
@@ -998,7 +1050,7 @@ impl OrdinaryObject {
         };
         match self.position(key) {
             Some(i) => self.entries[i].1 = property,
-            None if self.extensible => self.push(key, property),
+            None if self.extensible => return self.push(key, property),
             None => return false,
         }
         true
@@ -1042,8 +1094,11 @@ impl OrdinaryObject {
                     value,
                     flags: PropertyFlags::DATA,
                 };
-                self.push(key, property);
-                SetOutcome::Done
+                if self.push(key, property) {
+                    SetOutcome::Done
+                } else {
+                    SetOutcome::HeapLimit
+                }
             }
         }
     }
@@ -1062,8 +1117,7 @@ impl OrdinaryObject {
             value,
             flags: PropertyFlags::DATA,
         };
-        self.push(key, property);
-        true
+        self.push(key, property)
     }
 
     /// `[[Delete]]` (ECMAScript OrdinaryDelete, clj-quickjs-124; QuickJS
@@ -1113,7 +1167,8 @@ impl OrdinaryObject {
         };
         match i {
             Some(i) => self.entries[i].1 = property,
-            None => self.push(key, property),
+            None if !self.push(key, property) => return DefineOutcome::HeapLimit,
+            None => {}
         }
         DefineOutcome::Done
     }
@@ -1243,6 +1298,7 @@ impl PropertyDescriptor {
 /// What [`OrdinaryObject::define_own_property`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DefineOutcome {
+    HeapLimit,
     /// The property was created or updated.
     Done,
     /// ValidateAndApplyPropertyDescriptor returned false (`defineProperty`
@@ -1465,7 +1521,7 @@ mod tests {
         let heap = Arc::new(Heap::default());
         let live_symbol = JsSymbol::new(Some(s("live")));
         let live = {
-            let mut object = OrdinaryObject::new(None);
+            let mut object = OrdinaryObject::new(&crate::heap::Heap::default(), None);
             object.define(
                 heap.keys().intern_symbol(&live_symbol).unwrap(),
                 Value::Number(42.0),
@@ -1477,7 +1533,7 @@ mod tests {
         };
         for i in 0..300 {
             let symbol = JsSymbol::new(Some(s(&format!("garbage-{i}"))));
-            let mut object = OrdinaryObject::new(None);
+            let mut object = OrdinaryObject::new(&crate::heap::Heap::default(), None);
             object.define(heap.keys().intern_symbol(&symbol).unwrap(), Value::Null);
             heap.alloc(HeapObject::Plain(object)).unwrap();
         }
@@ -1678,7 +1734,7 @@ mod tests {
     #[test]
     fn properties_keep_creation_order_and_the_first_position() {
         let keys = PropertyKeys::default();
-        let mut o = OrdinaryObject::new(None);
+        let mut o = OrdinaryObject::new(&crate::heap::Heap::default(), None);
         let names: Vec<PropertyKey> = (0..20)
             .map(|i| keys.intern(&s(&format!("p{i}"))).unwrap())
             .collect();
@@ -1707,7 +1763,7 @@ mod tests {
             .map(|i| keys.intern(&s(&format!("p{i}"))).unwrap())
             .collect();
         for count in [4, 12] {
-            let mut o = OrdinaryObject::new(None);
+            let mut o = OrdinaryObject::new(&crate::heap::Heap::default(), None);
             for (i, &k) in names[..count].iter().enumerate() {
                 assert!(o.define(k, Value::Number(i as f64)));
             }
@@ -1733,7 +1789,7 @@ mod tests {
     fn set_reports_the_cases_it_does_not_decide() {
         let keys = PropertyKeys::default();
         let (a, b) = (keys.intern(&s("a")).unwrap(), keys.intern(&s("b")).unwrap());
-        let mut o = OrdinaryObject::new(Some(TaskId::from_raw(1)));
+        let mut o = OrdinaryObject::new(&crate::heap::Heap::default(), Some(TaskId::from_raw(1)));
         assert_eq!(o.set(a, Value::Bool(true)), SetOutcome::Done);
         o.entries[0].1.flags.writable = false;
         assert_eq!(o.set(a, Value::Null), SetOutcome::ReadOnly);

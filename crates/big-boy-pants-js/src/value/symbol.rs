@@ -181,6 +181,7 @@ mod tests {
         let id = heap
             .alloc(HeapObject::WeakRef(Box::new(
                 crate::object::weak_ref::WeakRefObject::new(
+                    &heap,
                     crate::ids::TaskId::from_raw(1),
                     prototype,
                     &target,

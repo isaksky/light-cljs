@@ -944,8 +944,12 @@ mod tests {
     fn completed_cells_report_their_values_as_dependency_outcome_roots() {
         let heap = Arc::new(Heap::default());
         let table = DependencyTable::new(Arc::clone(&heap));
-        let ready = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
-        let failed = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
+        let ready = heap
+            .alloc(crate::heap::HeapObject::host_object(&heap))
+            .unwrap();
+        let failed = heap
+            .alloc(crate::heap::HeapObject::host_object(&heap))
+            .unwrap();
         // Plain objects are not shareable; install directly to test tracing.
         for (def, outcome) in [
             (1, Terminal::Ready(Value::Object(ready))),
@@ -983,7 +987,9 @@ mod tests {
         let Read::Waiting { produce: Some(req) } = table.read_or_subscribe(w(1), key(1)) else {
             panic!("first need claims the producer");
         };
-        let plain = heap.alloc(crate::heap::HeapObject::host_object()).unwrap();
+        let plain = heap
+            .alloc(crate::heap::HeapObject::host_object(&heap))
+            .unwrap();
         let _root = Rooted::new(&heap, Value::Object(plain));
         let err = table
             .complete(

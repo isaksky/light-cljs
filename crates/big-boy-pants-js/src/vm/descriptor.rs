@@ -147,7 +147,7 @@ pub(crate) fn from_property_descriptor(
     let prototype = realm::intrinsics(heap)
         .ok_or_else(exhausted)?
         .object_prototype;
-    let mut object = OrdinaryObject::with_prototype(task, prototype);
+    let mut object = OrdinaryObject::with_prototype(heap, task, prototype);
     let flags = property.flags;
     let mut fields = match property.accessor {
         Some((get, set)) => vec![("get", get), ("set", set)],
@@ -371,14 +371,14 @@ mod tests {
     fn to_property_descriptor_reads_inherited_fields() {
         let heap = Heap::default();
         let task = TaskId::from_raw(1);
-        let mut base = OrdinaryObject::new(Some(task));
+        let mut base = OrdinaryObject::new(&heap, Some(task));
         base.define(key(heap.keys(), "value"), Value::Number(7.0));
         base.define(key(heap.keys(), "writable"), Value::Bool(true));
         base.define(key(heap.keys(), "enumerable"), Value::Number(1.0));
         let base = heap.alloc(HeapObject::Plain(base)).unwrap();
-        let inheriting = OrdinaryObject::with_prototype(task, base);
+        let inheriting = OrdinaryObject::with_prototype(&heap, task, base);
         let inheriting = Value::Object(heap.alloc(HeapObject::Plain(inheriting)).unwrap());
-        let mut shadowing = OrdinaryObject::with_prototype(task, base);
+        let mut shadowing = OrdinaryObject::with_prototype(&heap, task, base);
         shadowing.define(key(heap.keys(), "value"), Value::Undefined);
         let shadowing = Value::Object(heap.alloc(HeapObject::Plain(shadowing)).unwrap());
 
@@ -394,7 +394,7 @@ mod tests {
         assert_eq!(desc.writable, Some(true));
 
         // Through `Object.defineProperty`.
-        let target = OrdinaryObject::new(Some(task));
+        let target = OrdinaryObject::new(&heap, Some(task));
         let target = Value::Object(heap.alloc(HeapObject::Plain(target)).unwrap());
         let name = Value::String(JsString::from("k"));
         for (desc, expected) in [

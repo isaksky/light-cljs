@@ -1161,7 +1161,8 @@ pub(crate) fn construct(heap: &Heap, task: TaskId, time: f64) -> Result<Value, F
     let time = time_clip(time);
     let realm =
         crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
-    let object = OrdinaryObject::with_prototype(task, realm.date_prototype).with_date_value(time);
+    let object =
+        OrdinaryObject::with_prototype(heap, task, realm.date_prototype).with_date_value(time);
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
         .ok_or(Fault::OutOfMemory("heap object table exhausted"))

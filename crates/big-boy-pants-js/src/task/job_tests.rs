@@ -208,7 +208,7 @@ fn body_exception_discards_jobs() {
         .0
         .heap
         .alloc(crate::heap::HeapObject::Plain(
-            crate::object::OrdinaryObject::new(Some(task.id())),
+            crate::object::OrdinaryObject::new(&task.0.heap, Some(task.id())),
         ))
         .unwrap();
     let value = Rooted::new(&task.0.heap, Value::Object(object));
@@ -269,7 +269,7 @@ fn job_activation_rejects_excess_stack_values() {
                 )),
                 None => HeapObject::Builtin(BuiltinFunction {
                     which: Builtin::MathAbs,
-                    properties: crate::object::OrdinaryObject::new(None),
+                    properties: crate::object::OrdinaryObject::new(&task.0.heap, None),
                 }),
             };
             let callable = Value::Object(task.0.heap.alloc(callable).unwrap());
@@ -479,7 +479,7 @@ fn queue_roots_arguments_and_cancellation_releases_them() {
         .0
         .heap
         .alloc(crate::heap::HeapObject::Plain(
-            crate::object::OrdinaryObject::new(Some(task.id())),
+            crate::object::OrdinaryObject::new(&task.0.heap, Some(task.id())),
         ))
         .unwrap();
     let value = Rooted::new(&task.0.heap, Value::Object(object));
@@ -616,7 +616,7 @@ fn inbox_is_traced_while_task_is_at_a_running_safepoint() {
         .0
         .heap
         .alloc(crate::heap::HeapObject::Plain(
-            crate::object::OrdinaryObject::new(Some(task.id())),
+            crate::object::OrdinaryObject::new(&task.0.heap, Some(task.id())),
         ))
         .unwrap();
     let value = Rooted::new(&task.0.heap, Value::Object(object));

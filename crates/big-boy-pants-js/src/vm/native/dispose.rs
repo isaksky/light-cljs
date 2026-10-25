@@ -462,7 +462,7 @@ impl Stack {
                 };
                 let value = heap
                     .alloc(crate::heap::HeapObject::DisposableStack(Box::new(
-                        stack::DisposableStack::new(task, prototype, *kind),
+                        stack::DisposableStack::new(heap, task, prototype, *kind),
                     )))
                     .map(Value::Object)
                     .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;

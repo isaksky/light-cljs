@@ -470,14 +470,10 @@ impl State {
                     {
                         self.end -= 1;
                     } else {
-                        self.build = Some(
-                            StringBuild::new(vec![(
-                                self.text.clone(),
-                                self.start,
-                                self.end - self.start,
-                            )])
-                            .ok_or(Fault::StringTooLong)?,
-                        );
+                        self.build = Some(StringBuild::new_accounted(
+                            heap,
+                            vec![(self.text.clone(), self.start, self.end - self.start)],
+                        )?);
                         self.stage = Stage::Build;
                         break;
                     }
@@ -632,10 +628,10 @@ impl State {
             self.end = len;
             self.stage = Stage::Trim;
         } else if self.which == StringRepeat {
-            self.build = Some(
-                StringBuild::new(vec![(self.text.clone(), 0, len * self.number as usize)])
-                    .ok_or(Fault::StringTooLong)?,
-            );
+            self.build = Some(StringBuild::new_accounted(
+                heap,
+                vec![(self.text.clone(), 0, len * self.number as usize)],
+            )?);
             self.stage = Stage::Build;
         } else if self.which == StringAt {
             return Ok(Action::Return(Value::String(

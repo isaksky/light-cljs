@@ -203,7 +203,7 @@ impl State {
                     .ok_or(Fault::Internal("ordinary constructor prototype missing"))?;
                 let receiver = heap
                     .alloc(crate::heap::HeapObject::Plain(
-                        crate::object::OrdinaryObject::with_prototype(task, prototype),
+                        crate::object::OrdinaryObject::with_prototype(heap, task, prototype),
                     ))
                     .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
                 return Ok(Action::EnterConstructor(Box::new(Invocation {

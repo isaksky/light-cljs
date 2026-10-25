@@ -151,7 +151,7 @@ pub(crate) fn likely_subtags(
         .ok_or(Fault::OutOfMemory("realm exhausted"))?
         .intl_locale_prototype;
     let object =
-        crate::object::OrdinaryObject::with_prototype(task, prototype).with_locale_data(tag);
+        crate::object::OrdinaryObject::with_prototype(heap, task, prototype).with_locale_data(tag);
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
         .ok_or(Fault::OutOfMemory("heap exhausted"))

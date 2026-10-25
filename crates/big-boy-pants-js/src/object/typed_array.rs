@@ -244,7 +244,7 @@ pub(crate) fn constructor(
         .ok_or(Fault::OutOfMemory("typed array realm"))?
         .typed_array_prototypes[kind as usize];
     heap.alloc(HeapObject::TypedArray(Box::new(TypedArray {
-        object: OrdinaryObject::with_prototype(task, prototype),
+        object: OrdinaryObject::with_prototype(heap, task, prototype),
         view: View {
             kind,
             buffer,

@@ -250,7 +250,7 @@ impl State {
                 let proto = crate::realm::intrinsics(heap)
                     .ok_or(Fault::OutOfMemory("realm exhausted"))?
                     .intl_display_names_prototype;
-                let object = OrdinaryObject::with_prototype(task, proto)
+                let object = OrdinaryObject::with_prototype(heap, task, proto)
                     .with_display_names(self.slots.take().unwrap());
                 heap.alloc(HeapObject::Plain(object))
                     .map(Value::Object)
@@ -387,7 +387,7 @@ mod tests {
             slots.fallback = fallback;
             let this = Value::Object(
                 heap.alloc(HeapObject::Plain(
-                    OrdinaryObject::with_prototype(task, proto).with_display_names(slots),
+                    OrdinaryObject::with_prototype(&heap, task, proto).with_display_names(slots),
                 ))
                 .unwrap(),
             );

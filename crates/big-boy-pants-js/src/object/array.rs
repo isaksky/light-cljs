@@ -118,6 +118,8 @@ pub(crate) struct ArrayObject {
     /// freezing a large array allocates nothing. Never cleared: a frozen
     /// array is not extensible and its elements cannot be reconfigured.
     frozen: bool,
+    budget: std::sync::Arc<crate::heap::budget::ByteBudget>,
+    reservation: crate::heap::budget::ByteReservation,
 }
 
 /// The attributes of an element of a frozen array that was enumerable
@@ -132,10 +134,10 @@ impl ArrayObject {
     /// Internal immutable array storage, built before allocation. Only
     /// TemplateObject uses this, with primitive elements and intrinsic
     /// prototypes; freeze before exposing it to JavaScript.
-    pub(crate) fn template(prototype: ObjectId) -> ArrayObject {
+    pub(crate) fn template(heap: &crate::heap::Heap, prototype: ObjectId) -> ArrayObject {
         ArrayObject {
-            object: OrdinaryObject::intrinsic(Some(prototype)),
-            ..ArrayObject::new(None)
+            object: OrdinaryObject::intrinsic(heap, Some(prototype)),
+            ..ArrayObject::new(heap, None)
         }
     }
     /// A copy of a frozen intrinsic array ([`OrdinaryObject::stand_in`]).
@@ -149,13 +151,15 @@ impl ArrayObject {
             accessors: self.accessors.clone(),
             length_writable: self.length_writable,
             frozen: self.frozen,
+            budget: self.budget.clone(),
+            reservation: Default::default(),
         })
     }
 
     /// An empty array (length 0) with a null prototype, owned by `owner`.
-    pub(crate) fn new(owner: Option<TaskId>) -> ArrayObject {
+    pub(crate) fn new(heap: &crate::heap::Heap, owner: Option<TaskId>) -> ArrayObject {
         ArrayObject {
-            object: OrdinaryObject::new(owner),
+            object: OrdinaryObject::new(heap, owner),
             dense: Vec::new(),
             sparse: BTreeMap::new(),
             length: 0,
@@ -163,24 +167,35 @@ impl ArrayObject {
             accessors: BTreeMap::new(),
             length_writable: true,
             frozen: false,
+            budget: heap.byte_budget(),
+            reservation: Default::default(),
         }
     }
 
     /// An empty array owned by `owner` inheriting from `prototype`
     /// (`Array.prototype` for an array literal: ArrayCreate).
-    pub(crate) fn with_prototype(owner: TaskId, prototype: ObjectId) -> ArrayObject {
+    pub(crate) fn with_prototype(
+        heap: &crate::heap::Heap,
+        owner: TaskId,
+        prototype: ObjectId,
+    ) -> ArrayObject {
         ArrayObject {
-            object: OrdinaryObject::with_prototype(owner, prototype),
-            ..ArrayObject::new(Some(owner))
+            object: OrdinaryObject::with_prototype(heap, owner, prototype),
+            ..ArrayObject::new(heap, Some(owner))
         }
     }
 
     /// ArrayCreate(length): all indices are holes. Numeric lengths never
     /// allocate dense slots or sparse entries, even at 2^32 - 1.
-    pub(crate) fn with_length(owner: TaskId, prototype: ObjectId, length: u32) -> ArrayObject {
+    pub(crate) fn with_length(
+        heap: &crate::heap::Heap,
+        owner: TaskId,
+        prototype: ObjectId,
+        length: u32,
+    ) -> ArrayObject {
         ArrayObject {
             length,
-            ..Self::with_prototype(owner, prototype)
+            ..Self::with_prototype(heap, owner, prototype)
         }
     }
 
@@ -221,20 +236,44 @@ impl ArrayObject {
 
     /// Store `value` at `index` (present or not), keeping the storage
     /// invariant of the module docs, and extend `length` past it.
-    fn store(&mut self, index: u32, value: Value) {
+    fn store(&mut self, index: u32, value: Value) -> bool {
         let end = self.dense.len();
         if let Some(slot) = self.dense.get_mut(index as usize) {
             *slot = Some(value);
         } else if self.sparse.is_empty() && index as usize - end <= MAX_DENSE_GAP as usize {
+            let required = index as usize + 1;
+            if required > self.dense.capacity() {
+                let capacity = required.max(self.dense.capacity().saturating_mul(2));
+                let bytes = (capacity - self.dense.capacity())
+                    .saturating_mul(std::mem::size_of::<Option<Value>>());
+                let Some(additional) = self.budget.reserve(bytes) else {
+                    return false;
+                };
+                if self
+                    .dense
+                    .try_reserve_exact(capacity - self.dense.len())
+                    .is_err()
+                {
+                    return false;
+                }
+                self.reservation.merge(additional);
+            }
             self.dense.resize(index as usize, None);
             self.dense.push(Some(value));
         } else {
+            if !self.sparse.contains_key(&index) {
+                let Some(additional) = self.budget.reserve(1024) else {
+                    return false;
+                };
+                self.reservation.merge(additional);
+            }
             self.sparse.insert(index, value);
         }
         if index >= self.length {
             // `index <= MAX_INDEX`, so this cannot overflow.
             self.length = index + 1;
         }
+        true
     }
 
     /// OrdinarySet of element `index` on this array as the receiver, for
@@ -255,8 +294,11 @@ impl ArrayObject {
         if !self.element_flags(index).writable {
             return SetOutcome::ReadOnly;
         }
-        self.store(index, value);
-        SetOutcome::Done
+        if self.store(index, value) {
+            SetOutcome::Done
+        } else {
+            SetOutcome::HeapLimit
+        }
     }
 
     /// The end of OrdinarySet once the prototype chain allowed the write of
@@ -273,8 +315,11 @@ impl ArrayObject {
         if !self.object.extensible() {
             return SetOutcome::NotExtensible;
         }
-        self.store(index, value);
-        SetOutcome::Done
+        if self.store(index, value) {
+            SetOutcome::Done
+        } else {
+            SetOutcome::HeapLimit
+        }
     }
 
     /// The attributes of an element `attributes` has no entry for.
@@ -302,11 +347,14 @@ impl ArrayObject {
         self.object.freeze();
         self.length_writable = false;
         self.frozen = true;
+        let before = self.attributes.len();
         self.attributes.retain(|_, flags| {
             flags.writable = false;
             flags.configurable = false;
             *flags != FROZEN_ELEMENT
         });
+        self.reservation
+            .refund((before - self.attributes.len()) * 1024);
     }
 
     /// TestIntegrityLevel(frozen) (`Object.isFrozen`, clj-quickjs-122): the
@@ -355,11 +403,17 @@ impl ArrayObject {
         match self.dense.get_mut(index as usize) {
             Some(slot) => *slot = None,
             None => {
-                self.sparse.remove(&index);
+                if self.sparse.remove(&index).is_some() {
+                    self.reservation.refund(1024);
+                }
             }
         }
-        self.attributes.remove(&index);
-        self.accessors.remove(&index);
+        if self.attributes.remove(&index).is_some() {
+            self.reservation.refund(1024);
+        }
+        if self.accessors.remove(&index).is_some() {
+            self.reservation.refund(1024);
+        }
         DeleteOutcome::Deleted
     }
 
@@ -406,14 +460,30 @@ impl ArrayObject {
             Ok(property) => property,
             Err(outcome) => return outcome,
         };
-        self.store(index, property.value);
+        let new_accessor = property.accessor.is_some() && !self.accessors.contains_key(&index);
+        let new_attributes =
+            property.flags != self.default_flags() && !self.attributes.contains_key(&index);
+        let Some(additional) = self
+            .budget
+            .reserve(1024 * (usize::from(new_accessor) + usize::from(new_attributes)))
+        else {
+            return DefineOutcome::HeapLimit;
+        };
+        if !self.store(index, property.value) {
+            return DefineOutcome::HeapLimit;
+        }
+        self.reservation.merge(additional);
         if let Some(accessor) = property.accessor {
             self.accessors.insert(index, accessor);
         } else {
-            self.accessors.remove(&index);
+            if self.accessors.remove(&index).is_some() {
+                self.reservation.refund(1024);
+            }
         }
         if property.flags == self.default_flags() {
-            self.attributes.remove(&index);
+            if self.attributes.remove(&index).is_some() {
+                self.reservation.refund(1024);
+            }
         } else {
             self.attributes.insert(index, property.flags);
         }
@@ -477,21 +547,33 @@ impl ArrayObject {
     /// an array literal does (CreateDataProperty, then the literal's final
     /// `length`). False, with nothing changed, when `length` is already
     /// `2^32 - 1` (no further index exists).
-    pub(crate) fn push(&mut self, element: Option<Value>) -> bool {
+    pub(crate) fn push(
+        &mut self,
+        element: Option<Value>,
+    ) -> Result<(), crate::vm::dispatch::Fault> {
         let index = self.length;
         if index > MAX_INDEX {
-            return false;
+            return Err(crate::vm::dispatch::Fault::RangeError(
+                "invalid array length".into(),
+            ));
         }
         match element {
-            Some(value) => self.store(index, value),
+            Some(value) => {
+                if !self.store(index, value) {
+                    return Err(crate::vm::dispatch::Fault::HeapLimit);
+                }
+            }
             None => {
                 if self.sparse.is_empty() && self.dense.len() == index as usize {
-                    self.dense.push(None);
+                    if !self.store(index, Value::Undefined) {
+                        return Err(crate::vm::dispatch::Fault::HeapLimit);
+                    }
+                    self.dense[index as usize] = None;
                 }
                 self.length = index + 1;
             }
         }
-        true
+        Ok(())
     }
 }
 
@@ -519,11 +601,50 @@ mod tests {
     }
 
     #[test]
+    fn denied_dense_growth_keeps_length_and_values() {
+        let heap = crate::heap::Heap::with_byte_limit(2 * std::mem::size_of::<Option<Value>>());
+        let mut array = ArrayObject::new(&heap, None);
+        assert!(array.push(Some(n(1.0))).is_ok());
+        assert!(array.push(Some(n(2.0))).is_ok());
+        assert!(matches!(
+            array.push(Some(n(3.0))),
+            Err(crate::vm::dispatch::Fault::HeapLimit)
+        ));
+        assert_eq!(array.length(), 2);
+        assert_eq!(array.get(0), Some(&n(1.0)));
+        assert_eq!(array.get(1), Some(&n(2.0)));
+        assert_eq!(array.set(0, n(42.0)), SetOutcome::Done);
+        assert_eq!(array.get(0), Some(&n(42.0)));
+    }
+
+    #[test]
+    fn sparse_and_descriptor_reservations_rollback_and_refund() {
+        let heap = crate::heap::Heap::with_byte_limit(1024);
+        let mut array = ArrayObject::new(&heap, None);
+        assert_eq!(array.set(10000, n(1.0)), SetOutcome::Done);
+        assert_eq!(array.set(20000, n(2.0)), SetOutcome::HeapLimit);
+        assert_eq!(array.length(), 10001);
+        let descriptor = PropertyDescriptor {
+            value: Some(n(42.0)),
+            writable: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            array.define_element(10000, &descriptor),
+            DefineOutcome::HeapLimit
+        );
+        assert_eq!(array.get(10000), Some(&n(1.0)));
+        assert!(array.element_flags(10000).writable);
+        assert_eq!(array.delete_element(10000), DeleteOutcome::Deleted);
+        assert_eq!(array.set(20000, n(2.0)), SetOutcome::Done);
+    }
+
+    #[test]
     fn constructor_length_allocates_no_elements() {
         let heap = crate::heap::Heap::default();
         let task = TaskId::from_raw(1);
         let prototype = crate::realm::intrinsics(&heap).unwrap().array_prototype;
-        let array = ArrayObject::with_length(task, prototype, u32::MAX);
+        let array = ArrayObject::with_length(&heap, task, prototype, u32::MAX);
         assert_eq!(array.length(), u32::MAX);
         assert!(array.dense.is_empty());
         assert!(array.sparse.is_empty());
@@ -567,11 +688,11 @@ mod tests {
 
     #[test]
     fn writes_keep_length_and_choose_dense_or_sparse_storage() {
-        let mut a = ArrayObject::new(None);
-        assert!(a.push(Some(n(0.0))));
-        assert!(a.push(None));
-        assert!(a.push(Some(n(2.0))));
-        assert!(a.push(None));
+        let mut a = ArrayObject::new(&crate::heap::Heap::default(), None);
+        assert!(a.push(Some(n(0.0))).is_ok());
+        assert!(a.push(None).is_ok());
+        assert!(a.push(Some(n(2.0))).is_ok());
+        assert!(a.push(None).is_ok());
         assert_eq!(a.length(), 4);
         assert_eq!((a.dense.len(), a.sparse.len()), (4, 0));
         assert_eq!(a.get(1), None, "a hole is absent");
@@ -590,7 +711,7 @@ mod tests {
         let order: Vec<u32> = a.elements().map(|(i, _)| i).collect();
         assert_eq!(order, vec![0, 1, 2, 10, 11, MAX_INDEX]);
         // No index exists past 2^32 - 2.
-        assert!(!a.push(Some(n(0.0))));
+        assert!(a.push(Some(n(0.0))).is_err());
         assert_eq!(a.length(), u32::MAX);
     }
 
@@ -598,9 +719,9 @@ mod tests {
     /// the attributes `defineProperty` gave, and blocks every change.
     #[test]
     fn freezing_needs_no_per_element_attributes() {
-        let mut a = ArrayObject::new(None);
+        let mut a = ArrayObject::new(&crate::heap::Heap::default(), None);
         for i in 0..1000 {
-            a.push(Some(n(f64::from(i))));
+            a.push(Some(n(f64::from(i)))).ok().unwrap();
         }
         let hidden = PropertyDescriptor {
             enumerable: Some(false),
@@ -631,9 +752,9 @@ mod tests {
     /// drops its attributes and keeps the storage invariant.
     #[test]
     fn deleted_elements_become_holes() {
-        let mut a = ArrayObject::new(None);
+        let mut a = ArrayObject::new(&crate::heap::Heap::default(), None);
         for i in 0..3 {
-            a.push(Some(n(f64::from(i))));
+            a.push(Some(n(f64::from(i)))).ok().unwrap();
         }
         assert_eq!(a.set(MAX_INDEX, n(-1.0)), SetOutcome::Done);
         let hidden = PropertyDescriptor {
@@ -660,8 +781,8 @@ mod tests {
 
     #[test]
     fn absent_elements_defer_to_a_prototype() {
-        let mut a = ArrayObject::new(None);
-        a.push(Some(n(0.0)));
+        let mut a = ArrayObject::new(&crate::heap::Heap::default(), None);
+        a.push(Some(n(0.0))).ok().unwrap();
         a.object.set_prototype(Some(ObjectId::from_index(0)));
         assert_eq!(a.set(0, n(1.0)), SetOutcome::Done, "present: own write");
         assert_eq!(a.set(1, n(1.0)), SetOutcome::Inherited);

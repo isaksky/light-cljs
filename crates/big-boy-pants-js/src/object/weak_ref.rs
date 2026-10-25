@@ -14,9 +14,15 @@ pub(crate) struct WeakRefObject {
 }
 
 impl WeakRefObject {
-    pub(crate) fn new(owner: TaskId, prototype: ObjectId, target: &Value, edge: TraceEdge) -> Self {
+    pub(crate) fn new(
+        heap: &crate::heap::Heap,
+        owner: TaskId,
+        prototype: ObjectId,
+        target: &Value,
+        edge: TraceEdge,
+    ) -> Self {
         Self {
-            object: OrdinaryObject::with_prototype(owner, prototype),
+            object: OrdinaryObject::with_prototype(heap, owner, prototype),
             target: match target {
                 Value::Symbol(symbol) => WeakSlot::for_symbol(symbol.clone()),
                 _ => WeakSlot::new(edge),

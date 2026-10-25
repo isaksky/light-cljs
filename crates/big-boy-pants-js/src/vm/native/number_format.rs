@@ -368,8 +368,8 @@ impl State {
                 let proto = crate::realm::intrinsics(heap)
                     .ok_or(Fault::OutOfMemory("realm exhausted"))?
                     .intl_number_format_prototype;
-                let object =
-                    OrdinaryObject::with_prototype(task, proto).with_number_format(slots.clone());
+                let object = OrdinaryObject::with_prototype(heap, task, proto)
+                    .with_number_format(slots.clone());
                 heap.alloc(HeapObject::Plain(object))
                     .map(Value::Object)
                     .map(Action::Return)

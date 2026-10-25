@@ -65,7 +65,7 @@ pub(crate) fn allocate(heap: &Heap, task: TaskId, compiled: Arc<Compiled>) -> Re
     let proto = crate::realm::intrinsics(heap)
         .ok_or(Fault::OutOfMemory("RegExp realm"))?
         .regexp_prototype;
-    let mut o = OrdinaryObject::with_prototype(task, proto).with_regexp(compiled);
+    let mut o = OrdinaryObject::with_prototype(heap, task, proto).with_regexp(compiled);
     let key = heap
         .keys()
         .intern(&JsString::from("lastIndex"))
@@ -276,8 +276,8 @@ pub(crate) fn exec_with_capture_budget(
         .has_indices
         .then(|| property::new_array(heap, task))
         .transpose()?;
-    let mut groups = OrdinaryObject::new(Some(task));
-    let mut indices_groups = OrdinaryObject::new(Some(task));
+    let mut groups = OrdinaryObject::new(heap, Some(task));
+    let mut indices_groups = OrdinaryObject::new(heap, Some(task));
     let mut named = false;
     for (i, capture) in m.groups.iter().enumerate() {
         let v = capture.as_ref().map_or(Value::Undefined, |r| {

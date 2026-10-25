@@ -941,6 +941,7 @@ enum Stored {
 fn stored(outcome: SetOutcome, key: &Key, prototype: Option<ObjectId>) -> Result<Stored, Fault> {
     match outcome {
         SetOutcome::Done => Ok(Stored::Done),
+        SetOutcome::HeapLimit => Err(Fault::HeapLimit),
         SetOutcome::Setter(setter) => Ok(Stored::Setter(setter)),
         SetOutcome::ReadOnly => Ok(Stored::Rejected(read_only(key))),
         SetOutcome::NotExtensible => Ok(Stored::Rejected(not_extensible(key))),
@@ -1321,6 +1322,7 @@ fn prepare_write_cached(
         .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
     match added {
         SetOutcome::Done => Ok(Write::Complete(None)),
+        SetOutcome::HeapLimit => Err(Fault::HeapLimit),
         SetOutcome::Setter(setter) => setter_result(setter, key, strict).map(Write::Complete),
         SetOutcome::ReadOnly => rejected(read_only(key)),
         SetOutcome::NotExtensible => rejected(not_extensible(key)),
@@ -1911,6 +1913,7 @@ pub(crate) fn define_accessor(
 fn defined(outcome: DefineOutcome, key: &Key) -> Result<(), Fault> {
     match outcome {
         DefineOutcome::Done => Ok(()),
+        DefineOutcome::HeapLimit => Err(Fault::HeapLimit),
         DefineOutcome::Rejected(reason) => Err(Fault::TypeError(format!(
             "cannot define property '{key}': {reason}"
         ))),
@@ -2193,7 +2196,7 @@ pub(crate) fn new_array(heap: &Heap, task: TaskId) -> Result<Value, Fault> {
     let prototype = realm::intrinsics(heap)
         .ok_or_else(exhausted)?
         .array_prototype;
-    let array = ArrayObject::with_prototype(task, prototype);
+    let array = ArrayObject::with_prototype(heap, task, prototype);
     heap.alloc(HeapObject::Array(Box::new(array)))
         .map(Value::Object)
         .ok_or_else(exhausted)
@@ -2226,13 +2229,7 @@ pub(crate) fn append(
                 return Err(immutable(&Key::Name(JsString::from("length"))));
             }
             check_write(a.object(), task)?;
-            if a.push(element) {
-                Ok(())
-            } else {
-                Err(Fault::Unsupported(
-                    "an array literal with more than 2^32 - 1 elements".to_string(),
-                ))
-            }
+            a.push(element)
         }
         other => Err(wrong(object_name(other))),
     })
@@ -2254,7 +2251,7 @@ mod tests {
         let owner = TaskId::from_raw(1);
         let caller = TaskId::from_raw(2);
         let ordinary = heap
-            .alloc(HeapObject::Plain(OrdinaryObject::new(Some(owner))))
+            .alloc(HeapObject::Plain(OrdinaryObject::new(&heap, Some(owner))))
             .unwrap();
         let namespace = heap
             .alloc(HeapObject::ModuleNamespace(Box::new(Namespace {
@@ -2264,7 +2261,7 @@ mod tests {
             .unwrap();
         let typed = heap
             .alloc(HeapObject::TypedArray(Box::new(TypedArray {
-                object: OrdinaryObject::new(Some(owner)),
+                object: OrdinaryObject::new(&heap, Some(owner)),
                 view: View {
                     kind: ElementType::Uint8,
                     buffer: ordinary,
@@ -2435,7 +2432,7 @@ mod tests {
             assert_eq!(to_property_key(&key).ok(), Some(expected), "{key:?}");
         }
         let heap = Heap::default();
-        let object = Value::Object(heap.alloc(HeapObject::host_object()).unwrap());
+        let object = Value::Object(heap.alloc(HeapObject::host_object(&heap)).unwrap());
         assert!(matches!(
             to_property_key(&object),
             Err(Fault::Unsupported(_))
@@ -2446,7 +2443,7 @@ mod tests {
     fn index_keys_of_ordinary_objects_are_their_names() {
         let heap = Heap::default();
         let task = TaskId::from_raw(1);
-        let o = OrdinaryObject::new(Some(task));
+        let o = OrdinaryObject::new(&heap, Some(task));
         let o = Value::Object(heap.alloc(HeapObject::Plain(o)).unwrap());
         // Reading an index nobody defined interns nothing.
         assert_eq!(
@@ -2475,14 +2472,14 @@ mod tests {
         let name = JsString::from("k");
         let k = Key::from_name(&name);
         let parent = heap
-            .alloc(HeapObject::Plain(OrdinaryObject::new(Some(task))))
+            .alloc(HeapObject::Plain(OrdinaryObject::new(&heap, Some(task))))
             .unwrap();
         let desc = PropertyDescriptor {
             value: Some(Value::Number(1.0)),
             ..PropertyDescriptor::default()
         };
         ok(define_own_property(&heap, task, parent, &k, &desc));
-        let child = OrdinaryObject::with_prototype(task, parent);
+        let child = OrdinaryObject::with_prototype(&heap, task, parent);
         let child = Value::Object(heap.alloc(HeapObject::Plain(child)).unwrap());
         match put_field(&heap, task, &child, &name, Value::Number(2.0), true) {
             Err(Fault::TypeError(m)) => {

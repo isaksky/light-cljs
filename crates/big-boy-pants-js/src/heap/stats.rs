@@ -230,7 +230,7 @@ mod tests {
         assert_eq!(empty.slots, 0);
         assert_eq!(empty.object_bytes, 0);
 
-        heap.alloc(HeapObject::host_object()).unwrap();
+        heap.alloc(HeapObject::host_object(&heap)).unwrap();
         heap.alloc_persistent(HeapObject::Vector(PVector::from_values(&[])), Some(&[]))
             .unwrap();
         let two = heap.usage();

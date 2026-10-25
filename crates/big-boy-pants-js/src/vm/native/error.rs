@@ -85,7 +85,7 @@ impl ErrorState {
             Some(kind) => intrinsics.native_error_prototype(kind),
             None => intrinsics.error_prototype,
         };
-        let object = OrdinaryObject::with_prototype(task, proto).with_error_data();
+        let object = OrdinaryObject::with_prototype(heap, task, proto).with_error_data();
         let id = heap
             .alloc(HeapObject::Plain(object))
             .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
@@ -320,7 +320,7 @@ pub(super) fn suppressed_error(
     let intrinsics =
         crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
     let prototype = intrinsics.native_error_prototype(NativeErrorKind::Suppressed);
-    let mut object = OrdinaryObject::with_prototype(task, prototype).with_error_data();
+    let mut object = OrdinaryObject::with_prototype(heap, task, prototype).with_error_data();
     for (name, value) in [
         ("error", error),
         ("suppressed", suppressed),

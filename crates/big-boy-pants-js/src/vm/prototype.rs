@@ -388,7 +388,7 @@ pub(crate) fn object_create(heap: &Heap, task: TaskId, args: &[Value]) -> Result
         ));
     }
     check_chain(heap, task, proto, None)?;
-    let mut object = OrdinaryObject::new(Some(task));
+    let mut object = OrdinaryObject::new(heap, Some(task));
     object.set_prototype(proto);
     heap.alloc(HeapObject::Plain(object))
         .map(Value::Object)
@@ -528,7 +528,7 @@ mod tests {
     use crate::realm;
 
     fn plain(heap: &Heap, owner: Option<TaskId>) -> ObjectId {
-        heap.alloc(HeapObject::Plain(OrdinaryObject::new(owner)))
+        heap.alloc(HeapObject::Plain(OrdinaryObject::new(heap, owner)))
             .unwrap()
     }
 
@@ -615,7 +615,7 @@ mod tests {
     fn non_extensible_objects_keep_their_prototype() {
         let heap = Heap::default();
         let task = TaskId::from_raw(1);
-        let mut object = OrdinaryObject::new(Some(task));
+        let mut object = OrdinaryObject::new(&heap, Some(task));
         object.prevent_extensions();
         let id = heap.alloc(HeapObject::Plain(object)).unwrap();
         let other = plain(&heap, Some(task));

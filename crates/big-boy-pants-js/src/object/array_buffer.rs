@@ -83,7 +83,7 @@ fn allocate(
         .ok_or_else(invalid_length)?
         .array_buffer_prototype;
     heap.alloc(HeapObject::ArrayBuffer(Box::new(ArrayBuffer {
-        object: OrdinaryObject::with_prototype(task, prototype),
+        object: OrdinaryObject::with_prototype(heap, task, prototype),
         bytes,
         detached: false,
         reservation,

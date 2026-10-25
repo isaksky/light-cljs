@@ -12,6 +12,7 @@ use crate::value::Value;
 pub(crate) struct WeakMapObject {
     object: OrdinaryObject,
     entries: EphemeronTable,
+    reservation: crate::heap::budget::ByteReservation,
 }
 
 pub(crate) fn weak_key(value: &Value) -> Option<TraceEdge> {
@@ -25,10 +26,11 @@ pub(crate) fn weak_key(value: &Value) -> Option<TraceEdge> {
 }
 
 impl WeakMapObject {
-    pub(crate) fn new(owner: TaskId, prototype: ObjectId) -> Self {
+    pub(crate) fn new(heap: &crate::heap::Heap, owner: TaskId, prototype: ObjectId) -> Self {
         Self {
-            object: OrdinaryObject::with_prototype(owner, prototype),
+            object: OrdinaryObject::with_prototype(heap, owner, prototype),
             entries: EphemeronTable::default(),
+            reservation: Default::default(),
         }
     }
 
@@ -45,10 +47,21 @@ impl WeakMapObject {
         self.entries.get(key)
     }
     pub(crate) fn set(&mut self, key: TraceEdge, value: Value) {
+        if self.entries.get(key).is_none() {
+            let Some(additional) = self.object.budget.reserve(512) else {
+                self.object.budget.note_denial();
+                return;
+            };
+            self.reservation.merge(additional);
+        }
         self.entries.insert(key, value);
     }
     pub(crate) fn delete(&mut self, key: TraceEdge) -> bool {
-        self.entries.remove(key).is_some()
+        let removed = self.entries.remove(key).is_some();
+        if removed {
+            self.reservation.refund(512);
+        }
+        removed
     }
 }
 
@@ -57,7 +70,9 @@ impl Trace for WeakMapObject {
         self.object.trace(visit);
     }
     fn trace_conditional(&mut self, visit: &mut dyn ConditionalVisitor) {
+        let before = self.entries.len();
         self.entries.trace_conditional(visit);
+        self.reservation.refund((before - self.entries.len()) * 512);
     }
 }
 

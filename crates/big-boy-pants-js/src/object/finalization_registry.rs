@@ -23,21 +23,24 @@ pub(crate) struct FinalizationRegistryObject {
     cells: BTreeMap<u64, Cell>,
     next_id: u64,
     inbox: Weak<crate::job::JobInbox>,
+    reservation: crate::heap::budget::ByteReservation,
 }
 
 impl FinalizationRegistryObject {
     pub(crate) fn new(
+        heap: &crate::heap::Heap,
         owner: TaskId,
         prototype: ObjectId,
         callback: Value,
         inbox: Weak<crate::job::JobInbox>,
     ) -> Self {
         Self {
-            object: OrdinaryObject::with_prototype(owner, prototype),
+            object: OrdinaryObject::with_prototype(heap, owner, prototype),
             callback,
             cells: BTreeMap::new(),
             next_id: 0,
             inbox,
+            reservation: Default::default(),
         }
     }
     pub(crate) fn object(&self) -> &OrdinaryObject {
@@ -57,7 +60,13 @@ impl FinalizationRegistryObject {
         token: Option<TraceEdge>,
     ) -> Option<()> {
         let id = self.next_id;
-        self.next_id = id.checked_add(1)?;
+        let next = id.checked_add(1)?;
+        let Some(additional) = self.object.budget.reserve(2048) else {
+            self.object.budget.note_denial();
+            return None;
+        };
+        self.reservation.merge(additional);
+        self.next_id = next;
         self.cells.insert(
             id,
             Cell {
@@ -72,6 +81,7 @@ impl FinalizationRegistryObject {
         let before = self.cells.len();
         self.cells
             .retain(|_, cell| cell.token.as_ref().and_then(WeakSlot::get) != Some(token));
+        self.reservation.refund((before - self.cells.len()) * 2048);
         self.cells.len() != before
     }
     /// Called after the pause under heap access. Repeated/out-of-order
@@ -81,6 +91,7 @@ impl FinalizationRegistryObject {
             return None;
         }
         let cell = self.cells.remove(&token)?;
+        self.reservation.refund(2048);
         Some(Job {
             callable: self.callback.clone(),
             args: vec![cell.held],

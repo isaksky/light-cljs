@@ -355,7 +355,7 @@ impl State {
                 let proto = crate::realm::intrinsics(heap)
                     .ok_or(Fault::OutOfMemory("realm exhausted"))?
                     .intl_collator_prototype;
-                let object = OrdinaryObject::with_prototype(task, proto)
+                let object = OrdinaryObject::with_prototype(heap, task, proto)
                     .with_collator(self.slots.take().unwrap());
                 heap.alloc(HeapObject::Plain(object))
                     .map(Value::Object)

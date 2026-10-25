@@ -232,7 +232,7 @@ impl State {
                 let proto = crate::realm::intrinsics(heap)
                     .ok_or(Fault::OutOfMemory("realm exhausted"))?
                     .intl_relative_time_format_prototype;
-                let object = OrdinaryObject::with_prototype(task, proto)
+                let object = OrdinaryObject::with_prototype(heap, task, proto)
                     .with_relative_time_format(self.slots.take().unwrap());
                 heap.alloc(HeapObject::Plain(object))
                     .map(Value::Object)

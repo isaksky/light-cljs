@@ -791,7 +791,7 @@ mod tests {
     }
 
     fn plain(heap: &Heap) -> Value {
-        Value::Object(heap.alloc(HeapObject::host_object()).unwrap())
+        Value::Object(heap.alloc(HeapObject::host_object(heap)).unwrap())
     }
 
     fn known(heap: &Heap, v: &Value) -> bool {

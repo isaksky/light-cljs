@@ -239,7 +239,7 @@ mod tests {
     fn namespace_cells_retain_and_reclaim() {
         let heap = std::sync::Arc::new(Heap::default());
         let owner = TaskId::from_raw(1);
-        let value = heap.alloc(HeapObject::host_object()).unwrap();
+        let value = heap.alloc(HeapObject::host_object(&heap)).unwrap();
         let cell = heap
             .alloc(HeapObject::Cell(BindingCell {
                 owner,

@@ -202,7 +202,8 @@ fn new_with_prototype(
         heap,
         HeapObject::Promise(Promise {
             prototype,
-            properties: owner.map(|task| Box::new(OrdinaryObject::with_prototype(task, prototype))),
+            properties: owner
+                .map(|task| Box::new(OrdinaryObject::with_prototype(heap, task, prototype))),
             private: None,
             result: None,
             reactions: vec![],
@@ -225,7 +226,7 @@ fn function(heap: &Heap, which: Builtin) -> Result<Value, Fault> {
     let prototype = crate::realm::intrinsics(heap)
         .ok_or(Fault::OutOfMemory("realm exhausted"))?
         .function_prototype;
-    let mut properties = OrdinaryObject::intrinsic(Some(prototype));
+    let mut properties = OrdinaryObject::intrinsic(heap, Some(prototype));
     for (name, value) in [
         ("name", Value::String(JsString::from(which.name()))),
         ("length", Value::Number(f64::from(which.length()))),

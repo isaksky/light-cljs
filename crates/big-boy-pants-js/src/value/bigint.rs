@@ -40,7 +40,33 @@ pub struct JsBigInt(Repr);
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Repr {
     Small(i64),
-    Large { negative: bool, limbs: Arc<[u32]> },
+    Large {
+        negative: bool,
+        limbs: Arc<BigIntLimbs>,
+    },
+}
+
+#[derive(Debug)]
+struct BigIntLimbs {
+    words: Box<[u32]>,
+    reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
+}
+impl std::ops::Deref for BigIntLimbs {
+    type Target = [u32];
+    fn deref(&self) -> &[u32] {
+        &self.words
+    }
+}
+impl PartialEq for BigIntLimbs {
+    fn eq(&self, other: &Self) -> bool {
+        self.words == other.words
+    }
+}
+impl Eq for BigIntLimbs {}
+impl std::hash::Hash for BigIntLimbs {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.words, state);
+    }
 }
 
 impl From<i64> for JsBigInt {
@@ -77,6 +103,37 @@ impl PartialOrd for JsBigInt {
 }
 
 impl JsBigInt {
+    pub(crate) fn bit_length(&self) -> usize {
+        let mut small = [0; 2];
+        let (_, limbs) = self.magnitude(&mut small);
+        limbs.last().map_or(0, |high| {
+            (limbs.len() - 1) * 32 + (32 - high.leading_zeros() as usize)
+        })
+    }
+
+    pub(crate) fn accounted(
+        heap: &crate::heap::Heap,
+        bits: usize,
+        operation: impl FnOnce() -> Result<Self, BigIntError>,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        let reservation = if bits <= 63 || !heap.has_byte_limit() {
+            None
+        } else {
+            let bytes = bits.min(MAX_BIGINT_BITS).div_ceil(32) * 16 + 256;
+            Some(Arc::new(
+                heap.reserve_bytes(bytes)
+                    .ok_or(crate::vm::dispatch::Fault::HeapLimit)?,
+            ))
+        };
+        let mut result = operation()
+            .map_err(|error| crate::vm::dispatch::Fault::RangeError(error.to_string()))?;
+        if let Repr::Large { limbs, .. } = &mut result.0
+            && let Some(body) = Arc::get_mut(limbs)
+        {
+            body.reservation = reservation;
+        }
+        Ok(result)
+    }
     /// Wrap to a signed two's-complement width without constructing 2^bits.
     pub fn checked_as_int_n(&self, bits: u64) -> Result<Self, BigIntError> {
         self.checked_as_n(bits, true)
@@ -614,7 +671,10 @@ impl JsBigInt {
         }
         Ok(Self(Repr::Large {
             negative,
-            limbs: limbs.into(),
+            limbs: Arc::new(BigIntLimbs {
+                words: limbs.into_boxed_slice(),
+                reservation: None,
+            }),
         }))
     }
 

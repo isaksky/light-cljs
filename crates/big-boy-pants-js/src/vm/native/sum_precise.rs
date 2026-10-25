@@ -374,7 +374,7 @@ mod tests {
         // must be retained while return is called exactly once.
         let realm = crate::realm::intrinsics(&heap).unwrap();
         let method = Value::Object(realm.object);
-        let mut iterator = crate::object::OrdinaryObject::new(Some(task));
+        let mut iterator = crate::object::OrdinaryObject::new(&heap, Some(task));
         let key = heap
             .keys()
             .intern(&crate::value::JsString::from("return"))

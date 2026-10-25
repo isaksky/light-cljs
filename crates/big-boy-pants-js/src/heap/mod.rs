@@ -291,8 +291,8 @@ pub(crate) enum HeapObject {
 impl HeapObject {
     /// A new empty ordinary object created by the embedder (no owner task;
     /// see `crate::object`).
-    pub(crate) fn host_object() -> HeapObject {
-        HeapObject::Plain(OrdinaryObject::new(None))
+    pub(crate) fn host_object(heap: &Heap) -> HeapObject {
+        HeapObject::Plain(OrdinaryObject::new(heap, None))
     }
 
     #[cfg(test)]
@@ -511,21 +511,66 @@ fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Heap {
+    pub(crate) fn has_byte_limit(&self) -> bool {
+        self.byte_budget.is_limited()
+    }
+    pub(crate) fn take_byte_denial(&self) -> bool {
+        self.byte_budget.take_denial()
+    }
+    pub(crate) fn byte_budget(&self) -> Arc<budget::ByteBudget> {
+        self.byte_budget.clone()
+    }
     pub(crate) fn reserve_bytes(&self, bytes: usize) -> Option<budget::ByteReservation> {
         self.byte_budget.reserve(bytes)
     }
 
     #[cfg(test)]
     pub(crate) fn with_byte_limit(bytes: usize) -> Self {
-        Self {
-            byte_budget: budget::ByteBudget::new(Some(bytes)),
+        Self::with_test_byte_headroom(bytes, false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_byte_headroom(bytes: usize, global: bool) -> Self {
+        let budget = budget::ByteBudget::new(Some(usize::MAX));
+        let heap = Self {
+            keys: PropertyKeys::with_budget(budget.clone()),
+            byte_budget: budget,
             ..Self::default()
-        }
+        };
+        // Tests select headroom above the fixed intrinsic inventory, so a
+        // quota failure happens in their requested operation, after catch
+        // handlers have been installed.
+        crate::realm::intrinsics(&heap).expect("test realm");
+        let global_bytes = if global {
+            let id = crate::realm::new_global_object(&heap, crate::ids::TaskId::from_raw(0))
+                .expect("test global");
+            let bytes = heap
+                .read(id, |object| match object {
+                    HeapObject::Plain(object) => object.properties().count() * 512,
+                    _ => unreachable!(),
+                })
+                .unwrap();
+            heap.collect().unwrap();
+            bytes
+        } else {
+            0
+        };
+        heap.byte_budget.set_limit(
+            heap.byte_budget
+                .used()
+                .checked_add(bytes)
+                .unwrap()
+                .checked_add(global_bytes)
+                .unwrap(),
+        );
+        heap
     }
 
     pub(crate) fn with_policy(policy: HeapPolicy) -> Self {
+        let budget = budget::ByteBudget::new(None);
         Self {
-            byte_budget: budget::ByteBudget::new(None),
+            keys: PropertyKeys::with_budget(budget.clone()),
+            byte_budget: budget,
             policy,
             next_collection: AtomicUsize::new(policy.threshold(0)),
             ..Self::default()
@@ -563,10 +608,17 @@ impl Heap {
     }
 
     fn allocate_accounted(&self, object: HeapObject, shareable: bool) -> Option<ObjectId> {
+        if self.byte_budget.denied() {
+            return None;
+        }
+        let Some(reservation) = self.reserve_bytes(std::mem::size_of::<HeapObject>()) else {
+            self.byte_budget.note_denial();
+            return None;
+        };
         if !self.admit_allocation() {
             return None;
         }
-        let id = self.allocate(object, shareable);
+        let id = self.allocate(object, shareable, reservation);
         if id.is_some() {
             self.allocated();
         } else if self.policy.hard_limit_objects.is_some() {
@@ -817,8 +869,8 @@ mod tests {
     #[test]
     fn allocation_gives_distinct_stable_identities() {
         let heap = Heap::default();
-        let a = heap.alloc(HeapObject::host_object()).unwrap();
-        let b = heap.alloc(HeapObject::host_object()).unwrap();
+        let a = heap.alloc(HeapObject::host_object(&heap)).unwrap();
+        let b = heap.alloc(HeapObject::host_object(&heap)).unwrap();
         assert_ne!(a, b);
         assert_eq!(heap.kind(a), Some(ObjectKind::PlainObject));
         assert_eq!(heap.kind(ObjectId::from_index(99)), None);
@@ -834,7 +886,7 @@ mod tests {
         assert_eq!(heap.known_shareable(known), Some(true));
         assert_eq!(heap.collect().unwrap().reclaimed, 1);
         // The plain object takes over the slot, with a new generation.
-        let plain = heap.alloc(HeapObject::host_object()).unwrap();
+        let plain = heap.alloc(HeapObject::host_object(&heap)).unwrap();
         assert_eq!(plain.index, known.index);
         assert_eq!(heap.known_shareable(plain), Some(false));
         assert_eq!(heap.known_shareable(known), None, "stale id");

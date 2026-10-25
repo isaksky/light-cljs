@@ -698,7 +698,7 @@ pub(crate) fn intrinsics(heap: &Heap) -> Option<&Intrinsics> {
 /// task state before the next safepoint.
 pub(crate) fn new_global_object(heap: &Heap, task: crate::ids::TaskId) -> Option<ObjectId> {
     let intrinsics = intrinsics(heap)?;
-    let mut object = OrdinaryObject::with_prototype(task, intrinsics.object_prototype);
+    let mut object = OrdinaryObject::with_prototype(heap, task, intrinsics.object_prototype);
     for global in Global::ALL {
         let key = heap.keys().intern(&JsString::from(global.name()))?;
         object.define_with(key, intrinsics.global(global), PropertyFlags::METHOD);
@@ -832,7 +832,7 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         all: Vec::new(),
         function_prototype: None,
     };
-    let object_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(None)))?;
+    let object_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(heap, None)))?;
     b.all.push(object_prototype);
     let function_prototype = b.builtin(Some(object_prototype), Builtin::FunctionPrototype, &[])?;
     b.function_prototype = Some(function_prototype);
@@ -1031,9 +1031,10 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
     let parse_float = b.function(Builtin::ParseFloat, &[])?;
     b.add(number, "parseInt", parse_int, PropertyFlags::METHOD)?;
     b.add(number, "parseFloat", parse_float, PropertyFlags::METHOD)?;
-    let math = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let math = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(math);
     // Borrow promoted tables instead of reserving their full arrays in the
     // large realm-construction frame (also reached on 64 KiB module workers).
@@ -1103,9 +1104,10 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         _ => false,
     })?
     .then_some(())?;
-    let error_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let error_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(error_prototype);
     let error = b.function(
         Builtin::Error,
@@ -1129,9 +1131,10 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
     }
     let mut native_errors = Vec::with_capacity(NativeErrorKind::ALL.len());
     for kind in NativeErrorKind::ALL {
-        let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-            error_prototype,
-        ))))?;
+        let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+            heap,
+            Some(error_prototype),
+        )))?;
         b.all.push(prototype);
         let constructor = b.builtin(
             Some(error),
@@ -1150,16 +1153,18 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         native_errors.push((constructor, prototype));
     }
     let native_errors = native_errors.into_boxed_slice().try_into().ok()?;
-    let json = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let json = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(json);
     let parse = b.function(Builtin::JsonParse, &[])?;
     b.add(json, "parse", parse, PropertyFlags::METHOD)?;
 
-    let symbol_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let symbol_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(symbol_prototype);
     let symbol = b.function(
         Builtin::Symbol,
@@ -1281,9 +1286,10 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
     let (date_prototype, date) = date_intrinsics(&mut b, object_prototype)?;
     let (regexp_prototype, regexp) = regexp_intrinsics(&mut b, object_prototype)?;
     regexp_symbol_intrinsics(&mut b, regexp, regexp_prototype, string_prototype)?;
-    let bigint_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let bigint_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(bigint_prototype);
     let bigint = b.function(
         Builtin::BigInt,
@@ -1327,9 +1333,10 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
             PropertyFlags::METHOD,
         )?;
     }
-    let promise_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let promise_prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(promise_prototype);
     let promise = b.function(
         Builtin::Promise,
@@ -1389,7 +1396,7 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
     let array_of = b.function(Builtin::ArrayOf, &[])?;
     b.add(array, "of", array_of, PropertyFlags::METHOD)?;
 
-    let mut generator = OrdinaryObject::intrinsic(Some(iterator_prototype));
+    let mut generator = OrdinaryObject::intrinsic(heap, Some(iterator_prototype));
     let tag = heap
         .keys()
         .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
@@ -1587,7 +1594,7 @@ fn primitive_prototype(
     let heap = b.heap;
     let to_string_id = b.function(to_string, &[])?;
     let value_of = b.function(value_of, &[])?;
-    let mut prototype = OrdinaryObject::intrinsic(Some(object_prototype));
+    let mut prototype = OrdinaryObject::intrinsic(heap, Some(object_prototype));
     prototype = prototype.with_primitive_data(match constructor {
         Builtin::Boolean => PrimitiveData::Boolean(false),
         Builtin::Number => PrimitiveData::Number(0.0),
@@ -1639,7 +1646,7 @@ fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
     let to_string = b.function(Builtin::ArrayPrototypeToString, &[])?;
     let push = b.function(Builtin::ArrayPrototypePush, &[])?;
     let join = b.function(Builtin::ArrayPrototypeJoin, &[])?;
-    let mut prototype = OrdinaryObject::intrinsic(Some(object_prototype));
+    let mut prototype = OrdinaryObject::intrinsic(heap, Some(object_prototype));
     let length = heap.keys().intern(&JsString::from("length"))?;
     let length_flags = PropertyFlags {
         writable: true,
@@ -1660,7 +1667,7 @@ fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
     define(heap, &mut prototype, "join", join, PropertyFlags::METHOD)?;
     // The standard record includes names even when the associated methods
     // are not implemented yet. It has no Object.prototype fallbacks.
-    let mut unscopables = OrdinaryObject::intrinsic(None);
+    let mut unscopables = OrdinaryObject::intrinsic(heap, None);
     for name in [
         "at",
         "copyWithin",
@@ -1714,7 +1721,7 @@ fn async_generator_intrinsics(
     let tag = heap
         .keys()
         .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
-    let mut async_iterator = OrdinaryObject::intrinsic(Some(object_prototype));
+    let mut async_iterator = OrdinaryObject::intrinsic(heap, Some(object_prototype));
     let key = heap
         .keys()
         .intern_symbol(&crate::value::symbol::well_known("asyncIterator"))?;
@@ -1730,7 +1737,7 @@ fn async_generator_intrinsics(
         .then_some(())?;
     let async_iterator = heap.alloc(HeapObject::Plain(async_iterator))?;
     b.all.push(async_iterator);
-    let mut generator = OrdinaryObject::intrinsic(Some(async_iterator));
+    let mut generator = OrdinaryObject::intrinsic(heap, Some(async_iterator));
     generator
         .define_with(
             tag,
@@ -1887,7 +1894,7 @@ fn iterator_intrinsics(
         .keys()
         .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
     let identity = b.function(Builtin::IteratorIdentity, &[])?;
-    let mut iterator = OrdinaryObject::intrinsic(Some(object_prototype));
+    let mut iterator = OrdinaryObject::intrinsic(heap, Some(object_prototype));
     iterator
         .define_with(key, Value::Object(identity), PropertyFlags::METHOD)
         .then_some(())?;
@@ -1899,7 +1906,7 @@ fn iterator_intrinsics(
         ("String Iterator", crate::vm::native::iterator::Kind::String),
     ] {
         let next = b.function(Builtin::IteratorNext(kind), &[])?;
-        let mut prototype = OrdinaryObject::intrinsic(Some(iterator));
+        let mut prototype = OrdinaryObject::intrinsic(heap, Some(iterator));
         define(heap, &mut prototype, "next", next, PropertyFlags::METHOD)?;
         prototype
             .define_with(
@@ -1938,11 +1945,10 @@ fn iterator_intrinsics(
 
 /// Append the Map constructor/prototype cycle and its ordinary accessor.
 fn map_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(ObjectId, ObjectId)> {
-    let prototype = b
-        .heap
-        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-            object_prototype,
-        ))))?;
+    let prototype = b.heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        b.heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::Map,
@@ -1997,9 +2003,10 @@ fn array_buffer_intrinsics(
     object_prototype: ObjectId,
 ) -> Option<(ObjectId, ObjectId)> {
     let heap = b.heap;
-    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::ArrayBuffer,
@@ -2043,9 +2050,10 @@ fn intl_locale_intrinsics(
     intl: ObjectId,
 ) -> Option<ObjectId> {
     let heap = b.heap;
-    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::IntlLocale,
@@ -2115,11 +2123,10 @@ fn date_symbol_intrinsic(b: &mut Build<'_>, prototype: ObjectId) -> Option<()> {
 
 /// Date.prototype is ordinary and unbranded; only constructed Dates have a slot.
 fn date_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(ObjectId, ObjectId)> {
-    let prototype = b
-        .heap
-        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-            object_prototype,
-        ))))?;
+    let prototype = b.heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        b.heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::Date,
@@ -2178,9 +2185,10 @@ fn intl_number_format_intrinsics(
     intl: ObjectId,
 ) -> Option<(ObjectId, ObjectId)> {
     let heap = b.heap;
-    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::IntlNumberFormat,
@@ -2296,7 +2304,7 @@ impl Build<'_> {
         extra: &[(&str, ObjectId, PropertyFlags)],
     ) -> Option<ObjectId> {
         let heap = self.heap;
-        let mut properties = OrdinaryObject::intrinsic(prototype);
+        let mut properties = OrdinaryObject::intrinsic(heap, prototype);
         let info = [
             ("length", Value::Number(f64::from(which.length()))),
             ("name", Value::String(JsString::from(which.name()))),
@@ -2382,9 +2390,10 @@ fn typed_array_intrinsics(
 ) -> Option<([ObjectId; 10], [ObjectId; 10])> {
     use crate::object::typed_array::ElementType;
     let heap = b.heap;
-    let shared = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let shared = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(shared);
     let abstract_constructor = b.function(
         Builtin::TypedArray,
@@ -2421,7 +2430,10 @@ fn typed_array_intrinsics(
     let mut prototypes = [shared; 10];
     let mut constructors = [abstract_constructor; 10];
     for (index, kind) in ElementType::ALL.into_iter().enumerate() {
-        let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(shared))))?;
+        let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+            heap,
+            Some(shared),
+        )))?;
         b.all.push(prototype);
         let constructor = b.builtin(
             Some(abstract_constructor),
@@ -2447,11 +2459,10 @@ fn regexp_intrinsics(
     b: &mut Build<'_>,
     object_prototype: ObjectId,
 ) -> Option<(ObjectId, ObjectId)> {
-    let prototype = b
-        .heap
-        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-            object_prototype,
-        ))))?;
+    let prototype = b.heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        b.heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::RegExp,
@@ -2538,7 +2549,7 @@ fn regexp_symbol_intrinsics(
 #[inline(never)]
 fn regexp_iterator_intrinsics(b: &mut Build<'_>, parent: ObjectId) -> Option<ObjectId> {
     let next = b.function(Builtin::RegExpIteratorNext, &[])?;
-    let mut o = OrdinaryObject::intrinsic(Some(parent));
+    let mut o = OrdinaryObject::intrinsic(b.heap, Some(parent));
     define(b.heap, &mut o, "next", next, PropertyFlags::METHOD)?;
     let tag = b
         .heap
@@ -2561,9 +2572,10 @@ fn intl_list_format_intrinsics(
     intl: ObjectId,
 ) -> Option<ObjectId> {
     let heap = b.heap;
-    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::IntlListFormat,
@@ -2607,9 +2619,10 @@ fn intl_plural_rules_intrinsics(
     intl: ObjectId,
 ) -> Option<ObjectId> {
     let heap = b.heap;
-    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::IntlPluralRules,
@@ -2652,9 +2665,10 @@ fn intl_collator_intrinsics(
     intl: ObjectId,
 ) -> Option<(ObjectId, ObjectId)> {
     let heap = b.heap;
-    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::IntlCollator,
@@ -2712,11 +2726,10 @@ fn weak_map_intrinsics(
     b: &mut Build<'_>,
     object_prototype: ObjectId,
 ) -> Option<(ObjectId, ObjectId)> {
-    let prototype = b
-        .heap
-        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-            object_prototype,
-        ))))?;
+    let prototype = b.heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        b.heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::WeakMap,
@@ -2755,9 +2768,10 @@ fn intl_date_time_format_intrinsics(
     intl: ObjectId,
 ) -> Option<(ObjectId, ObjectId)> {
     let heap = b.heap;
-    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::IntlDateTimeFormat,
@@ -2815,11 +2829,10 @@ fn weak_ref_intrinsics(
     b: &mut Build<'_>,
     object_prototype: ObjectId,
 ) -> Option<(ObjectId, ObjectId)> {
-    let prototype = b
-        .heap
-        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-            object_prototype,
-        ))))?;
+    let prototype = b.heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        b.heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::WeakRef,
@@ -2849,11 +2862,10 @@ fn finalization_registry_intrinsics(
     b: &mut Build<'_>,
     object_prototype: ObjectId,
 ) -> Option<(ObjectId, ObjectId)> {
-    let prototype = b
-        .heap
-        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-            object_prototype,
-        ))))?;
+    let prototype = b.heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        b.heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::FinalizationRegistry,
@@ -2890,9 +2902,10 @@ fn intl_relative_time_format_intrinsics(
     intl: ObjectId,
 ) -> Option<ObjectId> {
     let heap = b.heap;
-    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::IntlRelativeTimeFormat,
@@ -2945,9 +2958,10 @@ fn intl_segmenter_intrinsics(
     intl: ObjectId,
 ) -> Option<(ObjectId, ObjectId, ObjectId)> {
     let heap = b.heap;
-    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::IntlSegmenter,
@@ -2983,7 +2997,7 @@ fn intl_segmenter_intrinsics(
     .then_some(())?;
     let containing = b.function(Builtin::IntlSegmentsContaining, &[])?;
     let iterable = b.function(Builtin::IntlSegmentsIterator, &[])?;
-    let mut segments = OrdinaryObject::intrinsic(Some(object_prototype));
+    let mut segments = OrdinaryObject::intrinsic(heap, Some(object_prototype));
     define(
         heap,
         &mut segments,
@@ -3000,7 +3014,7 @@ fn intl_segmenter_intrinsics(
     let segments = heap.alloc(HeapObject::Plain(segments))?;
     b.all.push(segments);
     let next = b.function(Builtin::IntlSegmentIteratorNext, &[])?;
-    let mut iterator = OrdinaryObject::intrinsic(Some(iterator_prototype));
+    let mut iterator = OrdinaryObject::intrinsic(heap, Some(iterator_prototype));
     define(heap, &mut iterator, "next", next, PropertyFlags::METHOD)?;
     iterator
         .define_with(
@@ -3020,9 +3034,10 @@ fn intl_display_names_intrinsics(
     intl: ObjectId,
 ) -> Option<ObjectId> {
     let heap = b.heap;
-    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::IntlDisplayNames,
@@ -3064,7 +3079,7 @@ fn intl_display_names_intrinsics(
 fn reflect_namespace(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<ObjectId> {
     let heap = b.heap;
     // Reflect methods share the immutable realm; operation state is task-owned.
-    let mut reflect = OrdinaryObject::intrinsic(Some(object_prototype));
+    let mut reflect = OrdinaryObject::intrinsic(heap, Some(object_prototype));
     for which in [
         Builtin::ReflectApply,
         Builtin::ReflectConstruct,
@@ -3099,9 +3114,10 @@ fn reflect_namespace(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<Ob
 #[inline(never)]
 fn intl_namespace(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<ObjectId> {
     let heap = b.heap;
-    let intl = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let intl = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(intl);
     let tag = crate::value::symbol::well_known("toStringTag");
     let tag_key = heap.keys().intern_symbol(&tag)?;
@@ -3123,9 +3139,10 @@ fn intl_duration_format_intrinsics(
     intl: ObjectId,
 ) -> Option<ObjectId> {
     let heap = b.heap;
-    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-        object_prototype,
-    ))))?;
+    let prototype = heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::IntlDurationFormat,
@@ -3198,11 +3215,10 @@ fn disposable_stack_intrinsics(
             "dispose",
         )
     };
-    let prototype = b
-        .heap
-        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-            object_prototype,
-        ))))?;
+    let prototype = b.heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        b.heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         constructor_kind,
@@ -3267,11 +3283,10 @@ fn disposable_stack_intrinsics(
 }
 
 fn set_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(ObjectId, ObjectId)> {
-    let prototype = b
-        .heap
-        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-            object_prototype,
-        ))))?;
+    let prototype = b.heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        b.heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::Set,
@@ -3323,11 +3338,10 @@ fn weak_set_intrinsics(
     b: &mut Build<'_>,
     object_prototype: ObjectId,
 ) -> Option<(ObjectId, ObjectId)> {
-    let prototype = b
-        .heap
-        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
-            object_prototype,
-        ))))?;
+    let prototype = b.heap.alloc(HeapObject::Plain(OrdinaryObject::intrinsic(
+        b.heap,
+        Some(object_prototype),
+    )))?;
     b.all.push(prototype);
     let constructor = b.function(
         Builtin::WeakSet,
@@ -3369,7 +3383,7 @@ fn map_iterator_intrinsics(
         Builtin::IteratorNext(crate::vm::native::iterator::Kind::MapEntries),
         &[],
     )?;
-    let mut prototype = OrdinaryObject::intrinsic(Some(iterator));
+    let mut prototype = OrdinaryObject::intrinsic(heap, Some(iterator));
     define(heap, &mut prototype, "next", next, PropertyFlags::METHOD)?;
     let tag = heap
         .keys()
@@ -3412,7 +3426,7 @@ fn set_iterator_intrinsics(
         Builtin::IteratorNext(crate::vm::native::iterator::Kind::SetValues),
         &[],
     )?;
-    let mut prototype = OrdinaryObject::intrinsic(Some(iterator));
+    let mut prototype = OrdinaryObject::intrinsic(heap, Some(iterator));
     define(heap, &mut prototype, "next", next, PropertyFlags::METHOD)?;
     let tag = heap
         .keys()
@@ -3697,10 +3711,10 @@ mod tests {
     #[test]
     fn intrinsic_view_index_rejects_nonintrinsics_and_stale_generations() {
         let heap = Arc::new(Heap::default());
-        let stale = heap.alloc(HeapObject::host_object()).unwrap();
-        let retained = heap.alloc(HeapObject::host_object()).unwrap();
+        let stale = heap.alloc(HeapObject::host_object(&heap)).unwrap();
+        let retained = heap.alloc(HeapObject::host_object(&heap)).unwrap();
         let _root = crate::heap::Rooted::new(&heap, Value::Object(retained));
-        heap.alloc(HeapObject::host_object()).unwrap();
+        heap.alloc(HeapObject::host_object(&heap)).unwrap();
         heap.collect().unwrap();
         let intrinsics = intrinsics(&heap).unwrap();
         // Realm allocation reuses the old slot with a new generation.
@@ -3713,7 +3727,7 @@ mod tests {
         for view in &intrinsics.views {
             assert_eq!(intrinsics.view(view.id).unwrap().id, view.id);
         }
-        let ordinary = heap.alloc(HeapObject::host_object()).unwrap();
+        let ordinary = heap.alloc(HeapObject::host_object(&heap)).unwrap();
         assert!(intrinsics.view(ordinary).is_none());
         assert!(intrinsics.view(ObjectId::from_index(u32::MAX)).is_none());
     }

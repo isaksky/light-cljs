@@ -107,7 +107,7 @@ fn map<R>(
 
 fn object(heap: &Heap, task: TaskId, fields: &[(&str, Value)]) -> Result<Value, Fault> {
     let realm = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("iterator realm"))?;
-    let mut o = OrdinaryObject::with_prototype(task, realm.object_prototype);
+    let mut o = OrdinaryObject::with_prototype(heap, task, realm.object_prototype);
     for (name, value) in fields {
         let key = heap
             .keys()
@@ -148,7 +148,7 @@ pub(crate) fn create(
     } else {
         realm.array_iterator_prototype
     };
-    let o = OrdinaryObject::with_prototype(task, prototype).with_iterator(Data {
+    let o = OrdinaryObject::with_prototype(heap, task, prototype).with_iterator(Data {
         source: source.clone(),
         index: 0,
         kind,

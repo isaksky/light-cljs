@@ -120,7 +120,7 @@ pub(crate) fn resolved_options(
         .object_prototype;
     let value = heap
         .alloc(HeapObject::Plain(OrdinaryObject::with_prototype(
-            task, proto,
+            heap, task, proto,
         )))
         .map(Value::Object)
         .ok_or(Fault::OutOfMemory("heap exhausted"))?;

@@ -289,7 +289,7 @@ pub(crate) fn bind_with_metadata(
         return Err(Fault::Internal("bound target is not an object"));
     };
     let parent = super::prototype::get_prototype_of(heap, task, *target_id)?;
-    let mut store = OrdinaryObject::intrinsic(parent);
+    let mut store = OrdinaryObject::intrinsic(heap, parent);
     store.define_with(
         intern(heap, "length")?,
         Value::Number(length),
@@ -939,7 +939,7 @@ fn writable_record(
     }
     // Allocated, then attached in the same instruction (no safepoint
     // between): reachable from the function, which the frame holds.
-    let mut fresh = OrdinaryObject::new(Some(task));
+    let mut fresh = OrdinaryObject::new(heap, Some(task));
     fresh.set_prototype(inheritance_prototype(heap, function)?);
     for name in ["length", "name"] {
         let key = Key::Name(JsString::from(name));
@@ -998,7 +998,7 @@ fn materialize(
     } else {
         object_prototype(heap)?
     };
-    let mut prototype = OrdinaryObject::with_prototype(task, parent);
+    let mut prototype = OrdinaryObject::with_prototype(heap, task, parent);
     if !generator {
         prototype.define_with(constructor, Value::Object(function), PropertyFlags::METHOD);
     }

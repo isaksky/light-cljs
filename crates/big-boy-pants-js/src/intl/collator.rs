@@ -402,7 +402,7 @@ pub(crate) fn get_compare(heap: &Heap, task: TaskId, this: &Value) -> Result<Val
         return Ok(cached);
     }
     let realm = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("realm exhausted"))?;
-    let mut metadata = OrdinaryObject::intrinsic(Some(realm.function_prototype));
+    let mut metadata = OrdinaryObject::intrinsic(heap, Some(realm.function_prototype));
     for (name, value) in [
         ("name", Value::String(JsString::from(""))),
         ("length", Value::Number(2.0)),

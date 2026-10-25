@@ -463,14 +463,12 @@ pub(crate) fn object_keys(
     let prototype = realm::intrinsics(heap)
         .ok_or_else(exhausted)?
         .array_prototype;
-    let mut array = ArrayObject::with_prototype(task, prototype);
+    let mut array = ArrayObject::with_prototype(heap, task, prototype);
     for key in &keys {
         if matches!(key.key, Key::Symbol(_)) {
             continue;
         }
-        if !array.push(Some(Value::String(key.name()))) {
-            return Err(Fault::Internal("more than 2^32 - 1 own keys"));
-        }
+        array.push(Some(Value::String(key.name())))?;
     }
     heap.alloc(HeapObject::Array(Box::new(array)))
         .map(Value::Object)
@@ -915,7 +913,7 @@ mod tests {
         let heap = Heap::default();
         let task = TaskId::from_raw(1);
         let id = heap
-            .alloc(HeapObject::Plain(OrdinaryObject::new(Some(task))))
+            .alloc(HeapObject::Plain(OrdinaryObject::new(&heap, Some(task))))
             .unwrap();
         let s = Key::Symbol(crate::value::JsSymbol::new(Some("k".into())));
         let t = Key::Symbol(crate::value::JsSymbol::new(Some("k".into())));
@@ -980,7 +978,7 @@ mod tests {
     fn ordinary_keys_sort_indices_first() {
         let heap = Heap::default();
         let task = TaskId::from_raw(1);
-        let mut o = OrdinaryObject::new(Some(task));
+        let mut o = OrdinaryObject::new(&heap, Some(task));
         let order = ["z", "10", "a", "2", "4294967295", "01", "0", "b", "c", "d"];
         for name in order {
             let key = heap.keys().intern(&JsString::from(name)).unwrap();
@@ -1009,7 +1007,7 @@ mod tests {
     fn for_in_enumerator_rechecks_keys_and_traces_its_object() {
         let heap = Heap::default();
         let task = TaskId::from_raw(1);
-        let mut o = OrdinaryObject::new(Some(task));
+        let mut o = OrdinaryObject::new(&heap, Some(task));
         for name in ["b", "1", "a"] {
             let key = heap.keys().intern(&JsString::from(name)).unwrap();
             assert!(o.define(key, Value::Null));
@@ -1076,12 +1074,12 @@ mod tests {
             enumerable: false,
             configurable: true,
         };
-        let mut proto = OrdinaryObject::new(Some(task));
+        let mut proto = OrdinaryObject::new(&heap, Some(task));
         proto.set_prototype(Some(object_prototype));
         assert!(proto.define(key("h"), Value::Null));
         assert!(proto.define(key("p"), Value::Null));
         let proto = heap.alloc(HeapObject::Plain(proto)).unwrap();
-        let mut o = OrdinaryObject::new(Some(task));
+        let mut o = OrdinaryObject::new(&heap, Some(task));
         o.set_prototype(Some(proto));
         assert!(o.define_with(key("h"), Value::Null, hidden));
         assert!(o.define(key("a"), Value::Null));
@@ -1114,9 +1112,9 @@ mod tests {
     fn array_keys_list_elements_then_length() {
         let heap = Heap::default();
         let task = TaskId::from_raw(1);
-        let mut a = ArrayObject::new(Some(task));
-        a.push(None);
-        a.push(Some(Value::Null));
+        let mut a = ArrayObject::new(&heap, Some(task));
+        a.push(None).ok().unwrap();
+        a.push(Some(Value::Null)).ok().unwrap();
         assert_eq!(
             a.set(crate::object::array::MAX_INDEX, Value::Null),
             crate::object::SetOutcome::Done
@@ -1163,7 +1161,7 @@ mod tests {
             ["length", "name", "prototype"]
         );
 
-        let mut record = OrdinaryObject::new(Some(task));
+        let mut record = OrdinaryObject::new(&heap, Some(task));
         let x = heap.keys().intern(&JsString::from("x")).unwrap();
         let hidden = heap.keys().intern(&JsString::from("hidden")).unwrap();
         assert!(record.define(x, Value::Null));

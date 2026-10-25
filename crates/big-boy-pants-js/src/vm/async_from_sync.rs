@@ -147,7 +147,7 @@ pub(crate) fn create(
         ]
     });
     let realm = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("async iterator realm"))?;
-    let mut object = OrdinaryObject::with_prototype(task, realm.async_iterator_prototype);
+    let mut object = OrdinaryObject::with_prototype(heap, task, realm.async_iterator_prototype);
     let mut next_method = Value::Undefined;
     for (name, code) in ["next", "return", "throw"].into_iter().zip(drivers) {
         let method = dispatch::new_function(
