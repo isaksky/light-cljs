@@ -235,6 +235,124 @@ Focused regressions cover proxy/namespace/typed-array inheritance, function
 setters, UTF-16 names, foreign-owner faults, intrinsic lock-free access, and
 intrinsic slot holes and stale generations.
 
+## Segmented allocation (2026-10-25)
+
+Compared `98a33109644b8f1e0fb7bd2082c25c0e46e815f5` with allocator implementation
+`c48eda0bdfea996f3e940e93f3faedc816aadb82`, using the same Mac/Rust 1.99.1
+workspace release profile described above. Command at both revisions, from
+repository root: `CARGO_BUILD_JOBS=3 cargo run --locked --release -p
+big-boy-pants-js --example bench -- scaling --quick --rounds 3`. The after run
+invoked the resulting binary directly after its build completed. Both runs use
+one discarded warmup, three measured rounds, four tasks per thread, and the
+unchanged canonical sources and result checks. Quick sizes are 4,000 iterations
+per task for arithmetic/properties and two iterations for each other kernel.
+
+No other build or test ran during either timing window. Background host activity
+was uncontrolled: load averages changed from `1.63 2.14 3.22` to
+`2.79 2.37 3.26` before, and from `3.65 3.53 3.33` to `4.74 3.80 3.43` after.
+No stack overrides or `RUSTFLAGS` were used for these measurements. These quick
+rows are a paired allocation-change comparison, not a replacement for the
+full-size Phase 0 scaling gate.
+
+| Kernel | Threads | Before ns/iteration median [min..max] | After ns/iteration median [min..max] | Before / after | After scaling |
+|---|---:|---:|---:|---:|---:|
+| arithmetic | 1 | 313.9 [303.6..320.8] | 327.4 [314.7..327.4] | 0.959x | 1.000x |
+| arithmetic | 2 | 161.2 [161.1..168.3] | 160.2 [157.4..162.0] | 1.006x | 2.043x |
+| arithmetic | 4 | 87.7 [87.1..87.8] | 85.9 [83.8..86.4] | 1.021x | 3.810x |
+| arithmetic | 8 | 44.7 [44.3..46.8] | 44.1 [44.0..44.7] | 1.014x | 7.425x |
+| allocate | 1 | 3197020.9 [3183557.4..3269572.9] | 3368651.0 [3352906.2..3412270.8] | 0.949x | 1.000x |
+| allocate | 2 | 5203765.6 [4559171.9..5533393.2] | 4238260.4 [4192677.1..4475028.6] | 1.228x | 0.795x |
+| allocate | 4 | 10133656.2 [10127460.9..10176294.3] | 10079332.0 [10019949.2..10119239.6] | 1.005x | 0.334x |
+| allocate | 8 | 10965673.2 [10941818.4..11005496.7] | 10989174.5 [10967417.3..11140337.9] | 0.998x | 0.307x |
+| properties | 1 | 1033.4 [1029.7..1069.9] | 1082.6 [1075.2..1103.7] | 0.955x | 1.000x |
+| properties | 2 | 915.6 [895.2..923.4] | 927.7 [908.0..1160.6] | 0.987x | 1.167x |
+| properties | 4 | 1182.8 [1021.3..1261.0] | 1763.4 [1390.7..1999.1] | 0.671x | 0.614x |
+| properties | 8 | 3243.9 [2689.1..3432.7] | 3579.4 [3321.6..3647.8] | 0.906x | 0.302x |
+| cljs_map | 1 | 9493333.4 [9485562.5..9593838.5] | 10273859.4 [10252666.8..10346088.5] | 0.924x | 1.000x |
+| cljs_map | 2 | 13642382.8 [13638968.8..13695411.5] | 14103614.6 [14091247.4..14787518.2] | 0.967x | 0.728x |
+| cljs_map | 4 | 37995263.0 [37491960.9..38857571.6] | 38555520.8 [37033105.5..38653082.0] | 0.985x | 0.266x |
+| cljs_map | 8 | 37764840.5 [37653488.3..39014160.8] | 38561640.6 [38168747.4..38856173.2] | 0.979x | 0.266x |
+| cljs_protocol | 1 | 4792307.4 [4778343.8..4882416.8] | 4996552.1 [4943744.8..5006802.0] | 0.959x | 1.000x |
+| cljs_protocol | 2 | 6627838.5 [6277471.4..6849049.5] | 5899648.4 [5786901.1..6086953.1] | 1.123x | 0.847x |
+| cljs_protocol | 4 | 17914750.0 [17779442.7..18179776.0] | 16933380.2 [16158937.5..16958410.2] | 1.058x | 0.295x |
+| cljs_protocol | 8 | 17612559.2 [17363738.9..17772612.0] | 16632587.9 [16473045.6..16872180.3] | 1.059x | 0.300x |
+
+The allocation kernel's eight-thread throughput remains essentially unchanged
+(91.2 to 91.0 iterations/s); relative scaling is 0.292x before and 0.307x after.
+Its two-thread median improves by 1.228x, while its one-thread median regresses
+by 5.4%. Most other contended rows remain poor. This does **not** demonstrate
+the full shared-heap scaling gate: these JavaScript kernels still read and
+mutate existing objects under the table lock. Stable segment lookup and atomic
+header checks also add work to those accesses.
+
+The narrower allocation contract is exercised directly by
+`heap::storage::tests::reserved_allocations_and_shareability_checks_do_not_take_the_table_lock`:
+ordinary and persistent allocations, including shareability checks of object
+parts, complete while another thread holds the object-table lock. Only batch
+refills need that lock. Existing-object access remains the scope of
+light-cljs-471; no duplicate performance follow-up was created here.
+
+For attribution, a separate `target/release/examples/bench scaling --rounds 1`
+run used the full sizes. After its four-thread allocation row completed,
+`sample "$bench_pid" 5 1 -file target/allocation-profile.txt` captured the
+eight-thread allocation phase. This profiled run is separate from the paired
+quick timing rows above. The eight workers contributed 25,816 sampled stacks
+(3,227 each); the waiting main thread is excluded from the percentages below.
+
+| Top self frame | Worker samples | Worker sample share |
+|---|---:|---:|
+| `__psynch_mutexwait` | 15,318 | 59.3% |
+| `__psynch_mutexdrop` | 6,661 | 25.8% |
+| `dispatch::execute_budgeted` | 404 | 1.6% |
+| `pthread_mutex_lock` | 276 | 1.1% |
+| `dispatch::Fault` destruction | 270 | 1.0% |
+
+`Heap::allocate`, including its descendants, accounted for 241 stacks (0.93%);
+only 15 mutex-wait samples were beneath it, attributable to batch refills.
+The leading remaining mutex-wait callers were existing-object paths:
+`proxy::unwrapped` (3,557), `property::lookup` (2,753),
+`property::prepare_write` (1,827), `dispatch::resolve_this` (1,727), and
+`proxy::inspect` (1,359). The common allocation path is no longer the serialized
+operation; existing-object locking remains the measured bottleneck. These are
+wall-time sampled stacks, not instruction counts or an isolated allocator
+throughput benchmark.
+
+Validation at `c48eda0b` used `CARGO_BUILD_JOBS=3` and `--test-threads=3`:
+
+- `cargo test --locked -p big-boy-pants-js --all-targets` passed **1,969 tests**
+  in 58 result groups, with no failures or ignored tests. `--doc` passed all
+  **six doctests**. This includes the full root inventory, both public and
+  crate-internal all-holder allocation/collection tests, the GC suites,
+  publication, the QuickJS-derived corpus and the 64 KiB worker-stack tests.
+- Fifty iterations of the compiled libtest binary filtered to `heap::`
+  (53 tests), the complete `gc` binary (51 tests), and the `gc_roots` binary's
+  exact `every_holder_retains_while_other_workers_allocate_and_collect` test
+  all passed: **5,250 test executions**. The new four-worker identity stress
+  covers eight rounds and 16 collections per execution, keeps partially used
+  reservations across collection, checks retained objects' unique stamps,
+  rejects stale IDs, and rejects duplicate IDs across recycled slots.
+- `cargo fmt -p big-boy-pants-js -- --check` passed. Strict
+  `cargo clippy --locked -p big-boy-pants-js --all-targets -- -D warnings`
+  still reports the same nine pre-existing Rust 1.99 diagnostics in
+  `deprecated`, `clippy::chunks_exact_to_as_chunks`, and
+  `clippy::byte_char_slices`. Adding only `-A` for those three categories
+  passes; no source suppressions were added.
+- ThreadSanitizer passed all **53 heap tests and 121 public GC/root tests**,
+  with an instrumented standard library and no race reports. Miri is absent
+  (`cargo miri --version` reports no such command). Homebrew's Rust lacks its
+  TSan runtime library, so the matching installed rustup Rust 1.99.1 dylib
+  supplied the runtime. Reproduction on this machine:
+
+```sh
+sanitizer_lib="$(rustup run stable rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/lib"
+export RUSTC_BOOTSTRAP=1
+export RUSTFLAGS="-Zsanitizer=thread -L native=$sanitizer_lib -C link-arg=-Wl,-rpath,$sanitizer_lib"
+export CARGO_TARGET_DIR=target/tsan
+export CARGO_BUILD_JOBS=3
+cargo test --locked -Zbuild-std --target aarch64-apple-darwin -p big-boy-pants-js --lib heap:: -- --test-threads=3
+cargo test --locked -Zbuild-std --target aarch64-apple-darwin -p big-boy-pants-js --test gc --test gc_roots -- --test-threads=3
+```
+
 ## Method and limits of the measurements
 
 `examples/bench/main.rs` handles timing, a counting allocator and reports;

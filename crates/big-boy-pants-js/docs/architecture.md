@@ -386,6 +386,12 @@ public API cannot reach.
   then every holder is released and everything it held is reclaimed.
   `crate_internal_holders_retain_while_other_workers_allocate_and_collect`
   *(lib)* does the same for object constants and native payload edges.
+  `heap::storage::tests::concurrent_allocations_keep_unique_ids_and_correct_objects_across_collections`
+  checks four mutators across segment growth, reservation retention and slot
+  reuse: no identity repeats, each retained ID resolves to its stamped payload,
+  and every reclaimed ID remains stale. The storage lock-exclusion test also
+  allocates ordinary and persistent objects while another thread holds the
+  table lock. Repeated and ThreadSanitizer results are in `measurement.md`.
 - **Not reclaimable while the runtime lives.** A dependency cell is never
   removed, so a published outcome stays rooted until the runtime and every
   task are gone; the reclamation test drops a cell table directly. Likewise
