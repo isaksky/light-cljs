@@ -3288,6 +3288,72 @@ fn polls(instr: Instr, pc: usize) -> bool {
     }
 }
 
+/// Immutable dispatch facts computed once when validated code is loaded.
+/// A primitive run never crosses a poll point or a branch. Its last
+/// instruction may be a branch; a backward branch starts its own run.
+#[derive(Debug)]
+pub(crate) struct InstructionInfo {
+    poll: bool,
+    primitive_run: u32,
+}
+
+pub(crate) fn instruction_info(instrs: &[Instr]) -> Box<[InstructionInfo]> {
+    let mut info: Vec<_> = instrs
+        .iter()
+        .enumerate()
+        .map(|(pc, &instr)| InstructionInfo {
+            poll: polls(instr, pc),
+            primitive_run: 0,
+        })
+        .collect();
+    for pc in (0..instrs.len()).rev() {
+        let primitive = matches!(
+            instrs[pc],
+            Instr::Const(_)
+                | Instr::Undefined
+                | Instr::GetLocal(_)
+                | Instr::SetLocal(_)
+                | Instr::Pop
+                | Instr::Dup
+                | Instr::Not
+                | Instr::StrictEq
+                | Instr::Jump(_)
+                | Instr::JumpIfFalse(_)
+                | Instr::ToNumber
+                | Instr::ToNumeric
+                | Instr::ToNumberPair
+                | Instr::Neg
+                | Instr::Inc
+                | Instr::Dec
+                | Instr::Add
+                | Instr::Plus
+                | Instr::Sub
+                | Instr::Mul
+                | Instr::Div
+                | Instr::Rem
+                | Instr::Lt
+                | Instr::Gt
+                | Instr::Le
+                | Instr::Ge
+                | Instr::CompareLt
+                | Instr::CompareGt
+                | Instr::CompareLe
+                | Instr::CompareGe
+        );
+        if primitive {
+            let following = if matches!(instrs[pc], Instr::Jump(_) | Instr::JumpIfFalse(_)) {
+                0
+            } else {
+                info.get(pc + 1)
+                    .filter(|next| !next.poll)
+                    .map_or(0, |next| next.primitive_run)
+            };
+            info[pc].primitive_run = following.saturating_add(1);
+        }
+    }
+    info.into_boxed_slice()
+}
+
 /// Run until the task returns or fails, or until `budget` instructions have
 /// executed (`None`: unlimited).
 #[cfg(test)]
@@ -3373,10 +3439,40 @@ pub(crate) fn execute_budgeted(
         if std::mem::take(&mut state.collection_point) {
             return Exit::CollectionPoint;
         }
-        if let Some(left) = budget {
-            if *left == 0 {
-                return Exit::Yield;
+        if *budget == Some(0) {
+            return Exit::Yield;
+        }
+        // Charge only instructions that actually execute. A conversion miss
+        // leaves its operands and pc untouched for the ordinary path below;
+        // a short budget stops at precisely the same next instruction.
+        if native::running(state).is_none() {
+            let pc = state.top().pc;
+            if let Some(info) = code.instruction_info.get(pc)
+                && info.primitive_run != 0
+            {
+                if info.poll {
+                    heap.safepoint(state);
+                }
+                let count = u64::from(info.primitive_run).min(budget.unwrap_or(u64::MAX));
+                let mut executed = 0;
+                while executed < count {
+                    let Some(&instr) = code.instrs.get(state.top().pc) else {
+                        break;
+                    };
+                    if !state.primitive_step(&code, instr) {
+                        break;
+                    }
+                    executed += 1;
+                }
+                if let Some(left) = budget {
+                    *left -= executed;
+                }
+                if executed != 0 {
+                    continue;
+                }
             }
+        }
+        if let Some(left) = budget {
             *left -= 1;
         }
         // A running native frame (no call frame above it) takes the next
@@ -3392,7 +3488,7 @@ pub(crate) fn execute_budgeted(
             None => {
                 let pc = state.top().pc;
                 let instr = code.instrs.get(pc).copied();
-                if instr.is_some_and(|i| polls(i, pc)) {
+                if code.instruction_info.get(pc).is_some_and(|info| info.poll) {
                     heap.safepoint(state);
                 }
                 let result = match instr {
@@ -3502,6 +3598,52 @@ mod tests {
             world: WorldId::INITIAL,
         };
         VmState::new(&code.0, &[], diag, VmLimits::DEFAULT)
+    }
+
+    #[test]
+    fn primitive_batches_preserve_every_budget_prefix() {
+        // Compare each possible short run against the generic instruction
+        // dispatcher, including numeric edges and conversion misses in the
+        // middle of a batch. This checks the saved pc, locals, operands and
+        // exact remaining budget, not just the final program result.
+        for source in [
+            "function f() { let i = 0, s = 0; while (i < 7) { s = s + i % 3; i++; } return s; }",
+            "function f() { let x = -0; x = x / 0; return !(x <= 1) && !(x >= 1) && x !== x; }",
+            "function f() { let x = '2'; x = x + 1; x = x - 1; return x * 2; }",
+            "function f() { let x = 3n; x++; return x + 2n; }",
+            "function f() { let x = true; return +x + (null - 1) + ('4' / 2); }",
+        ] {
+            let fast = crate::frontend::compile_function(source).unwrap();
+            let mut generic = crate::frontend::compile_function(source).unwrap();
+            for info in &mut Arc::get_mut(&mut generic.0).unwrap().instruction_info {
+                info.primitive_run = 0;
+            }
+            for limit in 0..256 {
+                let mut a = state(&fast, 1);
+                let mut b = state(&generic, 1);
+                let mut left_a = Some(limit);
+                let mut left_b = Some(limit);
+                let exit_a = execute_budgeted(&mut a, &Heap::default(), &mut NoHost, &mut left_a);
+                let exit_b = execute_budgeted(&mut b, &Heap::default(), &mut NoHost, &mut left_b);
+                assert_eq!(
+                    format!("{exit_a:?}"),
+                    format!("{exit_b:?}"),
+                    "{source}, budget {limit}"
+                );
+                assert_eq!(left_a, left_b, "{source}, budget {limit}");
+                if !matches!(exit_a, Exit::Yield) {
+                    break;
+                }
+                assert_eq!(a.top().pc, b.top().pc, "{source}, budget {limit}");
+                assert_eq!(format!("{:?}", a.operands()), format!("{:?}", b.operands()));
+                for local in 0..fast.0.locals {
+                    assert_eq!(
+                        format!("{:?}", a.local(local).ok().unwrap()),
+                        format!("{:?}", b.local(local).ok().unwrap())
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -3969,6 +4111,7 @@ mod tests {
                 constructor_kind: crate::vm::ConstructorKind::None,
                 uses_arguments: false,
                 offsets: (0..instrs.len() as u32).collect(),
+                instruction_info: crate::vm::dispatch::instruction_info(&instrs),
                 instrs: instrs.clone().into(),
                 max_stack: 0,
                 debug: None,

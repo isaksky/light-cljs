@@ -1967,6 +1967,7 @@ mod tests {
                 constructor_kind: crate::vm::ConstructorKind::None,
                 uses_arguments: false,
                 offsets: (0..instrs.len() as u32).collect(),
+                instruction_info: crate::vm::dispatch::instruction_info(&instrs),
                 instrs: instrs.clone().into(),
                 max_stack: 0,
                 debug: None,

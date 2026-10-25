@@ -207,6 +207,7 @@ pub(crate) struct Code {
     /// Derived from the bytecode when loaded, including spec round trips.
     pub(crate) uses_arguments: bool,
     pub(crate) instrs: Box<[Instr]>,
+    pub(crate) instruction_info: Box<[super::dispatch::InstructionInfo]>,
     /// Byte offset of each instruction, for diagnostics.
     pub(crate) offsets: Box<[u32]>,
     pub(crate) max_stack: usize,
@@ -892,6 +893,7 @@ impl Executable {
                     Instr::NewArguments | Instr::ForwardArguments | Instr::Rest(_)
                 )
             }),
+            instruction_info: super::dispatch::instruction_info(&instrs),
             instrs: instrs.into(),
             offsets: offsets.into(),
             max_stack,

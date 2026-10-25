@@ -710,6 +710,124 @@ impl VmState {
         self.stack.get(self.top().floor()..).unwrap_or(&[])
     }
 
+    /// Primitive dispatch without a `Result<_, Fault>` temporary. A miss
+    /// changes nothing, so the ordinary instruction path can diagnose it or
+    /// perform JavaScript conversion. All indexing remains checked.
+    #[inline]
+    pub(crate) fn primitive_step(&mut self, code: &Code, instr: super::instr::Instr) -> bool {
+        use super::instr::Instr;
+        let floor = self.top().floor();
+        let len = self.stack.len();
+        let depth = len.saturating_sub(floor);
+        match instr {
+            Instr::Const(i) => {
+                let Some(value) = code.constants.get(usize::from(i)) else {
+                    return false;
+                };
+                self.push(value.clone());
+            }
+            Instr::Undefined => self.push(Value::Undefined),
+            Instr::GetLocal(i) => {
+                if i >= code.locals {
+                    return false;
+                }
+                let Some(value) = self.stack.get(self.top().base + usize::from(i)) else {
+                    return false;
+                };
+                self.push(value.clone());
+            }
+            Instr::SetLocal(i) => {
+                let at = self.top().base + usize::from(i);
+                if i >= code.locals || depth == 0 || at >= floor {
+                    return false;
+                }
+                let value = self.stack.pop().expect("checked operand");
+                self.stack[at] = value;
+            }
+            Instr::Pop if depth > 0 => {
+                self.stack.pop();
+            }
+            Instr::Dup if depth > 0 => self.push(self.stack[len - 1].clone()),
+            Instr::Not if depth > 0 => {
+                self.stack[len - 1] = Value::Bool(!self.stack[len - 1].truthy())
+            }
+            Instr::StrictEq if depth >= 2 => {
+                let equal = self.stack[len - 2].strict_equals(&self.stack[len - 1]);
+                self.stack.pop();
+                self.stack[len - 2] = Value::Bool(equal);
+            }
+            Instr::Jump(target) => {
+                self.top_mut().pc = target as usize;
+                return true;
+            }
+            Instr::JumpIfFalse(target) if depth > 0 => {
+                let taken = !self.stack.pop().expect("checked operand").truthy();
+                self.top_mut().pc = if taken {
+                    target as usize
+                } else {
+                    self.top().pc + 1
+                };
+                return true;
+            }
+            Instr::ToNumber | Instr::ToNumeric | Instr::Neg | Instr::Inc | Instr::Dec
+                if depth > 0 =>
+            {
+                let Value::Number(value) = self.stack[len - 1] else {
+                    return false;
+                };
+                self.stack[len - 1] = Value::Number(match instr {
+                    Instr::Neg => -value,
+                    Instr::Inc => value + 1.0,
+                    Instr::Dec => value - 1.0,
+                    _ => value,
+                });
+            }
+            Instr::ToNumberPair
+            | Instr::Add
+            | Instr::Plus
+            | Instr::Sub
+            | Instr::Mul
+            | Instr::Div
+            | Instr::Rem
+            | Instr::Lt
+            | Instr::Gt
+            | Instr::Le
+            | Instr::Ge
+            | Instr::CompareLt
+            | Instr::CompareGt
+            | Instr::CompareLe
+            | Instr::CompareGe
+                if depth >= 2 =>
+            {
+                let (Value::Number(a), Value::Number(b)) =
+                    (&self.stack[len - 2], &self.stack[len - 1])
+                else {
+                    return false;
+                };
+                let value = match instr {
+                    Instr::ToNumberPair => {
+                        self.top_mut().pc += 1;
+                        return true;
+                    }
+                    Instr::Add | Instr::Plus => Value::Number(a + b),
+                    Instr::Sub => Value::Number(a - b),
+                    Instr::Mul => Value::Number(a * b),
+                    Instr::Div => Value::Number(a / b),
+                    Instr::Rem => Value::Number(a % b),
+                    Instr::Lt | Instr::CompareLt => Value::Bool(a < b),
+                    Instr::Gt | Instr::CompareGt => Value::Bool(a > b),
+                    Instr::Le | Instr::CompareLe => Value::Bool(a <= b),
+                    _ => Value::Bool(a >= b),
+                };
+                self.stack.pop();
+                self.stack[len - 2] = value;
+            }
+            _ => return false,
+        }
+        self.top_mut().pc += 1;
+        true
+    }
+
     /// Remove the running frame's operand that has `above` operands on top
     /// of it (0: the top), shifting those down.
     pub(crate) fn remove_operand(&mut self, above: usize) -> Result<Value, Fault> {

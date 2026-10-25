@@ -33,6 +33,23 @@ finished task receives `Finished`. A run releases its Rust stack and reports:
 
 Budgets count VM instructions and resumable native steps, not wall time.
 A task can migrate between slices without moving or reconstructing its values.
+Validated code stores poll flags and the length of each primitive instruction
+stretch. Dispatch caps a stretch at the remaining budget and charges exactly
+the instructions executed, preserving the next instruction even when a slice
+ends partway through it. A branch ends a stretch; a backward branch starts a
+new one so its poll still precedes the branch. Numeric arithmetic/comparison
+and conversion instructions use a guarded primitive path; a nonnumeric operand
+leaves the stack and instruction position unchanged for ordinary conversion.
+Primitive execution creates no `Fault` result and primitive `Value` clones
+copy their payloads without reference counting. Strings, symbols and BigInts
+retain their existing ownership.
+
+Run entry, allocation instructions, calls, returns, native steps and caught
+exceptions retain their existing safepoints. A stretch cannot start a native
+continuation or cross a poll. The longest stretch without a poll remains
+bounded by executable code length. Cancellation is still observed by the task
+driver at its documented run/dependency/park/budget boundaries; batching adds
+no new unlimited-run cancellation guarantee.
 
 VM calls retain immutable code through `TaskCode`: an `Arc<TaskCodeOwner>`
 whose owner holds an `Arc<Code>`.
