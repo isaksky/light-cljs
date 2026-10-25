@@ -102,6 +102,13 @@ impl Operands {
     }
 }
 impl PluralRules {
+    /// The pinned NumberFormat unit tables have only singular/other forms and
+    /// select singular for a rounded mathematical value of one, regardless of
+    /// visible zero padding. Reuse exact plural operands without a float roundtrip.
+    pub fn unit_category(decimal: &Decimal) -> &'static str {
+        let (integer, fraction) = decimal.parts();
+        Operands::new(integer, fraction.trim_end_matches('0').into()).category("en", false)
+    }
     pub fn select(&self, n: f64) -> Result<&'static str, Fault> {
         if !n.is_finite() {
             return Ok("other");

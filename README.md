@@ -2937,7 +2937,7 @@ licensing and the informational release-size measurement are recorded in
 No binary-size cap applies at this stage. Regeneration uses the existing
 [offline exporter](scripts/quickjs-data/README.md#checked-in-intl-modules), with
 pinned hashes and provenance; normal builds require no generator or network.
-Decimal/percent/currency `Intl.NumberFormat`, `Intl.PluralRules` and root
+Decimal/percent/currency/unit `Intl.NumberFormat`, `Intl.PluralRules` and root
 `Intl.Collator`, including their
 `supportedLocalesOf` methods, use the test locales above
 (clj-quickjs-213, clj-quickjs-212).
@@ -3311,8 +3311,8 @@ shared Number::toString output. BigInts and decimal strings retain their digits.
 Options and argument coercions can wait, yield, collect and migrate. The host
 supplies the default locale once per constructor; absent a host it is en-US.
 
-Deferred: unit style and nonstandard notations
-(explicit RangeError), parts/range methods, ChainNumberFormat's legacy
+Deferred: nonstandard notations
+(explicit RangeError), range methods, ChainNumberFormat's legacy
 fallback receiver, and general Object.prototype.toString tag consumption.
 Both localeMatcher values currently use lookup over the policy's test locales.
 Valid decimal string input is bounded to 100,000 coefficient characters and exponent
@@ -3413,7 +3413,7 @@ currency settings only for currency style. Locale patterns preserve spaces and
 bidi marks. Unknown valid codes display themselves. Following the output policy,
 name and narrowSymbol use the snapshot's regular symbol, code uses the literal
 code without extra spacing, and NaN/infinity have no style affixes.
-Deferred: unit style (RangeError), distinct narrow symbols and translated
+Deferred: distinct narrow symbols and translated
 currency names beyond the pinned QuickJS behavior.
 
 Date ISO parsing (clj-quickjs-184): `Date.parse(value)` performs resumable
@@ -4114,8 +4114,7 @@ fractional/nonfinite fields and mixed signs, and retain task ownership.
 
 Deferred: ISO duration strings/Temporal private slots and complete CLDR unit
 coverage. Missing patterns reproduce QuickJS's literal unit-identifier fallback.
-NumberFormat style `unit` remains a RangeError, although its pattern data is
-now available for a future implementation.
+NumberFormat also consumes these unit patterns (clj-quickjs-306).
 
 ```sh
 CARGO_BUILD_JOBS=3 cargo test --test js_source intl_duration_format -- --test-threads=3
@@ -4136,7 +4135,7 @@ rows. Supported constructors exercised are `Intl.DateTimeFormat`,
 This fixture covers the agreed test locales and QuickJS snapshot strings.
 Deferred behavior remains: DateTimeFormat calendars beyond gregory,
 `timeZoneName` options, and named time zones other than the host's configured
-zone (UTC and fixed offsets are supported); NumberFormat unit style;
+zone (UTC and fixed offsets are supported);
 Segmenter sentence granularity and complete UAX #29 segmentation;
 DisplayNames localized names beyond en/fr (English fallback); and duration
 strings/Temporal private slots and complete CLDR unit patterns. See the
@@ -4420,8 +4419,7 @@ Gaps found by the audit are filed as pellets, not fixed here. Private names now
 execute (clj-quickjs-291), as do static blocks (-292) and Set/WeakSet (-295);
 remaining work includes generator `return`/`throw` (-293), Array.prototype mutators,
 search, callback and copying methods (-296 to -299), the plain RegExp `i` flag
-(-303), Script property escapes (-304),
-NumberFormat unit style (-306), DateTimeFormat timeZoneName (-307),
+(-303), Script property escapes (-304), DateTimeFormat timeZoneName (-307),
 `Symbol.toPrimitive`
 dispatch (implemented by -310), `Object.prototype.toString`
 tags (-311), eval SyntaxError stacks (-312), async generators (-313), `??` and
@@ -4927,3 +4925,26 @@ process-wide random state. No runtime random source existed to reuse.
 
 Check: `CARGO_BUILD_JOBS=3 cargo test --test math -- --test-threads=3` and
 `CARGO_BUILD_JOBS=3 cargo test --test js_source math_ -- --test-threads=3`.
+
+### NumberFormat unit style (clj-quickjs-306)
+
+Supported: `style: 'unit'`, all 45 sanctioned simple identifiers and one
+`X-per-Y` compound, `unitDisplay: 'short' | 'long' | 'narrow'` (default short),
+and `unit`/`unitDisplay` in `resolvedOptions`. `formatToParts` returns numeric,
+literal and unit parts; it also supports existing decimal/percent/currency
+styles. Unit text uses the immutable QuickJS snapshot tables imported by -225.
+Missing rows use the exact identifier, so `kilometer` formats as `1 kilometer`,
+while `kilometer-per-hour` has `1 km/h`. Exact locale rows precede the snapshot's
+first matching prefix; untranslated policy locales retain the literal fallback.
+The snapshot's singular forms use the rounded mathematical value one, ignoring
+visible zero padding; exact PluralRules operands avoid float conversion.
+NaN/infinities have no unit affix. Missing/invalid units throw RangeError;
+invalid identifiers are rejected even for other styles. This deliberately uses
+RangeError for missing units as required by -306 (the snapshot uses TypeError).
+
+Options and numeric coercions use saved native stages; output arrays allocate
+one part per step and remain rooted across yields/waits/collection/migration.
+Existing NumberFormat decimal limits remain 100,000 coefficient characters and
+exponent magnitude 10,000; no additional unit-specific limit is introduced.
+Complete CLDR unit translations and range methods remain deferred.
+Check: `CARGO_BUILD_JOBS=3 cargo test --test js_source intl_number_format -- --test-threads=3`.

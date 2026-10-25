@@ -12,6 +12,8 @@ const OPTIONS: &[&str] = &[
     "currency",
     "currencyDisplay",
     "currencySign",
+    "unit",
+    "unitDisplay",
     "notation",
     "minimumIntegerDigits",
     "minimumFractionDigits",
@@ -42,6 +44,7 @@ enum Stage {
     Build,
     Format,
     Primitive,
+    Parts,
 }
 #[derive(Debug)]
 pub(super) struct State {
@@ -58,6 +61,9 @@ pub(super) struct State {
     max_fraction: Option<usize>,
     min_significant: Option<usize>,
     max_significant: Option<usize>,
+    to_parts: bool,
+    parts: std::collections::VecDeque<(&'static str, String)>,
+    result: Value,
 }
 impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
@@ -68,6 +74,7 @@ impl Trace for State {
         self.options.trace(visit);
         self.this.trace(visit);
         self.argument.trace(visit);
+        self.result.trace(visit);
     }
 }
 impl State {
@@ -78,7 +85,10 @@ impl State {
         heap: &Heap,
         task: TaskId,
     ) -> Result<Self, Fault> {
-        let format = which == builtin::Builtin::IntlNumberFormatBound;
+        let format = matches!(
+            which,
+            builtin::Builtin::IntlNumberFormatBound | builtin::Builtin::IntlNumberFormatToParts
+        );
         if format {
             number_format::record(heap, task, this)?;
         }
@@ -104,6 +114,9 @@ impl State {
             max_fraction: None,
             min_significant: None,
             max_significant: None,
+            to_parts: which == builtin::Builtin::IntlNumberFormatToParts,
+            parts: Default::default(),
+            result: Value::Undefined,
         })
     }
     fn result(input: Input) -> Result<Value, Fault> {
@@ -182,7 +195,7 @@ impl State {
                 }
                 "style" => {
                     self.slots.as_mut().unwrap().style =
-                        service::string_option(&value, &["decimal", "percent", "currency"])?
+                        service::string_option(&value, &["decimal", "percent", "currency", "unit"])?
                 }
                 "currency" => {
                     if text.len() != 3 || !text.bytes().all(|c| c.is_ascii_alphabetic()) {
@@ -197,6 +210,16 @@ impl State {
                 "currencySign" => {
                     self.slots.as_mut().unwrap().currency_sign =
                         service::string_option(&value, &["standard", "accounting"])?
+                }
+                "unit" => {
+                    if !number_format::valid_unit(&text) {
+                        return Err(Fault::RangeError("invalid unit identifier".into()));
+                    }
+                    self.slots.as_mut().unwrap().unit = Some(text);
+                }
+                "unitDisplay" => {
+                    self.slots.as_mut().unwrap().unit_display =
+                        service::string_option(&value, &["short", "long", "narrow"])?;
                 }
                 "notation" if text == "standard" => {}
                 "roundingMode" => {
@@ -277,10 +300,16 @@ impl State {
             Stage::Read => {
                 // SetNumberFormatDigitOptions rejects inconsistent significant
                 // bounds before observing roundingMode or useGrouping.
-                if OPTIONS.get(self.option) == Some(&"notation") {
+                if OPTIONS.get(self.option) == Some(&"unit") {
                     let slots = self.slots.as_ref().unwrap();
                     if slots.style == "currency" && slots.currency.is_none() {
                         return Err(Fault::TypeError("currency option is required".into()));
+                    }
+                }
+                if OPTIONS.get(self.option) == Some(&"unitDisplay") {
+                    let slots = self.slots.as_ref().unwrap();
+                    if slots.style == "unit" && slots.unit.is_none() {
+                        return Err(Fault::RangeError("unit option is required".into()));
                     }
                 }
                 if OPTIONS.get(self.option) == Some(&"roundingMode")
@@ -354,14 +383,35 @@ impl State {
                     self.stage = Stage::Primitive;
                     Ok(Action::ToString(self.argument.clone()))
                 } else {
-                    number_format::record(heap, task, &self.this)?
-                        .format(&self.argument)
-                        .map(Action::Return)
+                    let slots = number_format::record(heap, task, &self.this)?;
+                    if self.to_parts {
+                        self.parts = slots.parts(&self.argument)?.into();
+                        self.result = property::new_array(heap, task)?;
+                        self.stage = Stage::Parts;
+                        Ok(Action::Continue)
+                    } else {
+                        slots.format(&self.argument).map(Action::Return)
+                    }
                 }
             }
             Stage::Primitive => {
                 self.argument = Self::result(input)?;
                 self.stage = Stage::Format;
+                Ok(Action::Continue)
+            }
+            Stage::Parts => {
+                let Some((kind, text)) = self.parts.pop_front() else {
+                    return Ok(Action::Return(self.result.clone()));
+                };
+                let item = service::resolved_options(
+                    heap,
+                    task,
+                    [
+                        ("type", Value::String(JsString::from(kind))),
+                        ("value", Value::String(JsString::from(text.as_str()))),
+                    ],
+                )?;
+                property::append(heap, task, &self.result, Some(item))?;
                 Ok(Action::Continue)
             }
         }

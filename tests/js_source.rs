@@ -24361,6 +24361,186 @@ fn intl_number_format_decimal() {
     }
 }
 
+/// Synthetic fixtures, not light-cljs output. Expected unit text follows the
+/// pinned QuickJS patterns, including literal identifiers for missing rows.
+#[test]
+fn intl_number_format_unit() {
+    for source in [
+        "new Intl.NumberFormat('en',{style:'unit',unit:'hour'}).format(1) === '1 hr'",
+        "new Intl.NumberFormat('en',{style:'unit',unit:'hour',unitDisplay:'long'}).format(2) === '2 hours'",
+        "new Intl.NumberFormat('en',{style:'unit',unit:'kilometer'}).format(1) === '1 kilometer'",
+        "let n=new Intl.NumberFormat('en',{style:'unit',unit:'kilometer-per-hour',unitDisplay:'narrow'}); n.format(2) === '2km/h' && n.resolvedOptions().unitDisplay === 'narrow' && n.resolvedOptions().unit === 'kilometer-per-hour'",
+        "let n=new Intl.NumberFormat('en',{style:'unit',unit:'hour',unitDisplay:'long'}); JSON.stringify(n.formatToParts(-2)) === '[{\"type\":\"minusSign\",\"value\":\"-\"},{\"type\":\"integer\",\"value\":\"2\"},{\"type\":\"literal\",\"value\":\" \"},{\"type\":\"unit\",\"value\":\"hours\"}]'",
+        "let n=new Intl.NumberFormat('en',{style:'unit',unit:'hour',unitDisplay:'long',minimumFractionDigits:2}); n.format(-1) === '-1.00 hour' && n.format(2) === '2.00 hours'",
+        "new Intl.NumberFormat('en',{style:'unit',unit:'hour',unitDisplay:'long',maximumFractionDigits:0}).format(1.1) === '1 hour'",
+        "let n=new Intl.NumberFormat('en',{style:'unit',unit:'hour',unitDisplay:'long',maximumFractionDigits:20}); n.format('1.00000000000000000001') === '1.00000000000000000001 hours' && n.format('1.00000000000000000000') === '1 hour'",
+        "let n=new Intl.NumberFormat('en',{style:'unit',unit:'percent'}); n.format(0.5) === '0.5%' && n.resolvedOptions().maximumFractionDigits === 3",
+        "let n=new Intl.NumberFormat('en',{style:'unit',unit:'hour',unitDisplay:'long',minimumSignificantDigits:3}); n.format(1n) === '1.00 hour' && n.format(0) === '0.00 hours'",
+        "let n=new Intl.NumberFormat('en',{style:'unit',unit:'hour'}); n.format(NaN) === 'NaN' && n.format(-Infinity) === '-∞' && n.format(-0) === '-0 hr' && n.resolvedOptions().style === 'unit' && n.resolvedOptions().unitDisplay === 'short'",
+        "let o=new Intl.NumberFormat('en',{unit:'hour',unitDisplay:'long'}).resolvedOptions(); o.unit === undefined && o.unitDisplay === undefined",
+        "let n=new Intl.NumberFormat('en',{style:'unit',unit:'hour',numberingSystem:'fullwide'}); JSON.stringify(n.formatToParts(1234.5)) === '[{\"type\":\"integer\",\"value\":\"１\"},{\"type\":\"group\",\"value\":\",\"},{\"type\":\"integer\",\"value\":\"２３４\"},{\"type\":\"decimal\",\"value\":\".\"},{\"type\":\"fraction\",\"value\":\"５\"},{\"type\":\"literal\",\"value\":\" \"},{\"type\":\"unit\",\"value\":\"hr\"}]'",
+        "let n=new Intl.NumberFormat('ja',{style:'unit',unit:'kilometer-per-hour',unitDisplay:'long'}); JSON.stringify(n.formatToParts(2)) === '[{\"type\":\"unit\",\"value\":\"時速\"},{\"type\":\"literal\",\"value\":\" \"},{\"type\":\"integer\",\"value\":\"2\"},{\"type\":\"literal\",\"value\":\" \"},{\"type\":\"unit\",\"value\":\"キロメートル\"}]'",
+        "let log=''; let caught=false; try {new Intl.NumberFormat('en',{style:'unit',get unit(){log+='u';},get unitDisplay(){log+='d';},get notation(){log+='n';}});}catch(e){caught=e instanceof RangeError;} caught && log === 'u'",
+        "let log=''; let caught=false; try {new Intl.NumberFormat('en',{unit:'unknown',get unitDisplay(){log+='d';}});}catch(e){caught=e instanceof RangeError;} caught && log === ''",
+        "let log=''; let caught=false; try {new Intl.NumberFormat('en',{style:'currency',get unit(){log+='u';return 'unknown';}});}catch(e){caught=e instanceof TypeError;} caught && log === ''",
+        "let d=Object.getOwnPropertyDescriptor(Intl.NumberFormat.prototype,'formatToParts'); d.writable && d.configurable && !d.enumerable && d.value.name === 'formatToParts' && d.value.length === 1",
+        "let n=new Intl.NumberFormat('en',{style:'unit',unit:'acre-per-second'}); let p=n.formatToParts(2); p.length === 3 && p[1].type === 'literal' && p[1].value === ' ' && p[2].type === 'unit' && p[2].value === 'acre-per-second' && p[2].unit === undefined",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+    for (locale, expected) in [
+        ("en", "2 hours"),
+        ("en-US", "2 hours"),
+        ("en-GB", "2 hours"),
+        ("de", "2 Stunden"),
+        ("fr", "2 hour"),
+        ("es", "2 hour"),
+        ("ja", "2 時間"),
+        ("zh", "2小时"),
+        ("zh-Hant", "2 小時"),
+        ("zh-Hans-CN", "2小时"),
+        ("ar", "2 hour"),
+        ("ru", "2 hour"),
+        ("pt-BR", "2 hour"),
+        ("tr", "2 hour"),
+    ] {
+        let source = format!(
+            "new Intl.NumberFormat('{locale}',{{style:'unit',unit:'hour',unitDisplay:'long'}}).format(2) === '{expected}'"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for (locale, display, unit, expected) in [
+        ("en-GB", "short", "minute", "2 mins"),
+        ("en-GB-u-nu-latn", "short", "minute", "2 min"),
+        ("en", "narrow", "hour", "2h"),
+        ("de", "narrow", "kilometer-per-hour", "2 km/h"),
+        ("zh", "long", "kilometer-per-hour", "每小時 2 公里"),
+        ("zh-Hant-u-nu-latn", "long", "hour", "2小时"),
+    ] {
+        let source = format!(
+            "new Intl.NumberFormat('{locale}',{{style:'unit',unit:'{unit}',unitDisplay:'{display}'}}).format(2) === '{expected}'"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
+    }
+    for option in [
+        "style:'unit'",
+        "unit:''",
+        "unit:'unknown'",
+        "unit:'Hour'",
+        "unit:'hour-per-'",
+        "unit:'-per-hour'",
+        "unit:'hour-per-day-per-second'",
+        "unit:'square-meter'",
+        "unit:'hour\\0'",
+        "unitDisplay:'wide'",
+        "unitDisplay:'LONG'",
+        "unit:null",
+    ] {
+        let source = format!("new Intl.NumberFormat('en',{{{option}}})");
+        assert_eq!(failure(&source).kind(), VmErrorKind::RangeError, "{source}");
+    }
+    for source in [
+        "Intl.NumberFormat.prototype.formatToParts.call({},1)",
+        "new Intl.NumberFormat('en',{style:'unit',unit:'hour'}).formatToParts(Symbol())",
+        "new Intl.NumberFormat.prototype.formatToParts(1)",
+    ] {
+        assert_eq!(failure(source).kind(), VmErrorKind::TypeError, "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. All sanctioned identifiers are
+/// accepted even when the snapshot has no translated pattern for them.
+#[test]
+fn intl_number_format_unit_identifiers_and_parts() {
+    assert_eq!(
+        eval(
+            r#"
+        let units='acre bit byte celsius centimeter day degree fahrenheit fluid-ounce foot gallon gigabit gigabyte gram hectare hour inch kilobit kilobyte kilogram kilometer liter megabit megabyte meter microsecond mile mile-scandinavian milliliter millimeter millisecond minute month nanosecond ounce percent petabyte pound second stone terabit terabyte week yard year'.split(' ');
+        let ok=true;
+        for(let unit of units){
+            for(let display of ['short','long','narrow']){
+                for(let name of [unit,unit+'-per-second']){
+                    let n=new Intl.NumberFormat('en',{style:'unit',unit:name,unitDisplay:display});
+                    ok=ok && n.resolvedOptions().unit === name;
+                    for(let value of [1n,-2,NaN,Infinity,-Infinity,-0,'12345678901234567890.5']){
+                        let text=''; for(let part of n.formatToParts(value)){text+=part.value;}
+                        ok=ok && text === n.format(value);
+                    }
+                }
+            }
+        }
+        for(let options of [{},{style:'percent'},{style:'currency',currency:'EUR',currencySign:'accounting'}]){
+            let n=new Intl.NumberFormat('de',options);
+            for(let value of [-1234.5,NaN,Infinity,-Infinity]){
+                let text=''; for(let part of n.formatToParts(value)){text+=part.value;}
+                ok=ok && text === n.format(value);
+            }
+        }
+        ok
+    "#
+        ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixture, not light-cljs output. Unit options/coercions and partial
+/// result arrays stay rooted across waits, collection and 64 KiB migration.
+#[test]
+fn intl_number_format_unit_wait_collect_and_migrate() {
+    let rt = Runtime::new();
+    let mut task = rt.spawn(&exe(r#"
+        let log='';
+        let n=new Intl.NumberFormat('en',{
+            get style(){log+='s';__rt.need(1,1);return 'unit';},
+            get unit(){log+='u';__rt.need(2,1);return {toString(){log+='t';__rt.need(3,1);return 'hour';}};},
+            get unitDisplay(){log+='d';__rt.need(4,1);return {toString(){log+='c';__rt.need(5,1);return 'long';}};}
+        });
+        let parts=n.formatToParts({valueOf(){log+='v';__rt.need(6,1);return -1234567.5;}});
+        let text=''; for(let part of parts){text+=part.value;}
+        text === '-1,234,567.5 hours' && parts.length === 10 && log === 'sutdcv'
+    "#), &[]).unwrap();
+    let mut waited = 0;
+    for _ in 0..3000 {
+        let (next, outcome) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap();
+                (task, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        task = next;
+        match outcome {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Waiting(_) => {
+                waited += 1;
+                assert!(waited <= 6);
+                rt.collect().unwrap();
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = rt.root(Primitive::Number(0.0));
+                task = rt
+                    .complete(request.key(), request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Bool(true));
+                assert_eq!(waited, 6);
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("unit formatting did not finish");
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn intl_number_format_options_and_rounding() {

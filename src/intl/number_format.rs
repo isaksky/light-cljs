@@ -1,5 +1,29 @@
 //! NumberFormat slots and exact decimal arithmetic. Numbers enter via
 //! the shared Number::toString helper, as QuickJS's Intl mathematical values do.
+/*
+ * Unit identifier validation and pattern composition adapted from QuickJS
+ * intl/numberformat.c (7d1c13c5d8f8); see docs/attribution.md.
+ * Copyright (c) 2017-2021 Fabrice Bellard
+ * Copyright (c) 2017-2021 Charlie Gordon
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
 use super::{LocaleData, data::numbers, table_string};
 use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
@@ -23,6 +47,8 @@ pub(crate) struct NumberFormat {
     pub currency: Option<String>,
     pub currency_display: &'static str,
     pub currency_sign: &'static str,
+    pub unit: Option<String>,
+    pub unit_display: &'static str,
 }
 impl NumberFormat {
     pub fn new(locale: String, data: &'static LocaleData) -> Self {
@@ -44,9 +70,19 @@ impl NumberFormat {
             currency: None,
             currency_display: "symbol",
             currency_sign: "standard",
+            unit: None,
+            unit_display: "short",
         }
     }
     pub fn format(&self, value: &Value) -> Result<Value, Fault> {
+        let result: String = self
+            .parts(value)?
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect();
+        Ok(Value::String(JsString::from(result.as_str())))
+    }
+    pub fn parts(&self, value: &Value) -> Result<Vec<(&'static str, String)>, Fault> {
         let text = match value {
             Value::String(s) => s.to_string_lossy(),
             _ => {
@@ -65,15 +101,16 @@ impl NumberFormat {
         let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
         let symbol =
             |table, index| table_string(table, index as usize).expect("pinned number symbol");
+        let mut unit_one = false;
         let body = if unsigned == "Infinity" {
             symbol(numbers::infinity_tab, self.data.symbols.infinity_idx).to_owned()
         } else {
             match Decimal::parse(unsigned)? {
                 None => {
-                    return Ok(Value::String(JsString::from(symbol(
-                        numbers::nan_tab,
-                        self.data.symbols.nan_idx,
-                    ))));
+                    return Ok(vec![(
+                        "nan",
+                        symbol(numbers::nan_tab, self.data.symbols.nan_idx).to_owned(),
+                    )]);
                 }
                 Some(mut n) => {
                     // Scale the mathematical decimal value, including BigInts,
@@ -87,6 +124,9 @@ impl NumberFormat {
                         (self.max_fraction as i32, self.min_fraction)
                     };
                     n.round(places, self.rounding, negative);
+                    if self.style == "unit" {
+                        unit_one = super::plural_rules::PluralRules::unit_category(&n) == "one";
+                    }
                     let minimum = if let Some((min, _)) = self.significant {
                         (min as i32 - n.point).max(0) as usize
                     } else {
@@ -133,54 +173,77 @@ impl NumberFormat {
             }
         };
         // QuickJS handles nonfinite values before applying style patterns.
-        let result = if unsigned == "Infinity" && negative {
-            format!(
-                "{}{body}",
-                symbol(numbers::minusSign_tab, self.data.symbols.minusSign_idx)
-            )
-        } else if unsigned == "Infinity" {
-            body
-        } else {
-            let p = &self.data.patterns;
-            let (positive, minus) = match (self.style, self.currency_sign) {
-                ("percent", _) => (p.pct_pos, p.pct_neg),
-                ("currency", "accounting") => (p.acc_pos, p.acc_neg),
-                ("currency", _) => (p.cur_pos, p.cur_neg),
-                _ => (p.dec_pos, p.dec_neg),
-            };
-            let pattern = symbol(
-                numbers::pattern_tab,
-                if negative { minus } else { positive },
-            );
-            let currency = self.currency.as_deref().unwrap_or("");
-            let currency = if self.style != "currency" || self.currency_display == "code" {
-                currency
-            } else {
-                currency_symbol(self.data, currency).unwrap_or(currency)
-            };
-            // Tokens come only from the pinned patterns. Append replacements
-            // once, so user currency text cannot be interpreted as a pattern.
-            let mut result = String::new();
-            let mut rest = pattern;
-            while let Some(start) = rest.find('{') {
-                result.push_str(&rest[..start]);
-                let (token, tail) = rest[start..].split_once('}').expect("pinned pattern token");
-                result.push_str(match token {
-                    "{number" => &body,
-                    "{minusSign" => symbol(numbers::minusSign_tab, self.data.symbols.minusSign_idx),
-                    "{percentSign" => {
-                        symbol(numbers::percentSign_tab, self.data.symbols.percentSign_idx)
-                    }
-                    "{currency" => currency,
-                    _ => unreachable!("pinned number pattern"),
-                });
-                rest = tail;
+        if unsigned == "Infinity" {
+            let mut parts = Vec::new();
+            if negative {
+                parts.push((
+                    "minusSign",
+                    symbol(numbers::minusSign_tab, self.data.symbols.minusSign_idx).to_owned(),
+                ));
             }
-            result.push_str(rest);
-            result
+            parts.push(("infinity", body));
+            return Ok(parts);
+        }
+        let p = &self.data.patterns;
+        let (positive, minus) = match (self.style, self.currency_sign) {
+            ("percent", _) => (p.pct_pos, p.pct_neg),
+            ("currency", "accounting") => (p.acc_pos, p.acc_neg),
+            ("currency", _) => (p.cur_pos, p.cur_neg),
+            _ => (p.dec_pos, p.dec_neg),
         };
-        let result = map_digits(self.numbering, &result);
-        Ok(Value::String(JsString::from(result.as_str())))
+        let pattern = symbol(
+            numbers::pattern_tab,
+            if negative { minus } else { positive },
+        );
+        let currency = self.currency.as_deref().unwrap_or("");
+        let currency = if self.currency_display == "code" {
+            currency
+        } else {
+            currency_symbol(self.data, currency).unwrap_or(currency)
+        };
+        let body = map_digits(self.numbering, &body);
+        let mut parts = Vec::new();
+        let mut rest = pattern;
+        while let Some(start) = rest.find('{') {
+            push_part(&mut parts, "literal", &rest[..start]);
+            let (token, tail) = rest[start..].split_once('}').expect("pinned pattern token");
+            match token {
+                "{number" => parts.extend(self.numeric_parts(&body)),
+                "{minusSign" => push_part(
+                    &mut parts,
+                    "minusSign",
+                    symbol(numbers::minusSign_tab, self.data.symbols.minusSign_idx),
+                ),
+                "{percentSign" => push_part(
+                    &mut parts,
+                    "percentSign",
+                    symbol(numbers::percentSign_tab, self.data.symbols.percentSign_idx),
+                ),
+                "{currency" => push_part(&mut parts, "currency", currency),
+                _ => unreachable!("pinned number pattern"),
+            }
+            rest = tail;
+        }
+        push_part(&mut parts, "literal", rest);
+        if self.style == "unit" {
+            let unit = self.unit.as_deref().expect("validated unit");
+            let pattern = unit_pattern(&self.locale, unit, self.unit_display, unit_one);
+            let (prefix, suffix) = pattern
+                .unwrap_or("{number}")
+                .split_once("{number}")
+                .expect("pinned unit placeholder");
+            let mut full = Vec::new();
+            unit_affix(&mut full, prefix, true);
+            full.extend(parts);
+            if pattern.is_some() {
+                unit_affix(&mut full, suffix, false);
+            } else {
+                push_part(&mut full, "literal", " ");
+                push_part(&mut full, "unit", unit);
+            }
+            parts = full;
+        }
+        Ok(parts)
     }
     /// Parts of a finite unsigned decimal, sharing the formatter's rounding,
     /// grouping and digit mapping. RelativeTimeFormat adds its unit metadata.
@@ -190,10 +253,9 @@ impl NumberFormat {
     /// Decimal parts also accepting an exact bounded decimal string (used by
     /// DurationFormat to combine subseconds without binary-float rounding).
     pub fn decimal_parts(&self, value: &Value) -> Result<Vec<(&'static str, String)>, Fault> {
-        let Value::String(formatted) = self.format(value)? else {
-            unreachable!()
-        };
-        let text = formatted.to_string_lossy();
+        self.parts(value)
+    }
+    fn numeric_parts(&self, text: &str) -> Vec<(&'static str, String)> {
         let decimal = self.data.decimal_separator().unwrap();
         let group = self.data.group_separator().unwrap();
         let digits = map_digits(self.numbering, "0123456789");
@@ -203,7 +265,7 @@ impl NumberFormat {
         )
         .unwrap();
         let mut parts: Vec<(&'static str, String)> = Vec::new();
-        let mut rest = text.as_str();
+        let mut rest = text;
         let mut fraction = false;
         while !rest.is_empty() {
             let (kind, length) = if !minus.is_empty() && rest.starts_with(minus) {
@@ -235,7 +297,7 @@ impl NumberFormat {
             }
             rest = &rest[length..];
         }
-        Ok(parts)
+        parts
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
         let mut fields = vec![
@@ -249,6 +311,18 @@ impl NumberFormat {
             ),
             ("style", Value::String(JsString::from(self.style))),
         ];
+        if self.style == "unit" {
+            fields.extend([
+                (
+                    "unit",
+                    Value::String(JsString::from(self.unit.as_deref().unwrap())),
+                ),
+                (
+                    "unitDisplay",
+                    Value::String(JsString::from(self.unit_display)),
+                ),
+            ]);
+        }
         if self.style == "currency" {
             fields.extend([
                 (
@@ -304,6 +378,109 @@ impl NumberFormat {
             ("trailingZeroDisplay", Value::String(JsString::from("auto"))),
         ]);
         super::service::resolved_options(heap, task, fields)
+    }
+}
+
+/// ECMA-402 sanctioned units, matching the pinned QuickJS identifier list.
+pub(crate) fn valid_unit(unit: &str) -> bool {
+    const SIMPLE: &[&str] = &[
+        "acre",
+        "bit",
+        "byte",
+        "celsius",
+        "centimeter",
+        "day",
+        "degree",
+        "fahrenheit",
+        "fluid-ounce",
+        "foot",
+        "gallon",
+        "gigabit",
+        "gigabyte",
+        "gram",
+        "hectare",
+        "hour",
+        "inch",
+        "kilobit",
+        "kilobyte",
+        "kilogram",
+        "kilometer",
+        "liter",
+        "megabit",
+        "megabyte",
+        "meter",
+        "microsecond",
+        "mile",
+        "mile-scandinavian",
+        "milliliter",
+        "millimeter",
+        "millisecond",
+        "minute",
+        "month",
+        "nanosecond",
+        "ounce",
+        "percent",
+        "petabyte",
+        "pound",
+        "second",
+        "stone",
+        "terabit",
+        "terabyte",
+        "week",
+        "yard",
+        "year",
+    ];
+    if let Some((numerator, denominator)) = unit.split_once("-per-") {
+        SIMPLE.contains(&numerator) && SIMPLE.contains(&denominator)
+    } else {
+        SIMPLE.contains(&unit)
+    }
+}
+
+fn unit_pattern(locale: &str, unit: &str, style: &str, one: bool) -> Option<&'static str> {
+    use super::data::units::nf_unit_patterns;
+    let text = |s| super::pool_string(s, 0).unwrap();
+    // Match QuickJS's exact pass followed by its first matching prefix pass.
+    // In particular a Unicode extension can select an earlier parent row.
+    let rows = || nf_unit_patterns.chunks_exact(8);
+    let row = rows()
+        .find(|r| text(r[0].unwrap()) == locale && text(r[1].unwrap()) == unit)
+        .or_else(|| {
+            rows().find(|r| {
+                locale
+                    .strip_prefix(text(r[0].unwrap()))
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+                    && text(r[1].unwrap()) == unit
+            })
+        })?;
+    let index = match style {
+        "narrow" => 4,
+        "long" => 6,
+        _ => 2,
+    };
+    (if one {
+        row[index + 1].or(row[index])
+    } else {
+        row[index]
+    })
+    .map(text)
+}
+
+fn push_part(parts: &mut Vec<(&'static str, String)>, kind: &'static str, text: &str) {
+    if !text.is_empty() {
+        parts.push((kind, text.to_owned()));
+    }
+}
+
+fn unit_affix(parts: &mut Vec<(&'static str, String)>, text: &str, prefix: bool) {
+    if prefix {
+        let unit = text.trim_end_matches(' ');
+        push_part(parts, "unit", unit);
+        push_part(parts, "literal", &text[unit.len()..]);
+    } else {
+        let unit = text.trim_start_matches(' ');
+        push_part(parts, "literal", &text[..text.len() - unit.len()]);
+        push_part(parts, "unit", unit);
     }
 }
 

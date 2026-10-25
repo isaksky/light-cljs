@@ -1049,7 +1049,8 @@ fn realm_intrinsics_reclaim_with_their_heap() {
     // Ten RegExp/String protocol built-ins and one iterator prototype (-301).
     // The remaining Math methods add 27 intrinsics (-319).
     // Date's Symbol.toPrimitive adds one built-in (-310).
-    assert_eq!(ids.len(), 471);
+    // NumberFormat formatToParts adds one built-in (-306).
+    assert_eq!(ids.len(), 472);
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

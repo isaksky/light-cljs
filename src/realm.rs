@@ -2215,6 +2215,8 @@ fn intl_number_format_intrinsics(
     })?
     .then_some(())?;
     let bound = b.function(Builtin::IntlNumberFormatBound, &[])?;
+    let parts = b.function(Builtin::IntlNumberFormatToParts, &[])?;
+    b.add(prototype, "formatToParts", parts, PropertyFlags::METHOD)?;
     Some((prototype, bound))
 }
 

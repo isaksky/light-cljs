@@ -650,11 +650,11 @@ Yield expressions with live operands and yields inside try/catch/finally are
 executable; they do not require any of those deferred methods (clj-quickjs-244).
 
 `Intl` provides locale identifiers and likely-subtag maximize/minimize
-(clj-quickjs-209/-210/-211), plus decimal/percent/currency `NumberFormat` with bound `format`,
+(clj-quickjs-209/-210/-211), plus decimal/percent/currency/unit `NumberFormat` with bound `format`, `formatToParts`,
 `resolvedOptions` and `supportedLocalesOf` over the policy's test locales
 (clj-quickjs-213). Other formatting service constructors and their
 `supportedLocalesOf`, Locale information methods, and NumberFormat's
-unit style and parts/range methods remain deferred.
+range methods remain deferred.
 
 Known differences from full JavaScript within the accepted forms, and
 checks left to later stages:
@@ -4755,10 +4755,9 @@ digits (0..100), significant digits (1..21), and all nine rounding modes
 (default halfExpand); default fraction bounds are 0..3. Invalid listed options
 throw catchable RangeErrors; invalid receivers and Symbol numbers throw TypeError.
 
-Explicit gaps: unit style and nonstandard
-notations throw RangeError. Numbering-system options and nu extensions use the pinned QuickJS digit mappings;
+Explicit gaps: nonstandard notations throw RangeError. Numbering-system options and nu extensions use the pinned QuickJS digit mappings;
 unknown well-formed systems fall back to the selected system. Both matchers use lookup over the policy's test locales.
-Parts/range methods, ChainNumberFormat legacy receivers and general
+Range methods, ChainNumberFormat legacy receivers and general
 Object.prototype.toString tag consumption remain deferred. Decimal coefficient
 input over 100,000 characters or exponent magnitude over 10,000 throws RangeError
 when the numeric syntax is valid. Malformed strings produce localized NaN;
@@ -4908,7 +4907,7 @@ Patterns and symbols come from the test-locale snapshot, including nonbreaking
 spaces and Arabic bidi marks. The QuickJS output policy retains four-digit
 Spanish grouping; narrowSymbol and name both use the regular currency symbol,
 code inserts the literal code without added spacing, and nonfinite values have
-no percent/currency affix. Explicit gaps: unit style throws RangeError; distinct
+no percent/currency affix. Explicit gaps: distinct
 narrow symbols and translated currency names beyond QuickJS remain deferred.
 
 ### Execution: Date ISO parsing (clj-quickjs-184)
@@ -6131,7 +6130,7 @@ Intl.DurationFormat toStringTag are supported.
 Explicit gaps: duration strings and Temporal objects' private duration slots
 are unsupported. Unit spellings follow the pinned QuickJS finite table, with
 its literal unit-identifier fallback where patterns are absent; this is not
-complete CLDR coverage. NumberFormat style unit still throws RangeError.
+complete CLDR coverage. NumberFormat consumes the same unit patterns (clj-quickjs-306).
 
 ### Module execution (clj-quickjs-253/255)
 
@@ -7020,3 +7019,19 @@ Publication of task-owned ordinary objects or function property records still
 fails; freezing does not change ownership. Foreign object access remains an
 explicit error. Persistent collections without conversion methods throw TypeError.
 No new limits: existing property lookup/native frame limits apply.
+
+### NumberFormat unit style (clj-quickjs-306)
+
+`Intl.NumberFormat` accepts `style: 'unit'` with a sanctioned simple `unit` or
+one sanctioned `X-per-Y` compound. `unitDisplay` defaults to short and accepts
+long/narrow. `resolvedOptions` includes these fields only for unit style.
+Missing units and invalid identifiers/displays throw RangeError (missing units
+intentionally follow the pellet contract rather than QuickJS's TypeError).
+Getters and conversions follow currencySign, unit, unitDisplay, notation order;
+missing/invalid units fail before reading unitDisplay. Parts include `unit` and
+separate literal spaces, with no extra unit metadata. `formatToParts` also
+supports the existing decimal/percent/currency paths and their receiver brands.
+Snapshot patterns, first-prefix lookup, mathematical-one singular selection,
+literal identifier fallback and unadorned nonfinite output match QuickJS;
+complete CLDR translation is deferred. Existing NumberFormat resource bounds
+apply. Result arrays are task owned and assembled one part per native step.

@@ -6244,9 +6244,9 @@ trimmed with the shared StrWhiteSpace predicate, and malformed mantissas or
 exponents produce localized NaN before the resource checks or coefficient
 allocation. No dependencies or OS locale access.
 
-Unit style and nonstandard notations,
-formatToParts/ranges, and legacy ChainNumberFormat receivers remain deferred.
-Unit style and nonstandard notations throw RangeError. General
+Nonstandard notations, ranges, and legacy ChainNumberFormat receivers remain
+deferred. Nonstandard notations throw RangeError. Unit style and formatToParts
+are supported (clj-quickjs-306). General
 Object.prototype.toString tag consumption remains the existing explicit gap.
 
 ## Date non-locale string formatting (clj-quickjs-183)
@@ -8282,9 +8282,9 @@ UnitPatternEntry rows from pinned intl/numberformat.c. The Intl repacker writes
 units.rs and unit_provenance.txt; complete C/Rust value comparison, repeated
 repacking, semantic edge cases, deliberate corruption and input hashes verify
 these tables. Missing patterns retain the snapshot's unit identifier fallback,
-including French and subsecond spellings. Data for NumberFormat unit style is
-now present, but its constructor/options/compound-unit behavior remain a gap;
-this pellet enables only the duration consumer. Locale coverage and the host
+including French and subsecond spellings. NumberFormat also consumes these
+tables for simple and compound unit identifiers (clj-quickjs-306). Locale
+coverage and the host
 default-locale leaf remain the shared Intl policy.
 
 ### Module execution (clj-quickjs-253/255)

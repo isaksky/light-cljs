@@ -578,6 +578,7 @@ pub(crate) enum Builtin {
     MathF16round,
 
     DateToPrimitive,
+    IntlNumberFormatToParts,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -753,6 +754,7 @@ impl Builtin {
             Builtin::IntlDateTimeFormatSupportedLocales => "supportedLocalesOf",
             Builtin::IntlNumberFormatGetFormat => "get format",
             Builtin::IntlNumberFormatBound => "",
+            Builtin::IntlNumberFormatToParts => "formatToParts",
             Builtin::IntlNumberFormatResolvedOptions => "resolvedOptions",
             Builtin::IntlNumberFormatSupportedLocales => "supportedLocalesOf",
             Builtin::IntlLocale => "Locale",
@@ -1089,6 +1091,7 @@ impl Builtin {
             Builtin::IntlCollatorSupportedLocales => 1,
             Builtin::IntlNumberFormat
             | Builtin::IntlNumberFormatBound
+            | Builtin::IntlNumberFormatToParts
             | Builtin::IntlNumberFormatSupportedLocales => 1,
             Builtin::IntlNumberFormatGetFormat | Builtin::IntlNumberFormatResolvedOptions => 0,
             Builtin::IntlDateTimeFormat
@@ -1490,6 +1493,7 @@ pub(crate) fn call(
         }
         Builtin::IntlNumberFormat
         | Builtin::IntlNumberFormatBound
+        | Builtin::IntlNumberFormatToParts
         | Builtin::IntlNumberFormatSupportedLocales => {
             Err(Fault::Internal("NumberFormat requires native frame"))
         }

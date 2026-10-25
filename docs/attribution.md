@@ -1631,3 +1631,14 @@ light-cljs output. The Date hint strings follow ECMAScript (`number`, `string`,
 `default`); QuickJS's additional `integer` hint is deliberately rejected.
 UTC local-format output includes the pellet's requested ` (UTC)` annotation,
 extending the pinned QuickJS numeric-offset format.
+
+## NumberFormat unit style (clj-quickjs-306)
+
+`src/intl/number_format.rs` adapts the sanctioned identifier list, exact/prefix
+pattern selection, unit affix/part composition and fallback semantics from
+`research/quickjs/intl/numberformat.c` (`is_well_formed_unit_identifier`,
+`find_unit_pattern`, `intl_mv_format_unit`), revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. The QuickJS copyright and MIT
+permission notice are retained in `src/intl/data/QUICKJS-LICENSE`; unit patterns
+continue to use the existing -225 importer/provenance without table changes.
+Synthetic source tests reproduce these strings and are not light-cljs output.

@@ -1565,6 +1565,7 @@ pub(crate) fn start_builtin(
         which,
         Builtin::IntlNumberFormat
             | Builtin::IntlNumberFormatBound
+            | Builtin::IntlNumberFormatToParts
             | Builtin::IntlNumberFormatSupportedLocales
     ) && (!construct || which == Builtin::IntlNumberFormat)
     {
