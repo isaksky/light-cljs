@@ -61,6 +61,10 @@ pub(crate) fn well_known(name: &str) -> JsSymbol {
     static SPECIES: OnceLock<JsSymbol> = OnceLock::new();
     static IS_CONCAT_SPREADABLE: OnceLock<JsSymbol> = OnceLock::new();
     static MATCH: OnceLock<JsSymbol> = OnceLock::new();
+    static MATCH_ALL: OnceLock<JsSymbol> = OnceLock::new();
+    static SEARCH: OnceLock<JsSymbol> = OnceLock::new();
+    static REPLACE: OnceLock<JsSymbol> = OnceLock::new();
+    static SPLIT: OnceLock<JsSymbol> = OnceLock::new();
     let slot = match name {
         "iterator" => &ITERATOR,
         "asyncIterator" => &ASYNC_ITERATOR,
@@ -73,6 +77,10 @@ pub(crate) fn well_known(name: &str) -> JsSymbol {
         "species" => &SPECIES,
         "isConcatSpreadable" => &IS_CONCAT_SPREADABLE,
         "match" => &MATCH,
+        "matchAll" => &MATCH_ALL,
+        "search" => &SEARCH,
+        "replace" => &REPLACE,
+        "split" => &SPLIT,
         _ => unreachable!("unknown well-known symbol"),
     };
     slot.get_or_init(|| JsSymbol::new(Some(JsString::from(format!("Symbol.{name}").as_str()))))

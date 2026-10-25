@@ -18800,7 +18800,7 @@ fn primitive_wrappers_string_properties() {
         "let s = new String('ab'); s['01'] = 7; s[2] = 'c'; delete s[2] && delete s['01'] && s[2] === undefined && s.length === 2",
         "let s = ''; for (let k in new String('abc')) { s = s + k; } s === '012'",
         "let k = Object.getOwnPropertyNames(new String('')); k.length === 1 && k[0] === 'length'",
-        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k[7] === 'indexOf' && k[8] === 'lastIndexOf' && k[9] === 'substring' && k[10] === 'slice' && k[11] === 'concat' && k[12] === 'padStart' && k[13] === 'padEnd' && k[14] === 'split' && k[15] === 'replace' && k[16] === 'replaceAll' && k[17] === 'toUpperCase' && k[18] === 'toLowerCase' && k[19] === 'toLocaleUpperCase' && k[20] === 'toLocaleLowerCase' && k[21] === 'trim' && k[22] === 'trimStart' && k[23] === 'trimEnd' && k[24] === 'repeat' && k[25] === 'startsWith' && k[26] === 'endsWith' && k[27] === 'includes' && k[28] === 'at' && k[29] === 'localeCompare' && k[30] === 'normalize' && k.length === 31",
+        "let k = Object.getOwnPropertyNames(String.prototype); k[0] === 'length' && k[1] === 'toString' && k[4] === 'charAt' && k[5] === 'charCodeAt' && k[6] === 'codePointAt' && k[7] === 'indexOf' && k[8] === 'lastIndexOf' && k[9] === 'substring' && k[10] === 'slice' && k[11] === 'concat' && k[12] === 'padStart' && k[13] === 'padEnd' && k[14] === 'split' && k[15] === 'replace' && k[16] === 'replaceAll' && k[17] === 'toUpperCase' && k[18] === 'toLowerCase' && k[19] === 'toLocaleUpperCase' && k[20] === 'toLocaleLowerCase' && k[21] === 'trim' && k[22] === 'trimStart' && k[23] === 'trimEnd' && k[24] === 'repeat' && k[25] === 'startsWith' && k[26] === 'endsWith' && k[27] === 'includes' && k[28] === 'at' && k[29] === 'localeCompare' && k[30] === 'normalize' && k[31] === 'match' && k[32] === 'matchAll' && k[33] === 'search' && k.length === 34",
         "'length' in new String('abc') && 0 in new String('abc') && !(3 in new String('abc'))",
         "let s = new String('abc'); Object.setPrototypeOf(s, null); s.length === 3 && s[1] === 'b' && s.toString === undefined",
         "Object.create(new String('abc')).length === 3 && Object.create(new String('abc'))[1] === 'b'",
@@ -22652,7 +22652,7 @@ fn regexp_flags_errors_and_internal_state() {
         );
     }
     for src in [
-        "let caught = false; try {'a'.split(/a/);} catch(e){caught = e instanceof TypeError && e.message.indexOf('RegExp separators') >= 0;} caught",
+        "'a'.split(/a/).join('|') === '|'",
         r"let r = /(b+)c/g; let m = r.exec('abbbbbc'); let a = m[1] === 'bbbbb' && m.index === 1; let b = new RegExp('a/b').source === 'a\\/b'; r = /a/y; r.lastIndex = 1; let c = r.test('ba') && r.lastIndex === 2; let d = /a/u.test('a'); a && b && c && d",
         "let r = /a/g; RegExp(r) === r && new RegExp(r) !== r && new RegExp(r).flags === 'g' && RegExp(r, 'm').flags === 'm'",
         "let r = /a/g; let d = Object.getOwnPropertyDescriptor(r, 'lastIndex'); d.value === 0 && d.writable && !d.enumerable && !d.configurable && r instanceof RegExp && r.constructor === RegExp",
@@ -22844,15 +22844,13 @@ fn regexp_object_tag_and_brand() {
     );
 }
 
-/// Synthetic fixtures, not light-cljs output. RegExp split dispatch is
-/// deferred and must fail explicitly for every supported creation form.
+/// Synthetic fixtures, not light-cljs output. All RegExp creation forms
+/// now dispatch through @@split (clj-quickjs-301).
 #[test]
-fn string_split_rejects_regexp_separators() {
+fn string_split_regexp_separators() {
     for separator in ["/,/", "RegExp(',')", "new RegExp(',')"] {
         assert_eq!(
-            eval(&format!(
-                "let caught = false; try {{ 'a,b'.split({separator}); }} catch(e) {{ caught = e instanceof TypeError && e.message.indexOf('RegExp separators') >= 0; }} caught"
-            )),
+            eval(&format!("'a,b'.split({separator}).join('|') === 'a|b'")),
             ValueView::Bool(true),
             "{separator}"
         );
@@ -23655,8 +23653,8 @@ fn string_replace() {
         r#"let caught = false; try { String.prototype.replace.call(null, '', 'x'); } catch(e) { caught = e instanceof TypeError; } caught"#,
         r#"let caught = false; try { 'x'.replace(Symbol(), ''); } catch(e) { caught = e instanceof TypeError; } caught"#,
         r#"let r = /a/g; Object.defineProperty(r, 'lastIndex', {writable:false}); let caught = false; try { 'a'.replace(r, 'b'); } catch(e) { caught = e instanceof TypeError; } caught"#,
-        // The documented brand-dispatch policy ignores overridden exec/flags.
-        r#"let r = /a/g; r.exec = () => {throw 1;}; Object.defineProperty(r,'flags',{get(){throw 2;}}); 'aa'.replaceAll(r, 'b') === 'bb'"#,
+        // @@replace observes flags before invoking custom exec (-301).
+        r#"let r = /a/g; r.exec = () => {throw 1;}; Object.defineProperty(r,'flags',{get(){throw 2;}}); let caught = false; try {'aa'.replaceAll(r, 'b');} catch(e) {caught = e === 2;} caught"#,
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
@@ -23667,6 +23665,16 @@ fn string_replace() {
 #[test]
 fn string_replace_wait_yield_collect_and_migrate() {
     for expression in [
+        "'abc'.match({get [Symbol.match](){count++; __rt.need(189,1); return s => s === 'abc';}})",
+        "'abc'.matchAll({[Symbol.matchAll](s){count++; __rt.need(189,1); return s === 'abc';}})",
+        "let r = /b/; Object.defineProperty(r,'exec',{get(){count++; __rt.need(189,1); return RegExp.prototype.exec;}});| 'abc'.search(r) === 1",
+        "let r = /b/g; Object.defineProperty(r,'flags',{get(){count++; __rt.need(189,1); return 'g';}});| 'abc'.match(r)[0] === 'b'",
+        "let r = /b/g; r.constructor = {get [Symbol.species](){count++; __rt.need(189,1); return RegExp;}};| 'abc'.matchAll(r).next().value.index === 1",
+        "let r = /,/; r.constructor = {[Symbol.species]: function(rx,f){count++; __rt.need(189,1); return /,/y;}};| 'a,b'.split(r).join('|') === 'a|b'",
+        "let r = /b/; r.exec = s => ({get 0(){count++; __rt.need(189,1); return 'X';}, length:1, index:1});| 'abc'.replace(r,'[$&]') === 'a[X]c'",
+        "let r = /b/; r.exec = s => ({0:'b',length:1,index:1,groups:{get x(){count++; __rt.need(189,1); return 'X';}}});| 'abc'.replace(r,'<$<x>>') === 'a<X>c'",
+        "let rx = {lastIndex:0, exec(s){count++; __rt.need(189,1); return {0:'x'};}}; let r = /a/g; r.constructor = {[Symbol.species]: function(){return rx;}}; let it = 'a'.matchAll(r);| it.next().value[0] === 'x'",
+        "let rx = {get lastIndex(){return 7;},set lastIndex(v){count++; __rt.need(189,1);},exec(){return null;},flags:'g'};| RegExp.prototype[Symbol.match].call(rx,'a') === null",
         "'🐱'.replace(/(?:)/gu, (m,p) => {if(p === 2){count++; __rt.need(189,1);} return '-';}) === '-🐱-'",
         "String.prototype.replace.call({get toString(){count++; __rt.need(189,1); return () => 'abc';}}, 'b', 'X') === 'aXc'",
         "'abc'.replace({toString(){count++; __rt.need(189,1); return 'b';}}, 'X') === 'aXc'",
@@ -29912,6 +29920,107 @@ fn string_repeat_result_length_limits() {
         eval(
             "let n=0, caught=false; try { 'ab'.repeat({valueOf(){n++;return 2 ** 63;}}); } catch(e) { caught=e instanceof InternalError && e.message==='string too long'; } caught && n===1"
         ),
+        ValueView::Bool(true)
+    );
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn regexp_symbol_dispatch() {
+    for source in [
+        r#"'a1b2'.match(/\d/g).join() === '1,2'"#,
+        r#"'abc'.search(/c/) === 2"#,
+        r#"'a1b2'.split(/\d/).join('|') === 'a|b|'"#,
+        r#"let r = /a/g; r.lastIndex = 1; let it = 'aba'.matchAll(r); let a = it.next(), b = it.next(); a.value.index === 2 && !a.done && b.done && it.next().done && r.lastIndex === 1 && it[Symbol.iterator]() === it && it[Symbol.toStringTag] === 'RegExp String Iterator'"#,
+        r#"let x = { flags:'g', [Symbol.replace](s,r) {return s+r;}, [Symbol.split](s,n) {return s+n;}, [Symbol.match](s) {return s+1;}, [Symbol.matchAll](s) {return s+2;}, [Symbol.search](s) {return s+3;} }; 'a'.replace(x,'b') === 'ab' && 'a'.replaceAll(x,'c') === 'ac' && 'a'.split(x,4) === 'a4' && 'a'.match(x) === 'a1' && 'a'.matchAll(x) === 'a2' && 'a'.search(x) === 'a3'"#,
+        r#"let r = /a/g; let n = 0; r.exec = function(s) {return n++ === 0 ? {0:'x', length:1, index:1} : null;}; 'abc'.replace(r,'[$&]') === 'a[x]c' && n === 2"#,
+        r#"let r = /b/g; r.lastIndex = -0; 'abc'.search(r) === 1 && Object.is(r.lastIndex, -0)"#,
+        r#"'ab'.split(/(b)/).join('|') === 'a|b|' && 'ab'.split(/(?:)/).join('|') === 'a|b' && ''.split(/a/).length === 1 && ''.split(/(?:)/).length === 0"#,
+        r#"let seen = ''; let r = /,/; r.constructor = {[Symbol.species]: function(rx,f) {seen = f; return /,/y;}}; 'a,b'.split(r).join('|') === 'a|b' && seen === 'y'"#,
+        r#"let r = /a/; r[Symbol.match] = false; r[Symbol.replace] = () => 7; 'a'.replaceAll(r,'b') === 7"#,
+        r#"let r = /a/; let caught = 0; try {'a'.matchAll(r);} catch(e) {caught += e instanceof TypeError;} try {'a'.replaceAll(r,'b');} catch(e) {caught += e instanceof TypeError;} caught === 2"#,
+        r#"let x = {exec() {return 3;}, flags:''}; let caught = false; try {RegExp.prototype[Symbol.match].call(x,'a');} catch(e) {caught = e instanceof TypeError;} caught"#,
+        r#"'abc'.match('b')[0] === 'b' && 'abc'.search('b') === 1 && 'ab'.matchAll('').next().value[0] === ''"#,
+        r#"'🐱'.match(/(?:)/gu).length === 2 && [...'🐱'.matchAll(/(?:)/gu)].length === 2"#,
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Observable ordering and generic
+/// exec results, including values that differ from the source's match spans.
+#[test]
+fn regexp_symbol_protocol_edges() {
+    for source in [
+        "let receiver = {toString(){throw 1;}}; let x = {[Symbol.replace](s,r){return s === receiver && r === 7;}}; String.prototype.replace.call(receiver,x,7)",
+        "let n = 0; let x = {[Symbol.search]:1}; let caught = false; try {String.prototype.search.call({toString(){n++;return 'a';}}, x);} catch(e) {caught = e instanceof TypeError;} caught && n === 0",
+        "let r = /a/; r[Symbol.replace] = null; 'x/a/y'.replace(r,'X') === 'xXy'",
+        "let r = /a/; r[Symbol.split] = null; 'x/a/y'.split(r).join('|') === 'x|y'",
+        "let r = /a/g; r.exec = 1; 'aba'.match(r).join() === 'a,a'",
+        "let r = {lastIndex:3, exec(){this.lastIndex=8; return {index:'answer'};}}; RegExp.prototype[Symbol.search].call(r,'a') === 'answer' && r.lastIndex === 3",
+        "let r = {lastIndex:3, exec(){throw 42;}}; let caught = false; try {RegExp.prototype[Symbol.search].call(r,'a');} catch(e) {caught = e === 42;} caught && r.lastIndex === 0",
+        "let seen = ''; let r = /a/; r.constructor = {[Symbol.species]: ()=>{}}; Object.defineProperty(r,'flags',{get(){seen += 'f'; return '';}}); let caught = false; try {'a'.split(r,0);} catch(e) {caught = e instanceof TypeError;} caught && seen === ''",
+        "let r = /a/g; r.constructor = {[Symbol.species]:null}; [...'aba'.matchAll(r)].length === 2",
+        "let r = /a/; let it = RegExp.prototype[Symbol.matchAll].call(r,'aba'); it.next().value.index === 0 && it.next().done",
+        "let rx; let r = /a/g; r.constructor = {[Symbol.species]:function(){rx={lastIndex:0,exec(){return {0:'a'};}};return rx;}}; let it = 'a'.matchAll(r); rx.exec = () => null; it.next().done",
+        "let r = /,/g; r.lastIndex = 2; 'a,b,c'.split(r,3).join('|') === 'a|b|c' && r.lastIndex === 2",
+        "let a = 'ab'.split(/(z)?b/); a.length === 3 && a[0] === 'a' && a[1] === undefined && a[2] === ''",
+        "'🐱x'.split(/(?:)/u).join('|') === '🐱|x' && 'ab'.split(/(b)/,2).join('|') === 'a|b'",
+        "let rx = {flags:'',exec(){return {0:'XY',1:{toString(){return 'C';}},length:2,index:1,groups:{'0':'N'}};}}; RegExp.prototype[Symbol.replace].call(rx,'abcde', '$1-$<0>-$&') === 'aC-N-XYde'",
+        "let n = 0; let rx = {flags:'g',exec(){return n++ < 2 ? {0:'x',length:1,index:0} : null;}}; let calls = 0; RegExp.prototype[Symbol.replace].call(rx,'ab',()=>{calls++;return 'X';}) === 'Xb' && calls === 2",
+        "let rx = {flags:'',exec(){return {0:'x',length:1,index:0,groups:null};}}; let caught = false; try {RegExp.prototype[Symbol.replace].call(rx,'a','$&');} catch(e) {caught = e instanceof TypeError;} caught",
+        "let r = /a/; r[Symbol.match] = false; RegExp(r) !== r && RegExp(r).source === 'a'",
+        "let x = {[Symbol.match]:true,source:'b',flags:'g'}; let r = RegExp(x); r.source === 'b' && r.flags === 'g'",
+        "let p = Object.getPrototypeOf(''.matchAll(/x/g)); let caught = false; try {p.next.call({});} catch(e) {caught = e instanceof TypeError;} caught && p.next.length === 0 && p.next.name === 'next'",
+        "let d = Object.getOwnPropertyDescriptor(RegExp.prototype,Symbol.replace); d.value.name === '[Symbol.replace]' && d.value.length === 2 && d.writable && !d.enumerable && d.configurable && RegExp[Symbol.species] === RegExp && String.prototype.match.length === 1",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output. Bounds cover adversarial custom
+/// exec/capture values as well as the bounded built-in matcher.
+#[test]
+fn regexp_symbol_limits() {
+    for source in [
+        "let caught = false; try {'a'.replace(/(?<x>a)/,'$<'.repeat(2000));} catch(e) {caught = e instanceof RangeError && e.message.indexOf('replacement work limit') >= 0;} caught",
+        "let rx = {flags:'g',exec(){return {0:'x'.repeat(65536)};}}; let caught = false; try {RegExp.prototype[Symbol.match].call(rx,'a');} catch(e) {caught = e instanceof RangeError;} caught",
+        "let rx = {flags:'',exec(){return {0:'a',length:1000002,index:0};}}; let caught = false; try {RegExp.prototype[Symbol.replace].call(rx,'a','');} catch(e) {caught = e instanceof RangeError;} caught",
+        "let rx = {flags:'',exec(){return {0:'a'.repeat(65537),length:1,index:0};}}; let caught = false; try {RegExp.prototype[Symbol.replace].call(rx,'a','');} catch(e) {caught = e instanceof RangeError;} caught",
+        "let r = /a/g; let caught = false; try {'a'.repeat(65537).match(r);} catch(e) {caught = e instanceof RangeError;} caught",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn regexp_symbols_on_small_worker_stack() {
+    // Synthetic fixture, not light-cljs output. Compile on the embedding
+    // thread, then exercise native transitions on a 64 KiB worker.
+    let rt = Runtime::new();
+    rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
+    let code = exe(
+        "let matches = 'a1b2'.match(/\\d/g); let split = 'a1b2'.split(/\\d/); let it = 'a1b2'.matchAll(/\\d/g); matches[0] === '1' && split[2] === '' && it.next().value.index === 1 && 'abc'.search(/c/) === 2 && 'abc'.replace(/b/,(m,p) => p) === 'a1c'",
+    );
+    let task = rt.spawn(&code, &[]).unwrap();
+    let value = std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            let RunOutcome::Complete(value) = task.run().unwrap() else {
+                panic!()
+            };
+            value.view()
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(value, ValueView::Bool(true));
+}
+
+#[test]
+fn regexp_symbol_fixture() {
+    assert_eq!(
+        eval(include_str!("fixtures/js/regexp_symbols.js")),
         ValueView::Bool(true)
     );
 }

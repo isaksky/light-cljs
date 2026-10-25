@@ -406,11 +406,26 @@ pub(crate) struct OrdinaryObject {
 
 #[derive(Debug, Default)]
 struct InternalSlots {
+    regexp_iterator: Option<Box<crate::vm::native::string_regexp::IteratorData>>,
     engine_error: Option<Box<crate::vm::exception::ErrorObject>>,
     private: crate::vm::private::Elements,
 }
 
 impl OrdinaryObject {
+    pub(crate) fn with_regexp_iterator(
+        mut self,
+        data: crate::vm::native::string_regexp::IteratorData,
+    ) -> Self {
+        self.internal
+            .get_or_insert_with(Default::default)
+            .regexp_iterator = Some(Box::new(data));
+        self
+    }
+    pub(crate) fn regexp_iterator(
+        &mut self,
+    ) -> Option<&mut crate::vm::native::string_regexp::IteratorData> {
+        self.internal.as_deref_mut()?.regexp_iterator.as_deref_mut()
+    }
     pub(crate) fn with_display_names(
         mut self,
         data: crate::intl::display_names::DisplayNames,
@@ -1059,6 +1074,9 @@ impl Trace for OrdinaryObject {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         if let Some(internal) = &self.internal {
             internal.private.trace(visit);
+            if let Some(iterator) = &internal.regexp_iterator {
+                iterator.trace(visit);
+            }
         }
         if let Some(segmenter) = &self.segmenter {
             segmenter.trace(visit);

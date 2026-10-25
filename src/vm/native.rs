@@ -241,6 +241,7 @@ mod relative_time_format;
 pub(crate) mod segmenter;
 mod string_methods;
 mod string_raw;
+pub(crate) mod string_regexp;
 mod string_replace;
 mod sum_precise;
 mod typed_array;
@@ -453,10 +454,6 @@ enum ConvertTarget {
     ArrayBuffer(builtin::Builtin),
     SymbolDescription,
     SymbolRegistryKey,
-    StringSplit {
-        separator_undefined: bool,
-        limit_undefined: bool,
-    },
     NumberValue,
     PrimitiveValue,
     StringValue,
@@ -562,14 +559,9 @@ enum NativeState {
         wrap: Option<(u64, bool)>,
     },
     Promise(super::promise::PromiseState),
-    StringSplit {
-        split: Box<crate::value::string::StringSplit>,
-        out: Value,
-        remaining: u32,
-    },
     Error(Box<error::ErrorState>),
     RegExp(regexp::State),
-    StringReplace(Box<string_replace::State>),
+    StringRegExp(Box<string_regexp::State>),
     Bind {
         target: Value,
         args: Vec<Value>,
@@ -994,7 +986,6 @@ impl Trace for NativeFrame {
             }
             NativeState::TypedArray(array) => array.trace(visit),
             NativeState::Promise(p) => p.trace(visit),
-            NativeState::StringSplit { out, .. } => out.trace(visit),
             NativeState::JsonStringify(stringifier) => stringifier.trace(visit),
             NativeState::Json {
                 text,
@@ -1026,7 +1017,7 @@ impl Trace for NativeFrame {
             NativeState::ArrayToString { this, .. } => this.trace(visit),
             NativeState::Error(error) => error.trace(visit),
             NativeState::RegExp(re) => re.trace(visit),
-            NativeState::StringReplace(replace) => replace.trace(visit),
+            NativeState::StringRegExp(state) => state.trace(visit),
             NativeState::StringMethods(method) => method.trace(visit),
             NativeState::Reduce { f, vec, acc, .. } => {
                 for v in [f, vec, acc] {
@@ -1504,6 +1495,9 @@ pub(crate) fn start_builtin(
         object_statics::start(heap, state, which, args, popped)?;
         return Ok(true);
     }
+    if string_regexp::handles(which) && !construct {
+        return start_string_regexp(heap, state, which, this, args, popped);
+    }
     if matches!(
         which,
         Builtin::Number | Builtin::String | Builtin::Symbol | Builtin::BigInt
@@ -1534,6 +1528,8 @@ pub(crate) fn start_builtin(
             | Builtin::NumberPrototypeValueOf
             | Builtin::StringPrototypeValueOf
             | Builtin::StringPrototypeToString
+            | Builtin::RegExpSource
+            | Builtin::RegExpFlag(_)
             | Builtin::IntlNumberFormatGetFormat
             | Builtin::IntlNumberFormatResolvedOptions
             | Builtin::ObjectSetPrototypeOf
@@ -1799,6 +1795,23 @@ pub(crate) fn start_builtin(
         return start_typed_array_constructor(heap, state, kind, args, popped);
     }
     start_builtin_slow(heap, state, which, this, args, construct, popped)
+}
+
+/// Keep the protocol state and argument temporaries off the general built-in
+/// dispatch frame, which is also used on 64 KiB migrating workers.
+#[inline(never)]
+fn start_string_regexp(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    let native = string_regexp::State::new(heap, state.diag.task, which, this, args)?;
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::StringRegExp(Box::new(native)))?;
+    Ok(true)
 }
 
 pub(crate) fn start_builtin_constructor(
@@ -2410,16 +2423,6 @@ fn start_builtin_slow(
     }
     if matches!(
         which,
-        Builtin::StringPrototypeReplace | Builtin::StringPrototypeReplaceAll
-    ) && !construct
-    {
-        let native = string_replace::State::new(heap, state.diag.task, which, this, args)?;
-        state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::StringReplace(Box::new(native)))?;
-        return Ok(true);
-    }
-    if matches!(
-        which,
         Builtin::IntlCollator | Builtin::IntlCollatorBound | Builtin::IntlCollatorSupportedLocales
     ) && (!construct || which == Builtin::IntlCollator)
     {
@@ -2917,29 +2920,6 @@ fn start_builtin_conversion(
                     concat_len: 0,
                 },
                 vec![this.clone(), pos],
-                Hint::String,
-            )
-        }
-        Builtin::StringPrototypeSplit if !construct => {
-            if matches!(this, Value::Null | Value::Undefined) {
-                return Err(Fault::TypeError(format!(
-                    "String.prototype.split called on {}",
-                    this.type_name()
-                )));
-            }
-            let separator = args.first().cloned().unwrap_or(Value::Undefined);
-            if crate::regexp::object::data(heap, state.diag.task, &separator)?.is_some() {
-                return Err(Fault::TypeError(
-                    "RegExp separators in String.prototype.split are not supported".into(),
-                ));
-            }
-            let limit = args.get(1).cloned().unwrap_or(Value::Undefined);
-            (
-                ConvertTarget::StringSplit {
-                    separator_undefined: matches!(separator, Value::Undefined),
-                    limit_undefined: matches!(limit, Value::Undefined),
-                },
-                vec![this.clone(), limit, separator],
                 Hint::String,
             )
         }
@@ -3820,7 +3800,6 @@ fn string_operand(target: ConvertTarget, index: usize) -> bool {
         ) => index == 1,
         Instruction(Instr::In) | NumberParse { .. } => index == 0,
         PropertyBuiltin { .. } => index == 1,
-        StringSplit { .. } => index != 1,
         StringBuiltin { which, .. } => builtin::string_operand_is_text(which, index),
         _ => false,
     }
@@ -4194,7 +4173,7 @@ impl NativeState {
             }
             NativeState::Error(error) => error.step(heap, task, input),
             NativeState::RegExp(_) => unreachable!("RegExp dispatched before other native arms"),
-            NativeState::StringReplace(replace) => replace.step(heap, task, input),
+            NativeState::StringRegExp(state) => state.step(heap, task, input),
             NativeState::StringMethods(method) => method.step(heap, task, input),
             NativeState::Bind {
                 target,
@@ -4571,28 +4550,6 @@ impl NativeState {
                     Ok(Action::Return(Value::Number(*magnitude * sum.sqrt())))
                 }
             }
-            NativeState::StringSplit {
-                split,
-                out,
-                remaining,
-            } => {
-                use crate::value::string::SplitStep;
-                if *remaining == 0 {
-                    return Ok(Action::Return(out.clone()));
-                }
-                match split
-                    .advance()
-                    .ok_or(Fault::OutOfMemory("split string allocation failed"))?
-                {
-                    SplitStep::Continue => Ok(Action::Continue),
-                    SplitStep::Done => Ok(Action::Return(out.clone())),
-                    SplitStep::Part(part) => {
-                        property::append(heap, task, out, Some(Value::String(part)))?;
-                        *remaining -= 1;
-                        Ok(Action::Continue)
-                    }
-                }
-            }
             NativeState::StringSearch(search) => Ok(match search.advance(256) {
                 Some(index) => Action::Return(Value::Number(index as f64)),
                 None => Action::Continue,
@@ -4802,27 +4759,6 @@ impl NativeState {
                             if !matches!(receiver, Value::BigInt(_)) {
                                 operands[*next] = Value::Number(dispatch::to_number(receiver)?);
                             }
-                            *next += 1;
-                            continue;
-                        }
-                        if let ConvertTarget::StringSplit {
-                            limit_undefined, ..
-                        } = target
-                        {
-                            operands[*next] = if *next == 1 {
-                                Value::Number(if *limit_undefined {
-                                    u32::MAX as f64
-                                } else {
-                                    dispatch::to_int32(dispatch::to_number(receiver)?) as u32 as f64
-                                })
-                            } else {
-                                Value::String(dispatch::to_js_string(receiver)?)
-                            };
-                            *hint = if *next == 0 {
-                                Hint::Number
-                            } else {
-                                Hint::String
-                            };
                             *next += 1;
                             continue;
                         }
@@ -5074,26 +5010,6 @@ impl NativeState {
                     ConvertTarget::SymbolDescription => Ok(Action::Return(Value::Symbol(
                         crate::value::JsSymbol::new(Some(dispatch::to_js_string(&operands[0])?)),
                     ))),
-                    ConvertTarget::StringSplit {
-                        separator_undefined,
-                        ..
-                    } => {
-                        let text = dispatch::to_js_string(&operands[0])?;
-                        let remaining = dispatch::to_number(&operands[1])? as u32;
-                        let separator = if separator_undefined {
-                            None
-                        } else {
-                            Some(dispatch::to_js_string(&operands[2])?)
-                        };
-                        *self = NativeState::StringSplit {
-                            split: Box::new(crate::value::string::StringSplit::new(
-                                text, separator,
-                            )),
-                            out: property::new_array(heap, task)?,
-                            remaining,
-                        };
-                        Ok(Action::Continue)
-                    }
                     ConvertTarget::NumberParse { integer } => {
                         let text = dispatch::to_js_string(&operands[0])?;
                         let radix = if integer {
@@ -5373,7 +5289,7 @@ impl NativeState {
                 | NativeState::Promise(_)
                 | NativeState::Error(_)
                 | NativeState::RegExp(_)
-                | NativeState::StringReplace(_)
+                | NativeState::StringRegExp(_)
                 | NativeState::StringMethods(_)
                 | NativeState::PropertyCall { .. }
                 | NativeState::DefineProperty(_)
@@ -5399,7 +5315,6 @@ impl NativeState {
                 | NativeState::Convert { .. }
                 | NativeState::MathHypot { .. }
                 | NativeState::StringSearch(_)
-                | NativeState::StringSplit { .. }
                 | NativeState::StringBuild(_)
                 | NativeState::NumberParse(_)
                 | NativeState::DateParse { .. }

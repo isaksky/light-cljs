@@ -2307,8 +2307,8 @@ Deferred:
   with `UnsupportedOperand` (an absent method reads `undefined`).
 - The String methods added below include case conversion, trim, repeat,
   predicates, `at`, collation and normalization (clj-quickjs-300). Remaining
-  absent methods read `undefined`; match/matchAll/search dispatch is tracked in
-  clj-quickjs-301.
+  absent methods read `undefined`. String/RegExp symbol dispatch, including
+  match/matchAll/search, executes (clj-quickjs-301).
 
 ### `Function.prototype`, `call`, `apply` and `Reflect.apply` (clj-quickjs-102)
 
@@ -2640,8 +2640,8 @@ including surrogate pairs. Limits use ToUint32, with undefined defaulting to
 `2^32 - 1`. Generic receivers and object arguments use resumable conversion
 in receiver/limit/separator order. Long scans and copies run in 256-unit
 batches, and array fields are appended one per step. Null/undefined receivers
-throw TypeError. RegExp separators and `Symbol.split` remain deferred; object
-separators currently undergo ToString.
+throw TypeError. RegExp separators and custom `Symbol.split` methods execute
+(clj-quickjs-301); other separators undergo ToString.
 
 Tests: `cargo test --test js_source string_split` and
 `cargo test --test js_source string_code_unit_coercion_waits_yields_collects_and_migrates`.
@@ -3176,9 +3176,8 @@ UTF-16 empty-string matches, global lastIndex reset and empty-match progress.
 `replaceAll` requires global regexps. Function replacers receive captures,
 offset, input and optional named groups; calls and all coercions may suspend.
 
-Dispatch uses the internal RegExp brand and flags; Symbol.replace and custom
-exec/flags hooks, generic RegExp replacement, match/search and the previously
-deferred flags remain deferred. String scans yield in 256-comparison batches;
+Dispatch observes Symbol.replace and custom exec/flags hooks (-301).
+String scans yield in 256-comparison batches;
 regexp searches retain the matcher step limit. Strings supplied to replacement
 and callback results are capped at 65,536 code units. `lastIndex` numeric
 conversion checks that same string bound after ToPrimitive. Aggregate capture,
@@ -4362,8 +4361,7 @@ never with a panic.
 Gaps found by the audit are filed as pellets, not fixed here. Private names now
 execute (clj-quickjs-291), as do static blocks (-292) and Set/WeakSet (-295);
 remaining work includes generator `return`/`throw` (-293), Array.prototype mutators,
-search, callback and copying methods (-296 to -299), and match/matchAll/search with RegExp symbol
-dispatch (-301), the plain RegExp `i` flag
+search, callback and copying methods (-296 to -299), the plain RegExp `i` flag
 (-303), Script property escapes (-304), v-flag string properties (-305),
 NumberFormat unit style (-306), DateTimeFormat timeZoneName (-307),
 `Symbol.toPrimitive`
@@ -4804,3 +4802,30 @@ Getters, setters, Proxy traps, iterator callbacks and key/typed-array conversion
 wait, collect and migrate without replay. Results are task-owned; snapshot/array sizes use
 the existing object/array limits, with no additional method-specific cap. Validate with
 `cargo test --test object_statics` and `cargo test --test need object_statics_wait_collect_and_migrate`.
+
+### String and RegExp symbol protocols (clj-quickjs-301)
+
+Supported: String `match`, `matchAll`, `search`, `replace`, `replaceAll`, and
+`split` dispatch through their respective well-known symbols before receiver
+coercion. `matchAll`/`replaceAll` use `Symbol.match` for IsRegExp and require
+`g` in RegExp-like arguments' flags. RegExp exposes all five symbol methods;
+its exec lookup accepts custom callables returning an object or null and
+otherwise falls back to the bounded built-in matcher. Search saves/restores
+lastIndex with SameValue, including negative zero. Match handles global and
+empty Unicode matches. Split uses species and sticky matching, includes
+captures and respects its limit. MatchAll uses species, copies lastIndex and
+returns a task-owned, traced RegExp String Iterator with lazy exec lookup.
+All observable getters, coercions, setters, constructors and callbacks can
+wait, yield, collect and migrate without replay.
+
+Resource limits: built-in RegExp symbol operations check input, flags,
+replacement and converted capture strings before flattening at 65,536 UTF-16
+units, and numeric conversions use the same post-ToPrimitive string bound.
+An aggregate 1,000,000-unit allowance charges iterations, result/capture
+storage, species probing, copied units and substitution/output work, including
+custom exec paths. Iterator next gets its own allowance; every matcher search
+retains its existing matcher limit. Exhaustion throws RangeError. Plain-string
+split retains its existing incremental scan/copy behavior and string limits.
+Iterator Symbol.toStringTag is exposed; generic Object.prototype.toString tag
+lookup remains tracked separately. Tests: `cargo test --test js_source regexp_`,
+`cargo test --test js_source string_replace`, `cargo test --test js_source string_split`.

@@ -1582,3 +1582,13 @@ Semantic references: `research/quickjs/quickjs.c` functions `js_object_assign`,
 The implementation composes this runtime's traced copy/descriptor/iterator continuations;
 no upstream source or tests were copied. Tests are original synthetic fixtures, not
 light-cljs output. IteratorClose follows AddEntriesFromIterable's entry-error boundary.
+
+## String and RegExp symbol protocols (clj-quickjs-301)
+
+Semantic references: `js_string_match`, `js_regexp_Symbol_match`,
+`js_regexp_Symbol_matchAll`, `js_regexp_string_iterator_next`,
+`js_regexp_Symbol_search`, `js_regexp_Symbol_replace`, and
+`js_regexp_Symbol_split` in `research/quickjs/quickjs.c` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+Rust continuations and synthetic JavaScript tests were written afresh;
+no QuickJS source or test text was copied.

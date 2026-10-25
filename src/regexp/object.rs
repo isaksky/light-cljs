@@ -207,6 +207,19 @@ pub(crate) fn exec(
     input: &JsString,
     last: u64,
 ) -> Result<Value, Fault> {
+    exec_with_capture_budget(heap, task, this, input, last, None)
+}
+
+/// Replacement shares its materialization allowance across all matches.
+/// Charge before allocating any result or invoking a replacer.
+pub(crate) fn exec_with_capture_budget(
+    heap: &Heap,
+    task: TaskId,
+    this: &Value,
+    input: &JsString,
+    last: u64,
+    mut replacement_work: Option<&mut usize>,
+) -> Result<Value, Fault> {
     let c = receiver(heap, task, this)?;
     let stateful = c.flags.global || c.flags.sticky;
     let start = if stateful {
@@ -240,6 +253,12 @@ pub(crate) fn exec(
     let Some(m) = found else {
         return Ok(Value::Null);
     };
+    if let Some(work) = &mut replacement_work {
+        let units = m.groups.iter().flatten().map(|r| r.len()).sum::<usize>() + m.groups.len() + 1;
+        **work = work
+            .checked_sub(units)
+            .ok_or_else(|| Fault::RangeError("string replacement work limit exceeded".into()))?;
+    }
     // Reserve every copied UTF-16 unit, including group zero and overlapping
     // lookahead/nested captures, against the allowance left by this search.
     // Do this before allocating any result, so a rejected match copies nothing.

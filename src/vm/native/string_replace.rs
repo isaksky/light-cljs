@@ -1,16 +1,13 @@
-//! Brand-dispatched replacement. Scans/match collection resume between native
-//! steps; matcher calls are bounded leaves. Coercions and replacers use VM frames.
-use std::sync::Arc;
-
+//! Plain-string replacement fallback after an absent @@replace method.
+//! Scans resume between native steps; coercions/replacers use VM frames.
 use super::{Action, Input};
+use crate::heap::Heap;
 use crate::heap::gc::Trace;
-use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
-use crate::object::{OrdinaryObject, PropertyFlags};
-use crate::regexp::{matcher, object};
+use crate::regexp::matcher;
 use crate::value::string::StringSearch;
 use crate::value::{JsString, Value};
-use crate::vm::{builtin::Builtin, dispatch, dispatch::Fault, property};
+use crate::vm::{builtin::Builtin, dispatch, dispatch::Fault};
 
 // Check before flattening a rope. Copying/substitution/capture storage has a
 // separate aggregate allowance, shared across all native steps and callbacks.
@@ -23,8 +20,6 @@ enum Phase {
     Text,
     Search,
     Replacement,
-    LastIndex,
-    LastNumber,
     Collect,
     Render,
     Callback,
@@ -36,7 +31,6 @@ pub(super) struct State {
     this: Value,
     search: Value,
     replacement: Value,
-    regexp: Option<Arc<object::Compiled>>,
     all: bool,
     functional: bool,
     phase: Phase,
@@ -64,31 +58,18 @@ impl Trace for State {
 }
 
 impl State {
-    pub(super) fn new(
-        heap: &Heap,
-        task: TaskId,
-        which: Builtin,
-        this: &Value,
-        args: &[Value],
-    ) -> Result<Self, Fault> {
+    pub(super) fn new(which: Builtin, this: &Value, args: &[Value]) -> Result<Self, Fault> {
         if matches!(this, Value::Null | Value::Undefined) {
             return Err(Fault::TypeError(
                 "String replacement requires a receiver".into(),
             ));
         }
         let search = args.first().cloned().unwrap_or(Value::Undefined);
-        let regexp = object::data(heap, task, &search)?;
         let all = which == Builtin::StringPrototypeReplaceAll;
-        if all && regexp.as_ref().is_some_and(|r| !r.flags.global) {
-            return Err(Fault::TypeError(
-                "replaceAll requires a global RegExp".into(),
-            ));
-        }
         Ok(Self {
             this: this.clone(),
             search,
             replacement: args.get(1).cloned().unwrap_or(Value::Undefined),
-            regexp,
             all,
             functional: false,
             phase: Phase::Start,
@@ -119,7 +100,7 @@ impl State {
     pub(super) fn step(
         &mut self,
         heap: &Heap,
-        task: TaskId,
+        _task: TaskId,
         input: Input,
     ) -> Result<Action, Fault> {
         let v = match input {
@@ -134,12 +115,8 @@ impl State {
             }
             Phase::Text => {
                 self.text = string(v)?;
-                if self.regexp.is_some() {
-                    Ok(self.replacement_action(heap))
-                } else {
-                    self.phase = Phase::Search;
-                    Ok(Action::ToString(self.search.clone()))
-                }
+                self.phase = Phase::Search;
+                Ok(Action::ToString(self.search.clone()))
             }
             Phase::Search => {
                 self.needle = string(v)?;
@@ -149,35 +126,16 @@ impl State {
                 if !self.functional {
                     self.template = string(v)?;
                 }
-                if let Some(re) = &self.regexp {
-                    if re.flags.global {
-                        set_last_index(heap, task, &self.search, 0)?;
-                    }
-                    self.phase = Phase::LastIndex;
-                } else {
-                    self.scan = Some(StringSearch::new(
-                        self.text.clone(),
-                        self.needle.clone(),
-                        0,
-                        false,
-                    ));
-                    self.phase = Phase::Collect;
-                }
-                Ok(Action::Continue)
-            }
-            Phase::LastIndex => {
-                // Branded regexps have a non-configurable own data property.
-                // ToLength can still invoke JavaScript when its value is an object.
-                let last = property::get(heap, task, &self.search, &object::key("lastIndex"))?;
-                self.phase = Phase::LastNumber;
-                Ok(Action::ToNumberLimited(last, MAX_ARGUMENT_UNITS))
-            }
-            Phase::LastNumber => {
-                self.next = usize::try_from(super::to_length(&v)?).unwrap_or(usize::MAX);
+                self.scan = Some(StringSearch::new(
+                    self.text.clone(),
+                    self.needle.clone(),
+                    0,
+                    false,
+                ));
                 self.phase = Phase::Collect;
                 Ok(Action::Continue)
             }
-            Phase::Collect => self.collect(heap, task),
+            Phase::Collect => self.collect(),
             Phase::Render => {
                 let Some(m) = self.results.get(self.current) else {
                     if self.results.is_empty() {
@@ -200,7 +158,7 @@ impl State {
                 )?;
                 self.source_end = span.end;
                 if self.functional {
-                    let args = self.callback_args(heap, task)?;
+                    let args = self.callback_args()?;
                     self.phase = Phase::Callback;
                     Ok(Action::Call {
                         callee: self.replacement.clone(),
@@ -208,14 +166,7 @@ impl State {
                         args,
                     })
                 } else {
-                    substitute(
-                        &self.text,
-                        &self.template,
-                        m,
-                        self.regexp.as_ref().map(|re| re.names.as_slice()),
-                        &mut self.out,
-                        &mut self.work,
-                    )?;
+                    substitute(&self.text, &self.template, m, &mut self.out, &mut self.work)?;
                     self.current += 1;
                     Ok(Action::Continue)
                 }
@@ -234,42 +185,12 @@ impl State {
         }
     }
 
-    fn collect(&mut self, heap: &Heap, task: TaskId) -> Result<Action, Fault> {
+    fn collect(&mut self) -> Result<Action, Fault> {
         if self.collected {
             self.phase = Phase::Render;
             return Ok(Action::Continue);
         }
-        let found = if let Some(re) = &self.regexp {
-            let stateful = re.flags.global || re.flags.sticky;
-            let start = if stateful { self.next } else { 0 };
-            let found =
-                matcher::exec(&re.program, self.text.code_units(), start).map_err(|e| match e {
-                    matcher::MatchError::LimitExceeded => {
-                        Fault::RangeError("regular expression step limit exceeded".into())
-                    }
-                    _ => Fault::SyntaxError(e.to_string()),
-                })?;
-            if stateful {
-                let end = found
-                    .as_ref()
-                    .map_or(0, |m| m.groups[0].as_ref().unwrap().end);
-                set_last_index(heap, task, &self.search, end)?;
-                self.next = end;
-                if re.flags.global
-                    && let Some(m) = &found
-                    && m.groups[0].as_ref().unwrap().is_empty()
-                {
-                    self.next = matcher::advance_string_index(
-                        self.text.code_units(),
-                        end,
-                        re.flags.unicode || re.flags.unicode_sets,
-                    );
-                    set_last_index(heap, task, &self.search, self.next)?;
-                }
-            }
-            self.collected = found.is_none() || !re.flags.global;
-            found
-        } else {
+        let found = {
             if self.next > self.text.len() {
                 self.collected = true;
                 return Ok(Action::Continue);
@@ -304,7 +225,7 @@ impl State {
         Ok(Action::Continue)
     }
 
-    fn callback_args(&mut self, heap: &Heap, task: TaskId) -> Result<Vec<Value>, Fault> {
+    fn callback_args(&mut self) -> Result<Vec<Value>, Fault> {
         let m = &self.results[self.current];
         let mut args = Vec::with_capacity(m.groups.len() + 3);
         for span in &m.groups {
@@ -319,28 +240,6 @@ impl State {
         }
         args.push(Value::Number(m.index as f64));
         args.push(Value::String(self.text.clone()));
-        if let Some(re) = &self.regexp
-            && re.names.iter().any(Option::is_some)
-        {
-            let mut groups = OrdinaryObject::new(Some(task));
-            for (i, name) in re.names.iter().enumerate() {
-                if let Some(name) = name {
-                    charge(&mut self.work, name.len() + 1)?;
-                    let key = heap
-                        .keys()
-                        .intern(name)
-                        .ok_or(Fault::OutOfMemory("capture name"))?;
-                    let value = args[i + 1].clone();
-                    if !matches!(value, Value::Undefined) || groups.get_own(key).is_none() {
-                        groups.define_with(key, value, PropertyFlags::DATA);
-                    }
-                }
-            }
-            args.push(Value::Object(
-                heap.alloc(HeapObject::Plain(groups))
-                    .ok_or(Fault::OutOfMemory("replacement groups"))?,
-            ));
-        }
         Ok(args)
     }
 }
@@ -372,31 +271,16 @@ fn append(out: &mut Vec<u16>, work: &mut usize, units: &[u16]) -> Result<(), Fau
     Ok(())
 }
 
-fn set_last_index(heap: &Heap, task: TaskId, re: &Value, index: usize) -> Result<(), Fault> {
-    let setter = property::prepare_put(
-        heap,
-        task,
-        re,
-        &object::key("lastIndex"),
-        Value::Number(index as f64),
-        true,
-    )?;
-    debug_assert!(setter.is_none());
-    Ok(())
-}
-
 fn substitute(
     text: &JsString,
     template: &JsString,
     m: &matcher::Captures,
-    names: Option<&[Option<JsString>]>,
     out: &mut Vec<u16>,
     work: &mut usize,
 ) -> Result<(), Fault> {
     let source = text.code_units();
     let units = template.code_units();
     let whole = m.groups[0].as_ref().unwrap();
-    let named = names.is_some_and(|names| names.iter().any(Option::is_some));
     let mut i = 0;
     while i < units.len() {
         charge(work, 1)?;
@@ -428,32 +312,6 @@ fn substitute(
                 } else {
                     append(out, work, &[36])?;
                     consumed = 1;
-                }
-            }
-            60 if named => {
-                let mut end = i + 2;
-                while end < units.len() && units[end] != 62 {
-                    charge(work, 1)?;
-                    end += 1;
-                }
-                if end == units.len() {
-                    append(out, work, &[36])?;
-                    consumed = 1;
-                } else {
-                    let name = &units[i + 2..end];
-                    for (index, capture_name) in names.unwrap().iter().enumerate() {
-                        charge(work, 1)?;
-                        if let Some(capture_name) = capture_name {
-                            charge(work, capture_name.len() + name.len())?;
-                            if capture_name.code_units() == name
-                                && let Some(span) = &m.groups[index + 1]
-                            {
-                                append(out, work, &source[span.clone()])?;
-                                break;
-                            }
-                        }
-                    }
-                    consumed = end + 1 - i;
                 }
             }
             _ => {

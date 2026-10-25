@@ -455,6 +455,7 @@ pub(crate) struct Intrinsics {
     pub(crate) intl_number_format_bound: ObjectId,
     pub(crate) array_iterator_prototype: ObjectId,
     pub(crate) string_iterator_prototype: ObjectId,
+    pub(crate) regexp_iterator_prototype: ObjectId,
 
     pub(crate) intl_plural_rules_prototype: ObjectId,
     pub(crate) generator_prototype: ObjectId,
@@ -990,6 +991,9 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         Builtin::StringAt,
         Builtin::StringLocaleCompare,
         Builtin::StringNormalize,
+        Builtin::StringMatch,
+        Builtin::StringMatchAll,
+        Builtin::StringPrototypeSearch,
     ] {
         let method = b.function(which, &[])?;
         b.add(
@@ -1185,6 +1189,10 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         "species",
         "isConcatSpreadable",
         "match",
+        "matchAll",
+        "search",
+        "replace",
+        "split",
     ] {
         b.add_value(
             symbol,
@@ -1317,6 +1325,7 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         )?;
     let set_iterator_prototype =
         set_iterator_intrinsics(&mut b, iterator_prototype, set_prototype)?;
+    let regexp_iterator_prototype = regexp_iterator_intrinsics(&mut b, iterator_prototype)?;
 
     for method in [Builtin::BigIntAsIntN, Builtin::BigIntAsUintN] {
         let function = b.function(method, &[])?;
@@ -1411,6 +1420,7 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         proxy,
         array_iterator_prototype,
         string_iterator_prototype,
+        regexp_iterator_prototype,
         bigint,
         bigint_prototype,
         typed_array_prototypes,
@@ -2306,6 +2316,26 @@ fn regexp_intrinsics(
         &[("prototype", prototype, PropertyFlags::FIXED)],
     )?;
     b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    promise_species(b, constructor)?;
+    for (name, which) in [
+        ("match", Builtin::RegExpMatch),
+        ("matchAll", Builtin::RegExpMatchAll),
+        ("search", Builtin::RegExpSearch),
+        ("replace", Builtin::RegExpReplace),
+        ("split", Builtin::RegExpSplit),
+    ] {
+        let f = b.function(which, &[])?;
+        let key = b
+            .heap
+            .keys()
+            .intern_symbol(&crate::value::symbol::well_known(name))?;
+        b.heap
+            .with_object_mut(prototype, |o| match o {
+                HeapObject::Plain(o) => o.define_with(key, Value::Object(f), PropertyFlags::METHOD),
+                _ => false,
+            })?
+            .then_some(())?;
+    }
     for (name, which) in [
         ("exec", Builtin::RegExpExec),
         ("test", Builtin::RegExpTest),
@@ -2341,6 +2371,26 @@ fn regexp_intrinsics(
         }
     }
     Some((prototype, constructor))
+}
+
+#[inline(never)]
+fn regexp_iterator_intrinsics(b: &mut Build<'_>, parent: ObjectId) -> Option<ObjectId> {
+    let next = b.function(Builtin::RegExpIteratorNext, &[])?;
+    let mut o = OrdinaryObject::intrinsic(Some(parent));
+    define(b.heap, &mut o, "next", next, PropertyFlags::METHOD)?;
+    let tag = b
+        .heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    o.define_with(
+        tag,
+        Value::String("RegExp String Iterator".into()),
+        PropertyFlags::FUNCTION_INFO,
+    )
+    .then_some(())?;
+    let id = b.heap.alloc(HeapObject::Plain(o))?;
+    b.all.push(id);
+    Some(id)
 }
 
 fn intl_list_format_intrinsics(

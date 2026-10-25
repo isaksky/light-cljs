@@ -538,6 +538,16 @@ pub(crate) enum Builtin {
     ObjectValues,
     ObjectFromEntries,
     ObjectDefineProperties,
+
+    StringMatch,
+    StringMatchAll,
+    StringPrototypeSearch,
+    RegExpMatch,
+    RegExpMatchAll,
+    RegExpSearch,
+    RegExpReplace,
+    RegExpSplit,
+    RegExpIteratorNext,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -591,6 +601,16 @@ impl Builtin {
             Builtin::ObjectValues => "values",
             Builtin::ObjectFromEntries => "fromEntries",
             Builtin::ObjectDefineProperties => "defineProperties",
+
+            Self::StringMatch => "match",
+            Self::StringMatchAll => "matchAll",
+            Self::StringPrototypeSearch => "search",
+            Self::RegExpMatch => "[Symbol.match]",
+            Self::RegExpMatchAll => "[Symbol.matchAll]",
+            Self::RegExpSearch => "[Symbol.search]",
+            Self::RegExpReplace => "[Symbol.replace]",
+            Self::RegExpSplit => "[Symbol.split]",
+            Self::RegExpIteratorNext => "next",
             Builtin::Set => "Set",
             Builtin::WeakSet => "WeakSet",
             Builtin::SetAdd | Builtin::WeakSetAdd => "add",
@@ -910,6 +930,14 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Self::StringMatch
+            | Self::StringMatchAll
+            | Self::StringPrototypeSearch
+            | Self::RegExpMatch
+            | Self::RegExpMatchAll
+            | Self::RegExpSearch => 1,
+            Self::RegExpReplace | Self::RegExpSplit => 2,
+            Self::RegExpIteratorNext => 0,
             Builtin::Set
             | Builtin::WeakSet
             | Builtin::SetClear
@@ -1430,6 +1458,15 @@ pub(crate) fn call(
             Err(Fault::Internal("string method requires resumable frame"))
         }
         Builtin::RegExp
+        | Builtin::StringMatch
+        | Builtin::StringMatchAll
+        | Builtin::StringPrototypeSearch
+        | Builtin::RegExpMatch
+        | Builtin::RegExpMatchAll
+        | Builtin::RegExpSearch
+        | Builtin::RegExpReplace
+        | Builtin::RegExpSplit
+        | Builtin::RegExpIteratorNext
         | Builtin::StringPrototypeReplace
         | Builtin::StringPrototypeReplaceAll
         | Builtin::RegExpExec

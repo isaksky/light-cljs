@@ -19,6 +19,8 @@ pub(super) enum State {
         flags: Value,
         original: Value,
         identity: bool,
+        branded: bool,
+        is_regexp: bool,
         stage: u8,
     },
     Exec {
@@ -79,9 +81,10 @@ pub(super) fn start(
             let original = arg(0);
             let mut pattern = original.clone();
             let mut flags = arg(1);
-            let mut identity = false;
+            let identity = !construct && matches!(flags, Value::Undefined);
+            let mut branded = false;
             if let Some(c) = object::data(heap, task, &original)? {
-                identity = !construct && matches!(flags, Value::Undefined);
+                branded = true;
                 pattern = Value::String(c.source.clone());
                 if matches!(flags, Value::Undefined) {
                     flags = Value::String(object::flags(c.flags));
@@ -92,7 +95,9 @@ pub(super) fn start(
                 flags,
                 original,
                 identity,
-                stage: 0,
+                branded,
+                is_regexp: false,
+                stage: 10,
             }
         }
         Builtin::RegExpExec if !construct => {
@@ -200,9 +205,40 @@ impl State {
                 flags,
                 original,
                 identity,
+                branded,
+                is_regexp,
                 stage,
             } => loop {
                 match *stage {
+                    10 => {
+                        *stage = 11;
+                        if matches!(original, Value::Object(_)) {
+                            let key =
+                                property::Key::Symbol(crate::value::symbol::well_known("match"));
+                            match property::read(heap, task, original, &key)? {
+                                Some(property::Read::Getter(callee)) => {
+                                    return Ok(Action::Call {
+                                        callee,
+                                        this: original.clone(),
+                                        args: vec![],
+                                    });
+                                }
+                                Some(property::Read::Value(value)) => v = value,
+                                None => v = Value::Undefined,
+                            }
+                        } else {
+                            v = Value::Undefined;
+                        }
+                    }
+                    11 => {
+                        *is_regexp = if matches!(v, Value::Undefined) {
+                            *branded
+                        } else {
+                            v.truthy()
+                        };
+                        *identity &= *is_regexp;
+                        *stage = 0;
+                    }
                     0 => {
                         *stage = 1;
                         if *identity {
@@ -220,6 +256,14 @@ impl State {
                             if crate::atom::same_value(&v, &constructor) {
                                 return Ok(Action::Return(original.clone()));
                             }
+                        }
+                        if *is_regexp && !*branded {
+                            *stage = 12;
+                            match read(heap, task, original, "source")? {
+                                Ok(value) => v = value,
+                                Err(action) => return Ok(action),
+                            }
+                            continue;
                         }
                         *stage = 2;
                         if matches!(pattern, Value::Undefined) {
@@ -242,6 +286,30 @@ impl State {
                         let flags = string(v)?;
                         let c = object::compile(&source, &flags).map_err(|e| e.fault())?;
                         return object::allocate(heap, task, c).map(Action::Return);
+                    }
+                    12 => {
+                        *pattern = v;
+                        *stage = 13;
+                        if matches!(flags, Value::Undefined) {
+                            match read(heap, task, original, "flags")? {
+                                Ok(value) => v = value,
+                                Err(action) => return Ok(action),
+                            }
+                        } else {
+                            v = flags.clone();
+                        }
+                    }
+                    13 => {
+                        *flags = v;
+                        *stage = 14;
+                        if matches!(pattern, Value::Undefined) {
+                            v = Value::String("".into());
+                        } else {
+                            return Ok(Action::ToString(pattern.clone()));
+                        }
+                    }
+                    14 => {
+                        *stage = 2;
                     }
                     _ => return Err(Fault::Internal("RegExp constructor stage")),
                 }
@@ -267,7 +335,7 @@ impl State {
                     }
                     2 => {
                         *stage = 3;
-                        return Ok(Action::ToNumber(v));
+                        return Ok(Action::ToNumberLimited(v, 65_536));
                     }
                     3 => {
                         return object::exec(heap, task, this, text, super::to_length(&v)?)
