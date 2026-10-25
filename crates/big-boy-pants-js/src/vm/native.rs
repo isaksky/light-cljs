@@ -1477,7 +1477,7 @@ fn eval_source(
             }
             let f = dispatch::new_function(
                 heap,
-                state.top().code.clone(),
+                state.top().code.shared(),
                 Box::new([]),
                 state.diag.task,
                 None,
@@ -3559,7 +3559,8 @@ fn enter_ordinary_constructor(
     heap: &Heap,
     call: construct::Invocation,
 ) -> Result<Flow, Fault> {
-    let Callee::Code(id, code) = dispatch::callee(heap, &call.callee)? else {
+    let Callee::Code(id, code) = dispatch::cached_callee(heap, &call.callee, &state.code_cache)?
+    else {
         return Err(Fault::Internal("ordinary constructor is not code"));
     };
     set_awaiting(state, Awaiting::CallResult)?;
@@ -3642,7 +3643,7 @@ fn apply_action(
                 return Err(Fault::Internal("eval function is not an object"));
             };
             state.push(function);
-            state.enter(code, id, Value::Undefined, 0)?;
+            state.enter(state.code_cache.get(&code), id, Value::Undefined, 0)?;
             state.top_mut().eval = true;
             Ok(Flow::FrameChanged)
         }
@@ -3761,23 +3762,26 @@ fn apply_action(
             let (max_args, max_hops) = state.forward_limits(state.stack_len());
             let call = builtin::Forward { callee, this, args };
             let task = state.diag.task;
-            let (id, code, call) = match dispatch::resolve(heap, task, call, max_args, max_hops)? {
-                (Callee::Bound(_), _) => return Err(Fault::Internal("unresolved bound function")),
-                (Callee::Code(id, code), call) => (id, code, call),
-                (Callee::Builtin(which), call) => {
-                    set_awaiting(state, Awaiting::CallResult)?;
-                    if start_builtin(heap, state, which, &call.this, &call.args, false, 0)? {
-                        return Ok(Flow::FrameChanged);
+            let (id, code, call) =
+                match dispatch::resolve(heap, task, call, max_args, max_hops, &state.code_cache)? {
+                    (Callee::Bound(_), _) => {
+                        return Err(Fault::Internal("unresolved bound function"));
                     }
-                    // Runs to completion (`crate::vm::builtin`); no safepoint
-                    // falls between here and the push that roots its result.
-                    // The next step receives it like a callback's return.
-                    let result =
-                        builtin::call_in_state(heap, state, which, &call.this, &call.args)?;
-                    state.push(result);
-                    return Ok(Flow::Next);
-                }
-            };
+                    (Callee::Code(id, code), call) => (id, code, call),
+                    (Callee::Builtin(which), call) => {
+                        set_awaiting(state, Awaiting::CallResult)?;
+                        if start_builtin(heap, state, which, &call.this, &call.args, false, 0)? {
+                            return Ok(Flow::FrameChanged);
+                        }
+                        // Runs to completion (`crate::vm::builtin`); no safepoint
+                        // falls between here and the push that roots its result.
+                        // The next step receives it like a callback's return.
+                        let result =
+                            builtin::call_in_state(heap, state, which, &call.this, &call.args)?;
+                        state.push(result);
+                        return Ok(Flow::Next);
+                    }
+                };
             set_awaiting(state, Awaiting::CallResult)?;
             state.push(call.callee);
             let argc = call.args.len();
@@ -6092,7 +6096,7 @@ mod tests {
         expect(
             violation(|| {
                 let _b = scoped_borrow();
-                let _ = s.enter(std::sync::Arc::clone(&code.0), id, Value::Undefined, 0);
+                let _ = s.enter(s.code_cache.get(&code.0), id, Value::Undefined, 0);
             }),
             "entering a call frame",
         );

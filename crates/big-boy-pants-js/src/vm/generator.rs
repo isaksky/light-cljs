@@ -100,7 +100,7 @@ pub(crate) fn create(heap: &Heap, vm: &mut VmState) -> Result<(), Fault> {
         None => {
             let Value::Object(id) = super::dispatch::new_function(
                 heap,
-                vm.top().code.clone(),
+                vm.top().code.shared(),
                 Box::new([]),
                 vm.diag.task,
                 None,

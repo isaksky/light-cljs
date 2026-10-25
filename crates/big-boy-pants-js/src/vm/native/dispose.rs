@@ -44,7 +44,7 @@ pub(super) fn start_async_stack(
     };
     state.truncate_operands(state.stack_len() - popped)?;
     state.push(function);
-    state.enter(code.0.clone(), id, this, 0)
+    state.enter(state.code_cache.get(&code.0), id, this, 0)
 }
 
 #[derive(Debug)]

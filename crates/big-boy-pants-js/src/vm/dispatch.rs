@@ -512,9 +512,9 @@ fn name_constant(code: &Code, i: u16) -> Result<&JsString, Fault> {
 }
 
 /// What a callable value runs.
-pub(crate) enum Callee {
+pub(crate) enum Callee<C = Arc<Code>> {
     /// A function object: its code runs in a new VM frame.
-    Code(ObjectId, Arc<Code>),
+    Code(ObjectId, C),
     /// A built-in function: Rust code run inside the call instruction
     /// (`crate::vm::builtin`).
     Builtin(Builtin),
@@ -525,12 +525,28 @@ pub(crate) enum Callee {
 /// The callee of a `Call`/`CallMethod` (or of a native's callback): what it
 /// runs, or the name of what was found instead.
 pub(crate) fn callee(heap: &Heap, callee: &Value) -> Result<Callee, Fault> {
+    callee_code(heap, callee, Arc::clone)
+}
+
+pub(crate) fn cached_callee(
+    heap: &Heap,
+    callee: &Value,
+    cache: &super::frames::CodeCache,
+) -> Result<Callee<super::frames::TaskCode>, Fault> {
+    callee_code(heap, callee, |code| cache.get(code))
+}
+
+fn callee_code<C>(
+    heap: &Heap,
+    callee: &Value,
+    code: impl FnOnce(&Arc<Code>) -> C,
+) -> Result<Callee<C>, Fault> {
     let Value::Object(id) = *callee else {
         return Err(Fault::NotCallable(callee.type_name()));
     };
     let id = super::proxy::unwrapped(heap, id)?;
     heap.read(id, |object| match object {
-        HeapObject::Function(f) => Ok(Callee::Code(id, Arc::clone(&f.code))),
+        HeapObject::Function(f) => Ok(Callee::Code(id, code(&f.code))),
         HeapObject::Builtin(f) => Ok(Callee::Builtin(f.which)),
         HeapObject::BoundFunction(f) => Ok(Callee::Bound(builtin::Forward {
             callee: f.target.clone(),
@@ -558,7 +574,7 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
     let [f, ..] = rest else {
         return Err(Fault::Internal("operand stack underflow"));
     };
-    if let Callee::Code(id, code) = callee(heap, f)?
+    if let Callee::Code(id, code) = cached_callee(heap, f, &state.code_cache)?
         && !matches!(f, Value::Object(object) if super::proxy::inspect(heap, state.diag.task, *object)?.is_some())
     {
         if method {
@@ -608,7 +624,7 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
         this,
         args: args.to_vec(),
     };
-    match resolve(heap, task, forward, max_args, max_hops)? {
+    match resolve(heap, task, forward, max_args, max_hops, &state.code_cache)? {
         (Callee::Code(id, code), forward) => {
             let keep = state.stack_len() - popped;
             state.truncate_operands(keep)?;
@@ -746,12 +762,13 @@ pub(crate) fn resolve(
     mut forward: builtin::Forward,
     max_args: usize,
     max_hops: usize,
-) -> Result<(Callee, builtin::Forward), Fault> {
+    cache: &super::frames::CodeCache,
+) -> Result<(Callee<super::frames::TaskCode>, builtin::Forward), Fault> {
     for hops in 0..=max_hops {
         if let Value::Object(id) = forward.callee {
             forward.callee = Value::Object(super::proxy::forward(heap, task, id, "apply")?);
         }
-        match callee(heap, &forward.callee)? {
+        match cached_callee(heap, &forward.callee, cache)? {
             Callee::Bound(mut bound) => {
                 if hops == max_hops {
                     break;
@@ -843,7 +860,7 @@ fn construct_target(
     if super_call && !is_constructor(heap, &f, max_hops)? {
         return Err(not_a_constructor(state, &f, f.type_name()));
     }
-    let (id, code) = match callee(heap, &f) {
+    let (id, code) = match cached_callee(heap, &f, &state.code_cache) {
         Ok(Callee::Builtin(Builtin::Proxy)) => {
             let result = super::proxy::construct(heap, task, &args)?;
             state.replace(argc + 1, result)?;
@@ -2148,7 +2165,7 @@ fn template_object(state: &mut VmState, heap: &Heap, n: u16) -> Result<(), Fault
     if n == 0 || state.operands().len() < 2 * n {
         return Err(Fault::Internal("invalid template object arity"));
     }
-    let code = Arc::clone(&state.top().code);
+    let code = state.top().code.shared();
     let pc = state.top().pc.saturating_sub(1);
     let key = (Arc::as_ptr(&code) as usize, pc);
     let realm = realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
@@ -2788,7 +2805,7 @@ fn step_instruction(
                     // one; it is kept in the frame (a root) from now on.
                     let f = new_function(
                         heap,
-                        Arc::clone(&state.top().code),
+                        state.top().code.shared(),
                         Box::new([]),
                         state.diag.task,
                         None,
@@ -3315,7 +3332,7 @@ pub(crate) fn execute_budgeted(
     budget: &mut Option<u64>,
 ) -> Exit {
     native::assert_no_borrow("reentering the dispatch loop");
-    let mut code = Arc::clone(&state.top().code);
+    let mut code = state.top().code.clone();
     // Run entry is a poll point.
     heap.safepoint(state);
     loop {
@@ -3363,7 +3380,7 @@ pub(crate) fn execute_budgeted(
             Ok(Flow::Resume(_)) => unreachable!("resume was dispatched above"),
             Ok(Flow::Next) => continue,
             Ok(Flow::FrameChanged) => {
-                code = Arc::clone(&state.top().code);
+                code = state.top().code.clone();
                 continue;
             }
             Ok(Flow::Complete(value)) => return Exit::Return(value),
@@ -3386,7 +3403,7 @@ pub(crate) fn execute_budgeted(
         };
         match raised {
             None => {
-                code = Arc::clone(&state.top().code);
+                code = state.top().code.clone();
                 // Every value is back in task-owned state: a poll point, so
                 // a loop through handlers cannot starve a collection.
                 heap.safepoint(state);

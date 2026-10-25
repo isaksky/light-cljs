@@ -60,6 +60,8 @@
 //! never changes world. A failure reports the failing frame and its chain of
 //! callers ([`crate::Diagnostic::call_chain`]).
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::collections::OwnedBuilders;
@@ -79,6 +81,50 @@ use crate::vm::native::{self, NativeFrame};
 /// before inspecting their rope; filenames retain a bounded UTF-16 prefix.
 const ERROR_STACK_UNITS: usize = 16_384;
 const ERROR_STACK_METADATA_UNITS: usize = 256;
+
+/// An owning handle whose reference count belongs to one task. Only creating
+/// this handle touches the executable's shared reference count; calls and
+/// dispatch-frame changes clone the outer Arc. Both layers are Send + Sync,
+/// so migration and detached generator activations need no special lifetime
+/// rules or unsafe references. The immutable Code itself is never copied.
+#[derive(Clone, Debug)]
+pub(crate) struct TaskCode(Arc<Arc<Code>>);
+
+impl TaskCode {
+    pub(crate) fn shared(&self) -> Arc<Code> {
+        Arc::clone(&self.0)
+    }
+}
+
+impl std::ops::Deref for TaskCode {
+    type Target = Code;
+    fn deref(&self) -> &Code {
+        &self.0
+    }
+}
+
+/// Bound retained code even for an unending stream of dynamic evals. Cached
+/// code is not a GC root: a handle is only obtained from a live function or
+/// executable; frames retain their usual callee/constant roots. Owning the
+/// Arc prevents pointer reuse from aliasing a different executable.
+#[derive(Debug, Default)]
+pub(crate) struct CodeCache(RefCell<HashMap<usize, TaskCode>>);
+
+impl CodeCache {
+    pub(crate) fn get(&self, code: &Arc<Code>) -> TaskCode {
+        let key = Arc::as_ptr(code) as usize;
+        let mut cache = self.0.borrow_mut();
+        if let Some(local) = cache.get(&key) {
+            return local.clone();
+        }
+        if cache.len() == 256 {
+            cache.clear();
+        }
+        let local = TaskCode(Arc::new(Arc::clone(code)));
+        cache.insert(key, local.clone());
+        local
+    }
+}
 
 #[cfg(test)]
 thread_local! {
@@ -145,7 +191,7 @@ pub(crate) struct Frame {
     /// Eval's var/function declarations create configurable global properties.
     pub(crate) eval: bool,
     /// The shared code this frame runs (never copied per task or call).
-    pub(crate) code: Arc<Code>,
+    pub(crate) code: TaskCode,
     /// The function object this frame was called through, for
     /// `CurrentFunction` and for `GetCapture` (its captured values are the
     /// frame's closure environment). `None` for the entry frame until
@@ -268,6 +314,7 @@ pub(crate) struct GlobalLexical {
 /// The complete VM state of one task.
 #[derive(Debug)]
 pub(crate) struct VmState {
+    pub(crate) code_cache: CodeCache,
     /// Deterministic task-local Math.random stream; never worker/realm state.
     pub(crate) random_state: u64,
     pub(crate) module_link: Option<Box<crate::module::Linker>>,
@@ -340,7 +387,7 @@ impl VmState {
                 &mut self.entry,
                 Frame {
                     eval: false,
-                    code,
+                    code: self.code_cache.get(&code),
                     callee: None,
                     this: Value::Undefined,
                     new_target: Value::Undefined,
@@ -437,7 +484,10 @@ impl VmState {
         let bound = &args[..args.len().min(usize::from(code.params))];
         stack.extend_from_slice(bound);
         bind_args(&mut stack, 0, code, bound.len());
+        let code_cache = CodeCache::default();
+        let entry_code = code_cache.get(code);
         VmState {
+            code_cache,
             random_state: 0,
             module_link: None,
             sim_host: None,
@@ -450,7 +500,7 @@ impl VmState {
             global_lexicals: std::collections::HashMap::new(),
             entry: Frame {
                 eval: false,
-                code: Arc::clone(code),
+                code: entry_code,
                 callee: None,
                 this: Value::Undefined,
                 new_target: Value::Undefined,
@@ -699,7 +749,7 @@ impl VmState {
     /// the task's limits.
     pub(crate) fn enter(
         &mut self,
-        code: Arc<Code>,
+        code: TaskCode,
         callee: ObjectId,
         this: Value,
         argc: usize,
@@ -716,7 +766,7 @@ impl VmState {
     /// `enter` has checked ordinary-call eligibility.
     pub(crate) fn enter_constructor(
         &mut self,
-        code: Arc<Code>,
+        code: TaskCode,
         callee: ObjectId,
         this: Value,
         argc: usize,
@@ -1293,7 +1343,7 @@ impl VmState {
     pub(crate) fn frame_code(&self) -> Vec<Arc<Code>> {
         std::iter::once(&self.entry)
             .chain(&self.calls)
-            .map(|f| Arc::clone(&f.code))
+            .map(|f| f.code.shared())
             .collect()
     }
 }
@@ -1344,6 +1394,74 @@ mod tests {
     use super::*;
     use crate::vm::Assembler;
     use crate::vm::instr::Opcode;
+
+    #[test]
+    fn call_handles_keep_shared_counts_constant_and_tasks_independent() {
+        let exe = Assembler::new()
+            .op(Opcode::Undefined)
+            .op(Opcode::Return)
+            .finish("shared", 0, 0)
+            .unwrap();
+        let a = CodeCache::default();
+        let b = CodeCache::default();
+        let ca = a.get(&exe.0);
+        let cb = b.get(&exe.0);
+        assert!(!Arc::ptr_eq(&ca.0, &cb.0));
+        assert!(Arc::ptr_eq(&ca.0, &a.get(&exe.0).0));
+        let count = Arc::strong_count(&exe.0);
+        let calls: Vec<_> = (0..1_000).map(|_| a.get(&exe.0)).collect();
+        assert_eq!(Arc::strong_count(&exe.0), count);
+        drop(calls);
+        assert_eq!(Arc::strong_count(&exe.0), count);
+    }
+
+    #[test]
+    fn detached_code_owns_its_lifetime_after_cache_eviction_and_migration() {
+        let exe = Assembler::new()
+            .op(Opcode::Undefined)
+            .op(Opcode::Return)
+            .finish("detached", 0, 0)
+            .unwrap();
+        let weak = Arc::downgrade(&exe.0);
+        let mut state = VmState::new(
+            &exe.0,
+            &[],
+            DiagnosticContext {
+                task: TaskId::from_raw(1),
+                world: WorldId::INITIAL,
+            },
+            VmLimits::DEFAULT,
+        );
+        let saved = state.detach_activation().ok().unwrap();
+        // More distinct code than the cache can retain, including the
+        // detached frame's former entry. Eviction must not invalidate it.
+        for _ in 0..256 {
+            let other = Assembler::new()
+                .op(Opcode::Undefined)
+                .op(Opcode::Return)
+                .finish("other", 0, 0)
+                .unwrap();
+            state.code_cache.get(&other.0);
+        }
+        assert!(
+            !state
+                .code_cache
+                .0
+                .borrow()
+                .contains_key(&(Arc::as_ptr(&exe.0) as usize))
+        );
+        drop(state);
+        drop(exe);
+        assert!(weak.upgrade().is_some());
+        std::thread::spawn(move || {
+            assert_eq!(&*saved.frame.code.name, "detached");
+            assert_eq!(saved.frame.code.instrs.len(), 2);
+            drop(saved);
+        })
+        .join()
+        .unwrap();
+        assert!(weak.upgrade().is_none());
+    }
 
     fn metadata_state(name: JsString, filename: &str, frames: usize) -> VmState {
         // Early VM fixture: loaded metadata and repeated explicit frames.

@@ -33,6 +33,27 @@ finished task receives `Finished`. A run releases its Rust stack and reports:
 
 Budgets count VM instructions and resumable native steps, not wall time.
 A task can migrate between slices without moving or reconstructing its values.
+
+VM calls retain immutable code through `TaskCode`, an owning `Arc<Arc<Code>>`.
+Each task caches at most 256 distinct handles by code identity; a miss takes
+one shared code reference, while calls, returns and dispatch-frame changes
+clone only the task's outer handle. Clearing a full cache cannot invalidate
+live frames. Code bytes and child function tables remain shared, and tasks
+never share their outer handles through function objects. Both ownership
+layers support migration; no borrowed code pointer outlives a heap read.
+
+Code ownership and heap rooting are separate. A function object owns its
+shared code and traces its constants and captures; each call frame traces its
+callee. The entry executable owns and roots entry constants. A detached
+generator or async activation owns its `TaskCode` and traces its code constants
+and callee even after the original VM state is gone. Suspension preserves
+these owners; return, unwind and cancellation release them normally. The
+bounded cache alone is not a heap root and cannot make a dead function's
+constants live: cached handles can only be retrieved using code already held
+by a live function or executable. Ordinary function creation and metadata
+operations may still clone a shared code reference; ordinary VM frame
+transitions do not.
+
 Leaf `Host::effect` takes/returns root-free primitives, cannot reenter or wait,
 and has no heap access; failure becomes a host-effect error. `Task::run` has no
 host and rejects effects. Host clock/default-locale calls are unrecorded leaf
