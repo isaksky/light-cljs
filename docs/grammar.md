@@ -5281,8 +5281,8 @@ The service shares Date's cached host zone and accepts UTC, fixed minute offsets
 and the host's named zone/aliases (matched without ASCII case). Date names and numeric digits reproduce the
 pinned QuickJS snapshot, including its manual component layout.
 
-Explicit gaps: calendars other than `gregory` and explicit `timeZoneName`
-components throw RangeError when supplied, after value validation.
+Explicit gaps: calendars other than `gregory` throw RangeError when supplied,
+after value validation.
 Named zones outside the host selection throw RangeError. No host clock means
 `format()` throws RangeError; NaN, infinities and out-of-TimeClip values do too.
 Style formatting is described under -217; formatToParts and ranges are deferred.
@@ -5306,7 +5306,8 @@ short/long sharing a pool. en-US uses U+202F before the period; other locale
 tags use a space. Fractions truncate milliseconds, use Arabic decimal U+066B
 with arab digits and a period otherwise, and support standalone formatting.
 Time components use Date's existing host zone and transition rules.
-Explicit `timeZoneName`, formatToParts and ranges remain gaps.
+Explicit `timeZoneName` components are described under -307; formatToParts
+and ranges remain gaps.
 
 ### Intl.DateTimeFormat styles (clj-quickjs-217)
 
@@ -5324,9 +5325,20 @@ hourCycle/hour12 when timeStyle is present.
 Full/long time styles include snapshot zone output: UTC's short/English long
 names, raw fixed-offset identifiers, Vienna's English standard/summer names,
 and GMT offsets for other host-selected named zones. DST uses the instant's
-offset. Explicit gaps: independent `timeZoneName` components still throw
-RangeError; non-Gregorian calendars, other named zones, parts and ranges remain
+offset. Explicit gaps: non-Gregorian calendars, other named zones, parts and ranges remain
 unsupported as above. Styles use the existing generated pools unchanged.
+
+### Intl.DateTimeFormat timeZoneName components (clj-quickjs-307)
+
+Execution: `timeZoneName` accepts short/long/shortOffset/longOffset/shortGeneric/
+longGeneric and reports that exact value in resolved options. Only `long`
+uses long names in the pinned QuickJS snapshot; all five other values use
+short names. UTC names and Vienna long names are English; other named zones
+and explicit minute offsets use ASCII GMT offsets. Existing host-zone and
+alias limits apply. Names alone preserve numeric date defaults. With explicit
+names, fractions require a second field; standalone day periods follow the
+name without a separator and are omitted with date-only fields. Invalid
+widths throw RangeError; mixing a name with a style throws TypeError.
 
 ## Async execution (clj-quickjs-248)
 

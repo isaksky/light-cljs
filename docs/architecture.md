@@ -7154,8 +7154,7 @@ are guarded, unrecorded host leaf effects; a missing host clock throws RangeErro
 
 Compatibility follows the recorded QuickJS-output policy: manual date fields
 use weekday, month, day, year, era ordering with QuickJS separators even where
-CLDR style patterns differ. Unsupported calendars and explicit time zone name
-components fail with RangeError. Non-Gregorian components,
+CLDR style patterns differ. Unsupported calendars fail with RangeError. Non-Gregorian components,
 formatToParts and range methods remain deferred.
 
 ### Intl.DateTimeFormat time fields (clj-quickjs-216)
@@ -7179,7 +7178,8 @@ keeps the reference's colon layout, two-digit neighboring fields, Japanese
 trailing period, Spanish U+202F inside am/pm, en-US U+202F before the period,
 and five shared day-period hour buckets. Fraction precision truncates
 milliseconds and also formats without a second field (the reference's manual
-formatter omits that case). Explicit timeZoneName components remain a gap.
+formatter omits that case); explicit timeZoneName follows the snapshot's
+fraction behavior, as described under -307 below.
 
 ### Intl.DateTimeFormat styles (clj-quickjs-217)
 
@@ -7199,10 +7199,26 @@ before local calendar conversion. Full/long time styles implement the pinned
 reference's zone pattern semantics: English UTC names, raw fixed identifiers,
 Vienna's English standard/summer names and GMT offset fallback for other named
 host zones. Named-zone offsets use the formatted instant's transition; their
-display truncates seconds to minutes as the reference does. Explicit
-timeZoneName components keep their documented RangeError gap, but combining
-one with a style throws TypeError. Resolved style options omit all components,
+display truncates seconds to minutes as the reference does. Combining an explicit
+timeZoneName component with a style throws TypeError. Resolved style options omit all components,
 and time styles expose the resolved hour cycle and boolean hour12.
+
+### Intl.DateTimeFormat timeZoneName components (clj-quickjs-307)
+
+The existing immutable slots store all six validated name widths; the saved
+option getter/coercion stages remain resumable. A final pattern field renders
+the name through the shared zone renderer, and resolved options report its
+width after fractionalSecondDigits. Component fixed offsets use GMT display;
+style patterns retain raw identifiers. No heap kinds, GC edges, publication
+rules, work limits or generated tables change.
+
+The pinned reference selects long English names only for `long`; shortOffset,
+longOffset, shortGeneric and longGeneric use the short fallback. UTC and Vienna
+names and the other zones' GMT fallback share the style renderer's instant
+lookup. Existing host-selected named-zone/alias restrictions still apply.
+The explicit-name manual path requires seconds for fractions and places a
+standalone day period directly after the name; date-only fields omit day
+periods. See README's -307 section for exact output examples and limits.
 
 ### Async activations and task completion (clj-quickjs-248)
 
