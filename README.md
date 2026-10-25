@@ -3479,8 +3479,8 @@ cleared-slot notifications delivered after the collection pause. Retained
 notifications root their owners and held data until consumed. Existing Map
 entries stay strong. See `docs/architecture.md`, "Weak slots and ephemerons".
 WeakRef uses the weak slots and task job keep-alives (-176).
-Deferred JavaScript surfaces: WeakSet and
-cross-task weak-object publication.
+WeakSet is supported (-295 below). Cross-task weak-object publication remains
+deferred.
 
 ### `Array.prototype.sort` (clj-quickjs-208)
 
@@ -3571,8 +3571,8 @@ WeakMaps are task-owned and reject publication, even when empty or frozen;
 foreign tasks cannot use borrowed methods to bypass ownership.
 
 Iterable construction is supported (clj-quickjs-294 below).
-Deferred: WeakSet and generic symbol-tag consumption by
-Object.prototype.toString. WeakMap intentionally has no size or enumeration
+WeakSet is supported (-295 below). Generic symbol-tag consumption by
+Object.prototype.toString remains deferred. WeakMap intentionally has no size or enumeration
 API. Targeted checks: `CARGO_BUILD_JOBS=3 cargo test --test js_source weak_map -- --test-threads=3`,
 `CARGO_BUILD_JOBS=3 cargo test --test gc weak_map_ -- --test-threads=3`, and
 `CARGO_BUILD_JOBS=3 cargo test --test publication weak_maps_ -- --test-threads=3`.
@@ -4322,8 +4322,8 @@ instruction is rejected by the validator or fails the task with `Internal`,
 never with a panic.
 
 Gaps found by the audit are filed as pellets, not fixed here. Private names now
-execute (clj-quickjs-291), as do static blocks (-292); remaining work includes generator `return`/`throw` (-293),
-Set/WeakSet (-295), Array.prototype mutators,
+execute (clj-quickjs-291), as do static blocks (-292) and Set/WeakSet (-295);
+remaining work includes generator `return`/`throw` (-293), Array.prototype mutators,
 search, callback and copying methods (-296 to -299), String.prototype case/trim/
 repeat/search predicates (-300) and match/matchAll/search with RegExp symbol
 dispatch (-301), Boolean and BigInt wrappers (-302), the plain RegExp `i` flag

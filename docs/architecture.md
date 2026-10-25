@@ -4983,7 +4983,7 @@ Mutable JavaScript Maps remain unpublishable, including when frozen.
 Persistent HAMT maps use separate immutable storage and are unchanged.
 WeakMap uses a separate ephemeron table whose existing deletion/GC policy
 shrinks capacity; it has no public enumeration. Map entries/keys/values,
-Map for-of and JavaScript Set remain deferred. Future Map iterators must
+Map for-of remains deferred; JavaScript Set is supported (-295 below). Future Map iterators must
 save logical positions and latch completion rather than retain tree nodes.
 
 `churn_compacts_without_live_cursors` reproduces both delete and clear churn;
