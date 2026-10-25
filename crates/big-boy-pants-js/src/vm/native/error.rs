@@ -277,7 +277,10 @@ impl ErrorState {
                             value = Value::Undefined;
                             *stage = 3;
                         }
-                        5 => return join(name, &value).map(|s| Action::Return(Value::String(s))),
+                        5 => {
+                            return join(heap, name, &value)
+                                .map(|s| Action::Return(Value::String(s)));
+                        }
                         _ => return Err(Fault::Internal("invalid Error toString stage")),
                     }
                 }
@@ -379,7 +382,7 @@ fn define(heap: &Heap, object: &Value, name: &str, value: Value) -> Result<(), F
     .ok_or(Fault::Internal("Error object was reclaimed"))
 }
 
-fn join(name: &Value, message: &Value) -> Result<JsString, Fault> {
+fn join(heap: &Heap, name: &Value, message: &Value) -> Result<JsString, Fault> {
     let (Value::String(name), Value::String(message)) = (name, message) else {
         return Err(Fault::Internal("Error strings not converted"));
     };
@@ -389,9 +392,8 @@ fn join(name: &Value, message: &Value) -> Result<JsString, Fault> {
     if message.is_empty() {
         return Ok(name.clone());
     }
-    name.concat(&JsString::from(": "))
-        .and_then(|s| s.concat(message))
-        .ok_or(Fault::StringTooLong)
+    name.concat_accounted(heap, &JsString::from(": "))?
+        .concat_accounted(heap, message)
 }
 
 /// Diagnostics must not run user code, including getters or conversions.
@@ -420,7 +422,7 @@ pub(crate) fn diagnostic(heap: &Heap, task: TaskId, value: &Value) -> Option<Str
         }
         Some(Value::String(JsString::from(default)))
     };
-    join(&data("name", "Error")?, &data("message", "")?)
+    join(heap, &data("name", "Error")?, &data("message", "")?)
         .ok()
         .map(|s| s.to_string_lossy())
 }

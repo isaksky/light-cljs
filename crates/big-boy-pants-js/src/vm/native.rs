@@ -1286,7 +1286,11 @@ fn operands<const N: usize>(state: &VmState) -> Result<[Value; N], Fault> {
 /// Other primitive operands retain their single-step path.
 /// Property operations retain their base checks before observable key
 /// conversion; equality never converts two objects or a nullish pair.
-pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool, Fault> {
+pub(crate) fn start_conversion(
+    heap: &Heap,
+    state: &mut VmState,
+    instr: Instr,
+) -> Result<bool, Fault> {
     use Instr::*;
     if matches!(
         instr,
@@ -1297,7 +1301,7 @@ pub(crate) fn start_conversion(state: &mut VmState, instr: Instr) -> Result<bool
             .len()
             .checked_sub(2)
             .ok_or(Fault::Internal("operand stack underflow"))?;
-        if let Some(parser) = bigint_comparison(instr, &ops[at..]) {
+        if let Some(parser) = bigint_comparison(heap, instr, &ops[at..])? {
             state.pop()?;
             state.pop()?;
             push_native(state, parser)?;
@@ -1426,7 +1430,7 @@ pub(crate) fn start_direct_eval(
         state.replace(popped, value)?;
         return Ok(());
     };
-    let mut native = eval::State::new(text)?;
+    let mut native = eval::State::new(heap, text)?;
     let mut captures = Vec::with_capacity(site.bindings.len() + 2);
     for binding in &site.bindings {
         captures.push(eval_source(heap, state, binding.source)?);
@@ -1540,7 +1544,7 @@ pub(crate) fn start_builtin(
         which,
         Builtin::Number | Builtin::String | Builtin::Symbol | Builtin::BigInt
     ) {
-        return start_primitive_constructor(state, which, args, construct, popped);
+        return start_primitive_constructor(heap, state, which, args, construct, popped);
     }
     if which == Builtin::BigIntPrototypeToString && !construct {
         return start_bigint_to_string(heap, state, this, args, popped);
@@ -1767,7 +1771,7 @@ pub(crate) fn start_builtin(
     if which == Builtin::Eval && !construct {
         let value = args.first().cloned().unwrap_or(Value::Undefined);
         let native = if let Value::String(text) = value {
-            eval::State::new(text)?
+            eval::State::new(heap, text)?
         } else {
             state.replace(popped, value)?;
             return Ok(true);
@@ -2139,6 +2143,7 @@ fn start_number_format(
 
 #[inline(never)]
 fn start_primitive_constructor(
+    heap: &Heap,
     state: &mut VmState,
     which: builtin::Builtin,
     args: &[Value],
@@ -2154,7 +2159,10 @@ fn start_primitive_constructor(
         && let Some(Value::String(text)) = args.first()
     {
         let native = NativeState::BigIntParse {
-            parser: Box::new(crate::value::bigint::StringToBigInt::new(text.clone())),
+            parser: Box::new(crate::value::bigint::StringToBigInt::new_accounted(
+                heap,
+                text.clone(),
+            )?),
             instr: None,
             operands: vec![],
             index: 0,
@@ -3525,7 +3533,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         if let NativeState::Eval(eval) = &mut frame.state {
             eval.step()?
         } else if let NativeState::DynamicFunction(function) = &mut frame.state {
-            function.step(input)?
+            function.step(heap, input)?
         } else if let NativeState::Instanceof { value, target } = &frame.state {
             step_instanceof(heap, state.diag.task, value, target, input)?
         } else {
@@ -3998,6 +4006,7 @@ fn string_operand(target: ConvertTarget, index: usize) -> bool {
 // trampoline's Rust frame, which also serves calls on 64 KiB worker stacks.
 #[inline(never)]
 fn string_code_number_scan(
+    heap: &Heap,
     operand: &mut Value,
 ) -> Result<Box<crate::value::string::StringToNumber>, Fault> {
     // Transfer ownership so flattening releases a unique rope in slices,
@@ -4006,35 +4015,41 @@ fn string_code_number_scan(
         unreachable!("string operand checked by caller")
     };
     Ok(Box::new(
-        crate::value::string::StringToNumber::new(text)
-            .ok_or(Fault::OutOfMemory("string code numeric input"))?,
+        crate::value::string::StringToNumber::new_accounted(heap, text)?,
     ))
 }
 
 /// Parse a string only after both operands have passed through ToPrimitive.
 /// Invalid strings become NaN, which is unequal/unordered for these operations.
-fn bigint_comparison(instr: Instr, operands: &[Value]) -> Option<NativeState> {
+fn bigint_comparison(
+    heap: &Heap,
+    instr: Instr,
+    operands: &[Value],
+) -> Result<Option<NativeState>, Fault> {
     if !matches!(
         instr,
         Instr::CompareLt | Instr::CompareGt | Instr::CompareLe | Instr::CompareGe | Instr::LooseEq
     ) {
-        return None;
+        return Ok(None);
     }
     let index = match operands {
         [Value::String(_), Value::BigInt(_)] => 0,
         [Value::BigInt(_), Value::String(_)] => 1,
-        _ => return None,
+        _ => return Ok(None),
     };
     let Value::String(text) = &operands[index] else {
         unreachable!()
     };
-    Some(NativeState::BigIntParse {
-        parser: Box::new(crate::value::bigint::StringToBigInt::new(text.clone())),
+    Ok(Some(NativeState::BigIntParse {
+        parser: Box::new(crate::value::bigint::StringToBigInt::new_accounted(
+            heap,
+            text.clone(),
+        )?),
         instr: Some(instr),
         operands: operands.to_vec(),
         index,
         wrap: None,
-    })
+    }))
 }
 
 fn step_instanceof(
@@ -4367,7 +4382,7 @@ impl NativeState {
                 unreachable!("async generator dispatched before other native arms")
             }
             NativeState::Eval(eval) => eval.step(),
-            NativeState::DynamicFunction(function) => function.step(input),
+            NativeState::DynamicFunction(function) => function.step(heap, input),
             NativeState::Generator { id, failed } => {
                 if let Some(error) = failed.take() {
                     super::generator::complete(heap, *id);
@@ -4427,7 +4442,7 @@ impl NativeState {
                     })
                 } else {
                     let value = if let Some((bits, signed)) = wrap {
-                        builtin::bigint_as_n(*bits, &value, *signed)?
+                        builtin::bigint_as_n(heap, *bits, &value, *signed)?
                     } else {
                         value
                     };
@@ -4839,7 +4854,7 @@ impl NativeState {
                         return Err(Fault::Internal("JSON.parse expected ToString result"));
                     };
                     *text = Value::Undefined;
-                    *parser = Some(Box::new(super::json::Parser::new(input)?));
+                    *parser = Some(Box::new(super::json::Parser::new(heap, input)?));
                 }
                 match parser.as_mut().unwrap().advance(heap, task)? {
                     Some(value) => {
@@ -4966,9 +4981,9 @@ impl NativeState {
                     if let Value::BigInt(value) = receiver
                         && string_operand(*target, *next)
                     {
-                        *formatter = Some(Box::new(crate::value::bigint::BigIntToString::new(
-                            value, 10,
-                        )));
+                        *formatter = Some(Box::new(
+                            crate::value::bigint::BigIntToString::new_accounted(heap, value, 10)?,
+                        ));
                         return Ok(Action::Continue);
                     }
                     if !matches!(receiver, Value::Object(_)) {
@@ -5078,7 +5093,8 @@ impl NativeState {
                             if codes && matches!(receiver, Value::String(_)) {
                                 // Reuse the strict scanner's budgeted rope
                                 // flattening, trimming, validation and parsing.
-                                *number_scan = Some(string_code_number_scan(&mut operands[*next])?);
+                                *number_scan =
+                                    Some(string_code_number_scan(heap, &mut operands[*next])?);
                                 return Ok(Action::Continue);
                             }
                             operands[*next] =
@@ -5240,7 +5256,7 @@ impl NativeState {
                     ConvertTarget::DateConstructor => {
                         if let Value::String(text) = &operands[0] {
                             *self = NativeState::DateParse {
-                                parser: Box::new(super::date::Parser::new(text.clone())?),
+                                parser: Box::new(super::date::Parser::new(heap, text.clone())?),
                                 construct: true,
                             };
                             Ok(Action::Continue)
@@ -5252,7 +5268,7 @@ impl NativeState {
                     ConvertTarget::DateParse => {
                         let text = dispatch::to_js_string(&operands[0])?;
                         *self = NativeState::DateParse {
-                            parser: Box::new(super::date::Parser::new(text)?),
+                            parser: Box::new(super::date::Parser::new(heap, text)?),
                             construct: false,
                         };
                         Ok(Action::Continue)
@@ -5345,12 +5361,14 @@ impl NativeState {
                             && let Value::BigInt(value) = &operands[index]
                         {
                             *next = index;
-                            *formatter = Some(Box::new(crate::value::bigint::BigIntToString::new(
-                                value, 10,
-                            )));
+                            *formatter = Some(Box::new(
+                                crate::value::bigint::BigIntToString::new_accounted(
+                                    heap, value, 10,
+                                )?,
+                            ));
                             return Ok(Action::Continue);
                         }
-                        if let Some(parser) = bigint_comparison(instr, operands) {
+                        if let Some(parser) = bigint_comparison(heap, instr, operands)? {
                             *self = parser;
                             return Ok(Action::Continue);
                         }
@@ -5413,9 +5431,12 @@ impl NativeState {
                             && let Value::String(text) = &operands[0]
                         {
                             *self = NativeState::BigIntParse {
-                                parser: Box::new(crate::value::bigint::StringToBigInt::new(
-                                    text.clone(),
-                                )),
+                                parser: Box::new(
+                                    crate::value::bigint::StringToBigInt::new_accounted(
+                                        heap,
+                                        text.clone(),
+                                    )?,
+                                ),
                                 instr: None,
                                 operands: vec![],
                                 index: 0,
@@ -5454,9 +5475,12 @@ impl NativeState {
                         let bits = dispatch::to_index(&operands[0])?;
                         if let Value::String(text) = &operands[1] {
                             *self = NativeState::BigIntParse {
-                                parser: Box::new(crate::value::bigint::StringToBigInt::new(
-                                    text.clone(),
-                                )),
+                                parser: Box::new(
+                                    crate::value::bigint::StringToBigInt::new_accounted(
+                                        heap,
+                                        text.clone(),
+                                    )?,
+                                ),
                                 instr: None,
                                 operands: vec![],
                                 index: 0,
@@ -5464,7 +5488,8 @@ impl NativeState {
                             };
                             Ok(Action::Continue)
                         } else {
-                            builtin::bigint_as_n(bits, &operands[1], signed).map(Action::Return)
+                            builtin::bigint_as_n(heap, bits, &operands[1], signed)
+                                .map(Action::Return)
                         }
                     }
                     ConvertTarget::BigIntToString => {
@@ -5475,7 +5500,9 @@ impl NativeState {
                             return Err(Fault::Internal("BigInt formatting receiver"));
                         };
                         *self = NativeState::BigIntFormat(Box::new(
-                            crate::value::bigint::BigIntToString::new(value, radix),
+                            crate::value::bigint::BigIntToString::new_accounted(
+                                heap, value, radix,
+                            )?,
                         ));
                         Ok(Action::Continue)
                     }
@@ -5504,7 +5531,7 @@ impl NativeState {
             which,
             builtin::Builtin::StringFromCharCode | builtin::Builtin::StringFromCodePoint
         ) {
-            return builtin::string_from_codes(which, operands).map(Action::Return);
+            return builtin::string_from_codes(heap, which, operands).map(Action::Return);
         }
         if builtin::is_string_build(which) {
             *self =
@@ -5523,9 +5550,9 @@ impl NativeState {
                 position = if last { f64::INFINITY } else { 0.0 };
             }
             let position = position.trunc().clamp(0.0, text.len() as f64) as usize;
-            *self = NativeState::StringSearch(crate::value::string::StringSearch::new(
-                text, search, position, last,
-            ));
+            *self = NativeState::StringSearch(crate::value::string::StringSearch::new_accounted(
+                heap, text, search, position, last,
+            )?);
             return Ok(Action::Continue);
         }
         let (this, args) = if access {

@@ -1018,7 +1018,7 @@ fn property_step(
     _host: &mut dyn Host,
     instr: Instr,
 ) -> Result<Flow, Fault> {
-    if native::start_conversion(state, instr)? {
+    if native::start_conversion(heap, state, instr)? {
         return Ok(Flow::Next);
     }
     match instr {
@@ -1544,7 +1544,7 @@ fn property_read_step(
     _host: &mut dyn Host,
     instr: Instr,
 ) -> Result<Flow, Fault> {
-    if native::start_conversion(state, instr)? {
+    if native::start_conversion(heap, state, instr)? {
         return Ok(Flow::Next);
     }
     if let Instr::GetField(i) = instr {
@@ -2330,7 +2330,7 @@ fn step_instruction(
     host: &mut dyn Host,
     instr: Instr,
 ) -> Result<Flow, Fault> {
-    if native::start_conversion(state, instr)? {
+    if native::start_conversion(heap, state, instr)? {
         return Ok(Flow::Next);
     }
     if native::is_resumable(instr) {

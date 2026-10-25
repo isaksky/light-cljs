@@ -123,11 +123,11 @@ impl State {
         Action::Continue
     }
 
-    fn string(&mut self, input: Input, next: Stage) -> Result<Action, Fault> {
+    fn string(&mut self, heap: &Heap, input: Input, next: Stage) -> Result<Action, Fault> {
         let Value::String(text) = Self::value(input)? else {
             return Err(Fault::Internal("sort expected a string"));
         };
-        self.flatten = Some(StringFlatten::new(text).ok_or(Fault::OutOfMemory("sort string"))?);
+        self.flatten = Some(StringFlatten::new_accounted(heap, text)?);
         self.stage = next;
         Ok(Action::Continue)
     }
@@ -243,7 +243,7 @@ impl State {
                 };
                 Ok(self.select(number.is_nan() || number <= 0.0))
             }
-            Stage::LeftString => self.string(input, Stage::FlattenLeft),
+            Stage::LeftString => self.string(heap, input, Stage::FlattenLeft),
             Stage::FlattenLeft => {
                 if let Some(text) = self.flatten.as_mut().unwrap().advance(256) {
                     self.left_string = Some(text);
@@ -253,7 +253,7 @@ impl State {
                 }
                 Ok(Action::Continue)
             }
-            Stage::RightString => self.string(input, Stage::FlattenRight),
+            Stage::RightString => self.string(heap, input, Stage::FlattenRight),
             Stage::FlattenRight => {
                 if let Some(text) = self.flatten.as_mut().unwrap().advance(256) {
                     self.right_string = Some(text);

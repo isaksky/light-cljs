@@ -242,11 +242,9 @@ impl State {
         }
         Ok(self.advance_option())
     }
-    fn primitive(&mut self, value: Value) -> Result<Action, Fault> {
+    fn primitive(&mut self, heap: &Heap, value: Value) -> Result<Action, Fault> {
         if let Value::String(text) = value {
-            self.scanner = Some(Box::new(
-                StringToNumber::new(text).ok_or(Fault::OutOfMemory("duration numeric string"))?,
-            ));
+            self.scanner = Some(Box::new(StringToNumber::new_accounted(heap, text)?));
             self.stage = Stage::Scan;
             Ok(Action::Continue)
         } else {
@@ -373,7 +371,7 @@ impl State {
                 }
             }
             Stage::FieldValue => self.field_value(Self::result(input)?),
-            Stage::Primitive => self.primitive(Self::result(input)?),
+            Stage::Primitive => self.primitive(heap, Self::result(input)?),
             Stage::Scan => match self.scanner.as_mut().unwrap().advance(256) {
                 Some(number) => {
                     self.scanner = None;

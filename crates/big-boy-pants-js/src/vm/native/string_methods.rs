@@ -103,6 +103,8 @@ pub(super) struct State {
     passthrough_end: usize,
     add_dot: bool,
     early: Option<EarlyResult>,
+    copy_reservation: Option<std::sync::Arc<crate::heap::budget::ByteReservation>>,
+    output_reservation: Option<std::sync::Arc<crate::heap::budget::ByteReservation>>,
 }
 impl Trace for State {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
@@ -187,6 +189,8 @@ impl State {
             passthrough_end: 0,
             add_dot: false,
             early: None,
+            copy_reservation: None,
+            output_reservation: None,
         })
     }
     fn lower(&self) -> bool {
@@ -205,7 +209,8 @@ impl State {
                 | StringToLocaleLowerCase
         )
     }
-    fn collect(&mut self, source: JsString, stage: Stage) -> Result<Action, Fault> {
+    fn collect(&mut self, heap: &Heap, source: JsString, stage: Stage) -> Result<Action, Fault> {
+        self.copy_reservation = JsString::reserve(heap, source.len(), 1)?;
         reserve(&mut self.units, source.len())?;
         self.cursor = Some(UnitCursor::new(source));
         self.stage = stage;
@@ -236,7 +241,8 @@ impl State {
     fn finish(&mut self) -> Result<Action, Fault> {
         Ok(Action::Return(Value::String(
             JsString::from_owned_code_units(std::mem::take(&mut self.out))
-                .ok_or(Fault::StringTooLong)?,
+                .ok_or(Fault::StringTooLong)?
+                .with_reservation(self.output_reservation.take()),
         )))
     }
     fn language(&mut self, locale: JsString) {
@@ -440,7 +446,8 @@ impl State {
                             self.cursor = None;
                             let flat =
                                 JsString::from_owned_code_units(std::mem::take(&mut self.units))
-                                    .ok_or(Fault::StringTooLong)?;
+                                    .ok_or(Fault::StringTooLong)?
+                                    .with_reservation(self.copy_reservation.take());
                             if self.stage == Stage::CollectNeedle {
                                 self.needle = flat;
                                 self.needle_flat = true;
@@ -597,7 +604,7 @@ impl State {
         }
         if !self.text_flat {
             let source = std::mem::replace(&mut self.text, JsString::from(""));
-            return self.collect(source, Stage::Collect);
+            return self.collect(heap, source, Stage::Collect);
         }
         if matches!(
             self.which,
@@ -605,7 +612,7 @@ impl State {
         ) {
             if !self.needle_flat {
                 let source = std::mem::replace(&mut self.needle, JsString::from(""));
-                return self.collect(source, Stage::CollectNeedle);
+                return self.collect(heap, source, Stage::CollectNeedle);
             }
             let pos = self.number.max(0.0).min(len as f64) as usize;
             self.start = if self.which == StringEndsWith {
@@ -616,8 +623,13 @@ impl State {
             } else {
                 pos
             };
-            let mut search =
-                StringSearch::new(self.text.clone(), self.needle.clone(), self.start, false);
+            let mut search = StringSearch::new_accounted(
+                heap,
+                self.text.clone(),
+                self.needle.clone(),
+                self.start,
+                false,
+            )?;
             search
                 .reserve_prefix()
                 .map_err(|_| Fault::OutOfMemory("String search prefix"))?;
@@ -638,6 +650,9 @@ impl State {
                 self.text.code_unit_at(self.start).unwrap(),
             )));
         } else {
+            // Cover decoding, Unicode expansion, sorting scratch and the returned body.
+            self.output_reservation =
+                JsString::reserve(heap, len.checked_mul(128).ok_or(Fault::HeapLimit)?, 1)?;
             reserve(&mut self.scalars, len)?;
             // Unicode 17 maximum default case expansion is 3 UTF-16 units per
             // source unit; maximum fully recursive compatibility expansion 18.

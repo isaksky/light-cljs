@@ -209,7 +209,8 @@ mod tests {
     fn javascript_array_growth_denial_survives_yield_and_cancellation() {
         use crate::frontend::compile_function;
         use crate::{Budget, RunOutcome, Runtime, ValueView};
-        let runtime = Runtime::with_byte_limit(1024);
+        let runtime =
+            Runtime::with_byte_limit(1024 + std::mem::size_of::<crate::heap::HeapObject>());
         let code = compile_function("function f() { let a = []; try { for (;;) a.push(1); } catch(e) { return e === 'heap byte limit exceeded' && a.length > 0 && a[0] === 1; } }").unwrap();
         let task = runtime.spawn(&code, &[]).unwrap();
         loop {
@@ -243,5 +244,90 @@ mod tests {
         let task = runtime.spawn(&code, &[]).unwrap();
         let outcome = task.run().unwrap();
         assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    }
+
+    #[test]
+    fn large_string_and_bigint_denial_is_catchable_after_resumption() {
+        use crate::frontend::compile_function;
+        use crate::{Budget, RunOutcome, Runtime, ValueView};
+        for expression in [
+            "'x'.repeat(1000000)",
+            "1n << 1000000n",
+            "BigInt('9'.repeat(40000))",
+            "('x'.repeat(20000)).normalize('NFKD')",
+        ] {
+            let runtime = Runtime::with_byte_limit(256 * 1024);
+            let code = compile_function(&format!("function f() {{ try {{ return {expression}; }} catch(e) {{ return e === 'heap byte limit exceeded'; }} }}")).unwrap();
+            let task = runtime.spawn(&code, &[]).unwrap();
+            loop {
+                match task
+                    .run_with(Budget::instructions(7), &mut crate::host::NoHost)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {}
+                    RunOutcome::Complete(value) => {
+                        assert_eq!(value.view(), ValueView::Bool(true), "{expression}");
+                        break;
+                    }
+                    other => panic!("{expression}: {other:?}"),
+                }
+            }
+            drop(task);
+            runtime.collect().unwrap();
+            let small = compile_function("function f() { return 'ok'.repeat(100); }").unwrap();
+            let task = runtime.spawn(&small, &[]).unwrap();
+            assert!(
+                matches!(task.run().unwrap(), RunOutcome::Complete(_)),
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn eight_workers_share_backing_store_admission_and_reclaim_payloads() {
+        use crate::heap::{Heap, HeapObject, Scope};
+        use crate::ids::TaskId;
+        use crate::value::Value;
+        let heap = Arc::new(Heap::with_byte_limit(usize::MAX / 2));
+        let ready = std::sync::Barrier::new(9);
+        let admitted = AtomicUsize::new(0);
+        std::thread::scope(|threads| {
+            for worker in 0..8 {
+                let heap = &heap;
+                let ready = &ready;
+                let admitted = &admitted;
+                threads.spawn(move || {
+                    let scope = Scope::new(heap);
+                    // Reserve each worker's slot batch before fixing the payload headroom.
+                    let _ = scope.new_object();
+                    ready.wait();
+                    ready.wait();
+                    let result = crate::object::array_buffer::constructor(
+                        heap,
+                        TaskId::from_raw(worker + 1),
+                        &Value::Number(65536.0),
+                    );
+                    if result.is_ok() {
+                        admitted.fetch_add(1, Ordering::Relaxed);
+                    }
+                    ready.wait();
+                    ready.wait();
+                    drop(result);
+                    drop(scope);
+                });
+            }
+            ready.wait();
+            let occupied = heap.byte_budget().used();
+            let allowance = 4 * (65536 + std::mem::size_of::<HeapObject>());
+            heap.byte_budget().set_limit(occupied + allowance);
+            ready.wait();
+            ready.wait();
+            assert_eq!(admitted.load(Ordering::Relaxed), 4);
+            assert_eq!(heap.byte_budget().used(), occupied + allowance);
+            ready.wait();
+        });
+        let occupied = heap.byte_budget().used();
+        heap.collect().unwrap();
+        assert!(heap.byte_budget().used() <= occupied - 4 * 65536);
     }
 }

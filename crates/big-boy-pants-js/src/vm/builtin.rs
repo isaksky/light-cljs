@@ -1913,7 +1913,8 @@ pub(crate) fn call(
             _ => Err(Fault::TypeError("Symbol.keyFor requires a symbol".into())),
         },
         Builtin::SymbolPrototypeToString => {
-            symbol_descriptive_string(&this_symbol_value(heap, task, this)?).map(Value::String)
+            symbol_descriptive_string(heap, &this_symbol_value(heap, task, this)?)
+                .map(Value::String)
         }
         Builtin::SymbolPrototypeValueOf | Builtin::SymbolPrototypeToPrimitive => {
             this_symbol_value(heap, task, this).map(Value::Symbol)
@@ -2163,7 +2164,12 @@ fn string_access(which: Builtin, this: &Value, pos: &Value) -> Result<Value, Fau
 /// Leaf encoding after native::Convert has completed budgeted ToNumber and
 /// validation in argument order. O(args), at most two output units per
 /// argument; the configured stack limit bounds this final allocation/copy.
-pub(super) fn string_from_codes(which: Builtin, args: &[Value]) -> Result<Value, Fault> {
+pub(super) fn string_from_codes(
+    heap: &Heap,
+    which: Builtin,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    let ticket = JsString::reserve(heap, args.len().checked_mul(4).ok_or(Fault::HeapLimit)?, 1)?;
     let mut units = Vec::new();
     for arg in args {
         let Value::Number(n) = *arg else {
@@ -2197,7 +2203,7 @@ pub(super) fn string_from_codes(which: Builtin, args: &[Value]) -> Result<Value,
         }
     }
     JsString::from_code_units(units)
-        .map(Value::String)
+        .map(|text| Value::String(text.with_reservation(ticket)))
         .ok_or(Fault::StringTooLong)
 }
 
@@ -2467,11 +2473,13 @@ fn this_string_value(
     }
 }
 
-fn symbol_descriptive_string(symbol: &crate::value::JsSymbol) -> Result<JsString, Fault> {
+fn symbol_descriptive_string(
+    heap: &Heap,
+    symbol: &crate::value::JsSymbol,
+) -> Result<JsString, Fault> {
     JsString::from("Symbol(")
-        .concat(symbol.description().unwrap_or(&JsString::from("")))
-        .and_then(|s| s.concat(&JsString::from(")")))
-        .ok_or(Fault::StringTooLong)
+        .concat_accounted(heap, symbol.description().unwrap_or(&JsString::from("")))?
+        .concat_accounted(heap, &JsString::from(")"))
 }
 
 /// Brand checks inspect only the receiver's own immutable internal data.
@@ -2565,17 +2573,27 @@ pub(crate) fn to_bigint(value: &Value) -> Result<Value, Fault> {
     }
 }
 
-pub(crate) fn bigint_as_n(bits: u64, value: &Value, signed: bool) -> Result<Value, Fault> {
+pub(crate) fn bigint_as_n(
+    heap: &Heap,
+    bits: u64,
+    value: &Value,
+    signed: bool,
+) -> Result<Value, Fault> {
     let Value::BigInt(value) = to_bigint(value)? else {
         unreachable!("ToBigInt returns a BigInt")
     };
-    if signed {
-        value.checked_as_int_n(bits)
-    } else {
-        value.checked_as_uint_n(bits)
-    }
+    crate::value::JsBigInt::accounted(
+        heap,
+        (bits.min(crate::value::bigint::MAX_BIGINT_BITS as u64)) as usize,
+        || {
+            if signed {
+                value.checked_as_int_n(bits)
+            } else {
+                value.checked_as_uint_n(bits)
+            }
+        },
+    )
     .map(Value::BigInt)
-    .map_err(|error| Fault::RangeError(error.to_string()))
 }
 
 /// Finish a primitive constructor after resumable ToPrimitive. Arguments remain
@@ -2608,7 +2626,7 @@ pub(crate) fn primitive_constructor(
             None => 0.0,
         }),
         Builtin::String => Value::String(match args.first() {
-            Some(Value::Symbol(s)) if !construct => symbol_descriptive_string(s)?,
+            Some(Value::Symbol(s)) if !construct => symbol_descriptive_string(heap, s)?,
             Some(value) => to_js_string(value)?,
             None => JsString::from(""),
         }),

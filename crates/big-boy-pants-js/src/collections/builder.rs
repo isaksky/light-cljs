@@ -395,7 +395,9 @@ mod tests {
 
     #[test]
     fn denied_freeze_keeps_builder_open_and_contents_intact() {
-        let heap = Arc::new(Heap::with_byte_limit(std::mem::size_of::<Value>()));
+        let heap = Arc::new(Heap::with_byte_limit(
+            std::mem::size_of::<Value>() + std::mem::size_of::<HeapObject>(),
+        ));
         let _scope = Scope::new(&heap);
         let owner = TaskId::from_raw(1);
         let mut owned = OwnedBuilders::default();

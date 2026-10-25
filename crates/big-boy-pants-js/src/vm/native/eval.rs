@@ -28,15 +28,14 @@ pub(crate) struct State {
 }
 
 impl State {
-    pub(crate) fn new(text: JsString) -> Result<Self, Fault> {
+    pub(crate) fn new(heap: &crate::heap::Heap, text: JsString) -> Result<Self, Fault> {
         if text.len() > MAX_SOURCE_UNITS {
             return Err(Fault::RangeError(
                 "eval source exceeds 16,384 UTF-16 code units".into(),
             ));
         }
         Ok(Self {
-            flatten: StringFlatten::new(text)
-                .ok_or(Fault::OutOfMemory("eval source allocation"))?,
+            flatten: StringFlatten::new_accounted(heap, text)?,
             text: None,
             next: 0,
             source: String::new(),
@@ -144,20 +143,17 @@ impl DynamicFunction {
         }
     }
 
-    fn append(&mut self, text: &JsString) -> Result<(), Fault> {
+    fn append(&mut self, heap: &crate::heap::Heap, text: &JsString) -> Result<(), Fault> {
         if self.source.len().saturating_add(text.len()) > MAX_SOURCE_UNITS {
             return Err(Fault::RangeError(
                 "Function source exceeds 16,384 UTF-16 code units".into(),
             ));
         }
-        self.source = self
-            .source
-            .concat(text)
-            .ok_or(Fault::OutOfMemory("Function source allocation"))?;
+        self.source = self.source.concat_accounted(heap, text)?;
         Ok(())
     }
 
-    pub(super) fn step(&mut self, input: Input) -> Result<Action, Fault> {
+    pub(super) fn step(&mut self, heap: &crate::heap::Heap, input: Input) -> Result<Action, Fault> {
         if let Some(compiler) = &mut self.compiler {
             return compiler.step();
         }
@@ -165,12 +161,12 @@ impl DynamicFunction {
             // The last argument is the body; all preceding arguments are
             // comma-separated parameter source fragments.
             if self.next == self.args.len() {
-                self.append(&JsString::from("\n) {\n"))?;
+                self.append(heap, &JsString::from("\n) {\n"))?;
                 self.parameter_end = self.source.len() - 3;
             } else if self.next > 1 {
-                self.append(&JsString::from(","))?;
+                self.append(heap, &JsString::from(","))?;
             }
-            self.append(&text)?;
+            self.append(heap, &text)?;
         } else if !matches!(input, Input::Start) {
             return Err(Fault::Internal("Function expected a converted string"));
         }
@@ -180,11 +176,11 @@ impl DynamicFunction {
             return Ok(Action::ToString(arg));
         }
         if self.args.is_empty() {
-            self.append(&JsString::from("\n) {\n"))?;
+            self.append(heap, &JsString::from("\n) {\n"))?;
             self.parameter_end = self.source.len() - 3;
         }
-        self.append(&JsString::from("\n}"))?;
-        let mut compiler = State::new(self.source.clone())?;
+        self.append(heap, &JsString::from("\n}"))?;
+        let mut compiler = State::new(heap, self.source.clone())?;
         compiler.dynamic_parameters = Some(self.parameter_end);
         self.compiler = Some(compiler);
         self.args.clear();

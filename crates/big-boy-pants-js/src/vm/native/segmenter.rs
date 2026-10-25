@@ -276,8 +276,7 @@ impl State {
                     return Err(Fault::Internal("Segmenter string"));
                 };
                 self.input = text.clone();
-                self.flatten =
-                    Some(StringFlatten::new(text).ok_or(Fault::OutOfMemory("segment flatten"))?);
+                self.flatten = Some(StringFlatten::new_accounted(heap, text)?);
                 self.stage = Stage::Flatten;
                 Ok(Action::Continue)
             }

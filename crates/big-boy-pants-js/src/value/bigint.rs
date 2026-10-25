@@ -780,6 +780,7 @@ pub struct StringToBigInt {
     base: u64,
     carry: u64,
     limb: usize,
+    reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 #[derive(Debug)]
@@ -792,6 +793,22 @@ enum ParseStage {
 }
 
 impl StringToBigInt {
+    pub(crate) fn new_accounted(
+        heap: &crate::heap::Heap,
+        text: super::JsString,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        let bytes = text
+            .len()
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(256))
+            .ok_or(crate::vm::dispatch::Fault::HeapLimit)?;
+        let ticket = heap
+            .reserve_bytes(bytes)
+            .ok_or(crate::vm::dispatch::Fault::HeapLimit)?;
+        let mut parser = Self::new(text);
+        parser.reservation = ticket.is_charged().then(|| Arc::new(ticket));
+        Ok(parser)
+    }
     pub fn new(text: super::JsString) -> Self {
         Self {
             end: text.len(),
@@ -805,6 +822,7 @@ impl StringToBigInt {
             base: 0,
             carry: 0,
             limb: 0,
+            reservation: None,
         }
     }
 
@@ -941,7 +959,12 @@ impl StringToBigInt {
     }
 
     fn finish(&mut self) -> Result<JsBigInt, BigIntError> {
-        JsBigInt::from_sign_magnitude(self.negative, std::mem::take(&mut self.limbs))
+        let mut result =
+            JsBigInt::from_sign_magnitude(self.negative, std::mem::take(&mut self.limbs))?;
+        if let Repr::Large { limbs, .. } = &mut result.0 {
+            Arc::get_mut(limbs).expect("new parser result").reservation = self.reservation.take();
+        }
+        Ok(result)
     }
 }
 
@@ -1049,9 +1072,22 @@ pub(crate) struct BigIntToString {
     output: Vec<u16>,
     copying: bool,
     binary_bit: usize,
+    reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 impl BigIntToString {
+    pub(crate) fn new_accounted(
+        heap: &crate::heap::Heap,
+        value: &JsBigInt,
+        radix: u32,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        let ticket = heap
+            .reserve_bytes(value.bit_length().saturating_mul(16).saturating_add(512))
+            .ok_or(crate::vm::dispatch::Fault::HeapLimit)?;
+        let mut formatter = Self::new(value, radix);
+        formatter.reservation = ticket.is_charged().then(|| Arc::new(ticket));
+        Ok(formatter)
+    }
     pub(crate) fn new(value: &JsBigInt, radix: u32) -> Self {
         assert!((2..=36).contains(&radix));
         let (negative, limbs) = value.to_sign_magnitude();
@@ -1076,6 +1112,7 @@ impl BigIntToString {
             output: vec![],
             copying: bits == 0,
             binary_bit: bits,
+            reservation: None,
         }
     }
 
@@ -1098,7 +1135,8 @@ impl BigIntToString {
                 } else {
                     return super::JsString::from_owned_code_units(std::mem::take(
                         &mut self.output,
-                    ));
+                    ))
+                    .map(|text| text.with_reservation(self.reservation.take()));
                 }
             } else if self.radix.is_power_of_two() {
                 // Direct high-to-low extraction is linear for 2/4/8/16/32.
@@ -1121,7 +1159,8 @@ impl BigIntToString {
                 if self.binary_bit == 0 {
                     return super::JsString::from_owned_code_units(std::mem::take(
                         &mut self.output,
-                    ));
+                    ))
+                    .map(|text| text.with_reservation(self.reservation.take()));
                 }
             } else if self.cursor != 0 {
                 self.cursor -= 1;

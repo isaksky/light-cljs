@@ -44,7 +44,14 @@ pub(super) struct State {
     current: usize,
     source_end: usize,
     out: Vec<u16>,
-    work: usize,
+    work: Work,
+}
+
+#[derive(Debug)]
+struct Work {
+    remaining: usize,
+    budget: std::sync::Arc<crate::heap::budget::ByteBudget>,
+    reservation: crate::heap::budget::ByteReservation,
 }
 
 impl Trace for State {
@@ -58,7 +65,12 @@ impl Trace for State {
 }
 
 impl State {
-    pub(super) fn new(which: Builtin, this: &Value, args: &[Value]) -> Result<Self, Fault> {
+    pub(super) fn new(
+        heap: &Heap,
+        which: Builtin,
+        this: &Value,
+        args: &[Value],
+    ) -> Result<Self, Fault> {
         if matches!(this, Value::Null | Value::Undefined) {
             return Err(Fault::TypeError(
                 "String replacement requires a receiver".into(),
@@ -83,7 +95,11 @@ impl State {
             current: 0,
             source_end: 0,
             out: Vec::new(),
-            work: MAX_REPLACE_WORK,
+            work: Work {
+                remaining: MAX_REPLACE_WORK,
+                budget: heap.byte_budget(),
+                reservation: Default::default(),
+            },
         })
     }
 
@@ -126,12 +142,13 @@ impl State {
                 if !self.functional {
                     self.template = string(v)?;
                 }
-                self.scan = Some(StringSearch::new(
+                self.scan = Some(StringSearch::new_accounted(
+                    heap,
                     self.text.clone(),
                     self.needle.clone(),
                     0,
                     false,
-                ));
+                )?);
                 self.phase = Phase::Collect;
                 Ok(Action::Continue)
             }
@@ -147,7 +164,10 @@ impl State {
                         &self.text.code_units()[self.source_end..],
                     )?;
                     let text = JsString::from_owned_code_units(std::mem::take(&mut self.out))
-                        .ok_or_else(limit)?;
+                        .ok_or_else(limit)?
+                        .with_reservation(Some(std::sync::Arc::new(std::mem::take(
+                            &mut self.work.reservation,
+                        ))));
                     return Ok(Action::Return(Value::String(text)));
                 };
                 let span = m.groups[0].as_ref().expect("whole match");
@@ -158,7 +178,7 @@ impl State {
                 )?;
                 self.source_end = span.end;
                 if self.functional {
-                    let args = self.callback_args()?;
+                    let args = self.callback_args(heap)?;
                     self.phase = Phase::Callback;
                     Ok(Action::Call {
                         callee: self.replacement.clone(),
@@ -225,14 +245,17 @@ impl State {
         Ok(Action::Continue)
     }
 
-    fn callback_args(&mut self) -> Result<Vec<Value>, Fault> {
+    fn callback_args(&mut self, heap: &Heap) -> Result<Vec<Value>, Fault> {
         let m = &self.results[self.current];
         let mut args = Vec::with_capacity(m.groups.len() + 3);
         for span in &m.groups {
             args.push(if let Some(span) = span {
                 charge(&mut self.work, span.len())?;
+                let ticket = JsString::reserve(heap, span.len(), 1)?;
                 Value::String(
-                    JsString::from_code_units(&self.text.code_units()[span.clone()]).unwrap(),
+                    JsString::from_code_units(&self.text.code_units()[span.clone()])
+                        .unwrap()
+                        .with_reservation(ticket),
                 )
             } else {
                 Value::Undefined
@@ -248,8 +271,14 @@ fn limit() -> Fault {
     Fault::RangeError("string replacement work limit exceeded".into())
 }
 
-fn charge(work: &mut usize, units: usize) -> Result<(), Fault> {
-    *work = work.checked_sub(units).ok_or_else(limit)?;
+fn charge(work: &mut Work, units: usize) -> Result<(), Fault> {
+    let remaining = work.remaining.checked_sub(units).ok_or_else(limit)?;
+    let ticket = work
+        .budget
+        .reserve(units.checked_mul(128).ok_or(Fault::HeapLimit)?)
+        .ok_or(Fault::HeapLimit)?;
+    work.reservation.merge(ticket);
+    work.remaining = remaining;
     Ok(())
 }
 
@@ -265,7 +294,7 @@ fn string(v: Value) -> Result<JsString, Fault> {
     Ok(text)
 }
 
-fn append(out: &mut Vec<u16>, work: &mut usize, units: &[u16]) -> Result<(), Fault> {
+fn append(out: &mut Vec<u16>, work: &mut Work, units: &[u16]) -> Result<(), Fault> {
     charge(work, units.len())?;
     out.extend_from_slice(units);
     Ok(())
@@ -276,7 +305,7 @@ fn substitute(
     template: &JsString,
     m: &matcher::Captures,
     out: &mut Vec<u16>,
-    work: &mut usize,
+    work: &mut Work,
 ) -> Result<(), Fault> {
     let source = text.code_units();
     let units = template.code_units();

@@ -150,7 +150,7 @@ impl Drop for Body {
 }
 
 impl JsString {
-    fn with_reservation(
+    pub(crate) fn with_reservation(
         mut self,
         reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
     ) -> Self {
@@ -160,7 +160,7 @@ impl JsString {
         self
     }
 
-    fn reserve(
+    pub(crate) fn reserve(
         heap: &crate::heap::Heap,
         units: usize,
         bodies: usize,
@@ -377,9 +377,31 @@ pub(crate) struct StringFlatten {
     leaf: Option<(JsString, usize)>,
     units: Vec<u16>,
     ready: Option<JsString>,
+    reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 impl StringFlatten {
+    pub(crate) fn new_accounted(
+        heap: &crate::heap::Heap,
+        text: JsString,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        // Cover the flattened output and the traversal's linked-node stack.
+        let reservation = if matches!(&text.0.storage, Storage::Flat(_)) {
+            None
+        } else {
+            JsString::reserve(
+                heap,
+                text.len()
+                    .checked_mul(64)
+                    .ok_or(crate::vm::dispatch::Fault::HeapLimit)?,
+                1,
+            )?
+        };
+        let mut flatten =
+            Self::new(text).ok_or(crate::vm::dispatch::Fault::OutOfMemory("string flatten"))?;
+        flatten.reservation = reservation;
+        Ok(flatten)
+    }
     pub(crate) fn new(text: JsString) -> Option<Self> {
         let ready = match &text.0.storage {
             Storage::Flat(_) => Some(text.clone()),
@@ -398,6 +420,7 @@ impl StringFlatten {
             leaf: None,
             units,
             ready,
+            reservation: None,
         })
     }
 
@@ -431,7 +454,8 @@ impl StringFlatten {
                 // Children are retained before releasing their parent, so
                 // consuming a uniquely owned chain also releases it in steps.
             } else {
-                return JsString::from_owned_code_units(std::mem::take(&mut self.units));
+                return JsString::from_owned_code_units(std::mem::take(&mut self.units))
+                    .map(|text| text.with_reservation(self.reservation.take()));
             }
         }
         None
@@ -682,9 +706,29 @@ pub(crate) struct StringSearch {
     last: bool,
     result: isize,
     done: bool,
+    reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 impl StringSearch {
+    pub(crate) fn new_accounted(
+        heap: &crate::heap::Heap,
+        text: JsString,
+        needle: JsString,
+        position: usize,
+        last: bool,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        let reservation = JsString::reserve(
+            heap,
+            needle
+                .len()
+                .checked_mul(8)
+                .ok_or(crate::vm::dispatch::Fault::HeapLimit)?,
+            1,
+        )?;
+        let mut search = Self::new(text, needle, position, last);
+        search.reservation = reservation;
+        Ok(search)
+    }
     /// Reserve before a new consumer starts scanning, so prefix-table growth
     /// never copies an input-sized buffer inside a charged comparison step.
     pub(crate) fn reserve_prefix(&mut self) -> Result<(), std::collections::TryReserveError> {
@@ -725,6 +769,7 @@ impl StringSearch {
             last,
             result,
             done,
+            reservation: None,
         }
     }
 
@@ -787,6 +832,7 @@ pub(crate) struct StringSplit {
     start: usize,
     tail: bool,
     done: bool,
+    reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 pub(crate) enum SplitStep {
@@ -796,6 +842,24 @@ pub(crate) enum SplitStep {
 }
 
 impl StringSplit {
+    pub(crate) fn new_accounted(
+        heap: &crate::heap::Heap,
+        text: JsString,
+        separator: Option<JsString>,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        // The complete partition shares one reservation, including each possible one-unit body.
+        let reservation = JsString::reserve(
+            heap,
+            text.len()
+                .checked_add(separator.as_ref().map_or(0, JsString::len))
+                .and_then(|n| n.checked_mul(512))
+                .ok_or(crate::vm::dispatch::Fault::HeapLimit)?,
+            1,
+        )?;
+        let mut split = Self::new(text, separator);
+        split.reservation = reservation;
+        Ok(split)
+    }
     pub(crate) fn new(text: JsString, separator: Option<JsString>) -> Self {
         let search = separator
             .as_ref()
@@ -809,6 +873,7 @@ impl StringSplit {
             start: 0,
             tail: false,
             done: false,
+            reservation: None,
         }
     }
 
@@ -822,7 +887,7 @@ impl StringSplit {
                 Some(part) => {
                     self.build = None;
                     self.done = self.tail;
-                    SplitStep::Part(part)
+                    SplitStep::Part(part.with_reservation(self.reservation.clone()))
                 }
             });
         }
@@ -838,7 +903,7 @@ impl StringSplit {
                 }
                 Some(part) => {
                     self.start += 1;
-                    SplitStep::Part(part)
+                    SplitStep::Part(part.with_reservation(self.reservation.clone()))
                 }
             });
         }
@@ -1338,6 +1403,24 @@ pub(crate) struct StringToNumber {
 }
 
 impl StringToNumber {
+    pub(crate) fn new_accounted(
+        heap: &crate::heap::Heap,
+        text: JsString,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        let flatten = StringFlatten::new_accounted(heap, text)?;
+        Ok(Self {
+            flatten: Some(flatten),
+            text: None,
+            next: 0,
+            start: usize::MAX,
+            end: 0,
+            validating: false,
+            grammar: DecimalPrefix::default(),
+            radix: None,
+            parser: None,
+        })
+    }
+    #[cfg(test)]
     pub(crate) fn new(text: JsString) -> Option<Self> {
         Some(Self {
             flatten: Some(StringFlatten::new(text)?),

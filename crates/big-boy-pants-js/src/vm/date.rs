@@ -58,11 +58,10 @@ pub(crate) struct Parser {
 }
 
 impl Parser {
-    pub(crate) fn new(text: crate::value::JsString) -> Result<Self, Fault> {
+    pub(crate) fn new(heap: &Heap, text: crate::value::JsString) -> Result<Self, Fault> {
         Ok(Self {
             text: None,
-            flatten: crate::value::string::StringFlatten::new(text)
-                .ok_or(Fault::OutOfMemory("Date parse input allocation failed"))?,
+            flatten: crate::value::string::StringFlatten::new_accounted(heap, text)?,
             iso: IsoParser::default(),
             fallback: None,
         })
@@ -1489,7 +1488,9 @@ mod tests {
             text = text.concat(&zero).unwrap();
         }
         text = text.concat(&crate::value::JsString::from("Z")).unwrap();
-        let mut parser = Parser::new(text).ok().expect("input allocation");
+        let mut parser = Parser::new(&Heap::default(), text)
+            .ok()
+            .expect("input allocation");
         let before = crate::value::JsString::copied_code_units();
         assert!(parser.advance(1).is_none());
         assert!(crate::value::JsString::copied_code_units() - before <= 1);

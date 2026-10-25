@@ -195,6 +195,8 @@ pub(crate) struct State {
     rendered: Vec<u16>,
     replacement: Vec<u16>,
     work: usize,
+    budget: std::sync::Arc<crate::heap::budget::ByteBudget>,
+    reservation: crate::heap::budget::ByteReservation,
     split: Option<Box<crate::value::string::StringSplit>>,
     legacy: Option<Box<string_replace::State>>,
 }
@@ -286,6 +288,8 @@ impl State {
             rendered: Vec::new(),
             replacement: Vec::new(),
             work: MAX_WORK,
+            budget: heap.byte_budget(),
+            reservation: Default::default(),
             split: None,
             legacy: None,
         };
@@ -308,6 +312,11 @@ impl State {
         Ok(s)
     }
     fn charge(&mut self, amount: usize) -> Result<(), Fault> {
+        let ticket = self
+            .budget
+            .reserve(amount.checked_mul(256).ok_or(Fault::HeapLimit)?)
+            .ok_or(Fault::HeapLimit)?;
+        self.reservation.merge(ticket);
         self.work = self.work.checked_sub(amount).ok_or_else(|| {
             Fault::RangeError(
                 if self.which == Builtin::RegExpReplace {
@@ -567,6 +576,7 @@ impl State {
                     StringPrototypeReplace | StringPrototypeReplaceAll
                 ) {
                     self.legacy = Some(Box::new(string_replace::State::new(
+                        heap,
                         self.which,
                         &self.this,
                         &[self.arg.clone(), self.extra.clone()],
@@ -635,20 +645,22 @@ impl State {
                 self.out = property::new_array(heap, task)?;
                 // ToString(separator) precedes the zero-limit return.
                 if matches!(self.arg, Value::Undefined) {
-                    self.split = Some(Box::new(crate::value::string::StringSplit::new(
+                    self.split = Some(Box::new(crate::value::string::StringSplit::new_accounted(
+                        heap,
                         self.text.clone(),
                         None,
-                    )));
+                    )?));
                     self.go(StringSplit)
                 } else {
                     self.convert_string(self.arg.clone(), SplitSeparatorString)
                 }
             }
             SplitSeparatorString => {
-                self.split = Some(Box::new(crate::value::string::StringSplit::new(
+                self.split = Some(Box::new(crate::value::string::StringSplit::new_accounted(
+                    heap,
                     self.text.clone(),
                     Some(coerced_string(v)?),
-                )));
+                )?));
                 self.go(StringSplit)
             }
             StringSplit => {
@@ -764,7 +776,7 @@ impl State {
                     let flags = if self.which == RegExpSplit
                         && !self.flags.code_units().contains(&(b'y' as u16))
                     {
-                        self.flags.concat(&"y".into()).ok_or(Fault::StringTooLong)?
+                        self.flags.concat_accounted(heap, &"y".into())?
                     } else {
                         self.flags.clone()
                     };
@@ -994,7 +1006,7 @@ impl State {
                     self.push(
                         heap,
                         task,
-                        Value::String(slice(&self.text, self.p, self.text.len())?),
+                        Value::String(slice(heap, &self.text, self.p, self.text.len())?),
                     )?;
                     return Ok(Action::Return(self.out.clone()));
                 }
@@ -1027,7 +1039,7 @@ impl State {
                     self.push(
                         heap,
                         task,
-                        Value::String(slice(&self.text, self.p, self.q)?),
+                        Value::String(slice(heap, &self.text, self.p, self.q)?),
                     )?;
                     self.p = self.end;
                     if self.count as u64 == self.limit {
@@ -1080,7 +1092,10 @@ impl State {
                         .extend_from_slice(&self.text.code_units()[suffix..]);
                     return Ok(Action::Return(Value::String(
                         JsString::from_owned_code_units(std::mem::take(&mut self.rendered))
-                            .ok_or(Fault::StringTooLong)?,
+                            .ok_or(Fault::StringTooLong)?
+                            .with_reservation(Some(std::sync::Arc::new(std::mem::take(
+                                &mut self.reservation,
+                            )))),
                     )));
                 };
                 self.result = result;
@@ -1228,8 +1243,13 @@ impl State {
         let replacement = match token {
             36 => Some(Value::String("$".into())),
             38 => Some(self.captures[0].clone()),
-            96 => Some(Value::String(slice(&self.text, 0, self.p)?)),
-            39 => Some(Value::String(slice(&self.text, end, self.text.len())?)),
+            96 => Some(Value::String(slice(heap, &self.text, 0, self.p)?)),
+            39 => Some(Value::String(slice(
+                heap,
+                &self.text,
+                end,
+                self.text.len(),
+            )?)),
             48..=57 => {
                 let mut n = (token - 48) as usize;
                 if let Some(&digit @ 48..=57) = units.get(i + 2) {
@@ -1293,6 +1313,9 @@ fn coerced_string(v: Value) -> Result<JsString, Fault> {
         _ => Err(Fault::Internal("RegExp symbol string conversion missing")),
     }
 }
-fn slice(text: &JsString, start: usize, end: usize) -> Result<JsString, Fault> {
-    JsString::from_code_units(&text.code_units()[start..end]).ok_or(Fault::StringTooLong)
+fn slice(heap: &Heap, text: &JsString, start: usize, end: usize) -> Result<JsString, Fault> {
+    let ticket = JsString::reserve(heap, end - start, 1)?;
+    JsString::from_code_units(&text.code_units()[start..end])
+        .map(|text| text.with_reservation(ticket))
+        .ok_or(Fault::StringTooLong)
 }

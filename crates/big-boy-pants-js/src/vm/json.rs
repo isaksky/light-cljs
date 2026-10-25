@@ -88,6 +88,7 @@ pub(crate) struct Parser {
     stack: Vec<Container>,
     result: Option<Value>,
     token: Token,
+    string_reservation: Option<std::sync::Arc<crate::heap::budget::ByteReservation>>,
 }
 
 impl Trace for Parser {
@@ -105,10 +106,10 @@ impl Trace for Parser {
 }
 
 impl Parser {
-    pub(crate) fn new(text: JsString) -> Result<Self, Fault> {
+    pub(crate) fn new(heap: &Heap, text: JsString) -> Result<Self, Fault> {
         Ok(Self {
             text: JsString::from(""),
-            flatten: Some(StringFlatten::new(text).ok_or(Fault::OutOfMemory("JSON input buffer"))?),
+            flatten: Some(StringFlatten::new_accounted(heap, text)?),
             next: 0,
             line: 1,
             column: 1,
@@ -116,6 +117,7 @@ impl Parser {
             stack: Vec::new(),
             result: None,
             token: Token::Syntax,
+            string_reservation: None,
         })
     }
 
@@ -382,6 +384,7 @@ impl Parser {
                         Some(34) => {
                             let end = self.next;
                             self.consume();
+                            self.string_reservation = JsString::reserve(heap, end - start, 1)?;
                             let mut units = Vec::new();
                             units
                                 .try_reserve_exact(end - start)
@@ -431,8 +434,9 @@ impl Parser {
                     mut units,
                 } => {
                     if next == end {
-                        let text =
-                            JsString::from_owned_code_units(units).ok_or(Fault::StringTooLong)?;
+                        let text = JsString::from_owned_code_units(units)
+                            .ok_or(Fault::StringTooLong)?
+                            .with_reservation(self.string_reservation.take());
                         self.token = Token::Ready(Lexeme::String(text), position);
                         continue;
                     }
@@ -1118,6 +1122,7 @@ impl Stringifier {
                 };
             }
             S::Indent { remaining, after } => {
+                let ticket = JsString::reserve(heap, STEP, 1)?;
                 let count = remaining.min(STEP);
                 let gap = self.gap.code_units();
                 // remaining starts at a whole number of gaps. Preserve its
@@ -1127,7 +1132,9 @@ impl Stringifier {
                     .map(|i| gap[(offset + i) % gap.len()])
                     .collect::<Vec<_>>();
                 self.append(
-                    JsString::from_owned_code_units(units).expect("bounded indentation chunk"),
+                    JsString::from_owned_code_units(units)
+                        .expect("bounded indentation chunk")
+                        .with_reservation(ticket),
                 )?;
                 if remaining == count {
                     self.after_indent(after);
@@ -1251,6 +1258,7 @@ impl Stringifier {
             } => {
                 // Reserve for one saved high surrogate plus this slice.
                 // Node visits count too, so a deep rope prefix must yield.
+                let ticket = JsString::reserve(heap, (STEP + 1) * 6, 1)?;
                 let mut units = Vec::with_capacity((STEP + 1) * 6);
                 let mut done = false;
                 for _ in 0..STEP {
@@ -1282,7 +1290,9 @@ impl Stringifier {
                 }
                 if !units.is_empty() {
                     self.append(
-                        JsString::from_owned_code_units(units).expect("bounded JSON quote chunk"),
+                        JsString::from_owned_code_units(units)
+                            .expect("bounded JSON quote chunk")
+                            .with_reservation(ticket),
                     )?;
                 }
                 if done {
@@ -1443,7 +1453,7 @@ mod stringify_budget_tests {
     fn json_parse_invalid_identifier_is_budgeted() {
         let text = JsString::from("x".repeat(65536).as_str());
         let heap = Heap::default();
-        let mut parser = Parser::new(text).ok().expect("input buffer");
+        let mut parser = Parser::new(&heap, text).ok().expect("input buffer");
         for step in 0..1000 {
             match parser.advance(&heap, TaskId::from_raw(1)) {
                 Ok(None) => {}
@@ -1476,7 +1486,7 @@ mod stringify_budget_tests {
         .unwrap();
         text = text.concat(&suffix).unwrap();
         let heap = Heap::default();
-        let mut parser = Parser::new(text).ok().expect("input buffer");
+        let mut parser = Parser::new(&heap, text).ok().expect("input buffer");
         let mut steps = 0;
         for _ in 0..1000 {
             let copies = JsString::copied_code_units();

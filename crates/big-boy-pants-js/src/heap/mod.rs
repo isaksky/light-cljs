@@ -542,16 +542,11 @@ impl Heap {
         // handlers have been installed.
         crate::realm::intrinsics(&heap).expect("test realm");
         let global_bytes = if global {
-            let id = crate::realm::new_global_object(&heap, crate::ids::TaskId::from_raw(0))
+            crate::realm::new_global_object(&heap, crate::ids::TaskId::from_raw(0))
                 .expect("test global");
-            let bytes = heap
-                .read(id, |object| match object {
-                    HeapObject::Plain(object) => object.properties().count() * 512,
-                    _ => unreachable!(),
-                })
-                .unwrap();
+            let occupied = heap.byte_budget.used();
             heap.collect().unwrap();
-            bytes
+            occupied - heap.byte_budget.used()
         } else {
             0
         };

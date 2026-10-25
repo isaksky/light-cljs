@@ -467,10 +467,9 @@ impl State {
                     5 => {
                         let flags = string(v)?;
                         let s = JsString::from("/")
-                            .concat(source)
-                            .and_then(|s| s.concat(&JsString::from("/")))
-                            .and_then(|s| s.concat(&flags))
-                            .ok_or(Fault::StringTooLong)?;
+                            .concat_accounted(heap, source)?
+                            .concat_accounted(heap, &JsString::from("/"))?
+                            .concat_accounted(heap, &flags)?;
                         return Ok(Action::Return(Value::String(s)));
                     }
                     _ => return Err(Fault::Internal("RegExp toString stage")),

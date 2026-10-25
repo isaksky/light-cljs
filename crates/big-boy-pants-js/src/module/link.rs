@@ -281,7 +281,7 @@ impl Linker {
             return Ok(Action::Continue);
         };
         if self.json_parser.is_none() {
-            self.json_parser = Some(Box::new(crate::vm::json::Parser::new(text.clone())?));
+            self.json_parser = Some(Box::new(crate::vm::json::Parser::new(heap, text.clone())?));
         }
         // Validate every JSON module before entering any JavaScript frame,
         // including hoisted function instantiation. Partial containers remain
