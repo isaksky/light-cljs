@@ -6897,6 +6897,12 @@ impl<'s> Lowerer<'s> {
                 };
                 self.out().op_u16(op, count as u16, at);
             }
+            Lowering::FormOp(form_op) => {
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.out().op_u16(Opcode::FormOp, form_op as u16, at);
+            }
             Lowering::HostEffect => {
                 let selector = match args[0].kind {
                     ExprKind::Number(op)

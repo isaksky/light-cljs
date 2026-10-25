@@ -49,11 +49,17 @@
 //! dependency) and continues where it stopped when the task is run again,
 //! without repeating completed elements.
 //!
+//! **`__rt.formList(…)`, `__rt.formVector(…)`, `__rt.formMap(k, v, …)`**
+//! and the fixed-arity **`__rt.formKeyword(ns, name)`** … **`__rt.formValue(v)`**
+//! (light-cljs-466) construct, inspect, compare and update native Clojure
+//! form values ([`crate::collections::form`]); the table is in
+//! [`crate::vm::intrinsics`] ("Form intrinsics").
+//!
 //! A call evaluates its arguments left to right, then runs one VM
 //! instruction; the operand order is the instruction's stack order
 //! ([`crate::vm::intrinsics`] documents operands, results and errors).
 
-use crate::vm::Opcode;
+use crate::vm::{FormOp, Opcode};
 
 /// The name of the compiler-reserved intrinsic binding.
 pub(crate) const RESERVED_BINDING: &str = "__rt";
@@ -83,6 +89,10 @@ pub(crate) enum Lowering {
     /// `__rt.need(definition, kind)`: both arguments, then `need` (a
     /// suspension point). Literal arguments are range-checked when compiled.
     Need,
+    /// The arguments, then `form_op` with this operation as its operand
+    /// (`__rt.formKeyword(ns, name)` and the other fixed-arity form
+    /// intrinsics).
+    FormOp(FormOp),
 }
 
 /// One entry of the intrinsic table.
@@ -138,7 +148,47 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     },
     op("reduce", 3, Opcode::Reduce),
     op("needAll", 2, Opcode::NeedAll),
+    Intrinsic {
+        name: "formList",
+        arity: Arity::Any,
+        lowering: Lowering::Counted(Opcode::NewFormList),
+    },
+    Intrinsic {
+        name: "formVector",
+        arity: Arity::Any,
+        lowering: Lowering::Counted(Opcode::NewFormVector),
+    },
+    Intrinsic {
+        name: "formMap",
+        arity: Arity::Pairs,
+        lowering: Lowering::Counted(Opcode::NewFormMap),
+    },
+    form_op(FormOp::Keyword),
+    form_op(FormOp::Symbol),
+    form_op(FormOp::Kind),
+    form_op(FormOp::Namespace),
+    form_op(FormOp::Name),
+    form_op(FormOp::Count),
+    form_op(FormOp::Nth),
+    form_op(FormOp::Get),
+    form_op(FormOp::Assoc),
+    form_op(FormOp::Dissoc),
+    form_op(FormOp::Conj),
+    form_op(FormOp::Equals),
+    form_op(FormOp::Hash),
+    form_op(FormOp::Meta),
+    form_op(FormOp::WithMeta),
+    form_op(FormOp::Value),
+    form_op(FormOp::Keys),
 ];
+
+const fn form_op(op: FormOp) -> Intrinsic {
+    Intrinsic {
+        name: op.intrinsic(),
+        arity: Arity::Exactly(op.arity()),
+        lowering: Lowering::FormOp(op),
+    }
+}
 
 /// The table entry for `name`, if it is an intrinsic.
 pub(crate) fn lookup(name: &str) -> Option<&'static Intrinsic> {
@@ -159,6 +209,12 @@ mod tests {
             );
         }
         assert!(lookup("vector").is_some());
+        for op in FormOp::ALL {
+            assert_eq!(
+                lookup(op.intrinsic()).map(|i| i.lowering),
+                Some(Lowering::FormOp(op))
+            );
+        }
         assert!(lookup("toString").is_none());
     }
 }

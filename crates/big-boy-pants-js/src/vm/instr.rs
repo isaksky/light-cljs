@@ -175,6 +175,15 @@
 //! | `DefinePrivateGetter` | 0xBC | – | receiver identity function → receiver | install private getter |
 //! | `DefinePrivateSetter` | 0xBD | – | receiver identity function → receiver | install private setter |
 //! | `PrivateIn` | 0xBE | – | identity receiver → boolean | own private brand; primitives throw |
+//! | `NewFormList` | 0xBF | u16 count n | v1 … vn → list | new Clojure form list of the n values (light-cljs-466) |
+//! | `NewFormVector` | 0xC0 | u16 count n | v1 … vn → vec | new Clojure form vector |
+//! | `NewFormMap` | 0xC1 | u16 entry count n | k1 v1 … kn vn → map | new Clojure form map with structural keys; a later equal key wins |
+//! | `FormOp` | 0xC2 | u16 [`FormOp`] | arguments ([`FormOp::arity`]) → result | one form-value operation |
+//!
+//! Opcodes `0xBF`–`0xC2` are the private form intrinsics behind
+//! `__rt.form*`, documented in [`crate::vm::intrinsics`] and
+//! [`crate::collections::form`]. `FormOp`'s operand selects the operation
+//! and so its operand count; an unknown selector is a load error.
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -759,6 +768,10 @@ pub enum Opcode {
     DefinePrivateGetter = 0xBC,
     DefinePrivateSetter = 0xBD,
     PrivateIn = 0xBE,
+    NewFormList = 0xBF,
+    NewFormVector = 0xC0,
+    NewFormMap = 0xC1,
+    FormOp = 0xC2,
 }
 
 /// Operand encoding of an opcode.
@@ -788,6 +801,8 @@ pub(crate) enum OperandKind {
     Name,
     /// u16 built-in global name (`crate::realm::Global`).
     BuiltinGlobal,
+    /// u16 [`FormOp`] selector.
+    FormOp,
 }
 
 impl OperandKind {
@@ -803,7 +818,8 @@ impl OperandKind {
             | OperandKind::ArgCount
             | OperandKind::Capture
             | OperandKind::Name
-            | OperandKind::BuiltinGlobal => 2,
+            | OperandKind::BuiltinGlobal
+            | OperandKind::FormOp => 2,
             OperandKind::Target => 4,
         }
     }
@@ -981,6 +997,10 @@ impl Opcode {
             0xBC => DefinePrivateGetter,
             0xBD => DefinePrivateSetter,
             0xBE => PrivateIn,
+            0xBF => NewFormList,
+            0xC0 => NewFormVector,
+            0xC1 => NewFormMap,
+            0xC2 => FormOp,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1183,6 +1203,10 @@ impl Opcode {
             DefinePrivateGetter => "define_private_getter",
             DefinePrivateSetter => "define_private_setter",
             PrivateIn => "private_in",
+            NewFormList => "new_form_list",
+            NewFormVector => "new_form_vector",
+            NewFormMap => "new_form_map",
+            FormOp => "form_op",
             PutGlobalStrict => "put_global_strict",
             PutFieldStrict => "put_field_strict",
             PutElemStrict => "put_elem_strict",
@@ -1287,6 +1311,8 @@ impl Opcode {
             NewPrivateName => OperandKind::Name,
             GetPrivate | PutPrivate | DefinePrivateField | DefinePrivateMethod
             | DefinePrivateGetter | DefinePrivateSetter | PrivateIn => OperandKind::None,
+            NewFormList | NewFormVector | NewFormMap => OperandKind::Count,
+            FormOp => OperandKind::FormOp,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }
@@ -1324,6 +1350,121 @@ impl ThrowKind {
             4 => ThrowKind::YieldStarMissingThrow,
             _ => return None,
         })
+    }
+}
+
+/// The form-value operation a `FormOp` instruction performs (its u16
+/// operand), behind the `__rt.form*` intrinsic of the same name
+/// ([`crate::vm::intrinsics`], "Form intrinsics").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u16)]
+pub enum FormOp {
+    /// ns name → keyword (`formKeyword`).
+    Keyword = 0,
+    /// ns name → symbol (`formSymbol`).
+    Symbol = 1,
+    /// v → kind name or null (`formKind`).
+    Kind = 2,
+    /// named → namespace or null (`formNamespace`).
+    Namespace = 3,
+    /// named → name (`formName`).
+    Name = 4,
+    /// coll → count (`formCount`).
+    Count = 5,
+    /// coll i → element (`formNth`).
+    Nth = 6,
+    /// coll key default → value (`formGet`).
+    Get = 7,
+    /// coll key value → coll' (`formAssoc`).
+    Assoc = 8,
+    /// map key → map' (`formDissoc`).
+    Dissoc = 9,
+    /// coll value → coll' (`formConj`).
+    Conj = 10,
+    /// a b → boolean (`formEquals`).
+    Equals = 11,
+    /// v → hash (`formHash`).
+    Hash = 12,
+    /// v → metadata or null (`formMeta`).
+    Meta = 13,
+    /// v meta → v' (`formWithMeta`).
+    WithMeta = 14,
+    /// v → an occurrence's value, or v (`formValue`).
+    Value = 15,
+    /// map → form vector of its keys, in trie order (`formKeys`).
+    Keys = 16,
+}
+
+impl FormOp {
+    /// Every operation, in selector order.
+    pub const ALL: [FormOp; 17] = [
+        FormOp::Keyword,
+        FormOp::Symbol,
+        FormOp::Kind,
+        FormOp::Namespace,
+        FormOp::Name,
+        FormOp::Count,
+        FormOp::Nth,
+        FormOp::Get,
+        FormOp::Assoc,
+        FormOp::Dissoc,
+        FormOp::Conj,
+        FormOp::Equals,
+        FormOp::Hash,
+        FormOp::Meta,
+        FormOp::WithMeta,
+        FormOp::Value,
+        FormOp::Keys,
+    ];
+
+    /// Decode an operand; `None` for unassigned values.
+    pub fn from_u16(code: u16) -> Option<FormOp> {
+        FormOp::ALL.get(usize::from(code)).copied()
+    }
+
+    /// The number of operands it pops (it always pushes one result).
+    pub const fn arity(self) -> usize {
+        match self {
+            FormOp::Kind
+            | FormOp::Namespace
+            | FormOp::Name
+            | FormOp::Count
+            | FormOp::Hash
+            | FormOp::Meta
+            | FormOp::Value
+            | FormOp::Keys => 1,
+            FormOp::Keyword
+            | FormOp::Symbol
+            | FormOp::Nth
+            | FormOp::Dissoc
+            | FormOp::Conj
+            | FormOp::Equals
+            | FormOp::WithMeta => 2,
+            FormOp::Get | FormOp::Assoc => 3,
+        }
+    }
+
+    /// The `__rt` intrinsic name.
+    pub const fn intrinsic(self) -> &'static str {
+        match self {
+            FormOp::Keyword => "formKeyword",
+            FormOp::Symbol => "formSymbol",
+            FormOp::Kind => "formKind",
+            FormOp::Namespace => "formNamespace",
+            FormOp::Name => "formName",
+            FormOp::Count => "formCount",
+            FormOp::Nth => "formNth",
+            FormOp::Get => "formGet",
+            FormOp::Assoc => "formAssoc",
+            FormOp::Dissoc => "formDissoc",
+            FormOp::Conj => "formConj",
+            FormOp::Equals => "formEquals",
+            FormOp::Hash => "formHash",
+            FormOp::Meta => "formMeta",
+            FormOp::WithMeta => "formWithMeta",
+            FormOp::Value => "formValue",
+            FormOp::Keys => "formKeys",
+        }
     }
 }
 
@@ -1541,6 +1682,13 @@ pub(crate) enum Instr {
     DefinePrivateGetter,
     DefinePrivateSetter,
     PrivateIn,
+    /// Element count.
+    NewFormList(u16),
+    /// Element count.
+    NewFormVector(u16),
+    /// Entry count (pops twice as many values).
+    NewFormMap(u16),
+    FormOp(FormOp),
 }
 
 impl Instr {
@@ -1733,6 +1881,10 @@ impl Instr {
             Instr::DefinePrivateGetter => Opcode::DefinePrivateGetter,
             Instr::DefinePrivateSetter => Opcode::DefinePrivateSetter,
             Instr::PrivateIn => Opcode::PrivateIn,
+            Instr::NewFormList(_) => Opcode::NewFormList,
+            Instr::NewFormVector(_) => Opcode::NewFormVector,
+            Instr::NewFormMap(_) => Opcode::NewFormMap,
+            Instr::FormOp(_) => Opcode::FormOp,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
             Instr::PutFieldStrict(_) => Opcode::PutFieldStrict,
             Instr::PutElemStrict => Opcode::PutElemStrict,
@@ -1800,7 +1952,9 @@ impl Instr {
             ToPropertyKey => (2, 2),
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
             | CallFinally | DropCompletion => (0, 0),
-            NewVector(n) => (usize::from(n), 1),
+            NewVector(n) | NewFormList(n) | NewFormVector(n) => (usize::from(n), 1),
+            NewFormMap(n) => (2 * usize::from(n), 1),
+            FormOp(op) => (op.arity(), 1),
             NewMap(n) | TemplateObject(n) => (2 * usize::from(n), 1),
             Call(n) => (usize::from(n) + 1, 1),
             Construct(n) => (usize::from(n) + 1, 1),
@@ -1845,6 +1999,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 190);
+        assert_eq!(assigned, 194);
     }
 }

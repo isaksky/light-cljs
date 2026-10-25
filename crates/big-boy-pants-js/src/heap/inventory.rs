@@ -60,6 +60,8 @@ enum Holder {
     BindingCell,
     /// Edges of persistent vectors, maps and occurrences.
     PersistentCollectionEdges,
+    /// Elements, keys, values and metadata of native form values.
+    FormEdges,
     /// An object constant of executable code a live task runs.
     ExecutableConstant,
     /// Edges reported by a native payload's `Trace`.
@@ -117,7 +119,7 @@ enum Holder {
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 52] = [
+const HOLDERS: [Holder; 53] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -135,6 +137,7 @@ const HOLDERS: [Holder; 52] = [
     Holder::ClosureEnvironment,
     Holder::BindingCell,
     Holder::PersistentCollectionEdges,
+    Holder::FormEdges,
     Holder::ExecutableConstant,
     Holder::NativePayloadEdges,
     Holder::ObjectProperty,
@@ -186,7 +189,7 @@ const CATEGORIES: [RootCategory; 7] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 28] = [
+const KINDS: [ObjectKind; 29] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -215,6 +218,7 @@ const KINDS: [ObjectKind; 28] = [
     ObjectKind::Proxy,
     ObjectKind::JsSet,
     ObjectKind::WeakSet,
+    ObjectKind::Form,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -234,6 +238,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             ClosureEnvironment,
             BindingCell,
             PersistentCollectionEdges,
+            FormEdges,
             NativePayloadEdges,
             FunctionProperties,
             BoundFunction,
@@ -302,6 +307,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::Vector | ObjectKind::Map | ObjectKind::Occurrence => {
             &[PersistentCollectionEdges, DependencyOutcome]
         }
+        ObjectKind::Form => &[FormEdges],
         ObjectKind::Builder => &[TransientBuilder],
         ObjectKind::Function => &[
             ClosureEnvironment,
@@ -520,6 +526,7 @@ fn coverage(holder: Holder) -> Coverage {
             "persistent_collection_edges_retain",
             "persistent_collection_edges_reclaim",
         ),
+        Holder::FormEdges => public("form_edges_retain", "form_edges_reclaim"),
         Holder::ExecutableConstant => Coverage {
             retains: (Inventory, "executable_constant_retains"),
             reclaims: (Inventory, "executable_constant_reclaims"),

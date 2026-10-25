@@ -8,6 +8,12 @@
 //! ever reads another heap object or runs user code,
 //! so lookups need no heap lock beyond resolving the map itself.
 //!
+//! The trie operations themselves take the key hash and equality as
+//! parameters ([`PMap::get_with`] and friends): the native form maps of
+//! `crate::collections::form` reuse this storage with ClojureScript value
+//! equality and hashing. The SameValueZero API above is unchanged and is
+//! the only one internal registries use.
+//!
 //! Each trie level consumes 5 hash bits. Keys whose 64-bit hashes are fully
 //! equal end in a collision node. Nodes are immutable and shared through
 //! `Arc`; an update copies only the path to the changed entry. Iteration
@@ -23,6 +29,9 @@ use crate::value::Value;
 
 const BITS: u32 = 5;
 const MASK: u64 = (1 << BITS) - 1;
+
+/// A key equality `eq(stored, probe)` for the generic trie operations.
+pub(crate) type KeyEq<'a> = &'a dyn Fn(&Value, &Value) -> bool;
 
 /// SameValueZero key equality. See the module docs.
 pub(crate) fn key_eq(a: &Value, b: &Value) -> bool {
@@ -154,6 +163,14 @@ impl PMap {
     }
 
     fn get_hashed(&self, hash: u64, key: &Value) -> Option<Value> {
+        self.get_with(hash, key, &key_eq)
+    }
+
+    /// Lookup with a caller-supplied key equality: `eq(stored, probe)`
+    /// must be consistent with `hash` (equal keys have equal hashes). The
+    /// structural form maps of `crate::collections::form` use this with
+    /// their own equality; the SameValueZero API above passes [`key_eq`].
+    pub(crate) fn get_with(&self, hash: u64, key: &Value, eq: KeyEq<'_>) -> Option<Value> {
         let mut node = self.root.as_deref()?;
         let mut shift = 0;
         loop {
@@ -164,8 +181,12 @@ impl PMap {
                         return None;
                     }
                     match entries.get(position(*bitmap, bit))? {
-                        Entry::Pair { key: k, value, .. } => {
-                            return key_eq(k, key).then(|| value.clone());
+                        Entry::Pair {
+                            hash: h,
+                            key: k,
+                            value,
+                        } => {
+                            return (*h == hash && eq(k, key)).then(|| value.clone());
                         }
                         Entry::Child(child) => {
                             node = child;
@@ -174,17 +195,25 @@ impl PMap {
                     }
                 }
                 Node::Collision { pairs, .. } => {
-                    return pairs
-                        .iter()
-                        .find(|(k, _)| key_eq(k, key))
-                        .map(|p| p.1.clone());
+                    return pairs.iter().find(|(k, _)| eq(k, key)).map(|p| p.1.clone());
                 }
             }
         }
     }
 
     fn assoc_hashed(&self, hash: u64, key: Value, value: Value) -> Option<PMap> {
-        let key = canonical_key(key);
+        self.assoc_with(hash, canonical_key(key), value, &key_eq)
+    }
+
+    /// [`PMap::assoc`] with a caller-supplied hash and key equality (see
+    /// [`PMap::get_with`]). The key is stored as given.
+    pub(crate) fn assoc_with(
+        &self,
+        hash: u64,
+        key: Value,
+        value: Value,
+        eq: KeyEq<'_>,
+    ) -> Option<PMap> {
         let Some(root) = &self.root else {
             let root = Node::Bitmap {
                 bitmap: bit_for(hash, 0),
@@ -195,7 +224,7 @@ impl PMap {
                 root: Some(Arc::new(root)),
             });
         };
-        let (root, len) = match assoc_in(root, 0, hash, key, value) {
+        let (root, len) = match assoc_in(root, 0, hash, key, value, eq) {
             Assoc::Unchanged => return None,
             Assoc::Replaced(n) => (n, self.len),
             Assoc::Added(n) => (n, self.len + 1),
@@ -207,7 +236,13 @@ impl PMap {
     }
 
     fn dissoc_hashed(&self, hash: u64, key: &Value) -> Option<PMap> {
-        match dissoc_in(self.root.as_deref()?, 0, hash, key) {
+        self.dissoc_with(hash, key, &key_eq)
+    }
+
+    /// [`PMap::dissoc`] with a caller-supplied hash and key equality (see
+    /// [`PMap::get_with`]).
+    pub(crate) fn dissoc_with(&self, hash: u64, key: &Value, eq: KeyEq<'_>) -> Option<PMap> {
+        match dissoc_in(self.root.as_deref()?, 0, hash, key, eq) {
             Dissoc::Absent => None,
             Dissoc::Removed(root) => Some(PMap {
                 len: self.len - 1,
@@ -233,6 +268,66 @@ impl PMap {
         }
         if let Some(root) = &self.root {
             walk(root, &mut f);
+        }
+    }
+
+    /// Call `f` on every entry with its stored hash, in trie order.
+    pub(crate) fn for_each_hashed(&self, mut f: impl FnMut(u64, &Value, &Value)) {
+        fn walk(node: &Node, f: &mut dyn FnMut(u64, &Value, &Value)) {
+            match node {
+                Node::Bitmap { entries, .. } => {
+                    for entry in entries {
+                        match entry {
+                            Entry::Pair { hash, key, value } => f(*hash, key, value),
+                            Entry::Child(child) => walk(child, f),
+                        }
+                    }
+                }
+                Node::Collision { hash, pairs } => pairs.iter().for_each(|(k, v)| f(*hash, k, v)),
+            }
+        }
+        if let Some(root) = &self.root {
+            walk(root, &mut f);
+        }
+    }
+
+    /// The entries whose stored hash is `hash`, in trie order (one, unless
+    /// distinct keys share the full hash).
+    pub(crate) fn entries_with_hash(&self, hash: u64) -> Vec<(Value, Value)> {
+        let Some(mut node) = self.root.as_deref() else {
+            return Vec::new();
+        };
+        let mut shift = 0;
+        loop {
+            match node {
+                Node::Bitmap { bitmap, entries } => {
+                    let bit = bit_for(hash, shift);
+                    if bitmap & bit == 0 {
+                        return Vec::new();
+                    }
+                    match &entries[position(*bitmap, bit)] {
+                        Entry::Pair {
+                            hash: h,
+                            key,
+                            value,
+                        } if *h == hash => {
+                            return vec![(key.clone(), value.clone())];
+                        }
+                        Entry::Pair { .. } => return Vec::new(),
+                        Entry::Child(child) => {
+                            node = child;
+                            shift += BITS;
+                        }
+                    }
+                }
+                Node::Collision { hash: h, pairs } => {
+                    return if *h == hash {
+                        pairs.clone()
+                    } else {
+                        Vec::new()
+                    };
+                }
+            }
         }
     }
 
@@ -291,7 +386,7 @@ fn merge(shift: u32, a: (u64, Value, Value), b: (u64, Value, Value)) -> Node {
     }
 }
 
-fn assoc_in(node: &Node, shift: u32, hash: u64, key: Value, value: Value) -> Assoc {
+fn assoc_in(node: &Node, shift: u32, hash: u64, key: Value, value: Value, eq: KeyEq<'_>) -> Assoc {
     match node {
         Node::Bitmap { bitmap, entries } => {
             let bit = bit_for(hash, shift);
@@ -310,7 +405,7 @@ fn assoc_in(node: &Node, shift: u32, hash: u64, key: Value, value: Value) -> Ass
                     key: k,
                     value: v,
                 } => {
-                    if key_eq(k, &key) {
+                    if *h == hash && eq(k, &key) {
                         if identical(v, &value) {
                             return Assoc::Unchanged;
                         }
@@ -326,7 +421,7 @@ fn assoc_in(node: &Node, shift: u32, hash: u64, key: Value, value: Value) -> Ass
                         (Entry::Child(Arc::new(child)), true)
                     }
                 }
-                Entry::Child(child) => match assoc_in(child, shift + BITS, hash, key, value) {
+                Entry::Child(child) => match assoc_in(child, shift + BITS, hash, key, value, eq) {
                     Assoc::Unchanged => return Assoc::Unchanged,
                     Assoc::Replaced(n) => (Entry::Child(Arc::new(n)), false),
                     Assoc::Added(n) => (Entry::Child(Arc::new(n)), true),
@@ -349,7 +444,7 @@ fn assoc_in(node: &Node, shift: u32, hash: u64, key: Value, value: Value) -> Ass
             // reaches one has the node's full hash.
             debug_assert_eq!(*h, hash);
             let mut copy = pairs.clone();
-            match pairs.iter().position(|(k, _)| key_eq(k, &key)) {
+            match pairs.iter().position(|(k, _)| eq(k, &key)) {
                 Some(i) if identical(&pairs[i].1, &value) => Assoc::Unchanged,
                 Some(i) => {
                     copy[i].1 = value;
@@ -386,7 +481,7 @@ fn single_pair(node: &Node) -> Option<Entry> {
     }
 }
 
-fn dissoc_in(node: &Node, shift: u32, hash: u64, key: &Value) -> Dissoc {
+fn dissoc_in(node: &Node, shift: u32, hash: u64, key: &Value, eq: KeyEq<'_>) -> Dissoc {
     match node {
         Node::Bitmap { bitmap, entries } => {
             let bit = bit_for(hash, shift);
@@ -395,9 +490,11 @@ fn dissoc_in(node: &Node, shift: u32, hash: u64, key: &Value) -> Dissoc {
             }
             let pos = position(*bitmap, bit);
             let replacement = match &entries[pos] {
-                Entry::Pair { key: k, .. } if key_eq(k, key) => None,
+                Entry::Pair {
+                    hash: h, key: k, ..
+                } if *h == hash && eq(k, key) => None,
                 Entry::Pair { .. } => return Dissoc::Absent,
-                Entry::Child(child) => match dissoc_in(child, shift + BITS, hash, key) {
+                Entry::Child(child) => match dissoc_in(child, shift + BITS, hash, key, eq) {
                     Dissoc::Absent => return Dissoc::Absent,
                     Dissoc::Removed(None) => None,
                     Dissoc::Removed(Some(n)) => {
@@ -422,7 +519,7 @@ fn dissoc_in(node: &Node, shift: u32, hash: u64, key: &Value) -> Dissoc {
             }))
         }
         Node::Collision { hash: h, pairs } => {
-            let Some(i) = pairs.iter().position(|(k, _)| key_eq(k, key)) else {
+            let Some(i) = pairs.iter().position(|(k, _)| eq(k, key)) else {
                 return Dissoc::Absent;
             };
             let mut copy = pairs.clone();

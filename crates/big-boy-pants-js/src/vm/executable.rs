@@ -33,7 +33,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::instr::{Instr, Opcode, OperandKind, ThrowKind};
+use super::instr::{FormOp, Instr, Opcode, OperandKind, ThrowKind};
 use crate::error::SourceLocation;
 use crate::heap::gc::Trace;
 use crate::value::{JsString, Primitive, Value};
@@ -335,6 +335,10 @@ pub enum ValidationErrorKind {
     UnknownThrowKind {
         code: u16,
     },
+    /// A `FormOp` operand that names no [`FormOp`](crate::FormOp).
+    UnknownFormOp {
+        code: u16,
+    },
     /// A `Function` operand past the end of the child function table.
     FunctionOutOfRange {
         index: u16,
@@ -494,6 +498,10 @@ impl Executable {
                     let code = operand as u16;
                     return Err(err(offset, UnknownThrowKind { code }));
                 }
+                OperandKind::FormOp if FormOp::from_u16(operand as u16).is_none() => {
+                    let code = operand as u16;
+                    return Err(err(offset, UnknownFormOp { code }));
+                }
                 OperandKind::BuiltinGlobal
                     if crate::realm::Global::from_u16(operand as u16).is_none() =>
                 {
@@ -553,6 +561,21 @@ impl Executable {
                 Opcode::HostEffect => Instr::HostEffect(operand as u16),
                 Opcode::NewVector => Instr::NewVector(operand as u16),
                 Opcode::NewMap => Instr::NewMap(operand as u16),
+                Opcode::NewFormList => Instr::NewFormList(operand as u16),
+                Opcode::NewFormVector => Instr::NewFormVector(operand as u16),
+                Opcode::NewFormMap => Instr::NewFormMap(operand as u16),
+                Opcode::FormOp => match FormOp::from_u16(operand as u16) {
+                    Some(op) => Instr::FormOp(op),
+                    // Pass 1 rejected unknown operations.
+                    None => {
+                        return Err(err(
+                            offsets[i],
+                            UnknownFormOp {
+                                code: operand as u16,
+                            },
+                        ));
+                    }
+                },
                 Opcode::Count => Instr::Count,
                 Opcode::Nth => Instr::Nth,
                 Opcode::Get => Instr::Get,
@@ -916,6 +939,9 @@ impl Executable {
                 | Instr::HostEffect(v)
                 | Instr::NewVector(v)
                 | Instr::NewMap(v)
+                | Instr::NewFormList(v)
+                | Instr::NewFormVector(v)
+                | Instr::NewFormMap(v)
                 | Instr::Function(v, _)
                 | Instr::Method(v, _)
                 | Instr::Call(v)
@@ -949,6 +975,7 @@ impl Executable {
                 | Instr::Rest(v)
                 | Instr::SetComputedName(v) => u32::from(v),
                 Instr::ThrowError(kind) => u32::from(kind as u16),
+                Instr::FormOp(op) => u32::from(op as u16),
                 // Branch targets are instruction indices once loaded.
                 Instr::Jump(t)
                 | Instr::JumpIfFalse(t)
@@ -1301,6 +1328,26 @@ mod tests {
         for i in 0..50 {
             assert!(load(vec![g, i, 0, RET], vec![], 0).is_ok());
         }
+    }
+
+    #[test]
+    fn form_ops_are_validated_and_take_their_arity() {
+        let (f, u) = (Opcode::FormOp as u8, Opcode::Undefined as u8);
+        let unknown = FormOp::ALL.len() as u8;
+        assert_eq!(
+            kind(load(vec![u, f, unknown, 0, RET], vec![], 0)),
+            UnknownFormOp {
+                code: u16::from(unknown)
+            }
+        );
+        // `formGet` pops three operands: one is too few.
+        let get = FormOp::Get as u8;
+        assert!(matches!(
+            kind(load(vec![u, f, get, 0, RET], vec![], 0)),
+            StackUnderflow { .. }
+        ));
+        let ok = load(vec![u, u, u, f, get, 0, RET], vec![], 0).unwrap();
+        assert_eq!(ok.to_spec().code, vec![u, u, u, f, get, 0, RET]);
     }
 
     #[test]

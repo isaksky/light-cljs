@@ -77,6 +77,8 @@ pub struct ObjectCounts {
     pub proxy: usize,
     pub js_set: usize,
     pub weak_set: usize,
+    /// Native Clojure form values (`crate::collections::form`).
+    pub form: usize,
 }
 
 impl ObjectCounts {
@@ -110,6 +112,7 @@ impl ObjectCounts {
             + self.proxy
             + self.js_set
             + self.weak_set
+            + self.form
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -143,6 +146,7 @@ impl ObjectCounts {
             HeapObject::Generator(_) => &mut self.generator,
             HeapObject::AsyncState(_) => &mut self.async_state,
             HeapObject::ModuleNamespace(_) => &mut self.module_namespace,
+            HeapObject::Form(_) => &mut self.form,
         };
         *n += 1;
     }

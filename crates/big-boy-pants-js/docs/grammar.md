@@ -37,7 +37,7 @@ identified in [attribution.md](attribution.md).
 | Exceptions and disposal | throw/try/catch/finally, completion across waits, Error/NativeError/AggregateError/SuppressedError, captured stacks, using/await using, DisposableStack/AsyncDisposableStack | `tests/exceptions.rs`, `tests/exception_waits.rs`, `tests/error_stacks.rs`, `tests/native_unwind.rs` |
 | Generators and jobs | next/return/throw, yield/yield*, async functions/await, async generator queued requests/delegation, async-from-sync adapters, task-owned jobs | `tests/fixtures/js/generator_return_throw.js`, `tests/async_generators.rs`, `tests/async_iteration.rs`, `tests/quickjs_async.rs` |
 | Static modules | Imports/live cells/re-exports/namespaces/cycles, default expressions/declarations, JSON default values | `tests/js_modules.rs`, `tests/fixtures/modules/default_exports.js` |
-| Native collections/intrinsics | Persistent vectors/maps, builders, folds, dependency need/needAll; atoms through embedding/VM bytecode | `tests/collection_intrinsics.rs`, `tests/collections.rs`, `tests/native_fold.rs`, `tests/need.rs`, `tests/atoms.rs` |
+| Native collections/intrinsics | Persistent vectors/maps, builders, folds, dependency need/needAll; atoms through embedding/VM bytecode; native Clojure form values (keywords, symbols, lists, vectors, maps with structural keys and metadata) | `tests/collection_intrinsics.rs`, `tests/collections.rs`, `tests/native_fold.rs`, `tests/need.rs`, `tests/atoms.rs`, `tests/forms.rs` |
 
 ### Native JavaScript surface
 
@@ -291,10 +291,13 @@ instruction (operands, results and run-time errors: `crate::vm::intrinsics`,
 | `__rt.need(definition, kind)` | `need` | the shared result `kind` of `definition` in the task's world, suspending the whole task while it is pending (clj-quickjs-23); both are non-negative integers (a bad literal is a compile error) |
 | `__rt.reduce(f, init, v)` | `reduce` | resumable native fold (clj-quickjs-12): `f(acc, x)` for each element of the vector `v` in order, starting from `init`; a callback may suspend the whole task, which continues inside the fold without repeating completed elements |
 | `__rt.needAll(defs, kind)` | `need_all` | resumable native (clj-quickjs-12): a new vector of the shared results `kind` of each definition id in the vector `defs`, suspending at the call for each pending one |
+| `__rt.formList(x…)`, `__rt.formVector(x…)`, `__rt.formMap(k, v, …)` | `new_form_list n`, `new_form_vector n`, `new_form_map n` | new native Clojure form list, vector or map (light-cljs-466); map keys are structural, a later equal key wins |
+| `__rt.formKeyword(ns, name)`, `__rt.formSymbol(ns, name)` and the other `__rt.form*` operations | `form_op k` | one form-value operation (`crate::vm::intrinsics`, "Form intrinsics"; contract in `crate::collections::form`) |
 
 Atoms additionally have VM opcodes `atom_new`, `atom_load`, `atom_cas`; they are
 exposed to Rust by `Runtime`/`Scope`, not source `__rt` names. Native maps use
-SameValueZero keys with objects by identity. Structural `value_equals`, identity
+SameValueZero keys with objects by identity; form maps (`__rt.formMap`) are a
+separate kind whose keys compare by ClojureScript value equality. Structural `value_equals`, identity
 and provenance are different operations. Persistent updates share unchanged
 subtrees; builders are owned by task ID, can migrate and freeze once. Builder
 misuse fails with WrongType/NotOwner/Frozen/OwnerFinished; collection indices

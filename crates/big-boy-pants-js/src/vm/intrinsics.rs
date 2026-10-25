@@ -87,6 +87,42 @@
 //! Single-writer atoms are readable here; only their Rust
 //! [`Publisher`](crate::Publisher) can change them.
 //!
+//! # Form intrinsics
+//!
+//! Opcodes `0xBF`–`0xC2` operate on native Clojure form values
+//! ([`crate::collections::form`], which documents the value, equality,
+//! hashing, metadata and publication contract and its supported boundary).
+//! They are a separate kind from the SameValueZero collections above: a
+//! form operation rejects a persistent vector or map, and the intrinsics
+//! above reject forms. Keys are structural: an equal key finds the entry.
+//! Occurrences are transparent only to `formEquals`, `formHash` and map
+//! keys; the other operations take the occurrence itself (`formValue`
+//! unwraps it).
+//!
+//! | `__rt` call | Instruction | Result | Errors ([`CollectionError`]) |
+//! |-------------|-------------|--------|--------|
+//! | `formList(x1, …, xn)`, `formVector(…)` | `new_form_list n`, `new_form_vector n` | new list or vector of the values, in order | – |
+//! | `formMap(k1, v1, …)` | `new_form_map n` | new map; a later equal key replaces the value | – |
+//! | `formKeyword(ns, name)`, `formSymbol(ns, name)` | `form_op` | new keyword or symbol; `ns` a string or `null`/`undefined`, `name` a string (exact UTF-16) | `WrongType` |
+//! | `formKind(v)` | `form_op` | `"keyword"`, `"symbol"`, `"list"`, `"vector"`, `"map"`, `"occurrence"`, or `null` | – |
+//! | `formNamespace(x)`, `formName(x)` | `form_op` | a keyword's or symbol's namespace (or `null`) and name | `WrongType` |
+//! | `formCount(c)` | `form_op` | element or entry count | `WrongType` |
+//! | `formNth(c, i)` | `form_op` | list or vector element at index `i` | `WrongType`, `InvalidIndex`, `IndexOutOfBounds` |
+//! | `formGet(c, k, d)` | `form_op` | map value for an equal key, or vector element at index `k`; `d` when absent | `WrongType` (not a vector or map) |
+//! | `formAssoc(c, k, v)` | `form_op` | new map with `k` set, or vector with index `k <= count` set | `WrongType`, `InvalidIndex`, `IndexOutOfBounds` |
+//! | `formDissoc(m, k)` | `form_op` | new map without the entry for an equal key (absent: `m`) | `WrongType` |
+//! | `formConj(c, x)` | `form_op` | vector: `x` appended; list: `x` prepended | `WrongType` |
+//! | `formKeys(m)` | `form_op` | a new form vector of the map's keys (the stored key objects), in trie order | `WrongType` |
+//! | `formEquals(a, b)`, `formHash(v)` | `form_op` | value equality (boolean) and the light-cljs runtime's 32-bit hash (number) | – |
+//! | `formMeta(v)` | `form_op` | the form's metadata map, or `null` | – |
+//! | `formWithMeta(v, m)` | `form_op` | a symbol, list, vector or map with metadata `m` (a form map or `null`); `v` itself for the same `m` | `WrongType` |
+//! | `formValue(v)` | `form_op` | an occurrence's value (through nested occurrences), else `v` | – |
+//!
+//! Updates keep the input's metadata and follow the identity rules of
+//! [`crate::collections::form`]. A `formEquals`, `formHash` or structural
+//! lookup runs to completion inside its instruction, like the collection
+//! intrinsics, reading only frozen form bodies; it never calls JavaScript.
+//!
 //! # Rooting
 //!
 //! Every intrinsic reads its operands in place and pops them only after its
@@ -96,12 +132,13 @@
 
 use super::dispatch::Fault;
 use super::frames::VmState;
-use super::instr::Instr;
+use super::instr::{FormOp, Instr};
 use crate::atom::{self, AtomError};
 use crate::collections::builder::{self, BuildFault, BuilderKind};
-use crate::collections::{self as coll, CollectionError};
+use crate::collections::form::{self, FormKind};
+use crate::collections::{self as coll, CollectionError, PersistentKind};
 use crate::heap::Heap;
-use crate::value::Value;
+use crate::value::{JsString, Value};
 
 impl From<CollectionError> for Fault {
     fn from(e: CollectionError) -> Self {
@@ -254,9 +291,113 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
             state.replace(3, witness)?;
             state.push(Value::Bool(ok));
         }
+        Instr::NewFormList(n) | Instr::NewFormVector(n) => {
+            let n = usize::from(n);
+            let ops = state.operands();
+            let start = ops
+                .len()
+                .checked_sub(n)
+                .ok_or(Fault::Internal("operand stack underflow"))?;
+            let made = match instr {
+                Instr::NewFormList(_) => form::new_list(heap, &ops[start..])?,
+                _ => form::new_vector(heap, &ops[start..])?,
+            };
+            state.replace(n, made)?;
+        }
+        Instr::NewFormMap(n) => {
+            let n = 2 * usize::from(n);
+            let ops = state.operands();
+            let start = ops
+                .len()
+                .checked_sub(n)
+                .ok_or(Fault::Internal("operand stack underflow"))?;
+            let entries: Vec<(Value, Value)> = ops[start..]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|[k, v]| (k.clone(), v.clone()))
+                .collect();
+            let map = form::new_map(heap, &entries)?;
+            state.replace(n, map)?;
+        }
+        Instr::FormOp(op) => {
+            let n = op.arity();
+            let ops = state.operands();
+            let start = ops
+                .len()
+                .checked_sub(n)
+                .ok_or(Fault::Internal("operand stack underflow"))?;
+            let args = ops[start..].to_vec();
+            let result = form_op(heap, op, args)?;
+            state.replace(n, result)?;
+        }
         _ => return Err(Fault::Internal("not a collection intrinsic")),
     }
     Ok(())
+}
+
+/// One `FormOp` on its operands (oldest first, exactly [`FormOp::arity`]).
+fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, CollectionError> {
+    let mut args = args.into_iter();
+    let mut arg = || args.next().unwrap_or(Value::Undefined);
+    let string = |s: &str| Value::String(JsString::from(s));
+    Ok(match op {
+        FormOp::Keyword => form::new_named_from_values(heap, FormKind::Keyword, arg(), arg())?,
+        FormOp::Symbol => form::new_named_from_values(heap, FormKind::Symbol, arg(), arg())?,
+        FormOp::Kind => {
+            let v = arg();
+            match form::kind(heap, &v) {
+                Some(kind) => string(kind.name()),
+                None if coll::kind_of(heap, &v) == Some(PersistentKind::Occurrence) => {
+                    string("occurrence")
+                }
+                None => Value::Null,
+            }
+        }
+        FormOp::Namespace => form::name(heap, &arg())?
+            .namespace
+            .map_or(Value::Null, Value::String),
+        FormOp::Name => Value::String(form::name(heap, &arg())?.name),
+        FormOp::Count => Value::Number(form::count(heap, &arg())? as f64),
+        FormOp::Nth => {
+            let (c, i) = (arg(), arg());
+            form::nth_at(heap, &c, &i)?
+        }
+        FormOp::Get => {
+            let (c, k, d) = (arg(), arg(), arg());
+            form::get(heap, &c, &k)?.unwrap_or(d)
+        }
+        FormOp::Assoc => {
+            let (c, k, v) = (arg(), arg(), arg());
+            form::assoc(heap, &c, k, v)?
+        }
+        FormOp::Dissoc => {
+            let (m, k) = (arg(), arg());
+            form::dissoc(heap, &m, &k)?
+        }
+        FormOp::Conj => {
+            let (c, v) = (arg(), arg());
+            form::conj(heap, &c, v)?
+        }
+        FormOp::Equals => {
+            let (a, b) = (arg(), arg());
+            Value::Bool(form::equals(heap, &a, &b))
+        }
+        FormOp::Hash => Value::Number(f64::from(form::hash(heap, &arg()))),
+        FormOp::Meta => form::meta(heap, &arg()).unwrap_or(Value::Null),
+        FormOp::WithMeta => {
+            let (v, m) = (arg(), arg());
+            form::with_meta(heap, &v, &m)?
+        }
+        FormOp::Value => form::unwrap(heap, arg()),
+        FormOp::Keys => {
+            let keys: Vec<Value> = form::entries(heap, &arg())?
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            form::new_vector(heap, &keys)?
+        }
+    })
 }
 
 /// Early VM tests (hand-assembled bytecode). Cross-task use while the owner

@@ -191,6 +191,9 @@ pub(crate) enum ObjectKind {
     Proxy,
     JsSet,
     WeakSet,
+    /// A native Clojure form value: keyword, symbol, list, vector or map
+    /// ([`crate::collections::form`]).
+    Form,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -278,6 +281,10 @@ pub(crate) enum HeapObject {
     Proxy(crate::vm::proxy::Proxy),
     JsSet(Box<crate::object::map::MapObject>),
     WeakSet(Box<crate::object::weak_map::WeakMapObject>),
+    /// A native Clojure form value (`crate::collections::form`): immutable
+    /// once allocated, like the persistent collections; its `Trace`
+    /// reports its elements, keys, values and metadata.
+    Form(Arc<crate::collections::form::FormObject>),
 }
 
 impl HeapObject {
@@ -318,6 +325,7 @@ impl HeapObject {
             HeapObject::AsyncState(_) => ObjectKind::AsyncState,
             HeapObject::ModuleNamespace(_) => ObjectKind::ModuleNamespace,
             HeapObject::Proxy(_) => ObjectKind::Proxy,
+            HeapObject::Form(_) => ObjectKind::Form,
         }
     }
 }
@@ -351,6 +359,7 @@ impl Trace for HeapObject {
             HeapObject::AsyncState(a) => a.trace(visit),
             HeapObject::ModuleNamespace(ns) => ns.trace(visit),
             HeapObject::Proxy(p) => p.trace(visit),
+            HeapObject::Form(f) => f.trace(visit),
         }
     }
 
@@ -383,6 +392,8 @@ impl Trace for HeapObject {
             HeapObject::AsyncState(a) => a.trace_conditional(visit),
             HeapObject::ModuleNamespace(_) => {}
             HeapObject::Proxy(_) => {}
+            // Form contents are exclusively strong.
+            HeapObject::Form(_) => {}
         }
     }
 }

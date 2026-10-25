@@ -362,6 +362,7 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
         HeapObject::Vector(_)
         | HeapObject::Map(_)
         | HeapObject::Occurrence(_)
+        | HeapObject::Form(_)
         | HeapObject::Builder(_)
         | HeapObject::Cell(_)
         | HeapObject::Atom(_)

@@ -415,6 +415,7 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::Vector(_)
                 | HeapObject::Map(_)
                 | HeapObject::Occurrence(_)
+                | HeapObject::Form(_)
                 | HeapObject::Builder(_)
                 | HeapObject::Cell(_)
                 | HeapObject::Atom(_)
@@ -2714,7 +2715,11 @@ fn step_instruction(
         | Instr::Freeze
         | Instr::AtomNew
         | Instr::AtomLoad
-        | Instr::AtomCas => intrinsics::step(state, heap, instr)?,
+        | Instr::AtomCas
+        | Instr::NewFormList(_)
+        | Instr::NewFormVector(_)
+        | Instr::NewFormMap(_)
+        | Instr::FormOp(_) => intrinsics::step(state, heap, instr)?,
         Instr::DefineClassMethod | Instr::DefineClassGetter | Instr::DefineClassSetter => {
             return define_class_element(state, heap, instr);
         }
@@ -3152,7 +3157,12 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::NewCell
         | Instr::AtomNew
         | Instr::AtomLoad
-        | Instr::AtomCas => true,
+        | Instr::AtomCas
+        // Constructors and updates allocate; the others read (conservative).
+        | Instr::NewFormList(_)
+        | Instr::NewFormVector(_)
+        | Instr::NewFormMap(_)
+        | Instr::FormOp(_) => true,
         Instr::Const(_)
         | Instr::Undefined
         | Instr::GetThis

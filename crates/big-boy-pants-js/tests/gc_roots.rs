@@ -294,6 +294,53 @@ fn persistent_collection(rt: &Runtime) -> Held {
     Held::new(weak, move || drop(root))
 }
 
+/// A form list rooted by the host: `^{:m <obj>} ([<obj>] {[:k] <occ>})`.
+/// Every element, map key and value, the metadata map and its value, and
+/// the occurrence's value are held only through form edges.
+fn form_edges(rt: &Runtime) -> Held {
+    let (root, weak) = rt.scope(|s| {
+        let name = |t: &str| big_boy_pants_js::JsString::from(t);
+        let leaf = s.new_object();
+        let vec = s.new_form_vector(&[leaf]).unwrap();
+        let k = s.new_keyword(None, name("k")).unwrap();
+        let key = s.new_form_vector(&[k]).unwrap();
+        let inner = s.new_object();
+        let at = Provenance {
+            source: 1,
+            line: 2,
+            column: 3,
+        };
+        let occ = s.new_occurrence(inner, at).unwrap();
+        let map = s.new_form_map(&[(key, occ)]).unwrap();
+        let m = s.new_keyword(None, name("m")).unwrap();
+        let meta_value = s.new_object();
+        let meta = s.new_form_map(&[(m, meta_value)]).unwrap();
+        let list = s.new_list(&[vec, map]).unwrap();
+        let list = s.form_with_meta(list, Some(meta)).unwrap();
+        let weak = [
+            list, vec, leaf, map, key, k, occ, inner, meta, m, meta_value,
+        ]
+        .map(|l| s.downgrade(l))
+        .to_vec();
+        (s.persist(list), weak)
+    });
+    Held::new(weak, move || drop(root))
+}
+
+#[test]
+fn form_edges_retain() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &form_edges(&rt));
+}
+
+#[test]
+fn form_edges_reclaim() {
+    let rt = Runtime::new();
+    let held = form_edges(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
 /// A task's published result: the `Rooted` of `RunOutcome::Complete`,
 /// owned by the embedder after the task is gone.
 fn task_result(rt: &Runtime) -> Held {

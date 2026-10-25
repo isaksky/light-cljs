@@ -55,7 +55,7 @@
 //! | `ids` | opaque task, world, definition, result-kind, dependency-key, producer and wake-handle identifiers |
 //! | `error` | runtime failure and diagnostics |
 //! | [`host`] | the leaf host-effect trait ([`Host`]) and its non-reentrancy contract; [`host::sim`], the simulated compiler host (worlds, result kinds, producers) |
-//! | [`collections`] | persistent vectors and maps, syntax occurrences, and the native collection contract |
+//! | [`collections`] | persistent vectors and maps, syntax occurrences, native Clojure form values ([`collections::form`]), and the native collection contract |
 //! | [`frontend`] | JavaScript subset lexer, parser, AST and compiler to bytecode, with positioned diagnostics (`docs/grammar.md`) |
 //! | [`dep`] | dependency keys, single-assignment cells, read-or-subscribe, per-task dependency log |
 //! | [`atom`] | atomic references: single-writer publication, identity compare-and-set, load-to-root acquisition |
@@ -107,7 +107,9 @@ mod job;
 pub mod regexp;
 
 pub use atom::{AtomError, AtomErrorKind, CasOutcome, Publisher};
-pub use collections::{BuilderError, CollectionError, PersistentKind, Provenance};
+pub use collections::{
+    BuilderError, CollectionError, FormKind, FormName, PersistentKind, Provenance,
+};
 pub use dep::{
     CellStatus, ClaimError, CompleteError, Completion, DemandSite, DependencyGraph, DependencyLog,
     Need, NeedError, ProducerRequest, WaitCycle, WaitStep, Wakeups,
@@ -128,7 +130,7 @@ pub use task::{
 pub use value::share::{KeyName, PathStep, PublishError, ValuePath};
 pub use value::{BigIntError, JsBigInt, JsString, JsSymbol, MAX_BIGINT_BITS, Primitive, ValueView};
 pub use vm::{
-    Assembler, ConstructorKind, Executable, ExecutableSpec, Label, Opcode, ThrowKind,
+    Assembler, ConstructorKind, Executable, ExecutableSpec, FormOp, Label, Opcode, ThrowKind,
     ValidationError, ValidationErrorKind, VmLimits,
 };
 

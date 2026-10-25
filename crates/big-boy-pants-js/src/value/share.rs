@@ -7,7 +7,7 @@
 //!
 //! | Category | Kinds today | Shareable? |
 //! |----------|-------------|------------|
-//! | [`Shareability::Persistent`] | vector, map, occurrence, function (closure; its own-property record is a separate ordinary object), built-in function, realm intrinsic ordinary object (`Object.prototype`, `crate::realm`), internal frozen template arrays; natives that declare it | when everything it references is shareable (transitively) |
+//! | [`Shareability::Persistent`] | vector, map, occurrence, form value (`crate::collections::form`: its elements, keys, values and metadata are walked), function (closure; its own-property record is a separate ordinary object), built-in function, realm intrinsic ordinary object (`Object.prototype`, `crate::realm`), internal frozen template arrays; natives that declare it | when everything it references is shareable (transitively) |
 //! | [`Shareability::TaskOwned`] | transient builders (any state), ordinary objects other than realm intrinsics, JavaScript Maps, Sets, WeakMaps, WeakSets, WeakRefs, FinalizationRegistries and DisposableStacks, ArrayBuffers and typed-array views, binding cells, natives that declare it | never |
 //! | [`Shareability::ConcurrentReference`] | atoms (`crate::atom`), Promises (including subclasses) and their resolving-pair guards (`crate::vm::promise`); reserved for any future heap-object handle to a dependency cell (cells themselves are runtime-owned, not heap objects; `crate::dep` checks each result it installs) | always; not descended into |
 //!
@@ -189,7 +189,9 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::sync::Arc;
 
+use crate::collections::form::{FormBody, FormObject};
 use crate::collections::{PMap, PVector, object_name};
 use crate::heap::{HandleError, Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
@@ -228,9 +230,10 @@ pub(crate) fn classify(object: &HeapObject) -> Shareability {
         HeapObject::Plain(o) if o.is_intrinsic() => Shareability::Persistent,
         HeapObject::Plain(_) => Shareability::TaskOwned,
         HeapObject::Native(payload) => payload.shareability(),
-        HeapObject::Vector(_) | HeapObject::Map(_) | HeapObject::Occurrence(_) => {
-            Shareability::Persistent
-        }
+        HeapObject::Vector(_)
+        | HeapObject::Map(_)
+        | HeapObject::Occurrence(_)
+        | HeapObject::Form(_) => Shareability::Persistent,
         HeapObject::Builder(_) => Shareability::TaskOwned,
         // Code and captured values are fixed at creation (`crate::vm::function`).
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => Shareability::Persistent,
@@ -277,6 +280,7 @@ fn owner(object: &HeapObject) -> Option<TaskId> {
         | HeapObject::Vector(_)
         | HeapObject::Map(_)
         | HeapObject::Occurrence(_)
+        | HeapObject::Form(_)
         | HeapObject::Function(_)
         | HeapObject::BoundFunction(_)
         | HeapObject::Atom(_)
@@ -294,6 +298,9 @@ pub enum KeyName {
     Primitive(Primitive),
     /// A heap-object key (keys compare by identity), by its kind name.
     Object(&'static str),
+    /// A keyword or symbol key of a form map, by its reader spelling
+    /// (`:ns/name`, `ns/name`; lossy for lone surrogates).
+    Form(String),
 }
 
 impl fmt::Display for KeyName {
@@ -310,6 +317,7 @@ impl fmt::Display for KeyName {
             KeyName::Primitive(Primitive::Symbol(s)) => write!(f, "{s}"),
             KeyName::Primitive(Primitive::BigInt(n)) => write!(f, "{n}n"),
             KeyName::Object(kind) => write!(f, "<{kind}>"),
+            KeyName::Form(spelling) => f.write_str(spelling),
         }
     }
 }
@@ -344,6 +352,9 @@ pub enum PathStep {
     FunctionProperties,
     /// A concise method's immutable home object. Displayed `.home_object`.
     HomeObject,
+    /// A form's metadata map (`crate::collections::form`). Displayed
+    /// `.meta`.
+    Metadata,
 }
 
 /// A path from a published value to one object it reaches. Displayed as
@@ -373,6 +384,7 @@ impl fmt::Display for ValuePath {
                 PathStep::Element(i) => write!(f, "[{i}]")?,
                 PathStep::FunctionProperties => f.write_str(".properties")?,
                 PathStep::HomeObject => f.write_str(".home_object")?,
+                PathStep::Metadata => f.write_str(".meta")?,
             }
         }
         Ok(())
@@ -428,6 +440,7 @@ enum Step {
     Capture(usize),
     FunctionProperties,
     HomeObject,
+    Metadata,
 }
 
 /// What one object contributes to the walk.
@@ -448,6 +461,9 @@ enum Children {
     Vector(PVector),
     Map(PMap),
     Occurrence(Value),
+    /// A form's elements (`[i]`), or its keys and values (`{key}`), then
+    /// its metadata (`.meta`).
+    Form(Arc<FormObject>),
     Native(Vec<ObjectId>),
     /// A closure's captured values and its own-property record, if it has
     /// one. Its code's constants are primitives by construction
@@ -474,6 +490,25 @@ impl Children {
                 f(Step::MapValue(k.clone()), v);
             }),
             Children::Occurrence(v) => f(Step::OccurrenceValue, v),
+            Children::Form(form) => {
+                match form.body() {
+                    FormBody::Keyword(_) | FormBody::Symbol(_) => {}
+                    FormBody::List(items) | FormBody::Vector(items) => {
+                        let mut index = 0;
+                        items.for_each(|v| {
+                            f(Step::Index(index), v);
+                            index += 1;
+                        });
+                    }
+                    FormBody::Map(map) => map.for_each(|k, v| {
+                        f(Step::MapKey(k.clone()), k);
+                        f(Step::MapValue(k.clone()), v);
+                    }),
+                }
+                if let Some(meta) = form.meta() {
+                    f(Step::Metadata, meta);
+                }
+            }
             Children::Native(edges) => {
                 for (n, &id) in edges.iter().enumerate() {
                     f(Step::NativeEdge(n), &Value::Object(id));
@@ -514,6 +549,7 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
             HeapObject::Vector(vec) => Children::Vector(vec.clone()),
             HeapObject::Map(map) => Children::Map(map.clone()),
             HeapObject::Occurrence(occ) => Children::Occurrence(occ.value.clone()),
+            HeapObject::Form(form) => Children::Form(form.clone()),
             HeapObject::Function(func) => Children::Function {
                 captures: func.captures.clone(),
                 properties: func.properties,
@@ -705,9 +741,19 @@ fn path_to(
 
 fn name_step(heap: &Heap, step: Step) -> PathStep {
     let key = |k: Value| match k {
-        Value::Object(id) => {
-            KeyName::Object(heap.read(id, object_name).unwrap_or("reclaimed object"))
-        }
+        Value::Object(id) => heap
+            .read(id, |o| match o {
+                HeapObject::Form(f) => match f.body() {
+                    FormBody::Keyword(n) => Some(KeyName::Form(format!(":{}", n.spelling()))),
+                    FormBody::Symbol(n) => Some(KeyName::Form(n.spelling())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .flatten()
+            .unwrap_or_else(|| {
+                KeyName::Object(heap.read(id, object_name).unwrap_or("reclaimed object"))
+            }),
         other => KeyName::Primitive(other.to_primitive().unwrap_or(Primitive::Undefined)),
     };
     match step {
@@ -719,6 +765,7 @@ fn name_step(heap: &Heap, step: Step) -> PathStep {
         Step::Capture(n) => PathStep::Capture(n),
         Step::FunctionProperties => PathStep::FunctionProperties,
         Step::HomeObject => PathStep::HomeObject,
+        Step::Metadata => PathStep::Metadata,
     }
 }
 

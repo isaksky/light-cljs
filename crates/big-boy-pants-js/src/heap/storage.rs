@@ -15,8 +15,8 @@
 //! 2. **Frozen bodies** (`FROZEN`) never change while the slot is live: any
 //!    thread may hold shared references to them without any lock. Only kinds
 //!    listed in [`freezable`] are frozen; their types are `Sync` (asserted
-//!    below) and have no conditional storage. Persistent collections and
-//!    atom handles are frozen when allocated. Functions, built-ins and realm
+//!    below) and have no conditional storage. Persistent collections, form
+//!    values and atom handles are frozen when allocated. Functions, built-ins and realm
 //!    intrinsics become frozen when they are marked known shareable. The flag
 //!    is set while holding the slot's access word (rule 3), so the last
 //!    mutation happens-before the Release that sets it, and it is never
@@ -77,6 +77,7 @@ fn freezable(object: &HeapObject) -> bool {
         HeapObject::Vector(_)
         | HeapObject::Map(_)
         | HeapObject::Occurrence(_)
+        | HeapObject::Form(_)
         | HeapObject::Atom(_)
         | HeapObject::Function(_)
         | HeapObject::BoundFunction(_)
@@ -94,6 +95,7 @@ fn frozen_at_allocation(object: &HeapObject) -> bool {
         HeapObject::Vector(_)
             | HeapObject::Map(_)
             | HeapObject::Occurrence(_)
+            | HeapObject::Form(_)
             | HeapObject::Atom(_)
     )
 }
@@ -105,6 +107,7 @@ fn freezable_kinds_are_sync() {
     sync::<crate::collections::PVector>();
     sync::<crate::collections::PMap>();
     sync::<crate::collections::Occurrence>();
+    sync::<Arc<crate::collections::form::FormObject>>();
     sync::<Arc<crate::atom::AtomCell>>();
     sync::<crate::vm::function::FunctionObject>();
     sync::<crate::vm::function::BoundFunction>();
@@ -122,6 +125,7 @@ fn stand_in(object: &HeapObject) -> Option<HeapObject> {
         HeapObject::Vector(v) => HeapObject::Vector(v.clone()),
         HeapObject::Map(m) => HeapObject::Map(m.clone()),
         HeapObject::Occurrence(o) => HeapObject::Occurrence(o.clone()),
+        HeapObject::Form(f) => HeapObject::Form(f.clone()),
         HeapObject::Atom(a) => HeapObject::Atom(a.clone()),
         HeapObject::Function(f) => HeapObject::Function(f.clone()),
         HeapObject::BoundFunction(f) => HeapObject::BoundFunction(f.clone()),

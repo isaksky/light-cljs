@@ -53,7 +53,7 @@ pub use executable::{
     ConstructorKind, Executable, ExecutableSpec, ValidationError, ValidationErrorKind,
 };
 pub use frames::VmLimits;
-pub use instr::{Opcode, ThrowKind};
+pub use instr::{FormOp, Opcode, ThrowKind};
 
 pub(crate) mod async_from_sync;
 pub(crate) mod async_generator;

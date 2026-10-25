@@ -1966,6 +1966,7 @@ mod tests {
             | HeapObject::Vector(_)
             | HeapObject::Map(_)
             | HeapObject::Occurrence(_)
+            | HeapObject::Form(_)
             | HeapObject::Builder(_)
             | HeapObject::Function(_)
             | HeapObject::Cell(_) => panic!("not a native object"),

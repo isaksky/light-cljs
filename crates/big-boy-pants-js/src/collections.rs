@@ -120,11 +120,14 @@
 //!   marked known shareable at allocation).
 //! * Keywords, structural (value-based) map keys, sorted or insertion-ordered
 //!   persistent maps, persistent sets/lists, slicing, iteration protocols and
-//!   JavaScript property access on persistent collections. Strings, symbols
+//!   JavaScript property access on these persistent collections. (Keywords,
+//!   symbols, lists and structural map keys exist as the separate native
+//!   form values of [`form`], light-cljs-466.) Strings, symbols
 //!   and BigInts are supported values/keys. JavaScript's mutable Map/Set
 //!   are separate from these native persistent types.
 
 pub(crate) mod builder;
+pub mod form;
 pub(crate) mod map;
 mod vector;
 
@@ -137,6 +140,7 @@ use crate::value::Value;
 
 pub use builder::BuilderError;
 pub(crate) use builder::{Builder, OwnedBuilders};
+pub use form::{FormKind, FormName};
 pub(crate) use map::PMap;
 pub(crate) use vector::PVector;
 
@@ -262,6 +266,7 @@ pub(crate) fn object_name(object: &HeapObject) -> &'static str {
         HeapObject::Vector(_) => PersistentKind::Vector.name(),
         HeapObject::Map(_) => PersistentKind::Map.name(),
         HeapObject::Occurrence(_) => PersistentKind::Occurrence.name(),
+        HeapObject::Form(f) => f.kind().diagnostic_name(),
         HeapObject::Builder(b) => b.kind().name(),
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => "function",
         HeapObject::Cell(_) => "binding cell",

@@ -200,7 +200,7 @@ publication; spawn leaves cross-task handoff validation to the embedder.
 
 | Class | Contract |
 | --- | --- |
-| Immutable/shareable | Primitives, persistent collections/occurrences and eligible functions whose captures and other edges pass publication. Unchanged subtrees preserve identity. |
+| Immutable/shareable | Primitives, persistent collections/occurrences, native form values and eligible functions whose captures and other edges pass publication. Unchanged subtrees preserve identity. |
 | Task-owned | Ordinary objects/arrays, property records, lexical mutation cells, builders, generators and async activations; freezing JS properties does not make these publishable. |
 | Explicit concurrent reference | Atoms and all Promises/settlement guards; installs validate their contents rather than allowing arbitrary shared mutable graphs. |
 
@@ -234,6 +234,28 @@ Builders belong to a task, survive migration, freeze once and cannot publish.
 JS `Map`/`Set` are separate task-owned mutable collections; their iterators use
 monotonic insertion positions, delete/clear eagerly release entries, and weak
 variants use conditional tracing. See the [native contract](grammar.md#reserved-intrinsic-binding).
+
+Native Clojure form values (light-cljs-466, `src/collections/form.rs`) are a
+separate frozen kind for macro inputs and outputs: keywords and symbols with
+exact UTF-16 namespace/name, lists, vectors and maps, and metadata. They reuse
+the vector trie and the HAMT storage (the trie operations take key hash and
+equality as parameters; the SameValueZero map API is unchanged). Equality and
+the 32-bit hash are the light-cljs runtime's `=`/`hash` for these values: lists
+and vectors are sequentially equal, map keys are structural, metadata and
+provenance never take part, and the walks use explicit heap stacks (also across
+nested keys with colliding hashes, with backtracking) and run no JavaScript;
+equality decides each distinct pair of forms once.
+Identity stays separate: a task returns an unchanged subtree as the same object,
+and equal scalars at different locations are distinct occurrences. Exact reader
+literals that no Number represents keep their text in the host's table, keyed by
+the provenance of the occurrence a macro returns unchanged. Forms are
+`Persistent` for publication (elements, keys, values and metadata are walked,
+with `[i]`, `{:key}` and `.meta` path steps) and traced as `FormEdges`.
+Rust builds and reads them through `Scope::new_keyword` … `Scope::form_value`;
+JavaScript through `__rt.form*`. Sets, sorted maps, lazy and seq views, records,
+user `IEquiv`/`IHash`, and the compiler `Datum` bridge (light-cljs-462) are not
+part of this surface. The module docs carry a runnable example. Tests:
+`tests/forms.rs`, `collections::form::tests`, `form_edges_retain`/`form_edges_reclaim`.
 
 ## Atomic references
 
@@ -425,6 +447,7 @@ public API cannot reach.
 | closure environment | `PersistentHandle` (`Function`) | `closure_environment_retains` | `closure_environment_reclaims` |
 | captured mutable binding | `PersistentHandle` (`Function` → `Cell`) | `binding_cell_retains` | `binding_cell_reclaims` |
 | persistent collection edges | `PersistentHandle` (`Map` → `Vector` → `Occurrence`) | `persistent_collection_edges_retain` | `persistent_collection_edges_reclaim` |
+| native form edges (elements, map keys and values, metadata) | `PersistentHandle` (`Form` list → vector, map key and value, metadata map, occurrence) | `form_edges_retain` | `form_edges_reclaim` |
 | executable object constants | `ExecutableConstant` | `executable_constant_retains` *(lib)* | `executable_constant_reclaims` *(lib)* |
 | native payload edges | `PersistentHandle` (`Native`) | `native_payload_edges_retain` *(lib)* | `native_payload_edges_reclaim` *(lib)* |
 | ephemeron values, conditional on reached owner and key | `PersistentHandle` (`Native`, conditional storage) | `ephemeron_value_lives_only_with_key` *(lib, heap::gc)* | `ephemeron_value_lives_only_with_key` *(lib, heap::gc)* |
