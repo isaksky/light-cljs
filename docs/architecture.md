@@ -104,6 +104,11 @@ prototype access follow ordinary-object ownership rules, including property
 protocols such as constructor/species lookup; publishing a Promise grants no
 foreign access to that state. Publication checks and
 property mutation coordinate to avoid caching a stale shareability decision.
+Promise private elements are likewise opaque task-owned storage, traced even
+when the Promise is shared. Foreign private access (including private-in and
+initialization) throws `TypeError`; publication never publishes private payloads.
+Native Promises can acquire private elements through a returning super without
+gaining public property storage; the first private initialization owns that store.
 Module namespaces remain task-owned even when empty or frozen. Any
 Promise can retain a private result in an opaque envelope tagged with the
 settling task; foreign reactions reject rather than reading it. Sharing the

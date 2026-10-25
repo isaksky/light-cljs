@@ -79,6 +79,10 @@ functions cannot gain mutable property records. Promises/guards (including
 subclasses) and atoms are explicit concurrent references. Subclass Promise own
 properties and prototype access remain task-owned under ordinary-object rules;
 sharing their settlement state grants no foreign access to that state.
+Promise private fields, methods and accessors use traced task-owned storage;
+foreign private reads, writes, initialization and private-in throw `TypeError`.
+This includes native Promises stamped by a returning super constructor, whose
+private storage belongs to the first task that initializes a private element.
 See [architecture.md](architecture.md#publication-and-native-values).
 
 `undefined`, `NaN` and `Infinity` are reserved literal bindings and cannot be

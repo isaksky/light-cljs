@@ -98,6 +98,89 @@ fn promise_subclass_keeps_brand_and_runs_executor() {
 }
 
 #[test]
+fn promise_subclasses_support_private_elements() {
+    check(
+        "class P extends Promise { #x = 1; getX() { return this.#x; } static has(p) { return #x in p; } } let p = new P(() => {}); p.getX() === 1 && P.has(p) && !P.has(new Promise(() => {}))",
+    );
+    check(
+        r#"
+        class P extends Promise {
+            #payload = {value: 7};
+            #method() { return this.#payload.value; }
+            get #x() { return this.#method(); }
+            set #x(value) { this.#payload = {value}; }
+            get x() { return this.#x; }
+            set x(value) { this.#x = value; }
+            static has(p) { return #payload in p && #method in p && #x in p; }
+        }
+        let p = new P(() => {});
+        let ok = p.x === 7 && P.has(p) && Reflect.ownKeys(p).length === 0;
+        Object.freeze(p);
+        p.x = 9;
+        let proxy = new Proxy(p, {});
+        let caught = false;
+        try { P.prototype.x; } catch(e) { caught = e instanceof TypeError; }
+        ok && p.x === 9 && caught && !P.has(proxy);
+        "#,
+    );
+    // A returning super can stamp a native Promise without public properties.
+    check(
+        "let p = Object.freeze(new Promise(() => {})); class B { constructor() { return p; } } class C extends B { #x = {value: 11}; getX() { return this.#x.value; } static read(p) { return p.#x.value; } } new C() === p && C.read(p) === 11 && Reflect.ownKeys(p).length === 0",
+    );
+}
+
+#[test]
+fn promise_private_elements_remain_task_owned_after_publication() {
+    for base in ["Promise", "B"] {
+        let runtime = Runtime::new();
+        let source = format!(
+            r#"
+            let resolve, p = new Promise(r => {{ resolve = r; }});
+            class B {{ constructor() {{ return p; }} }}
+            class P extends {base} {{
+                #x = {{value: 7}};
+                #method() {{ return this.#x.value; }}
+                get #accessor() {{ return this.#method(); }}
+                static operations() {{ return __rt.vector(
+                    o => #x in o, o => o.#x, o => {{ o.#x = 2; }},
+                    o => o.#method(), o => o.#accessor);
+                }}
+            }}
+            let instance = new P(r => {{ resolve = r; }});
+            __rt.vector(instance, P.operations(), resolve);
+            "#
+        );
+        let code = compile_script("private-promise.js", &source).unwrap();
+        let RunOutcome::Complete(pair) = runtime.spawn(&code, &[]).unwrap().run().unwrap() else {
+            panic!("expected Promise and private operations");
+        };
+        runtime.publish(&pair).unwrap();
+        runtime.collect().unwrap();
+        let consumer = clj_quickjs::frontend::compile_function(
+            r#"function consume(pair) {
+                let p = __rt.nth(pair, 0), operations = __rt.nth(pair, 1), caught = 0;
+                for (let i = 0; i < 5; i++) {
+                    try { __rt.nth(operations, i)(p); }
+                    catch(e) { if(e instanceof TypeError) caught++; }
+                }
+                class B { constructor() { return p; } }
+                class Stamp extends B { #foreign = 3; }
+                try { new Stamp(); } catch(e) { if(e instanceof TypeError) caught++; }
+                __rt.nth(pair, 2)(8);
+                return caught === 6;
+            }"#,
+        )
+        .unwrap();
+        let result = runtime.spawn(&consumer, &[&pair]).unwrap().run().unwrap();
+        assert!(
+            matches!(result, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)),
+            "{base}"
+        );
+        runtime.publish(&pair).unwrap();
+    }
+}
+
+#[test]
 fn derived_promise_own_properties_follow_ordinary_object_rules() {
     check(
         r#"

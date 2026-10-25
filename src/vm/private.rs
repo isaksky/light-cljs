@@ -1,7 +1,7 @@
 //! Private elements: lexical fresh symbols and owner-checked, traced storage.
 //! No public key conversion, prototype walk, integrity check or Proxy trap.
 //! Semantics reference: QuickJS quickjs.c JS_*PrivateField / js_operator_private_in,
-//! revision 7d1c13c5d8f8; independently implemented over task-owned objects.
+//! revision 7d1c13c5d8f8; independently implemented over task-owned storage.
 use std::collections::HashMap;
 
 use super::dispatch::Fault;
@@ -69,6 +69,7 @@ fn storage<R>(
             HeapObject::Generator(g) => Some(&mut g.object),
             HeapObject::ArrayBuffer(b) => Some(&mut b.object),
             HeapObject::TypedArray(a) => Some(&mut a.object),
+            HeapObject::Promise(p) => return f(p.private_elements(task, create)?),
             HeapObject::Proxy(p) => {
                 if p.owner != task {
                     return Err(error());

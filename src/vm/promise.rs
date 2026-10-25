@@ -24,6 +24,9 @@ pub(crate) struct Promise {
     // Box the optional store so ordinary Promise/heap allocation temporaries
     // stay small enough for 64 KiB VM worker stacks.
     pub(crate) properties: Option<Box<OrdinaryObject>>,
+    // Private elements are opaque task-owned state, independent of public
+    // properties. Native promises may acquire them through a returning super.
+    private: Option<Box<(TaskId, super::private::Elements)>>,
     result: Option<Settlement>,
     reactions: Vec<Registration>,
     is_handled: bool,
@@ -80,6 +83,9 @@ impl Trace for Promise {
         if let Some(result) = &self.result {
             result.value.trace(visit);
         }
+        if let Some(private) = &self.private {
+            private.1.trace(visit);
+        }
         for reaction in &self.reactions {
             reaction.callable.trace(visit);
         }
@@ -87,6 +93,23 @@ impl Trace for Promise {
 }
 
 impl Promise {
+    pub(crate) fn private_elements(
+        &mut self,
+        task: TaskId,
+        create: bool,
+    ) -> Result<Option<&mut super::private::Elements>, Fault> {
+        if self.check_owner(task).is_err() || self.private.as_ref().is_some_and(|p| p.0 != task) {
+            return Err(Fault::TypeError(
+                "invalid private member receiver or operation".into(),
+            ));
+        }
+        if create {
+            self.private
+                .get_or_insert_with(|| Box::new((task, super::private::Elements::default())));
+        }
+        Ok(self.private.as_mut().map(|p| &mut p.1))
+    }
+
     /// Check access to JavaScript properties, never settlement ownership.
     pub(crate) fn check_owner(&self, task: TaskId) -> Result<(), Fault> {
         let owner = self.properties.as_deref().and_then(OrdinaryObject::owner);
@@ -180,6 +203,7 @@ fn new_with_prototype(
         HeapObject::Promise(Promise {
             prototype,
             properties: owner.map(|task| Box::new(OrdinaryObject::with_prototype(task, prototype))),
+            private: None,
             result: None,
             reactions: vec![],
             is_handled: false,
