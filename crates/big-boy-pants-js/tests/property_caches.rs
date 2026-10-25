@@ -67,6 +67,37 @@ fn concurrent_tasks_share_executable_with_different_shapes() {
     });
 }
 
+#[test]
+fn concurrent_runtimes_do_not_confuse_interned_key_bindings() {
+    let code = compile_function("function run() { let o={x:1,y:2}; let sum=0; for(let i=0;i<2000;i++){o.x=i;sum+=o.x+o.y;} return sum; }").unwrap();
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = ["({a:1,b:2,c:3})", "({z:1})"]
+            .into_iter()
+            .map(|source| {
+                let runtime = Runtime::new();
+                let setup = compile_script("different-keys.js", source).unwrap();
+                // Retain the setup task so the two heaps assign different key IDs.
+                let setup_task = runtime.spawn(&setup, &[]).unwrap();
+                setup_task.run().unwrap();
+                let task = runtime.spawn(&code, &[]).unwrap();
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    let RunOutcome::Complete(value) = task.run().unwrap() else {
+                        panic!("complete")
+                    };
+                    assert_eq!(value.view(), ValueView::Number(2_003_000.0));
+                    drop(setup_task);
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    });
+}
+
 struct NoEffects;
 impl Host for NoEffects {
     fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {

@@ -60,8 +60,9 @@
 //! compare and hash by identity (derived Rust equality over the private id),
 //! never by any user-defined comparison. A symbol key (clj-quickjs-127) is a
 //! fresh id with no name entry. A name is interned when a property with it
-//! is first defined; a read of a name that was never interned cannot find a
-//! property and does not grow the table. The collector reclaims untraced
+//! is first defined or a named executable operand binds to this runtime.
+//! Generic reads of unknown computed names do not grow the table.
+//! The collector reclaims untraced
 //! keys and reuses their slots after a full mark (clj-quickjs-259).
 //!
 //! These keys are QuickJS's `JSAtom`s (`research/quickjs/quickjs.c`,
@@ -589,7 +590,7 @@ impl OrdinaryObject {
             prototype: None,
             extensible: true,
             entries: Vec::new(),
-            shape: Some(shape::Shape::empty()),
+            shape: None,
             index: None,
             primitive_data: None,
             error_data: false,
@@ -946,7 +947,11 @@ impl OrdinaryObject {
     }
 
     fn push(&mut self, key: PropertyKey, property: Property) {
-        self.shape = self.shape.as_ref().and_then(|shape| shape.append(key));
+        self.shape = match &self.shape {
+            Some(shape) => shape.append(key),
+            None if self.entries.is_empty() => shape::Shape::append_empty(key),
+            None => None,
+        };
         let at = self.entries.len();
         self.entries.push((key, property));
         if let Some(index) = &mut self.index {

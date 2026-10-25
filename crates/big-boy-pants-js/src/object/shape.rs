@@ -20,6 +20,20 @@ type Edge = (u32, PropertyKey);
 type Transitions = HashMap<Edge, Arc<ShapeHandle>>;
 const LIMIT: usize = 4096;
 
+struct Local {
+    transitions: Transitions,
+    front: [Option<(Edge, Arc<ShapeHandle>)>; 64],
+}
+
+impl Default for Local {
+    fn default() -> Self {
+        Self {
+            transitions: HashMap::new(),
+            front: std::array::from_fn(|_| None),
+        }
+    }
+}
+
 /// Repeated construction changes the worker-local outer reference count,
 /// not the immutable shape's globally shared count. Migration is safe: both
 /// layers remain ordinary owning Arcs and contain no interior mutability.
@@ -34,13 +48,13 @@ impl std::ops::Deref for ShapeHandle {
 }
 
 thread_local! {
-    static LOCAL: RefCell<Transitions> = RefCell::new(HashMap::new());
+    static LOCAL: RefCell<Local> = RefCell::new(Local::default());
     static EMPTY_HANDLE: Arc<ShapeHandle> = Arc::new(ShapeHandle(Shape::empty_shared()));
 }
 
 impl Shape {
-    pub(super) fn empty() -> Arc<ShapeHandle> {
-        EMPTY_HANDLE.with(Arc::clone)
+    pub(super) fn append_empty(key: PropertyKey) -> Option<Arc<ShapeHandle>> {
+        EMPTY_HANDLE.with(|shape| shape.append(key))
     }
 
     fn empty_shared() -> Arc<Self> {
@@ -61,8 +75,15 @@ impl Shape {
         let edge = (self.id, key);
         LOCAL.with(|local| {
             let mut local = local.borrow_mut();
-            if let Some(shape) = local.get(&edge) {
+            let front = (self.id as usize ^ (key.0 as usize).wrapping_mul(31)) & 63;
+            if let Some((cached, shape)) = &local.front[front]
+                && *cached == edge
+            {
                 return Some(Arc::clone(shape));
+            }
+            if let Some(shape) = local.transitions.get(&edge).cloned() {
+                local.front[front] = Some((edge, Arc::clone(&shape)));
+                return Some(shape);
             }
             static SHARED: OnceLock<Mutex<HashMap<Edge, Weak<Shape>>>> = OnceLock::new();
             static NEXT: AtomicU64 = AtomicU64::new(2);
@@ -87,11 +108,13 @@ impl Shape {
                     shape
                 }
             };
-            if local.len() >= LIMIT {
-                local.clear();
+            if local.transitions.len() >= LIMIT {
+                local.transitions.clear();
+                local.front.fill(None);
             }
             let handle = Arc::new(ShapeHandle(shape));
-            local.insert(edge, Arc::clone(&handle));
+            local.front[front] = Some((edge, Arc::clone(&handle)));
+            local.transitions.insert(edge, Arc::clone(&handle));
             Some(handle)
         })
     }
