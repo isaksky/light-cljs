@@ -12,24 +12,17 @@ impl Host for NoEffects {
     }
 }
 
-#[test]
-fn quickjs_operator_cases_run_unmodified() {
-    let fixture = include_str!("fixtures/js/quickjs_test_language_operators.js");
+/// Runs each named case of a fixture that appends one `case();` call per
+/// case after the unmodified upstream definitions, which must span
+/// `upstream_lines` lines (their bytes were compared with research/quickjs
+/// at 7d1c13c5d8f8). Every case must complete with undefined.
+fn run_cases_unmodified(fixture: &str, cases: &[&str], upstream_lines: usize) {
     let (_, body) = fixture.split_once("*/\n").expect("license header");
-    let cases = [
-        "test_op1",
-        "test_cvt",
-        "test_eq",
-        "test_inc_dec",
-        "test_op2",
-    ];
     let calls: String = cases.iter().map(|case| format!("{case}();\n")).collect();
-    let definitions = body.strip_suffix(&calls).expect("five appended calls");
-    // Pinned upstream lines 1-32 (helpers) and 39-220 (cases and F).
-    // Their bytes were compared with research/quickjs at 7d1c13c5d8f8.
-    assert_eq!(definitions.lines().count(), 32 + 182);
+    let definitions = body.strip_suffix(&calls).expect("appended case calls");
+    assert_eq!(definitions.lines().count(), upstream_lines);
     let mut failures = Vec::new();
-    for case in cases {
+    for &case in cases {
         let source = format!("{definitions}{case}();\n");
         // Preserve upstream's non-strict script mode. Compile once per case,
         // with the original helpers and complete function definitions.
@@ -74,4 +67,41 @@ fn quickjs_operator_cases_run_unmodified() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn quickjs_operator_cases_run_unmodified() {
+    // Pinned upstream lines 1-32 (helpers) and 39-220 (cases and F).
+    run_cases_unmodified(
+        include_str!("fixtures/js/quickjs_test_language_operators.js"),
+        &[
+            "test_op1",
+            "test_cvt",
+            "test_eq",
+            "test_inc_dec",
+            "test_op2",
+        ],
+        32 + 182,
+    );
+}
+
+/// The template, regexp-skip, parse (semicolon and arrow ASI), Unicode
+/// identifier and number-literal cases of test_language.js (clj-quickjs-30).
+/// `test_number_literals` needs the upstream file's sloppy mode for `01.a`.
+#[test]
+fn quickjs_literal_and_parse_cases_run_unmodified() {
+    // Pinned upstream lines 1-32, 356-376, 389-397, 578-608, 634-639, 667-676.
+    run_cases_unmodified(
+        include_str!("fixtures/js/quickjs_test_language_parsing.js"),
+        &[
+            "test_template",
+            "test_template_skip",
+            "test_regexp_skip",
+            "test_parse_semicolon",
+            "test_parse_arrow_function",
+            "test_unicode_ident",
+            "test_number_literals",
+        ],
+        32 + 21 + 9 + 31 + 6 + 10,
+    );
 }

@@ -1386,3 +1386,24 @@ are added. These are adapted QuickJS test text, synthetic fixtures, not
 light-cljs output. The driver retains upstream non-strict mode and compiles
 `test_cyclic_labels` without calling it. All twelve upstream cases complete
 unmodified, including the Proxy for-in case supported by clj-quickjs-91.
+
+### Language parse and literal source fixture (clj-quickjs-30)
+
+`tests/fixtures/js/quickjs_test_language_parsing.js` preserves lines 1-32,
+356-376, 389-397, 578-608, 634-639 and 667-676 of
+`research/quickjs/tests/test_language.js` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04): the two
+assertion helpers and `test_template`, `test_template_skip`,
+`test_regexp_skip`, `test_parse_semicolon`, `test_parse_arrow_function`,
+`test_unicode_ident` and `test_number_literals`, byte-for-byte unchanged, with
+one call per case appended. Adapted rows: none. The header retains the full
+copyright/MIT notice from `research/quickjs/LICENSE`. The driver in
+`tests/quickjs_language.rs` is original and keeps upstream's non-strict mode.
+`tests/malformed_input.rs` reuses five existing corpus fixtures as truncation
+input only and copies no further upstream text; its rejected-form rows and
+hand-built bytecode are synthetic. The corpus audit compared every case
+function of `test_language.js`, `test_closure.js`, `test_loop.js`,
+`test_builtin.js` and `test_bigint.js` at that revision with the fixtures
+listed above; `test_line_column_numbers` is the only case that cannot run
+unmodified (see README). Adapted QuickJS test text, synthetic fixtures, not
+light-cljs output.

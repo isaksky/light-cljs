@@ -8807,3 +8807,26 @@ writes and definitions select the forwarded target before resumable value
 coercion, preserving the original assignment/definition result. Object-valued
 ownKeys lengths are tested through waits, collection and migration. Prototype
 ownership/cycle checks include transparent proxy targets.
+
+## Semantic corpus audit and malformed-input rejection (clj-quickjs-30)
+
+`tests/quickjs_language.rs` shares one driver between the operator fixture and
+the new parse/literal fixture: each case is compiled once in sloppy mode with
+the unmodified upstream helpers and definitions, runs in 100-instruction slices
+with a collection after every yield, and must complete with undefined. The
+pinned line counts guard the fixture text against silent edits.
+
+`tests/malformed_input.rs` is the rejection half of the corpus. The truncation
+sweep compiles every line-boundary prefix of five corpus fixtures and every
+character-boundary prefix of a synthetic program; a rejected prefix must carry
+a span inside the source at character boundaries with a real line/column, and
+a compiled prefix runs for a bounded slice (any outcome, no panic). A table of
+the `docs/grammar.md` "Rejected forms" rows, including every reserved-binding
+misuse of `__rt`, is checked through `compile_script_with` so compile-time
+rejections (async generators) are covered as well as parse-time ones. The
+bytecode rows are early VM tests with hand-built code, not source support:
+backward and end-of-code branch targets, catch targets inside operands,
+truncated branch operands, loop back-edge and handler-entry stack mismatches,
+oversized call/dup operands, empty capture/local/constant tables, and a
+run-time handler mismatch (`PopCatch`, `PopFinally`, `EndFinally` without a
+handler) that fails the task with `Internal` rather than panicking.
