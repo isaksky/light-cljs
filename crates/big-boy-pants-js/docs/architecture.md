@@ -55,6 +55,13 @@ conversion order, native continuations and diagnostic locations. Fusion adds
 no serialized opcode and never crosses an interior safepoint; heap references
 stay in task storage throughout.
 
+Primitive and fused Number remainder uses integer remainder only when both
+operands round-trip exactly through `i32` and the divisor is nonzero. The
+integer overflow pair (`i32::MIN`, -1) produces zero, and the result takes the
+dividend's sign, including negative zero. Fractions, larger Numbers, NaN,
+infinities and zero divisors retain the general floating-point remainder;
+BigInt and conversion dispatch are unchanged.
+
 Run entry, allocation instructions, calls, returns, native steps and caught
 exceptions retain their existing safepoints. A stretch cannot start a native
 continuation or cross a poll. The longest stretch without a poll remains

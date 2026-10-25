@@ -3758,6 +3758,13 @@ mod tests {
             "function f() { let x = {valueOf() { throw 9; }}; let y = 2; try { x = x + y; } catch (e) { return e; } }",
             "function f() { let a = 'x', b = 3, c = 2; return a + b % c; }",
             "function f() { let a = 1n, b = 3, c = 2; try { return a + b % c; } catch (e) { return 7; } }",
+            "function f() { let a = -2147483648, b = -1; return 1 / (a % b); }",
+            "function f() { let a = -7n, b = 3n; return a % b; }",
+            "function f() { let a = 7n, b = 0n; try { return a % b; } catch (e) { return 9; } }",
+            "function f() { let a = 7n, b = 3; try { return a % b; } catch (e) { return 9; } }",
+            "function f() { let a = '7', b = true; return a % b; }",
+            "function f() { let a = {valueOf() { return -7; }}, b = {valueOf() { return 3; }}; return a % b; }",
+            "function f() { let a = {valueOf() { throw 9; }}, b = 3; try { return a % b; } catch (e) { return e; } }",
         ] {
             let fast = crate::frontend::compile_function(source).unwrap();
             let mut generic = crate::frontend::compile_function(source).unwrap();
@@ -3840,6 +3847,26 @@ mod tests {
             "a <= b",
             "a >= b",
         ] {
+            let mut values = values.to_vec();
+            if expression.contains('%') {
+                values.extend([
+                    -7.0,
+                    3.0,
+                    -1.5,
+                    1.5,
+                    f64::from(i32::MIN) - 1.0,
+                    f64::from(i32::MIN),
+                    f64::from(i32::MIN) + 0.5,
+                    f64::from(i32::MAX) - 0.5,
+                    f64::from(i32::MAX),
+                    f64::from(i32::MAX) + 1.0,
+                    9007199254740992.0,
+                    9007199254740994.0,
+                    -9007199254740992.0,
+                    i64::MAX as f64,
+                    i64::MIN as f64,
+                ]);
+            }
             let source = format!(
                 "function f(a, b) {{ let x = {expression}; if (a < b) {{ x = x; }} return x; }}"
             );
@@ -3852,8 +3879,8 @@ mod tests {
             );
             let mut generic = Executable::load(fast.to_spec()).unwrap();
             disable_primitive_dispatch(&mut generic.0);
-            for a in values {
-                for b in values {
+            for &a in &values {
+                for &b in &values {
                     // Includes every interior prefix and repeated resumption
                     // at lengths smaller than, equal to and larger than a fusion.
                     for slice in 1..=fast.instruction_count() as u64 + 1 {

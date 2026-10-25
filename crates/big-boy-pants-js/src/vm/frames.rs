@@ -138,6 +138,22 @@ thread_local! {
     pub(crate) static FAIL_STACK_RESERVATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Integer remainder is exact when both Numbers round-trip through i32.
+/// Saturating casts alone are insufficient: the equality guards reject NaN,
+/// infinities, fractions and out-of-range values. `wrapping_rem` handles
+/// i32::MIN % -1 without overflow; copysign restores the dividend's -0.
+/// Everything outside this narrow guard retains the general f64 remainder.
+#[inline]
+fn number_remainder(a: f64, b: f64) -> f64 {
+    let x = a as i32;
+    let y = b as i32;
+    if f64::from(x) == a && f64::from(y) == b && y != 0 {
+        f64::from(x.wrapping_rem(y)).copysign(a)
+    } else {
+        a % b
+    }
+}
+
 /// A single fallibly reserved buffer. Appends and formatting cannot grow it.
 struct ErrorStackSnapshot {
     units: Vec<u16>,
@@ -745,7 +761,7 @@ impl VmState {
                 Instr::Sub => a - b,
                 Instr::Mul => a * b,
                 Instr::Div => a / b,
-                Instr::Rem => a % b,
+                Instr::Rem => number_remainder(a, b),
                 _ => unreachable!("validated fused arithmetic"),
             }
         }
@@ -899,7 +915,7 @@ impl VmState {
                     Instr::Sub => Value::Number(a - b),
                     Instr::Mul => Value::Number(a * b),
                     Instr::Div => Value::Number(a / b),
-                    Instr::Rem => Value::Number(a % b),
+                    Instr::Rem => Value::Number(number_remainder(*a, *b)),
                     Instr::Lt | Instr::CompareLt => Value::Bool(a < b),
                     Instr::Gt | Instr::CompareGt => Value::Bool(a > b),
                     Instr::Le | Instr::CompareLe => Value::Bool(a <= b),
@@ -1605,6 +1621,66 @@ mod tests {
     use super::*;
     use crate::vm::Assembler;
     use crate::vm::instr::Opcode;
+
+    #[test]
+    fn guarded_remainder_matches_f64_bits() {
+        fn check(a: f64, b: f64) {
+            let actual = number_remainder(a, b);
+            let expected = a % b;
+            if expected.is_nan() {
+                assert!(actual.is_nan(), "{a:?} % {b:?}");
+            } else {
+                assert_eq!(actual.to_bits(), expected.to_bits(), "{a:?} % {b:?}");
+            }
+        }
+        let edges = [
+            -0.0,
+            0.0,
+            -1.0,
+            1.0,
+            -3.0,
+            3.0,
+            -7.0,
+            7.0,
+            -1.5,
+            1.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            -f64::MAX,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            f64::from(i32::MIN) - 1.0,
+            f64::from(i32::MIN),
+            f64::from(i32::MIN) + 0.5,
+            f64::from(i32::MAX) - 0.5,
+            f64::from(i32::MAX),
+            f64::from(i32::MAX) + 1.0,
+            9007199254740991.0,
+            9007199254740992.0,
+            9007199254740994.0,
+            -9007199254740992.0,
+            i64::MAX as f64,
+            i64::MIN as f64,
+        ];
+        for a in edges {
+            for b in edges {
+                check(a, b);
+            }
+        }
+        // Deterministic broad coverage of both guarded integer pairs and
+        // arbitrary IEEE bit patterns; no random seed or host JS dependency.
+        let mut bits = 0x9e3779b97f4a7c15_u64;
+        for _ in 0..20_000 {
+            bits ^= bits << 13;
+            bits ^= bits >> 7;
+            bits ^= bits << 17;
+            let next = bits.rotate_left(29);
+            check(f64::from(bits as i32), f64::from(next as i32));
+            check(f64::from_bits(bits), f64::from_bits(next));
+        }
+    }
 
     #[test]
     fn call_handles_keep_shared_counts_constant_and_tasks_independent() {
