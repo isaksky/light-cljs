@@ -64,13 +64,15 @@ fn cursor<R>(
         let HeapObject::Plain(o) = o else {
             return Err(invalid());
         };
-        if o.owner() != Some(task) {
+        let owner = o.owner();
+        let data = o.regexp_iterator().ok_or_else(invalid)?;
+        if owner != Some(task) {
             return Err(Fault::ForeignObject {
-                owner: o.owner(),
+                owner,
                 caller: task,
             });
         }
-        o.regexp_iterator().map(f).ok_or_else(invalid)
+        Ok(f(data))
     })
     .ok_or(Fault::Internal("RegExp iterator reclaimed"))?
 }
@@ -621,7 +623,8 @@ impl State {
                 if matches!(self.extra, Value::Undefined) {
                     self.go(SplitSeparator)
                 } else {
-                    self.number(self.extra.clone(), SplitLimitNumber)
+                    self.phase = SplitLimitNumber;
+                    Ok(Action::ToNumber(self.extra.clone()))
                 }
             }
             SplitLimitNumber => {
@@ -854,10 +857,18 @@ impl State {
                 self.get(heap, task, self.rx.clone(), "exec", ExecMethod)
             }
             ExecMethod => {
-                if matches!(
-                    dispatch::callee(heap, &v),
-                    Ok(dispatch::Callee::Builtin(RegExpExec))
-                ) {
+                // Callee classification unwraps Proxies; the fast path must
+                // recognize the value itself so wrapper call checks still run.
+                let intrinsic = if let Value::Object(id) = &v {
+                    heap.read(
+                        *id,
+                        |o| matches!(o, HeapObject::Builtin(f) if f.which == RegExpExec),
+                    )
+                    .ok_or(Fault::Internal("exec callee reclaimed"))?
+                } else {
+                    false
+                };
+                if intrinsic {
                     object::receiver(heap, task, &self.rx)?;
                     self.get(heap, task, self.rx.clone(), "lastIndex", ExecIndex)
                 } else if dispatch::callee(heap, &v).is_ok() {
@@ -1063,9 +1074,10 @@ impl State {
         match self.phase {
             Render => {
                 let Some(result) = self.results.get(self.index).cloned() else {
-                    self.charge(self.text.len() - self.source_end)?;
+                    let suffix = self.source_end.min(self.text.len());
+                    self.charge(self.text.len() - suffix)?;
                     self.rendered
-                        .extend_from_slice(&self.text.code_units()[self.source_end..]);
+                        .extend_from_slice(&self.text.code_units()[suffix..]);
                     return Ok(Action::Return(Value::String(
                         JsString::from_owned_code_units(std::mem::take(&mut self.rendered))
                             .ok_or(Fault::StringTooLong)?,
@@ -1180,7 +1192,7 @@ impl State {
                     let Value::String(m) = &self.captures[0] else {
                         unreachable!()
                     };
-                    self.source_end = (self.p + m.len()).min(self.text.len());
+                    self.source_end = self.p + m.len();
                 }
                 self.index += 1;
                 self.go(Render)

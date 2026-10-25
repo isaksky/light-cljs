@@ -7655,6 +7655,8 @@ fn string_split() {
 #[test]
 fn string_split_coercion_and_boundaries() {
     for src in [
+        "'a,b'.split(',', ' '.repeat(65536) + '2').join('|') === 'a|b'",
+        "let count = 0; 'a,b'.split(',', {valueOf(){count++; return ' '.repeat(65536) + '2';}}).join('|') === 'a|b' && count === 1",
         "let a = '\\u{10000}'.split(''); a.length === 2 && a[0] === '\\ud800' && a[1] === '\\udc00'",
         "'abababa'.split('aba').join('|') === '|b|' && 'aaaaa'.split('aa').join('|') === '||a'",
         "'a,b,c'.split(',', 2.9).join('|') === 'a|b' && 'a,b'.split(',', 4294967297).join('|') === 'a'",
@@ -22735,6 +22737,9 @@ fn regexp_code_reload_and_publication() {
 #[test]
 fn regexp_coercions_wait_yield_collect_and_migrate() {
     for expression in [
+        "let log = ''; let x = {get [Symbol.match](){log += 'm'; count++; __rt.need(188,1); return true;},get source(){log += 's';return 'a';},get flags(){log += 'f';return 'g';}}; let r = RegExp(x);| log === 'msf' && r.source === 'a' && r.flags === 'g'",
+        "let log = ''; let x = {get [Symbol.match](){log += 'm'; return true;},get source(){log += 's';count++; __rt.need(188,1); return 'a';},get flags(){log += 'f';return 'g';}}; let r = RegExp(x);| log === 'msf' && r.source === 'a' && r.flags === 'g'",
+        "let log = ''; let x = {get [Symbol.match](){log += 'm'; return true;},get source(){log += 's';return 'a';},get flags(){log += 'f';count++; __rt.need(188,1); return 'g';}}; let r = RegExp(x);| log === 'msf' && r.source === 'a' && r.flags === 'g'",
         "let r = /(?<n>.)/duy; r.lastIndex = {valueOf(){count++; __rt.need(188, 1); return 1;}};|(() => {let m = r.exec('🐱'); return m.indices[0][0] === 0 && m.indices[0][1] === 2 && m.indices.groups.n === m.indices[1] && m.indices[1][1] === 2;})()",
         "let m = /(?<n>a)/d.exec('ba'); let pair = m.indices.groups.n; count++; __rt.need(188, 1);|pair === m.indices[1] && pair[0] === 1 && pair[1] === 2",
         "RegExp({toString(){count++; __rt.need(188, 1); return 'a';}}, 'g').test('a')",
@@ -29952,6 +29957,11 @@ fn regexp_symbol_dispatch() {
 #[test]
 fn regexp_symbol_protocol_edges() {
     for source in [
+        "let n = 0; let r = {flags:'g',exec(){return n++ < 2 ? {0:'xx',length:1,index:n-1} : null;}}; RegExp.prototype[Symbol.replace].call(r,'a','X') === 'X'",
+        "let n = 0, calls = 0; let r = {flags:'g',exec(){return n++ < 2 ? {0:'xx',length:1,index:n-1} : null;}}; RegExp.prototype[Symbol.replace].call(r,'a',()=>{calls++;return 'X';}) === 'X' && calls === 2",
+        "let p = Object.getPrototypeOf(''.matchAll(/x/g)); let count = 0; for (let receiver of [p, Object.prototype]) {try {p.next.call(receiver);} catch(e) {count += e instanceof TypeError;}} count === 2",
+        "let r = /a/; r.exec = new Proxy(RegExp.prototype.exec, {}); 'a'.match(r)[0] === 'a'",
+        "let r = /a/; r.exec = new Proxy(RegExp.prototype.exec, {apply(){return null;}}); let caught = false; try {'a'.match(r);} catch(e) {caught = e instanceof TypeError;} caught",
         "let receiver = {toString(){throw 1;}}; let x = {[Symbol.replace](s,r){return s === receiver && r === 7;}}; String.prototype.replace.call(receiver,x,7)",
         "let n = 0; let x = {[Symbol.search]:1}; let caught = false; try {String.prototype.search.call({toString(){n++;return 'a';}}, x);} catch(e) {caught = e instanceof TypeError;} caught && n === 0",
         "let r = /a/; r[Symbol.replace] = null; 'x/a/y'.replace(r,'X') === 'xXy'",
