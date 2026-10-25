@@ -1,5 +1,13 @@
 # Attribution
 
+## Class static initialization blocks (clj-quickjs-292)
+
+Semantic references: `js_parse_class` and `js_parse_function_decl2`, including
+`JS_PARSE_FUNC_CLASS_STATIC_INIT`, in `research/quickjs/quickjs.c` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The Rust implementation and tests were written afresh; all new JavaScript
+fixtures are synthetic, not light-cljs output. No QuickJS code was copied.
+
 ## Non-constructor function rejection (clj-quickjs-135)
 
 The generator row in `tests/js_source.rs::non_constructors_reject_new` adapts

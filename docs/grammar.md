@@ -120,8 +120,8 @@ StatementListItem   = FunctionDeclaration | ClassDeclaration | LexicalDeclaratio
 ClassDeclaration    = "class" BindingIdentifier [ "extends" LeftHandSideExpression ] ClassBody
 ClassExpression     = "class" [ BindingIdentifier ] [ "extends" LeftHandSideExpression ] ClassBody
 SuperCall           = "super" Arguments  (* derived constructors and their lexical arrows/direct eval only *)
-SuperProperty       = "super" ( "." IdentifierName | "[" Expression "]" ) (* methods/accessors/field initializers and their lexical arrows/direct eval only *)
-ClassBody           = "{" { ";" | [ "static" ] ClassMethod } "}"
+SuperProperty       = "super" ( "." IdentifierName | "[" Expression "]" ) (* methods/accessors/field initializers/static blocks and their lexical arrows/direct eval only *)
+ClassBody           = "{" { ";" | [ "static" ] ClassMethod | "static" "{" { StatementListItem } "}" } "}"
 ClassMethod         = PropertyName FormalParameters FunctionBody
                     | ( "get" | "set" ) PropertyName FormalParameters FunctionBody
                     | [ "async" [no LineTerminator here] ] [ "*" ] PropertyName FormalParameters FunctionBody
@@ -543,7 +543,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | a property as a for-of target (`for (a.b of o)`), `debugger` | Unsupported |
 | `with` in strict code (clj-quickjs-110) | Invalid at `with` |
 | `await using` outside async functions, including module top level; patterns, missing initializers, switch clauses or single-statement bodies | SyntaxError (Invalid or Unsupported according to the rejected token) |
-| static initialization blocks, `import`/`export` in scripts, dynamic `import` | Unsupported |
+| `import`/`export` in scripts, dynamic `import` | Unsupported |
 | private names outside their declaring lexical class scope | Invalid |
 | module string-literal import/export names, import attributes (including `type: 'json'` and `type: 'json5'`), `import.meta`, top-level `await` | Unsupported |
 | `new.target` outside a non-arrow function, including a top-level arrow or indirect eval (clj-quickjs-99) | Invalid |
@@ -610,7 +610,7 @@ uncaught assertion Error. A synthetic host console records hello's arguments:
 adaptation are listed in each fixture header and `docs/architecture.md`.
 
 Super properties and public class fields execute (clj-quickjs-138/139);
-private names execute (clj-quickjs-291); static blocks remain rejected.
+private names execute (clj-quickjs-291), as do static blocks (-292).
 Derived classes and constructor `super()` calls execute (clj-quickjs-137).
 Source `new.target` in base and derived constructors, lexical arrows and direct
 eval uses the leaf construction target, including before `super()`.
@@ -5723,9 +5723,8 @@ use resumable VM frames, including constructors and computed-key conversion.
 Rejected forms: duplicate constructors, accessor/async/generator constructors,
 and non-computed static methods/accessors named `prototype` are early `Invalid`
 SyntaxErrors. Declarations in single-statement positions are `Invalid`.
-Public fields execute as described below (-139), as do private names (-291). Static
-blocks remain explicitly unsupported.
-Explicit gaps: static initialization blocks. Derived constructors execute below (-137).
+Public fields execute as described below (-139), as do private names (-291) and
+static initialization blocks (-292). Derived constructors execute below (-137).
 
 ```js accept
 class Point { constructor(x) { this.x = x; } get y() { return this.x; } static origin() { return new Point(0); } }
@@ -5788,7 +5787,7 @@ Rejected forms: `super()` outside a derived constructor or its lexical arrows/di
 `new super()`, are early `Invalid` SyntaxErrors. Non-constructor heritage and
 invalid parent prototypes throw TypeError at runtime. An implicit constructor
 for `extends null` throws TypeError when it tries to construct its parent.
-Explicit gaps: static blocks. Construction with the
+Static blocks execute (-292). Construction with the
 derived new target supports ordinary/class parents and `Object`; constructing
 other built-in subclasses is explicitly rejected with UnsupportedOperand.
 
@@ -6329,7 +6328,7 @@ a derived receiver's initialization error points to `super`.
 
 Rejected forms: super properties outside methods/accessors (including ordinary
 nested functions), bare `super`, and `super?.x` are early Invalid SyntaxErrors.
-Private names execute (clj-quickjs-291). Explicit gaps: static blocks. Lexical
+Private names execute (clj-quickjs-291), as do static blocks (-292). Lexical
 arrows and direct eval inherit the method context (clj-quickjs-112).
 
 ```js accept
@@ -6418,7 +6417,7 @@ on 64 KiB worker stacks. Existing restrictions on exotic property descriptors
 Rejected forms: non-computed fields named `constructor`, static fields named
 `prototype`, and references to `arguments` in initializer code (including arrows
 and direct eval) are Invalid SyntaxErrors. `super()` is forbidden in initializers.
-Private names execute (-291). Explicit gaps: static blocks.
+Private names execute (-291), as do static blocks (-292).
 
 ```js accept
 class S { static x = 42; static y = S.x; static z = this.x; }
@@ -6441,12 +6440,45 @@ class R { constructor = 1; }
 class R { x = arguments; }
 ```
 
-```js reject Unsupported 1:18
+```js accept
 class R { static {} }
 ```
 
 ```js accept
 class R { #x; }
+```
+
+### Class static initialization blocks (clj-quickjs-292)
+
+Class elements include `static { StatementList? }`. Blocks execute once per
+class evaluation, in order with static field initializers, after all computed
+keys and methods have been installed and the inner class name initialized.
+Each block introduces its own var and lexical scopes. Its strict receiver is
+the class, `new.target` is undefined, and class private names and super property
+access are available, including through arrows and direct eval. Exceptions
+propagate out of the class definition and prevent later initializers.
+
+`return`, `super()`, await expressions and references to `arguments` are early
+errors in the block. Arguments restrictions extend through arrows and direct
+eval; nested ordinary functions and methods have their own arguments/context.
+Nested async functions may await and nested functions may return. Break and
+continue cannot target loops, switches or labels outside the block. Existing
+function scope redeclaration checks apply. Blocks use resumable, traced VM
+method frames and existing nesting/local/capture limits.
+
+Synthetic fixtures, not light-cljs output:
+
+```js accept
+class C { static x = 1; static { this.x += 2; var local = 7; this.f = () => local; } static y = this.x; }
+C.x === 3 && C.y === 3 && C.f() === 7;
+```
+
+```js reject Invalid 1:20
+class C { static { return; } }
+```
+
+```js reject Invalid 1:20
+class C { static { arguments; } }
 ```
 
 ### Lexical super through arrows and direct eval (clj-quickjs-112)
@@ -6474,7 +6506,7 @@ SyntaxErrors; direct eval outside that context and indirect eval throw catchable
 SyntaxError. `super()` requires a derived constructor context and remains
 forbidden in ordinary methods and field initializers. Direct eval in parameter
 expressions inherits the enclosing method context (clj-quickjs-109).
-Private names execute (clj-quickjs-291). Explicit gaps: static blocks.
+Private names execute (clj-quickjs-291), as do static blocks (-292).
 
 Synthetic fixtures, not light-cljs output:
 

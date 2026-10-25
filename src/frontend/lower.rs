@@ -165,10 +165,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ast::{
-    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Class, Declarator, Expr, ExprKind, ForInHead,
-    ForInit, Function, FunctionKind, Ident, LexicalDecl, LexicalKind, LogicalOp, Pattern,
-    PatternKind, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase, TemplateElement,
-    UnaryOp, UpdateOp,
+    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Class, ClassElement, Declarator, Expr,
+    ExprKind, ForInHead, ForInit, Function, FunctionKind, Ident, LexicalDecl, LexicalKind,
+    LogicalOp, Pattern, PatternKind, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase,
+    TemplateElement, UnaryOp, UpdateOp,
 };
 use super::intrinsics::{self, Arity, Lowering, RESERVED_BINDING};
 use super::lexer::{Lexer, TokenKind};
@@ -180,6 +180,12 @@ use crate::vm::executable::{
     ConstructorKind, EvalBinding, EvalBindingKind, EvalSite, EvalSource, Executable, ExecutableSpec,
 };
 use crate::vm::instr::{Opcode, ThrowKind};
+
+/// Class initialization order, including blocks with independent var scopes.
+enum ClassInitializer<'a> {
+    Member(&'a PropertyDef, Ident, bool),
+    StaticBlock(&'a Function),
+}
 
 /// Locals are counted by a u16.
 const MAX_LOCALS: usize = u16::MAX as usize;
@@ -3026,7 +3032,7 @@ impl<'s> Lowerer<'s> {
         f: &Function,
         self_name: Option<(String, SelfKind)>,
         inferred_name: Option<JsString>,
-        fields: Option<&[(&PropertyDef, Ident, bool)]>,
+        fields: Option<&[ClassInitializer<'_>]>,
     ) -> Result<(), SyntaxError> {
         if f.params.len() > MAX_LOCALS {
             return Err(self.error(SyntaxErrorKind::TooLarge, f.span, "too many parameters"));
@@ -3053,8 +3059,9 @@ impl<'s> Lowerer<'s> {
         );
         self.cur_mut().lexical_this =
             matches!(f.kind, FunctionKind::Arrow | FunctionKind::ConciseArrow);
-        self.cur_mut().class_initializer =
-            fields.is_some() || self.cur().lexical_this && parent_initializer;
+        self.cur_mut().class_initializer = fields.is_some()
+            || f.kind == FunctionKind::ClassStaticBlock
+            || self.cur().lexical_this && parent_initializer;
         self.cur_mut().super_property = if self.cur().lexical_this {
             parent_super_property
         } else {
@@ -3076,7 +3083,18 @@ impl<'s> Lowerer<'s> {
             self.out().op(Opcode::Pop, f.span);
         }
         if let Some(fields) = fields {
-            for (property, key, is_field) in fields {
+            for initializer in fields {
+                let (property, key, is_field) = match initializer {
+                    ClassInitializer::Member(property, key, is_field) => (property, key, is_field),
+                    ClassInitializer::StaticBlock(block) => {
+                        // Method creation leaves the home object as the call's receiver.
+                        self.out().op(Opcode::GetThis, block.span);
+                        self.closure(block, None, None)?;
+                        self.out().op_u16(Opcode::CallMethod, 0, block.span);
+                        self.out().op(Opcode::Pop, block.span);
+                        continue;
+                    }
+                };
                 let at = property.name_span;
                 self.out().op(Opcode::GetThis, at);
                 if let PropertyName::Identifier(name) = &property.name
@@ -3160,7 +3178,10 @@ impl<'s> Lowerer<'s> {
         }
         let opcode = if matches!(
             f.kind,
-            FunctionKind::Method | FunctionKind::Getter | FunctionKind::Setter
+            FunctionKind::Method
+                | FunctionKind::Getter
+                | FunctionKind::Setter
+                | FunctionKind::ClassStaticBlock
         ) {
             Opcode::Method
         } else {
@@ -6368,6 +6389,9 @@ impl<'s> Lowerer<'s> {
         // all identities before creating any member closure (forward references).
         let mut private_names = HashMap::new();
         for element in &class.elements {
+            let ClassElement::Member(element) = element else {
+                continue;
+            };
             let p = &element.property;
             let PropertyName::Identifier(name) = &p.name else {
                 continue;
@@ -6457,6 +6481,13 @@ impl<'s> Lowerer<'s> {
         let mut instance_private_methods = Vec::new();
         let mut static_private_methods = Vec::new();
         for (index, element) in class.elements.iter().enumerate() {
+            let element = match element {
+                ClassElement::Member(element) => element,
+                ClassElement::StaticBlock(block) => {
+                    static_fields.push(ClassInitializer::StaticBlock(block));
+                    continue;
+                }
+            };
             let p = &element.property;
             let at = p.name_span;
             self.out().op_u16(
@@ -6492,7 +6523,7 @@ impl<'s> Lowerer<'s> {
                     && name.starts_with('#')
                 {
                     self.out().op(Opcode::Pop, at); // unused home object
-                    let field = (
+                    let field = ClassInitializer::Member(
                         p,
                         Ident {
                             name: name.clone(),
@@ -6519,9 +6550,9 @@ impl<'s> Lowerer<'s> {
                 self.pattern_store(&Pattern::ident(field_key.clone()), true, false)?;
                 self.out().op(Opcode::Pop, at); // unused home object
                 if element.is_static {
-                    static_fields.push((p, field_key, true));
+                    static_fields.push(ClassInitializer::Member(p, field_key, true));
                 } else {
-                    instance_fields.push((p, field_key, true));
+                    instance_fields.push(ClassInitializer::Member(p, field_key, true));
                 }
                 continue;
             }
@@ -6559,9 +6590,9 @@ impl<'s> Lowerer<'s> {
                 self.out().op(Opcode::Pop, at); // spelling
                 self.out().op(Opcode::Pop, at); // home object
                 if element.is_static {
-                    static_private_methods.push((p, method, false));
+                    static_private_methods.push(ClassInitializer::Member(p, method, false));
                 } else {
-                    instance_private_methods.push((p, method, false));
+                    instance_private_methods.push(ClassInitializer::Member(p, method, false));
                 }
                 continue;
             }

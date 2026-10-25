@@ -14,8 +14,8 @@
 //! The five module fixtures are complete licensed QuickJS source copies.
 
 use super::ast::{
-    BinaryOp, ChainLinkKind, Expr, ExprKind, Function, FunctionKind, LogicalOp, Pattern,
-    PatternKind, PropertyName, Script, Stmt, StmtKind, UnaryOp, UpdateOp,
+    BinaryOp, ChainLinkKind, ClassElement, ClassMember, Expr, ExprKind, Function, FunctionKind,
+    LogicalOp, Pattern, PatternKind, PropertyName, Script, Stmt, StmtKind, UnaryOp, UpdateOp,
 };
 use super::lexer::{Lexer, Punct, TokenKind};
 use super::{
@@ -837,7 +837,14 @@ fn render_expr(e: &Expr) -> String {
                 c.name.as_ref().map_or("-", |n| n.name.as_str()),
                 render_function(&c.constructor)
             );
-            for e in &c.elements {
+            for element in &c.elements {
+                let e = match element {
+                    ClassElement::Member(e) => e,
+                    ClassElement::StaticBlock(f) => {
+                        out.push_str(&format!(" (static-block {})", render_function(f)));
+                        continue;
+                    }
+                };
                 let name = match &e.property.name {
                     PropertyName::Identifier(n) => n.clone(),
                     PropertyName::String(n) => format!("{n:?}"),
@@ -1148,6 +1155,7 @@ fn render_function(f: &Function) -> String {
         ),
         FunctionKind::Arrow => format!("(arrow ({})", params.join(" ")),
         FunctionKind::Method => format!("(method ({})", params.join(" ")),
+        FunctionKind::ClassStaticBlock => "(static-block".into(),
         FunctionKind::ClassConstructor => format!("(constructor ({})", params.join(" ")),
         FunctionKind::DerivedClassConstructor | FunctionKind::DefaultDerivedConstructor => {
             format!("(derived-constructor ({})", params.join(" "))
@@ -5081,10 +5089,10 @@ fn class_syntax() {
     assert_eq!(c.constructor.kind, FunctionKind::ClassConstructor);
     assert!(c.constructor.strict);
     assert_eq!(c.elements.len(), 3);
-    assert!(!c.elements[0].is_static);
-    assert!(c.elements[1].is_static);
+    assert!(!class_member(&c.elements[0]).is_static);
+    assert!(class_member(&c.elements[1]).is_static);
     assert!(
-        matches!(&c.elements[2].property.value.kind, ExprKind::Function(f) if f.kind == FunctionKind::Getter && f.strict)
+        matches!(&class_member(&c.elements[2]).property.value.kind, ExprKind::Function(f) if f.kind == FunctionKind::Getter && f.strict)
     );
     for (source, name, is_static) in [
         ("let E1 = class E { static F() { return E; } };", "E", true),
@@ -5098,7 +5106,7 @@ fn class_syntax() {
             panic!()
         };
         assert_eq!(c.name.as_ref().unwrap().name, name);
-        assert_eq!(c.elements[0].is_static, is_static);
+        assert_eq!(class_member(&c.elements[0]).is_static, is_static);
     }
     for source in [
         "class C { constructor() {} constructor() {} }",
@@ -5116,12 +5124,16 @@ fn class_syntax() {
             "{source}"
         );
     }
-    assert_eq!(
-        parse_script("class C { static {} }").unwrap_err().kind,
-        SyntaxErrorKind::Unsupported,
-    );
+    assert!(parse_script("class C { static {} }").is_ok());
     assert!(parse_script_with("class C { m(eval) {} }", ScriptOptions::SLOPPY).is_err());
     assert!(parse_script_with("class C {} let eval = 1;", ScriptOptions::SLOPPY).is_ok());
+}
+
+fn class_member(element: &ClassElement) -> &ClassMember {
+    let ClassElement::Member(member) = element else {
+        panic!("expected class member")
+    };
+    member
 }
 
 #[test]
@@ -5535,6 +5547,9 @@ fn nesting_at_the_limit_fits_a_2_mib_stack() {
                 "class { static x = ".repeat(n),
                 "; }".repeat(n)
             )
+        }),
+        ("nested static initialization blocks", |n| {
+            format!("{}0;{}", "class C { static {".repeat(n), "}}".repeat(n))
         }),
         ("derived class constructors", |n| {
             format!(
@@ -6229,14 +6244,16 @@ fn class_fields() {
         panic!()
     };
     assert_eq!(c.elements.len(), 3);
-    assert!(c.elements.iter().all(|e| !e.is_field));
-    assert!(c.elements[2].is_static);
+    assert!(c.elements.iter().all(|e| !class_member(e).is_field));
+    assert!(class_member(&c.elements[2]).is_static);
     for (element, kind) in c.elements.iter().zip([
         FunctionKind::Getter,
         FunctionKind::Setter,
         FunctionKind::Getter,
     ]) {
-        assert!(matches!(&element.property.value.kind, ExprKind::Function(f) if f.kind == kind));
+        assert!(
+            matches!(&class_member(element).property.value.kind, ExprKind::Function(f) if f.kind == kind)
+        );
     }
     for (source, fields) in [
         (
@@ -6257,7 +6274,13 @@ fn class_fields() {
         let ExprKind::Class(c) = &d.declarators[0].init.as_ref().unwrap().kind else {
             panic!()
         };
-        assert_eq!(c.elements.iter().filter(|e| e.is_field).count(), fields);
+        assert_eq!(
+            c.elements
+                .iter()
+                .filter(|e| class_member(e).is_field)
+                .count(),
+            fields
+        );
     }
     for source in [
         "class R { constructor = 1; }",
@@ -6293,7 +6316,7 @@ fn class_fields_asi_escaped_names() {
             panic!()
         };
         assert_eq!(c.elements.len(), 2);
-        assert!(c.elements[1].property.name.is_named("if"));
+        assert!(class_member(&c.elements[1]).property.name.is_named("if"));
     }
     for source in [
         r"class C { a = 1 +

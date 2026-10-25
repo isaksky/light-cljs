@@ -3847,7 +3847,7 @@ construction of other built-in subclasses is explicitly rejected. Verify with
 
 Lexical super properties through arrows/direct eval and constructor super calls
 from direct eval execute (-112). Public fields execute (-139), as do private
-members (-291); static initialization blocks remain deferred.
+members (-291) and static initialization blocks (-292).
 
 ### Intl.ListFormat (clj-quickjs-220)
 
@@ -4172,7 +4172,7 @@ properties before base constructor parameters or immediately after derived
 `super()`; static fields run after method installation and inner-name binding.
 Initializers, super access, arrows and direct eval retain their receiver/home
 context across waits, collection and worker migration. Private names execute
-(-291); static initialization blocks remain explicitly rejected. See `docs/grammar.md`,
+(-291); static initialization blocks execute (-292). See `docs/grammar.md`,
 "Public class fields", for syntax, early errors and existing exotic-property gaps.
 
 ### JSON modules (clj-quickjs-256)
@@ -4322,7 +4322,7 @@ instruction is rejected by the validator or fails the task with `Internal`,
 never with a panic.
 
 Gaps found by the audit are filed as pellets, not fixed here. Private names now
-execute (clj-quickjs-291); remaining work includes static blocks (-292), generator `return`/`throw` (-293),
+execute (clj-quickjs-291), as do static blocks (-292); remaining work includes generator `return`/`throw` (-293),
 `new Map(iterable)` (-294), Set/WeakSet (-295), Array.prototype mutators,
 search, callback and copying methods (-296 to -299), String.prototype case/trim/
 repeat/search predicates (-300) and match/matchAll/search with RegExp symbol
@@ -4495,7 +4495,23 @@ be captured in publishable closures; receivers and class methods keep their
 existing task-owned publication restrictions. Adding private state to shared
 intrinsics, published functions, or runtime persistent/concurrent values is
 rejected with TypeError, as is reading another task's private receiver. Built-in
-subclassing and static blocks remain separate work.
+subclassing remains separate work; static blocks execute (-292).
+
+### Class static initialization blocks (clj-quickjs-292)
+
+`static { ... }` executes once per class evaluation, interleaved with static
+fields in definition order, after computed keys and method installation. Each
+block has an independent var/lexical scope, with `this` bound to the class,
+access to class private names, super properties, arrows and direct eval.
+`new.target` is undefined. References to `arguments` (including arrows/direct
+eval), top-level `await`, `return`, and `super()` are SyntaxErrors. Exceptions
+abort class definition and skip later initializers. Nested functions establish
+their normal grammar and argument bindings.
+
+Blocks use existing traced task-owned method frames for instruction budgets,
+dependency waits, GC and worker migration. Existing parser nesting and
+65,535-local/capture limits apply; no new worker-chosen limit is introduced.
+Verify: `CARGO_BUILD_JOBS=3 cargo test --test class_static_blocks -- --test-threads=3`.
 
 Verify: `CARGO_BUILD_JOBS=3 cargo test --test js_source private_class -- --test-threads=3`.
 

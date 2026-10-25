@@ -502,6 +502,9 @@ pub enum FunctionKind {
     ClassConstructor,
     DerivedClassConstructor,
     DefaultDerivedConstructor,
+    /// A class static initialization block: its own var scope and receiver,
+    /// no arguments binding, and class-initializer direct-eval restrictions.
+    ClassStaticBlock,
 }
 
 /// A class. Declarations use a lexical `let` initialized by this node.
@@ -516,7 +519,13 @@ pub struct Class {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct ClassElement {
+pub enum ClassElement {
+    Member(ClassMember),
+    StaticBlock(Function),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClassMember {
     pub is_static: bool,
     /// A public field, whose value is an initializer expression, rather than
     /// a method definition. An omitted initializer is `undefined`.
@@ -583,7 +592,14 @@ impl Expr {
                 c.constructor
                     .height
                     .max(c.heritage.as_ref().map_or(0, |e| e.height)),
-                |h, e| h.max(e.property.value.height).max(e.property.name.height()),
+                |h, e| {
+                    h.max(match e {
+                        ClassElement::Member(m) => {
+                            m.property.value.height.max(m.property.name.height())
+                        }
+                        ClassElement::StaticBlock(f) => f.height,
+                    })
+                },
             ),
             ExprKind::Sequence { left, right } => left.height.max(right.height),
             ExprKind::Object(properties) => properties

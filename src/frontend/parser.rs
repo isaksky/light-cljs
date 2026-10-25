@@ -9,8 +9,8 @@
 //! no QuickJS code is adapted.
 
 use super::ast::{
-    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Class, ClassElement, Declarator, Expr,
-    ExprKind, ForInHead, ForInit, Function, FunctionKind, Ident, LexicalDecl, LexicalKind,
+    BinaryOp, CatchClause, ChainLink, ChainLinkKind, Class, ClassElement, ClassMember, Declarator,
+    Expr, ExprKind, ForInHead, ForInit, Function, FunctionKind, Ident, LexicalDecl, LexicalKind,
     LogicalOp, Pattern, PatternKind, PropertyDef, PropertyName, Script, Stmt, StmtKind, SwitchCase,
     TemplateElement, UnaryOp, UpdateOp,
 };
@@ -646,7 +646,8 @@ impl<'a> Parser<'a> {
                 self.lexer.expect_property_name();
                 self.advance()?;
                 if self.is_punct(Punct::LBrace) {
-                    return Err(self.unsupported(self.tok.span, "static initialization blocks are"));
+                    elements.push(ClassElement::StaticBlock(self.parse_class_static_block()?));
+                    continue;
                 }
             }
             let (property, is_field) =
@@ -691,11 +692,11 @@ impl<'a> Parser<'a> {
                 };
                 constructor = Some(*f);
             } else {
-                elements.push(ClassElement {
+                elements.push(ClassElement::Member(ClassMember {
                     is_static,
                     is_field,
                     property,
-                });
+                }));
             }
             // The closing method brace already fetched the next token. Class
             // element names may be escaped reserved words, like object keys.
@@ -733,6 +734,48 @@ impl<'a> Parser<'a> {
             })),
             span,
         )
+    }
+
+    #[inline(never)]
+    fn parse_class_static_block(&mut self) -> PResult<Function> {
+        let saved = self.depth;
+        self.deeper(cost::FUNCTION)?;
+        let start = self.tok.span.start;
+        let outer_initializer = std::mem::replace(&mut self.class_initializer, true);
+        let outer_super = std::mem::replace(&mut self.super_call, false);
+        let outer_property = std::mem::replace(&mut self.super_property, true);
+        let outer_target = std::mem::replace(&mut self.new_target_allowed, true);
+        let outer_suspension = std::mem::take(&mut self.suspension);
+        // Return and transfers to enclosing loops/labels cannot cross a block.
+        // Nested functions establish their own return/await grammar as usual.
+        let outer_function = std::mem::replace(&mut self.in_function, false);
+        let outer_loop = std::mem::replace(&mut self.in_loop, false);
+        let outer_switch = std::mem::replace(&mut self.in_switch, false);
+        let outer_labels = std::mem::take(&mut self.labels);
+        let outer_asi = std::mem::replace(&mut self.class_field_asi, false);
+        let (body, _) = self.parse_function_body(None, &[], true, true, true)?;
+        self.class_initializer = outer_initializer;
+        self.super_call = outer_super;
+        self.super_property = outer_property;
+        self.new_target_allowed = outer_target;
+        self.suspension = outer_suspension;
+        self.in_function = outer_function;
+        self.in_loop = outer_loop;
+        self.in_switch = outer_switch;
+        self.labels = outer_labels;
+        self.class_field_asi = outer_asi;
+        self.depth = saved;
+        let function = Function::new(
+            FunctionKind::ClassStaticBlock,
+            None,
+            vec![],
+            vec![],
+            body,
+            self.span_from(start),
+            true,
+        );
+        self.check_height(function.height)?;
+        Ok(function)
     }
 
     #[inline(never)]
@@ -4166,7 +4209,7 @@ impl<'a> Parser<'a> {
             return Err(self.error(
                 SyntaxErrorKind::Invalid,
                 span,
-                "arguments is forbidden in a class field initializer",
+                "arguments is forbidden in a class initializer",
             ));
         }
         if RESERVED_CONSTANTS.contains(&name.as_str()) {
