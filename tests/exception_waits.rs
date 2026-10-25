@@ -415,6 +415,41 @@ fn cancellation_ends_await_using_at_cleanup_await() {
 }
 
 #[test]
+fn await_using_nullish_records_cancel_at_first_cleanup_await() {
+    // Synthetic fixtures, not light-cljs output. Nullish records defer the
+    // cancellation boundary to a real async call, or before a sync call.
+    for (declarations, expected) in [
+        (
+            "await using a = {[Symbol.asyncDispose]() { __rt.effect(1, 2); }}, b = null, c = undefined;",
+            vec![2.0, 1.0],
+        ),
+        (
+            "using a = {[Symbol.dispose]() { __rt.effect(1, 2); }}; await using b = null, c = undefined;",
+            vec![1.0],
+        ),
+    ] {
+        let rt = Runtime::new();
+        let source = format!(
+            "try {{
+                using outer = {{[Symbol.dispose]() {{ __rt.effect(1, 1); }}}};
+                (async () => {{ {declarations} __rt.need(5, 3); }})();
+            }} catch(e) {{ __rt.effect(1, 99); }}
+            __rt.effect(1, 98);"
+        );
+        let task = spawn(&rt, &source);
+        let mut log = Log::default();
+        run_to_wait(&rt, &task, &mut log, A);
+        assert!(log.0.is_empty());
+        rt.collect().unwrap();
+        let task = cancel_parked(&task);
+        rt.collect().unwrap();
+        let (outcome, log) = run_elsewhere(task, log);
+        cancelled(outcome);
+        assert_eq!(log.0, expected, "{source}");
+    }
+}
+
+#[test]
 fn cancellation_disposes_using_resources() {
     let rt = Runtime::new();
     let task = spawn(
