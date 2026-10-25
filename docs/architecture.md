@@ -4776,9 +4776,13 @@ native-frame protocol. Objects snapshot keys through `vm::keys`; arrays
 snapshot length once and stream ordinary index reads. Task ownership is
 checked for direct values and `toJSON` results, including empty arrays.
 
-Each native transition does one property/structural operation, quotes at
-most 256 input code units, or copies at most 256 final output units/part
-boundaries. Quoted chunks hold at most 1536 units, so their allocation and
+Each native transition does one property/structural operation, visits at
+most 256 rope nodes/input code units while quoting, or copies at most 256 final
+output units/part boundaries. Values and member names use a saved UnitCursor
+without flattening the input (clj-quickjs-289); the cursor takes ownership so
+consumed nodes are released incrementally. One pending high surrogate
+preserves pairing across rope boundaries and yields; end of input escapes it
+if unpaired. Quoted chunks hold at most 1542 units, so their allocation and
 transfer have bounded size, even for long escaped strings or member names.
 Output length is checked incrementally. Chunks and punctuation are retained
 as immutable JsString parts, then the existing StringBuild reserves once and

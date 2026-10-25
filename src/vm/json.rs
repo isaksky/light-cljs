@@ -722,8 +722,8 @@ enum StringifyStage {
     Next,
     PropertyResult,
     Quote {
-        text: JsString,
-        next: usize,
+        cursor: UnitCursor,
+        high: Option<u16>,
         key: bool,
     },
     Build(StringBuild),
@@ -906,8 +906,8 @@ impl Stringifier {
         Ok(())
     }
 
-    /// One transition, one property/callback, or at most 256 quoted/copied
-    /// code units. No recursive traversal, output-sized copy or string scan.
+    /// One transition, one property/callback, or at most 256 rope-node/unit
+    /// visits or output copies. No recursive traversal or string scan.
     pub(super) fn advance(
         &mut self,
         heap: &Heap,
@@ -1095,9 +1095,12 @@ impl Stringifier {
             }
             S::Key => {
                 self.append(JsString::from("\""))?;
+                // The cursor releases the source incrementally too; do not
+                // retain a redundant owner until a later native transition.
+                let text = std::mem::replace(&mut self.key, JsString::from(""));
                 self.stage = S::Quote {
-                    text: self.key.clone(),
-                    next: 0,
+                    cursor: UnitCursor::new(text),
+                    high: None,
                     key: true,
                 };
             }
@@ -1124,12 +1127,15 @@ impl Stringifier {
             }
             S::Close(array) => self.append(JsString::from(if array { "]" } else { "}" }))?,
             S::Emit => match &self.value {
-                Value::String(text) => {
-                    let text = text.clone();
+                Value::String(_) => {
                     self.append(JsString::from("\""))?;
+                    let Value::String(text) = std::mem::replace(&mut self.value, Value::Undefined)
+                    else {
+                        unreachable!("emitting a string")
+                    };
                     self.stage = S::Quote {
-                        text,
-                        next: 0,
+                        cursor: UnitCursor::new(text),
+                        high: None,
                         key: false,
                     };
                 }
@@ -1225,52 +1231,47 @@ impl Stringifier {
                 self.stage = S::Prepare;
             }
             S::Quote {
-                text,
-                mut next,
+                mut cursor,
+                mut high,
                 key,
             } => {
-                let mut units = Vec::with_capacity(STEP * 6);
-                let source = text.code_units();
+                // Reserve for one saved high surrogate plus this slice.
+                // Node visits count too, so a deep rope prefix must yield.
+                let mut units = Vec::with_capacity((STEP + 1) * 6);
+                let mut done = false;
                 for _ in 0..STEP {
-                    let Some(&c) = source.get(next) else {
-                        break;
-                    };
-                    next += 1;
-                    let escape = match c {
-                        34 => Some(34),
-                        92 => Some(92),
-                        8 => Some(98),
-                        12 => Some(102),
-                        10 => Some(110),
-                        13 => Some(114),
-                        9 => Some(116),
-                        _ => None,
-                    };
-                    if let Some(escaped) = escape {
-                        units.extend([92, escaped]);
-                    } else if c <= 31
-                        || (0xd800..=0xdfff).contains(&c)
-                            && !((0xd800..=0xdbff).contains(&c)
-                                && source
-                                    .get(next)
-                                    .is_some_and(|n| (0xdc00..=0xdfff).contains(n))
-                                || (0xdc00..=0xdfff).contains(&c)
-                                    && next >= 2
-                                    && (0xd800..=0xdbff).contains(&source[next - 2]))
-                    {
-                        const HEX: &[u8] = b"0123456789abcdef";
-                        units.extend([92, 117]);
-                        for shift in [12, 8, 4, 0] {
-                            units.push(u16::from(HEX[((c >> shift) & 15) as usize]));
+                    let c = match cursor.step() {
+                        CursorStep::Unit(c) => c,
+                        CursorStep::Continue => continue,
+                        CursorStep::End => {
+                            if let Some(c) = high.take() {
+                                quote_unit(&mut units, c);
+                            }
+                            done = true;
+                            break;
                         }
+                    };
+                    if let Some(previous) = high.take() {
+                        if (0xdc00..=0xdfff).contains(&c) {
+                            units.extend([previous, c]);
+                            continue;
+                        }
+                        quote_unit(&mut units, previous);
+                    }
+                    // Delay a high surrogate until the next unit or End,
+                    // even across a rope boundary or budget exhaustion.
+                    if (0xd800..=0xdbff).contains(&c) {
+                        high = Some(c);
                     } else {
-                        units.push(c);
+                        quote_unit(&mut units, c);
                     }
                 }
-                self.append(
-                    JsString::from_owned_code_units(units).expect("bounded JSON quote chunk"),
-                )?;
-                if next == source.len() {
+                if !units.is_empty() {
+                    self.append(
+                        JsString::from_owned_code_units(units).expect("bounded JSON quote chunk"),
+                    )?;
+                }
+                if done {
                     self.append(JsString::from(if key {
                         if self.gap.is_empty() { "\":" } else { "\": " }
                     } else {
@@ -1278,7 +1279,7 @@ impl Stringifier {
                     }))?;
                     self.stage = if key { S::Emit } else { S::Next };
                 } else {
-                    self.stage = S::Quote { text, next, key };
+                    self.stage = S::Quote { cursor, high, key };
                 }
             }
             S::Build(mut build) => {
@@ -1289,6 +1290,32 @@ impl Stringifier {
             }
         }
         Ok(A::Continue)
+    }
+}
+
+// A pair is emitted together by Quote; any surrogate reaching this helper
+// is unpaired and must use the well-formed JSON escape.
+fn quote_unit(units: &mut Vec<u16>, c: u16) {
+    let escape = match c {
+        34 => Some(34),
+        92 => Some(92),
+        8 => Some(98),
+        12 => Some(102),
+        10 => Some(110),
+        13 => Some(114),
+        9 => Some(116),
+        _ => None,
+    };
+    if let Some(escaped) = escape {
+        units.extend([92, escaped]);
+    } else if c <= 31 || (0xd800..=0xdfff).contains(&c) {
+        const HEX: &[u8] = b"0123456789abcdef";
+        units.extend([92, 117]);
+        for shift in [12, 8, 4, 0] {
+            units.push(u16::from(HEX[((c >> shift) & 15) as usize]));
+        }
+    } else {
+        units.push(c);
     }
 }
 
@@ -1307,6 +1334,95 @@ mod stringify_budget_tests {
             Err(Fault::StringTooLong)
         ));
         assert!(stringify.parts.is_empty());
+    }
+
+    #[test]
+    fn json_stringify_rope_keys_and_surrogates_are_budgeted() {
+        // Include a pair across rope children, adjacent high surrogates,
+        // an unpaired low, ordinary escapes, and a final unpaired high.
+        // Vary the prefix so a budget boundary can split any of them.
+        for (prefix, tail) in [
+            (33, 0),
+            (253, 0),
+            (254, 0),
+            (255, 0),
+            (256, 0),
+            (511, 0),
+            (255, 3500), // Deep prefix traversal must also yield.
+        ] {
+            for key in [false, true] {
+                let mut left = vec![120; prefix];
+                left.push(0xd83d);
+                let right = JsString::from_code_units(vec![
+                    0xde00, 0xd800, 0xd801, 0xdc01, 0xdc02, 10, 34, 92, 0, 0xd802,
+                ])
+                .unwrap();
+                let mut text = JsString::from_code_units(left)
+                    .unwrap()
+                    .concat(&right)
+                    .unwrap();
+                for _ in 0..tail {
+                    text = text.concat(&JsString::from("x")).unwrap();
+                }
+                let mut expected = vec![34];
+                expected.extend(vec![120; prefix]);
+                expected.extend([0xd83d, 0xde00]);
+                expected.extend("\\ud800".encode_utf16());
+                expected.extend([0xd801, 0xdc01]);
+                expected.extend("\\udc02\\n\\\"\\\\\\u0000\\ud802".encode_utf16());
+                expected.extend(vec![120; tail]);
+                expected.push(34);
+                if key {
+                    expected.extend([58, 32]);
+                }
+
+                let mut stringify = if key {
+                    let mut s = Stringifier::new(Value::Null, Value::Undefined);
+                    s.key = text;
+                    s.gap = JsString::from(" ");
+                    s.stage = StringifyStage::Key;
+                    s
+                } else {
+                    let mut s = Stringifier::new(Value::String(text), Value::Undefined);
+                    s.stage = StringifyStage::Emit;
+                    s
+                };
+                let heap = Heap::default();
+                let mut complete = false;
+                let mut steps = 0;
+                for _ in 0..100 {
+                    let before = cursor_release_counts();
+                    let copies = JsString::copied_code_units();
+                    assert!(matches!(
+                        stringify.advance(&heap, TaskId::from_raw(1), None),
+                        Ok(StringifyStep::Continue)
+                    ));
+                    let after = cursor_release_counts();
+                    assert!(after.0 - before.0 <= STEP, "unbudgeted cursor walk");
+                    assert!(
+                        after.1 - before.1 <= STEP,
+                        "unbudgeted rope release: {} bodies, prefix {prefix}, tail {tail}, key {key}, step {steps}",
+                        after.1 - before.1
+                    );
+                    assert_eq!(JsString::copied_code_units(), copies, "rope flattened");
+                    steps += 1;
+                    if matches!(stringify.stage, StringifyStage::Emit) && key
+                        || matches!(stringify.stage, StringifyStage::Next) && !key
+                    {
+                        complete = true;
+                        break;
+                    }
+                }
+                assert!(complete);
+                assert!(steps > (prefix + tail) / STEP);
+                let actual: Vec<_> = stringify
+                    .parts
+                    .iter()
+                    .flat_map(|(s, _, _)| s.code_units().iter().copied())
+                    .collect();
+                assert_eq!(actual, expected);
+            }
+        }
     }
 
     #[test]

@@ -20408,6 +20408,48 @@ fn json_stringify_long_strings_are_budgeted() {
     }
 }
 
+/// Synthetic fixture, not light-cljs output. Doubling produces a fresh rope;
+/// one instruction must not flatten its entire input before quoting can yield.
+#[test]
+fn json_stringify_rope_quoting_is_budgeted() {
+    use clj_quickjs::JsString;
+
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(
+            &exe("let s = 'x'; for (let i = 0; i < 13; i++) { s += s; } JSON.stringify(s);"),
+            &[],
+        )
+        .unwrap();
+    let mut yields = 0;
+    for _ in 0..2000 {
+        let before = JsString::copied_code_units();
+        let result = task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap();
+        assert!(
+            JsString::copied_code_units() - before <= 256,
+            "one instruction copied more than a stringify slice"
+        );
+        match result {
+            RunOutcome::Yielded => {
+                yields += 1;
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(
+                    value.string().unwrap(),
+                    format!("\"{}\"", "x".repeat(8192)).as_str()
+                );
+                assert!(yields >= 8192 / 256, "rope quoting must yield");
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("rope JSON.stringify did not finish");
+}
+
 /// Synthetic fixtures, not light-cljs output. Deep input is constructed by a
 /// loop, avoiding source/parser recursion; wide arrays stream their indices.
 #[test]

@@ -2748,6 +2748,9 @@ the first 10 UTF-16 code units for strings, including Number/String wrappers
 with resumable conversion. Empty containers stay compact and indentation is budgeted.
 Number-wrapper conversion strings are capped at 4096 UTF-16 units before
 leaf numeric parsing; ordinary quoted strings keep their normal length limit.
+Quoting values and member names visits at most 256 rope nodes/code units per
+slice without flattening the input (clj-quickjs-289). Surrogate pairs remain
+intact across rope boundaries and yields; lone surrogates use JSON escapes.
 Replacer functions/lists and Boolean wrappers remain deferred or prerequisite
 gaps. See `docs/grammar.md` for precise limits and behavior.
 
