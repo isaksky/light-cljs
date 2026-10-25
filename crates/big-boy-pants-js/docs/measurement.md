@@ -780,6 +780,19 @@ follow-up **light-cljs-487** investigates guarded fusion to reduce primitive
 operand-stack traffic. It does not claim arithmetic fusion will eliminate the
 remaining call, constructor, property or allocation costs.
 
+Validation of the unchanged implementation at `0942c89e` used
+`CARGO_BUILD_JOBS=3` and `--test-threads=3`: `cargo test --locked -p
+big-boy-pants-js --all-targets` passed **2,002 tests in 60 result groups**,
+including the QuickJS-derived corpus; `--doc` passed **six doctests**. The new
+regression compares generic and optimized execution at every short budget
+prefix, including saved pc/locals/operands, numeric edge cases and conversion
+fallback. The affected call/budget/safepoint/GC/cancellation/native/dependency
+suites also passed separately (300 tests). Engine formatting passes. Strict
+Clippy reports only the unchanged nine diagnostics in `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`; allowing only
+those categories passes, with no source suppressions. Rebase onto `5059ce9c`
+was a no-op, so these checks were reused rather than repeated.
+
 ## Method and limits of the measurements
 
 `examples/bench/main.rs` handles timing, a counting allocator and reports;
