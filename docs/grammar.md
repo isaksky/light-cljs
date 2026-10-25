@@ -1429,7 +1429,7 @@ Executed, with JavaScript semantics:
 | `function f(a, b = expr) { ... }`, `(a = expr) => ...` (clj-quickjs-100) | on entry, the parameters are initialized left to right; a parameter's default is evaluated only when its argument is `undefined` (missing or passed: `f(1)` and `f(1, undefined)` run it, `f(1, null)` does not) and becomes its value. Parameters are bindings with a temporal dead zone: a default sees the parameters before it, the enclosing scopes and the function's own name, but reading itself or a later parameter is a ReferenceError (`function f(a = b, b) {} f()`). The parameters have a scope of their own around the body's: the body's `let`/`const`/`var`/function declarations are invisible to the defaults (`const x = 1; function f(a = () => x) { var x = 2; return a(); }` gives 1); a body `var` that repeats a parameter is a separate binding starting with the parameter's value, and a body function declaration may repeat one (a `let`/`const` may not). Closures created in a default capture the parameter bindings under the usual value/cell rule, so they see the body's later assignments to a parameter, and one run before its parameter is initialized fails with the run-time ReferenceError. QuickJS: `js_parse_function_decl2` (`has_parameter_expressions`) |
 | `o.m(a, b)` (clj-quickjs-117) | a method call: evaluates `o` once, reads `m` (the checks of `o.name`), evaluates the arguments, then calls with `o` as the receiver (`call_method`); a parenthesized callee `(o.m)()` is the same call, `(0, o.m)()` is a plain call. A built-in function sees the receiver as `this`, and so does a JavaScript function (clj-quickjs-116). `(f = o.m)()` and `let f = o.m; f()` are plain calls too. A plain call passes `undefined` as the receiver |
 | `this` (clj-quickjs-116, -104) | at script level: the task's global object, even in strict code. Inside a non-arrow function (its body and its parameters' defaults, and blocks, `try` and nested statements in it): the receiver the running call was made with, the very object (`get_this`, which reads the frame's `this` slot and allocates nothing): `o` for a method call `o.m()`, `undefined` for a plain call `f()`, for a task's entry function and for a callback of a resumable native (`__rt.reduce`). A function nested in it has its own `this`. In strict code the receiver is used as is, so `this.x` in a plain call throws a catchable TypeError. In sloppy code an object receiver is used as is, and evaluating `this` with any other receiver fails the task with `UnsupportedOperand` (it would be the global object, clj-quickjs-104, or a wrapper, clj-quickjs-72). The frame's `this` is task-owned and traced with the frame, so it survives waits, collections and migration |
-| `new.target` (clj-quickjs-99) | the invoked constructor for construction, `undefined` on ordinary calls, including method, accessor, native callback and forwarded calls. Ordinary functions, generators, async functions and methods establish their own binding before defaults; arrows inherit the nearest enclosing non-arrow function value by capture, even after that function returns. Direct eval inherits both the binding and its value through arrows and nested eval. At script scope (including top-level arrows and indirect eval), this is an early `SyntaxError` of kind `Invalid` at the `new` token. Only the literal identifier `target` is allowed after the dot; assignment and update are invalid. The frame and captures are traced and survive yields, waits and migration. Explicit gaps: `Reflect.construct` and built-in subclassing remain deferred |
+| `new.target` (clj-quickjs-99) | the invoked constructor for construction, `undefined` on ordinary calls, including method, accessor, native callback and forwarded calls. Ordinary functions, generators, async functions and methods establish their own binding before defaults; arrows inherit the nearest enclosing non-arrow function value by capture, even after that function returns. Direct eval inherits both the binding and its value through arrows and nested eval. At script scope (including top-level arrows and indirect eval), this is an early `SyntaxError` of kind `Invalid` at the `new` token. Only the literal identifier `target` is allowed after the dot; assignment and update are invalid. The frame and captures are traced and survive yields, waits and migration. Explicit gap: `Reflect.construct` remains deferred; built-in subclasses execute (-309) |
 | `new F(a, b)`, `new F` (clj-quickjs-71) | evaluates `F`, then the arguments (none without an argument list), then `construct` at the `new` token (ECMAScript EvaluateNew, QuickJS `OP_call_constructor`): `Object` follows the argument rules below (clj-quickjs-280); `Number` and `String` construct wrappers (clj-quickjs-72, below); otherwise `F` must be an ordinary, non-generator, non-async function from a `function` declaration or expression; generators, async functions, concise methods, accessors, arrows and other non-constructors (a primitive, a non-constructor built-in such as `Object.is`, a collection, a plain object) throw a catchable TypeError `… is not a constructor` reported at `new`. A new ordinary object owned by the task inherits from `F.prototype` (the lazy prototype object, created on first use, whose `constructor` is `F`) or, when `F.prototype` is not an object, from `Object.prototype`; `F` runs in a new task-owned frame with it as `this` (so it may yield, wait on `__rt.need`, be collected around and migrate like any call). If `F` returns an object, that object is the result, otherwise the new object is (return override). `new F()()` calls the result; `new new F()()` constructs with it. `new` on a published (shared) function fails like reading its `prototype` |
 | `Object` and other built-in globals (clj-quickjs-117) | a name with no lexical binding that is a built-in global (`Object`; `Number` and `String`, clj-quickjs-73; `Function` and `Reflect`, clj-quickjs-102) is read from the task's global object (`get_global`); its initial value is the shared immutable intrinsic, the same object in every task. The binding can be replaced without changing the intrinsic. A `let`/`const`/parameter shadows it; script `var` reuses the property |
 | `Object(v)`, `Object()`, `new Object(v)`, `new Object` (clj-quickjs-117, clj-quickjs-280) | `undefined`, `null` or no argument: a fresh task-owned ordinary object inheriting from `Object.prototype`; an object (any heap value): `v` itself; a number, string, symbol, boolean or BigInt: its task-owned wrapper, using the corresponding intrinsic prototype (clj-quickjs-302). All arguments evaluate; only the first is used. No coercion callbacks run. Derived Object construction allocates from `new.target.prototype` and ignores argument values. `Object.length` is 1, `Object.prototype.constructor === Object` |
@@ -3550,8 +3550,8 @@ Sloppy non-object receiver substitution is still deferred.
 `Error(message, options)` and `new Error(message, options)` create distinct
 ordinary task-owned objects with an internal error marker and
 `Error.prototype` as prototype. Bound calls and bound construction use the
-same intrinsic prototype; subclass syntax and `Reflect.construct` are not
-supported. The global binding is a writable task-owned global-object property.
+same intrinsic prototype; subclasses use their derived prototype (-309).
+`Reflect.construct` remains deferred. The global binding is a writable task-owned global-object property.
 `Error.name` is `"Error"`, its length is 1, and
 `Error.prototype.constructor === Error`. The prototype inherits from
 `Object.prototype`, has name `"Error"` and message `""`, and is shared and
@@ -3701,7 +3701,7 @@ primitives. `Array.length` is 1 and `Array.name` is `"Array"`;
 configurable; intrinsic mutation still follows the shared-immutable rule.
 `Array.isArray` has length 1 and the usual method attributes.
 
-Explicit gaps: subclassing built-ins, other Proxy traps, species and the remaining array methods belong to later work.
+Built-in subclasses execute (-309). Explicit gaps: other Proxy traps, species and the remaining array methods belong to later work.
 
 ### NativeError constructors (clj-quickjs-229)
 
@@ -4112,7 +4112,7 @@ a fresh buffer without detaching, with negative indices relative to its length.
 Object indices convert left to right through resumable native frames.
 
 Explicit gaps: custom slice constructors/species fail explicitly; resizable
-buffers, SharedArrayBuffer and subclassing remain deferred. Integer typed-array
+buffers and SharedArrayBuffer remain deferred. Typed-array subclasses execute (-309). Integer typed-array
 views are supported below.
 Publication through atoms or dependency cells rejects buffers, including detached
 ones. Foreign tasks cannot read or mutate their state.
@@ -4248,7 +4248,7 @@ properties, but deletion and attribute restrictions fail. A nonempty view
 cannot be frozen (preventing extensions still succeeds).
 
 Explicit gaps: BigInt typed arrays, other typed-array methods, resizable
-buffers and subclass/species construction remain deferred. Source construction
+buffers and species construction remain deferred. Source construction
 and set/fill/join/toString are described under clj-quickjs-168 below.
 
 ### BigInt bitwise and shift operators (clj-quickjs-200)
@@ -4350,7 +4350,7 @@ quiet NaN representation. Loads widen exactly to Number. The backing bytes
 are little-endian; all existing exotic operations and detachment rules apply.
 
 Explicit gaps: `Math.f16round`, BigInt views, other typed-array methods,
-resizable buffers and subclass/species construction remain deferred. Source
+resizable buffers and species construction remain deferred. Source
 construction and set/fill/join/toString are described under clj-quickjs-168 below.
 
 ### RegExp object execution (clj-quickjs-188)
@@ -4466,7 +4466,7 @@ the same function object as `Array.prototype.toString`, including dynamic
 `this.join` lookup. Getters, iterator calls and conversions remain resumable;
 long element loops and string copying yield to the instruction budget.
 
-Explicit gaps: BigInt views, resizable/shared buffers, species/subclassing,
+Explicit gaps: BigInt views, resizable/shared buffers, species,
 and other typed-array methods (except `values`/`Symbol.iterator`, clj-quickjs-237) remain
 deferred. Allocation and iterable collection are bounded by the existing
 16 MiB backing-buffer limit per view; infinite iterables hit that limit.
@@ -4612,8 +4612,8 @@ fulfilled Promise adopted by `new Promise(r => r(inner))` adds two jobs before
 the outer reaction: the adoption call and the inner forwarding reaction.
 Thenable calls can yield, wait, migrate and survive collection like reactions.
 
-Rejected forms: construction of Promise subclasses retains
-explicit rejections. Explicit gaps: subclass capabilities,
+Promise subclasses construct with their derived prototype (-309).
+Explicit gaps: subclass capabilities,
 species, combinators, `finally` and arbitrary Promise own properties are
 deferred. Only the intrinsic Promise constructor is
 accepted as `this` for static resolve/reject.
@@ -5781,8 +5781,7 @@ Rejected forms: `super()` outside a derived constructor or its lexical arrows/di
 invalid parent prototypes throw TypeError at runtime. An implicit constructor
 for `extends null` throws TypeError when it tries to construct its parent.
 Static blocks execute (-292). Construction with the
-derived new target supports ordinary/class parents and `Object`; constructing
-other built-in subclasses is explicitly rejected with UnsupportedOperand.
+derived new target supports ordinary/class parents and built-in constructors (-309).
 
 ```js accept
 class A { constructor(a, b) { this.s = a + b; } }
@@ -6650,8 +6649,8 @@ Rejected forms: malformed parameter/body source, strict-mode restricted
 parameter names, strict directives with non-simple parameters, and `super`
 without a method context throw SyntaxError. Unsupported source forms retain
 the frontend's existing limits. Explicit gaps: GeneratorFunction and
-AsyncFunction constructors, Function.prototype.toString, and alternate
-new.target/subclass allocation remain deferred. Sloppy receiver substitution
+AsyncFunction constructors and Function.prototype.toString remain deferred.
+Function subclass allocation executes (-309). Sloppy receiver substitution
 retains the existing explicit UnsupportedOperand limit. Object argument
 conversion uses the shared OrdinaryToPrimitive path; general object
 Symbol.toPrimitive dispatch remains deferred to clj-quickjs-128.
@@ -6919,9 +6918,8 @@ Entry validation/getter and adder failures perform IteratorClose with the
 original exception preserved. GetIterator and IteratorStepValue errors do
 not close. Native state traces the target, cached method, iterator record,
 entry/key, and pending exception across budgets, waits and collection.
-There is no new entry-count cap. Shared realm prototype immutability and
-unsupported built-in subclass construction (-309) still apply; the shared
-consumer supports task-owned overridden adders when supplied such a target.
+There is no new entry-count cap. Shared realm prototype immutability still applies;
+built-in subclasses execute (-309), including task-owned overridden adders.
 
 ### Boolean constructor and Boolean/BigInt boxing (clj-quickjs-302)
 
@@ -6939,7 +6937,7 @@ JSON.stringify uses Boolean/BigInt wrapper internal data after toJSON, ignoring 
 conversion overrides: booleans serialize normally and BigInts throw TypeError.
 Wrappers have ordinary task-owned properties and cannot publish; immutable intrinsic
 objects remain shared. No new size cap: BigInt retains its 1 Mbit magnitude cap.
-Built-in subclassing and general Symbol.toPrimitive dispatch remain deferred separately.
+Built-in subclass construction executes (-309); general Symbol.toPrimitive dispatch remains deferred separately.
 Object.prototype.toString still rejects BigInt primitives/wrappers with UnsupportedOperand
 until general Symbol.toStringTag consumption is implemented.
 

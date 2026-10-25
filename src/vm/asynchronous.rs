@@ -122,7 +122,7 @@ pub(crate) fn await_value(heap: &Heap, vm: &mut VmState) -> Result<Flow, Fault> 
         });
     }
     let value = vm.pop()?;
-    super::native::await_promise(vm, super::promise::await_state(heap, value)?)?;
+    super::native::await_promise(vm, super::promise::await_state(heap, vm.diag.task, value)?)?;
     Ok(Flow::FrameChanged)
 }
 

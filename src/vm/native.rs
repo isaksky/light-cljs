@@ -228,6 +228,7 @@ mod array_mutate;
 mod array_search;
 mod array_sort;
 mod collator;
+mod construct;
 mod date_time_format;
 mod display_names;
 mod duration_format;
@@ -347,6 +348,11 @@ pub(crate) enum Action {
     Construct {
         callee: Value,
         args: Vec<Value>,
+    },
+    InitializeBuiltin {
+        which: builtin::Builtin,
+        args: Vec<Value>,
+        prototype: Option<ObjectId>,
     },
     /// Run the original instruction with its converted operands. This is
     /// one leaf instruction, never interpreter re-entry.
@@ -517,6 +523,7 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    BuiltinConstruct(Box<construct::State>),
     CopyProperties(copy_properties::State),
     Rest {
         values: Vec<Value>,
@@ -947,6 +954,7 @@ pub(crate) fn await_promise(
 impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match &self.state {
+            NativeState::BuiltinConstruct(constructor) => constructor.trace(visit),
             NativeState::CopyProperties(copy) => copy.trace(visit),
             NativeState::Rest { values, out, .. } => {
                 for value in values {
@@ -1498,6 +1506,11 @@ pub(crate) fn start_builtin(
             | Builtin::Boolean
             | Builtin::BooleanPrototypeToString
             | Builtin::BooleanPrototypeValueOf
+            | Builtin::NumberPrototypeValueOf
+            | Builtin::StringPrototypeValueOf
+            | Builtin::StringPrototypeToString
+            | Builtin::IntlNumberFormatGetFormat
+            | Builtin::IntlNumberFormatResolvedOptions
             | Builtin::ObjectSetPrototypeOf
             | Builtin::ObjectCreate
             | Builtin::ArraySpecies
@@ -1517,6 +1530,25 @@ pub(crate) fn start_builtin(
             | Builtin::WeakSetDelete
     ) {
         return Ok(false);
+    }
+    if matches!(
+        which,
+        Builtin::RegExp
+            | Builtin::RegExpExec
+            | Builtin::RegExpTest
+            | Builtin::RegExpToString
+            | Builtin::RegExpFlags
+    ) {
+        return start_regexp(heap, state, which, this, args, construct, popped);
+    }
+    if matches!(
+        which,
+        Builtin::IntlNumberFormat
+            | Builtin::IntlNumberFormatBound
+            | Builtin::IntlNumberFormatSupportedLocales
+    ) && (!construct || which == Builtin::IntlNumberFormat)
+    {
+        return start_number_format(heap, state, which, this, args, popped);
     }
     if !construct
         && matches!(
@@ -1735,6 +1767,224 @@ pub(crate) fn start_builtin(
         return start_typed_array_constructor(heap, state, kind, args, popped);
     }
     start_builtin_slow(heap, state, which, this, args, construct, popped)
+}
+
+pub(crate) fn start_builtin_constructor(
+    state: &mut VmState,
+    which: builtin::Builtin,
+    target: Value,
+    args: Vec<Value>,
+    popped: usize,
+) -> Result<(), Fault> {
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(
+        state,
+        NativeState::BuiltinConstruct(Box::new(construct::State::new(which, target, args))),
+    )
+}
+
+/// Enter the existing built-in implementation after prototype selection. In
+/// particular collections must inherit overridden set/add before consuming an
+/// iterable, and Promise must hold its final prototype before its executor.
+#[inline(never)]
+fn initialize_builtin(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    args: &[Value],
+    prototype: Option<ObjectId>,
+) -> Result<(), Fault> {
+    // Primitive conversions can walk user properties on 64 KiB workers.
+    // Keep unrelated collection/Promise construction storage off that stack.
+    if matches!(
+        which,
+        builtin::Builtin::Number | builtin::Builtin::String | builtin::Builtin::Boolean
+    ) {
+        if !start_builtin(heap, state, which, &Value::Undefined, args, true, 0)? {
+            let result = builtin::primitive_constructor(heap, state.diag.task, which, args, true)?;
+            state.push(result);
+        }
+        return Ok(());
+    }
+    initialize_builtin_slow(heap, state, which, args, prototype)
+}
+
+#[inline(never)]
+fn initialize_builtin_slow(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    args: &[Value],
+    prototype: Option<ObjectId>,
+) -> Result<(), Fault> {
+    use builtin::Builtin;
+    let task = state.diag.task;
+    let result = match which {
+        Builtin::RegExp => {
+            let native = regexp::start(heap, task, which, &Value::Undefined, args, true)?
+                .ok_or(Fault::Internal("RegExp constructor missing"))?;
+            return push_native(state, NativeState::RegExp(native));
+        }
+        Builtin::IntlLocale
+        | Builtin::IntlNumberFormat
+        | Builtin::IntlCollator
+        | Builtin::IntlDateTimeFormat
+        | Builtin::IntlPluralRules
+        | Builtin::IntlListFormat
+        | Builtin::IntlSegmenter
+        | Builtin::IntlRelativeTimeFormat
+        | Builtin::IntlDisplayNames
+        | Builtin::IntlDurationFormat => {
+            return initialize_intl_constructor(heap, state, which, args);
+        }
+        Builtin::Date | Builtin::ArrayBuffer => {
+            if !start_builtin_conversion(heap, state, which, &Value::Undefined, args, true, 0)? {
+                return Err(Fault::Internal("coercing constructor missing"));
+            }
+            return Ok(());
+        }
+        Builtin::Object => builtin::new_object(heap, task)?,
+        Builtin::Array => builtin::array_constructor(heap, task, args)?,
+        Builtin::Map | Builtin::WeakMap | Builtin::Set | Builtin::WeakSet => {
+            let result = match which {
+                Builtin::Map => builtin::map_constructor(heap, task)?,
+                Builtin::WeakMap => builtin::weak_map_constructor(heap, task)?,
+                Builtin::Set => builtin::set_constructor(heap, task)?,
+                Builtin::WeakSet => builtin::weak_set_constructor(heap, task)?,
+                _ => unreachable!(),
+            };
+            construct::initialize_prototype(
+                heap,
+                task,
+                &result,
+                prototype.ok_or(Fault::Internal("collection prototype missing"))?,
+            )?;
+            let items = args.first().cloned().unwrap_or(Value::Undefined);
+            return if matches!(which, Builtin::Set | Builtin::WeakSet) {
+                start_add_values(state, result, items, 0)
+            } else {
+                start_add_entries(state, result, items, 0)
+            };
+        }
+        Builtin::WeakRef => builtin::weak_ref_constructor(heap, state, args)?,
+        Builtin::FinalizationRegistry => {
+            builtin::finalization_registry_constructor(heap, state, args)?
+        }
+        Builtin::Promise => {
+            let native = super::promise::constructor(
+                heap,
+                task,
+                args,
+                prototype.ok_or(Fault::Internal("promise prototype missing"))?,
+            )?;
+            return push_native(state, NativeState::Promise(native));
+        }
+        _ => {
+            if start_builtin(heap, state, which, &Value::Undefined, args, true, 0)? {
+                // Error allocates on entry, before message/cause callbacks.
+                if let Some(proto) = prototype
+                    && let Some(NativeFrame {
+                        state: NativeState::Error(error::ErrorState::Constructor { object, .. }),
+                        ..
+                    }) = state.natives.last()
+                {
+                    construct::initialize_prototype(heap, task, object, proto)?;
+                }
+                return Ok(());
+            }
+            builtin::primitive_constructor(heap, task, which, args, true)?
+        }
+    };
+    state.push(result);
+    Ok(())
+}
+
+#[inline(never)]
+fn initialize_intl_constructor(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    args: &[Value],
+) -> Result<(), Fault> {
+    use builtin::Builtin;
+    let task = state.diag.task;
+    let this = &Value::Undefined;
+    let native = match which {
+        Builtin::IntlLocale => {
+            NativeState::Intl(box_constructor_state(|| intl::Intl::new(args, true))?)
+        }
+        Builtin::IntlNumberFormat => NativeState::NumberFormat(box_constructor_state(|| {
+            number_format::State::new(which, this, args, heap, task)
+        })?),
+        Builtin::IntlCollator => NativeState::Collator(box_constructor_state(|| {
+            collator::State::new(which, this, args, heap, task)
+        })?),
+        Builtin::IntlDateTimeFormat => NativeState::DateTimeFormat(box_constructor_state(|| {
+            date_time_format::State::new(which, this, args, heap, task)
+        })?),
+        Builtin::IntlPluralRules => NativeState::PluralRules(box_constructor_state(|| {
+            plural_rules::State::new(which, this, args, heap, task)
+        })?),
+        Builtin::IntlListFormat => NativeState::ListFormat(box_constructor_state(|| {
+            list_format::State::new(which, this, args, heap, task)
+        })?),
+        Builtin::IntlSegmenter => NativeState::Segmenter(box_constructor_state(|| {
+            segmenter::State::new(which, this, args, heap, task)
+        })?),
+        Builtin::IntlRelativeTimeFormat => {
+            NativeState::RelativeTimeFormat(box_constructor_state(|| {
+                relative_time_format::State::new(which, this, args, heap, task)
+            })?)
+        }
+        Builtin::IntlDisplayNames => NativeState::DisplayNames(box_constructor_state(|| {
+            display_names::State::new(which, this, args, heap, task)
+        })?),
+        Builtin::IntlDurationFormat => NativeState::DurationFormat(box_constructor_state(|| {
+            duration_format::State::new(which, this, args, heap, task)
+        })?),
+        _ => return Err(Fault::Internal("not an Intl constructor")),
+    };
+    push_native(state, native)
+}
+
+// Each constructor creates its temporary state on a separate stack frame.
+// Debug builds otherwise reserve all Intl state temporaries in the dispatcher.
+#[inline(never)]
+fn box_constructor_state<T>(make: impl FnOnce() -> Result<T, Fault>) -> Result<Box<T>, Fault> {
+    make().map(Box::new)
+}
+
+#[inline(never)]
+fn start_regexp(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    construct: bool,
+    popped: usize,
+) -> Result<bool, Fault> {
+    if let Some(native) = regexp::start(heap, state.diag.task, which, this, args, construct)? {
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, NativeState::RegExp(native))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+#[inline(never)]
+fn start_number_format(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    let native = number_format::State::new(which, this, args, heap, state.diag.task)?;
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::NumberFormat(Box::new(native)))?;
+    Ok(true)
 }
 
 #[inline(never)]
@@ -2215,29 +2465,12 @@ fn start_builtin_slow(
         push_native(state, NativeState::ListFormat(Box::new(native)))?;
         return Ok(true);
     }
-    if matches!(
-        which,
-        Builtin::IntlNumberFormat
-            | Builtin::IntlNumberFormatSupportedLocales
-            | Builtin::IntlNumberFormatBound
-    ) && (!construct || which == Builtin::IntlNumberFormat)
-    {
-        let native = number_format::State::new(which, this, args, heap, state.diag.task)?;
-        state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::NumberFormat(Box::new(native)))?;
-        return Ok(true);
-    }
     if (which == Builtin::IntlLocale && construct)
         || (which == Builtin::IntlGetCanonicalLocales && !construct)
     {
         let native = intl::Intl::new(args, construct)?;
         state.truncate_operands(state.stack_len() - popped)?;
         push_native(state, NativeState::Intl(Box::new(native)))?;
-        return Ok(true);
-    }
-    if let Some(native) = regexp::start(heap, state.diag.task, which, this, args, construct)? {
-        state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::RegExp(native))?;
         return Ok(true);
     }
     if !construct {
@@ -2351,6 +2584,20 @@ fn start_builtin_slow(
         push_native(state, NativeState::DefineProperty(desc))?;
         return Ok(true);
     }
+    start_builtin_conversion(heap, state, which, this, args, construct, popped)
+}
+
+#[inline(never)]
+fn start_builtin_conversion(
+    heap: &Heap,
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    construct: bool,
+    popped: usize,
+) -> Result<bool, Fault> {
+    use builtin::Builtin;
     let (target, operands, hint) = match which {
         Builtin::ArrayBuffer if construct => (
             ConvertTarget::ArrayBuffer(which),
@@ -2980,6 +3227,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::Instruction { .. }
             | Action::Call { .. }
             | Action::Construct { .. }
+            | Action::InitializeBuiltin { .. }
             | Action::ToNumber(_)
             | Action::ToPrimitiveNumber(_)
             | Action::DefaultLocale
@@ -3092,6 +3340,18 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     };
     state.pop_native_catch(native_index);
     state.truncate_operands(base)?;
+    // Constructor entry can start another conversion native. Do not retain
+    // apply_action's unrelated call/async temporaries on small worker stacks.
+    if let Action::InitializeBuiltin {
+        which,
+        args,
+        prototype,
+    } = action
+    {
+        set_awaiting(state, Awaiting::CallResult)?;
+        initialize_builtin(heap, state, which, &args, prototype)?;
+        return Ok(Flow::Next);
+    }
     apply_action(state, heap, host, action)
 }
 
@@ -3130,7 +3390,10 @@ fn apply_action(
             state.push_handler(super::exception::HandlerKind::NativeCatch {
                 native: state.natives.len() - 1,
             })?;
-            await_promise(state, super::promise::await_state(heap, value)?)?;
+            await_promise(
+                state,
+                super::promise::await_state(heap, state.diag.task, value)?,
+            )?;
             Ok(Flow::FrameChanged)
         }
         Action::ResumeAsync {
@@ -3311,6 +3574,9 @@ fn apply_action(
             state.push(callee);
             args.into_iter().for_each(|value| state.push(value));
             Ok(Flow::Resume(Instr::Construct(argc)))
+        }
+        Action::InitializeBuiltin { .. } => {
+            unreachable!("constructor entered before action dispatch")
         }
         Action::Continue => Ok(Flow::Next),
         Action::Need { dependency, kind } => {
@@ -3605,6 +3871,17 @@ impl NativeState {
         host: &mut dyn Host,
     ) -> Result<Action, Fault> {
         match self {
+            NativeState::BuiltinConstruct(constructor) => constructor.step(heap, task, input),
+            NativeState::RegExp(regexp) => regexp.step(heap, task, input),
+            NativeState::Intl(intl) => intl.step(heap, task, input),
+            NativeState::NumberFormat(format) => format.step(heap, task, input),
+            NativeState::PluralRules(rules) => rules.step(heap, task, input),
+            NativeState::RelativeTimeFormat(format) => format.step(heap, task, input),
+            NativeState::DisplayNames(names) => names.step(heap, task, input),
+            NativeState::Collator(collator) => collator.step(heap, task, input),
+            NativeState::DateTimeFormat(format) => format.step(heap, task, input, host),
+            NativeState::ListFormat(format) => format.step(heap, task, input),
+            NativeState::Segmenter(segmenter) => segmenter.step(heap, task, input),
             NativeState::Convert { .. } => self.step_conversion(heap, task, input, host),
             // Iterator protocol reads can descend through descriptor and
             // conversion helpers. Keep the unrelated native arms' stack
@@ -3659,6 +3936,7 @@ impl NativeState {
         host: &mut dyn Host,
     ) -> Result<Action, Fault> {
         match self {
+            NativeState::BuiltinConstruct(_) => unreachable!("constructor dispatched separately"),
             NativeState::Async(a) => a.step(heap, input),
             NativeState::CopyProperties(_) | NativeState::Rest { .. } => {
                 Err(Fault::Internal("copy native bypassed dispatch"))
@@ -3758,19 +4036,17 @@ impl NativeState {
             NativeState::ArrayMutate(_) => {
                 unreachable!("array mutator dispatched before other native arms")
             }
-            NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::Promise(_) => unreachable!("promise dispatched before other native arms"),
-            NativeState::NumberFormat(format) => format.step(heap, task, input),
-            NativeState::PluralRules(rules) => rules.step(heap, task, input),
-            NativeState::RelativeTimeFormat(format) => format.step(heap, task, input),
-            NativeState::DisplayNames(names) => names.step(heap, task, input),
-            NativeState::DurationFormat(_) => {
-                unreachable!("DurationFormat dispatched before other native arms")
-            }
-            NativeState::Collator(collator) => collator.step(heap, task, input),
-            NativeState::DateTimeFormat(format) => format.step(heap, task, input, host),
-            NativeState::ListFormat(format) => format.step(heap, task, input),
-            NativeState::Segmenter(segmenter) => segmenter.step(heap, task, input),
+            NativeState::Intl(_)
+            | NativeState::NumberFormat(_)
+            | NativeState::PluralRules(_)
+            | NativeState::RelativeTimeFormat(_)
+            | NativeState::DisplayNames(_)
+            | NativeState::DurationFormat(_)
+            | NativeState::Collator(_)
+            | NativeState::DateTimeFormat(_)
+            | NativeState::ListFormat(_)
+            | NativeState::Segmenter(_) => unreachable!("Intl dispatched before other native arms"),
             NativeState::StringRaw(raw) => {
                 if let Some(build) = raw.finish()? {
                     *self = NativeState::StringBuild(build);
@@ -3859,7 +4135,7 @@ impl NativeState {
                 }
             }
             NativeState::Error(error) => error.step(heap, task, input),
-            NativeState::RegExp(re) => re.step(heap, task, input),
+            NativeState::RegExp(_) => unreachable!("RegExp dispatched before other native arms"),
             NativeState::StringReplace(replace) => replace.step(heap, task, input),
             NativeState::Bind {
                 target,
@@ -5009,6 +5285,7 @@ impl NativeState {
             (NativeState::BigIntParse { .. } | NativeState::BigIntFormat(_), _) => Action::Unwind,
             (
                 NativeState::Eval(_)
+                | NativeState::BuiltinConstruct(_)
                 | NativeState::CopyProperties(_)
                 | NativeState::Rest { .. }
                 | NativeState::DynamicFunction(_)

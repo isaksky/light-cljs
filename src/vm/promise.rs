@@ -17,6 +17,7 @@ use crate::value::{JsString, Value, share};
 #[derive(Debug)]
 pub(crate) struct Promise {
     pub(crate) prototype: ObjectId,
+    pub(crate) owner: Option<TaskId>,
     result: Option<Settlement>,
     reactions: Vec<Registration>,
     is_handled: bool,
@@ -31,6 +32,7 @@ pub(crate) struct Promise {
 pub(crate) struct Resolving {
     promise: ObjectId,
     resolved: bool,
+    pub(crate) owner: Option<TaskId>,
 }
 impl Trace for Resolving {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
@@ -75,6 +77,45 @@ impl Trace for Promise {
     }
 }
 
+fn check_owner(owner: Option<TaskId>, task: TaskId) -> Result<(), Fault> {
+    if owner.is_some_and(|owner| owner != task) {
+        return Err(Fault::ForeignObject {
+            owner,
+            caller: task,
+        });
+    }
+    Ok(())
+}
+impl Promise {
+    pub(crate) fn check_owner(&self, task: TaskId) -> Result<(), Fault> {
+        check_owner(self.owner, task)
+    }
+}
+
+pub(crate) fn constructor(
+    heap: &Heap,
+    task: TaskId,
+    args: &[Value],
+    prototype: ObjectId,
+) -> Result<PromiseState, Fault> {
+    let executor = args.first().cloned().unwrap_or(Value::Undefined);
+    dispatch::callee(heap, &executor)?;
+    let intrinsic = crate::realm::intrinsics(heap)
+        .ok_or(Fault::OutOfMemory("realm exhausted"))?
+        .promise_prototype;
+    let owner = (prototype != intrinsic).then_some(task);
+    let promise = new_with_prototype(heap, prototype, owner)?;
+    let (guard, resolve, reject) = resolving_functions(heap, promise)?;
+    Ok(PromiseState::Constructor {
+        promise,
+        guard,
+        executor,
+        resolve,
+        reject,
+        called: false,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Reaction {
     source: ObjectId,
@@ -109,10 +150,18 @@ fn new(heap: &Heap) -> Result<ObjectId, Fault> {
     let prototype = crate::realm::intrinsics(heap)
         .ok_or(Fault::OutOfMemory("realm exhausted"))?
         .promise_prototype;
+    new_with_prototype(heap, prototype, None)
+}
+fn new_with_prototype(
+    heap: &Heap,
+    prototype: ObjectId,
+    owner: Option<TaskId>,
+) -> Result<ObjectId, Fault> {
     alloc(
         heap,
         HeapObject::Promise(Promise {
             prototype,
+            owner,
             result: None,
             reactions: vec![],
             is_handled: false,
@@ -151,28 +200,37 @@ fn function(heap: &Heap, which: Builtin) -> Result<Value, Fault> {
     )?))
 }
 fn resolving_functions(heap: &Heap, promise: ObjectId) -> Result<(ObjectId, Value, Value), Fault> {
+    let owner = heap
+        .read(promise, |o| match o {
+            HeapObject::Promise(p) => p.owner,
+            _ => None,
+        })
+        .ok_or(Fault::Internal("promise reclaimed"))?;
     let guard = alloc(
         heap,
         HeapObject::PromiseResolving(Resolving {
             promise,
             resolved: false,
+            owner,
         }),
     )?;
     let resolve = function(heap, Builtin::PromiseResolver(guard, false))?;
     let reject = function(heap, Builtin::PromiseResolver(guard, true))?;
     Ok((guard, resolve, reject))
 }
-fn claim(heap: &Heap, id: ObjectId) -> Result<Option<ObjectId>, Fault> {
-    claim_with_capacity(heap, id, true)
+fn claim(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<ObjectId>, Fault> {
+    claim_with_capacity(heap, task, id, true)
 }
 
 fn claim_with_capacity(
     heap: &Heap,
+    task: TaskId,
     id: ObjectId,
     capacity: bool,
 ) -> Result<Option<ObjectId>, Fault> {
     heap.with_object_mut(id, |o| match o {
         HeapObject::PromiseResolving(p) => {
+            check_owner(p.owner, task)?;
             if p.resolved {
                 return Ok(None);
             }
@@ -492,7 +550,7 @@ impl PromiseState {
                     return Err(Fault::Internal("missing TypeError result"));
                 };
                 if let Some(guard) = forwarding {
-                    if let Some(target) = claim(heap, *guard)? {
+                    if let Some(target) = claim(heap, task, *guard)? {
                         settle(heap, task, inbox, target, true, value)?;
                     }
                     // A resolver forwards the rejection and returns normally.
@@ -563,7 +621,7 @@ impl PromiseState {
                 value,
                 constructor,
             } => {
-                if guard.is_none() || claim(heap, guard.unwrap())?.is_some() {
+                if guard.is_none() || claim(heap, task, guard.unwrap())?.is_some() {
                     settle(heap, task, inbox, *promise, true, value.clone())?;
                 }
                 Ok(Action::Return(if *constructor {
@@ -763,22 +821,15 @@ pub(crate) fn start(
             PromiseState::Return(leaf(heap, task, inbox, which, this, args)?)
         }
         Builtin::Promise if construct => {
-            let executor = arg(0);
-            dispatch::callee(heap, &executor)?;
-            let promise = new(heap)?;
-            let (guard, resolve, reject) = resolving_functions(heap, promise)?;
-            PromiseState::Constructor {
-                promise,
-                guard,
-                executor,
-                resolve,
-                reject,
-                called: false,
-            }
+            let prototype = crate::realm::intrinsics(heap)
+                .ok_or(Fault::OutOfMemory("realm exhausted"))?
+                .promise_prototype;
+            constructor(heap, task, args, prototype)?
         }
         Builtin::Promise => return Err(Fault::TypeError("Promise requires new".into())),
         Builtin::PromiseResolver(guard, reject) if !construct => {
-            let Some(promise) = claim_with_capacity(heap, guard, reject || native_capacity)? else {
+            let Some(promise) = claim_with_capacity(heap, task, guard, reject || native_capacity)?
+            else {
                 return Ok(None);
             };
             if reject {
@@ -850,6 +901,11 @@ pub(crate) fn leaf(
         }
         Builtin::PromiseThen => {
             let source = receiver(heap, this)?;
+            heap.read(source, |o| match o {
+                HeapObject::Promise(p) => p.check_owner(task),
+                _ => Err(Fault::Internal("promise changed kind")),
+            })
+            .ok_or(Fault::Internal("promise reclaimed"))??;
             let derived = new(heap)?;
             let handler = |i| {
                 let value = arg(i);
@@ -889,8 +945,13 @@ pub(crate) fn capability(heap: &Heap) -> Result<(ObjectId, Value, Value), Fault>
 
 /// PromiseResolve with the intrinsic constructor; native promises take the
 /// identity path and their observable `then` property is never consulted.
-pub(crate) fn await_state(heap: &Heap, value: Value) -> Result<PromiseState, Fault> {
+pub(crate) fn await_state(heap: &Heap, task: TaskId, value: Value) -> Result<PromiseState, Fault> {
     if let Ok(promise) = receiver(heap, &value) {
+        heap.read(promise, |o| match o {
+            HeapObject::Promise(p) => p.check_owner(task),
+            _ => Err(Fault::Internal("promise changed kind")),
+        })
+        .ok_or(Fault::Internal("promise reclaimed"))??;
         return Ok(PromiseState::Await {
             promise,
             resolve: Value::Undefined,

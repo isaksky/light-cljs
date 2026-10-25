@@ -5156,7 +5156,7 @@ Object argument coercion runs through traced native conversion frames, allowing
 checks detachment after coercion (which can itself transfer the receiver).
 Slice rejects detachment before and after conversion; ordinary intrinsic slices
 copy bytes without detaching. Custom slice constructors/species fail explicitly;
-subclassing, resizable buffers and SharedArrayBuffer are deferred. Integer typed-array
+resizable buffers and SharedArrayBuffer are deferred; typed-array subclasses execute (-309). Integer typed-array
 views are supported below.
 The semantic reference is `research/quickjs/quickjs.c`, revision `7d1c13c5d8f8`,
 `js_array_buffer_constructor`, `js_array_buffer_get_byteLength`,
@@ -7757,8 +7757,8 @@ uninitialized cell stay traced. Default constructors use ForwardArguments to
 pack the original actual arguments directly, without invoking an iterator.
 Constructor return checks run after finally blocks: objects override the
 receiver, undefined requires an initialized receiver, and other primitives throw
-TypeError. Native built-in subclass allocation is rejected explicitly except
-for Object, whose derived receiver uses ordinary allocation. Runtime eval keeps
+TypeError. Native built-in subclass allocation selects the derived prototype
+through a traced native continuation (-309). Runtime eval keeps
 the existing scope/strictness model and reads the live receiver cell, but does
 not inherit super-call syntax context.
 
@@ -9017,3 +9017,34 @@ Existing parser, v set compilation and matcher budgets remain unchanged; no
 new work limit, heap object or resumable native is needed. Full-domain
 verification compares the installed Rust reader, aliases, complements and iu
 images with the reference and detects a corrupted Script bit separately.
+
+### Built-in construction with a derived prototype (clj-quickjs-309)
+
+The checked Construct dispatcher preserves `new.target` through super calls,
+transparent proxies and bound forwarding, then enters `native::construct::State`.
+That continuation retains the target, arguments, selected prototype and result.
+Its prototype read uses the ordinary resumable property instruction, including
+the supported Proxy protocol, and falls back to the constructor's own intrinsic
+prototype for nonobjects. No opcode or heap-kind discriminants change.
+
+Prototype selection precedes initialization for Array, Error, collections,
+Promise, RegExp, typed arrays and Intl constructors. Number/String, Date,
+ArrayBuffer and dynamic Function retain conversion/validation before prototype
+selection. Existing native constructors supply their exotic/internal-slot
+payloads; their fresh result's prototype is installed before returning to JS.
+Collections receive the selected prototype before obtaining `set`/`add`, Error
+before message/cause callbacks, and Promise before allocating resolving functions
+or invoking its executor. Object-derived allocation ignores super arguments.
+DisposableStack retains its existing allocation continuation; Proxy construction
+does not select an instance prototype.
+
+Intrinsic Promises and their guards remain explicit concurrent references.
+Derived Promise prototypes can point into mutable task-owned state, so such
+Promises and resolving guards carry their creating task and classify as task-owned
+at publication. Property/prototype reads, then, await and resolver invocation
+enforce that ownership. Promise subclass capability/species algorithms remain
+separate from instance construction. No new worker-selected limits are needed.
+
+The semantic reference is `research/quickjs/quickjs.c` at 7d1c13c5d8f8,
+`JS_CreateFromConstructor`, `js_array_constructor` and `js_error_constructor`;
+this is a fresh implementation over traced task-owned native continuations.

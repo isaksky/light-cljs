@@ -61,9 +61,8 @@ impl ErrorState {
         kind: Option<NativeErrorKind>,
         stack: JsString,
     ) -> Result<Self, Fault> {
-        // NewTarget is the intrinsic (or a bound target, resolved by Construct).
-        // Reflect.construct and subclass syntax are not supported yet. The
-        // intrinsic's fixed prototype is used in both call modes.
+        // Calls use the intrinsic prototype; Construct installs its selected
+        // new.target prototype before this continuation runs any callbacks.
         let intrinsics = crate::realm::intrinsics(heap)
             .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
         let proto = match kind {

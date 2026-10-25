@@ -1096,6 +1096,25 @@ pub(crate) fn inheritance_prototype(
     function_prototype(heap).map(Some)
 }
 
+/// Install [[Prototype]] on a freshly compiled Function constructor result.
+pub(crate) fn initialize_constructor_prototype(
+    heap: &Heap,
+    task: TaskId,
+    function: ObjectId,
+    prototype: ObjectId,
+) -> Result<(), Fault> {
+    if inheritance_prototype(heap, function)? == Some(prototype) {
+        return Ok(());
+    }
+    let record = define_target(
+        heap,
+        task,
+        function,
+        &Key::Name(JsString::from("prototype")),
+    )?;
+    super::prototype::set_prototype_of(heap, task, record, Some(prototype))
+}
+
 /// Storage of a mutable captured binding. See the module docs.
 #[derive(Debug)]
 pub(crate) struct BindingCell {

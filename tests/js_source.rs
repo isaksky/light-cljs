@@ -1133,10 +1133,17 @@ fn derived_classes_enumerate_inherited_statics() {
     }
 }
 
-/// Native allocation beyond Object remains an explicit scoped gap.
+/// Synthetic fixture, not light-cljs output: native subclasses allocate with
+/// the derived prototype (clj-quickjs-309).
 #[test]
-fn derived_classes_builtin_parent_gaps() {
-    for parent in ["Array", "Error", "Date", "Promise", "Intl.Segmenter"] {
+fn derived_classes_builtin_parents() {
+    for (parent, args) in [
+        ("Array", ""),
+        ("Error", ""),
+        ("Date", "0"),
+        ("Promise", "() => {}"),
+        ("Intl.Segmenter", "'en'"),
+    ] {
         assert_eq!(
             eval(&format!(
                 "class D extends {parent} {{}} Object.getPrototypeOf(D) === {parent} && Object.getPrototypeOf(D.prototype) === {parent}.prototype"
@@ -1144,8 +1151,10 @@ fn derived_classes_builtin_parent_gaps() {
             ValueView::Bool(true)
         );
         assert_eq!(
-            failure(&format!("class D extends {parent} {{}} new D();")).kind(),
-            VmErrorKind::UnsupportedOperand
+            eval(&format!(
+                "class D extends {parent} {{}} let d = new D({args}); d instanceof D && d instanceof {parent}"
+            )),
+            ValueView::Bool(true)
         );
     }
 }
@@ -29703,7 +29712,7 @@ fn array_copy_bound_constructor_hop_limit() {
 #[test]
 fn class_heritage_recognizes_intl_constructors() {
     // Synthetic fixtures, not light-cljs output. Heritage validation checks
-    // constructor identity without instantiating unsupported built-in subclasses.
+    // constructor identity independently of built-in instance allocation.
     for name in ["DisplayNames", "DurationFormat"] {
         let source = format!(
             "class C extends Intl.{name} {{}} Object.getPrototypeOf(C) === Intl.{name} && Object.getPrototypeOf(C.prototype) === Intl.{name}.prototype"

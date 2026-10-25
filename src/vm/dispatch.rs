@@ -831,17 +831,9 @@ fn construct_target(
         }
         f = bound.callee;
     }
-    // Built-in allocation paths do not yet accept an alternate new.target.
-    // Object's derived allocation is ordinary and ignores arguments by spec.
+    // Preserve the original new.target through super and bound forwarding.
     if super_call && !is_constructor(heap, &f, max_hops)? {
         return Err(not_a_constructor(state, &f, f.type_name()));
-    }
-    if super_call
-        && matches!(callee(heap, &f)?, Callee::Builtin(which) if !matches!(which, Builtin::Object | Builtin::DisposableStack | Builtin::AsyncDisposableStack))
-    {
-        return Err(Fault::Unsupported(
-            "subclass construction of this built-in is not supported".into(),
-        ));
     }
     let (id, code) = match callee(heap, &f) {
         Ok(Callee::Builtin(Builtin::Proxy)) => {
@@ -859,99 +851,14 @@ fn construct_target(
             super::native::start_disposable_stack_constructor(state, new_target, argc + 1, kind)?;
             return Ok(Flow::Next);
         }
-        Ok(Callee::Builtin(Builtin::Object)) if super_call => {
-            let object = allocate_receiver(heap, task, &new_target)?;
-            state.replace(argc + 1, object)?;
-            return Ok(Flow::Next);
-        }
-        Ok(Callee::Builtin(Builtin::Object)) => {
+        Ok(Callee::Builtin(Builtin::Object)) if new_target.same_object(&f) => {
             let result = builtin::object_constructor(heap, task, &args)?;
             state.replace(argc + 1, result)?;
             return Ok(Flow::Next);
         }
-        Ok(Callee::Builtin(Builtin::Date)) => {
-            if !super::native::start_builtin(
-                heap,
-                state,
-                Builtin::Date,
-                &Value::Undefined,
-                &args,
-                true,
-                argc + 1,
-            )? {
-                return Err(Fault::Internal("Date constructor requires a native frame"));
-            }
-            return Ok(Flow::Next);
-        }
         Ok(Callee::Code(id, code)) if code.constructor_kind.is_constructor() => (id, code),
-        Ok(Callee::Builtin(
-            which @ (Builtin::Map | Builtin::WeakMap | Builtin::Set | Builtin::WeakSet),
-        )) => {
-            let result = match which {
-                Builtin::Map => builtin::map_constructor(heap, task)?,
-                Builtin::WeakMap => builtin::weak_map_constructor(heap, task)?,
-                Builtin::Set => builtin::set_constructor(heap, task)?,
-                Builtin::WeakSet => builtin::weak_set_constructor(heap, task)?,
-                _ => unreachable!(),
-            };
-            let items = args.first().cloned().unwrap_or(Value::Undefined);
-            if matches!(which, Builtin::Set | Builtin::WeakSet) {
-                super::native::start_add_values(state, result, items, argc + 1)?;
-            } else {
-                super::native::start_add_entries(state, result, items, argc + 1)?;
-            }
-            return Ok(Flow::Next);
-        }
-        Ok(Callee::Builtin(Builtin::WeakRef)) => {
-            let result = builtin::weak_ref_constructor(heap, state, &args)?;
-            state.replace(argc + 1, result)?;
-            return Ok(Flow::Next);
-        }
-        Ok(Callee::Builtin(Builtin::FinalizationRegistry)) => {
-            let result = builtin::finalization_registry_constructor(heap, state, &args)?;
-            state.replace(argc + 1, result)?;
-            return Ok(Flow::Next);
-        }
-        Ok(Callee::Builtin(Builtin::Array)) => {
-            let result = builtin::array_constructor(heap, task, &args)?;
-            state.replace(argc + 1, result)?;
-            return Ok(Flow::Next);
-        }
-        Ok(Callee::Builtin(
-            which @ (Builtin::Boolean
-            | Builtin::Number
-            | Builtin::Function
-            | Builtin::String
-            | Builtin::Error
-            | Builtin::NativeError(_)
-            | Builtin::ArrayBuffer
-            | Builtin::IntlLocale
-            | Builtin::IntegerTypedArray(_)
-            | Builtin::RegExp
-            | Builtin::Promise
-            | Builtin::IntlNumberFormat
-            | Builtin::IntlPluralRules
-            | Builtin::IntlRelativeTimeFormat
-            | Builtin::IntlDisplayNames
-            | Builtin::IntlDurationFormat
-            | Builtin::IntlCollator
-            | Builtin::IntlDateTimeFormat
-            | Builtin::IntlListFormat
-            | Builtin::IntlSegmenter),
-        )) => {
-            if super::native::start_builtin(
-                heap,
-                state,
-                which,
-                &Value::Undefined,
-                &args,
-                true,
-                argc + 1,
-            )? {
-                return Ok(Flow::Next);
-            }
-            let result = builtin::primitive_constructor(heap, task, which, &args, true)?;
-            state.replace(argc + 1, result)?;
+        Ok(Callee::Builtin(which)) if is_constructor(heap, &f, max_hops)? => {
+            super::native::start_builtin_constructor(state, which, new_target, args, argc + 1)?;
             return Ok(Flow::Next);
         }
         Ok(_) => return Err(not_a_constructor(state, &f, "function")),

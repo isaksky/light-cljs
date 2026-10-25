@@ -731,7 +731,9 @@ fn lookup(
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     Ok(Lookup::Function)
                 }
-                Visit::Other(HeapObject::Promise(p)) => Ok(Lookup::Next(Some(p.prototype))),
+                Visit::Other(HeapObject::Promise(p)) => p
+                    .check_owner(task)
+                    .map(|()| Lookup::Next(Some(p.prototype))),
                 Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
                     Some(fault) => Err(fault),
                     None => Ok(Lookup::Next(None)),
@@ -1362,7 +1364,9 @@ fn check_inherited(
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     Ok(Walk::Function)
                 }
-                Visit::Other(HeapObject::Promise(p)) => Ok(Walk::Next(Some(p.prototype))),
+                Visit::Other(HeapObject::Promise(p)) => {
+                    p.check_owner(task).map(|()| Walk::Next(Some(p.prototype)))
+                }
                 // Another kind as a prototype: one without JavaScript
                 // properties ends the walk.
                 Visit::Other(other) => match not_ordinary(other, key, Access::Read) {

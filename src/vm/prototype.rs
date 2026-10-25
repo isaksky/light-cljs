@@ -100,7 +100,7 @@ pub(crate) fn get_prototype_of(
         .read(id, |object| match object {
             HeapObject::ModuleNamespace(ns) => ns.check_owner(task).map(|()| Some(None)),
             HeapObject::Plain(o) => readable(o, task).map(|()| Some(o.prototype())),
-            HeapObject::Promise(p) => Ok(Some(Some(p.prototype))),
+            HeapObject::Promise(p) => p.check_owner(task).map(|()| Some(Some(p.prototype))),
             HeapObject::Generator(g) => {
                 readable(&g.object, task).map(|()| Some(g.object.prototype()))
             }

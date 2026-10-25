@@ -2625,7 +2625,7 @@ as a dependency failure, is rejected as task-owned mutation.
 Tests: `cargo test --test js_source error_` and
 `cargo test --test exceptions uncaught_error_objects_report_name_and_message`.
 Engine-raised errors also use these instances (clj-quickjs-230); subclasses
-and `Reflect.construct` remain deferred.
+construct with their derived prototype (-309). `Reflect.construct` remains deferred.
 
 ### String splitting (clj-quickjs-157)
 
@@ -2671,7 +2671,7 @@ non-number element, or multiple elements. Large lengths allocate no holes.
 `Array.isArray` recognizes arrays and `Array.prototype`, and rejects
 persistent vectors and ordinary objects. Constructor/prototype links and
 standard property attributes are exposed. Results are task-owned like literals.
-Deferred: subclassing built-ins, other Proxy traps, species and remaining array methods.
+Built-in subclasses execute (-309). Deferred: other Proxy traps, species and remaining array methods.
 
 Verify: `cargo test --test js_source array_constructor_and_is_array`.
 
@@ -3012,7 +3012,7 @@ round-half-to-even clamping. The shared `%TypedArray%` prototype provides
 prototypes expose fixed `BYTES_PER_ELEMENT`. Detached views have zero length
 and undefined elements. Allocation uses ArrayBuffer's fallible 16 MiB bound.
 
-Deferred: BigInt views, resizable buffers, species/subclassing and other
+Deferred: BigInt views, resizable buffers, species and other
 typed-array methods. Source construction and set/fill/join/toString are
 described under clj-quickjs-168 below.
 
@@ -3146,7 +3146,7 @@ changes during indexed reads; explicit iterator overrides are honored.
 Element loops are budgeted; backing buffers and iterable lists use the existing
 16 MiB buffer limit. Validation: `cargo test --test js_source typed_array_`.
 
-Deferred: BigInt views, resizable/shared buffers, species/subclassing and
+Deferred: BigInt views, resizable/shared buffers, species and
 other typed-array methods (except `values`/`Symbol.iterator`, clj-quickjs-237).
 
 ### Synchronous iteration (clj-quickjs-237)
@@ -3850,8 +3850,8 @@ Derived classes and `super()` execute (-137), including static/prototype
 inheritance, receiver initialization checks, default argument forwarding and
 suspension inside parent constructors. The shared `new.target` binding preserves
 the most derived prototype and is available in constructors, lexical arrows and
-direct eval before and after `super()`. Parent classes/functions and `Object` are supported;
-construction of other built-in subclasses is explicitly rejected. Verify with
+direct eval before and after `super()`. Parent classes/functions and built-in
+constructors are supported (-309). Verify with
 `cargo test --test js_source derived_classes` and
 `cargo test --test need derived_constructor_waits_inside_super`.
 
@@ -3950,7 +3950,7 @@ yields, dependency waits, collection and worker migration.
 
 Verify with `CARGO_BUILD_JOBS=3 cargo test --test js_functions -- --test-threads=3`
 and `CARGO_BUILD_JOBS=3 cargo test --lib frontend:: -- --test-threads=3`.
-`Reflect.construct` and built-in subclassing remain deferred. Lexical `super`
+`Reflect.construct` remains deferred. Built-in subclass construction executes (-309). Lexical `super`
 through arrows and direct eval is supported (-112).
 
 ### Static module loading (clj-quickjs-252)
@@ -4223,7 +4223,7 @@ boundaries are checked independently, with catchable SyntaxErrors. Runtime
 compilation shares eval's 16,384-unit source cap (including the generated
 wrapper) and 2 MiB compiler stack; coercion callbacks and generated calls may
 wait, yield, survive GC and migrate between workers. GeneratorFunction,
-AsyncFunction, Function.prototype.toString and subclass allocation are deferred.
+AsyncFunction and Function.prototype.toString are deferred. Function subclasses execute (-309).
 
 Verify with `cargo test --test js_functions function_constructor`.
 
@@ -4237,7 +4237,7 @@ They are synthetic fixtures, not light-cljs output. Each case runs
 independently with bounded instruction slices and collection between slices.
 
 This adds fixture coverage for existing behavior. Private names execute (-291). Class static
-blocks, subclassing built-ins other than Object, generator `return()/throw()`
+blocks, generator `return()/throw()`
 and shared-object `Symbol.toPrimitive` dispatch remain outside this coverage.
 
 Verify with
@@ -4339,7 +4339,7 @@ repeat/search predicates (-300) and match/matchAll/search with RegExp symbol
 dispatch (-301), the plain RegExp `i` flag
 (-303), Script property escapes (-304), v-flag string properties (-305),
 NumberFormat unit style (-306), DateTimeFormat timeZoneName (-307),
-built-in subclassing (-309), `Symbol.toPrimitive`
+`Symbol.toPrimitive`
 dispatch, which today silently yields NaN (-310), `Object.prototype.toString`
 tags (-311), eval SyntaxError stacks (-312), async generators (-313), `??` and
 logical assignment (-314), rest parameters/object spread/destructuring loop
@@ -4505,7 +4505,7 @@ be captured in publishable closures; receivers and class methods keep their
 existing task-owned publication restrictions. Adding private state to shared
 intrinsics, published functions, or runtime persistent/concurrent values is
 rejected with TypeError, as is reading another task's private receiver. Built-in
-subclassing remains separate work; static blocks execute (-292).
+subclass construction executes (-309); static blocks execute (-292).
 
 ### Class static initialization blocks (clj-quickjs-292)
 
@@ -4600,9 +4600,8 @@ exception wins over errors or primitive results from `return()`.
 Each entry and callback runs through budgeted native steps, retaining traced
 state across dependency waits, collection, and worker migration. No additional
 entry-count limit is imposed; existing heap, stack and collection limits apply.
-Realm prototypes remain shared and immutable, and built-in subclasses remain
-outside this slice (-309). Custom adder lookup/calls are covered by VM tests
-using task-owned targets; constructor source tests preserve that boundary.
+Realm prototypes remain shared and immutable. Built-in subclasses execute (-309),
+including custom adder lookup/calls on task-owned derived prototypes.
 Tests: `cargo test --test map_iterables`,
 `cargo test --test need map_iterable_`,
 and `cargo test --lib vm::native::add_entries::tests`.
@@ -4632,7 +4631,7 @@ clear, enumeration or iterator API. Both collection types and Set iterators
 are task-owned and rejected at publication boundaries. Freezing or preventing
 extensions affects ordinary properties, while membership remains mutable.
 Realm prototypes follow Map's immutable intrinsic policy. Built-in subclass
-construction and ES2025 Set algebra methods remain deferred.
+construction executes (-309); ES2025 Set algebra methods remain deferred.
 
 Run the synthetic fixtures with
 `cargo test --test sets --test map_iterables -- --test-threads=3`.
@@ -4654,7 +4653,7 @@ survive collection/waits/migration, and cannot be published across tasks. Intrin
 retain the shared immutable realm policy. BigInt payloads share immutable limb storage
 without heap edges and sit behind a pointer to keep every ordinary object compact
 on small VM workers. No new size limit is imposed; the existing 1 Mbit BigInt cap applies.
-Built-in subclassing and general Symbol.toPrimitive dispatch remain separate work.
+Built-in subclass construction executes (-309); general Symbol.toPrimitive dispatch remains separate work.
 Object.prototype.toString on BigInt primitives/wrappers retains the explicit
 UnsupportedOperand gap for Symbol.toStringTag consumption.
 
@@ -4676,3 +4675,31 @@ Tables use shared sorted inclusive ranges with no runtime decoding, new native
 continuation or GC edges. Existing parse, set compilation and matching work
 limits apply; this feature adds no work allowance or worker-chosen limit.
 Check: `CARGO_BUILD_JOBS=3 cargo test --test js_source regexp_script_property_escapes -- --exact --test-threads=3`.
+
+### Built-in subclass construction (clj-quickjs-309)
+
+`class X extends Builtin` constructs branded instances with `X.prototype` for
+Array, Error and NativeErrors, Map/WeakMap/Set/WeakSet, Promise, RegExp, Date,
+Boolean/Number/String, Function, ArrayBuffer, supported typed arrays, WeakRef,
+FinalizationRegistry, DisposableStack/AsyncDisposableStack and Intl constructors.
+Default and explicit `super(...)`, bound argument forwarding, inherited methods,
+and further derived classes preserve the most derived prototype. Arrays retain
+their exotic length/index behavior and errors retain message, cause, name and stack.
+Collection constructors call the derived prototype's observable `set`/`add`.
+
+Prototype selection follows GetPrototypeFromConstructor, using the matching
+intrinsic when `new.target.prototype` is not an object. Constructor arguments,
+selected prototype and result stay traced across budget yields, callback waits,
+collection and worker migration. No new size or recursion limit is introduced;
+the existing native-frame, stack, heap and individual built-in limits apply.
+Realm prototypes remain immutable; derived prototypes are ordinary task-owned
+objects. Promises with derived prototypes and their resolving functions are also
+task-owned and cannot publish mutable prototype edges across tasks. Intrinsic
+Promises retain their concurrent sharing behavior.
+
+Symbol and BigInt remain nonconstructible. Proxy has no `prototype` for class
+heritage, and transparent constructor proxies retain `new.target` identity under
+the supported Proxy trap subset. `Reflect.construct`, Promise subclass
+capabilities/species, and existing method-specific species gaps remain deferred.
+
+Validation: `CARGO_BUILD_JOBS=3 cargo test --test builtin_subclasses -- --test-threads=3`.
