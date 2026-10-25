@@ -3419,7 +3419,8 @@ mod tests {
         // Ten RegExp/String protocol built-ins and one iterator prototype (-301).
         // The remaining Math methods add 27 intrinsics (-319).
         // Date's Symbol.toPrimitive adds one built-in (-310).
-        assert_eq!(first.all.len(), 471);
+        // NumberFormat formatToParts adds one built-in (-306).
+        assert_eq!(first.all.len(), 472);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
