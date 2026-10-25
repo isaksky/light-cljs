@@ -76,6 +76,9 @@ const native = (() => {
 })();
 globalThis.__lightNativeRuntime=native;
 globalThis.__lightRegisterUnit=name=>{if(!(name in globalThis.__lightCompilerRoots))Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:()=>{throw new Error("unsupported operation: helper not preloaded: "+name);}});return null;};
+// Declaration bundles advertise their products without demanding their code.
+// Keep preloaded roots and the same explicit unsupported-demand getters as units.
+globalThis.__lightRegisterBundle=names=>{for(const name of names)globalThis.__lightRegisterUnit(name);return null;};
 globalThis.__lightEnterCompilerFrontier=()=>null;
 globalThis.__lightLeaveCompilerFrontier=()=>null;
 globalThis.__lightCompilerRoots={};

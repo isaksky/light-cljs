@@ -161,6 +161,34 @@ fn constructs_real_macro_form() {
 }
 
 #[test]
+fn variadic_and_multi_arity_macros_forward_the_receiver() {
+    for (source, expected) in [
+        (
+            "(defmacro maximum [& xs] `(js/Math.max ~@xs)) (js/console.log (maximum 1 2) (maximum 40 2 42))",
+            "2 42\n",
+        ),
+        (
+            "(defmacro choose ([] 1) ([x] x) ([x y & more] `(js/Math.max ~x ~y ~@more))) (js/console.log (choose) (choose 2) (choose 1 2) (choose 1 2 3))",
+            "1 2 2 3\n",
+        ),
+        (
+            "(defmacro choose ([] 1) ([x] x)) (js/console.log (choose) (choose 2))",
+            "1 2\n",
+        ),
+        (
+            "(defmacro signatures [pname & sigs] `(defprotocol ~pname ~@sigs)) (signatures Sample (value [this])) (deftype Example [] Sample (value [this] 42)) (js/console.log (satisfies? Sample (Example.)) (value (Example.)))",
+            "true 42\n",
+        ),
+    ] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+            .unwrap_or_else(|error| panic!("{source}: {error}"));
+        assert_eq!(program_output(&emit_js(&program)), expected, "{source}");
+    }
+}
+
+#[test]
 fn metadata_environment_form_and_syntax_quote() {
     for (source, want) in [
         (
@@ -433,8 +461,38 @@ fn native_environment_updates_changed_slots_without_importing_the_namespace_agai
 }
 
 #[test]
+fn declaration_bundle_registration_preserves_preloaded_roots_and_rejects_demand() {
+    use light_cljs::{
+        bbp_evaluator::BbpEvaluator,
+        evaluator::{EvaluatorOptions, MacroEvaluator},
+    };
+    let evaluator = BbpEvaluator::new(EvaluatorOptions::default()).unwrap();
+    let result = evaluator.evaluate_unit(r#"rt => {
+        const roots = globalThis.__lightCompilerRoots;
+        roots['fixture/ready'] = 42;
+        let ran = false;
+        const code = () => { ran = true; throw new Error('must stay deferred'); };
+        __lightRegisterBundle(['fixture/ready', 'fixture/P', 'fixture/method'], code, [], 'fixture:1:1', false, false, 7);
+        __lightRegisterBundle(['fixture/P'], code, [], 'fixture:2:1', true, false, 8);
+        __lightRegisterBundle([], code, [['fixture/P', null, 'fixture/Type']], 'fixture:3:1', false, false, 9);
+        if (ran || roots['fixture/ready'] !== 42) throw new Error('registration changed preloaded state');
+        for (const name of ['fixture/P', 'fixture/method']) {
+            let message = '';
+            try { roots[name]; } catch (error) { message = String(error); }
+            if (!message.includes('unsupported operation: helper not preloaded: ' + name)) throw new Error('missing demand diagnostic: ' + name);
+        }
+        return null;
+    }"#).unwrap();
+    evaluator.release(result).unwrap();
+}
+
+#[test]
 fn unsupported_operations_are_explicit_and_do_not_fall_back() {
     for (source, expected) in [
+        (
+            "(defprotocol Sample (value [this])) (defmacro demand [] Sample) (demand)",
+            "helper not preloaded: cljs.user/Sample",
+        ),
         (
             "(defn absent [x] x) (defmacro use-helper [x] (absent x)) (use-helper 1)",
             "helper not preloaded: cljs.user/absent",
@@ -631,6 +689,53 @@ fn equal_scalar_occurrences_keep_their_distinct_source_identity() {
 #[path = "support/temp_dir.rs"]
 #[allow(dead_code)]
 mod temp_dir;
+
+#[test]
+fn reduced_project_namespaces_expand_variadic_macros() {
+    use light_cljs::analyzer::ExprKind;
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("benchmarks/project-results/native-2026-10-25");
+    for (entry, directory) in [
+        ("app.common.math", "reduced-penpot"),
+        ("workload.fonam", "reduced-generated"),
+    ] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let program = light_cljs::compiler::analyze_namespace_entry(
+            entry,
+            &[fixtures.join(directory)],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let js = emit_js(&program);
+        if entry == "app.common.math" {
+            assert_eq!(program_output(&format!("console.log({js});")), "2\n");
+        } else {
+            let protocols = program
+                .exprs
+                .iter()
+                .filter_map(|expr| match &expr.kind {
+                    ExprKind::DefProtocol {
+                        global, methods, ..
+                    } => Some((global, methods)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(protocols.len(), 1);
+            let (global, methods) = protocols[0];
+            assert_eq!(program.globals[global.0].namespace, "workload.fonam");
+            assert_eq!(program.globals[global.0].name, "Bagrir");
+            assert_eq!(methods.len(), 1);
+            assert_eq!(methods[0].key, "workload.fonam/Bagrir/mamjalsko");
+            assert_eq!(program.globals[methods[0].global.0].name, "mamjalsko");
+            assert_eq!(methods[0].arities, [1]);
+            assert_eq!(methods[0].variadic, None);
+            assert_eq!(program_output(&js), "");
+        }
+    }
+}
 
 #[test]
 fn namespace_stats_report_bridge_work_for_each_native_call() {

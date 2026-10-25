@@ -2554,8 +2554,7 @@ fn call_apply_and_reflect_apply() {
         failure("__rt.reduce(Function.prototype.call, 0, __rt.vector(1));").kind(),
         VmErrorKind::TypeError
     );
-    // A sloppy callee's `this` substitution (global object, wrappers) is a
-    // documented gap: the explicit failure of `this` in sloppy code.
+    // Sloppy primitive receiver boxing remains an explicit subset boundary.
     let sloppy = compile_script_with(
         "sloppy",
         "function s() { return this; } s.call(7);",
@@ -2601,6 +2600,47 @@ fn call_apply_and_reflect_apply() {
         ValueView::Number(820.0 + 550_000.0 + 1_500_000_000.0)
     );
     assert!(yields > 50, "only {yields} yields");
+}
+
+/// Synthetic receiver cases, including the call/apply forwarding used by
+/// emitted variadic and multi-arity functions. Collection between slices
+/// exercises the lazy global object's task root and captured receivers.
+#[test]
+fn sloppy_nullish_receivers_use_the_task_global_object() {
+    for source in [
+        "function f() { return this; } f() === globalThis && f.call(undefined) === globalThis && f.call(null) === globalThis",
+        "function f() { return this; } f.apply(undefined, []) === globalThis && Reflect.apply(f, null, []) === globalThis && f.bind(undefined)() === globalThis",
+        "function f() { return this; } const o = {}; f.call(o) === o && f.apply(o, []) === o && f.bind(o)() === o",
+        "function f() { 'use strict'; return this; } f() === undefined && f.call(undefined) === undefined && f.call(null) === null && f.call(7) === 7",
+        "function f() { return () => this; } const arrow = f(); arrow.call({}) === globalThis && f.call(null)() === globalThis",
+        "function f() { return eval('this'); } f() === globalThis && f.call(null) === globalThis && f.call({x: 7}).x === 7",
+        "function f() { return eval('\"use strict\"; this'); } f() === globalThis",
+        "function f() { return eval('() => this'); } f()() === globalThis && f.call(null).call({}) === globalThis",
+        "function f() { 'use strict'; return eval('this'); } f() === undefined && f.call(null) === null",
+        "Function('return this')() === globalThis && Function('return () => this')()() === globalThis",
+        "function entry() { return this; } function dispatch() { return entry.apply(this, arguments); } dispatch() === globalThis && dispatch.call(null) === globalThis",
+        "function entry(x, rest) { return this.marker + x + rest.length; } function dispatch() { return entry.call(this, arguments[0], Array.prototype.slice.call(arguments, 1)); } globalThis.marker = 10; dispatch(20, 30, 40) === 32 && dispatch.call({marker: 11}, 20, 30) === 32",
+        "function f() { return this; } const first = f(); globalThis = {}; first === f() && first !== globalThis",
+    ] {
+        let code = compile_script_with("sloppy-receiver", source, ScriptOptions::SLOPPY).unwrap();
+        let rt = Runtime::new();
+        let task = rt.spawn(&code, &[]).unwrap();
+        loop {
+            match task
+                .run_with(Budget::instructions(3), &mut PlusThousand::default())
+                .unwrap()
+            {
+                RunOutcome::Yielded => {
+                    rt.collect().unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+                    break;
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+    }
 }
 
 /// `apply` and `Reflect.apply` with a `null` list or an array-like whose

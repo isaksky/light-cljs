@@ -113,15 +113,17 @@ error diagnostics/stacks retain source locations. Accepted syntax can still
 raise a catchable unsupported-API error at execution (for example Proxy traps,
 JSON revivers/replacers and unsupported Intl options).
 
-Sloppy receiver substitution/boxing is absent: a sloppy call that needs `this`
-requires an object receiver; an omitted/nullish/primitive receiver fails with
-UnsupportedOperand rather than substituting the global object or boxing it.
+Sloppy calls substitute the task's global object for omitted or nullish
+receivers, including lexical arrows and direct eval. Object receivers retain
+their identity. Primitive receiver boxing is absent: reading `this` with a
+primitive receiver fails with UnsupportedOperand.
 Strict functions retain their supplied receiver unchanged. `arguments` is always
 an unmapped copy, even in sloppy functions: parameter writes and indexed argument
 writes do not alias each other. These are deliberate subset boundaries, not full
 sloppy-mode semantics. Implementation: `src/vm/dispatch.rs::checked_this` and
 `new_arguments`; evidence: `tests/js_functions.rs::call_apply_and_reflect_apply`
-and `arguments_object_holds_every_argument`.
+and `sloppy_nullish_receivers_use_the_task_global_object`, plus
+`arguments_object_holds_every_argument`.
 
 Lookbehind patterns parse into RegExp IR but are rejected during RegExp creation
 (including literal execution) with a catchable SyntaxError. Only positive and

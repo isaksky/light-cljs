@@ -14436,14 +14436,12 @@ fn object_literal_methods_in_sloppy_scripts() {
             .constructor_kind
             .is_constructor()
     );
-    // Global-object substitution is explicitly unsupported (clj-quickjs-104).
     for source in [source, "({m() { return this; }}).m.call(undefined)"] {
-        let exe = compile_script_with("sloppy-method", source, ScriptOptions::SLOPPY).unwrap();
-        let RunOutcome::Failed(error) = run(&exe, &[]) else {
-            panic!("sloppy this substitution must fail: {source}")
-        };
-        assert_eq!(error.kind(), VmErrorKind::UnsupportedOperand, "{source}");
-        assert!(error.message().contains("sloppy-mode"), "{error}");
+        assert_eq!(
+            sloppy_eval(&format!("{source} === globalThis")),
+            ValueView::Bool(true),
+            "{source}"
+        );
     }
     for source in [
         "({m() { return 010; }}).m() === 8",
@@ -14632,9 +14630,8 @@ fn method_calls_bind_this() {
     let ops = opcodes(&script.function(0).unwrap());
     assert!(ops.contains(&Opcode::GetThis), "{ops:?}");
 
-    // Sloppy code: an object receiver is `this` as is; an `undefined` one
-    // would be replaced by the global object (clj-quickjs-104), so it fails
-    // explicitly instead of giving a wrong value.
+    // Sloppy code preserves object receivers and substitutes the global
+    // object for an undefined receiver.
     let sloppy = |src: &str| {
         let exe = compile_script_with("sloppy", src, ScriptOptions::SLOPPY)
             .unwrap_or_else(|e| panic!("{e}"));
@@ -14644,11 +14641,8 @@ fn method_calls_bind_this() {
         RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true)),
         other => panic!("{other:?}"),
     }
-    match sloppy("function g() { return this; } g()") {
-        RunOutcome::Failed(e) => {
-            assert_eq!(e.kind(), VmErrorKind::UnsupportedOperand, "{e}");
-            assert!(e.message().contains("sloppy-mode"), "{e}");
-        }
+    match sloppy("function g() { return this; } g() === globalThis") {
+        RunOutcome::Complete(v) => assert_eq!(v.view(), ValueView::Bool(true)),
         other => panic!("{other:?}"),
     }
     // A strict function in a sloppy script sees `undefined`.

@@ -128,7 +128,7 @@
 //! | `SetComputedName` | 0x87 | u16 name | key function → key function | set a fresh closure's name from a converted key and constant prefix (`""`, `"get "`, `"set "`); no heap allocation |
 //! | `CheckDirectEval` | 0x88 | – | callee → callee | reject intrinsic parameter eval; ordinary source eval calls use scope descriptors |
 //! | `GetRawThis` | 0x91 | – | → this | transport a receiver for a potential direct eval without evaluating it |
-//! | `CheckSloppyThis` | 0x92 | – | this → this | enforce deferred sloppy receiver substitution gap at an actual eval this read |
+//! | `CheckSloppyThis` | 0x92 | – | this → this | substitute a nullish sloppy receiver, or reject primitive boxing, at an actual eval this read |
 //! | `DeclareGlobalLet` | 0x89 | u16 name | cell → cell | register a script lexical binding in the task environment |
 //! | `DeclareGlobalConst` | 0x8A | u16 name | cell → cell | register an immutable script lexical binding |
 //! | `InitGlobalLexical` | 0x8B | u16 name | value → – | initialize a registered script lexical cell |

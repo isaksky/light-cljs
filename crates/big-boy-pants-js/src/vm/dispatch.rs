@@ -967,19 +967,27 @@ pub(super) fn global_object(state: &mut VmState, heap: &Heap) -> Result<Value, F
     Ok(Value::Object(id))
 }
 
-/// The receiver of an ordinary function. Sloppy non-object substitution
-/// remains explicitly unsupported; script `this` uses `GetGlobalObject`.
-fn this_value(state: &VmState) -> Result<Value, Fault> {
+/// The receiver of an ordinary function. Nullish sloppy receivers use the
+/// task's rooted global object; primitive boxing remains unsupported.
+fn this_value(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
     let frame = state.top();
-    checked_this(&frame.this, frame.code.strict)
+    let value = frame.this.clone();
+    let strict = frame.code.strict;
+    checked_this(state, heap, &value, strict)
 }
 
-fn checked_this(value: &Value, strict: bool) -> Result<Value, Fault> {
+fn checked_this(
+    state: &mut VmState,
+    heap: &Heap,
+    value: &Value,
+    strict: bool,
+) -> Result<Value, Fault> {
     match value {
         this @ Value::Object(_) => Ok(this.clone()),
         this if strict => Ok(this.clone()),
+        Value::Undefined | Value::Null => global_object(state, heap),
         this => Err(Fault::Unsupported(format!(
-            "`this` of sloppy-mode code called with {} as its receiver is not supported (it needs the global object or a primitive wrapper)",
+            "`this` of sloppy-mode code called with {} as its receiver is not supported (it needs a primitive wrapper)",
             describe(this)
         ))),
     }
@@ -2863,7 +2871,7 @@ fn step_instruction(
         }
         Instr::Construct(argc) => return construct(state, heap, argc),
         Instr::GetThis => {
-            let this = this_value(state)?;
+            let this = this_value(state, heap)?;
             state.push(this);
         }
         Instr::GetRawThis => state.push(state.top().this.clone()),
@@ -2871,8 +2879,11 @@ fn step_instruction(
             let value = state
                 .operands()
                 .last()
-                .ok_or(Fault::Internal("missing eval receiver"))?;
-            checked_this(value, false)?;
+                .ok_or(Fault::Internal("missing eval receiver"))?
+                .clone();
+            let this = checked_this(state, heap, &value, false)?;
+            state.pop()?;
+            state.push(this);
         }
         Instr::CheckDirectEval => return check_direct_eval(state, heap),
         Instr::GetGlobalObject
@@ -3138,7 +3149,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         Instr::Call(_) | Instr::CallMethod(_) | Instr::Return | Instr::CallFinally
         | Instr::Construct(_) | Instr::CallSpread | Instr::CallMethodSpread | Instr::ConstructSpread => true,
         // Builds the realm on first use (`crate::realm`).
-        Instr::GetBuiltinGlobal(_) | Instr::GetGlobalObject | Instr::GetGlobal(_)
+        Instr::GetThis | Instr::CheckSloppyThis
+        | Instr::GetBuiltinGlobal(_) | Instr::GetGlobalObject | Instr::GetGlobal(_)
         | Instr::GetGlobalOrUndefined(_) | Instr::PutGlobal(_) | Instr::PutGlobalStrict(_)
         | Instr::DeclareGlobalVar(_) | Instr::DeclareGlobalFunction(_) | Instr::DeclareGlobalLet(_) | Instr::DeclareGlobalConst(_) | Instr::InitGlobalLexical(_) | Instr::CheckGlobalVar(_) | Instr::CheckGlobalFunction(_) | Instr::DeleteGlobal(_) | Instr::DeclareGlobalConstValue(_) | Instr::CheckGlobalLexicalConflict(_) => true,
         // On a function object these may allocate its property record and
@@ -3187,7 +3199,6 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::FormOp(_) => true,
         Instr::Const(_)
         | Instr::Undefined
-        | Instr::GetThis
         | Instr::GetLocal(_)
         | Instr::SetLocal(_)
         | Instr::Pop
@@ -3247,7 +3258,6 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::CheckSpreadArguments
         | Instr::CheckDirectEval
         | Instr::GetRawThis
-        | Instr::CheckSloppyThis
         // Copy or convert operands only (clj-quickjs-76).
         | Instr::Dup2 | Instr::Dup3
         | Instr::ToPropertyKey

@@ -76,10 +76,14 @@ or the engine's explicit `__rt.formValue` intrinsic to inspect them. Core operat
 runtime report their operation name and never fall back to another engine.
 
 The compiler's existing Rust core macro implementations supply the bootstrap.
-Core macros that need the larger JavaScript bootstrap are unsupported. Simple
-syntax quote/unquote works; lazy sequences, sets, user protocols/types, compiler
-literals, dynamic reader services, compiler build services and generated-symbol
-services are not implemented. Native symbol/keyword component spellings must
+Core macros that need the larger JavaScript bootstrap are unsupported. Variadic
+and multi-arity source macros work, including syntax quote/unquote and splicing.
+Macros can emit protocol/type declarations for the application; declaration
+registration retains preloaded helpers and reports unsupported demand for any
+other product. Executing user protocols/types inside a macro remains unsupported.
+Lazy sequences, sets, compiler literals, dynamic reader services, compiler build
+services and generated-symbol services are not implemented. Native
+symbol/keyword component spellings must
 round-trip unambiguously, as described in the engine's native form contract.
 JavaScript dynamic compilation currently limits each emitted unit to 16,384 UTF-16
 code units. Engine syntax/operation errors are reported with the macro's call and
