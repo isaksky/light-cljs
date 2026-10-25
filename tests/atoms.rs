@@ -229,6 +229,43 @@ fn cas_compares_identity_and_same_value_never_structure() {
 }
 
 #[test]
+fn bigint_compare_and_swap() {
+    let rt = Runtime::new();
+    let bigint = |digits: &str| {
+        let n = clj_quickjs::JsBigInt::from_digits(digits.trim_start_matches('-'), 10).unwrap();
+        rt.root(Primitive::BigInt(if digits.starts_with('-') {
+            n.negated()
+        } else {
+            n
+        }))
+    };
+    for digits in [
+        "0",
+        "1",
+        "-1",
+        "18446744073709551617",
+        "-18446744073709551617",
+    ] {
+        let initial = bigint(digits);
+        let atom = rt.new_atom(&initial).unwrap();
+        let new = rt.root(Primitive::Null);
+        for wrong in [bigint("2"), rt.root(num(1.0))] {
+            let current = conflict(rt.atom_compare_and_set(&atom, &wrong, &new));
+            assert_eq!(current.bigint().unwrap(), initial.bigint().unwrap());
+            assert_eq!(
+                rt.atom_load(&atom).unwrap().bigint().unwrap(),
+                initial.bigint().unwrap()
+            );
+        }
+        // Reparse so equal large integers have independent limb allocations.
+        swapped(rt.atom_compare_and_set(&atom, &bigint(digits), &new));
+        assert_eq!(rt.atom_load(&atom).unwrap().view(), ValueView::Null);
+    }
+    let zero = rt.new_atom(&bigint("0")).unwrap();
+    swapped(rt.atom_compare_and_set(&zero, &bigint("-0"), &bigint("1")));
+}
+
+#[test]
 fn a_loaded_old_value_survives_replacement_and_collection_until_released() {
     let rt = Runtime::new();
     // The old value is a small graph: a vector holding a vector.

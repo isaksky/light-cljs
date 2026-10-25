@@ -150,6 +150,7 @@ pub(crate) fn same_value(a: &Value, b: &Value) -> bool {
         (Value::Symbol(x), Value::Symbol(y)) => x == y,
         // Strings have no identity: SameValue compares their code units.
         (Value::String(x), Value::String(y)) => x == y,
+        (Value::BigInt(x), Value::BigInt(y)) => x == y,
         (Value::Undefined, Value::Undefined) | (Value::Null, Value::Null) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         _ => false,
@@ -660,6 +661,35 @@ mod tests {
         let s = |t: &str| Value::String(crate::value::JsString::from(t));
         assert!(same_value(&s("ab"), &s("ab")));
         assert!(!same_value(&s("ab"), &s("b")));
+        // Independently constructed BigInts compare by normalized value,
+        // including large limb bodies and canonical zero.
+        let bigint = |digits: &str| {
+            let n =
+                crate::value::JsBigInt::from_digits(digits.trim_start_matches('-'), 10).unwrap();
+            Value::BigInt(if digits.starts_with('-') {
+                n.negated()
+            } else {
+                n
+            })
+        };
+        for digits in [
+            "0",
+            "1",
+            "-1",
+            "18446744073709551617",
+            "-18446744073709551617",
+        ] {
+            assert!(same_value(&bigint(digits), &bigint(digits)), "{digits}");
+        }
+        assert!(same_value(&bigint("0"), &bigint("-0")));
+        assert!(!same_value(&bigint("1"), &bigint("2")));
+        assert!(!same_value(
+            &bigint("18446744073709551617"),
+            &bigint("18446744073709551618")
+        ));
+        assert!(!same_value(&bigint("1"), &bigint("-1")));
+        assert!(!same_value(&bigint("1"), &n(1.0)));
+        assert!(!same_value(&n(1.0), &bigint("1")));
     }
 
     #[test]

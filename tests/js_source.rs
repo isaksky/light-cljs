@@ -3480,6 +3480,28 @@ fn rope_strings_are_content_keys_and_publishable() {
 
 /// Synthetic fixtures, not light-cljs output.
 #[test]
+fn bigint_same_value_consumers() {
+    for src in [
+        "Object.is(1n, 1n)",
+        "Object.is(0n, -0n) && Object.is(-1n, -1n)",
+        "Object.is(18446744073709551617n, 0x10000000000000001n) && Object.is(-18446744073709551617n, -0x10000000000000001n)",
+        "!Object.is(1n, 2n) && !Object.is(1n, -1n) && !Object.is(1n, 1) && !Object.is(1, 1n) && !Object.is(0n, 0)",
+        "!Object.is(18446744073709551617n, 18446744073709551618n) && !Object.is(18446744073709551617n, -18446744073709551617n)",
+        "let o = {}; Object.defineProperty(o, 'x', {value: 1n}); Object.defineProperty(o, 'x', {value: 1n}) === o && o.x === 1n",
+        "let o = {}; Object.defineProperty(o, 'x', {value: 18446744073709551617n}); Object.defineProperty(o, 'x', {value: 0x10000000000000001n}) === o && o.x === 18446744073709551617n",
+        "let o = Object.freeze({x: -18446744073709551617n}); Object.defineProperty(o, 'x', {value: -0x10000000000000001n}) === o",
+        "let o = {}; Object.defineProperty(o, 'x', {value: 0n}); Object.defineProperty(o, 'x', {value: -0n}) === o",
+        "let o = {}; Object.defineProperty(o, 'x', {value: 1n}); let errors = 0; for (let value of [2n, -1n, 1]) { try { Object.defineProperty(o, 'x', {value}); } catch (e) { if (e instanceof TypeError) errors++; } } errors === 3 && o.x === 1n",
+        "let m = new Map(); m.set(18446744073709551617n, 'a'); m.set(0x10000000000000001n, 'b'); m.set(1n, 'bigint'); m.set(1, 'number'); m.size === 3 && m.get(18446744073709551617n) === 'b' && m.get(1n) === 'bigint' && m.get(1) === 'number' && !m.has(-18446744073709551617n)",
+        "let m = new Map(); m.set(0n, 'a'); m.set(-0n, 'b'); m.set(-18446744073709551617n, 'negative'); m.size === 2 && m.get(0n) === 'b' && m.has(-18446744073709551617n) && !m.has(18446744073709551617n) && !m.has(0)",
+        "18446744073709551617n === 0x10000000000000001n && -1n !== 1n && 1n !== 1 && 0n === -0n",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+/// Synthetic fixtures, not light-cljs output.
+#[test]
 fn bigint_literals_and_strict_equality() {
     for src in [
         "515377520732011331036461129765621272702107522001n === 515377520732011331036461129765621272702107522001n",

@@ -2836,6 +2836,13 @@ invalid strings are unequal and unordered. Strict equality keeps numeric types
 distinct. Validation: `cargo test --test js_source bigint_ -- --test-threads=3`
 and `cargo test --lib value::bigint:: -- --test-threads=3`.
 
+BigInt SameValue comparisons (clj-quickjs-281) also use exact integer value,
+including independently allocated limb bodies and canonical zero, while keeping
+BigInts distinct from Numbers. This covers `Object.is`, atom compare-and-set,
+and equal-value redefinitions of fixed properties and module namespace exports.
+Validation: `cargo test --test atoms bigint_compare_and_swap` and
+`cargo test --test js_modules bigint_namespace_definitions_use_same_value`.
+
 ### Intl locale data (clj-quickjs-209)
 
 Supported: the global ordinary `Intl` namespace, its `Symbol.toStringTag`

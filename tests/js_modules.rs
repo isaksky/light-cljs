@@ -1834,6 +1834,23 @@ fn namespace_definitions_use_same_value() {
 }
 
 #[test]
+fn bigint_namespace_definitions_use_same_value() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; Object.defineProperty(m, 'small', {value: 1n}); Object.defineProperty(m, 'large', {value: 0x10000000000000001n}); Object.defineProperty(m, 'negative', {value: -0x10000000000000001n}); Object.defineProperty(m, 'zero', {value: -0n}); let errors = 0; for (let value of [18446744073709551618n, -18446744073709551617n, 18446744073709551617]) { try { Object.defineProperty(m, 'large', {value}); } catch (e) { if (e instanceof TypeError) errors++; } } __rt.effect(0, errors === 3 && m.small === 1n && m.large === 18446744073709551617n && m.negative === -18446744073709551617n && m.zero === 0n);",
+            ),
+            (
+                "m.js",
+                "export let small = 1n, large = 18446744073709551617n, negative = -18446744073709551617n, zero = 0n;",
+            ),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
 fn namespace_escaped_reexport_names() {
     assert_effects(
         &[
