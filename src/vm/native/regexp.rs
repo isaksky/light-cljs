@@ -21,6 +21,8 @@ pub(super) enum State {
         identity: bool,
         branded: bool,
         is_regexp: bool,
+        new_target: Option<Value>,
+        prototype: Option<crate::heap::ObjectId>,
         stage: u8,
     },
     Exec {
@@ -52,11 +54,19 @@ impl Trace for State {
                 pattern,
                 flags,
                 original,
+                new_target,
+                prototype,
                 ..
             } => {
                 pattern.trace(visit);
                 flags.trace(visit);
                 original.trace(visit);
+                if let Some(target) = new_target {
+                    target.trace(visit);
+                }
+                if let Some(id) = prototype {
+                    visit((*id).into());
+                }
             }
             Self::Exec { this, input, .. } | Self::Test { this, input, .. } => {
                 this.trace(visit);
@@ -97,6 +107,8 @@ pub(super) fn start(
                 identity,
                 branded,
                 is_regexp: false,
+                new_target: None,
+                prototype: None,
                 stage: 10,
             }
         }
@@ -164,6 +176,12 @@ fn require_object(this: &Value) -> Result<(), Fault> {
         Err(Fault::TypeError("RegExp method requires an object".into()))
     }
 }
+fn get(this: &Value, name: &str) -> Action {
+    Action::Instruction {
+        instr: crate::vm::instr::Instr::GetElem,
+        operands: vec![this.clone(), Value::String(name.into())],
+    }
+}
 fn read(
     heap: &Heap,
     task: TaskId,
@@ -188,6 +206,13 @@ fn string(v: Value) -> Result<JsString, Fault> {
     }
 }
 impl State {
+    pub(super) fn set_new_target(&mut self, target: Value) {
+        let Self::Constructor { new_target, .. } = self else {
+            unreachable!("newTarget belongs to the RegExp constructor");
+        };
+        *new_target = Some(target);
+    }
+
     pub(super) fn step(
         &mut self,
         heap: &Heap,
@@ -207,6 +232,8 @@ impl State {
                 identity,
                 branded,
                 is_regexp,
+                new_target,
+                prototype,
                 stage,
             } => loop {
                 match *stage {
@@ -265,12 +292,7 @@ impl State {
                             }
                             continue;
                         }
-                        *stage = 2;
-                        if matches!(pattern, Value::Undefined) {
-                            v = Value::String(JsString::from(""));
-                        } else {
-                            return Ok(Action::ToString(pattern.clone()));
-                        }
+                        *stage = 15;
                     }
                     2 => {
                         *pattern = v;
@@ -285,7 +307,13 @@ impl State {
                         let source = string(pattern.clone())?;
                         let flags = string(v)?;
                         let c = object::compile(&source, &flags).map_err(|e| e.fault())?;
-                        return object::allocate(heap, task, c).map(Action::Return);
+                        let result = object::allocate(heap, task, c)?;
+                        if let Some(prototype) = prototype {
+                            super::construct::initialize_prototype(
+                                heap, task, &result, *prototype,
+                            )?;
+                        }
+                        return Ok(Action::Return(result));
                     }
                     12 => {
                         *pattern = v;
@@ -300,7 +328,28 @@ impl State {
                         }
                     }
                     13 => {
-                        *flags = v;
+                        *flags = std::mem::replace(&mut v, Value::Undefined);
+                        *stage = 15;
+                    }
+                    15 => {
+                        // RegExpAlloc follows IsRegExp/source/flags reads and
+                        // precedes RegExpInitialize's string conversions.
+                        *stage = 16;
+                        if let Some(target) = new_target {
+                            return Ok(get(target, "prototype"));
+                        }
+                    }
+                    16 => {
+                        if new_target.is_some() {
+                            *prototype = Some(match v {
+                                Value::Object(id) => id,
+                                _ => {
+                                    crate::realm::intrinsics(heap)
+                                        .ok_or(Fault::OutOfMemory("RegExp realm"))?
+                                        .regexp_prototype
+                                }
+                            });
+                        }
                         *stage = 14;
                         if matches!(pattern, Value::Undefined) {
                             v = Value::String("".into());

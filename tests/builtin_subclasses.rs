@@ -301,6 +301,84 @@ fn typed_array_primitive_length_precedes_prototype_lookup() {
 }
 
 #[test]
+fn regexp_new_target_protocol_order_and_waits() {
+    let source = "let log = ''; let B = RegExp.bind(null); Object.defineProperty(B,'prototype',{get(){log += 'p'; return RegExp.prototype;}}); let pattern = {get [Symbol.match](){log += 'm'; return true;}, get source(){log += 's'; return 'a';}, get flags(){log += 'f'; return 'g';}}; Reflect.construct(RegExp,[pattern],B); log";
+    let runtime = Runtime::new();
+    let code = compile_script("regexp-order.js", source).unwrap();
+    let task = runtime.spawn(&code, &[]).unwrap();
+    let RunOutcome::Complete(value) = task.run().unwrap() else {
+        panic!("RegExp construction failed");
+    };
+    assert_eq!(value.string().unwrap().to_string(), "msfp");
+
+    // Present Proxy get traps are outside the supported surface. Forwarding
+    // proxies and an ownKeys trap called by a getter still record the order.
+    check(
+        "let log = ''; let proto = Object.create(RegExp.prototype); let B = RegExp.bind(null); Object.defineProperty(B,'prototype',{get(){log += 'p'; return proto;}}); let pattern = {get [Symbol.match](){log += 'm'; return true;}, get constructor(){throw 99;}, get source(){log += 's'; return {toString(){log += 'x'; return 'a';}};}, get flags(){log += 'f'; proto = Object.create(RegExp.prototype); return {toString(){log += 'y'; return 'g';}};}}; let r = Reflect.construct(RegExp,[pattern],B); log === 'msfpxy' && Object.getPrototypeOf(r) === proto && r.source === 'a' && r.flags === 'g'",
+    );
+    check(
+        "let log = ''; let B = RegExp.bind(null); Object.defineProperty(B,'prototype',{get(){log += 'p'; return RegExp.prototype;}}); let N = new Proxy(B,{}); let probe = new Proxy({}, {ownKeys(){log += 'k'; return [];}}); let pattern = new Proxy({get [Symbol.match](){log += 'm'; Reflect.ownKeys(probe); return true;}, get source(){log += 's'; return 'a';}, get flags(){log += 'f'; return 'g';}},{}); let r = Reflect.construct(RegExp,[pattern],N); log === 'mksfp' && r.source === 'a' && r.flags === 'g'",
+    );
+    check(
+        "let log = ''; let B = RegExp.bind(null); Object.defineProperty(B,'prototype',{get(){log += 'p'; return null;}}); let pattern = {get [Symbol.match](){log += 'm'; return true;}, get source(){log += 's'; return 'a';}, get flags(){throw 99;}}; let r = Reflect.construct(RegExp,[pattern,{toString(){log += 'y'; return 'i';}}],B); log === 'mspy' && Object.getPrototypeOf(r) === RegExp.prototype && r.flags === 'i'",
+    );
+    check(
+        "let log = ''; let B = RegExp.bind(null); Object.defineProperty(B,'prototype',{get(){log += 'p'; return RegExp.prototype;}}); let pattern = {get [Symbol.match](){log += 'm'; return false;}, get source(){throw 99;}, get flags(){throw 99;}, toString(){log += 'x'; return 'a';}}; Reflect.construct(RegExp,[pattern],B); log === 'mpx'",
+    );
+    check(
+        "let log = ''; let B = RegExp.bind(null); Object.defineProperty(B,'prototype',{get(){log += 'p'; return RegExp.prototype;}}); let pattern = /a/g; Object.defineProperty(pattern,Symbol.match,{get(){log += 'm'; return false;}}); Object.defineProperty(pattern,'source',{get(){throw 99;}}); Object.defineProperty(pattern,'flags',{get(){throw 99;}}); let r = Reflect.construct(RegExp,[pattern],B); log === 'mp' && r !== pattern && r.source === 'a' && r.flags === 'g'",
+    );
+    check(
+        "let ok = true; for (let stop of ['m','s','f','p','x','y']) {let log = ''; function hit(s){log += s; if(s === stop) throw stop;} let B = RegExp.bind(null); Object.defineProperty(B,'prototype',{get(){hit('p'); return RegExp.prototype;}}); let pattern = {get [Symbol.match](){hit('m'); return true;}, get source(){hit('s'); return {toString(){hit('x'); return 'a';}};}, get flags(){hit('f'); return {toString(){hit('y'); return 'g';}};}}; let caught; try {Reflect.construct(RegExp,[pattern],B);} catch(e){caught = e;} ok = ok && caught === stop && log === 'msfpxy'.slice(0,'msfpxy'.indexOf(stop)+1);} ok",
+    );
+    check(
+        "let log = ''; let B = RegExp.bind(null); Object.defineProperty(B,'prototype',{get(){log += 'p'; throw 17;}}); let caught; try {Reflect.construct(RegExp,['['],B);} catch(e){caught = e;} caught === 17 && log === 'p'",
+    );
+    // Calling RegExp still observes constructor before source/flags, and keeps
+    // the identity fast path. Constructing it must never read constructor.
+    check(
+        "let log = ''; let pattern = new Proxy({get [Symbol.match](){log += 'm'; return true;}, get constructor(){log += 'c'; return RegExp;}, get source(){throw 99;}},{}); RegExp(pattern) === pattern && log === 'mc'",
+    );
+    check(
+        "let log = ''; let pattern = {get [Symbol.match](){log += 'm'; return true;}, get constructor(){log += 'c'; return null;}, get source(){log += 's'; return 'a';}, get flags(){log += 'f'; return 'g';}}; let r = RegExp(pattern); log === 'mcsf' && r.source === 'a' && r.flags === 'g'",
+    );
+
+    let source = "let log = ''; function hit(s,n){log += s; __rt.need(327,n);} let B = RegExp.bind(null); Object.defineProperty(B,'prototype',{get(){hit('p',4); let proto = Object.create(RegExp.prototype); proto.tag = 7; return proto;}}); let pattern = {get [Symbol.match](){hit('m',1); return true;}, get constructor(){throw 99;}, get source(){hit('s',2); return {toString(){hit('x',5); return 'a';}};}, get flags(){hit('f',3); return {toString(){hit('y',6); return 'g';}};}}; let r = Reflect.construct(RegExp,[pattern],B); log === 'msfpxy' && r.tag === 7 && r.source === 'a' && r.flags === 'g'";
+    let runtime = Runtime::new();
+    let code = compile_script("regexp-order-wait.js", source).unwrap();
+    let mut task = runtime.spawn(&code, &[]).unwrap();
+    for _ in 0..6 {
+        let (resumed, outcome) = std::thread::spawn(move || {
+            let outcome = task.run().unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = resumed;
+        assert!(matches!(outcome, RunOutcome::Waiting(_)));
+        runtime.collect().unwrap();
+        let mut requests = task.take_producer_requests();
+        assert_eq!(requests.len(), 1);
+        let request = requests.pop().unwrap();
+        let ready = runtime.root(clj_quickjs::Primitive::Undefined);
+        let mut runnable = runtime
+            .complete(
+                request.key(),
+                request.producer(),
+                clj_quickjs::Completion::Ready(&ready),
+            )
+            .unwrap()
+            .into_runnable();
+        assert_eq!(runnable.len(), 1);
+        task = runnable.pop().unwrap();
+    }
+    let result = std::thread::spawn(move || task.run().unwrap())
+        .join()
+        .unwrap();
+    assert!(matches!(result, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)));
+}
+
+#[test]
 fn new_target_prototype_getter_resumes_once_and_propagates_errors() {
     check(
         "let n = 0; let B = Array.bind(null); Object.defineProperty(B,'prototype',{get(){n++; throw 17;}}); let C = new Proxy(B,{}); let caught; try {new C(1,2);} catch(e){caught = e;} caught === 17 && n === 1",

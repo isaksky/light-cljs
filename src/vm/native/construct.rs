@@ -27,6 +27,7 @@ pub(super) struct State {
     result: Value,
     stage: Stage,
     late: bool,
+    regexp: Option<Box<super::regexp::State>>,
 }
 
 #[derive(Debug)]
@@ -52,6 +53,9 @@ impl Trace for State {
             visit(id.into());
         }
         self.result.trace(visit);
+        if let Some(regexp) = &self.regexp {
+            regexp.trace(visit);
+        }
     }
 }
 
@@ -78,6 +82,7 @@ impl State {
             result: Value::Undefined,
             stage: Stage::Start,
             late,
+            regexp: None,
         }
     }
 
@@ -104,8 +109,33 @@ impl State {
         task: TaskId,
         input: Input,
     ) -> Result<Action, Fault> {
+        if let Some(regexp) = &mut self.regexp {
+            return regexp.step(heap, task, input);
+        }
         match self.stage {
             Stage::Start => {
+                if self.which == Builtin::RegExp {
+                    // RegExp observes the pattern before prototype selection,
+                    // but coerces source/flags afterwards. Keep all three phases
+                    // in its traced, resumable continuation.
+                    let mut regexp = super::regexp::start(
+                        heap,
+                        task,
+                        self.which,
+                        &Value::Undefined,
+                        &self.args,
+                        true,
+                    )?
+                    .ok_or(Fault::Internal("RegExp constructor missing"))?;
+                    regexp.set_new_target(self.target.clone());
+                    self.regexp = Some(Box::new(regexp));
+                    self.args.clear();
+                    return self.regexp.as_mut().expect("RegExp state installed").step(
+                        heap,
+                        task,
+                        Input::Start,
+                    );
+                }
                 if matches!(self.which, Builtin::IntegerTypedArray(_))
                     && !matches!(self.args.first(), Some(Value::Object(_)))
                 {
