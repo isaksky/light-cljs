@@ -1283,11 +1283,13 @@ mod tests {
     fn throw_error_kinds_are_validated_and_specs_round_trip() {
         let t = Opcode::ThrowError as u8;
         assert_eq!(
-            kind(load(vec![t, 4, 0, RET], vec![], 0)),
-            UnknownThrowKind { code: 4 }
+            kind(load(vec![t, 5, 0, RET], vec![], 0)),
+            UnknownThrowKind { code: 5 }
         );
         let delete_super = load(vec![t, 3, 0, RET], vec![], 0).unwrap();
         assert_eq!(delete_super.to_spec().code, vec![t, 3, 0, RET]);
+        let missing_throw = load(vec![t, 4, 0, RET], vec![], 0).unwrap();
+        assert_eq!(missing_throw.to_spec().code, vec![t, 4, 0, RET]);
         // Every instruction shape survives `to_spec` and reloads identically.
         let (c, j, jf) = (
             Opcode::Const as u8,
