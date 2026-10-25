@@ -199,6 +199,8 @@ large-object dictionary index. They also carry a shared immutable shape describi
 the sequence of slot keys. Adding a property follows a shared shape transition;
 deletion or more than 64 properties switches that object to dictionary mode.
 Bounded worker-local transition caches avoid locking on repeated construction.
+Their direct front cache avoids repeated hashing, and its initialization goes
+directly into heap storage to preserve the 64 KiB VM-worker stack bound.
 Each local shape handle wraps the shared shape in a second owning `Arc`, so
 repeated allocation does not update a global reference count. Both layers are
 safe to migrate between workers. The bounded shared transition table holds weak

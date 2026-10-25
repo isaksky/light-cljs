@@ -146,8 +146,9 @@
 //! "Lock-free reads"), and the property-key table is consulted before,
 //! never while that word is held.
 //! Polls run before the operation, never inside these helpers. Interned
-//! key caches (including `Interned`) end before returning to the dispatch
-//! loop; accessor calls are returned as values for a later VM step. Keys
+//! operation-local keys (including `Interned`) end before returning to the
+//! dispatch loop; executable bindings validate the runtime/collection stamp
+//! before reusing a key. Accessor calls are returned as values for a later VM step. Keys
 //! carried across that step use `Key` names/symbols, never raw key ids.
 
 use std::fmt;

@@ -22,14 +22,16 @@ const LIMIT: usize = 4096;
 
 struct Local {
     transitions: Transitions,
-    front: [Option<(Edge, Arc<ShapeHandle>)>; 64],
+    front: Vec<Option<(Edge, Arc<ShapeHandle>)>>,
 }
 
 impl Default for Local {
     fn default() -> Self {
         Self {
             transitions: HashMap::new(),
-            front: std::array::from_fn(|_| None),
+            // Initialize directly in heap storage: a fixed array creates
+            // large TLS initialization temporaries on 64 KiB VM workers.
+            front: (0..64).map(|_| None).collect(),
         }
     }
 }
