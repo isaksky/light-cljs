@@ -278,7 +278,7 @@ fn overdeep_sources_fail_with_too_deep() {
 fn rejected_forms_fail_with_documented_kinds() {
     const SLOPPY: ScriptOptions = ScriptOptions::SLOPPY;
     const STRICT: ScriptOptions = ScriptOptions::STRICT;
-    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, UnknownToken, Unsupported};
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, Unsupported};
     let rows: &[(&str, ScriptOptions, SyntaxErrorKind)] = &[
         // using declarations
         ("using x = r;", STRICT, Invalid),
@@ -299,7 +299,7 @@ fn rejected_forms_fail_with_documented_kinds() {
         ("debugger;", STRICT, Unsupported),
         ("'use strict'; with (o) {}", SLOPPY, Invalid),
         ("class A { static { } }", STRICT, Unsupported),
-        ("class A { #x; }", STRICT, UnknownToken),
+        ("class A { m() { return this.#x; } }", STRICT, Invalid),
         ("import x from 'y';", STRICT, Unsupported),
         ("export const x = 1;", STRICT, Unsupported),
         ("x = import('y');", STRICT, Unsupported),
@@ -401,6 +401,8 @@ fn rejected_forms_fail_with_documented_kinds() {
         }
     }
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    // Private declarations execute; undeclared references still fail early (-291).
+    compile_script_with("accepted-private", "class A { #x; }", STRICT).unwrap();
     // Rest parameters, object spread and pattern heads execute (-315).
     for source in [
         "function f(...a) {}",
