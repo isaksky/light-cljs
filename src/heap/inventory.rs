@@ -1039,7 +1039,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 374); // Array callbacks (-298) plus async iteration (-313).
+    assert_eq!(ids.len(), 383); // Nine Array copying/iterator built-ins (-299).
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();
