@@ -378,8 +378,8 @@ Notes on the grammar:
   executing generators reject re-entrant next with TypeError.
   Generator functions create their own prototype/property record eagerly, so
   publication rejects that task-owned record while preserving local callability.
-  The inherited `Symbol.toStringTag` is `Generator`; general tag consumption by
-  `Object.prototype.toString` remains explicitly unsupported.
+  The inherited `Symbol.toStringTag` is `Generator`, consumed by
+  `Object.prototype.toString` (clj-quickjs-311).
   Delegated `yield* iterable` (clj-quickjs-245) acquires the iterator and caches
   its next method once, forwards each received next argument (initially
   undefined), and returns each non-done iterator result object unchanged.
@@ -663,7 +663,7 @@ checks left to later stages:
   `values`, string iteration and `for (using x of iterable)` execute. Async iteration,
   destructuring/property heads and other iterable consumers remain
   separate features. Iterator prototypes expose their `Symbol.toStringTag`;
-  generic `Object.prototype.toString` symbol-tag dispatch remains deferred.
+  `Object.prototype.toString` consumes symbol tags (clj-quickjs-311).
 
 - **Rope flattening** (clj-quickjs-146): the first contiguous read, comparison
   or hash flattens synchronously in O(length). Traversal and destruction use
@@ -855,8 +855,9 @@ checks left to later stages:
   changed (`Object.setPrototypeOf(f, p)`, `f.__proto__ = p` with another
   `p`: `UnsupportedOperand`). `Reflect` has only `apply`.
   `Object(v)` and `new Object(v)` wrap Number, String and Symbol primitives
-  using the existing wrappers (clj-quickjs-280, clj-quickjs-302). `Object.prototype.toString`/`valueOf` on number,
-  string receivers remain partial (Boolean receivers are supported by clj-quickjs-302). Direct `new Object()` creates
+  using the existing wrappers (clj-quickjs-280, clj-quickjs-302).
+  `Object.prototype.toString` accepts every primitive receiver (clj-quickjs-311);
+  `valueOf` on number/string receivers remains partial. Direct `new Object()` creates
   an ordinary object inheriting from `Object.prototype`.
 - **Objects are task-owned.** An object or array belongs to the task that
   created it: only that task reads or writes its properties (another task
@@ -902,8 +903,8 @@ checks left to later stages:
   functions both copy actual values without aliasing parameter locals.
   `callee` is absent; its restricted accessor is deferred. `Symbol.iterator`
   protocol support remains deferred (its identity is exposed by clj-quickjs-127).
-  The object is ordinary,
-  without a special arguments brand for `Object.prototype.toString`.
+  The ordinary property store retains an internal Arguments brand for
+  `Object.prototype.toString` (clj-quickjs-311).
 - **Default parameter values lack what the subset lacks elsewhere**
   (clj-quickjs-100): direct and indirect `eval` work in parameter
   expressions (clj-quickjs-109; see "Direct eval").
@@ -1278,7 +1279,8 @@ Locale prototype `toString`, `baseName`, `language`, `script`, `region`, `varian
 check internal-slot branding, independently of the current prototype. The tag
 descriptor is `Symbol.toStringTag = 'Intl.Locale'`. Absent string fields return
 `undefined`; absent numeric returns `false`, matching the pinned snapshot. `variants` and
-`firstDayOfWeek` options and general `@@toStringTag` consumption remain deferred.
+`firstDayOfWeek` options remain deferred. `Object.prototype.toString` consumes
+`@@toStringTag` (clj-quickjs-311).
 
 `Intl.Locale.prototype.maximize()` and `minimize()` return a fresh Locale using
 the intrinsic Locale prototype (clj-quickjs-211). They read branded internal
@@ -3987,9 +3989,8 @@ Explicit gaps: Map iteration methods are deferred.
 Fresh equal BigInt lookup/update/has/delete and forEach callback deletion
 loops are covered for 1000 inline and 1000 larger-than-128-bit keys
 (clj-quickjs-171), with each loop leaving an empty Map.
-Generic Object.prototype.toString
-consumption of Symbol.toStringTag remains deferred with Symbol protocol consumers;
-calling it on a Map explicitly fails with UnsupportedOperand.
+Object.prototype.toString consumes Symbol.toStringTag (clj-quickjs-311);
+calling it on a Map returns `[object Map]`.
 
 ### Execution: Map forEach (clj-quickjs-170)
 
@@ -4757,8 +4758,8 @@ throw catchable RangeErrors; invalid receivers and Symbol numbers throw TypeErro
 
 Explicit gaps: nonstandard notations throw RangeError. Numbering-system options and nu extensions use the pinned QuickJS digit mappings;
 unknown well-formed systems fall back to the selected system. Both matchers use lookup over the policy's test locales.
-Range methods, ChainNumberFormat legacy receivers and general
-Object.prototype.toString tag consumption remain deferred. Decimal coefficient
+Range methods and ChainNumberFormat legacy receivers remain deferred.
+Object.prototype.toString consumes tags (clj-quickjs-311). Decimal coefficient
 input over 100,000 characters or exponent magnitude over 10,000 throws RangeError
 when the numeric syntax is valid. Malformed strings produce localized NaN;
 surrounding whitespace follows JavaScript's rules. BigInt decimal conversion
@@ -4859,8 +4860,8 @@ requirements of this pellet take precedence over the pinned QuickJS
 `pluralrules.c` shortcuts (which ignore rounding, classify Russian fractions as
 integers, and do not implement English ordinal selection). Category names and
 the six upstream integer rows retain the QuickJS strings. No existing
-NumberFormat output changes. Inherited toStringTag consumption by
-Object.prototype.toString remains unsupported as for NumberFormat and Locale.
+NumberFormat output changes. Object.prototype.toString consumes inherited
+toStringTag (clj-quickjs-311).
 
 ### Unicode RegExp property escapes (clj-quickjs-192)
 
@@ -5244,8 +5245,8 @@ tasks, directly or through persistent values or captures.
 Iterable construction is supported (clj-quickjs-294 below).
 Explicit gaps: WeakSet remains deferred; FinalizationRegistry
 is supported (-177 below). WeakMap has no enumeration, size, clear or iterator API;
-the host-only entry-count test hook is not a JavaScript property. Generic
-Object.prototype.toString symbol-tag consumption remains deferred.
+the host-only entry-count test hook is not a JavaScript property.
+Object.prototype.toString consumes symbol tags (clj-quickjs-311).
 
 ### Intl.Collator German and Turkish tailorings (clj-quickjs-219)
 
@@ -5546,7 +5547,7 @@ returned by default wrapper conversion, throws catchable TypeError at the
 existing operator-token position.
 
 General object Symbol.toPrimitive dispatch executes (clj-quickjs-310).
-General Object.prototype.toString Symbol.toStringTag consumption remains deferred.
+Object.prototype.toString consumes Symbol.toStringTag (clj-quickjs-311).
 Sloppy-function receiver boxing remains deferred.
 
 Synthetic fixture, not light-cljs output:
@@ -6094,8 +6095,7 @@ set is recognized; languages without translated pools use English name data.
 Calling the constructor without new throws TypeError. Option getters and code
 coercions use ordinary resumable calls; calendar validation is budgeted.
 
-Explicit gaps: generic Object.prototype.toString consumption of
-Symbol.toStringTag remains deferred.
+Object.prototype.toString consumes Symbol.toStringTag (clj-quickjs-311).
 
 ### Execution: Intl.DisplayNames language names (clj-quickjs-224)
 
@@ -6550,7 +6550,7 @@ Callbacks and dispose-method getters can wait, yield, survive collection and
 migrate between workers without replay.
 Second disposal is a no-op returning undefined. `[Symbol.dispose]` is the same
 function object as dispose. The prototype's `[Symbol.toStringTag]` is
-`DisposableStack`; general Object.prototype.toString tag consumption remains a gap.
+`DisposableStack`, consumed by Object.prototype.toString (clj-quickjs-311).
 Move transfers resources into a fresh stack with the intrinsic prototype and
 marks the original disposed. Replacing/deleting the global or changing an
 instance's constructor never redirects move.
@@ -6953,8 +6953,8 @@ conversion overrides: booleans serialize normally and BigInts throw TypeError.
 Wrappers have ordinary task-owned properties and cannot publish; immutable intrinsic
 objects remain shared. No new size cap: BigInt retains its 1 Mbit magnitude cap.
 Built-in subclass construction executes (-309); general Symbol.toPrimitive dispatch executes (-310).
-Object.prototype.toString still rejects BigInt primitives/wrappers with UnsupportedOperand
-until general Symbol.toStringTag consumption is implemented.
+Object.prototype.toString consumes the inherited BigInt tag and returns
+`[object BigInt]` for primitives and wrappers (clj-quickjs-311).
 
 ### RegExp script properties (clj-quickjs-304)
 
@@ -7047,3 +7047,27 @@ Snapshot patterns, first-prefix lookup, mathematical-one singular selection,
 literal identifier fallback and unadorned nonfinite output match QuickJS;
 complete CLDR translation is deferred. Existing NumberFormat resource bounds
 apply. Result arrays are task owned and assembled one part per native step.
+
+### Execution: Object.prototype.toString (clj-quickjs-311)
+
+Implements builtinTag selection (Array through Proxy, Arguments, callable,
+Error, Boolean, Number, String, Date, RegExp, otherwise Object), followed by
+one resumable Get of Symbol.toStringTag on the boxed receiver. A string result
+replaces builtinTag; no other result is coerced. Null/undefined bypass boxing
+and the tag read. Arguments retain their internal brand after property or
+prototype mutation. Error/Date/RegExp/primitive brands do not forward through
+Proxy; IsArray and IsCallable do. Tag getters retain the boxed receiver as this.
+The ordinary property instruction handles inherited getters and exceptions, with
+traced task-owned native state across waits, yields, GC and worker migration.
+Array.prototype.toString's non-callable-join fallback shares this continuation.
+
+Missing data tags are installed on JSON, Reflect, Promise.prototype,
+BigInt.prototype and ArrayBuffer.prototype; existing intrinsic tags, including
+Module namespaces, are consumed through the same read. Typed arrays use the
+standard inherited accessor, returning undefined for unbranded receivers.
+SuppressedError has the Error fallback, with no symbol tag. Strings preserve
+UTF-16 code units and use the existing 2^30-1-unit rope limit. No extra tag cap.
+Shared intrinsics remain immutable. Existing unsupported Proxy get traps,
+512-target Proxy classification bound, and absent DataView/SharedArrayBuffer,
+Map iterator and separate generator/async function prototype intrinsics remain
+unchanged. Synthetic fixtures: tests/object_to_string.rs.

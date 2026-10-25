@@ -3344,8 +3344,8 @@ fn generator_branding_uses_prototype() {
         ValueView::Bool(true)
     );
     assert_eq!(
-        failure("function* g() {} Object.prototype.toString.call(g())").kind(),
-        VmErrorKind::UnsupportedOperand
+        string("function* g() {} Object.prototype.toString.call(g())"),
+        "[object Generator]"
     );
 }
 
@@ -4248,24 +4248,15 @@ fn bigint_comparisons_wait_yield_collect_and_migrate() {
     }
 }
 
-/// Synthetic fixtures, not light-cljs output. BigInt tag consumption remains
-/// deferred; wrapper and Number conversions are covered separately.
+/// Synthetic fixtures, not light-cljs output. BigInt tags are supported;
+/// mixed Number/BigInt operations still fail.
 #[test]
 fn bigint_deferred_operations_fail_explicitly() {
     for src in [
         "Object.prototype.toString.call(1n)",
         "Object.prototype.toString.call(Object(1n))",
     ] {
-        let error = failure(src);
-        assert_eq!(
-            error.kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}: {error}"
-        );
-        assert!(
-            error.message().to_ascii_lowercase().contains("bigint"),
-            "{src}: {error}"
-        );
+        assert_eq!(string(src), "[object BigInt]", "{src}");
     }
     for src in [
         "1n + 1",
@@ -21862,11 +21853,7 @@ fn map_symbol_keys_and_tag() {
         "Object.create(Object.create(Map.prototype))",
     ] {
         let src = format!("Object.prototype.toString.call({receiver})");
-        assert_eq!(
-            failure(&src).kind(),
-            VmErrorKind::UnsupportedOperand,
-            "{src}"
-        );
+        assert_eq!(string(&src), "[object Map]", "{src}");
     }
     for src in [
         "let m = new Map(); Object.setPrototypeOf(m, null); Object.prototype.toString.call(m) === '[object Object]'",
@@ -21881,23 +21868,28 @@ fn map_symbol_keys_and_tag() {
     }
 }
 
-/// Synthetic fixtures, not light-cljs output. Deferred tag consumption
-/// rejects presence without calling getters, even before a branded fallback.
+/// Synthetic fixtures, not light-cljs output. Non-string tags retain the
+/// builtin fallback; tag getter exceptions propagate unchanged.
 #[test]
-fn object_to_string_rejects_deferred_tags() {
-    for receiver in ["{}", "[]", "function() {}", "new Error()", "new Number(1)"] {
-        for descriptor in [
-            "{ value: undefined }",
-            "{ get: function() { throw new Error('tag getter ran'); } }",
+fn object_to_string_consumes_tags() {
+    for (receiver, tag) in [
+        ("{}", "Object"),
+        ("[]", "Array"),
+        ("function() {}", "Function"),
+        ("new Error()", "Error"),
+        ("new Number(1)", "Number"),
+    ] {
+        for (descriptor, expected) in [
+            ("{ value: undefined }", format!("[object {tag}]")),
+            (
+                "{ get: function() { throw 'tag getter ran'; } }",
+                "tag getter ran".into(),
+            ),
         ] {
             let src = format!(
-                "let o = {receiver}; Object.defineProperty(o, Symbol.toStringTag, {descriptor}); Object.prototype.toString.call(o)"
+                "let o = {receiver}; Object.defineProperty(o, Symbol.toStringTag, {descriptor}); let result; try {{result = Object.prototype.toString.call(o);}} catch(e) {{result = e;}} result"
             );
-            assert_eq!(
-                failure(&src).kind(),
-                VmErrorKind::UnsupportedOperand,
-                "{src}"
-            );
+            assert_eq!(string(&src), expected, "{src}");
         }
     }
 }

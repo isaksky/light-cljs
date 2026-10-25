@@ -658,6 +658,11 @@ enum NativeState {
         this: Value,
         stage: u8,
     },
+    ObjectToString {
+        this: Value,
+        tag: &'static str,
+        reading: bool,
+    },
     Json {
         text: Value,
         reviver: Value,
@@ -1018,7 +1023,9 @@ impl Trace for NativeFrame {
                 join.this.trace(visit);
                 join.separator.trace(visit);
             }
-            NativeState::ArrayToString { this, .. } => this.trace(visit),
+            NativeState::ArrayToString { this, .. } | NativeState::ObjectToString { this, .. } => {
+                this.trace(visit)
+            }
             NativeState::Error(error) => error.trace(visit),
             NativeState::RegExp(re) => re.trace(visit),
             NativeState::StringRegExp(state) => state.trace(visit),
@@ -1486,6 +1493,9 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if which == Builtin::ObjectPrototypeToString && !construct {
+        return start_object_to_string(state, this, popped);
+    }
     if !construct
         && matches!(
             which,
@@ -1532,6 +1542,7 @@ pub(crate) fn start_builtin(
             | Builtin::NumberPrototypeValueOf
             | Builtin::StringPrototypeValueOf
             | Builtin::StringPrototypeToString
+            | Builtin::TypedArrayToStringTag
             | Builtin::RegExpSource
             | Builtin::RegExpFlag(_)
             | Builtin::IntlNumberFormatGetFormat
@@ -1848,6 +1859,18 @@ fn start_string_regexp(
     let native = string_regexp::State::new(heap, state.diag.task, which, this, args)?;
     state.truncate_operands(state.stack_len() - popped)?;
     push_native(state, NativeState::StringRegExp(Box::new(native)))?;
+    Ok(true)
+}
+
+#[inline(never)]
+fn start_object_to_string(state: &mut VmState, this: &Value, popped: usize) -> Result<bool, Fault> {
+    let native = NativeState::ObjectToString {
+        this: this.clone(),
+        tag: "Object",
+        reading: false,
+    };
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, native)?;
     Ok(true)
 }
 
@@ -4071,8 +4094,58 @@ impl NativeState {
             NativeState::CopyProperties(copy) => copy.step(heap, task, input),
             NativeState::ObjectStatics(object) => object.step(heap, task, input),
             NativeState::Rest { .. } => self.step_rest(heap, task),
+            NativeState::ObjectToString { .. } => self.step_object_to_string(heap, task, input),
             _ => self.step_other(heap, task, input, host),
         }
+    }
+
+    // Keep property/classification temporaries off the general native frame.
+    #[inline(never)]
+    fn step_object_to_string(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        input: Input,
+    ) -> Result<Action, Fault> {
+        let NativeState::ObjectToString { this, tag, reading } = self else {
+            return Err(Fault::Internal("expected object tag state"));
+        };
+        let value = if !*reading {
+            *tag = builtin::builtin_tag(heap, this)?;
+            if !matches!(this, Value::Undefined | Value::Null) {
+                *this = builtin::array_string_receiver(heap, task, this)?;
+                *reading = true;
+                return Ok(Action::Instruction {
+                    instr: Instr::GetElem,
+                    operands: vec![
+                        this.clone(),
+                        Value::Symbol(crate::value::symbol::well_known("toStringTag")),
+                    ],
+                });
+            }
+            Value::Undefined
+        } else {
+            let Input::CallResult(value) = input else {
+                return Err(Fault::Internal("object toString expected tag result"));
+            };
+            value
+        };
+        let text = match value {
+            Value::String(text) => text,
+            _ => JsString::from(*tag),
+        };
+        let len = text.len();
+        *self = NativeState::StringBuild(
+            crate::value::string::StringBuild::concatenation(vec![
+                (JsString::from("[object "), 0, 8),
+                (text, 0, len),
+                (JsString::from("]"), 0, 1),
+            ])
+            .ok_or(Fault::RangeError(
+                "object tag exceeds string length limit".into(),
+            ))?,
+        );
+        Ok(Action::Continue)
     }
 
     #[inline(never)]
@@ -4397,6 +4470,7 @@ impl NativeState {
                 }
                 join.step(heap, task, input)
             }
+            NativeState::ObjectToString { .. } => unreachable!("object tag dispatched separately"),
             NativeState::ArrayToString { this, stage } => {
                 let method = if *stage == 0 {
                     *stage = 1;
@@ -4434,14 +4508,14 @@ impl NativeState {
                             args: vec![],
                         })
                     }
-                    Err(Fault::NotCallable(_)) => builtin::call(
-                        heap,
-                        task,
-                        builtin::Builtin::ObjectPrototypeToString,
-                        this,
-                        &[],
-                    )
-                    .map(Action::Return),
+                    Err(Fault::NotCallable(_)) => {
+                        *self = NativeState::ObjectToString {
+                            this: this.clone(),
+                            tag: "Object",
+                            reading: false,
+                        };
+                        Ok(Action::Continue)
+                    }
                     Err(error) => Err(error),
                 }
             }
@@ -5474,6 +5548,7 @@ impl NativeState {
                 | NativeState::Segmenter(_)
                 | NativeState::NumberFormat(_)
                 | NativeState::ArrayToString { .. }
+                | NativeState::ObjectToString { .. }
                 | NativeState::Bind { .. }
                 | NativeState::NeedAll { .. }
                 | NativeState::Convert { .. }

@@ -1665,3 +1665,11 @@ and `sim_host.rs` are synthetic fixtures, not light-cljs output. The existing
 snapshot timezone tables, notices and provenance are unchanged. Exact English
 names, GMT fallback and short handling for the four Offset/Generic options
 follow that snapshot's finite implementation rather than inferred CLDR data.
+
+## Object.prototype.toString tags (clj-quickjs-311)
+
+Semantic references: `js_object_toString` and `js_typed_array_get_toStringTag`
+in `research/quickjs/quickjs.c`,
+revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
+The Rust builtin classification, resumable tag read and synthetic JavaScript
+fixtures were written afresh; no QuickJS source or tests were copied.

@@ -1195,7 +1195,8 @@ fn realm_intrinsics_retain() {
     // Date's Symbol.toPrimitive adds one built-in (-310).
     // NumberFormat formatToParts adds one built-in (-306).
     // Reflect adds twelve methods (-320).
-    assert_eq!(rt.heap_usage().objects.builtin, 419);
+    // Includes %TypedArray%.prototype's Symbol.toStringTag getter (-311).
+    assert_eq!(rt.heap_usage().objects.builtin, 420);
     assert_eq!(rt.heap_usage().objects.plain, 65);
     for _ in 0..2 {
         assert_eq!(rt.request_collection().unwrap().reclaimed, 0);

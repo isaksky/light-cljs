@@ -592,6 +592,7 @@ pub(crate) enum Builtin {
     ReflectPreventExtensions,
     ReflectSet,
     ReflectSetPrototypeOf,
+    TypedArrayToStringTag,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -854,6 +855,7 @@ impl Builtin {
             Builtin::Object => "Object",
             Builtin::ObjectIs => "is",
             Builtin::ObjectPrototypeToString => "toString",
+            Builtin::TypedArrayToStringTag => "get [Symbol.toStringTag]",
             Builtin::ObjectPrototypeValueOf => "valueOf",
             Builtin::ArrayPrototypeToString => "toString",
             Builtin::Array => "Array",
@@ -1140,6 +1142,7 @@ impl Builtin {
             Builtin::IntegerTypedArray(_) => 3,
             Builtin::TypedArray => 0,
             Builtin::TypedArrayBuffer
+            | Builtin::TypedArrayToStringTag
             | Builtin::TypedArrayLength
             | Builtin::TypedArrayByteLength
             | Builtin::TypedArrayByteOffset => 0,
@@ -1769,11 +1772,24 @@ pub(crate) fn call(
             "variadic Math requires a budgeted native frame",
         )),
         Builtin::MathRandom => Err(Fault::Internal("Math.random requires task state")),
-        Builtin::ObjectPrototypeToString => {
-            let tag = to_string_tag(heap, task, this)?;
-            Ok(Value::String(JsString::from(
-                format!("[object {tag}]").as_str(),
-            )))
+        Builtin::ObjectPrototypeToString => Err(Fault::Internal(
+            "Object.prototype.toString requires a resumable native frame",
+        )),
+        Builtin::TypedArrayToStringTag => {
+            let Value::Object(id) = this else {
+                return Ok(Value::Undefined);
+            };
+            heap.read(*id, |object| match object {
+                HeapObject::TypedArray(array) if array.object.owner() != Some(task) => {
+                    Err(Fault::ForeignObject {
+                        owner: array.object.owner(),
+                        caller: task,
+                    })
+                }
+                HeapObject::TypedArray(array) => Ok(Value::String(array.view.kind.name().into())),
+                _ => Ok(Value::Undefined),
+            })
+            .ok_or(Fault::Internal("typed array was reclaimed"))?
         }
         Builtin::ObjectPrototypeValueOf => match this {
             Value::Undefined | Value::Null => Err(Fault::TypeError(format!(
@@ -2820,112 +2836,51 @@ pub(crate) fn is_array(heap: &Heap, value: &Value) -> Result<bool, Fault> {
         .ok_or(Fault::Internal("array test argument was reclaimed"))
 }
 
-/// The builtinTag of `Object.prototype.toString`. Reject an own or
-/// inherited `@@toStringTag` until resumable tag consumption is supported.
-fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str, Fault> {
-    if let Value::Object(id) = this
-        && crate::module::namespace::probe(
-            heap,
-            task,
-            *id,
-            &crate::vm::property::Key::Symbol(crate::value::symbol::well_known("toStringTag")),
-        )?
-        .is_some()
-    {
-        return Ok("Module");
-    }
-    // The shared namespaces have fixed data descriptors and cannot be
-    // mutated. Their tags need no getter, coercion, or resumable JS call.
-    if let Value::Object(id) = this {
-        let intrinsics =
-            realm::intrinsics(heap).ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
-        if *id == intrinsics.intl {
-            return Ok("Intl");
-        }
-        if *id == intrinsics.math {
-            return Ok("Math");
-        }
-    }
-    // HasProperty walks outside object-table locks and never invokes a
-    // getter. The receiver and its prototype chain stay rooted by the frame.
-    if matches!(this, Value::Object(_))
-        && crate::vm::property::has_property(
-            heap,
-            task,
-            this,
-            &crate::vm::property::Key::Symbol(crate::value::symbol::well_known("toStringTag")),
-        )?
-    {
-        return Err(Fault::Unsupported(
-            "Object.prototype.toString: Symbol.toStringTag lookup is not supported".to_string(),
-        ));
-    }
+/// Compute builtinTag before the observable tag read. Only IsArray and
+/// IsCallable follow Proxy targets; all other brands belong to the receiver.
+pub(super) fn builtin_tag(heap: &Heap, this: &Value) -> Result<&'static str, Fault> {
     if is_array(heap, this)? {
         return Ok("Array");
     }
-    let unsupported = |what: &str| {
-        Err(Fault::Unsupported(format!(
-            "Object.prototype.toString of {what} is not supported"
-        )))
-    };
     match this {
         Value::Undefined => Ok("Undefined"),
         Value::Null => Ok("Null"),
         Value::Bool(_) => Ok("Boolean"),
-        Value::Number(_) => unsupported("a number"),
-        Value::String(_) => unsupported("a string"),
-        Value::Symbol(_) => unsupported("a symbol"),
-        Value::BigInt(_) => unsupported("a BigInt"),
-        Value::Object(_) if super::dispatch::callee(heap, this).is_ok() => Ok("Function"),
-        Value::Object(_) if is_array(heap, this)? => Ok("Array"),
-        Value::Object(id) => heap
-            .read(*id, |object| match object {
-                HeapObject::Function(_) | HeapObject::BoundFunction(_) | HeapObject::Builtin(_) => {
-                    Ok("Function")
-                }
-                HeapObject::Array(_) => Ok("Array"),
-                HeapObject::Native(_)
-                | HeapObject::JsMap(_)
-                | HeapObject::JsSet(_)
-                | HeapObject::WeakMap(_)
-                | HeapObject::WeakSet(_)
-                | HeapObject::WeakRef(_)
-                | HeapObject::FinalizationRegistry(_)
-                | HeapObject::DisposableStack(_) => Ok("Object"),
-                HeapObject::ArrayBuffer(_) => Ok("ArrayBuffer"),
-                HeapObject::TypedArray(a) => Ok(a.view.kind.name()),
-                HeapObject::Plain(o) if o.is_error() => Ok("Error"),
-                HeapObject::Plain(o) if o.date_value().is_some() => Ok("Date"),
-                HeapObject::Plain(o) if o.regexp().is_some() => Ok("RegExp"),
-                // BigInt's standard tag comes from @@toStringTag. Keep the
-                // existing explicit protocol gap, including newly boxed values.
-                HeapObject::Plain(o)
-                    if matches!(o.primitive_data(), Some(PrimitiveData::BigInt(_))) =>
-                {
-                    unsupported("a BigInt")
-                }
-                HeapObject::Plain(o) => Ok(match o.primitive_data() {
+        Value::Number(_) => Ok("Number"),
+        Value::String(_) => Ok("String"),
+        Value::Symbol(_) | Value::BigInt(_) => Ok("Object"),
+        Value::Object(id) => {
+            let target = super::proxy::unwrapped(heap, *id)?;
+            // IsCallable needs only the kind, not dispatch's copy of a bound
+            // function's potentially large argument list.
+            if heap
+                .read(target, |object| {
+                    matches!(
+                        object,
+                        HeapObject::Function(_)
+                            | HeapObject::Builtin(_)
+                            | HeapObject::BoundFunction(_)
+                    )
+                })
+                .ok_or(Fault::Internal("receiver was reclaimed"))?
+            {
+                return Ok("Function");
+            }
+            heap.read(*id, |object| match object {
+                HeapObject::Plain(o) if o.is_arguments() => "Arguments",
+                HeapObject::Plain(o) if o.is_error() => "Error",
+                HeapObject::Plain(o) if o.date_value().is_some() => "Date",
+                HeapObject::Plain(o) if o.regexp().is_some() => "RegExp",
+                HeapObject::Plain(o) => match o.primitive_data() {
                     Some(PrimitiveData::Number(_)) => "Number",
                     Some(PrimitiveData::String(_)) => "String",
                     Some(PrimitiveData::Boolean(_)) => "Boolean",
-                    // Symbol wrappers get their tag from @@toStringTag;
-                    // without it, their builtinTag is Object.
-                    None | Some(PrimitiveData::Symbol(_) | PrimitiveData::BigInt(_)) => "Object",
-                }),
-                HeapObject::Vector(_)
-                | HeapObject::Map(_)
-                | HeapObject::Occurrence(_)
-                | HeapObject::Builder(_)
-                | HeapObject::Cell(_)
-                | HeapObject::Atom(_)
-                | HeapObject::PromiseReaction(_)
-                | HeapObject::PromiseResolving(_) => Ok("Object"),
-                HeapObject::Promise(_) => Ok("Promise"),
-                HeapObject::Generator(_) | HeapObject::AsyncState(_) => Ok("Object"),
-                HeapObject::ModuleNamespace(_) | HeapObject::Proxy(_) => Ok("Object"),
+                    _ => "Object",
+                },
+                _ => "Object",
             })
-            // The receiver is an operand of the running frame.
-            .unwrap_or(Err(Fault::Internal("receiver was reclaimed"))),
+            .ok_or(Fault::Internal("receiver was reclaimed"))
+        }
     }
 }
 
@@ -3336,21 +3291,13 @@ mod tests {
     use super::*;
 
     fn tag(heap: &Heap, this: &Value) -> String {
-        match call(
-            heap,
-            TaskId::from_raw(1),
-            Builtin::ObjectPrototypeToString,
-            this,
-            &[],
-        ) {
-            Ok(Value::String(s)) => s.to_string(),
-            Ok(other) => panic!("not a string: {other:?}"),
-            Err(_) => "unsupported".to_string(),
-        }
+        format!(
+            "[object {}]",
+            builtin_tag(heap, this).unwrap_or_else(|_| panic!("invalid receiver"))
+        )
     }
 
-    /// The receivers source code cannot pass yet (`Function.prototype.call`
-    /// is clj-quickjs-102).
+    /// Internal builtinTag classification; source fixtures cover dispatch.
     #[test]
     fn to_string_tags_of_other_receivers() {
         let heap = Heap::default();
@@ -3358,8 +3305,11 @@ mod tests {
         assert_eq!(tag(&heap, &object), "[object Function]");
         let vector = crate::collections::new_vector(&heap, &[]).unwrap();
         assert_eq!(tag(&heap, &vector), "[object Object]");
-        for primitive in [Value::Number(1.0), Value::String(JsString::from("s"))] {
-            assert_eq!(tag(&heap, &primitive), "unsupported");
+        for (primitive, expected) in [
+            (Value::Number(1.0), "Number"),
+            (Value::String(JsString::from("s")), "String"),
+        ] {
+            assert_eq!(tag(&heap, &primitive), format!("[object {expected}]"));
         }
         assert_eq!(tag(&heap, &Value::Null), "[object Null]");
         assert_eq!(tag(&heap, &Value::Bool(true)), "[object Boolean]");

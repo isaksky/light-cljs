@@ -1434,6 +1434,16 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
     )?;
     // Append after existing allocations to preserve intrinsic identities.
     date_symbol_intrinsic(&mut b, date_prototype)?;
+    typed_array_tag_intrinsic(&mut b, typed_array_prototypes[0])?;
+    for (id, tag) in [
+        (json, "JSON"),
+        (reflect, "Reflect"),
+        (promise_prototype, "Promise"),
+        (bigint_prototype, "BigInt"),
+        (array_buffer_prototype, "ArrayBuffer"),
+    ] {
+        b.tag(id, tag)?;
+    }
     let all = b.all;
     // Nothing changes the intrinsics from here on, so the views stay exact.
     let views = all
@@ -2233,6 +2243,24 @@ struct Build<'h> {
 }
 
 impl Build<'_> {
+    /// Install a standard non-writable, non-enumerable, configurable tag
+    /// before immutable intrinsic views are published.
+    fn tag(&self, id: ObjectId, tag: &str) -> Option<()> {
+        let key = self
+            .heap
+            .keys()
+            .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+        self.heap
+            .with_object_mut(id, |object| match object {
+                HeapObject::Plain(o) => o.define_with(
+                    key,
+                    Value::String(JsString::from(tag)),
+                    PropertyFlags::FUNCTION_INFO,
+                ),
+                _ => false,
+            })?
+            .then_some(())
+    }
     /// A built-in function inheriting from `Function.prototype`.
     fn function(
         &mut self,
@@ -2293,6 +2321,37 @@ impl Build<'_> {
         });
         (defined == Some(true)).then_some(())
     }
+}
+
+// Append the accessor after existing intrinsic allocations. Keep descriptor
+// temporaries off the cold realm builder on small workers.
+#[inline(never)]
+fn typed_array_tag_intrinsic(b: &mut Build<'_>, prototype: ObjectId) -> Option<()> {
+    let heap = b.heap;
+    let shared = heap.read(prototype, |object| match object {
+        HeapObject::Plain(o) => o.prototype(),
+        _ => None,
+    })??;
+    // Unbranded receivers return undefined; instances report their element kind.
+    let getter = b.function(Builtin::TypedArrayToStringTag, &[])?;
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    let descriptor = PropertyDescriptor {
+        get: Some(Value::Object(getter)),
+        set: Some(Value::Undefined),
+        enumerable: Some(false),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    if heap.with_object_mut(shared, |object| match object {
+        HeapObject::Plain(o) => o.define_own_property(key, &descriptor),
+        _ => unreachable!(),
+    })? != DefineOutcome::Done
+    {
+        return None;
+    }
+    Some(())
 }
 
 /// The abstract %TypedArray% and its shared accessor prototype, followed by
@@ -3445,7 +3504,8 @@ mod tests {
         // Date's Symbol.toPrimitive adds one built-in (-310).
         // NumberFormat formatToParts adds one built-in (-306).
         // Reflect adds twelve methods (-320).
-        assert_eq!(first.all.len(), 484);
+        // %TypedArray%.prototype's tag accessor adds one builtin (-311).
+        assert_eq!(first.all.len(), 485);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();

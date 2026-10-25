@@ -2110,7 +2110,8 @@ fn new_arguments(state: &mut VmState, heap: &Heap) -> Result<Value, Fault> {
         .arguments
         .as_ref()
         .ok_or(Fault::Internal("arguments already materialized"))?;
-    let mut object = OrdinaryObject::with_prototype(state.diag.task, prototype);
+    let mut object =
+        OrdinaryObject::with_prototype(state.diag.task, prototype).with_arguments_data();
     let intern = |name: &str| {
         heap.keys()
             .intern(&JsString::from(name))

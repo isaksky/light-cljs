@@ -376,6 +376,8 @@ pub(crate) struct OrdinaryObject {
     primitive_data: Option<PrimitiveData>,
     /// `[[ErrorData]]`: independent of properties and prototype changes.
     error_data: bool,
+    /// Arguments exotic brand, independent of user properties/prototype.
+    arguments_data: bool,
     /// Cold internal state stays boxed so allocation frames do not grow with
     /// each new language feature (in particular on 64 KiB VM workers).
     internal: Option<Box<InternalSlots>>,
@@ -488,6 +490,7 @@ impl OrdinaryObject {
             index: None,
             primitive_data: None,
             error_data: false,
+            arguments_data: false,
             internal: None,
             locale_data: None,
 
@@ -668,6 +671,15 @@ impl OrdinaryObject {
 
     pub(crate) fn is_error(&self) -> bool {
         self.error_data
+    }
+
+    pub(crate) fn with_arguments_data(mut self) -> Self {
+        self.arguments_data = true;
+        self
+    }
+
+    pub(crate) fn is_arguments(&self) -> bool {
+        self.arguments_data
     }
 
     pub(crate) fn with_engine_error(mut self, error: crate::vm::exception::ErrorObject) -> Self {

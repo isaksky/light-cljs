@@ -2822,9 +2822,8 @@ BigInt keys compare and hash by value, distinct from Number keys, with coverage
 for fresh inline and larger-than-128-bit keys and forEach deletion loops
 (clj-quickjs-171). Hashing is
 O(limbs) within the existing 1 Mbit cap per leaf call. Symbol keys compare by identity;
-`Map.prototype[Symbol.toStringTag]` is "Map". Generic Object.prototype.toString
-consumption of Symbol.toStringTag remains deferred with Symbol protocol consumers;
-calling it on a Map explicitly fails with UnsupportedOperand.
+`Map.prototype[Symbol.toStringTag]` is "Map" and `Object.prototype.toString`
+consumes it (clj-quickjs-311).
 
 JavaScript Map forEach (clj-quickjs-170): `forEach(callback, thisArg)` calls
 the callback with `(value, key, map)` in live insertion order and returns
@@ -2962,8 +2961,7 @@ Deferred: Locale information methods, `variants` and
 the selected pinned QuickJS cases,
 with `co-phonebook` accepted and normalized to `co-phonebk` as required by this
 pellet. Locale's absent `numeric` getter returns `false` as in that snapshot.
-General `Object.prototype.toString` consumption of Locale's tag shares the
-existing deferred `@@toStringTag` behavior.
+`Object.prototype.toString` consumes Locale's tag (clj-quickjs-311).
 
 ### Locale likely subtags (clj-quickjs-211)
 
@@ -3313,7 +3311,7 @@ supplies the default locale once per constructor; absent a host it is en-US.
 
 Deferred: nonstandard notations
 (explicit RangeError), range methods, ChainNumberFormat's legacy
-fallback receiver, and general Object.prototype.toString tag consumption.
+fallback receiver. Object.prototype.toString consumes the tag (clj-quickjs-311).
 Both localeMatcher values currently use lookup over the policy's test locales.
 Valid decimal string input is bounded to 100,000 coefficient characters and exponent
 magnitude 10,000 (RangeError beyond those limits).
@@ -3382,9 +3380,8 @@ canonical requested tags, including their extensions.
 
 Deferred: `selectRange`, nonstandard notation, rounding increments/priorities,
 trailing-zero display options and locales outside the policy's test coverage.
-These additional option properties are not consumed. Generic
-`Object.prototype.toString` consumption of inherited `Symbol.toStringTag` remains
-an existing explicit gap; instances expose `Symbol.toStringTag` directly.
+These additional option properties are not consumed. `Object.prototype.toString`
+consumes the inherited `Symbol.toStringTag` (clj-quickjs-311).
 Check: `cargo test --test js_source intl_plural_rules -- --test-threads=3`;
 `cargo test --test sim_host intl_default_locale_resolution -- --test-threads=3`.
 
@@ -3525,8 +3522,8 @@ Generator objects inherit the shared iterator identity protocol and can be
 consumed by `for...of` (clj-quickjs-237) and array/argument spread (clj-quickjs-130).
 Generator functions eagerly create their own task-owned prototype records, so
 publication rejects them without disabling local calls. Generators expose the
-inherited `Symbol.toStringTag` value `Generator`; general tag consumption by
-`Object.prototype.toString` remains explicitly deferred.
+inherited `Symbol.toStringTag` value `Generator`, consumed by
+`Object.prototype.toString` (clj-quickjs-311).
 
 ### RegExp Unicode sets (clj-quickjs-194)
 
@@ -3667,8 +3664,8 @@ WeakMaps are task-owned and reject publication, even when empty or frozen;
 foreign tasks cannot use borrowed methods to bypass ownership.
 
 Iterable construction is supported (clj-quickjs-294 below).
-WeakSet is supported (-295 below). Generic symbol-tag consumption by
-Object.prototype.toString remains deferred. WeakMap intentionally has no size or enumeration
+WeakSet is supported (-295 below). Object.prototype.toString consumes symbol
+tags (clj-quickjs-311). WeakMap intentionally has no size or enumeration
 API. Targeted checks: `CARGO_BUILD_JOBS=3 cargo test --test js_source weak_map -- --test-threads=3`,
 `CARGO_BUILD_JOBS=3 cargo test --test gc weak_map_ -- --test-threads=3`, and
 `CARGO_BUILD_JOBS=3 cargo test --test publication weak_maps_ -- --test-threads=3`.
@@ -3907,7 +3904,7 @@ participates in precise GC, including WeakMap key liveness.
 conversion and `String(Object(symbol))` throw TypeError. Symbol wrappers consult
 `[Symbol.toPrimitive]` before ordinary conversion methods, using resumable getter
 and callback frames. General object dispatch executes (clj-quickjs-310).
-Generic `Object.prototype.toString` tag consumption remains an explicit gap.
+`Object.prototype.toString` consumes tags (clj-quickjs-311).
 
 Tests: `cargo test --test js_source symbol_`,
 `cargo test --test js_source primitive_wrappers_survive_wait_collection_and_migration`,
@@ -4107,8 +4104,8 @@ are validated and canonicalized in bounded steps. Host defaults use the shared
 leaf locale boundary.
 
 Language names and dialect display are supported as described below. The
-symbol tag is readable directly; generic
-`Object.prototype.toString` tag consumption retains its existing explicit gap.
+symbol tag is readable directly and consumed by
+`Object.prototype.toString` (clj-quickjs-311).
 
 ### Intl.DisplayNames language names (clj-quickjs-224)
 
@@ -4447,7 +4444,8 @@ search, callback and copying methods (-296 to -299), the plain RegExp `i` flag
 (-303), Script property escapes (-304),
 `Symbol.toPrimitive`
 dispatch (implemented by -310), `Object.prototype.toString`
-tags (-311), eval SyntaxError stacks (-312), async generators (-313), `??` and
+tags (implemented by -311), eval SyntaxError stacks (-312),
+async generators (-313), `??` and
 logical assignment (-314), rest parameters/object spread/destructuring loop
 heads (-315), numeric separators (-316), Promise combinators (-317), Object
 statics (-318), the remaining Math functions (-319) and
@@ -4760,8 +4758,8 @@ retain the shared immutable realm policy. BigInt payloads share immutable limb s
 without heap edges and sit behind a pointer to keep every ordinary object compact
 on small VM workers. No new size limit is imposed; the existing 1 Mbit BigInt cap applies.
 Built-in subclass construction executes (-309); general Symbol.toPrimitive dispatch executes (-310).
-Object.prototype.toString on BigInt primitives/wrappers retains the explicit
-UnsupportedOperand gap for Symbol.toStringTag consumption.
+Object.prototype.toString on BigInt primitives/wrappers consumes the inherited
+Symbol.toStringTag and returns `[object BigInt]` (clj-quickjs-311).
 
 Validation: `CARGO_BUILD_JOBS=3 cargo test --test boolean_bigint_wrappers -- --test-threads=3`.
 
@@ -4907,8 +4905,8 @@ storage, species probing, copied units and substitution/output work, including
 custom exec paths. Iterator next gets its own allowance; every matcher search
 retains its existing matcher limit. Exhaustion throws RangeError. Plain-string
 split retains its existing incremental scan/copy behavior and string limits.
-Iterator Symbol.toStringTag is exposed; generic Object.prototype.toString tag
-lookup remains tracked separately. Tests: `cargo test --test js_source regexp_`,
+Iterator Symbol.toStringTag is exposed and consumed by Object.prototype.toString
+(clj-quickjs-311). Tests: `cargo test --test js_source regexp_`,
 `cargo test --test js_source string_replace`, `cargo test --test js_source string_split`.
 
 ### Remaining Math members (clj-quickjs-319)
@@ -4997,9 +4995,36 @@ traps execute resumably; other present traps raise the existing named TypeError.
 Absent traps forward to their targets. Shared realm objects remain immutable,
 and ownership/publication restrictions still apply; these runtime policy errors
 are not converted to `false`. Function prototype mutation retains its existing
-unsupported error. `Reflect[Symbol.toStringTag]` is tracked by clj-quickjs-311.
+unsupported error. `Reflect[Symbol.toStringTag]` is `"Reflect"` (clj-quickjs-311).
 No new resource limit is introduced: constructor argument forwarding uses the
 existing VM stack and 65,535-argument (u16) limits. Key snapshots retain existing
 internal-method bounds; returned key arrays are populated one element per step.
 
 Validation: `CARGO_BUILD_JOBS=3 cargo test --test reflect -- --test-threads=3`.
+
+### Object.prototype.toString tags (clj-quickjs-311)
+
+`Object.prototype.toString` handles null/undefined directly and boxes other
+primitives. It computes the builtin tag from Array (including transparent
+Proxy chains), Arguments, callable, Error, Boolean, Number, String, Date and
+RegExp brands, then reads `Symbol.toStringTag` exactly once. String tags override
+the fallback without coercion; other values retain it. Getter exceptions
+propagate, and getters can yield, wait, survive GC and migrate between workers.
+`Array.prototype.toString` uses this same continuation when `join` is not callable.
+
+Existing intrinsic tags are consumed, including Map/Set/WeakMap/WeakSet, Symbol,
+generators, iterator prototypes, disposable stacks, Intl and module namespaces.
+JSON, Reflect, Promise.prototype, BigInt.prototype and ArrayBuffer.prototype
+now carry standard non-writable, non-enumerable, configurable data tags.
+The shared typed-array prototype owns the standard tag getter: branded instances
+return their element name, unbranded receivers return undefined. SuppressedError
+uses its Error brand and has no standard symbol tag.
+
+The existing shared-intrinsic immutability and task-ownership rules still apply.
+Output uses UTF-16 rope concatenation with the existing 2^30-1 code-unit limit;
+there is no additional tag-length cap. Proxy `get` traps remain unsupported by
+the existing property machinery; absent traps forward normally, with the existing
+512-target classification bound. DataView/SharedArrayBuffer, Map iterators and
+separate GeneratorFunction/AsyncFunction prototype intrinsics do not yet exist.
+
+Check: `CARGO_BUILD_JOBS=3 cargo test --test object_to_string -- --test-threads=3`.
