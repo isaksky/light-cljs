@@ -2684,6 +2684,10 @@ fn array_callbacks_wait_without_replay() {
     for src in [
         "let n=0,seen=''; [1,2,3].forEach(v=>{ seen+=v; if(v === 2) { n++; __rt.effect(1,3); __rt.need(5,3); } }); n === 1 && seen === '123'",
         "let n=0,a=[{x:1},{x:2}]; let r=a.map((v,i,o)=>{ if(i === 1) { n++; delete o[i]; __rt.effect(1,3); __rt.need(5,3); } return {x:v.x+1}; }); n === 1 && r[0].x === 2 && r[1].x === 3",
+        "let n=0,a=[{valueOf() { n++; __rt.effect(1,3); return __rt.need(5,3); }},8]; let r=a.map(Number); n === 1 && r.length === 2 && r[0] === 7 && r[1] === 8",
+        "let n=0,a=[{toString() { n++; __rt.effect(1,3); return __rt.need(5,3); }},8]; let r=a.map(String); n === 1 && r.length === 2 && r[0] === '7' && r[1] === '8'",
+        "let n=0,a=[{valueOf() { n++; __rt.effect(1,3); return __rt.need(5,3); }},'8']; let r=a.map(BigInt); n === 1 && r.length === 2 && r[0] === 7n && r[1] === 8n",
+        "let n=0,a=[{toString() { n++; __rt.effect(1,3); return __rt.need(5,3); }},8]; let r=a.map(Symbol); n === 1 && r.length === 2 && typeof r[0] === 'symbol' && typeof r[1] === 'symbol' && r[0] !== r[1]",
         "let n=0,a=[{x:1},{x:2}]; let r=a.filter((v,i,o)=>{ if(i === 1) { n++; delete o[i]; __rt.effect(1,3); __rt.need(5,3); } return true; }); n === 1 && r[0].x === 1 && r[1].x === 2",
         "let n=0; let r=[{x:1},{x:2}].reduce((acc,v,i,o)=>{ if(i === 1) { n++; delete o[i]; __rt.effect(1,3); __rt.need(5,3); } return {x:acc.x+v.x}; },{x:0}); n === 1 && r.x === 3",
         "let n=0; let r=[{x:1},{x:2}].reduceRight((acc,v,i,o)=>{ if(i === 0) { n++; delete o[i]; __rt.effect(1,3); __rt.need(5,3); } return {x:acc.x+v.x}; },{x:0}); n === 1 && r.x === 3",

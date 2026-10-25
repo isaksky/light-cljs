@@ -1393,6 +1393,12 @@ pub(crate) fn start_builtin(
     popped: usize,
 ) -> Result<bool, Fault> {
     use builtin::Builtin;
+    if matches!(
+        which,
+        Builtin::Number | Builtin::String | Builtin::Symbol | Builtin::BigInt
+    ) {
+        return start_primitive_constructor(state, which, args, construct, popped);
+    }
     // These leaves never coerce operands; avoid reserving the slow built-in
     // conversion frame before a proxy/prototype walk on a 64 KiB worker.
     if matches!(
@@ -1589,6 +1595,66 @@ pub(crate) fn start_builtin(
         return start_typed_array_constructor(heap, state, kind, args, popped);
     }
     start_builtin_slow(heap, state, which, this, args, construct, popped)
+}
+
+#[inline(never)]
+fn start_primitive_constructor(
+    state: &mut VmState,
+    which: builtin::Builtin,
+    args: &[Value],
+    construct: bool,
+    popped: usize,
+) -> Result<bool, Fault> {
+    use builtin::Builtin;
+    if matches!(which, Builtin::Symbol | Builtin::BigInt) && construct {
+        return Ok(false);
+    }
+    if which == Builtin::BigInt
+        && !construct
+        && let Some(Value::String(text)) = args.first()
+    {
+        let native = NativeState::BigIntParse {
+            parser: Box::new(crate::value::bigint::StringToBigInt::new(text.clone())),
+            instr: None,
+            operands: vec![],
+            index: 0,
+            wrap: None,
+        };
+        state.truncate_operands(state.stack_len() - popped)?;
+        push_native(state, native)?;
+        return Ok(true);
+    }
+    let Some(value) = args.first().filter(|v| {
+        matches!(v, Value::Object(_))
+            || (matches!(which, Builtin::String | Builtin::Symbol) && matches!(v, Value::BigInt(_)))
+    }) else {
+        return Ok(false);
+    };
+    // Native callbacks can start another conversion at the same JS frame
+    // depth. Avoid the general dispatcher's unrelated constructor storage.
+    let native = NativeState::Convert {
+        formatter: None,
+        number_scan: None,
+        target: if which == Builtin::Symbol {
+            ConvertTarget::SymbolDescription
+        } else {
+            ConvertTarget::PrimitiveConstructor { which, construct }
+        },
+        operands: vec![value.clone()],
+        next: 0,
+        end: 1,
+        hint: if matches!(which, Builtin::String | Builtin::Symbol) {
+            Hint::String
+        } else {
+            Hint::Number
+        },
+        method: 0,
+        method_get: false,
+        symbol_method: SymbolMethod::Pending,
+    };
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, native)?;
+    Ok(true)
 }
 
 #[inline(never)]
@@ -1828,21 +1894,6 @@ fn start_builtin_slow(
         state.truncate_operands(state.stack_len() - popped)?;
         state.push(Value::Undefined);
         state.collection_point = true;
-        return Ok(true);
-    }
-    if which == Builtin::BigInt
-        && !construct
-        && let Some(Value::String(text)) = args.first()
-    {
-        let parser = NativeState::BigIntParse {
-            parser: Box::new(crate::value::bigint::StringToBigInt::new(text.clone())),
-            instr: None,
-            operands: vec![],
-            index: 0,
-            wrap: None,
-        };
-        state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, parser)?;
         return Ok(true);
     }
     if matches!(
@@ -2357,31 +2408,6 @@ fn start_builtin_slow(
                 ConvertTarget::SymbolRegistryKey,
                 vec![value.clone()],
                 Hint::String,
-            )
-        }
-        Builtin::Number | Builtin::String | Builtin::Symbol | Builtin::BigInt => {
-            if matches!(which, Builtin::Symbol | Builtin::BigInt) && construct {
-                return Ok(false);
-            }
-            let Some(value) = args.first().filter(|v| {
-                matches!(v, Value::Object(_))
-                    || (matches!(which, Builtin::String | Builtin::Symbol)
-                        && matches!(v, Value::BigInt(_)))
-            }) else {
-                return Ok(false);
-            };
-            (
-                if which == Builtin::Symbol {
-                    ConvertTarget::SymbolDescription
-                } else {
-                    ConvertTarget::PrimitiveConstructor { which, construct }
-                },
-                vec![value.clone()],
-                if matches!(which, Builtin::String | Builtin::Symbol) {
-                    Hint::String
-                } else {
-                    Hint::Number
-                },
             )
         }
         Builtin::ObjectDefineProperty | Builtin::ObjectGetOwnPropertyDescriptor

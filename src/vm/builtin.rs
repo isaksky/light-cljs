@@ -2391,9 +2391,12 @@ pub(crate) fn call_in_state(
     this: &Value,
     args: &[Value],
 ) -> Result<Value, Fault> {
-    // Prototype forwarding may walk proxy handlers. Keep it outside the
-    // unrelated temporaries in the large leaf built-in dispatcher.
+    // Primitive constructor callbacks and prototype forwarding can execute on
+    // small workers. Keep the large leaf dispatcher's unrelated storage out.
     match which {
+        Builtin::Number | Builtin::String | Builtin::Symbol | Builtin::BigInt => {
+            return primitive_constructor(heap, state.diag.task, which, args, false);
+        }
         Builtin::ObjectSetPrototypeOf => {
             return prototype::object_set_prototype_of(heap, state.diag.task, args);
         }

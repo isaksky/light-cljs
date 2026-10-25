@@ -4424,3 +4424,6 @@ Validation: `cargo test --test js_source array_callbacks` and
 `tests/fixtures/js/array_callbacks.js` (not light-cljs output) also runs under a
 three-instruction budget; dependency tests collect at every one-instruction
 yield and migrate pending operations to 64 KiB workers.
+Direct primitive-constructor callbacks (`map(Number)`, `map(String)`,
+`map(BigInt)`, `map(Symbol)`) use the same continuation routing, including
+conversions that wait before returning to the array iteration.
