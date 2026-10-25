@@ -4595,5 +4595,5 @@ Realm prototypes remain shared and immutable, and built-in subclasses remain
 outside this slice (-309). Custom adder lookup/calls are covered by VM tests
 using task-owned targets; constructor source tests preserve that boundary.
 Tests: `cargo test --test map_iterables`,
-`cargo test --test need map_iterable_constructors_wait_collect_and_migrate`,
+`cargo test --test need map_iterable_`,
 and `cargo test --lib vm::native::add_entries::tests`.

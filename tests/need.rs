@@ -2369,6 +2369,122 @@ fn check_map_iterable_wait(source: &str) {
     assert_eq!(task.dependency_log().edges(), &[expected]);
 }
 
+/// Synthetic fixtures, not light-cljs output. Failed dependencies remain
+/// exceptions; cancellation runs callback finally blocks and discards natives.
+#[test]
+fn map_iterable_dependency_failure_and_cancellation() {
+    for constructor in ["Map", "WeakMap"] {
+        for close_wait in [false, true] {
+            let entry = if close_wait {
+                "{0:{}, get 1() { throw {tag:17}; }}"
+            } else {
+                "{0:{}, get 1() { try { return __rt.need(5,3); } finally { __rt.effect(2,9); } }}"
+            };
+            let close = if close_wait {
+                "try { __rt.effect(2,5); __rt.need(5,3); } finally { __rt.effect(2,9); }"
+            } else {
+                "__rt.effect(2,5); throw 99;"
+            };
+            let expected_error = if close_wait {
+                "e.tag === 17"
+            } else {
+                "e.cause === 42"
+            };
+            let source = format!(
+                r#"
+                let closed = 0, ok = false;
+                let it = {{[Symbol.iterator]() {{return this;}}, next() {{return {{value:{entry}}};}},
+                    return() {{ closed++; {close} }} }};
+                try {{ new {constructor}(it); }} catch(e) {{ok = {expected_error};}}
+                ok && closed === 1
+            "#
+            );
+            let code = compile_script("map-failure-cancel", &source).unwrap();
+            for cancel in [false, true] {
+                let rt = Runtime::new();
+                let task = rt.spawn(&code, &[]).unwrap();
+                let mut host = Recorder::default();
+                let expected = key(&rt, NUMBER);
+                let mut waited = false;
+                for _ in 0..3000 {
+                    match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+                        RunOutcome::Yielded => {
+                            rt.collect().unwrap();
+                        }
+                        outcome => {
+                            assert_eq!(waiting(outcome), expected);
+                            waited = true;
+                            break;
+                        }
+                    }
+                }
+                assert!(waited);
+                let request = one_request(&task, expected);
+                rt.collect().unwrap();
+                let resumed = if cancel {
+                    let Cancel::Runnable(cancelled) = task.cancel() else {
+                        panic!("runnable cancellation")
+                    };
+                    cancelled
+                } else {
+                    let error = rt.root(Primitive::Number(42.0));
+                    only_runnable(
+                        rt.complete(
+                            request.key(),
+                            request.producer(),
+                            Completion::Failed(&error),
+                        )
+                        .unwrap(),
+                    )
+                };
+                rt.collect().unwrap();
+                let worker_rt = rt.clone();
+                let (outcome, host) = thread::spawn(move || {
+                    for _ in 0..3000 {
+                        match resumed
+                            .run_with(Budget::instructions(1), &mut host)
+                            .unwrap()
+                        {
+                            RunOutcome::Yielded => {
+                                worker_rt.collect().unwrap();
+                            }
+                            outcome => return (outcome, host),
+                        }
+                    }
+                    panic!("bounded failed/cancelled construction completion");
+                })
+                .join()
+                .unwrap();
+                if cancel {
+                    assert!(matches!(outcome, RunOutcome::Cancelled));
+                    assert!(
+                        publish_number(&rt, &request, 7.0)
+                            .into_runnable()
+                            .is_empty()
+                    );
+                } else {
+                    assert!(
+                        matches!(outcome, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)),
+                        "{source}"
+                    );
+                }
+                let reports: &[f64] = if close_wait {
+                    &[5.0, 9.0]
+                } else if cancel {
+                    &[9.0]
+                } else {
+                    &[9.0, 5.0]
+                };
+                assert_eq!(
+                    host.reports, reports,
+                    "close/finally exactly once: {source}"
+                );
+                rt.collect().unwrap();
+            }
+        }
+    }
+}
+
 /// Synthetic fixture, not light-cljs output. Dependency failure is an
 /// exception from the mapper; consumer cancellation discards the native
 /// boundary and executes only the callback's ordinary finally cleanup.
