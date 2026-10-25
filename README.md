@@ -3237,7 +3237,9 @@ All observable getters, calls, iterator steps and construction are resumable
 and budgeted; saved values and private callback environments are GC roots.
 The environments are task-owned and cannot publish across tasks. Intrinsic
 promises/resolvers keep cross-task settlement and enqueue callbacks on their
-registering task. Aggregate result arrays and `AggregateError.errors` use the
+registering task. An inaccessible foreign result becomes a local TypeError
+rejection for combinators and `finally`, so aggregates settle and cleanup runs
+without exposing the foreign value. Aggregate result arrays and `AggregateError.errors` use the
 existing JavaScript array limit of 2^32 - 1 entries (RangeError on overflow);
 `race` has no result array or additional input-count limit.
 Tests: `CARGO_BUILD_JOBS=3 cargo test --test promises -- --test-threads=3`.

@@ -745,6 +745,11 @@ impl PromiseState {
                         result.rejected,
                         result.owner.is_some_and(|owner| owner != task),
                         reaction.forwarding,
+                        standard::foreign_rejection_handler(
+                            heap,
+                            &reaction.fulfilled,
+                            &reaction.rejected,
+                        ),
                     )));
                     return Ok(Action::Continue);
                 }

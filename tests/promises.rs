@@ -2153,3 +2153,68 @@ fn promise_internal_callbacks_cannot_publish_task_owned_environments() {
         assert!(rt.publish(&callback).is_err(), "{body}");
     }
 }
+
+#[test]
+fn promise_combinators_reject_inaccessible_foreign_results() {
+    for source in ["Promise.resolve({n: 8})", "Promise.reject({n: 8})"] {
+        for (method, on_fulfilled, on_rejected) in [
+            ("all", "false", "e instanceof TypeError"),
+            ("race", "false", "e instanceof TypeError"),
+            (
+                "any",
+                "false",
+                "e instanceof AggregateError && e.errors[0] instanceof TypeError",
+            ),
+            (
+                "allSettled",
+                "x[0].status === 'rejected' && x[0].reason instanceof TypeError",
+                "false",
+            ),
+        ] {
+            let rt = Runtime::new();
+            let promise = finish(&function(
+                &rt,
+                &format!("function make() {{ return {source}; }}"),
+                &[],
+            ));
+            rt.publish(&promise).unwrap();
+            let task = function(
+                &rt,
+                &format!(
+                    "function consume(p) {{ Promise.{method}([p]).then(x => __rt.effect(0,{on_fulfilled}), e => __rt.effect(0,{on_rejected})); return 42; }}"
+                ),
+                &[promise],
+            );
+            let mut host = Effects::default();
+            assert!(matches!(
+                task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+                RunOutcome::Complete(_)
+            ));
+            assert_eq!(host.0, [Primitive::Bool(true)], "{method}: {source}");
+            assert!(task.unhandled_rejections().entries.is_empty());
+        }
+    }
+}
+
+#[test]
+fn promise_finally_runs_cleanup_for_inaccessible_foreign_results() {
+    let rt = Runtime::new();
+    let promise = finish(&function(
+        &rt,
+        "function make() { return Promise.resolve({n: 8}); }",
+        &[],
+    ));
+    rt.publish(&promise).unwrap();
+    let task = function(
+        &rt,
+        "function consume(p) { p.finally(() => __rt.effect(0,1)).catch(e => __rt.effect(0,e instanceof TypeError)); return 42; }",
+        &[promise],
+    );
+    let mut host = Effects::default();
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    assert_eq!(host.0, [Primitive::Number(1.), Primitive::Bool(true)]);
+    assert!(task.unhandled_rejections().entries.is_empty());
+}

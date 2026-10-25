@@ -70,6 +70,32 @@ fn closure(heap: &Heap, env: &Value, callback: Callback) -> Result<Value, Fault>
     function(heap, Builtin::PromiseCallback(*id, callback))
 }
 
+/// Engine observers must receive a local rejection for an inaccessible result:
+/// rejecting only then's discarded derived promise would strand a combinator
+/// or skip finally's cleanup. No foreign value is delivered to either closure.
+pub(super) fn foreign_rejection_handler(
+    heap: &Heap,
+    fulfilled: &Value,
+    rejected: &Value,
+) -> Option<Value> {
+    let observer = |value: &Value| {
+        let Value::Object(id) = value else {
+            return false;
+        };
+        heap.read(*id, |o| {
+            matches!(
+                o,
+                HeapObject::Builtin(BuiltinFunction {
+                    which: Builtin::PromiseCallback(_, Callback::Element(_) | Callback::Finally(_)),
+                    ..
+                })
+            )
+        })
+        .unwrap_or(false)
+    };
+    (observer(fulfilled) || observer(rejected)).then(|| rejected.clone())
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Capability {
     pub(super) promise: Value,
@@ -298,6 +324,7 @@ impl State {
         rejected: bool,
         foreign: bool,
         forwarding: Option<ObjectId>,
+        foreign_handler: Option<Value>,
     ) -> Self {
         Self::Reaction(ReactionState {
             cap,
@@ -306,6 +333,7 @@ impl State {
             rejected,
             foreign,
             forwarding,
+            foreign_handler,
             stage: 0,
         })
     }
@@ -545,6 +573,7 @@ pub(crate) struct ReactionState {
     rejected: bool,
     foreign: bool,
     forwarding: Option<ObjectId>,
+    foreign_handler: Option<Value>,
     stage: u8,
 }
 impl ReactionState {
@@ -602,6 +631,12 @@ impl ReactionState {
             3 => {
                 self.value = result(input)?;
                 self.rejected = true;
+                if let Some(handler) = self.foreign_handler.take() {
+                    self.handler = handler;
+                    self.foreign = false;
+                    self.stage = 0;
+                    return Ok(Action::Continue);
+                }
                 if let Some(guard) = self.forwarding {
                     if let Some(target) = claim(heap, task, guard)? {
                         settle(heap, task, inbox, target, true, self.value.clone())?;
@@ -622,6 +657,9 @@ impl Trace for ReactionState {
         self.cap.trace(visit);
         self.handler.trace(visit);
         self.value.trace(visit);
+        if let Some(handler) = &self.foreign_handler {
+            handler.trace(visit);
+        }
         if let Some(guard) = self.forwarding {
             visit(guard.into());
         }

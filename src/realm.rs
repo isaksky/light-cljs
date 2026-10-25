@@ -3251,7 +3251,8 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 418); // Fourteen String prototype methods (-300).
+        // Fourteen String methods (-300), six Promise methods, species getter, and AggregateError's pair (-317).
+        assert_eq!(first.all.len(), 427);
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -3337,7 +3338,8 @@ mod tests {
         assert_eq!(Global::from_name("WeakSet"), Some(Global::WeakSet));
         assert_eq!(Global::from_u16(48), Some(Global::Boolean));
         assert_eq!(Global::from_name("Boolean"), Some(Global::Boolean));
-        assert_eq!(Global::from_u16(49), None);
+        assert_eq!(Global::from_u16(49), Some(Global::AggregateError));
+        assert_eq!(Global::from_u16(50), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose
