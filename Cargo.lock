@@ -368,6 +368,7 @@ dependencies = [
 name = "light-cljs"
 version = "0.1.0"
 dependencies = [
+ "big-boy-pants-js",
  "cc",
  "mimalloc",
  "rquickjs",

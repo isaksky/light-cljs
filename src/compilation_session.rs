@@ -2671,6 +2671,11 @@ fn prepare_engine(
     view: std::rc::Weak<dyn CatalogView>,
     binding: &EngineBinding,
 ) -> Result<(), String> {
+    if evaluator.native_forms() {
+        // This serial backend accepts already installed helpers only. Demand
+        // services require resumable compiler scheduling and are not installed.
+        return Ok(());
+    }
     install_catalog_services(
         evaluator,
         view,

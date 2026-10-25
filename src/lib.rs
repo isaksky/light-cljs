@@ -45,6 +45,8 @@ pub mod dev_session;
 pub mod emitter;
 pub mod eval_session;
 pub mod evaluator;
+#[cfg(feature = "bbp-macros")]
+pub mod bbp_evaluator;
 pub mod folding;
 pub mod generated_names;
 pub mod inference;

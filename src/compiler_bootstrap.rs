@@ -556,6 +556,9 @@ fn build_in(
     evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
     cache: bool,
 ) -> Result<Bootstrap, String> {
+    if evaluator.native_forms() {
+        return Ok(Bootstrap { evaluator, functions: HashMap::new(), dropped: Default::default() });
+    }
     let cached = if cache { UNITS.get() } else { None };
     // Compiling the units is the process's work, not the build's: the
     // engine's deadline and poll budget stand still meanwhile, so a build

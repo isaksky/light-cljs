@@ -40,7 +40,7 @@ fn main() {
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     // The embedded QuickJS, which Cargo.toml links on every target but wasm32
     // (light-cljs-357).
-    if arch != "wasm32" {
+    if arch != "wasm32" && env::var_os("CARGO_FEATURE_QUICKJS").is_some() {
         println!("cargo::rustc-cfg=light_quickjs");
     }
     if env::var_os("CARGO_FEATURE_V8_MACROS").is_some()
@@ -92,7 +92,7 @@ fn main() {
 /// crate's sources (the embedded runtime, bootstrap, core macros and
 /// bundled first-party libraries are under `src/`), this script, the
 /// manifest and lock file, and the vendored engines with their patches.
-const IDENTITY_INPUTS: [&str; 7] = [
+const IDENTITY_INPUTS: [&str; 9] = [
     "src",
     "build.rs",
     "Cargo.toml",
@@ -100,6 +100,8 @@ const IDENTITY_INPUTS: [&str; 7] = [
     "vendor/rquickjs-sys",
     "vendor/v8",
     "vendor/v8-headers",
+    "crates/big-boy-pants-js/src",
+    "crates/big-boy-pants-js/Cargo.toml",
 ];
 
 /// The SHA-256 identity of the compiler being built, which every cache key

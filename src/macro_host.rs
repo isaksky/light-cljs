@@ -611,6 +611,7 @@ impl MacroEnvironment {
 /// refuses.
 #[derive(Clone, Default)]
 pub(crate) struct MacroTables {
+    pub(crate) native_macros: bool,
     data_readers: std::sync::Arc<DataReaderSources>,
     imports: crate::layered::Layered<String, Vec<MacroImport>>,
     renames: crate::layered::Layered<String, Vec<(String, String, String)>>,
@@ -894,6 +895,12 @@ impl MacroHost {
         std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
         crate::evaluator::EvalError,
     > {
+        #[cfg(feature = "bbp-macros")]
+        if (self.tables.native_macros || !cfg!(any(light_quickjs, light_v8))) && !self.tables.interactive {
+            let evaluator = crate::bbp_evaluator::BbpEvaluator::new(self.evaluator_options.clone())?;
+            self.prepare_compiler_evaluator(&evaluator)?;
+            return Ok(std::rc::Rc::new(evaluator));
+        }
         if let Some(host) = &self.engine.script_host
             && !self.tables.interactive
         {
@@ -1104,6 +1111,12 @@ impl MacroHost {
     /// readers keep the built-in QuickJS.
     pub fn set_script_host(&mut self, host: std::rc::Rc<dyn crate::host_evaluator::ScriptHost>) {
         self.engine.script_host = Some(host);
+    }
+
+    /// Select the experimental serial native-form macro backend for this host.
+    #[cfg(feature = "bbp-macros")]
+    pub fn use_native_macros(&mut self) {
+        self.tables.native_macros = true;
     }
     /// Control assertion emission for this host (enabled by default). Disabled
     /// assertions omit both condition and message, including function pre/post checks.

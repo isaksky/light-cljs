@@ -255,6 +255,11 @@ pub fn compiler_identity(host: &MacroHost) -> Digest {
         fingerprint.text("host").text(&script.engine());
         return fingerprint.finish();
     }
+    #[cfg(feature = "bbp-macros")]
+    if (host.tables.native_macros || !cfg!(any(light_quickjs, light_v8))) && !host.tables.interactive {
+        fingerprint.text("big-boy-pants-js").text("native-forms-1");
+        return fingerprint.finish();
+    }
     #[cfg(light_v8)]
     if !host.tables.interactive {
         fingerprint.text("v8").text(v8::V8::get_version());

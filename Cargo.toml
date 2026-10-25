@@ -23,7 +23,7 @@ big-boy-pants-js = { path = "crates/big-boy-pants-js" }
 # compile-time engine without V8). WebAssembly builds leave it out: their
 # embedder supplies the engine (`host_evaluator::ScriptHost`, light-cljs-357).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
+rquickjs = { version = "=0.14.0", optional = true, default-features = false, features = ["std"] }
 mimalloc = "=0.1.52"
 
 [target.'cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), any(target_os = "macos", target_os = "linux", target_os = "windows")))'.dependencies]
@@ -33,12 +33,17 @@ v8 = { version = "=152.2.0", path = "vendor/v8", optional = true, features = ["v
 cc = "=1.7.0"
 
 [features]
-default = ["v8-macros"]
+default = ["v8-macros", "quickjs"]
+quickjs = ["dep:rquickjs"]
+bbp-macros = ["dep:big-boy-pants-js"]
 # Native clean compilations use V8; interactive sessions use QuickJS, and wasm
 # embeds no engine (light-cljs-357).
 v8-macros = ["dep:v8"]
 # Benchmark-only allocation instrumentation, absent from normal timing runs.
 count-allocations = []
+
+[dependencies]
+big-boy-pants-js = { workspace = true, optional = true }
 
 [[bench]]
 name = "tokenizer"

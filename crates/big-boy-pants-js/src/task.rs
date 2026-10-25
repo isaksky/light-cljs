@@ -641,6 +641,31 @@ pub struct RunGuard<'t> {
 }
 
 impl Task {
+    /// Snapshot an own data property of this task's global object without
+    /// executing JavaScript. Accessors and absent properties return `None`.
+    /// The rooted value survives collection; this does not publish task-owned
+    /// objects or grant another task permission to access them.
+    pub fn global_value(&self, name: &str) -> Result<Option<Rooted>, RunError> {
+        if crate::host::inside_effect() {
+            return Err(RunError::InsideHostEffect);
+        }
+        let _access = self.0.heap.enter_mutator(Access::Op);
+        let body = self.0.body.try_lock().map_err(|error| match error {
+            std::sync::TryLockError::WouldBlock => RunError::AlreadyRunning,
+            std::sync::TryLockError::Poisoned(_) => RunError::Poisoned,
+        })?;
+        let TaskBody::Ready(vm) = &*body else {
+            return Err(RunError::Finished);
+        };
+        let Some(global) = vm.global_object else { return Ok(None) };
+        let property = crate::vm::property::get_own_property(
+            &self.0.heap, self.0.id, global,
+            &crate::vm::property::Key::Name(crate::JsString::from(name)),
+        ).map_err(|_| RunError::Poisoned)?;
+        Ok(property.filter(|p| p.accessor.is_none())
+            .map(|p| Rooted::new(&self.0.heap, p.value)))
+    }
+
     /// Install the optional QuickJS-style `std.gc`, `os.setTimeout` and
     /// `os.clearTimeout` test/host bindings on this task. Absent by default.
     /// Repeated installation preserves existing virtual time and timers.
