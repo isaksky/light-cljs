@@ -1263,6 +1263,38 @@ impl MacroHost {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_source_macro_preserves_datum_identity_across_expansions() {
+        let mut host = crate::MacroHost::new();
+        host.use_native_macros();
+        let source = "(defmacro same [x] x)";
+        crate::analyze_with_macros(source, &crate::parse(source).unwrap(), &mut host).unwrap();
+        let call = host
+            .read_compiler_form(&crate::compiler_data::Source::new(
+                "source-identity.cljs",
+                "(same ^{:m 1} [9007199254740993 \\a])",
+            ))
+            .unwrap()
+            .unwrap();
+        let original = call.children()[1].clone();
+        let environment =
+            crate::compiler_data::Datum::new(crate::compiler_data::DatumKind::Collection {
+                kind: crate::CollectionKind::Map,
+                children: Box::new([]),
+            });
+        for i in 0..2 {
+            let expanded = host
+                .expand_source_javascript("cljs.user", "same", &call, &environment, None)
+                .unwrap();
+            assert!(std::ptr::eq(expanded.data().kind(), original.data().kind()));
+            assert_eq!(expanded.span().bytes(), original.span().bytes());
+            assert_eq!(host.native_macro_calls()[i].exported, 0);
+            assert_eq!(host.native_macro_calls()[i].reused, 1);
+        }
+        assert_eq!(host.native_macro_calls()[1].imported, 0);
+    }
+
     use super::*;
 
     fn collection(kind: crate::parser::CollectionKind, children: Vec<Datum>) -> Datum {

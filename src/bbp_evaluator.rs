@@ -101,7 +101,9 @@ impl Bridge {
                     C::Vector => s.new_form_vector(&values),
                     C::Map => s.new_form_map(
                         &values
-                            .chunks_exact(2)
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
                             .map(|p| (p[0], p[1]))
                             .collect::<Vec<_>>(),
                     ),
@@ -228,18 +230,16 @@ impl Bridge {
             self.stats.reused += 1;
             return Ok(data.clone());
         }
-        if let Ok(p) = s.provenance(v) {
-            if let Some((data, root)) = self
+        if let Ok(p) = s.provenance(v)
+            && let Some((data, root)) = self
                 .tokens
                 .get(p.source as usize)
                 .and_then(|key| self.imports.get(key))
-            {
-                if s.same_object(v, s.local(root).map_err(error)?) {
-                    self.charge(data, depth, remaining)?;
-                    self.stats.reused += 1;
-                    return Ok(data.clone());
-                }
-            }
+            && s.same_object(v, s.local(root).map_err(error)?)
+        {
+            self.charge(data, depth, remaining)?;
+            self.stats.reused += 1;
+            return Ok(data.clone());
         }
         if depth == 0 || *remaining == 0 {
             return Err(error("form conversion limit exceeded"));

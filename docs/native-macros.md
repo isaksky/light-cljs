@@ -5,6 +5,7 @@ QuickJS:
 
 ```sh
 cargo test --locked --no-default-features --features bbp-macros --test bbp_macros
+cargo test --locked --no-default-features --features bbp-macros --lib native_source_macro_preserves_datum_identity
 cargo build --locked --no-default-features --features bbp-macros
 cargo tree --locked --no-default-features --features bbp-macros -e normal
 ```
