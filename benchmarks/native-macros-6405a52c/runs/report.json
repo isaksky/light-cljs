@@ -1,0 +1,2998 @@
+{
+  "samples" : [ {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : null,
+    "exit" : 0,
+    "js-sha256" : "cb242754e411227d0fe5e518c1e87cf4071a6710feee99492d00b1eb13de2c49",
+    "map-sha256" : "cf9f373e1b5803e169795a3319e0c73e2bb4d8356bc54de1cd919ef4b3a9c426",
+    "wall-seconds" : 0.019487166,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.collections", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 1,
+    "round" : 1,
+    "status" : "ok",
+    "result" : "(1 2) ([:a 1]) (\"a\" \"b\")\ntrue true true true\ntrue true true true true\n2\n",
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 1,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/001-collections-bbp-macros-j1/trace.tsv",
+    "units" : [ ],
+    "fixture" : "collections",
+    "node-command" : [ "node", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/001-collections-bbp-macros-j1/out.js" ],
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : {
+      "deferred-units.analyzed" : 0.0,
+      "deferred-units.executed" : 0.0,
+      "deferred-units.macro-free" : 0.0,
+      "deferred-units.prepared" : 0.0,
+      "deferred-units.registered" : 0.0,
+      "light-cljs-stats" : 1.0,
+      "macro-calls" : 17.0,
+      "macro-nodes.peak" : 81.0,
+      "macro.bridge.0.exported" : 3.0,
+      "macro.bridge.0.imported" : 112.0,
+      "macro.bridge.0.ns" : 74084.0,
+      "macro.bridge.0.reused" : 2.0,
+      "macro.bridge.1.exported" : 4.0,
+      "macro.bridge.1.imported" : 14.0,
+      "macro.bridge.1.ns" : 15416.0,
+      "macro.bridge.1.reused" : 2.0,
+      "macro.bridge.10.exported" : 1.0,
+      "macro.bridge.10.imported" : 12.0,
+      "macro.bridge.10.ns" : 5750.0,
+      "macro.bridge.10.reused" : 0.0,
+      "macro.bridge.11.exported" : 1.0,
+      "macro.bridge.11.imported" : 12.0,
+      "macro.bridge.11.ns" : 6501.0,
+      "macro.bridge.11.reused" : 0.0,
+      "macro.bridge.12.exported" : 1.0,
+      "macro.bridge.12.imported" : 12.0,
+      "macro.bridge.12.ns" : 5875.0,
+      "macro.bridge.12.reused" : 0.0,
+      "macro.bridge.2.exported" : 5.0,
+      "macro.bridge.2.imported" : 12.0,
+      "macro.bridge.2.ns" : 10001.0,
+      "macro.bridge.2.reused" : 0.0,
+      "macro.bridge.3.exported" : 1.0,
+      "macro.bridge.3.imported" : 13.0,
+      "macro.bridge.3.ns" : 9918.0,
+      "macro.bridge.3.reused" : 0.0,
+      "macro.bridge.4.exported" : 1.0,
+      "macro.bridge.4.imported" : 14.0,
+      "macro.bridge.4.ns" : 8209.0,
+      "macro.bridge.4.reused" : 0.0,
+      "macro.bridge.5.exported" : 1.0,
+      "macro.bridge.5.imported" : 12.0,
+      "macro.bridge.5.ns" : 6207.0,
+      "macro.bridge.5.reused" : 0.0,
+      "macro.bridge.6.exported" : 1.0,
+      "macro.bridge.6.imported" : 13.0,
+      "macro.bridge.6.ns" : 6877.0,
+      "macro.bridge.6.reused" : 0.0,
+      "macro.bridge.7.exported" : 1.0,
+      "macro.bridge.7.imported" : 12.0,
+      "macro.bridge.7.ns" : 7086.0,
+      "macro.bridge.7.reused" : 0.0,
+      "macro.bridge.8.exported" : 1.0,
+      "macro.bridge.8.imported" : 12.0,
+      "macro.bridge.8.ns" : 5876.0,
+      "macro.bridge.8.reused" : 0.0,
+      "macro.bridge.9.exported" : 1.0,
+      "macro.bridge.9.imported" : 12.0,
+      "macro.bridge.9.ns" : 10834.0,
+      "macro.bridge.9.reused" : 0.0,
+      "memory.live.artifacts" : 0.0,
+      "memory.live.bridge-payloads" : 0.0,
+      "memory.live.engine-handles" : 0.0,
+      "memory.live.engines" : 0.0,
+      "memory.parsed-trees.peak-bytes" : 6503.0,
+      "memory.parsed-trees.peak-files" : 1.0,
+      "memory.peak-rss-bytes" : 2.0611072E7,
+      "memory.queued-ir.peak-bytes" : 0.0,
+      "memory.queued-ir.peak-units" : 0.0,
+      "namespaces" : 1.0,
+      "native-bench.collections" : 17.0,
+      "time.analysis-ms" : 8.3,
+      "time.deferred-units-ms" : 0.0,
+      "time.emission-ms" : 3.8,
+      "time.macro-free-units-ms" : 0.0,
+      "time.prepare-application-ms" : 0.0,
+      "time.resolve-parse-ms" : 0.4,
+      "time.wall-ms" : 13.4,
+      "time.write-ms" : 0.6,
+      "trace.append-ms" : 0.0,
+      "trace.drain-ms" : 0.0,
+      "trace.drain.bookkeeping-ms" : 0.0,
+      "trace.drain.macro-free.max" : 0.0,
+      "trace.drain.width.max" : 0.0,
+      "trace.drains" : 0.0,
+      "trace.engine-ms" : 0.0,
+      "trace.engine.entries" : 0.0,
+      "trace.engine.outer-ms" : 0.0,
+      "trace.executions" : 0.0,
+      "trace.executions.unprepared" : 0.0,
+      "trace.finish-ms" : 0.0,
+      "trace.index-ms" : 0.0,
+      "trace.load-ms" : 0.4,
+      "trace.other-ms" : 0.2,
+      "trace.prepare-source-ms" : 0.1,
+      "trace.reads" : 0.0,
+      "trace.reads.cross-namespace" : 0.0,
+      "trace.registrations" : 0.0,
+      "trace.registrations.added-namespaces" : 0.0,
+      "trace.registrations.empty" : 0.0,
+      "trace.registrations.full-namespaces" : 0.0,
+      "trace.registrations.restarts" : 0.0,
+      "trace.release-ms" : 0.0,
+      "trace.top-level-ms" : 8.0,
+      "trace.top-level.engine-ms" : 0.0,
+      "trace.top-level.wait-ms" : 0.0,
+      "trace.unit-ms" : 0.0,
+      "trace.unit.engine-ms" : 0.0,
+      "trace.unit.longest-ms" : 0.0,
+      "trace.units" : 0.0,
+      "trace.units.demanded-by-top-level" : 0.0,
+      "trace.units.demanded-by-unit" : 0.0,
+      "trace.units.drained" : 0.0,
+      "trace.units.host" : 0.0,
+      "trace.units.host-ms" : 0.0,
+      "trace.units.without-macro-calls" : 0.0,
+      "trace.wait-ms" : 0.0,
+      "trace.wall-ms" : 8.7,
+      "trace.warnings-ms" : 0.0
+    },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 20676608,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.019487166,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.0,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "value" : 172634.0,
+        "unit" : "nanoseconds"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/001-collections-bbp-macros-j1"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : "light-cljs: big-boy-pants-js: unsupported operation: native macro compilation requires --jobs 1\n        0.00 real         0.00 user         0.00 sys\n             5455872  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                 618  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                   6  involuntary context switches\n             3425088  peak memory footprint\n",
+    "exit" : 1,
+    "js-sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "map-sha256" : null,
+    "wall-seconds" : 0.005237417,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.collections", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "2", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 2,
+    "round" : 1,
+    "status" : "unsupported",
+    "result" : null,
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 2,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/002-collections-bbp-macros-j2/trace.tsv",
+    "units" : [ ],
+    "fixture" : "collections",
+    "node-command" : null,
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : { },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 5455872,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.005237417,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.0,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "unavailable" : "No macro.bridge.N.ns counters in CLI stats"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/002-collections-bbp-macros-j2"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : "light-cljs: big-boy-pants-js: unsupported operation: native macro compilation requires --jobs 1\n        0.00 real         0.00 user         0.00 sys\n             5734400  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                 640  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  12  involuntary context switches\n             3720064  peak memory footprint\n",
+    "exit" : 1,
+    "js-sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "map-sha256" : null,
+    "wall-seconds" : 0.004474042,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.collections", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "4", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 4,
+    "round" : 1,
+    "status" : "unsupported",
+    "result" : null,
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 3,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/003-collections-bbp-macros-j4/trace.tsv",
+    "units" : [ ],
+    "fixture" : "collections",
+    "node-command" : null,
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : { },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 5734400,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.004474042,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.0,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "unavailable" : "No macro.bridge.N.ns counters in CLI stats"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/003-collections-bbp-macros-j4"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : "light-cljs: big-boy-pants-js: unsupported operation: native macro compilation requires --jobs 1\n        0.00 real         0.00 user         0.00 sys\n             6144000  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                 669  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  34  involuntary context switches\n             4211776  peak memory footprint\n",
+    "exit" : 1,
+    "js-sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "map-sha256" : null,
+    "wall-seconds" : 0.004721584,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.collections", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "8", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 8,
+    "round" : 1,
+    "status" : "unsupported",
+    "result" : null,
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 4,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/004-collections-bbp-macros-j8/trace.tsv",
+    "units" : [ ],
+    "fixture" : "collections",
+    "node-command" : null,
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : { },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 6144000,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.004721584,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.0,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "unavailable" : "No macro.bridge.N.ns counters in CLI stats"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/004-collections-bbp-macros-j8"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : null,
+    "exit" : 0,
+    "js-sha256" : "1d94b8acfcf818a54fcf4fa76f790353939831747eb2b8c53652a69c1b448036",
+    "map-sha256" : "31700664cc31df910a9084d153d061b0439060c4bf8654570d033dc419228a65",
+    "wall-seconds" : 0.015175875,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.environment", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 1,
+    "round" : 1,
+    "status" : "ok",
+    "result" : "native-bench.environment native-bench.environment native-bench.environment native-bench.environment\nnative-bench.environment native-bench.environment native-bench.environment native-bench.environment\n1 1 1 1\n42 42\n42 42\n",
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 5,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/005-environment-bbp-macros-j1/trace.tsv",
+    "units" : [ ],
+    "fixture" : "environment",
+    "node-command" : [ "node", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/005-environment-bbp-macros-j1/out.js" ],
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : {
+      "deferred-units.analyzed" : 0.0,
+      "deferred-units.executed" : 0.0,
+      "deferred-units.macro-free" : 0.0,
+      "deferred-units.prepared" : 0.0,
+      "deferred-units.registered" : 0.0,
+      "light-cljs-stats" : 1.0,
+      "macro-calls" : 20.0,
+      "macro-nodes.peak" : 116.0,
+      "macro.bridge.0.exported" : 2.0,
+      "macro.bridge.0.imported" : 107.0,
+      "macro.bridge.0.ns" : 62042.0,
+      "macro.bridge.0.reused" : 1.0,
+      "macro.bridge.1.exported" : 2.0,
+      "macro.bridge.1.imported" : 11.0,
+      "macro.bridge.1.ns" : 14207.0,
+      "macro.bridge.1.reused" : 1.0,
+      "macro.bridge.10.exported" : 1.0,
+      "macro.bridge.10.imported" : 11.0,
+      "macro.bridge.10.ns" : 7291.0,
+      "macro.bridge.10.reused" : 0.0,
+      "macro.bridge.11.exported" : 1.0,
+      "macro.bridge.11.imported" : 11.0,
+      "macro.bridge.11.ns" : 12416.0,
+      "macro.bridge.11.reused" : 0.0,
+      "macro.bridge.12.exported" : 4.0,
+      "macro.bridge.12.imported" : 15.0,
+      "macro.bridge.12.ns" : 11418.0,
+      "macro.bridge.12.reused" : 3.0,
+      "macro.bridge.13.exported" : 4.0,
+      "macro.bridge.13.imported" : 15.0,
+      "macro.bridge.13.ns" : 8748.0,
+      "macro.bridge.13.reused" : 3.0,
+      "macro.bridge.14.exported" : 3.0,
+      "macro.bridge.14.imported" : 12.0,
+      "macro.bridge.14.ns" : 7666.0,
+      "macro.bridge.14.reused" : 1.0,
+      "macro.bridge.15.exported" : 3.0,
+      "macro.bridge.15.imported" : 12.0,
+      "macro.bridge.15.ns" : 7877.0,
+      "macro.bridge.15.reused" : 1.0,
+      "macro.bridge.2.exported" : 2.0,
+      "macro.bridge.2.imported" : 11.0,
+      "macro.bridge.2.ns" : 8667.0,
+      "macro.bridge.2.reused" : 1.0,
+      "macro.bridge.3.exported" : 2.0,
+      "macro.bridge.3.imported" : 11.0,
+      "macro.bridge.3.ns" : 9749.0,
+      "macro.bridge.3.reused" : 1.0,
+      "macro.bridge.4.exported" : 2.0,
+      "macro.bridge.4.imported" : 11.0,
+      "macro.bridge.4.ns" : 8792.0,
+      "macro.bridge.4.reused" : 1.0,
+      "macro.bridge.5.exported" : 2.0,
+      "macro.bridge.5.imported" : 11.0,
+      "macro.bridge.5.ns" : 5708.0,
+      "macro.bridge.5.reused" : 1.0,
+      "macro.bridge.6.exported" : 2.0,
+      "macro.bridge.6.imported" : 11.0,
+      "macro.bridge.6.ns" : 5916.0,
+      "macro.bridge.6.reused" : 1.0,
+      "macro.bridge.7.exported" : 2.0,
+      "macro.bridge.7.imported" : 11.0,
+      "macro.bridge.7.ns" : 7834.0,
+      "macro.bridge.7.reused" : 1.0,
+      "macro.bridge.8.exported" : 1.0,
+      "macro.bridge.8.imported" : 11.0,
+      "macro.bridge.8.ns" : 6917.0,
+      "macro.bridge.8.reused" : 0.0,
+      "macro.bridge.9.exported" : 1.0,
+      "macro.bridge.9.imported" : 11.0,
+      "macro.bridge.9.ns" : 5708.0,
+      "macro.bridge.9.reused" : 0.0,
+      "memory.live.artifacts" : 0.0,
+      "memory.live.bridge-payloads" : 0.0,
+      "memory.live.engine-handles" : 0.0,
+      "memory.live.engines" : 0.0,
+      "memory.parsed-trees.peak-bytes" : 6814.0,
+      "memory.parsed-trees.peak-files" : 1.0,
+      "memory.peak-rss-bytes" : 2.0627456E7,
+      "memory.queued-ir.peak-bytes" : 0.0,
+      "memory.queued-ir.peak-units" : 0.0,
+      "namespaces" : 1.0,
+      "native-bench.environment" : 20.0,
+      "time.analysis-ms" : 6.7,
+      "time.deferred-units-ms" : 0.0,
+      "time.emission-ms" : 3.3,
+      "time.macro-free-units-ms" : 0.0,
+      "time.prepare-application-ms" : 0.0,
+      "time.resolve-parse-ms" : 0.1,
+      "time.wall-ms" : 10.8,
+      "time.write-ms" : 0.6,
+      "trace.append-ms" : 0.0,
+      "trace.drain-ms" : 0.0,
+      "trace.drain.bookkeeping-ms" : 0.0,
+      "trace.drain.macro-free.max" : 0.0,
+      "trace.drain.width.max" : 0.0,
+      "trace.drains" : 0.0,
+      "trace.engine-ms" : 0.0,
+      "trace.engine.entries" : 0.0,
+      "trace.engine.outer-ms" : 0.0,
+      "trace.executions" : 0.0,
+      "trace.executions.unprepared" : 0.0,
+      "trace.finish-ms" : 0.0,
+      "trace.index-ms" : 0.0,
+      "trace.load-ms" : 0.1,
+      "trace.other-ms" : 0.0,
+      "trace.prepare-source-ms" : 0.0,
+      "trace.reads" : 0.0,
+      "trace.reads.cross-namespace" : 0.0,
+      "trace.registrations" : 0.0,
+      "trace.registrations.added-namespaces" : 0.0,
+      "trace.registrations.empty" : 0.0,
+      "trace.registrations.full-namespaces" : 0.0,
+      "trace.registrations.restarts" : 0.0,
+      "trace.release-ms" : 0.0,
+      "trace.top-level-ms" : 6.6,
+      "trace.top-level.engine-ms" : 0.0,
+      "trace.top-level.wait-ms" : 0.0,
+      "trace.unit-ms" : 0.0,
+      "trace.unit.engine-ms" : 0.0,
+      "trace.unit.longest-ms" : 0.0,
+      "trace.units" : 0.0,
+      "trace.units.demanded-by-top-level" : 0.0,
+      "trace.units.demanded-by-unit" : 0.0,
+      "trace.units.drained" : 0.0,
+      "trace.units.host" : 0.0,
+      "trace.units.host-ms" : 0.0,
+      "trace.units.without-macro-calls" : 0.0,
+      "trace.wait-ms" : 0.0,
+      "trace.wall-ms" : 6.7,
+      "trace.warnings-ms" : 0.0
+    },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 20692992,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.015175875,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.01,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "value" : 190956.0,
+        "unit" : "nanoseconds"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/005-environment-bbp-macros-j1"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : "light-cljs: big-boy-pants-js: unsupported operation: native macro compilation requires --jobs 1\n        0.00 real         0.00 user         0.00 sys\n             5439488  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                 617  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                   6  involuntary context switches\n             3425152  peak memory footprint\n",
+    "exit" : 1,
+    "js-sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "map-sha256" : null,
+    "wall-seconds" : 0.005152833,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.environment", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "2", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 2,
+    "round" : 1,
+    "status" : "unsupported",
+    "result" : null,
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 6,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/006-environment-bbp-macros-j2/trace.tsv",
+    "units" : [ ],
+    "fixture" : "environment",
+    "node-command" : null,
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : { },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 5439488,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.005152833,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.0,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "unavailable" : "No macro.bridge.N.ns counters in CLI stats"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/006-environment-bbp-macros-j2"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : "light-cljs: big-boy-pants-js: unsupported operation: native macro compilation requires --jobs 1\n        0.00 real         0.00 user         0.00 sys\n             5652480  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                 634  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  12  involuntary context switches\n             3654592  peak memory footprint\n",
+    "exit" : 1,
+    "js-sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "map-sha256" : null,
+    "wall-seconds" : 0.004846334,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.environment", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "4", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 4,
+    "round" : 1,
+    "status" : "unsupported",
+    "result" : null,
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 7,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/007-environment-bbp-macros-j4/trace.tsv",
+    "units" : [ ],
+    "fixture" : "environment",
+    "node-command" : null,
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : { },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 5652480,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.004846334,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.0,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "unavailable" : "No macro.bridge.N.ns counters in CLI stats"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/007-environment-bbp-macros-j4"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : "light-cljs: big-boy-pants-js: unsupported operation: native macro compilation requires --jobs 1\n        0.00 real         0.00 user         0.00 sys\n             6144000  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                 668  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  34  involuntary context switches\n             4162560  peak memory footprint\n",
+    "exit" : 1,
+    "js-sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "map-sha256" : null,
+    "wall-seconds" : 0.00465325,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.environment", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "8", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 8,
+    "round" : 1,
+    "status" : "unsupported",
+    "result" : null,
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 8,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/008-environment-bbp-macros-j8/trace.tsv",
+    "units" : [ ],
+    "fixture" : "environment",
+    "node-command" : null,
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : { },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 6144000,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.00465325,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.0,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "unavailable" : "No macro.bridge.N.ns counters in CLI stats"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/008-environment-bbp-macros-j8"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : "light-cljs: /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros/native_bench/helper.cljs:7:25: macro expansion: while expanding via-helper: /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros/native_bench/helper.cljs:7:25: macro native-bench.helper/via-helper: big-boy-pants-js: Error: unsupported operation: helper not preloaded: native-bench.helper/demanded; definition /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros/native_bench/helper.cljs:3:1 (bytes 290..305)\n        0.00 real         0.00 user         0.00 sys\n            14270464  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                1171  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  13  involuntary context switches\n             8110976  peak memory footprint\n",
+    "exit" : 1,
+    "js-sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "map-sha256" : null,
+    "wall-seconds" : 0.010323042,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.helper", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 1,
+    "round" : 1,
+    "status" : "unsupported",
+    "result" : null,
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 9,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/009-helper-bbp-macros-j1/trace.tsv",
+    "units" : [ ],
+    "fixture" : "helper",
+    "node-command" : null,
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : { },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 14270464,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.010323042,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.0,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "unavailable" : "No macro.bridge.N.ns counters in CLI stats"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/009-helper-bbp-macros-j1"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : "light-cljs: big-boy-pants-js: unsupported operation: native macro compilation requires --jobs 1\n        0.00 real         0.00 user         0.00 sys\n             5439488  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                 617  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                   6  involuntary context switches\n             3425152  peak memory footprint\n",
+    "exit" : 1,
+    "js-sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "map-sha256" : null,
+    "wall-seconds" : 0.004295166,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.helper", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "2", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 2,
+    "round" : 1,
+    "status" : "unsupported",
+    "result" : null,
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 10,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/010-helper-bbp-macros-j2/trace.tsv",
+    "units" : [ ],
+    "fixture" : "helper",
+    "node-command" : null,
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : { },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 5439488,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.004295166,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.0,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "unavailable" : "No macro.bridge.N.ns counters in CLI stats"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/010-helper-bbp-macros-j2"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : "light-cljs: big-boy-pants-js: unsupported operation: native macro compilation requires --jobs 1\n        0.00 real         0.00 user         0.00 sys\n             5799936  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                 644  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  14  involuntary context switches\n             3818432  peak memory footprint\n",
+    "exit" : 1,
+    "js-sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "map-sha256" : null,
+    "wall-seconds" : 0.004274875,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.helper", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "4", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 4,
+    "round" : 1,
+    "status" : "unsupported",
+    "result" : null,
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 11,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/011-helper-bbp-macros-j4/trace.tsv",
+    "units" : [ ],
+    "fixture" : "helper",
+    "node-command" : null,
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : { },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 5799936,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.004274875,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.0,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "unavailable" : "No macro.bridge.N.ns counters in CLI stats"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/011-helper-bbp-macros-j4"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : "light-cljs: big-boy-pants-js: unsupported operation: native macro compilation requires --jobs 1\n        0.00 real         0.00 user         0.00 sys\n             5947392  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n                 662  page reclaims\n                   0  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   0  voluntary context switches\n                  26  involuntary context switches\n             4064256  peak memory footprint\n",
+    "exit" : 1,
+    "js-sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "map-sha256" : null,
+    "wall-seconds" : 0.004651375,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.helper", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "8", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 8,
+    "round" : 1,
+    "status" : "unsupported",
+    "result" : null,
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 12,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/012-helper-bbp-macros-j8/trace.tsv",
+    "units" : [ ],
+    "fixture" : "helper",
+    "node-command" : null,
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : { },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 5947392,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.004651375,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.0,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "unavailable" : "No macro.bridge.N.ns counters in CLI stats"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/012-helper-bbp-macros-j8"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : null,
+    "exit" : 0,
+    "js-sha256" : "cb242754e411227d0fe5e518c1e87cf4071a6710feee99492d00b1eb13de2c49",
+    "map-sha256" : "cf9f373e1b5803e169795a3319e0c73e2bb4d8356bc54de1cd919ef4b3a9c426",
+    "wall-seconds" : 0.0154075,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.collections", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 1,
+    "round" : 2,
+    "status" : "ok",
+    "result" : "(1 2) ([:a 1]) (\"a\" \"b\")\ntrue true true true\ntrue true true true true\n2\n",
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 13,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/013-collections-bbp-macros-j1/trace.tsv",
+    "units" : [ ],
+    "fixture" : "collections",
+    "node-command" : [ "node", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/013-collections-bbp-macros-j1/out.js" ],
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : {
+      "deferred-units.analyzed" : 0.0,
+      "deferred-units.executed" : 0.0,
+      "deferred-units.macro-free" : 0.0,
+      "deferred-units.prepared" : 0.0,
+      "deferred-units.registered" : 0.0,
+      "light-cljs-stats" : 1.0,
+      "macro-calls" : 17.0,
+      "macro-nodes.peak" : 81.0,
+      "macro.bridge.0.exported" : 3.0,
+      "macro.bridge.0.imported" : 112.0,
+      "macro.bridge.0.ns" : 70624.0,
+      "macro.bridge.0.reused" : 2.0,
+      "macro.bridge.1.exported" : 4.0,
+      "macro.bridge.1.imported" : 14.0,
+      "macro.bridge.1.ns" : 18581.0,
+      "macro.bridge.1.reused" : 2.0,
+      "macro.bridge.10.exported" : 1.0,
+      "macro.bridge.10.imported" : 12.0,
+      "macro.bridge.10.ns" : 6794.0,
+      "macro.bridge.10.reused" : 0.0,
+      "macro.bridge.11.exported" : 1.0,
+      "macro.bridge.11.imported" : 12.0,
+      "macro.bridge.11.ns" : 7542.0,
+      "macro.bridge.11.reused" : 0.0,
+      "macro.bridge.12.exported" : 1.0,
+      "macro.bridge.12.imported" : 12.0,
+      "macro.bridge.12.ns" : 6750.0,
+      "macro.bridge.12.reused" : 0.0,
+      "macro.bridge.2.exported" : 5.0,
+      "macro.bridge.2.imported" : 12.0,
+      "macro.bridge.2.ns" : 11501.0,
+      "macro.bridge.2.reused" : 0.0,
+      "macro.bridge.3.exported" : 1.0,
+      "macro.bridge.3.imported" : 13.0,
+      "macro.bridge.3.ns" : 11165.0,
+      "macro.bridge.3.reused" : 0.0,
+      "macro.bridge.4.exported" : 1.0,
+      "macro.bridge.4.imported" : 14.0,
+      "macro.bridge.4.ns" : 8957.0,
+      "macro.bridge.4.reused" : 0.0,
+      "macro.bridge.5.exported" : 1.0,
+      "macro.bridge.5.imported" : 12.0,
+      "macro.bridge.5.ns" : 6875.0,
+      "macro.bridge.5.reused" : 0.0,
+      "macro.bridge.6.exported" : 1.0,
+      "macro.bridge.6.imported" : 13.0,
+      "macro.bridge.6.ns" : 7793.0,
+      "macro.bridge.6.reused" : 0.0,
+      "macro.bridge.7.exported" : 1.0,
+      "macro.bridge.7.imported" : 12.0,
+      "macro.bridge.7.ns" : 8250.0,
+      "macro.bridge.7.reused" : 0.0,
+      "macro.bridge.8.exported" : 1.0,
+      "macro.bridge.8.imported" : 12.0,
+      "macro.bridge.8.ns" : 7210.0,
+      "macro.bridge.8.reused" : 0.0,
+      "macro.bridge.9.exported" : 1.0,
+      "macro.bridge.9.imported" : 12.0,
+      "macro.bridge.9.ns" : 12876.0,
+      "macro.bridge.9.reused" : 0.0,
+      "memory.live.artifacts" : 0.0,
+      "memory.live.bridge-payloads" : 0.0,
+      "memory.live.engine-handles" : 0.0,
+      "memory.live.engines" : 0.0,
+      "memory.parsed-trees.peak-bytes" : 6503.0,
+      "memory.parsed-trees.peak-files" : 1.0,
+      "memory.peak-rss-bytes" : 2.064384E7,
+      "memory.queued-ir.peak-bytes" : 0.0,
+      "memory.queued-ir.peak-units" : 0.0,
+      "namespaces" : 1.0,
+      "native-bench.collections" : 17.0,
+      "time.analysis-ms" : 6.7,
+      "time.deferred-units-ms" : 0.0,
+      "time.emission-ms" : 3.3,
+      "time.macro-free-units-ms" : 0.0,
+      "time.prepare-application-ms" : 0.0,
+      "time.resolve-parse-ms" : 0.1,
+      "time.wall-ms" : 10.8,
+      "time.write-ms" : 0.6,
+      "trace.append-ms" : 0.0,
+      "trace.drain-ms" : 0.0,
+      "trace.drain.bookkeeping-ms" : 0.0,
+      "trace.drain.macro-free.max" : 0.0,
+      "trace.drain.width.max" : 0.0,
+      "trace.drains" : 0.0,
+      "trace.engine-ms" : 0.0,
+      "trace.engine.entries" : 0.0,
+      "trace.engine.outer-ms" : 0.0,
+      "trace.executions" : 0.0,
+      "trace.executions.unprepared" : 0.0,
+      "trace.finish-ms" : 0.0,
+      "trace.index-ms" : 0.0,
+      "trace.load-ms" : 0.1,
+      "trace.other-ms" : 0.0,
+      "trace.prepare-source-ms" : 0.0,
+      "trace.reads" : 0.0,
+      "trace.reads.cross-namespace" : 0.0,
+      "trace.registrations" : 0.0,
+      "trace.registrations.added-namespaces" : 0.0,
+      "trace.registrations.empty" : 0.0,
+      "trace.registrations.full-namespaces" : 0.0,
+      "trace.registrations.restarts" : 0.0,
+      "trace.release-ms" : 0.0,
+      "trace.top-level-ms" : 6.6,
+      "trace.top-level.engine-ms" : 0.0,
+      "trace.top-level.wait-ms" : 0.0,
+      "trace.unit-ms" : 0.0,
+      "trace.unit.engine-ms" : 0.0,
+      "trace.unit.longest-ms" : 0.0,
+      "trace.units" : 0.0,
+      "trace.units.demanded-by-top-level" : 0.0,
+      "trace.units.demanded-by-unit" : 0.0,
+      "trace.units.drained" : 0.0,
+      "trace.units.host" : 0.0,
+      "trace.units.host-ms" : 0.0,
+      "trace.units.without-macro-calls" : 0.0,
+      "trace.wait-ms" : 0.0,
+      "trace.wall-ms" : 6.8,
+      "trace.warnings-ms" : 0.0
+    },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 20709376,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.0154075,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.01,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "value" : 184918.0,
+        "unit" : "nanoseconds"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/013-collections-bbp-macros-j1"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : null,
+    "exit" : 0,
+    "js-sha256" : "1d94b8acfcf818a54fcf4fa76f790353939831747eb2b8c53652a69c1b448036",
+    "map-sha256" : "31700664cc31df910a9084d153d061b0439060c4bf8654570d033dc419228a65",
+    "wall-seconds" : 0.015817917,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.environment", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 1,
+    "round" : 2,
+    "status" : "ok",
+    "result" : "native-bench.environment native-bench.environment native-bench.environment native-bench.environment\nnative-bench.environment native-bench.environment native-bench.environment native-bench.environment\n1 1 1 1\n42 42\n42 42\n",
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 14,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/014-environment-bbp-macros-j1/trace.tsv",
+    "units" : [ ],
+    "fixture" : "environment",
+    "node-command" : [ "node", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/014-environment-bbp-macros-j1/out.js" ],
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : {
+      "deferred-units.analyzed" : 0.0,
+      "deferred-units.executed" : 0.0,
+      "deferred-units.macro-free" : 0.0,
+      "deferred-units.prepared" : 0.0,
+      "deferred-units.registered" : 0.0,
+      "light-cljs-stats" : 1.0,
+      "macro-calls" : 20.0,
+      "macro-nodes.peak" : 116.0,
+      "macro.bridge.0.exported" : 2.0,
+      "macro.bridge.0.imported" : 107.0,
+      "macro.bridge.0.ns" : 55292.0,
+      "macro.bridge.0.reused" : 1.0,
+      "macro.bridge.1.exported" : 2.0,
+      "macro.bridge.1.imported" : 11.0,
+      "macro.bridge.1.ns" : 12875.0,
+      "macro.bridge.1.reused" : 1.0,
+      "macro.bridge.10.exported" : 1.0,
+      "macro.bridge.10.imported" : 11.0,
+      "macro.bridge.10.ns" : 6583.0,
+      "macro.bridge.10.reused" : 0.0,
+      "macro.bridge.11.exported" : 1.0,
+      "macro.bridge.11.imported" : 11.0,
+      "macro.bridge.11.ns" : 10375.0,
+      "macro.bridge.11.reused" : 0.0,
+      "macro.bridge.12.exported" : 4.0,
+      "macro.bridge.12.imported" : 15.0,
+      "macro.bridge.12.ns" : 10957.0,
+      "macro.bridge.12.reused" : 3.0,
+      "macro.bridge.13.exported" : 4.0,
+      "macro.bridge.13.imported" : 15.0,
+      "macro.bridge.13.ns" : 8917.0,
+      "macro.bridge.13.reused" : 3.0,
+      "macro.bridge.14.exported" : 3.0,
+      "macro.bridge.14.imported" : 12.0,
+      "macro.bridge.14.ns" : 7998.0,
+      "macro.bridge.14.reused" : 1.0,
+      "macro.bridge.15.exported" : 3.0,
+      "macro.bridge.15.imported" : 12.0,
+      "macro.bridge.15.ns" : 7833.0,
+      "macro.bridge.15.reused" : 1.0,
+      "macro.bridge.2.exported" : 2.0,
+      "macro.bridge.2.imported" : 11.0,
+      "macro.bridge.2.ns" : 7917.0,
+      "macro.bridge.2.reused" : 1.0,
+      "macro.bridge.3.exported" : 2.0,
+      "macro.bridge.3.imported" : 11.0,
+      "macro.bridge.3.ns" : 8292.0,
+      "macro.bridge.3.reused" : 1.0,
+      "macro.bridge.4.exported" : 2.0,
+      "macro.bridge.4.imported" : 11.0,
+      "macro.bridge.4.ns" : 8335.0,
+      "macro.bridge.4.reused" : 1.0,
+      "macro.bridge.5.exported" : 2.0,
+      "macro.bridge.5.imported" : 11.0,
+      "macro.bridge.5.ns" : 5749.0,
+      "macro.bridge.5.reused" : 1.0,
+      "macro.bridge.6.exported" : 2.0,
+      "macro.bridge.6.imported" : 11.0,
+      "macro.bridge.6.ns" : 5792.0,
+      "macro.bridge.6.reused" : 1.0,
+      "macro.bridge.7.exported" : 2.0,
+      "macro.bridge.7.imported" : 11.0,
+      "macro.bridge.7.ns" : 7708.0,
+      "macro.bridge.7.reused" : 1.0,
+      "macro.bridge.8.exported" : 1.0,
+      "macro.bridge.8.imported" : 11.0,
+      "macro.bridge.8.ns" : 7001.0,
+      "macro.bridge.8.reused" : 0.0,
+      "macro.bridge.9.exported" : 1.0,
+      "macro.bridge.9.imported" : 11.0,
+      "macro.bridge.9.ns" : 5668.0,
+      "macro.bridge.9.reused" : 0.0,
+      "memory.live.artifacts" : 0.0,
+      "memory.live.bridge-payloads" : 0.0,
+      "memory.live.engine-handles" : 0.0,
+      "memory.live.engines" : 0.0,
+      "memory.parsed-trees.peak-bytes" : 6814.0,
+      "memory.parsed-trees.peak-files" : 1.0,
+      "memory.peak-rss-bytes" : 2.0840448E7,
+      "memory.queued-ir.peak-bytes" : 0.0,
+      "memory.queued-ir.peak-units" : 0.0,
+      "namespaces" : 1.0,
+      "native-bench.environment" : 20.0,
+      "time.analysis-ms" : 6.9,
+      "time.deferred-units-ms" : 0.0,
+      "time.emission-ms" : 3.2,
+      "time.macro-free-units-ms" : 0.0,
+      "time.prepare-application-ms" : 0.0,
+      "time.resolve-parse-ms" : 0.1,
+      "time.wall-ms" : 10.9,
+      "time.write-ms" : 0.5,
+      "trace.append-ms" : 0.0,
+      "trace.drain-ms" : 0.0,
+      "trace.drain.bookkeeping-ms" : 0.0,
+      "trace.drain.macro-free.max" : 0.0,
+      "trace.drain.width.max" : 0.0,
+      "trace.drains" : 0.0,
+      "trace.engine-ms" : 0.0,
+      "trace.engine.entries" : 0.0,
+      "trace.engine.outer-ms" : 0.0,
+      "trace.executions" : 0.0,
+      "trace.executions.unprepared" : 0.0,
+      "trace.finish-ms" : 0.0,
+      "trace.index-ms" : 0.0,
+      "trace.load-ms" : 0.1,
+      "trace.other-ms" : 0.0,
+      "trace.prepare-source-ms" : 0.0,
+      "trace.reads" : 0.0,
+      "trace.reads.cross-namespace" : 0.0,
+      "trace.registrations" : 0.0,
+      "trace.registrations.added-namespaces" : 0.0,
+      "trace.registrations.empty" : 0.0,
+      "trace.registrations.full-namespaces" : 0.0,
+      "trace.registrations.restarts" : 0.0,
+      "trace.release-ms" : 0.0,
+      "trace.top-level-ms" : 6.9,
+      "trace.top-level.engine-ms" : 0.0,
+      "trace.top-level.wait-ms" : 0.0,
+      "trace.unit-ms" : 0.0,
+      "trace.unit.engine-ms" : 0.0,
+      "trace.unit.longest-ms" : 0.0,
+      "trace.units" : 0.0,
+      "trace.units.demanded-by-top-level" : 0.0,
+      "trace.units.demanded-by-unit" : 0.0,
+      "trace.units.drained" : 0.0,
+      "trace.units.host" : 0.0,
+      "trace.units.host-ms" : 0.0,
+      "trace.units.without-macro-calls" : 0.0,
+      "trace.wait-ms" : 0.0,
+      "trace.wall-ms" : 7.0,
+      "trace.warnings-ms" : 0.0
+    },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 20905984,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.015817917,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.01,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "value" : 177292.0,
+        "unit" : "nanoseconds"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/014-environment-bbp-macros-j1"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : null,
+    "exit" : 0,
+    "js-sha256" : "cb242754e411227d0fe5e518c1e87cf4071a6710feee99492d00b1eb13de2c49",
+    "map-sha256" : "cf9f373e1b5803e169795a3319e0c73e2bb4d8356bc54de1cd919ef4b3a9c426",
+    "wall-seconds" : 0.020692042,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.collections", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 1,
+    "round" : 3,
+    "status" : "ok",
+    "result" : "(1 2) ([:a 1]) (\"a\" \"b\")\ntrue true true true\ntrue true true true true\n2\n",
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 15,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/015-collections-bbp-macros-j1/trace.tsv",
+    "units" : [ ],
+    "fixture" : "collections",
+    "node-command" : [ "node", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/015-collections-bbp-macros-j1/out.js" ],
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : {
+      "deferred-units.analyzed" : 0.0,
+      "deferred-units.executed" : 0.0,
+      "deferred-units.macro-free" : 0.0,
+      "deferred-units.prepared" : 0.0,
+      "deferred-units.registered" : 0.0,
+      "light-cljs-stats" : 1.0,
+      "macro-calls" : 17.0,
+      "macro-nodes.peak" : 81.0,
+      "macro.bridge.0.exported" : 3.0,
+      "macro.bridge.0.imported" : 112.0,
+      "macro.bridge.0.ns" : 63999.0,
+      "macro.bridge.0.reused" : 2.0,
+      "macro.bridge.1.exported" : 4.0,
+      "macro.bridge.1.imported" : 14.0,
+      "macro.bridge.1.ns" : 16958.0,
+      "macro.bridge.1.reused" : 2.0,
+      "macro.bridge.10.exported" : 1.0,
+      "macro.bridge.10.imported" : 12.0,
+      "macro.bridge.10.ns" : 6041.0,
+      "macro.bridge.10.reused" : 0.0,
+      "macro.bridge.11.exported" : 1.0,
+      "macro.bridge.11.imported" : 12.0,
+      "macro.bridge.11.ns" : 8999.0,
+      "macro.bridge.11.reused" : 0.0,
+      "macro.bridge.12.exported" : 1.0,
+      "macro.bridge.12.imported" : 12.0,
+      "macro.bridge.12.ns" : 7002.0,
+      "macro.bridge.12.reused" : 0.0,
+      "macro.bridge.2.exported" : 5.0,
+      "macro.bridge.2.imported" : 12.0,
+      "macro.bridge.2.ns" : 10126.0,
+      "macro.bridge.2.reused" : 0.0,
+      "macro.bridge.3.exported" : 1.0,
+      "macro.bridge.3.imported" : 13.0,
+      "macro.bridge.3.ns" : 9877.0,
+      "macro.bridge.3.reused" : 0.0,
+      "macro.bridge.4.exported" : 1.0,
+      "macro.bridge.4.imported" : 14.0,
+      "macro.bridge.4.ns" : 9249.0,
+      "macro.bridge.4.reused" : 0.0,
+      "macro.bridge.5.exported" : 1.0,
+      "macro.bridge.5.imported" : 12.0,
+      "macro.bridge.5.ns" : 6249.0,
+      "macro.bridge.5.reused" : 0.0,
+      "macro.bridge.6.exported" : 1.0,
+      "macro.bridge.6.imported" : 13.0,
+      "macro.bridge.6.ns" : 6752.0,
+      "macro.bridge.6.reused" : 0.0,
+      "macro.bridge.7.exported" : 1.0,
+      "macro.bridge.7.imported" : 12.0,
+      "macro.bridge.7.ns" : 6958.0,
+      "macro.bridge.7.reused" : 0.0,
+      "macro.bridge.8.exported" : 1.0,
+      "macro.bridge.8.imported" : 12.0,
+      "macro.bridge.8.ns" : 6126.0,
+      "macro.bridge.8.reused" : 0.0,
+      "macro.bridge.9.exported" : 1.0,
+      "macro.bridge.9.imported" : 12.0,
+      "macro.bridge.9.ns" : 13209.0,
+      "macro.bridge.9.reused" : 0.0,
+      "memory.live.artifacts" : 0.0,
+      "memory.live.bridge-payloads" : 0.0,
+      "memory.live.engine-handles" : 0.0,
+      "memory.live.engines" : 0.0,
+      "memory.parsed-trees.peak-bytes" : 6503.0,
+      "memory.parsed-trees.peak-files" : 1.0,
+      "memory.peak-rss-bytes" : 2.0709376E7,
+      "memory.queued-ir.peak-bytes" : 0.0,
+      "memory.queued-ir.peak-units" : 0.0,
+      "namespaces" : 1.0,
+      "native-bench.collections" : 17.0,
+      "time.analysis-ms" : 6.6,
+      "time.deferred-units-ms" : 0.0,
+      "time.emission-ms" : 3.3,
+      "time.macro-free-units-ms" : 0.0,
+      "time.prepare-application-ms" : 0.0,
+      "time.resolve-parse-ms" : 0.1,
+      "time.wall-ms" : 15.7,
+      "time.write-ms" : 5.5,
+      "trace.append-ms" : 0.0,
+      "trace.drain-ms" : 0.0,
+      "trace.drain.bookkeeping-ms" : 0.0,
+      "trace.drain.macro-free.max" : 0.0,
+      "trace.drain.width.max" : 0.0,
+      "trace.drains" : 0.0,
+      "trace.engine-ms" : 0.0,
+      "trace.engine.entries" : 0.0,
+      "trace.engine.outer-ms" : 0.0,
+      "trace.executions" : 0.0,
+      "trace.executions.unprepared" : 0.0,
+      "trace.finish-ms" : 0.0,
+      "trace.index-ms" : 0.0,
+      "trace.load-ms" : 0.1,
+      "trace.other-ms" : 0.0,
+      "trace.prepare-source-ms" : 0.0,
+      "trace.reads" : 0.0,
+      "trace.reads.cross-namespace" : 0.0,
+      "trace.registrations" : 0.0,
+      "trace.registrations.added-namespaces" : 0.0,
+      "trace.registrations.empty" : 0.0,
+      "trace.registrations.full-namespaces" : 0.0,
+      "trace.registrations.restarts" : 0.0,
+      "trace.release-ms" : 0.0,
+      "trace.top-level-ms" : 6.6,
+      "trace.top-level.engine-ms" : 0.0,
+      "trace.top-level.wait-ms" : 0.0,
+      "trace.unit-ms" : 0.0,
+      "trace.unit.engine-ms" : 0.0,
+      "trace.unit.longest-ms" : 0.0,
+      "trace.units" : 0.0,
+      "trace.units.demanded-by-top-level" : 0.0,
+      "trace.units.demanded-by-unit" : 0.0,
+      "trace.units.drained" : 0.0,
+      "trace.units.host" : 0.0,
+      "trace.units.host-ms" : 0.0,
+      "trace.units.without-macro-calls" : 0.0,
+      "trace.wait-ms" : 0.0,
+      "trace.wall-ms" : 6.7,
+      "trace.warnings-ms" : 0.0
+    },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 20774912,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.020692042,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.01,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "value" : 171545.0,
+        "unit" : "nanoseconds"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/015-collections-bbp-macros-j1"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : null,
+    "exit" : 0,
+    "js-sha256" : "1d94b8acfcf818a54fcf4fa76f790353939831747eb2b8c53652a69c1b448036",
+    "map-sha256" : "31700664cc31df910a9084d153d061b0439060c4bf8654570d033dc419228a65",
+    "wall-seconds" : 0.018984125,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.environment", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 1,
+    "round" : 3,
+    "status" : "ok",
+    "result" : "native-bench.environment native-bench.environment native-bench.environment native-bench.environment\nnative-bench.environment native-bench.environment native-bench.environment native-bench.environment\n1 1 1 1\n42 42\n42 42\n",
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 16,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/016-environment-bbp-macros-j1/trace.tsv",
+    "units" : [ ],
+    "fixture" : "environment",
+    "node-command" : [ "node", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/016-environment-bbp-macros-j1/out.js" ],
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : {
+      "deferred-units.analyzed" : 0.0,
+      "deferred-units.executed" : 0.0,
+      "deferred-units.macro-free" : 0.0,
+      "deferred-units.prepared" : 0.0,
+      "deferred-units.registered" : 0.0,
+      "light-cljs-stats" : 1.0,
+      "macro-calls" : 20.0,
+      "macro-nodes.peak" : 116.0,
+      "macro.bridge.0.exported" : 2.0,
+      "macro.bridge.0.imported" : 107.0,
+      "macro.bridge.0.ns" : 63584.0,
+      "macro.bridge.0.reused" : 1.0,
+      "macro.bridge.1.exported" : 2.0,
+      "macro.bridge.1.imported" : 11.0,
+      "macro.bridge.1.ns" : 15168.0,
+      "macro.bridge.1.reused" : 1.0,
+      "macro.bridge.10.exported" : 1.0,
+      "macro.bridge.10.imported" : 11.0,
+      "macro.bridge.10.ns" : 7834.0,
+      "macro.bridge.10.reused" : 0.0,
+      "macro.bridge.11.exported" : 1.0,
+      "macro.bridge.11.imported" : 11.0,
+      "macro.bridge.11.ns" : 13250.0,
+      "macro.bridge.11.reused" : 0.0,
+      "macro.bridge.12.exported" : 4.0,
+      "macro.bridge.12.imported" : 15.0,
+      "macro.bridge.12.ns" : 12790.0,
+      "macro.bridge.12.reused" : 3.0,
+      "macro.bridge.13.exported" : 4.0,
+      "macro.bridge.13.imported" : 15.0,
+      "macro.bridge.13.ns" : 10082.0,
+      "macro.bridge.13.reused" : 3.0,
+      "macro.bridge.14.exported" : 3.0,
+      "macro.bridge.14.imported" : 12.0,
+      "macro.bridge.14.ns" : 9085.0,
+      "macro.bridge.14.reused" : 1.0,
+      "macro.bridge.15.exported" : 3.0,
+      "macro.bridge.15.imported" : 12.0,
+      "macro.bridge.15.ns" : 9374.0,
+      "macro.bridge.15.reused" : 1.0,
+      "macro.bridge.2.exported" : 2.0,
+      "macro.bridge.2.imported" : 11.0,
+      "macro.bridge.2.ns" : 8874.0,
+      "macro.bridge.2.reused" : 1.0,
+      "macro.bridge.3.exported" : 2.0,
+      "macro.bridge.3.imported" : 11.0,
+      "macro.bridge.3.ns" : 9500.0,
+      "macro.bridge.3.reused" : 1.0,
+      "macro.bridge.4.exported" : 2.0,
+      "macro.bridge.4.imported" : 11.0,
+      "macro.bridge.4.ns" : 10374.0,
+      "macro.bridge.4.reused" : 1.0,
+      "macro.bridge.5.exported" : 2.0,
+      "macro.bridge.5.imported" : 11.0,
+      "macro.bridge.5.ns" : 6665.0,
+      "macro.bridge.5.reused" : 1.0,
+      "macro.bridge.6.exported" : 2.0,
+      "macro.bridge.6.imported" : 11.0,
+      "macro.bridge.6.ns" : 6876.0,
+      "macro.bridge.6.reused" : 1.0,
+      "macro.bridge.7.exported" : 2.0,
+      "macro.bridge.7.imported" : 11.0,
+      "macro.bridge.7.ns" : 9167.0,
+      "macro.bridge.7.reused" : 1.0,
+      "macro.bridge.8.exported" : 1.0,
+      "macro.bridge.8.imported" : 11.0,
+      "macro.bridge.8.ns" : 7917.0,
+      "macro.bridge.8.reused" : 0.0,
+      "macro.bridge.9.exported" : 1.0,
+      "macro.bridge.9.imported" : 11.0,
+      "macro.bridge.9.ns" : 6292.0,
+      "macro.bridge.9.reused" : 0.0,
+      "memory.live.artifacts" : 0.0,
+      "memory.live.bridge-payloads" : 0.0,
+      "memory.live.engine-handles" : 0.0,
+      "memory.live.engines" : 0.0,
+      "memory.parsed-trees.peak-bytes" : 6814.0,
+      "memory.parsed-trees.peak-files" : 1.0,
+      "memory.peak-rss-bytes" : 2.0627456E7,
+      "memory.queued-ir.peak-bytes" : 0.0,
+      "memory.queued-ir.peak-units" : 0.0,
+      "namespaces" : 1.0,
+      "native-bench.environment" : 20.0,
+      "time.analysis-ms" : 7.3,
+      "time.deferred-units-ms" : 0.0,
+      "time.emission-ms" : 3.7,
+      "time.macro-free-units-ms" : 0.0,
+      "time.prepare-application-ms" : 0.0,
+      "time.resolve-parse-ms" : 0.1,
+      "time.wall-ms" : 12.2,
+      "time.write-ms" : 0.8,
+      "trace.append-ms" : 0.0,
+      "trace.drain-ms" : 0.0,
+      "trace.drain.bookkeeping-ms" : 0.0,
+      "trace.drain.macro-free.max" : 0.0,
+      "trace.drain.width.max" : 0.0,
+      "trace.drains" : 0.0,
+      "trace.engine-ms" : 0.0,
+      "trace.engine.entries" : 0.0,
+      "trace.engine.outer-ms" : 0.0,
+      "trace.executions" : 0.0,
+      "trace.executions.unprepared" : 0.0,
+      "trace.finish-ms" : 0.0,
+      "trace.index-ms" : 0.0,
+      "trace.load-ms" : 0.1,
+      "trace.other-ms" : 0.0,
+      "trace.prepare-source-ms" : 0.0,
+      "trace.reads" : 0.0,
+      "trace.reads.cross-namespace" : 0.0,
+      "trace.registrations" : 0.0,
+      "trace.registrations.added-namespaces" : 0.0,
+      "trace.registrations.empty" : 0.0,
+      "trace.registrations.full-namespaces" : 0.0,
+      "trace.registrations.restarts" : 0.0,
+      "trace.release-ms" : 0.0,
+      "trace.top-level-ms" : 7.3,
+      "trace.top-level.engine-ms" : 0.0,
+      "trace.top-level.wait-ms" : 0.0,
+      "trace.unit-ms" : 0.0,
+      "trace.unit.engine-ms" : 0.0,
+      "trace.unit.longest-ms" : 0.0,
+      "trace.units" : 0.0,
+      "trace.units.demanded-by-top-level" : 0.0,
+      "trace.units.demanded-by-unit" : 0.0,
+      "trace.units.drained" : 0.0,
+      "trace.units.host" : 0.0,
+      "trace.units.host-ms" : 0.0,
+      "trace.units.without-macro-calls" : 0.0,
+      "trace.wait-ms" : 0.0,
+      "trace.wall-ms" : 7.4,
+      "trace.warnings-ms" : 0.0
+    },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 20692992,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.018984125,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.01,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "value" : 206832.0,
+        "unit" : "nanoseconds"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/016-environment-bbp-macros-j1"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : null,
+    "exit" : 0,
+    "js-sha256" : "cb242754e411227d0fe5e518c1e87cf4071a6710feee99492d00b1eb13de2c49",
+    "map-sha256" : "cf9f373e1b5803e169795a3319e0c73e2bb4d8356bc54de1cd919ef4b3a9c426",
+    "wall-seconds" : 0.018136709,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.collections", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 1,
+    "round" : 4,
+    "status" : "ok",
+    "result" : "(1 2) ([:a 1]) (\"a\" \"b\")\ntrue true true true\ntrue true true true true\n2\n",
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 17,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/017-collections-bbp-macros-j1/trace.tsv",
+    "units" : [ ],
+    "fixture" : "collections",
+    "node-command" : [ "node", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/017-collections-bbp-macros-j1/out.js" ],
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : {
+      "deferred-units.analyzed" : 0.0,
+      "deferred-units.executed" : 0.0,
+      "deferred-units.macro-free" : 0.0,
+      "deferred-units.prepared" : 0.0,
+      "deferred-units.registered" : 0.0,
+      "light-cljs-stats" : 1.0,
+      "macro-calls" : 17.0,
+      "macro-nodes.peak" : 81.0,
+      "macro.bridge.0.exported" : 3.0,
+      "macro.bridge.0.imported" : 112.0,
+      "macro.bridge.0.ns" : 73750.0,
+      "macro.bridge.0.reused" : 2.0,
+      "macro.bridge.1.exported" : 4.0,
+      "macro.bridge.1.imported" : 14.0,
+      "macro.bridge.1.ns" : 18333.0,
+      "macro.bridge.1.reused" : 2.0,
+      "macro.bridge.10.exported" : 1.0,
+      "macro.bridge.10.imported" : 12.0,
+      "macro.bridge.10.ns" : 6499.0,
+      "macro.bridge.10.reused" : 0.0,
+      "macro.bridge.11.exported" : 1.0,
+      "macro.bridge.11.imported" : 12.0,
+      "macro.bridge.11.ns" : 7209.0,
+      "macro.bridge.11.reused" : 0.0,
+      "macro.bridge.12.exported" : 1.0,
+      "macro.bridge.12.imported" : 12.0,
+      "macro.bridge.12.ns" : 6206.0,
+      "macro.bridge.12.reused" : 0.0,
+      "macro.bridge.2.exported" : 5.0,
+      "macro.bridge.2.imported" : 12.0,
+      "macro.bridge.2.ns" : 11667.0,
+      "macro.bridge.2.reused" : 0.0,
+      "macro.bridge.3.exported" : 1.0,
+      "macro.bridge.3.imported" : 13.0,
+      "macro.bridge.3.ns" : 11542.0,
+      "macro.bridge.3.reused" : 0.0,
+      "macro.bridge.4.exported" : 1.0,
+      "macro.bridge.4.imported" : 14.0,
+      "macro.bridge.4.ns" : 8876.0,
+      "macro.bridge.4.reused" : 0.0,
+      "macro.bridge.5.exported" : 1.0,
+      "macro.bridge.5.imported" : 12.0,
+      "macro.bridge.5.ns" : 7416.0,
+      "macro.bridge.5.reused" : 0.0,
+      "macro.bridge.6.exported" : 1.0,
+      "macro.bridge.6.imported" : 13.0,
+      "macro.bridge.6.ns" : 7418.0,
+      "macro.bridge.6.reused" : 0.0,
+      "macro.bridge.7.exported" : 1.0,
+      "macro.bridge.7.imported" : 12.0,
+      "macro.bridge.7.ns" : 7961.0,
+      "macro.bridge.7.reused" : 0.0,
+      "macro.bridge.8.exported" : 1.0,
+      "macro.bridge.8.imported" : 12.0,
+      "macro.bridge.8.ns" : 7333.0,
+      "macro.bridge.8.reused" : 0.0,
+      "macro.bridge.9.exported" : 1.0,
+      "macro.bridge.9.imported" : 12.0,
+      "macro.bridge.9.ns" : 15167.0,
+      "macro.bridge.9.reused" : 0.0,
+      "memory.live.artifacts" : 0.0,
+      "memory.live.bridge-payloads" : 0.0,
+      "memory.live.engine-handles" : 0.0,
+      "memory.live.engines" : 0.0,
+      "memory.parsed-trees.peak-bytes" : 6503.0,
+      "memory.parsed-trees.peak-files" : 1.0,
+      "memory.peak-rss-bytes" : 2.0905984E7,
+      "memory.queued-ir.peak-bytes" : 0.0,
+      "memory.queued-ir.peak-units" : 0.0,
+      "namespaces" : 1.0,
+      "native-bench.collections" : 17.0,
+      "time.analysis-ms" : 7.5,
+      "time.deferred-units-ms" : 0.0,
+      "time.emission-ms" : 3.8,
+      "time.macro-free-units-ms" : 0.0,
+      "time.prepare-application-ms" : 0.0,
+      "time.resolve-parse-ms" : 0.1,
+      "time.wall-ms" : 12.2,
+      "time.write-ms" : 0.5,
+      "trace.append-ms" : 0.0,
+      "trace.drain-ms" : 0.0,
+      "trace.drain.bookkeeping-ms" : 0.0,
+      "trace.drain.macro-free.max" : 0.0,
+      "trace.drain.width.max" : 0.0,
+      "trace.drains" : 0.0,
+      "trace.engine-ms" : 0.0,
+      "trace.engine.entries" : 0.0,
+      "trace.engine.outer-ms" : 0.0,
+      "trace.executions" : 0.0,
+      "trace.executions.unprepared" : 0.0,
+      "trace.finish-ms" : 0.0,
+      "trace.index-ms" : 0.0,
+      "trace.load-ms" : 0.1,
+      "trace.other-ms" : 0.0,
+      "trace.prepare-source-ms" : 0.0,
+      "trace.reads" : 0.0,
+      "trace.reads.cross-namespace" : 0.0,
+      "trace.registrations" : 0.0,
+      "trace.registrations.added-namespaces" : 0.0,
+      "trace.registrations.empty" : 0.0,
+      "trace.registrations.full-namespaces" : 0.0,
+      "trace.registrations.restarts" : 0.0,
+      "trace.release-ms" : 0.0,
+      "trace.top-level-ms" : 7.4,
+      "trace.top-level.engine-ms" : 0.0,
+      "trace.top-level.wait-ms" : 0.0,
+      "trace.unit-ms" : 0.0,
+      "trace.unit.engine-ms" : 0.0,
+      "trace.unit.longest-ms" : 0.0,
+      "trace.units" : 0.0,
+      "trace.units.demanded-by-top-level" : 0.0,
+      "trace.units.demanded-by-unit" : 0.0,
+      "trace.units.drained" : 0.0,
+      "trace.units.host" : 0.0,
+      "trace.units.host-ms" : 0.0,
+      "trace.units.without-macro-calls" : 0.0,
+      "trace.wait-ms" : 0.0,
+      "trace.wall-ms" : 7.6,
+      "trace.warnings-ms" : 0.0
+    },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 20971520,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.018136709,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.01,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "value" : 189377.0,
+        "unit" : "nanoseconds"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/017-collections-bbp-macros-j1"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : null,
+    "exit" : 0,
+    "js-sha256" : "1d94b8acfcf818a54fcf4fa76f790353939831747eb2b8c53652a69c1b448036",
+    "map-sha256" : "31700664cc31df910a9084d153d061b0439060c4bf8654570d033dc419228a65",
+    "wall-seconds" : 0.016221416,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.environment", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 1,
+    "round" : 4,
+    "status" : "ok",
+    "result" : "native-bench.environment native-bench.environment native-bench.environment native-bench.environment\nnative-bench.environment native-bench.environment native-bench.environment native-bench.environment\n1 1 1 1\n42 42\n42 42\n",
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 18,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/018-environment-bbp-macros-j1/trace.tsv",
+    "units" : [ ],
+    "fixture" : "environment",
+    "node-command" : [ "node", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/018-environment-bbp-macros-j1/out.js" ],
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : {
+      "deferred-units.analyzed" : 0.0,
+      "deferred-units.executed" : 0.0,
+      "deferred-units.macro-free" : 0.0,
+      "deferred-units.prepared" : 0.0,
+      "deferred-units.registered" : 0.0,
+      "light-cljs-stats" : 1.0,
+      "macro-calls" : 20.0,
+      "macro-nodes.peak" : 116.0,
+      "macro.bridge.0.exported" : 2.0,
+      "macro.bridge.0.imported" : 107.0,
+      "macro.bridge.0.ns" : 67667.0,
+      "macro.bridge.0.reused" : 1.0,
+      "macro.bridge.1.exported" : 2.0,
+      "macro.bridge.1.imported" : 11.0,
+      "macro.bridge.1.ns" : 12834.0,
+      "macro.bridge.1.reused" : 1.0,
+      "macro.bridge.10.exported" : 1.0,
+      "macro.bridge.10.imported" : 11.0,
+      "macro.bridge.10.ns" : 6666.0,
+      "macro.bridge.10.reused" : 0.0,
+      "macro.bridge.11.exported" : 1.0,
+      "macro.bridge.11.imported" : 11.0,
+      "macro.bridge.11.ns" : 13000.0,
+      "macro.bridge.11.reused" : 0.0,
+      "macro.bridge.12.exported" : 4.0,
+      "macro.bridge.12.imported" : 15.0,
+      "macro.bridge.12.ns" : 11540.0,
+      "macro.bridge.12.reused" : 3.0,
+      "macro.bridge.13.exported" : 4.0,
+      "macro.bridge.13.imported" : 15.0,
+      "macro.bridge.13.ns" : 8792.0,
+      "macro.bridge.13.reused" : 3.0,
+      "macro.bridge.14.exported" : 3.0,
+      "macro.bridge.14.imported" : 12.0,
+      "macro.bridge.14.ns" : 7502.0,
+      "macro.bridge.14.reused" : 1.0,
+      "macro.bridge.15.exported" : 3.0,
+      "macro.bridge.15.imported" : 12.0,
+      "macro.bridge.15.ns" : 7873.0,
+      "macro.bridge.15.reused" : 1.0,
+      "macro.bridge.2.exported" : 2.0,
+      "macro.bridge.2.imported" : 11.0,
+      "macro.bridge.2.ns" : 7707.0,
+      "macro.bridge.2.reused" : 1.0,
+      "macro.bridge.3.exported" : 2.0,
+      "macro.bridge.3.imported" : 11.0,
+      "macro.bridge.3.ns" : 8167.0,
+      "macro.bridge.3.reused" : 1.0,
+      "macro.bridge.4.exported" : 2.0,
+      "macro.bridge.4.imported" : 11.0,
+      "macro.bridge.4.ns" : 8292.0,
+      "macro.bridge.4.reused" : 1.0,
+      "macro.bridge.5.exported" : 2.0,
+      "macro.bridge.5.imported" : 11.0,
+      "macro.bridge.5.ns" : 5416.0,
+      "macro.bridge.5.reused" : 1.0,
+      "macro.bridge.6.exported" : 2.0,
+      "macro.bridge.6.imported" : 11.0,
+      "macro.bridge.6.ns" : 5875.0,
+      "macro.bridge.6.reused" : 1.0,
+      "macro.bridge.7.exported" : 2.0,
+      "macro.bridge.7.imported" : 11.0,
+      "macro.bridge.7.ns" : 8126.0,
+      "macro.bridge.7.reused" : 1.0,
+      "macro.bridge.8.exported" : 1.0,
+      "macro.bridge.8.imported" : 11.0,
+      "macro.bridge.8.ns" : 6667.0,
+      "macro.bridge.8.reused" : 0.0,
+      "macro.bridge.9.exported" : 1.0,
+      "macro.bridge.9.imported" : 11.0,
+      "macro.bridge.9.ns" : 5749.0,
+      "macro.bridge.9.reused" : 0.0,
+      "memory.live.artifacts" : 0.0,
+      "memory.live.bridge-payloads" : 0.0,
+      "memory.live.engine-handles" : 0.0,
+      "memory.live.engines" : 0.0,
+      "memory.parsed-trees.peak-bytes" : 6814.0,
+      "memory.parsed-trees.peak-files" : 1.0,
+      "memory.peak-rss-bytes" : 2.0709376E7,
+      "memory.queued-ir.peak-bytes" : 0.0,
+      "memory.queued-ir.peak-units" : 0.0,
+      "namespaces" : 1.0,
+      "native-bench.environment" : 20.0,
+      "time.analysis-ms" : 6.8,
+      "time.deferred-units-ms" : 0.0,
+      "time.emission-ms" : 3.3,
+      "time.macro-free-units-ms" : 0.0,
+      "time.prepare-application-ms" : 0.0,
+      "time.resolve-parse-ms" : 0.1,
+      "time.wall-ms" : 10.9,
+      "time.write-ms" : 0.5,
+      "trace.append-ms" : 0.0,
+      "trace.drain-ms" : 0.0,
+      "trace.drain.bookkeeping-ms" : 0.0,
+      "trace.drain.macro-free.max" : 0.0,
+      "trace.drain.width.max" : 0.0,
+      "trace.drains" : 0.0,
+      "trace.engine-ms" : 0.0,
+      "trace.engine.entries" : 0.0,
+      "trace.engine.outer-ms" : 0.0,
+      "trace.executions" : 0.0,
+      "trace.executions.unprepared" : 0.0,
+      "trace.finish-ms" : 0.0,
+      "trace.index-ms" : 0.0,
+      "trace.load-ms" : 0.1,
+      "trace.other-ms" : 0.0,
+      "trace.prepare-source-ms" : 0.0,
+      "trace.reads" : 0.0,
+      "trace.reads.cross-namespace" : 0.0,
+      "trace.registrations" : 0.0,
+      "trace.registrations.added-namespaces" : 0.0,
+      "trace.registrations.empty" : 0.0,
+      "trace.registrations.full-namespaces" : 0.0,
+      "trace.registrations.restarts" : 0.0,
+      "trace.release-ms" : 0.0,
+      "trace.top-level-ms" : 6.8,
+      "trace.top-level.engine-ms" : 0.0,
+      "trace.top-level.wait-ms" : 0.0,
+      "trace.unit-ms" : 0.0,
+      "trace.unit.engine-ms" : 0.0,
+      "trace.unit.longest-ms" : 0.0,
+      "trace.units" : 0.0,
+      "trace.units.demanded-by-top-level" : 0.0,
+      "trace.units.demanded-by-unit" : 0.0,
+      "trace.units.drained" : 0.0,
+      "trace.units.host" : 0.0,
+      "trace.units.host-ms" : 0.0,
+      "trace.units.without-macro-calls" : 0.0,
+      "trace.wait-ms" : 0.0,
+      "trace.wall-ms" : 6.9,
+      "trace.warnings-ms" : 0.0
+    },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 20774912,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.016221416,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.01,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "value" : 191873.0,
+        "unit" : "nanoseconds"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/018-environment-bbp-macros-j1"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : null,
+    "exit" : 0,
+    "js-sha256" : "cb242754e411227d0fe5e518c1e87cf4071a6710feee99492d00b1eb13de2c49",
+    "map-sha256" : "cf9f373e1b5803e169795a3319e0c73e2bb4d8356bc54de1cd919ef4b3a9c426",
+    "wall-seconds" : 0.016313125,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.collections", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 1,
+    "round" : 5,
+    "status" : "ok",
+    "result" : "(1 2) ([:a 1]) (\"a\" \"b\")\ntrue true true true\ntrue true true true true\n2\n",
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 19,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/019-collections-bbp-macros-j1/trace.tsv",
+    "units" : [ ],
+    "fixture" : "collections",
+    "node-command" : [ "node", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/019-collections-bbp-macros-j1/out.js" ],
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : {
+      "deferred-units.analyzed" : 0.0,
+      "deferred-units.executed" : 0.0,
+      "deferred-units.macro-free" : 0.0,
+      "deferred-units.prepared" : 0.0,
+      "deferred-units.registered" : 0.0,
+      "light-cljs-stats" : 1.0,
+      "macro-calls" : 17.0,
+      "macro-nodes.peak" : 81.0,
+      "macro.bridge.0.exported" : 3.0,
+      "macro.bridge.0.imported" : 112.0,
+      "macro.bridge.0.ns" : 67707.0,
+      "macro.bridge.0.reused" : 2.0,
+      "macro.bridge.1.exported" : 4.0,
+      "macro.bridge.1.imported" : 14.0,
+      "macro.bridge.1.ns" : 17875.0,
+      "macro.bridge.1.reused" : 2.0,
+      "macro.bridge.10.exported" : 1.0,
+      "macro.bridge.10.imported" : 12.0,
+      "macro.bridge.10.ns" : 6334.0,
+      "macro.bridge.10.reused" : 0.0,
+      "macro.bridge.11.exported" : 1.0,
+      "macro.bridge.11.imported" : 12.0,
+      "macro.bridge.11.ns" : 7209.0,
+      "macro.bridge.11.reused" : 0.0,
+      "macro.bridge.12.exported" : 1.0,
+      "macro.bridge.12.imported" : 12.0,
+      "macro.bridge.12.ns" : 6791.0,
+      "macro.bridge.12.reused" : 0.0,
+      "macro.bridge.2.exported" : 5.0,
+      "macro.bridge.2.imported" : 12.0,
+      "macro.bridge.2.ns" : 11251.0,
+      "macro.bridge.2.reused" : 0.0,
+      "macro.bridge.3.exported" : 1.0,
+      "macro.bridge.3.imported" : 13.0,
+      "macro.bridge.3.ns" : 10956.0,
+      "macro.bridge.3.reused" : 0.0,
+      "macro.bridge.4.exported" : 1.0,
+      "macro.bridge.4.imported" : 14.0,
+      "macro.bridge.4.ns" : 9125.0,
+      "macro.bridge.4.reused" : 0.0,
+      "macro.bridge.5.exported" : 1.0,
+      "macro.bridge.5.imported" : 12.0,
+      "macro.bridge.5.ns" : 7249.0,
+      "macro.bridge.5.reused" : 0.0,
+      "macro.bridge.6.exported" : 1.0,
+      "macro.bridge.6.imported" : 13.0,
+      "macro.bridge.6.ns" : 8208.0,
+      "macro.bridge.6.reused" : 0.0,
+      "macro.bridge.7.exported" : 1.0,
+      "macro.bridge.7.imported" : 12.0,
+      "macro.bridge.7.ns" : 7794.0,
+      "macro.bridge.7.reused" : 0.0,
+      "macro.bridge.8.exported" : 1.0,
+      "macro.bridge.8.imported" : 12.0,
+      "macro.bridge.8.ns" : 6917.0,
+      "macro.bridge.8.reused" : 0.0,
+      "macro.bridge.9.exported" : 1.0,
+      "macro.bridge.9.imported" : 12.0,
+      "macro.bridge.9.ns" : 15874.0,
+      "macro.bridge.9.reused" : 0.0,
+      "memory.live.artifacts" : 0.0,
+      "memory.live.bridge-payloads" : 0.0,
+      "memory.live.engine-handles" : 0.0,
+      "memory.live.engines" : 0.0,
+      "memory.parsed-trees.peak-bytes" : 6503.0,
+      "memory.parsed-trees.peak-files" : 1.0,
+      "memory.peak-rss-bytes" : 2.0611072E7,
+      "memory.queued-ir.peak-bytes" : 0.0,
+      "memory.queued-ir.peak-units" : 0.0,
+      "namespaces" : 1.0,
+      "native-bench.collections" : 17.0,
+      "time.analysis-ms" : 6.7,
+      "time.deferred-units-ms" : 0.0,
+      "time.emission-ms" : 3.2,
+      "time.macro-free-units-ms" : 0.0,
+      "time.prepare-application-ms" : 0.0,
+      "time.resolve-parse-ms" : 0.1,
+      "time.wall-ms" : 10.8,
+      "time.write-ms" : 0.5,
+      "trace.append-ms" : 0.0,
+      "trace.drain-ms" : 0.0,
+      "trace.drain.bookkeeping-ms" : 0.0,
+      "trace.drain.macro-free.max" : 0.0,
+      "trace.drain.width.max" : 0.0,
+      "trace.drains" : 0.0,
+      "trace.engine-ms" : 0.0,
+      "trace.engine.entries" : 0.0,
+      "trace.engine.outer-ms" : 0.0,
+      "trace.executions" : 0.0,
+      "trace.executions.unprepared" : 0.0,
+      "trace.finish-ms" : 0.0,
+      "trace.index-ms" : 0.0,
+      "trace.load-ms" : 0.1,
+      "trace.other-ms" : 0.0,
+      "trace.prepare-source-ms" : 0.0,
+      "trace.reads" : 0.0,
+      "trace.reads.cross-namespace" : 0.0,
+      "trace.registrations" : 0.0,
+      "trace.registrations.added-namespaces" : 0.0,
+      "trace.registrations.empty" : 0.0,
+      "trace.registrations.full-namespaces" : 0.0,
+      "trace.registrations.restarts" : 0.0,
+      "trace.release-ms" : 0.0,
+      "trace.top-level-ms" : 6.7,
+      "trace.top-level.engine-ms" : 0.0,
+      "trace.top-level.wait-ms" : 0.0,
+      "trace.unit-ms" : 0.0,
+      "trace.unit.engine-ms" : 0.0,
+      "trace.unit.longest-ms" : 0.0,
+      "trace.units" : 0.0,
+      "trace.units.demanded-by-top-level" : 0.0,
+      "trace.units.demanded-by-unit" : 0.0,
+      "trace.units.drained" : 0.0,
+      "trace.units.host" : 0.0,
+      "trace.units.host-ms" : 0.0,
+      "trace.units.without-macro-calls" : 0.0,
+      "trace.wait-ms" : 0.0,
+      "trace.wall-ms" : 6.8,
+      "trace.warnings-ms" : 0.0
+    },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 20676608,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.016313125,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.01,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "value" : 183290.0,
+        "unit" : "nanoseconds"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/019-collections-bbp-macros-j1"
+  }, {
+    "load" : {
+      "command" : [ "uptime" ],
+      "exit" : 0,
+      "stdout" : "17:32  up 45 days, 22:31, 9 users, load averages: 2.23 2.49 3.14\n",
+      "stderr" : ""
+    },
+    "diagnostic" : null,
+    "exit" : 0,
+    "js-sha256" : "1d94b8acfcf818a54fcf4fa76f790353939831747eb2b8c53652a69c1b448036",
+    "map-sha256" : "31700664cc31df910a9084d153d061b0439060c4bf8654570d033dc419228a65",
+    "wall-seconds" : 0.015706291,
+    "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+    "command" : [ "/usr/bin/time", "-l", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.environment", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+    "jobs" : 1,
+    "round" : 5,
+    "status" : "ok",
+    "result" : "native-bench.environment native-bench.environment native-bench.environment native-bench.environment\nnative-bench.environment native-bench.environment native-bench.environment native-bench.environment\n1 1 1 1\n42 42\n42 42\n",
+    "unit-matching-note" : "Match namespace/name/line/column only within identical fixture hash and repository revision; retain raw trace for demander edges. These top-level fixtures currently emit no native unit rows, so a per-unit V8 ratio is unavailable.",
+    "order" : 20,
+    "trace-file" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/020-environment-bbp-macros-j1/trace.tsv",
+    "units" : [ ],
+    "fixture" : "environment",
+    "node-command" : [ "node", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/020-environment-bbp-macros-j1/out.js" ],
+    "timeout" : false,
+    "backend" : "bbp-macros",
+    "stats" : {
+      "deferred-units.analyzed" : 0.0,
+      "deferred-units.executed" : 0.0,
+      "deferred-units.macro-free" : 0.0,
+      "deferred-units.prepared" : 0.0,
+      "deferred-units.registered" : 0.0,
+      "light-cljs-stats" : 1.0,
+      "macro-calls" : 20.0,
+      "macro-nodes.peak" : 116.0,
+      "macro.bridge.0.exported" : 2.0,
+      "macro.bridge.0.imported" : 107.0,
+      "macro.bridge.0.ns" : 54707.0,
+      "macro.bridge.0.reused" : 1.0,
+      "macro.bridge.1.exported" : 2.0,
+      "macro.bridge.1.imported" : 11.0,
+      "macro.bridge.1.ns" : 12791.0,
+      "macro.bridge.1.reused" : 1.0,
+      "macro.bridge.10.exported" : 1.0,
+      "macro.bridge.10.imported" : 11.0,
+      "macro.bridge.10.ns" : 7082.0,
+      "macro.bridge.10.reused" : 0.0,
+      "macro.bridge.11.exported" : 1.0,
+      "macro.bridge.11.imported" : 11.0,
+      "macro.bridge.11.ns" : 11999.0,
+      "macro.bridge.11.reused" : 0.0,
+      "macro.bridge.12.exported" : 4.0,
+      "macro.bridge.12.imported" : 15.0,
+      "macro.bridge.12.ns" : 11333.0,
+      "macro.bridge.12.reused" : 3.0,
+      "macro.bridge.13.exported" : 4.0,
+      "macro.bridge.13.imported" : 15.0,
+      "macro.bridge.13.ns" : 8625.0,
+      "macro.bridge.13.reused" : 3.0,
+      "macro.bridge.14.exported" : 3.0,
+      "macro.bridge.14.imported" : 12.0,
+      "macro.bridge.14.ns" : 7623.0,
+      "macro.bridge.14.reused" : 1.0,
+      "macro.bridge.15.exported" : 3.0,
+      "macro.bridge.15.imported" : 12.0,
+      "macro.bridge.15.ns" : 7999.0,
+      "macro.bridge.15.reused" : 1.0,
+      "macro.bridge.2.exported" : 2.0,
+      "macro.bridge.2.imported" : 11.0,
+      "macro.bridge.2.ns" : 7458.0,
+      "macro.bridge.2.reused" : 1.0,
+      "macro.bridge.3.exported" : 2.0,
+      "macro.bridge.3.imported" : 11.0,
+      "macro.bridge.3.ns" : 8500.0,
+      "macro.bridge.3.reused" : 1.0,
+      "macro.bridge.4.exported" : 2.0,
+      "macro.bridge.4.imported" : 11.0,
+      "macro.bridge.4.ns" : 8416.0,
+      "macro.bridge.4.reused" : 1.0,
+      "macro.bridge.5.exported" : 2.0,
+      "macro.bridge.5.imported" : 11.0,
+      "macro.bridge.5.ns" : 6166.0,
+      "macro.bridge.5.reused" : 1.0,
+      "macro.bridge.6.exported" : 2.0,
+      "macro.bridge.6.imported" : 11.0,
+      "macro.bridge.6.ns" : 5959.0,
+      "macro.bridge.6.reused" : 1.0,
+      "macro.bridge.7.exported" : 2.0,
+      "macro.bridge.7.imported" : 11.0,
+      "macro.bridge.7.ns" : 7418.0,
+      "macro.bridge.7.reused" : 1.0,
+      "macro.bridge.8.exported" : 1.0,
+      "macro.bridge.8.imported" : 11.0,
+      "macro.bridge.8.ns" : 6833.0,
+      "macro.bridge.8.reused" : 0.0,
+      "macro.bridge.9.exported" : 1.0,
+      "macro.bridge.9.imported" : 11.0,
+      "macro.bridge.9.ns" : 5667.0,
+      "macro.bridge.9.reused" : 0.0,
+      "memory.live.artifacts" : 0.0,
+      "memory.live.bridge-payloads" : 0.0,
+      "memory.live.engine-handles" : 0.0,
+      "memory.live.engines" : 0.0,
+      "memory.parsed-trees.peak-bytes" : 6814.0,
+      "memory.parsed-trees.peak-files" : 1.0,
+      "memory.peak-rss-bytes" : 2.0627456E7,
+      "memory.queued-ir.peak-bytes" : 0.0,
+      "memory.queued-ir.peak-units" : 0.0,
+      "namespaces" : 1.0,
+      "native-bench.environment" : 20.0,
+      "time.analysis-ms" : 6.6,
+      "time.deferred-units-ms" : 0.0,
+      "time.emission-ms" : 3.5,
+      "time.macro-free-units-ms" : 0.0,
+      "time.prepare-application-ms" : 0.0,
+      "time.resolve-parse-ms" : 0.1,
+      "time.wall-ms" : 11.0,
+      "time.write-ms" : 0.6,
+      "trace.append-ms" : 0.0,
+      "trace.drain-ms" : 0.0,
+      "trace.drain.bookkeeping-ms" : 0.0,
+      "trace.drain.macro-free.max" : 0.0,
+      "trace.drain.width.max" : 0.0,
+      "trace.drains" : 0.0,
+      "trace.engine-ms" : 0.0,
+      "trace.engine.entries" : 0.0,
+      "trace.engine.outer-ms" : 0.0,
+      "trace.executions" : 0.0,
+      "trace.executions.unprepared" : 0.0,
+      "trace.finish-ms" : 0.0,
+      "trace.index-ms" : 0.0,
+      "trace.load-ms" : 0.1,
+      "trace.other-ms" : 0.0,
+      "trace.prepare-source-ms" : 0.0,
+      "trace.reads" : 0.0,
+      "trace.reads.cross-namespace" : 0.0,
+      "trace.registrations" : 0.0,
+      "trace.registrations.added-namespaces" : 0.0,
+      "trace.registrations.empty" : 0.0,
+      "trace.registrations.full-namespaces" : 0.0,
+      "trace.registrations.restarts" : 0.0,
+      "trace.release-ms" : 0.0,
+      "trace.top-level-ms" : 6.5,
+      "trace.top-level.engine-ms" : 0.0,
+      "trace.top-level.wait-ms" : 0.0,
+      "trace.unit-ms" : 0.0,
+      "trace.unit.engine-ms" : 0.0,
+      "trace.unit.longest-ms" : 0.0,
+      "trace.units" : 0.0,
+      "trace.units.demanded-by-top-level" : 0.0,
+      "trace.units.demanded-by-unit" : 0.0,
+      "trace.units.drained" : 0.0,
+      "trace.units.host" : 0.0,
+      "trace.units.host-ms" : 0.0,
+      "trace.units.without-macro-calls" : 0.0,
+      "trace.wait-ms" : 0.0,
+      "trace.wall-ms" : 6.7,
+      "trace.warnings-ms" : 0.0
+    },
+    "metrics" : {
+      "parked-tasks" : {
+        "unavailable" : "pool.parks counts worker waits, not suspended native macro tasks"
+      },
+      "runtime-initialization" : {
+        "unavailable" : "CLI trace does not isolate native runtime initialization"
+      },
+      "peak-rss" : {
+        "value" : 20692992,
+        "unit" : "bytes"
+      },
+      "help-while-waiting-depth" : {
+        "unavailable" : "No native scheduler help-depth counter is exposed"
+      },
+      "gc-count" : {
+        "unavailable" : "CLI exposes no native GC collection count"
+      },
+      "wall" : {
+        "value" : 0.015706291,
+        "unit" : "seconds"
+      },
+      "js-compilation" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS compilation counter"
+      },
+      "user-cpu" : {
+        "value" : 0.01,
+        "unit" : "seconds"
+      },
+      "gc-pauses" : {
+        "unavailable" : "CLI exposes no native GC pause durations"
+      },
+      "form-bridge" : {
+        "value" : 178576.0,
+        "unit" : "nanoseconds"
+      },
+      "worker-utilization" : {
+        "unavailable" : "No compiler worker utilization for serial native backend"
+      },
+      "js-execution" : {
+        "unavailable" : "Trace engine-us combines evaluation work; no separate JS execution counter"
+      },
+      "allocation" : {
+        "unavailable" : "CLI exposes no total allocated native engine bytes"
+      }
+    },
+    "timeout-ms" : 120000,
+    "artifacts" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/020-environment-bbp-macros-j1"
+  } ],
+  "schema" : 1,
+  "cargo-toml-sha256" : "8debece5da7f2af519b1cfe87577b32471531b0f8a95d6bde2af2fae299f0c75",
+  "runner-sha256" : "fbabfb9118eb0725728083f3a3606b0721e9ecfcce1b2e0d85f95cc22e13f7f0",
+  "revision" : "6405a52ce18c2d5234ba0389c2b4a1416e6e9ad0",
+  "build-jobs" : 3,
+  "started-at" : "2026-10-25T23:32:34.735936Z",
+  "build-target" : "aarch64-apple-darwin",
+  "toolchain" : [ {
+    "command" : [ "rustc", "-Vv" ],
+    "exit" : 0,
+    "stdout" : "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.3\n",
+    "stderr" : ""
+  }, {
+    "command" : [ "cargo", "-V" ],
+    "exit" : 0,
+    "stdout" : "cargo 1.99.1 (5f94df478 2026-08-27) (Homebrew)\n",
+    "stderr" : ""
+  }, {
+    "command" : [ "bb", "--version" ],
+    "exit" : 0,
+    "stdout" : "babashka v1.12.218\n",
+    "stderr" : ""
+  }, {
+    "command" : [ "node", "--version" ],
+    "exit" : 0,
+    "stdout" : "v26.12.1\n",
+    "stderr" : ""
+  } ],
+  "lock-sha256" : "6f496a0e19fd9c9b7e6f023573d9cde0b2d28be92888cf9b1bb0ca8d6826d3da",
+  "summary" : [ {
+    "fixture" : "collections",
+    "backend" : "bbp-macros",
+    "jobs" : 1,
+    "samples" : 5,
+    "performance-eligible" : true,
+    "statuses" : {
+      "ok" : 5
+    },
+    "metrics" : {
+      "form-bridge" : {
+        "median" : 183290.0,
+        "min" : 171545.0,
+        "max" : 189377.0,
+        "spread" : 17832.0,
+        "unit" : "nanoseconds"
+      },
+      "peak-rss" : {
+        "median" : 2.0709376E7,
+        "min" : 20676608,
+        "max" : 20971520,
+        "spread" : 294912,
+        "unit" : "bytes"
+      },
+      "user-cpu" : {
+        "median" : 0.01,
+        "min" : 0.0,
+        "max" : 0.01,
+        "spread" : 0.01,
+        "unit" : "seconds"
+      },
+      "wall" : {
+        "median" : 0.018136709,
+        "min" : 0.0154075,
+        "max" : 0.020692042,
+        "spread" : 0.0052845420000000014,
+        "unit" : "seconds"
+      }
+    }
+  }, {
+    "fixture" : "collections",
+    "backend" : "bbp-macros",
+    "jobs" : 2,
+    "samples" : 0,
+    "performance-eligible" : false,
+    "statuses" : {
+      "unsupported" : 1
+    },
+    "metrics" : { }
+  }, {
+    "fixture" : "collections",
+    "backend" : "bbp-macros",
+    "jobs" : 4,
+    "samples" : 0,
+    "performance-eligible" : false,
+    "statuses" : {
+      "unsupported" : 1
+    },
+    "metrics" : { }
+  }, {
+    "fixture" : "collections",
+    "backend" : "bbp-macros",
+    "jobs" : 8,
+    "samples" : 0,
+    "performance-eligible" : false,
+    "statuses" : {
+      "unsupported" : 1
+    },
+    "metrics" : { }
+  }, {
+    "fixture" : "environment",
+    "backend" : "bbp-macros",
+    "jobs" : 1,
+    "samples" : 5,
+    "performance-eligible" : true,
+    "statuses" : {
+      "ok" : 5
+    },
+    "metrics" : {
+      "form-bridge" : {
+        "median" : 190956.0,
+        "min" : 177292.0,
+        "max" : 206832.0,
+        "spread" : 29540.0,
+        "unit" : "nanoseconds"
+      },
+      "peak-rss" : {
+        "median" : 2.0692992E7,
+        "min" : 20692992,
+        "max" : 20905984,
+        "spread" : 212992,
+        "unit" : "bytes"
+      },
+      "user-cpu" : {
+        "median" : 0.01,
+        "min" : 0.01,
+        "max" : 0.01,
+        "spread" : 0.0,
+        "unit" : "seconds"
+      },
+      "wall" : {
+        "median" : 0.015817917,
+        "min" : 0.015175875,
+        "max" : 0.018984125,
+        "spread" : 0.003808250000000001,
+        "unit" : "seconds"
+      }
+    }
+  }, {
+    "fixture" : "environment",
+    "backend" : "bbp-macros",
+    "jobs" : 2,
+    "samples" : 0,
+    "performance-eligible" : false,
+    "statuses" : {
+      "unsupported" : 1
+    },
+    "metrics" : { }
+  }, {
+    "fixture" : "environment",
+    "backend" : "bbp-macros",
+    "jobs" : 4,
+    "samples" : 0,
+    "performance-eligible" : false,
+    "statuses" : {
+      "unsupported" : 1
+    },
+    "metrics" : { }
+  }, {
+    "fixture" : "environment",
+    "backend" : "bbp-macros",
+    "jobs" : 8,
+    "samples" : 0,
+    "performance-eligible" : false,
+    "statuses" : {
+      "unsupported" : 1
+    },
+    "metrics" : { }
+  }, {
+    "fixture" : "helper",
+    "backend" : "bbp-macros",
+    "jobs" : 1,
+    "samples" : 0,
+    "performance-eligible" : false,
+    "statuses" : {
+      "unsupported" : 1
+    },
+    "metrics" : { }
+  }, {
+    "fixture" : "helper",
+    "backend" : "bbp-macros",
+    "jobs" : 2,
+    "samples" : 0,
+    "performance-eligible" : false,
+    "statuses" : {
+      "unsupported" : 1
+    },
+    "metrics" : { }
+  }, {
+    "fixture" : "helper",
+    "backend" : "bbp-macros",
+    "jobs" : 4,
+    "samples" : 0,
+    "performance-eligible" : false,
+    "statuses" : {
+      "unsupported" : 1
+    },
+    "metrics" : { }
+  }, {
+    "fixture" : "helper",
+    "backend" : "bbp-macros",
+    "jobs" : 8,
+    "samples" : 0,
+    "performance-eligible" : false,
+    "statuses" : {
+      "unsupported" : 1
+    },
+    "metrics" : { }
+  } ],
+  "build-command" : [ "cargo", "build", "--locked", "--release", "--no-default-features", "--features", "bbp-macros", "--target", "aarch64-apple-darwin", "--target-dir", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target" ],
+  "fixtures" : [ {
+    "name" : "collections",
+    "entry" : "native-bench.collections",
+    "native-macro-calls" : 13,
+    "expected" : "(1 2) ([:a 1]) (\"a\" \"b\")\ntrue true true true\ntrue true true true true\n2\n",
+    "path" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros/native_bench/collections.cljs",
+    "bytes" : 575,
+    "sha256" : "986f21e4ded480f0d9f76935fef6aacf39acfe4c38de0cdedd594d6f3490ede9"
+  }, {
+    "name" : "environment",
+    "entry" : "native-bench.environment",
+    "native-macro-calls" : 16,
+    "expected" : "native-bench.environment native-bench.environment native-bench.environment native-bench.environment\nnative-bench.environment native-bench.environment native-bench.environment native-bench.environment\n1 1 1 1\n42 42\n42 42\n",
+    "path" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros/native_bench/environment.cljs",
+    "bytes" : 510,
+    "sha256" : "bb8031cf1556cb72834d01ee0d0112fb12de5dde220db47402742f748450e4f8"
+  }, {
+    "name" : "helper",
+    "entry" : "native-bench.helper",
+    "native-macro-calls" : 1,
+    "expected" : "[42 1]\n",
+    "proof-required" : "Compiler trace must prove actual helper park/resume and no effect replay; output alone is insufficient (light-cljs-463).",
+    "path" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros/native_bench/helper.cljs",
+    "bytes" : 308,
+    "sha256" : "d618180f854f9d506bd84afb01acba90e3c15eb0b03d1ae2515d48f46a357ff3"
+  } ],
+  "machine" : {
+    "command" : [ "uname", "-a" ],
+    "exit" : 0,
+    "stdout" : "Darwin Manageds-Virtual-Machine.local 24.6.0 Darwin Kernel Version 24.6.0: Wed Nov  5 21:32:20 PST 2025; root:xnu-11417.140.69.705.2~1/RELEASE_ARM64_VMAPPLE arm64\n",
+    "stderr" : ""
+  },
+  "build-environment" : { },
+  "options" : {
+    "runs" : 5,
+    "jobs" : [ 1, 2, 4, 8 ],
+    "timeout-ms" : 120000,
+    "output" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs"
+  },
+  "cache-policy" : "--no-cache; each measured compiler and Node invocation is a fresh process; OS filesystem cache is not flushed; no warmups",
+  "git-status" : {
+    "command" : [ "git", "status", "--porcelain" ],
+    "exit" : 0,
+    "stdout" : "?? benchmarks/native-macros-6405a52c/\n",
+    "stderr" : ""
+  },
+  "build-target-dir" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target",
+  "backends" : [ {
+    "name" : "bbp-macros",
+    "binary" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs",
+    "sha256" : "390d3cb28723995a0b94b1108257037b3446292e3687184e41cabc9d33120c3e",
+    "provenance" : "Native-only release build above"
+  } ],
+  "source-diff-sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "profile" : "Cargo release (repository Cargo.toml)",
+  "cpus" : 24
+}

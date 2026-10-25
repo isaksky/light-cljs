@@ -1,0 +1,22 @@
+Building explicit native-only release backend (3 build jobs)
+1 [collections bbp-macros 1] ok
+2 [collections bbp-macros 2] unsupported
+3 [collections bbp-macros 4] unsupported
+4 [collections bbp-macros 8] unsupported
+5 [environment bbp-macros 1] ok
+6 [environment bbp-macros 2] unsupported
+7 [environment bbp-macros 4] unsupported
+8 [environment bbp-macros 8] unsupported
+9 [helper bbp-macros 1] unsupported
+10 [helper bbp-macros 2] unsupported
+11 [helper bbp-macros 4] unsupported
+12 [helper bbp-macros 8] unsupported
+13 [collections bbp-macros 1] ok
+14 [environment bbp-macros 1] ok
+15 [collections bbp-macros 1] ok
+16 [environment bbp-macros 1] ok
+17 [collections bbp-macros 1] ok
+18 [environment bbp-macros 1] ok
+19 [collections bbp-macros 1] ok
+20 [environment bbp-macros 1] ok
+Report: /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/report.json

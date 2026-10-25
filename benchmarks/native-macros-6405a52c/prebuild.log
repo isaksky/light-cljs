@@ -1,0 +1,22 @@
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling big-boy-pants-js v0.1.0 (/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/crates/big-boy-pants-js)
+   Compiling cc v1.7.0
+   Compiling libmimalloc-sys v0.1.49
+   Compiling light-cljs v0.1.0 (/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1)
+warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
+   --> crates/big-boy-pants-js/src/value/symbol.rs:112:14
+    |
+112 |             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+    |              ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+112 -             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+112 +             .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+    |
+
+   Compiling mimalloc v0.1.52
+warning: `big-boy-pants-js` (lib) generated 1 warning (run `cargo fix --lib -p big-boy-pants-js` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 1m 13s

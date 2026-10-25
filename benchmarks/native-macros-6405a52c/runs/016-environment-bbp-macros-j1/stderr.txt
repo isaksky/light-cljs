@@ -1,0 +1,148 @@
+light-cljs-stats 1
+time.wall-ms 12.2
+time.resolve-parse-ms 0.1
+time.analysis-ms 7.3
+time.deferred-units-ms 0.0
+time.prepare-application-ms 0.0
+time.emission-ms 3.7
+time.write-ms 0.8
+namespaces 1
+macro-calls 20
+macro.bridge.0.imported 107
+macro.bridge.0.exported 2
+macro.bridge.0.reused 1
+macro.bridge.0.ns 63584
+macro.bridge.1.imported 11
+macro.bridge.1.exported 2
+macro.bridge.1.reused 1
+macro.bridge.1.ns 15168
+macro.bridge.2.imported 11
+macro.bridge.2.exported 2
+macro.bridge.2.reused 1
+macro.bridge.2.ns 8874
+macro.bridge.3.imported 11
+macro.bridge.3.exported 2
+macro.bridge.3.reused 1
+macro.bridge.3.ns 9500
+macro.bridge.4.imported 11
+macro.bridge.4.exported 2
+macro.bridge.4.reused 1
+macro.bridge.4.ns 10374
+macro.bridge.5.imported 11
+macro.bridge.5.exported 2
+macro.bridge.5.reused 1
+macro.bridge.5.ns 6665
+macro.bridge.6.imported 11
+macro.bridge.6.exported 2
+macro.bridge.6.reused 1
+macro.bridge.6.ns 6876
+macro.bridge.7.imported 11
+macro.bridge.7.exported 2
+macro.bridge.7.reused 1
+macro.bridge.7.ns 9167
+macro.bridge.8.imported 11
+macro.bridge.8.exported 1
+macro.bridge.8.reused 0
+macro.bridge.8.ns 7917
+macro.bridge.9.imported 11
+macro.bridge.9.exported 1
+macro.bridge.9.reused 0
+macro.bridge.9.ns 6292
+macro.bridge.10.imported 11
+macro.bridge.10.exported 1
+macro.bridge.10.reused 0
+macro.bridge.10.ns 7834
+macro.bridge.11.imported 11
+macro.bridge.11.exported 1
+macro.bridge.11.reused 0
+macro.bridge.11.ns 13250
+macro.bridge.12.imported 15
+macro.bridge.12.exported 4
+macro.bridge.12.reused 3
+macro.bridge.12.ns 12790
+macro.bridge.13.imported 15
+macro.bridge.13.exported 4
+macro.bridge.13.reused 3
+macro.bridge.13.ns 10082
+macro.bridge.14.imported 12
+macro.bridge.14.exported 3
+macro.bridge.14.reused 1
+macro.bridge.14.ns 9085
+macro.bridge.15.imported 12
+macro.bridge.15.exported 3
+macro.bridge.15.reused 1
+macro.bridge.15.ns 9374
+macro-nodes.peak 116
+deferred-units.registered 0
+deferred-units.analyzed 0
+deferred-units.prepared 0
+deferred-units.executed 0
+deferred-units.macro-free 0
+time.macro-free-units-ms 0.0
+trace.wall-ms 7.4
+trace.other-ms 0.0
+trace.load-ms 0.1
+trace.prepare-source-ms 0.0
+trace.top-level-ms 7.3
+trace.drain-ms 0.0
+trace.append-ms 0.0
+trace.index-ms 0.0
+trace.release-ms 0.0
+trace.warnings-ms 0.0
+trace.unit-ms 0.0
+trace.finish-ms 0.0
+trace.wait-ms 0.0
+trace.engine-ms 0.0
+trace.top-level.engine-ms 0.0
+trace.unit.engine-ms 0.0
+trace.engine.outer-ms 0.0
+trace.engine.entries 0
+trace.registrations 0
+trace.registrations.empty 0
+trace.registrations.restarts 0
+trace.registrations.full-namespaces 0
+trace.registrations.added-namespaces 0
+trace.top-level.wait-ms 0.0
+trace.drain.bookkeeping-ms 0.0
+trace.units 0
+trace.units.drained 0
+trace.units.demanded-by-top-level 0
+trace.units.demanded-by-unit 0
+trace.units.host 0
+trace.units.without-macro-calls 0
+trace.executions 0
+trace.executions.unprepared 0
+trace.reads 0
+trace.reads.cross-namespace 0
+trace.units.host-ms 0.0
+trace.unit.longest-ms 0.0
+trace.drains 0
+trace.drain.width.max 0
+trace.drain.macro-free.max 0
+memory.peak-rss-bytes 20627456
+memory.parsed-trees.peak-bytes 6814
+memory.parsed-trees.peak-files 1
+memory.queued-ir.peak-bytes 0
+memory.queued-ir.peak-units 0
+memory.live.artifacts 0
+memory.live.engines 0
+memory.live.engine-handles 0
+memory.live.bridge-payloads 0
+[macro-calls-by-namespace]
+native-bench.environment 20
+        0.01 real         0.01 user         0.00 sys
+            20692992  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                1588  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                  19  voluntary context switches
+                  23  involuntary context switches
+            13222784  peak memory footprint

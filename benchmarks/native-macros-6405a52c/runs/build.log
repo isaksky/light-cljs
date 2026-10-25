@@ -1,0 +1,15 @@
+warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
+   --> crates/big-boy-pants-js/src/value/symbol.rs:112:14
+    |
+112 |             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+    |              ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+112 -             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+112 +             .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+    |
+
+warning: `big-boy-pants-js` (lib) generated 1 warning (run `cargo fix --lib -p big-boy-pants-js` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.02s

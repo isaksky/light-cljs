@@ -1,0 +1,20 @@
+{
+  "revision" : "6405a52ce18c2d5234ba0389c2b4a1416e6e9ad0",
+  "cap-ms" : 30000,
+  "sampler" : {
+    "exit" : 0,
+    "timeout" : false
+  },
+  "cwd" : "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1",
+  "command" : [ "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/target/aarch64-apple-darwin/release/light-cljs", "--compile", "--entry", "native-bench.collections", "--source-root", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros", "--jobs", "1", "--no-cache", "--optimize", "none", "--macro-timeout-ms", "60000", "--macro-poll-budget", "100000000", "--stats-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/trace.tsv", "--source-map", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/runs/work/out.map", "--source-map-include-sources" ],
+  "sample-command" : [ "/usr/bin/sample", "63085", "30", "1", "-mayDie", "-file", "/Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/native-macros-6405a52c/profile/sample.txt" ],
+  "compiler-wall-ms" : 17.145,
+  "jobs" : 1,
+  "compiler" : {
+    "exit" : 0,
+    "timeout" : false
+  },
+  "fixture" : "collections",
+  "selection" : "Largest successful jobs-1 median wall time; one unchanged invocation",
+  "interval-ms" : 1
+}

@@ -1,0 +1,3 @@
+2026-10-25 17:32:45.975 sample[63086:262870119] pid_for_task(1e03) failed with error 5: (os/kern) failure
+Sampling process 0 for 30 seconds with 1 millisecond of run time between samples
+Sampling completed, processing symbols...

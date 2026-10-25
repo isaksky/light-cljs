@@ -1,0 +1,25 @@
+light-cljs-trace	2
+#stage	name	us	engine-us	engine-calls
+stage	other	46	0	0
+stage	load	94	0	0
+stage	prepare-source	11	0	0
+stage	top-level	7293	0	0
+stage	drain	0	0	0
+stage	append	0	0	0
+stage	index	0	0	0
+stage	release	0	0	0
+stage	warnings	1	0	0
+stage	unit	0	0	0
+stage	finish	2	0	0
+stage	wait	0	0	0
+stage	engine-outer	0	0	0
+stage	trace-wall	7449	0	0
+stage	prepare-application	6	0	0
+stage	emission	3720	0	0
+stage	write	807	0	0
+stage	wall	12218	0	0
+#namespace	index	name	bytes	load-us	prepare-us	top-level-us	top-level-engine-us	top-level-wait-us	drain-us	drain-engine-us	warnings-us	expansions	installed	requires
+namespace	0	native-bench.environment	510	69	11	7293	0	0	0	0	1	20	0	
+#unit	id	namespace	name	line	column	us	engine-us	engine-calls	wait-us	expansions	nodes	host	demander-kind	demander	depth	thread
+#execute	unit	demander-kind	demander	prepared
+#read	unit	demander-kind	demander

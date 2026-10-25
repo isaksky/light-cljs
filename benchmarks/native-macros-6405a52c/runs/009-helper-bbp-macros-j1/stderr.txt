@@ -1,0 +1,17 @@
+light-cljs: /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros/native_bench/helper.cljs:7:25: macro expansion: while expanding via-helper: /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros/native_bench/helper.cljs:7:25: macro native-bench.helper/via-helper: big-boy-pants-js: Error: unsupported operation: helper not preloaded: native-bench.helper/demanded; definition /Users/admin/.codex/tmp/pellets-orchestrate/light-cljs-20261025-a/484-1/benchmarks/fixtures/native-macros/native_bench/helper.cljs:3:1 (bytes 290..305)
+        0.00 real         0.00 user         0.00 sys
+            14270464  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                1171  page reclaims
+                   0  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   0  voluntary context switches
+                  13  involuntary context switches
+             8110976  peak memory footprint

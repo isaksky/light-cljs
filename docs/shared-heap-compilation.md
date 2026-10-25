@@ -264,6 +264,33 @@ per-unit scheme.
 
 ## Where the engine is today
 
+### Fixed macro fixtures (October 25, 2026)
+
+The native-only release baseline at `6405a52c`, before native compile-time core
+lowering and 472's automatic GC/budget changes, ran five fresh processes for
+each supported fixture/job cell, with cache disabled. Collections (13 native
+macro calls) and repeated environment access (16 calls) passed at jobs 1:
+median process wall **18.137 ms** (15.408–20.692) and **15.818 ms**
+(15.176–18.984), respectively. Median instrumented form bridge time was
+**0.183 ms / 0.191 ms**; peak RSS was about **20.7 MB** for each. Results,
+JavaScript and maps were identical across all five samples per fixture.
+
+The actual demanded-helper fixture failed with `helper not preloaded`
+(existing 463); every jobs 2/4/8 cell failed with `requires --jobs 1`. Those
+first-failure attempts are excluded from timing summaries. There is no
+parallel scaling result. No verified same-commit release V8 reference was
+available, and native traces contained no macro `unit` rows, so median,
+longest-unit and critical-path k cannot be calculated. The one bounded
+collections profile ended before sampler attachment (17 ms), leaving no
+usable stacks; it does not justify attributing cost to collections, property
+access or calls. Runtime initialization, separate JS compile/execute,
+allocation, GC, suspension/help-depth and utilization counters are unavailable
+on this revision. These small startup-inclusive samples are not macro-unit
+throughput estimates or substitutes for the existing 477/478/463/472 work.
+See [the fixture report](../benchmarks/native-macros-6405a52c/README.md) for
+frozen inputs/commands, raw samples, identity checks, all missing-counter
+causes and the unsuccessful bounded-profile evidence.
+
 ### Project attempts (October 25, 2026)
 
 The bounded real-project baseline at `b3fac889` used the native-only release
