@@ -8847,7 +8847,12 @@ Splice copies removed values with CreateDataProperty semantics before moving
 receiver elements, and reads constructor/@@species resumably. A native
 Construct action resumes the ordinary Construct instruction while retaining its
 parent native, so species constructors use existing construction, rooting and
-exception rules. These are task-owned continuations and mutable receivers;
+exception rules. CreateDataProperty resumes DefineElem, retaining descriptor
+validation and typed-array numeric coercion across waits. Immediate read results
+are saved in traced state for the next step instead of recursively reentering
+the state machine. Registration and native dispatch use small helper frames,
+including a leaf path for the species getter, for 64 KiB migrating workers.
+These are task-owned continuations and mutable receivers;
 publication and foreign-task checks remain in the property layer.
 
 Semantic reference only: `research/quickjs/quickjs.c` (`js_array_pop`,

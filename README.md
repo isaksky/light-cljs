@@ -4315,6 +4315,8 @@ an exception follow the ordinary property protocol. `splice` uses
 preserves holes and defines own data properties. `Array[Symbol.species]` is a
 getter returning its receiver. Result arrays have the existing `2^32 - 1`
 length bound; generic receiver lengths use the standard `2^53 - 1` bound.
+Generic typed-array receivers retain numeric coercion on every element write;
+typed-array species results use resumable CreateDataProperty coercion too.
 
 Each element move, swap, fill and deletion advances through native continuation
 steps, so long operations yield under the instruction budget. Receiver,
@@ -4324,6 +4326,7 @@ removed values and properties through the existing ArraySetLength path. No new
 worker-selected size limit is imposed. Primitive receivers reuse the existing
 Number/String/Symbol wrappers; Boolean/BigInt wrappers remain unsupported.
 Other Array methods retain their existing support status.
+Tests cover native execution on 64 KiB worker stacks after shared realm setup.
 
 Validation: `cargo test --test js_source array_mutators` and
 `cargo test --test need array_mutators`. The source fixture

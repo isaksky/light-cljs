@@ -45,6 +45,7 @@ pub(super) struct State {
     result: Value,
     lower: Value,
     upper: Value,
+    read_value: Option<Value>,
     length: u64,
     new_length: u64,
     numbers: [f64; 3],
@@ -71,6 +72,9 @@ impl Trace for State {
         {
             value.trace(visit);
         }
+        if let Some(value) = &self.read_value {
+            value.trace(visit);
+        }
     }
 }
 
@@ -84,6 +88,7 @@ impl State {
             result: Value::Undefined,
             lower: Value::Undefined,
             upper: Value::Undefined,
+            read_value: None,
             length: 0,
             new_length: 0,
             numbers: [0.0; 3],
@@ -103,9 +108,13 @@ impl State {
         }
     }
 
-    fn value(input: Input) -> Result<Value, Fault> {
+    fn value(&mut self, input: Input) -> Result<Value, Fault> {
         match input {
             Input::CallResult(value) => Ok(value),
+            Input::Start => self
+                .read_value
+                .take()
+                .ok_or(Fault::Internal("array mutator expected a saved read")),
             _ => Err(Fault::Internal("array mutator expected a call result")),
         }
     }
@@ -125,8 +134,14 @@ impl State {
                 this: base,
                 args: vec![],
             }),
-            Some(property::Read::Value(value)) => self.step(heap, task, Input::CallResult(value)),
-            None => self.step(heap, task, Input::CallResult(Value::Undefined)),
+            read => {
+                self.read_value = Some(match read {
+                    Some(property::Read::Value(value)) => value,
+                    None => Value::Undefined,
+                    Some(property::Read::Getter(_)) => unreachable!(),
+                });
+                Ok(Action::Continue)
+            }
         }
     }
 
@@ -198,10 +213,10 @@ impl State {
             }
             Stage::Length => {
                 self.stage = Stage::LengthNumber;
-                Ok(Action::ToNumber(Self::value(input)?))
+                Ok(Action::ToNumber(self.value(input)?))
             }
             Stage::LengthNumber => {
-                self.length = to_length(&Self::value(input)?)?;
+                self.length = to_length(&self.value(input)?)?;
                 self.new_length = self.length;
                 self.stage = Stage::Arguments;
                 Ok(Action::Continue)
@@ -238,7 +253,7 @@ impl State {
                 Ok(Action::ToNumber(value))
             }
             Stage::ArgumentNumber => {
-                let Value::Number(number) = Self::value(input)? else {
+                let Value::Number(number) = self.value(input)? else {
                     return Err(Fault::Internal("array mutator expected a number"));
                 };
                 self.numbers[self.argument] = number;
@@ -326,7 +341,7 @@ impl State {
                 Ok(Action::Continue)
             }
             Stage::Saved => {
-                self.result = Self::value(input)?;
+                self.result = self.value(input)?;
                 self.index = self.length;
                 if self.which == ArrayPrototypeShift {
                     self.movement(1, 0, self.new_length, false, Stage::DeleteTail);
@@ -351,7 +366,8 @@ impl State {
             }
             Stage::MoveValue => {
                 self.stage = Stage::MoveAdvance;
-                Ok(self.set(index_key(self.to), Self::value(input)?))
+                let value = self.value(input)?;
+                Ok(self.set(index_key(self.to), value))
             }
             Stage::MoveAdvance => {
                 self.remaining -= 1;
@@ -422,7 +438,7 @@ impl State {
                 }
             }
             Stage::ReverseLower => {
-                self.lower = Self::value(input)?;
+                self.lower = self.value(input)?;
                 self.stage = Stage::ReverseUpper;
                 Ok(Action::Continue)
             }
@@ -437,7 +453,7 @@ impl State {
                 }
             }
             Stage::ReverseUpperValue => {
-                self.upper = Self::value(input)?;
+                self.upper = self.value(input)?;
                 self.stage = Stage::ReverseWriteLower;
                 Ok(Action::Continue)
             }
@@ -481,7 +497,7 @@ impl State {
                 ))
             }
             Stage::Constructor => {
-                let constructor = Self::value(input)?;
+                let constructor = self.value(input)?;
                 if matches!(constructor, Value::Object(_)) {
                     return self.read(
                         heap,
@@ -500,7 +516,7 @@ impl State {
                 Ok(Action::Continue)
             }
             Stage::Species => {
-                let species = Self::value(input)?;
+                let species = self.value(input)?;
                 if !matches!(species, Value::Undefined | Value::Null) {
                     self.stage = Stage::CreatedRemoved;
                     return Ok(Action::Construct {
@@ -518,7 +534,7 @@ impl State {
                 Ok(Action::Continue)
             }
             Stage::CreatedRemoved => {
-                self.result = Self::value(input)?;
+                self.result = self.value(input)?;
                 self.stage = Stage::Removed;
                 Ok(Action::Continue)
             }
@@ -541,25 +557,15 @@ impl State {
                 }
             }
             Stage::RemovedValue => {
-                let Value::Object(id) = self.result else {
-                    unreachable!()
-                };
-                property::define_own_property(
-                    heap,
-                    task,
-                    id,
-                    &index_key(self.index),
-                    &crate::object::PropertyDescriptor {
-                        value: Some(Self::value(input)?),
-                        writable: Some(true),
-                        enumerable: Some(true),
-                        configurable: Some(true),
-                        ..Default::default()
-                    },
-                )?;
+                let key = Value::Number(self.index as f64);
+                let value = self.value(input)?;
                 self.index += 1;
                 self.stage = Stage::Removed;
-                Ok(Action::Continue)
+                Ok(Action::CreateDataProperty {
+                    this: self.result.clone(),
+                    key,
+                    value,
+                })
             }
             Stage::SpliceMove => {
                 self.index = self.length;

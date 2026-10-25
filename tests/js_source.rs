@@ -28613,3 +28613,70 @@ fn array_mutators_release_removed_elements() {
         assert_eq!(retained(source), empty, "{source}");
     }
 }
+
+/// Synthetic source runs every mutator on a small worker stack, including
+/// initial dispatch and species construction, with collection between steps.
+#[test]
+fn array_mutators_fit_small_worker_stacks() {
+    let rt = Runtime::new();
+    // Initialize the shared realm before scheduling this task on a worker;
+    // isolate mutator dispatch and native continuation stack use.
+    assert!(matches!(
+        rt.spawn(&exe("Array"), &[]).unwrap().run().unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    let source = "let a = [1,2,3]; let ok = a.pop() === 3 && a.shift() === 1; ok = ok && a.unshift(4,5) === 3 && a[0] === 4 && a[1] === 5 && a[2] === 2; let r = a.splice(1,1,6,7); ok = ok && r.length === 1 && r[0] === 5 && a.length === 4; a.reverse(); ok = ok && a[0] === 2 && a[3] === 4; a.fill(8,1,3); a.copyWithin(1,0,3); ok && a[0] === 2 && a[1] === 2 && a[2] === 8 && a[3] === 8";
+    let task = rt.spawn(&exe(source), &[]).unwrap();
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            for _ in 0..4000 {
+                match task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    RunOutcome::Complete(value) => {
+                        assert_eq!(value.view(), ValueView::Bool(true));
+                        return;
+                    }
+                    other => panic!("unexpected small-stack mutator: {other:?}"),
+                }
+            }
+            panic!("mutators did not complete");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// Synthetic fixtures, not light-cljs output. Generic Array writes retain
+/// integer-indexed coercion and partial effects before length/deletion errors.
+#[test]
+fn array_mutators_typed_array_receivers() {
+    for src in [
+        "let a = new Uint8Array(2), n = 0; let v = {valueOf() { n++; return 257; }}; Array.prototype.fill.call(a,v) === a && n === 2 && a[0] === 1 && a[1] === 1",
+        "let a = new Uint8Array([1,2,3]); Array.prototype.reverse.call(a) === a && a[0] === 3 && a[2] === 1",
+        "let a = new Uint8Array([1,2,3]); Array.prototype.copyWithin.call(a,1,0,2) === a && a[0] === 1 && a[1] === 1 && a[2] === 2",
+        "let a = new Uint8Array([1,2]), e; try { Array.prototype.shift.call(a); } catch(x) { e = x; } e instanceof TypeError && a.length === 2 && a[0] === 2 && a[1] === 2",
+        "let a = new Uint8Array([1,2]), e; try { Array.prototype.unshift.call(a,9); } catch(x) { e = x; } e instanceof TypeError && a.length === 2 && a[0] === 9 && a[1] === 1",
+        "let a = new Uint8Array([1,2]), e; try { Array.prototype.splice.call(a,0,1,9); } catch(x) { e = x; } e instanceof TypeError && a.length === 2 && a[0] === 9 && a[1] === 2",
+        "let a = new Uint8Array([1,2]), e; try { Array.prototype.splice.call(a,0,1); } catch(x) { e = x; } e instanceof TypeError && a[0] === 2 && a[1] === 2",
+        "let a = new Uint8Array([1,2]), e; try { Array.prototype.pop.call(a); } catch(x) { e = x; } e instanceof TypeError && a[0] === 1 && a[1] === 2 && a.length === 2",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}
+
+#[test]
+fn array_mutators_species_typed_array_coercion() {
+    for src in [
+        "let n = 0, a = [{valueOf() { n++; return 257; }}]; a.constructor = {[Symbol.species]: function(n) { let r = new Uint8Array(n); Object.defineProperty(r,'length',{value:n,writable:true}); return r; }}; let r = a.splice(0,1); r instanceof Uint8Array && r[0] === 1 && r.length === 1 && n === 1 && a.length === 0",
+        "let n = 0, a = [{valueOf() { n++; return 7; }}]; a.constructor = {[Symbol.species]: function() { return new Uint8Array(0); }}; let e; try { a.splice(0,1); } catch(x) { e = x; } e instanceof TypeError && n === 0 && a.length === 1",
+        "let error = {}, a = [{valueOf() { throw error; }}]; a.constructor = {[Symbol.species]: function(n) { let r = new Uint8Array(n); Object.defineProperty(r,'length',{value:n,writable:true}); return r; }}; let e; try { a.splice(0,1); } catch(x) { e = x; } e === error && a.length === 1",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+}

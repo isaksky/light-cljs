@@ -1288,43 +1288,7 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
     let next = b.function(Builtin::GeneratorNext, &[])?;
     b.add(generator_prototype, "next", next, PropertyFlags::METHOD)?;
 
-    let species_getter = b.function(Builtin::ArraySpecies, &[])?;
-    let species_key = heap
-        .keys()
-        .intern_symbol(&crate::value::symbol::well_known("species"))?;
-    heap.with_object_mut(array, |o| match o {
-        HeapObject::Builtin(f) => {
-            f.properties.define_own_property(
-                species_key,
-                &PropertyDescriptor {
-                    get: Some(Value::Object(species_getter)),
-                    set: Some(Value::Undefined),
-                    enumerable: Some(false),
-                    configurable: Some(true),
-                    ..Default::default()
-                },
-            ) == DefineOutcome::Done
-        }
-        _ => false,
-    })?
-    .then_some(())?;
-    for method in [
-        Builtin::ArrayPrototypePop,
-        Builtin::ArrayPrototypeShift,
-        Builtin::ArrayPrototypeUnshift,
-        Builtin::ArrayPrototypeSplice,
-        Builtin::ArrayPrototypeReverse,
-        Builtin::ArrayPrototypeFill,
-        Builtin::ArrayPrototypeCopyWithin,
-    ] {
-        let function = b.function(method, &[])?;
-        b.add(
-            array_prototype,
-            method.name(),
-            function,
-            PropertyFlags::METHOD,
-        )?;
-    }
+    array_mutator_intrinsics(&mut b, array_prototype, array)?;
     let array_sort = b.function(Builtin::ArrayPrototypeSort, &[])?;
     b.add(array_prototype, "sort", array_sort, PropertyFlags::METHOD)?;
     let (intl_collator_prototype, intl_collator_bound) =
@@ -1577,6 +1541,50 @@ fn array_prototype(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(Obj
     let is_array = b.function(Builtin::ArrayIsArray, &[])?;
     b.add(array, "isArray", is_array, PropertyFlags::METHOD)?;
     Some((id, array))
+}
+
+// Keep the new registration's allocation temporaries out of the large realm
+// builder, which also runs on first use by 64 KiB migrating workers.
+#[inline(never)]
+fn array_mutator_intrinsics(
+    b: &mut Build<'_>,
+    prototype: ObjectId,
+    constructor: ObjectId,
+) -> Option<()> {
+    let heap = b.heap;
+    let getter = b.function(Builtin::ArraySpecies, &[])?;
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("species"))?;
+    heap.with_object_mut(constructor, |o| match o {
+        HeapObject::Builtin(f) => {
+            f.properties.define_own_property(
+                key,
+                &PropertyDescriptor {
+                    get: Some(Value::Object(getter)),
+                    set: Some(Value::Undefined),
+                    enumerable: Some(false),
+                    configurable: Some(true),
+                    ..Default::default()
+                },
+            ) == DefineOutcome::Done
+        }
+        _ => false,
+    })?
+    .then_some(())?;
+    for method in [
+        Builtin::ArrayPrototypePop,
+        Builtin::ArrayPrototypeShift,
+        Builtin::ArrayPrototypeUnshift,
+        Builtin::ArrayPrototypeSplice,
+        Builtin::ArrayPrototypeReverse,
+        Builtin::ArrayPrototypeFill,
+        Builtin::ArrayPrototypeCopyWithin,
+    ] {
+        let function = b.function(method, &[])?;
+        b.add(prototype, method.name(), function, PropertyFlags::METHOD)?;
+    }
+    Some(())
 }
 
 /// Shared iterator prototypes and the iterable methods (clj-quickjs-237).

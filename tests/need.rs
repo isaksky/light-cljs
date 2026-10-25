@@ -2458,6 +2458,8 @@ fn array_sort_comparator_failure_and_cancellation() {
 #[test]
 fn array_mutators_wait_without_replay() {
     for src in [
+        "let n = 0, a = new Uint8Array(2); let v = {valueOf() { n++; if (n === 1) { __rt.effect(1,3); __rt.need(5,3); } return 257; }}; Array.prototype.fill.call(a,v) === a && n === 2 && a[0] === 1 && a[1] === 1",
+        "let n = 0, a = [{valueOf() { n++; __rt.effect(1,3); __rt.need(5,3); return 257; }}]; a.constructor = {[Symbol.species]: function(n) { let r = new Uint8Array(n); Object.defineProperty(r,'length',{value:n,writable:true}); return r; }}; let r = a.splice(0,1); r[0] === 1 && r.length === 1 && n === 1 && a.length === 0",
         "let n = 0, o = {get length() { n++; __rt.effect(1,3); return __rt.need(5,3) - 5; }, 0: {x:1}, 1: {x:2}}; Array.prototype.reverse.call(o); n === 1 && o[0].x === 2 && o[1].x === 1",
         "let n = 0, a = [1,2,3]; a.fill({x:7},{valueOf() { n++; __rt.effect(1,3); __rt.need(5,3); return 1; }}); n === 1 && a[0] === 1 && a[1].x === 7 && a[2] === a[1]",
         "let n = 0, a = [1]; Object.defineProperty(a,0,{get() { n++; __rt.effect(1,3); return {x:__rt.need(5,3)}; }, configurable:true}); let r = a.pop(); n === 1 && r.x === 7 && a.length === 0",
@@ -2494,23 +2496,26 @@ fn array_mutators_wait_without_replay() {
         rt.collect().unwrap();
         let resumed = only_runnable(publish_number(&rt, &request, 7.0));
         let worker_rt = rt.clone();
-        let (value, host) = thread::spawn(move || {
-            for _ in 0..4000 {
-                match resumed
-                    .run_with(Budget::instructions(1), &mut host)
-                    .unwrap()
-                {
-                    RunOutcome::Yielded => {
-                        worker_rt.collect().unwrap();
+        let (value, host) = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                for _ in 0..4000 {
+                    match resumed
+                        .run_with(Budget::instructions(1), &mut host)
+                        .unwrap()
+                    {
+                        RunOutcome::Yielded => {
+                            worker_rt.collect().unwrap();
+                        }
+                        RunOutcome::Complete(value) => return (value, host),
+                        other => panic!("unexpected resumed mutator: {other:?}"),
                     }
-                    RunOutcome::Complete(value) => return (value, host),
-                    other => panic!("unexpected resumed mutator: {other:?}"),
                 }
-            }
-            panic!("mutator did not complete");
-        })
-        .join()
-        .unwrap();
+                panic!("mutator did not complete");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
         assert_eq!(value.view(), ValueView::Bool(true), "{src}");
         assert_eq!(host.effects, [3.0], "no replay: {src}");
         assert_eq!(task.dependency_log().edges(), &[expected]);

@@ -307,6 +307,13 @@ pub(crate) enum Action {
         value: Value,
         strict: bool,
     },
+    /// Create an own data property through DefineElem's resumable typed-array
+    /// conversion path; inherited setters do not participate.
+    CreateDataProperty {
+        this: Value,
+        key: Value,
+        value: Value,
+    },
 
     ToNumber(Value),
     ToPrimitiveNumber(Value),
@@ -1384,7 +1391,10 @@ pub(crate) fn start_builtin(
     // conversion frame before a proxy/prototype walk on a 64 KiB worker.
     if matches!(
         which,
-        Builtin::ObjectGetPrototypeOf | Builtin::ObjectSetPrototypeOf | Builtin::ObjectCreate
+        Builtin::ObjectGetPrototypeOf
+            | Builtin::ObjectSetPrototypeOf
+            | Builtin::ObjectCreate
+            | Builtin::ArraySpecies
     ) {
         return Ok(false);
     }
@@ -1435,6 +1445,15 @@ pub(crate) fn start_builtin(
     }
     if !construct {
         match which {
+            Builtin::ArrayPrototypePop
+            | Builtin::ArrayPrototypeShift
+            | Builtin::ArrayPrototypeUnshift
+            | Builtin::ArrayPrototypeSplice
+            | Builtin::ArrayPrototypeReverse
+            | Builtin::ArrayPrototypeFill
+            | Builtin::ArrayPrototypeCopyWithin => {
+                return start_array_mutator(state, which, this, args, popped);
+            }
             Builtin::DisposableStackUse
             | Builtin::DisposableStackDispose
             | Builtin::AsyncDisposableStackUse
@@ -1536,6 +1555,21 @@ pub(crate) fn start_builtin(
         return start_typed_array_constructor(heap, state, kind, args, popped);
     }
     start_builtin_slow(heap, state, which, this, args, construct, popped)
+}
+
+/// Avoid the general constructor dispatcher's large stack frame for mutators.
+#[inline(never)]
+fn start_array_mutator(
+    state: &mut VmState,
+    which: builtin::Builtin,
+    this: &Value,
+    args: &[Value],
+    popped: usize,
+) -> Result<bool, Fault> {
+    let native = array_mutate::State::new(which, this.clone(), args);
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::ArrayMutate(Box::new(native)))?;
+    Ok(true)
 }
 
 /// Stack methods run without reserving unrelated built-in constructor storage.
@@ -1892,15 +1926,6 @@ fn start_builtin_slow(
                 iterator::State::map_for_each(heap, state.diag.task, this.clone(), arg(0), arg(1))?,
             ))),
 
-            Builtin::ArrayPrototypePop
-            | Builtin::ArrayPrototypeShift
-            | Builtin::ArrayPrototypeUnshift
-            | Builtin::ArrayPrototypeSplice
-            | Builtin::ArrayPrototypeReverse
-            | Builtin::ArrayPrototypeFill
-            | Builtin::ArrayPrototypeCopyWithin => Some(NativeState::ArrayMutate(Box::new(
-                array_mutate::State::new(which, this.clone(), args),
-            ))),
             Builtin::ArrayPrototypeSort => Some(NativeState::ArraySort(Box::new(
                 array_sort::State::new(this.clone(), args),
             ))),
@@ -2653,6 +2678,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::DynamicFunction(..)
             | Action::SimTimer { .. }
             | Action::SetProperty { .. }
+            | Action::CreateDataProperty { .. }
             | Action::Call { .. }
             | Action::Construct { .. }
             | Action::ToNumber(_)
@@ -2839,6 +2865,13 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
                 write_result(state, setter, this, value)?;
             }
             Ok(Flow::Next)
+        }
+        Action::CreateDataProperty { this, key, value } => {
+            set_awaiting(state, Awaiting::CallResult)?;
+            state.push(this);
+            state.push(key);
+            state.push(value);
+            Ok(Flow::Resume(Instr::DefineElem))
         }
         Action::ToNumber(_)
         | Action::ToNumberLimited(_, _)
@@ -3228,6 +3261,7 @@ impl NativeState {
             NativeState::Disposal(disposal) => disposal.step(heap, task, input),
             NativeState::Promise(promise) => promise.step(heap, task, jobs, input),
             NativeState::DurationFormat(format) => format.step(heap, task, input),
+            NativeState::ArrayMutate(array) => array.step(heap, task, input),
             _ => self.step_other(heap, task, input, host),
         }
     }
@@ -3316,7 +3350,9 @@ impl NativeState {
             NativeState::ArrayFrom(from) => from.step(heap, task, input),
             NativeState::MathSumPrecise(sum) => sum.step(heap, task, input),
             NativeState::ArraySort(sort) => sort.step(heap, task, input),
-            NativeState::ArrayMutate(array) => array.step(heap, task, input),
+            NativeState::ArrayMutate(_) => {
+                unreachable!("array mutator dispatched before other native arms")
+            }
             NativeState::Intl(intl) => intl.step(heap, task, input),
             NativeState::Promise(_) => unreachable!("promise dispatched before other native arms"),
             NativeState::NumberFormat(format) => format.step(heap, task, input),
