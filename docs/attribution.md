@@ -1437,9 +1437,25 @@ input only and copies no further upstream text; its rejected-form rows and
 hand-built bytecode are synthetic. The corpus audit compared every case
 function of `test_language.js`, `test_closure.js`, `test_loop.js`,
 `test_builtin.js` and `test_bigint.js` at that revision with the fixtures
-listed above; `test_line_column_numbers` is the only case that cannot run
-unmodified (see README). Adapted QuickJS test text, synthetic fixtures, not
+listed above; `test_line_column_numbers` now runs selected unchanged rows
+with its QuickJS-only function metadata section omitted (see below and README).
+Adapted QuickJS test text, synthetic fixtures, not
 light-cljs output.
+
+### Eval SyntaxError positions (clj-quickjs-312)
+
+`tests/fixtures/js/quickjs_test_builtin_positions.js` preserves lines 1-71,
+524-560, 1092-1130 and 1138-1174 of `research/quickjs/tests/test_builtin.js`
+at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04),
+byte-for-byte unchanged, with one trailing case call. The header retains
+the full copyright/MIT notice from `research/quickjs/LICENSE`.
+The function metadata section, lines 1131-1137, is intentionally omitted;
+all selected assertions are unchanged. The original driver in
+`tests/quickjs_language.rs` runs these rows across budget yields and GC.
+Consulted `research/quickjs/quickjs.c` (`js_parse_error`, `build_backtrace`)
+for the plain SyntaxError message and input-position stack frame convention;
+the Rust implementation uses the existing bounded snapshot and native eval
+continuation. Synthetic fixture, not light-cljs output.
 
 ## Nullish coalescing and logical assignment (clj-quickjs-314)
 

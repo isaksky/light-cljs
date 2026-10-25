@@ -1156,10 +1156,23 @@ impl VmState {
     /// This reads immutable code metadata only: no getters, heap edges, or
     /// worker/Rust-stack state. The resulting string survives frame teardown.
     pub(crate) fn error_stack(&self, pc: usize) -> Result<JsString, Fault> {
-        self.error_stack_with_limit::<ERROR_STACK_UNITS>(pc)
+        self.error_stack_with_input(pc, None)
     }
 
-    fn error_stack_with_limit<const LIMIT: usize>(&self, pc: usize) -> Result<JsString, Fault> {
+    /// An input pseudo-frame shares the snapshot's total bound with JS callers.
+    pub(crate) fn error_stack_with_input(
+        &self,
+        pc: usize,
+        input: Option<(&'static str, usize, usize)>,
+    ) -> Result<JsString, Fault> {
+        self.error_stack_with_limit::<ERROR_STACK_UNITS>(pc, input)
+    }
+
+    fn error_stack_with_limit<const LIMIT: usize>(
+        &self,
+        pc: usize,
+        input: Option<(&'static str, usize, usize)>,
+    ) -> Result<JsString, Fault> {
         use std::fmt::Write;
 
         let limit = LIMIT.min(crate::value::string::MAX_STRING_LEN);
@@ -1178,6 +1191,10 @@ impl VmState {
             .try_reserve_exact(reservation)
             .map_err(|_| Fault::OutOfMemory("error stack allocation failed"))?;
         let mut stack = ErrorStackSnapshot { units, limit };
+        if let Some((name, line, column)) = input {
+            // Names are internal static labels, never user source or getters.
+            let _ = writeln!(stack, "    at {name}:{line}:{column}");
+        }
         for (index, frame) in std::iter::once(&self.entry)
             .chain(&self.calls)
             .rev()
@@ -1359,7 +1376,7 @@ mod tests {
         }
         let vm = metadata_state(name, "filename", 4);
         let before = JsString::copied_code_units();
-        let stack = vm.error_stack_with_limit::<64>(0).ok().unwrap();
+        let stack = vm.error_stack_with_limit::<64>(0, None).ok().unwrap();
         assert!(stack.len() <= 64);
         assert!(JsString::copied_code_units() - before <= 64);
         assert!(
@@ -1400,15 +1417,57 @@ mod tests {
             "😀".repeat(128).encode_utf16().collect::<Vec<_>>()
         );
         assert_eq!(units[file_start + 256], '…' as u16);
-        assert!(vm.error_stack_with_limit::<0>(0).ok().unwrap().is_empty());
+        assert!(
+            vm.error_stack_with_limit::<0>(0, None)
+                .ok()
+                .unwrap()
+                .is_empty()
+        );
 
         let vm = metadata_state(JsString::from("name"), "file", 1);
         let expected = "    at name (file)\n";
-        assert_eq!(vm.error_stack_with_limit::<19>(0).ok().unwrap(), expected);
-        assert_eq!(vm.error_stack_with_limit::<20>(0).ok().unwrap(), expected);
         assert_eq!(
-            vm.error_stack_with_limit::<18>(0).ok().unwrap(),
+            vm.error_stack_with_limit::<19>(0, None).ok().unwrap(),
+            expected
+        );
+        assert_eq!(
+            vm.error_stack_with_limit::<20>(0, None).ok().unwrap(),
+            expected
+        );
+        assert_eq!(
+            vm.error_stack_with_limit::<18>(0, None).ok().unwrap(),
             "    at name (file)"
+        );
+    }
+
+    #[test]
+    fn input_position_shares_the_stack_snapshot_bound() {
+        let vm = metadata_state(JsString::from("name"), "file", 100);
+        for limit in [0, 8, 32, ERROR_STACK_UNITS] {
+            // Exercise an input prefix longer than the entire snapshot too.
+            let input = Some(("<eval>", usize::MAX, usize::MAX));
+            let stack = match limit {
+                0 => vm.error_stack_with_limit::<0>(0, input),
+                8 => vm.error_stack_with_limit::<8>(0, input),
+                32 => vm.error_stack_with_limit::<32>(0, input),
+                _ => vm.error_stack_with_input(0, input),
+            }
+            .ok()
+            .unwrap();
+            assert!(stack.len() <= limit);
+            let prefix = format!("    at <eval>:{}:{}\n", usize::MAX, usize::MAX);
+            let count = stack.len().min(prefix.len());
+            assert_eq!(&stack.to_string_lossy()[..count], &prefix[..count]);
+        }
+        let stack = vm
+            .error_stack_with_limit::<64>(0, Some(("<Function>", 2, 6)))
+            .ok()
+            .unwrap();
+        assert_eq!(stack.len(), 64);
+        assert!(
+            stack
+                .to_string_lossy()
+                .starts_with("    at <Function>:2:6\n    at name (file)\n")
         );
     }
 

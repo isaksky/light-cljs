@@ -105,3 +105,14 @@ fn quickjs_literal_and_parse_cases_run_unmodified() {
         32 + 21 + 9 + 31 + 6 + 10,
     );
 }
+
+#[test]
+fn quickjs_line_column_rows_run_unmodified() {
+    // The four QuickJS-only function metadata rows 1131-1137 are omitted;
+    // every selected row is unchanged, including the original strict directive.
+    run_cases_unmodified(
+        include_str!("fixtures/js/quickjs_test_builtin_positions.js"),
+        &["test_line_column_numbers"],
+        71 + 37 + 39 + 37,
+    );
+}

@@ -110,7 +110,12 @@ impl State {
             .map_err(|_| Fault::OutOfMemory("eval compiler thread"))?
             .join()
             .map_err(|_| Fault::Internal("eval compiler panicked"))?
-            .map_err(|error| Fault::SyntaxError(format!("{name}:{error}")))?;
+            .map_err(|error| Fault::CompileSyntaxError {
+                message: error.message,
+                name,
+                line: error.line as usize,
+                column: error.column as usize,
+            })?;
         if dynamic_parameters.is_some() {
             return Ok(Action::DynamicFunction(executable));
         }

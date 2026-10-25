@@ -4415,12 +4415,19 @@ and `tests/fixtures/js/quickjs_test_language_parsing.js` adds `test_template`,
 unmodified in upstream's sloppy mode (`tests/quickjs_language.rs`). The only
 documented adaptations remain `test_using` (immutable intrinsics, user decision
 clj-quickjs-234) and `test_weak_ref` (kept-object timing, clj-quickjs-178);
-`test_cyclic_labels` is compiled but uncalled, as upstream. The one case that
-cannot run unmodified is `test_line_column_numbers`: eval SyntaxErrors carry
-their position in the message instead of the first stack line (filed as
-clj-quickjs-312; the other rows pass individually), and its rows 1131-1134 read
-QuickJS's non-standard function `lineNumber`/`columnNumber`, an intended
-omission. `test_std.js`, `test_worker.js`, `test_rw_handler.js` and
+`test_cyclic_labels` is compiled but uncalled, as upstream.
+`tests/fixtures/js/quickjs_test_builtin_positions.js` now runs the selected
+`test_line_column_numbers` rows unchanged (clj-quickjs-312), including parsing,
+runtime errors, operators, accessors, references and assignments. The function
+metadata section (upstream lines 1131-1137, including its four statements)
+remains an explicit intended omission: QuickJS's non-standard function
+`lineNumber`/`columnNumber` properties are not implemented, so the complete
+case is not claimed as unmodified. Direct/indirect eval and Function
+compilation errors have plain SyntaxError messages and begin their stacks
+with `    at <eval>:line:column` or `    at <Function>:line:column`, followed
+by callers. Input locations and callers share the existing 16,384 UTF-16-unit
+stack snapshot cap; at most 64 JS caller frames are retained.
+`test_std.js`, `test_worker.js`, `test_rw_handler.js` and
 `test_bjson.js` need the QuickJS shell modules (`std`, `os`, `bjson`) and stay
 outside the corpus beyond the two adapted async cases; `test_intl.js` lines
 1-470 already run (clj-quickjs-226).

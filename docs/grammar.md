@@ -3619,8 +3619,13 @@ Every Error instance's stack, including engine errors, is a writable,
 configurable, non-enumerable own data property, as in QuickJS (clj-quickjs-230).
 Reads, writes, deletion, descriptors and enumeration use ordinary object rules.
 Eval runtime diagnostics use the `<eval>` source map; compilation failures
-are catchable SyntaxErrors whose messages include `<eval>:line:column`.
-Direct eval and function `lineNumber`/`columnNumber` properties remain deferred.
+from direct/indirect eval and Function are catchable SyntaxErrors with plain
+messages (clj-quickjs-312). Their first stack line is
+`    at <eval>:line:column` or `    at <Function>:line:column`, followed by
+the JS callers. The input location shares the existing 16,384 UTF-16-unit
+snapshot bound with the caller text (also for JSON's `<input>` location).
+Function positions refer to its generated wrapper source. Function
+`lineNumber`/`columnNumber` properties remain an intended QuickJS-only omission.
 
 ```js accept
 Error('hello').stack.indexOf('    at <anonymous> (') === 0;

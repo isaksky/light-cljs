@@ -181,6 +181,13 @@ pub(crate) enum Fault {
     /// The result would exceed QuickJS's maximum UTF-16 string length.
     StringTooLong,
     ReferenceError(String),
+    /// Runtime compilation keeps its source position out of the JS message.
+    CompileSyntaxError {
+        message: String,
+        name: &'static str,
+        line: usize,
+        column: usize,
+    },
 }
 
 /// What the loop does after an instruction (or a native step).
@@ -1848,9 +1855,9 @@ fn return_flow(state: &mut VmState, heap: &Heap, v: Value) -> Result<Flow, Fault
 /// The error kind and message of a fault that is not an exception value.
 fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
     match fault {
-        Fault::SyntaxError(m) | Fault::JsonSyntaxError { message: m, .. } => {
-            (VmErrorKind::SyntaxError, m)
-        }
+        Fault::SyntaxError(m)
+        | Fault::JsonSyntaxError { message: m, .. }
+        | Fault::CompileSyntaxError { message: m, .. } => (VmErrorKind::SyntaxError, m),
         Fault::RangeError(m) => (VmErrorKind::RangeError, m),
         Fault::StringTooLong => (VmErrorKind::StringTooLong, "string too long".into()),
         Fault::Unsupported(m) => (VmErrorKind::UnsupportedOperand, m),
@@ -1992,7 +1999,7 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
     heap: &Heap,
     error: VmError,
     cause: Value,
-    input: Option<(usize, usize)>,
+    input: Option<(&'static str, usize, usize)>,
 ) -> Option<Exit> {
     if !catchable(error.kind) || !state.has_handlers() {
         return Some(Exit::Fail(error));
@@ -2061,19 +2068,12 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
         if matches!(error.kind, VmErrorKind::DependencyFailed(_)) {
             define("cause", cause)?;
         }
-        let callers = state.error_stack(pc).map_err(|fault| match fault {
-            Fault::OutOfMemory(message) => message,
-            _ => "error stack too long",
-        })?;
-        let stack = if let Some((line, column)) = input {
-            // A fixed-size input location, followed by the existing bounded
-            // snapshot. No rescanning or JavaScript callbacks on failure.
-            JsString::from(format!("    at <input>:{line}:{column}\n").as_str())
-                .concat(&callers)
-                .ok_or("error stack too long")?
-        } else {
-            callers
-        };
+        let stack = state
+            .error_stack_with_input(pc, input)
+            .map_err(|fault| match fault {
+                Fault::OutOfMemory(message) => message,
+                _ => "error stack too long",
+            })?;
         define("stack", Value::String(stack))?;
         heap.alloc(HeapObject::Plain(object))
             .ok_or("heap object table exhausted")
@@ -3378,7 +3378,12 @@ pub(crate) fn execute_budgeted(
                 // failing `Call` pushes no frame), so the failure names it
                 // and its callers.
                 let input = match &fault {
-                    Fault::JsonSyntaxError { line, column, .. } => Some((*line, *column)),
+                    Fault::JsonSyntaxError { line, column, .. } => {
+                        Some(("<input>", *line, *column))
+                    }
+                    Fault::CompileSyntaxError {
+                        name, line, column, ..
+                    } => Some((*name, *line, *column)),
                     _ => None,
                 };
                 let (kind, message) = fault_error(fault, &code, pc);
