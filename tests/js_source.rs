@@ -3,6 +3,131 @@
 //! (`tests/fixtures/js/`, not light-cljs output) and inline snippets. The
 //! bytecode-corruption tests start from compiled code and edit its bytes.
 
+/// Synthetic fixtures, not light-cljs output.
+#[test]
+fn rest_spread_and_iteration_patterns() {
+    for source in [
+        "function f(a, ...r) { return a === 1 && Array.isArray(r) && r.join(',') === '2,3'; } f.length === 1 && f(1,2,3)",
+        "function f(a = r, ...r) {} let error; try { f(); } catch(e) { error = e instanceof ReferenceError; } error",
+        "function f(...[a, b = 7, ...r]) { return a === 1 && b === 7 && r.length === 0; } f.length === 0 && f(1)",
+        "function f(...{length: n, 0: a}) { return n === 2 && a === 4; } f(4,5)",
+        "let f = (a = 1, ...r) => a + r.length; f.length === 0 && f(undefined,2,3) === 3",
+        "function f(...r) { return r.length; } f() === 0 && f(1,2) === 2",
+        "function* f(...r) { yield r[0]; return r.length; } let it = f(7,8); it.next().value === 7 && it.next().value === 2",
+        "let f = Function('a', '...r', 'return a + r.length'); f.length === 1 && f(7,8,9) === 9",
+        "let o = {m(a, ...[b]) { return a + b; }}; o.m.length === 1 && o.m(3,4) === 7",
+        "let x = {a: 1}; let s = Symbol(); x[s] = 2; let y = {...null, ...undefined, ...false, ...x, a: 3, ...'ab'}; y.a === 3 && y[s] === 2 && y[0] === 'a' && y[1] === 'b'",
+        "let log = ''; let x = {get a() { log += 'a'; delete this.b; this.c = 3; return 1; }, b: 2}; let y = {z: 0, ...x}; y.a === 1 && !('b' in y) && !('c' in y) && log === 'a'",
+        "let x = Object.create({inherited: 1}); Object.defineProperty(x, 'hidden', {value: 2}); Object.defineProperty(x, '__proto__', {value: 3, enumerable: true}); let y = {...x}; !('hidden' in y) && !('inherited' in y) && y.__proto__ === 3 && Object.getPrototypeOf(y) === Object.prototype",
+        "let log = ''; let s = Symbol(); let x = new Proxy({a: 1, [s]: 2}, {ownKeys(t) { log += 'k'; return ['a', s]; }, getOwnPropertyDescriptor(t,k) { log += 'd'; return {value: t[k], enumerable: true, configurable: true}; }}); let y = {...x}; y.a === 1 && y[s] === 2 && log === 'kdd'",
+        "let log = ''; let s = Symbol(); let x = {get [s]() { log += 's'; return 3; }, get a() { log += 'a'; return 2; }, get 1() { log += '1'; return 1; }}; let y = {...x, ...x}; log === '1as1as' && y[s] === 3",
+        "let error, n = 0; try { let x = {...{get a() { throw 17; }}, b: n++}; } catch(e) { error = e; } error === 17 && n === 0",
+        "let fs = []; for (let [a, b = a] of [[1], [2]]) fs.push(() => a + b); fs[0]() === 2 && fs[1]() === 4",
+        "let fs = []; for (const {a, ...r} of [{a: 1, b: 2}, {a: 3, b: 4}]) fs.push(() => a + r.b); fs[0]() === 3 && fs[1]() === 7",
+        "let fs = []; for (var [a] of [[1], [2]]) fs.push(() => a); a === 2 && fs[0]() === 2 && fs[1]() === 2",
+        "let fs = []; for (let [a, b] in {ab: 1, cd: 2}) fs.push(() => a + b); fs[0]() === 'ab' && fs[1]() === 'cd'",
+        "let n; for (var {length: k} in {abc: 1}) n = k; n === 3 && k === 3",
+        "let o = {}, n = 0; for ([o.x] of [[1],[2]]) n += o.x; let a; for ({length: a} in {abc: 1}) {} n === 3 && a === 3",
+        "let n = 0; for (let {a = 7} of [{}, {a: 2}]) { if (a === 7) continue; n += a; } n === 2",
+        "let n = 0; for (const [a] of [[1]]) { try { a = 2; } catch(e) { n = e instanceof TypeError; } } n",
+        "let error; try { for (let [a] of a) {} } catch(e) { error = e instanceof ReferenceError; } error",
+        "let closed = 0; let it = {next() { return {value: null}; }, return() { closed++; return {}; }, [Symbol.iterator]() { return this; }}; let error; try { for (const {a} of it) {} } catch(e) { error = e instanceof TypeError; } error && closed === 1",
+    ] {
+        assert_eq!(eval(source), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn rest_parameters_have_unmapped_arguments() {
+    // Synthetic fixtures, not light-cljs output; sloppy mode is intentional.
+    for source in [
+        "function f(a, ...r) { a = 8; arguments[1] = 9; return arguments[0] === 1 && r[0] === 2 && arguments.length === 3; } f(1,2,3)",
+        "function f(a = () => r, ...r) { var r; return a() === r && r[0] === 2; } f(undefined,2)",
+        "function f(...arguments) { return arguments[0] === 7; } f(7)",
+    ] {
+        let code = compile_script_with("rest", source, ScriptOptions::SLOPPY).unwrap();
+        assert!(
+            matches!(run(&code, &[]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn rest_spread_publication() {
+    // Synthetic fixtures, not light-cljs output.
+    let rt = Runtime::new();
+    let RunOutcome::Complete(f) = rt
+        .spawn(&exe("(function (...r) { return r; })"), &[])
+        .unwrap()
+        .run()
+        .unwrap()
+    else {
+        panic!()
+    };
+    rt.publish(&f).unwrap();
+    rt.collect().unwrap();
+    let caller = compile_function("function caller(f) { return f(7); }").unwrap();
+    let RunOutcome::Complete(array) = rt.spawn(&caller, &[&f]).unwrap().run().unwrap() else {
+        panic!()
+    };
+    assert!(matches!(
+        rt.publish(&array),
+        Err(clj_quickjs::PublishError::NotShareable { .. })
+    ));
+    for source in ["({...{a: 1}})", "function f(...r) { return () => r; } f(1)"] {
+        let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
+        else {
+            panic!()
+        };
+        assert!(matches!(
+            rt.publish(&value),
+            Err(clj_quickjs::PublishError::NotShareable { .. })
+        ));
+    }
+}
+
+#[test]
+fn rest_spread_on_small_worker_stack() {
+    // Synthetic fixture, not light-cljs output. Compile and initialize the
+    // realm before moving execution to the 64 KiB worker.
+    let rt = Runtime::new();
+    rt.spawn(&exe("Object"), &[]).unwrap().run().unwrap();
+    let task = rt.spawn(&exe("function f(...[a]) { let r = {...a}; let n = 0; for (let {b} of [r]) n += b; return n; } f({b: 7}) === 7"), &[]).unwrap();
+    let value = std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            let RunOutcome::Complete(value) = task.run().unwrap() else {
+                panic!()
+            };
+            value.view()
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(value, ValueView::Bool(true));
+}
+
+#[test]
+fn rest_and_iteration_early_errors() {
+    for source in [
+        "function f(...r,) {}",
+        "function f(...r, a) {}",
+        "function f(...r = []) {}",
+        "function f(a, ...[a]) {}",
+        "function f(...r) { 'use strict'; }",
+        "({...r, x} = {})",
+        "for (const [a, a] of []) {}",
+        "for (let [a] = [] of []) {}",
+        "for (var {a} = {} in {}) {}",
+        "({set x(...r) {}})",
+        "for ({a = ({x = 1})} of []) {}",
+        "class C { set x(...r) {} }",
+    ] {
+        assert!(compile_script("invalid-rest", source).is_err(), "{source}");
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output. Async stack cases follow
 /// QuickJS test_language.js::test_await_using (MIT notice reproduced below).
 #[test]
@@ -1684,8 +1809,10 @@ fn object_destructuring_function_rest_preserves_publication() {
     for source in [
         "function f() {} f;",
         "function f() {} let {...r} = f; if (Object.keys(r).length !== 0) throw 1; f;",
+        "function f() {} let r = {...f}; if (Object.keys(r).length !== 0) throw 1; f;",
         "function target() {} target.bind(null);",
         "function target() {} let f = target.bind(null); let {...r} = f; if (Object.keys(r).length !== 0) throw 1; f;",
+        "function target() {} let f = target.bind(null); let r = {...f}; if (Object.keys(r).length !== 0) throw 1; f;",
     ] {
         let rt = Runtime::new();
         let RunOutcome::Complete(f) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap() else {
@@ -2756,6 +2883,13 @@ fn array_destructuring_nested_iterator_close() {
 #[test]
 fn array_and_object_destructuring_waits_collects_and_migrates() {
     for source in [
+        "let n = 0; let o = {...{get x() { n++; __rt.need(131, 1); return 7; }}}; o.x === 7 && n === 1",
+        "let n = 0; let p = new Proxy({x: 7}, {ownKeys(t) { n++; __rt.need(131, 1); return ['x']; }, getOwnPropertyDescriptor(t,k) { return {value: 7, enumerable: true, configurable: true}; }}); let o = {...p}; o.x === 7 && n === 1",
+        "let n = 0; let p = new Proxy({x: 7}, {getOwnPropertyDescriptor(t,k) { n++; __rt.need(131, 1); return {value: 7, enumerable: true, configurable: true}; }}); let o = {...p}; o.x === 7 && n === 1",
+        "function f(a = __rt.need(131, 1), ...r) { return () => a + r[0].x; } f(undefined, {x: 3})() === 10",
+        "function f(...[a = __rt.need(131, 1)]) { return () => a; } f(undefined)() === 7",
+        "let fs = []; for (let [a = __rt.need(131, 1)] of [[], [2]]) fs.push(() => a); fs[0]() === 7 && fs[1]() === 2",
+        "let fs = []; for (const {a = __rt.need(131, 1)} of [{}, {a: 2}]) fs.push(() => a); fs[0]() === 7 && fs[1]() === 2",
         "let n = 0; let {x} = {get x() { n++; __rt.need(131, 1); return 7; }}; x === 7 && n === 1",
         "let n = 0; let o = {get a() { n++; __rt.need(131, 1); return 7; }}; let {...r} = o; r.a === 7 && n === 1",
         "let s = Symbol('s'); let o = {}; o[s] = 7; let key = {toString() { __rt.need(131, 1); return 'x'; }}; let {[key]: a = 3, ...r} = o; a === 3 && r[s] === 7",

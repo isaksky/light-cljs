@@ -683,6 +683,8 @@ impl Executable {
                 Opcode::UsingDispose => Instr::UsingDispose(operand as u16),
                 Opcode::UsingCheckAsync => Instr::UsingCheckAsync,
                 Opcode::UsingDisposeAsync => Instr::UsingDisposeAsync(operand as u16),
+                Opcode::Rest => Instr::Rest(operand as u16),
+                Opcode::CopyDataProperties => Instr::CopyDataProperties,
                 Opcode::DefineGetterElem => Instr::DefineGetterElem,
                 Opcode::DefineSetterElem => Instr::DefineSetterElem,
                 Opcode::SetComputedName => Instr::SetComputedName(operand as u16),
@@ -825,9 +827,12 @@ impl Executable {
             captures,
             strict,
             constructor_kind,
-            uses_arguments: instrs
-                .iter()
-                .any(|i| matches!(i, Instr::NewArguments | Instr::ForwardArguments)),
+            uses_arguments: instrs.iter().any(|i| {
+                matches!(
+                    i,
+                    Instr::NewArguments | Instr::ForwardArguments | Instr::Rest(_)
+                )
+            }),
             instrs: instrs.into(),
             offsets: offsets.into(),
             max_stack,

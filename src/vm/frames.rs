@@ -163,8 +163,8 @@ pub(crate) struct Frame {
     /// new object as `this`. When it returns a value that is not an object,
     /// the caller receives `this` instead (the return-override rule).
     pub(crate) construct: bool,
-    /// Original actual arguments, only for code containing NewArguments.
-    /// Traced until that instruction consumes them, before defaults run.
+    /// Original actual arguments for NewArguments, Rest or ForwardArguments.
+    /// Traced until NewArguments consumes them, or until the frame leaves.
     pub(crate) arguments: Option<Vec<Value>>,
     /// Index of the next instruction to execute in `code`.
     pub(crate) pc: usize,

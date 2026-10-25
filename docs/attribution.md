@@ -1442,3 +1442,12 @@ Consulted `research/quickjs/quickjs.c`, `js_array_every`, `js_array_reduce`,
 arguments, hole handling, species results and flattening depth. The Rust native
 continuations and synthetic tests were independently written; no QuickJS source
 or test text was copied.
+
+## Rest parameters, spread properties and loop patterns (clj-quickjs-315)
+
+Consulted `research/quickjs/quickjs.c` `js_parse_function_decl2` (`OP_rest`),
+`js_parse_object_literal` (`OP_copy_data_properties`), and `js_parse_for_in_of`
+at revision `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04)
+for parameter restrictions, data copying and per-iteration binding semantics.
+The Rust implementation and synthetic fixtures (not light-cljs output) were
+written independently; no QuickJS source or test text was copied.

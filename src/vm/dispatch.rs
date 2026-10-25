@@ -2555,6 +2555,8 @@ fn step_instruction(
             state.replace(2, value)?;
         }
         Instr::UsingCheck
+        | Instr::Rest(_)
+        | Instr::CopyDataProperties
         | Instr::UsingDispose(_)
         | Instr::UsingCheckAsync
         | Instr::UsingDisposeAsync(_) => {
@@ -3242,6 +3244,8 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::UsingDispose(_)
         | Instr::UsingCheckAsync
         | Instr::UsingDisposeAsync(_)
+        | Instr::Rest(_)
+        | Instr::CopyDataProperties
         | Instr::NeedAll
         // Leaves the loop; continuing after it re-enters `execute`, which
         // polls at run entry.

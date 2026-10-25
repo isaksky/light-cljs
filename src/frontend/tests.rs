@@ -948,6 +948,7 @@ fn render_pattern(p: &Pattern) -> String {
     match &p.kind {
         PatternKind::Identifier(i) => i.name.clone(),
         PatternKind::Target(e) => render_expr(e),
+        PatternKind::Rest(target) => format!("...{}", render_pattern(target)),
         PatternKind::Object { properties, rest } => {
             let mut parts: Vec<String> = properties
                 .iter()
@@ -1270,6 +1271,16 @@ fn render_stmt(s: &Stmt) -> String {
                 "for-in"
             };
             let head = match head {
+                super::ast::ForInHead::Pattern(kind, target) => format!(
+                    "({} {})",
+                    match kind {
+                        Some(super::ast::LexicalKind::Let) => "let",
+                        Some(_) => "const",
+                        None => "var",
+                    },
+                    render_pattern(target)
+                ),
+                super::ast::ForInHead::Assignment(target) => render_pattern(target),
                 super::ast::ForInHead::Binding(name) => name.name.clone(),
                 super::ast::ForInHead::Member(target) => render_expr(target),
                 super::ast::ForInHead::Lexical(super::ast::LexicalKind::Let, name) => {
@@ -2678,7 +2689,7 @@ fn object_literals() {
     rejects_with(r#"({"s"});"#, UnexpectedToken, 1, 3, "needs a value");
     rejects_with("({a = 1});", Invalid, 1, 3, "destructuring");
     parse_script("({[k]: 1});").unwrap();
-    rejects_with("({...o});", Unsupported, 1, 3, "spread properties");
+    parse_script("({...o});").unwrap();
     for src in ["({async m() {}});", "({*g() {}});"] {
         parse_script(src).unwrap();
         if src.contains("async *") || src.contains("async function*") {
@@ -3729,7 +3740,7 @@ fn automatic_semicolon_insertion() {
 /// THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #[test]
 fn arrow_functions_and_asi() {
-    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken, Unsupported};
+    use SyntaxErrorKind::{Invalid, ReservedWord, UnexpectedToken};
     assert_eq!(ast("x => x"), "(arrow (x) => x)");
     assert_eq!(ast("() => {}"), "(arrow ())");
     assert_eq!(ast("(a, b,) => { return a; }"), "(arrow (a b) (return a))");
@@ -3781,7 +3792,7 @@ fn arrow_functions_and_asi() {
     rejects("(1) => 1", UnexpectedToken, 1, 2);
     rejects("((a)) => 1", UnexpectedToken, 1, 2);
     rejects("(a b) => 1", UnexpectedToken, 1, 4);
-    rejects_with("(...a) => 1", Unsupported, 1, 2, "rest parameters");
+    parse_script("(...a) => 1").unwrap();
     parse_script("({ a }) => 1").unwrap();
     rejects("(eval) => 1", ReservedWord, 1, 2);
     rejects("arguments => 1", ReservedWord, 1, 1);
@@ -5050,11 +5061,11 @@ fn rejects_unsupported_syntax_with_positions() {
         ("import x from 'y';", 1, 1, "import"),
         ("export const x = 1;", 1, 1, "export"),
         ("x = import('y');", 1, 5, "import"),
-        ("function f(...a) {}", 1, 12, "rest"),
     ];
     for &(src, line, column, needle) in cases {
         rejects_with(src, Unsupported, line, column, needle);
     }
+    parse_script("function f(...a) {}").unwrap();
     rejects_with("x = super.y;", SyntaxErrorKind::Invalid, 1, 5, "super");
 }
 
@@ -5387,6 +5398,12 @@ fn deep_nesting_is_rejected_without_overflowing_the_stack() {
             "}".repeat(n)
         ),
         format!("x = {}1{};", "function (a = ".repeat(n), ") {}".repeat(n)),
+        format!(
+            "x = {}1{};",
+            "function (...[a = ".repeat(n),
+            "]) {}".repeat(n)
+        ),
+        format!("x = {}1{};", "({...".repeat(n), "})".repeat(n)),
         format!("x = {}1{};", "(a = ".repeat(n), ") => a".repeat(n)),
         format!("x = 1{};", " + 1".repeat(n)),
         format!("x = 1{};", " ** 1".repeat(n)),

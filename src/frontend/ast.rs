@@ -63,6 +63,8 @@ pub struct Pattern {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PatternKind {
     Identifier(Ident),
+    /// A final formal parameter, collected from the remaining actual arguments.
+    Rest(Box<Pattern>),
     Array {
         elements: Vec<Option<Pattern>>,
         rest: Option<Box<Pattern>>,
@@ -103,6 +105,7 @@ impl Pattern {
     fn collect_names<'a>(&'a self, names: &mut Vec<&'a Ident>) {
         match &self.kind {
             PatternKind::Identifier(i) => names.push(i),
+            PatternKind::Rest(target) => target.collect_names(names),
             PatternKind::Array { elements, rest } => {
                 for p in elements.iter().flatten().chain(rest.as_deref()) {
                     p.collect_names(names);
@@ -166,6 +169,7 @@ impl Stmt {
                 let target = match head {
                     ForInHead::Member(target) => target.height,
                     ForInHead::Var(_, Some(init)) => init.height,
+                    ForInHead::Pattern(_, target) | ForInHead::Assignment(target) => target.height,
                     _ => 0,
                 };
                 target.max(object.height).max(body.height)
@@ -335,6 +339,10 @@ pub enum ForInit {
 /// The left side of a `for`-`in` head (clj-quickjs-85).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ForInHead {
+    /// Destructuring declaration; None denotes a function-scoped var binding.
+    Pattern(Option<LexicalKind>, Box<Pattern>),
+    /// Destructuring assignment, without a declaration.
+    Assignment(Box<Pattern>),
     /// `for (k in o)`: each key is assigned to the binding `k`.
     Binding(Ident),
     /// `for (let k in o)` or `for (const k in o)`: a new binding per

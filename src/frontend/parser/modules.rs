@@ -498,6 +498,9 @@ fn var_declared_names<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
             if let ForInHead::Var(name, _) = head {
                 out.push(name);
             }
+            if let ForInHead::Pattern(None, target) = head {
+                out.extend(target.names());
+            }
             var_declared_names(body, out);
         }
         StmtKind::If {

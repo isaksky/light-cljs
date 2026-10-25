@@ -253,6 +253,7 @@ use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::value::{JsString, Value};
 use crate::vm::{descriptor, property, prototype};
 
+mod copy_properties;
 pub(crate) mod error;
 
 /// What a native frame is waiting for.
@@ -291,6 +292,11 @@ enum Failure {
 /// What a step asks the trampoline to do next.
 #[derive(Debug)]
 pub(crate) enum Action {
+    /// Execute a property instruction and deliver its result to this native.
+    Instruction {
+        instr: Instr,
+        operands: Vec<Value>,
+    },
     /// Enter newly compiled eval code after releasing the native borrow.
     Eval(super::executable::Executable, Vec<Value>),
     DynamicFunction(super::executable::Executable),
@@ -501,6 +507,12 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    CopyProperties(copy_properties::State),
+    Rest {
+        values: Vec<Value>,
+        next: usize,
+        out: Value,
+    },
     Proxy(Box<super::proxy::State>),
     Dispose(dispose::State),
     Disposal(Box<dispose::Stack>),
@@ -883,6 +895,13 @@ pub(crate) fn await_promise(
 impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match &self.state {
+            NativeState::CopyProperties(copy) => copy.trace(visit),
+            NativeState::Rest { values, out, .. } => {
+                for value in values {
+                    value.trace(visit);
+                }
+                out.trace(visit);
+            }
             NativeState::Async(a) => a.trace(visit),
             NativeState::Eval(eval) => eval.trace(visit),
             NativeState::DynamicFunction(function) => function.trace(visit),
@@ -1016,7 +1035,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
     use Instr::*;
     match instr {
         Reduce | NeedAll | GetIterator | UsingCheck | UsingDispose(_) | UsingCheckAsync
-        | UsingDisposeAsync(_) | ForInNext => true,
+        | UsingDisposeAsync(_) | ForInNext | Rest(_) | CopyDataProperties => true,
         PendingException | SuppressedError | PendingCancel => false,
         IsCell | IsObject | ToObject => false,
         RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add
@@ -2636,6 +2655,32 @@ pub(crate) fn start(
     pc: usize,
 ) -> Result<(), Fault> {
     let (popped, native) = match instr {
+        Instr::Rest(index) => (
+            0,
+            NativeState::Rest {
+                values: state
+                    .top()
+                    .arguments
+                    .as_ref()
+                    .ok_or(Fault::Internal("rest arguments unavailable"))?
+                    .iter()
+                    .skip(usize::from(index))
+                    .cloned()
+                    .collect(),
+                next: 0,
+                out: Value::Undefined,
+            },
+        ),
+        Instr::CopyDataProperties => {
+            let [target, source] = operands::<2>(state)?;
+            (
+                2,
+                NativeState::CopyProperties(copy_properties::State::new(
+                    target.clone(),
+                    source.clone(),
+                )),
+            )
+        }
         Instr::ForInNext => (
             1,
             NativeState::Proxy(Box::new(super::proxy::State::new(
@@ -2775,6 +2820,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::SimTimer { .. }
             | Action::SetProperty { .. }
             | Action::CreateDataProperty { .. }
+            | Action::Instruction { .. }
             | Action::Call { .. }
             | Action::Construct { .. }
             | Action::ToNumber(_)
@@ -2961,6 +3007,13 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
                 write_result(state, setter, this, value)?;
             }
             Ok(Flow::Next)
+        }
+        Action::Instruction { instr, operands } => {
+            set_awaiting(state, Awaiting::CallResult)?;
+            for value in operands {
+                state.push(value);
+            }
+            Ok(Flow::Resume(instr))
         }
         Action::CreateDataProperty { this, key, value } => {
             set_awaiting(state, Awaiting::CallResult)?;
@@ -3360,7 +3413,33 @@ impl NativeState {
             NativeState::ArrayMutate(array) => array.step(heap, task, input),
             NativeState::ArraySearch(array) => array.step(heap, task, input),
             NativeState::ArrayCallbacks(array) => array.step(heap, task, input),
+
+            NativeState::CopyProperties(copy) => copy.step(heap, task, input),
+            NativeState::Rest { .. } => self.step_rest(heap, task),
             _ => self.step_other(heap, task, input, host),
+        }
+    }
+
+    #[inline(never)]
+    fn step_rest(&mut self, heap: &Heap, task: TaskId) -> Result<Action, Fault> {
+        let NativeState::Rest { values, next, out } = self else {
+            return Err(Fault::Internal("expected rest state"));
+        };
+        if matches!(out, Value::Undefined) {
+            *out = property::new_array(heap, task)?;
+            return Ok(Action::Continue);
+        }
+        if let Some(value) = values.get_mut(*next) {
+            property::append(
+                heap,
+                task,
+                out,
+                Some(std::mem::replace(value, Value::Undefined)),
+            )?;
+            *next += 1;
+            Ok(Action::Continue)
+        } else {
+            Ok(Action::Return(out.clone()))
         }
     }
 
@@ -3373,6 +3452,9 @@ impl NativeState {
     ) -> Result<Action, Fault> {
         match self {
             NativeState::Async(a) => a.step(heap, input),
+            NativeState::CopyProperties(_) | NativeState::Rest { .. } => {
+                Err(Fault::Internal("copy native bypassed dispatch"))
+            }
             NativeState::Eval(eval) => eval.step(),
             NativeState::DynamicFunction(function) => function.step(input),
             NativeState::Generator { id, failed } => {
@@ -4708,6 +4790,8 @@ impl NativeState {
             (NativeState::BigIntParse { .. } | NativeState::BigIntFormat(_), _) => Action::Unwind,
             (
                 NativeState::Eval(_)
+                | NativeState::CopyProperties(_)
+                | NativeState::Rest { .. }
                 | NativeState::DynamicFunction(_)
                 | NativeState::Reduce { .. }
                 | NativeState::ArrayFrom(_)

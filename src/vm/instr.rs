@@ -162,6 +162,8 @@
 //! | `ToObject` | 0xB0 | – | value → object | object environment boxing, rejecting nullish values |
 //! | `UsingCheckAsync` | 0xB1 | – | resource → method hint | async lookup with sync fallback |
 //! | `UsingDisposeAsync` | 0xB2 | u16 count | (value method hint)* has-error error cancelling → undefined | shared disposal with awaits |
+//! | `Rest` | 0xB3 | u16 first argument | → array | budgeted rest argument collection |
+//! | `CopyDataProperties` | 0xB4 | – | target source → target | budgeted object spread |
 //!
 //! `Method` (clj-quickjs-126) takes its capture count from child code,
 //! like `Function`. Validation also requires the home-object operand below
@@ -729,6 +731,10 @@ pub enum Opcode {
     UsingCheckAsync = 0xB1,
     /// (value method hint)* has-error error cancelling → undefined.
     UsingDisposeAsync = 0xB2,
+    /// → array: remaining original actual arguments, built in budgeted steps.
+    Rest = 0xB3,
+    /// target source → target: CopyDataProperties, skipping nullish sources.
+    CopyDataProperties = 0xB4,
 }
 
 /// Operand encoding of an opcode.
@@ -937,6 +943,8 @@ impl Opcode {
             0xB0 => ToObject,
             0xB1 => UsingCheckAsync,
             0xB2 => UsingDisposeAsync,
+            0xB3 => Rest,
+            0xB4 => CopyDataProperties,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1125,6 +1133,8 @@ impl Opcode {
             ToObject => "to_object",
             UsingCheckAsync => "using_check_async",
             UsingDisposeAsync => "using_dispose_async",
+            Rest => "rest",
+            CopyDataProperties => "copy_data_properties",
             PutGlobalStrict => "put_global_strict",
             PutFieldStrict => "put_field_strict",
             PutElemStrict => "put_elem_strict",
@@ -1224,6 +1234,8 @@ impl Opcode {
                 OperandKind::None
             }
             UsingDispose | UsingDisposeAsync => OperandKind::Count,
+            Rest => OperandKind::Count,
+            CopyDataProperties => OperandKind::None,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
         }
@@ -1464,6 +1476,8 @@ pub(crate) enum Instr {
     ToObject,
     UsingCheckAsync,
     UsingDisposeAsync(u16),
+    Rest(u16),
+    CopyDataProperties,
 }
 
 impl Instr {
@@ -1644,6 +1658,8 @@ impl Instr {
             Instr::ToObject => Opcode::ToObject,
             Instr::UsingCheckAsync => Opcode::UsingCheckAsync,
             Instr::UsingDisposeAsync(_) => Opcode::UsingDisposeAsync,
+            Instr::Rest(_) => Opcode::Rest,
+            Instr::CopyDataProperties => Opcode::CopyDataProperties,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
             Instr::PutFieldStrict(_) => Opcode::PutFieldStrict,
             Instr::PutElemStrict => Opcode::PutElemStrict,
@@ -1724,6 +1740,8 @@ impl Instr {
             UsingDispose(n) => (2 * usize::from(n) + 3, 1),
             UsingCheckAsync => (1, 2),
             UsingDisposeAsync(n) => (3 * usize::from(n) + 3, 1),
+            Rest(_) => (0, 1),
+            CopyDataProperties => (2, 1),
             PendingException => (0, 1),
             PendingCancel => (0, 1),
             SuppressedError => (2, 1),
@@ -1749,6 +1767,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 178);
+        assert_eq!(assigned, 180);
     }
 }

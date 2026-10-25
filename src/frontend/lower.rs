@@ -357,7 +357,11 @@ fn constructor_kind(f: &Function) -> ConstructorKind {
 }
 
 fn function_length(f: &Function) -> u16 {
-    f.defaults.iter().take_while(|d| d.is_none()).count() as u16
+    f.params
+        .iter()
+        .zip(&f.defaults)
+        .take_while(|(p, d)| d.is_none() && !matches!(p.kind, PatternKind::Rest(_)))
+        .count() as u16
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2755,6 +2759,18 @@ impl<'s> Lowerer<'s> {
         if f.generator {
             self.out().op(Opcode::GeneratorStart, f.span);
         }
+        // Collect before NewArguments can release the original actuals, and
+        // before defaults can mutate incoming parameter slots. The resulting
+        // array remains hidden until its parameter's initialization turn.
+        if let Some((index, p)) = f
+            .params
+            .iter()
+            .enumerate()
+            .find(|(_, p)| matches!(p.kind, PatternKind::Rest(_)))
+        {
+            self.out().op_u16(Opcode::Rest, index as u16, p.span);
+            self.out().op_u16(Opcode::SetLocal, index as u16, p.span);
+        }
         if !f.has_non_simple_parameters() {
             if f.generator {
                 self.out().op(Opcode::GeneratorInitialYield, f.span);
@@ -3295,7 +3311,9 @@ impl<'s> Lowerer<'s> {
                 }
                 Ok(true)
             }
-            PatternKind::Default { target, .. } => self.pattern_reference(target),
+            PatternKind::Default { target, .. } | PatternKind::Rest(target) => {
+                self.pattern_reference(target)
+            }
             _ => Ok(false),
         }
     }
@@ -3392,6 +3410,7 @@ impl<'s> Lowerer<'s> {
                 self.reference_put(reference);
                 self.out().op(Opcode::Pop, span);
             }
+            PatternKind::Rest(target) => self.pattern_store(target, initialize, prepared)?,
             PatternKind::Array { elements, rest } => {
                 self.array_pattern(elements, rest.as_deref(), initialize, span)?
             }
@@ -3760,6 +3779,47 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    #[inline(never)]
+    fn check_iteration_pattern(&self, head: &ForInHead) -> Result<(), SyntaxError> {
+        if let ForInHead::Pattern(None, target) = head {
+            for name in target.names() {
+                self.check_var_not_shadowed(name)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn declare_iteration_pattern(&mut self, head: &ForInHead) -> Result<Vec<u16>, SyntaxError> {
+        let mut cells = Vec::new();
+        if let ForInHead::Pattern(Some(kind), target) = head {
+            for name in target.names() {
+                self.declare(
+                    name,
+                    if *kind == LexicalKind::Let {
+                        BindingKind::Let
+                    } else {
+                        BindingKind::Const
+                    },
+                    false,
+                    false,
+                )?;
+                let b = self.local(name)?;
+                if b.repr == Repr::Cell {
+                    cells.push(b.slot);
+                }
+            }
+            self.renew_iteration_cells(&cells, target.span);
+        }
+        Ok(cells)
+    }
+
+    fn renew_iteration_cells(&mut self, cells: &[u16], span: Span) {
+        for &slot in cells {
+            self.out().op(Opcode::NewCell, span);
+            self.out().op_u16(Opcode::SetLocal, slot, span);
+        }
+    }
+
     /// Lower `for (head in object) body` (clj-quickjs-85):
     ///
     /// ```text
@@ -3810,9 +3870,11 @@ impl<'s> Lowerer<'s> {
         if let ForInHead::Var(name, _) = head {
             self.check_var_not_shadowed(name)?;
         }
+        self.check_iteration_pattern(head)?;
         self.reset_completion(span);
         let saved_slot = self.cur().next_slot;
         self.cur_mut().scopes.push(Scope::new());
+        let pattern_cells = self.declare_iteration_pattern(head)?;
         let mut cell = None;
         if let ForInHead::Var(name, Some(init)) = head {
             self.assign(name, init)?;
@@ -3843,6 +3905,7 @@ impl<'s> Lowerer<'s> {
         let end = self.out().label();
         self.out().branch(Opcode::PushFinally, cleanup, span);
         self.out().bind(start);
+        self.renew_iteration_cells(&pattern_cells, span);
         if let Some(slot) = cell {
             let out = self.out();
             out.op(Opcode::NewCell, span);
@@ -3853,6 +3916,10 @@ impl<'s> Lowerer<'s> {
         self.out().op(Opcode::ForInNext, span);
         self.out().branch(Opcode::JumpIfFalse, done, span);
         match head {
+            ForInHead::Pattern(kind, target) => {
+                self.pattern_store(target, kind.is_some(), false)?
+            }
+            ForInHead::Assignment(target) => self.pattern_store(target, false, false)?,
             ForInHead::Lexical(_, name) => {
                 let b = self.initialize(name)?;
                 match b.repr {
@@ -3934,9 +4001,11 @@ impl<'s> Lowerer<'s> {
         if let ForInHead::Var(name, _) = head {
             self.check_var_not_shadowed(name)?;
         }
+        self.check_iteration_pattern(head)?;
         self.reset_completion(span);
         let saved_slot = self.cur().next_slot;
         self.cur_mut().scopes.push(Scope::new());
+        let pattern_cells = self.declare_iteration_pattern(head)?;
         let mut cell = None;
         if let ForInHead::Lexical(kind, name) = head {
             self.declare(
@@ -3989,6 +4058,7 @@ impl<'s> Lowerer<'s> {
         // exits dispose before closing the iterator. Validation failures are
         // already consumer failures (`in_body` is true).
         self.disposable_scope(&resources, span, |this| {
+            this.renew_iteration_cells(&pattern_cells, span);
             if let Some(slot) = cell {
                 this.out().op(Opcode::NewCell, span);
                 this.out().op(Opcode::Dup, span);
@@ -3996,6 +4066,10 @@ impl<'s> Lowerer<'s> {
             }
             this.out().op_u16(Opcode::GetLocal, result, span);
             match head {
+                ForInHead::Pattern(kind, target) => {
+                    this.pattern_store(target, kind.is_some(), false)?
+                }
+                ForInHead::Assignment(target) => this.pattern_store(target, false, false)?,
                 ForInHead::Lexical(kind, name) => {
                     if *kind == LexicalKind::Using {
                         this.register_disposable(name.span)?;
@@ -5187,6 +5261,12 @@ impl<'s> Lowerer<'s> {
     ) -> Result<(), SyntaxError> {
         self.out().op(Opcode::NewObjectLiteral, span);
         for property in properties {
+            if let ExprKind::Spread(source) = &property.value.kind {
+                self.expr(source)?;
+                self.out()
+                    .op(Opcode::CopyDataProperties, property.name_span);
+                continue;
+            }
             if let PropertyName::Computed(key, _) = &property.name {
                 self.computed_property(property, key)?;
                 continue;
@@ -6588,6 +6668,9 @@ fn var_names_in<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Ident>) {
         StmtKind::ForIn { head, body, .. } | StmtKind::ForOf { head, body, .. } => {
             if let ForInHead::Var(name, _) = head {
                 out.push(name);
+            }
+            if let ForInHead::Pattern(None, target) = head {
+                out.extend(target.names());
             }
             var_names_in(body, out);
         }

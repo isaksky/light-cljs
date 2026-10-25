@@ -542,9 +542,7 @@ but fails at runtime with TypeError. Symbol-valued computed literal keys execute
 | module string-literal import/export names, import attributes (including `type: 'json'` and `type: 'json5'`), `import.meta`, top-level `await` | Unsupported |
 | `new.target` outside a non-arrow function, including a top-level arrow or indirect eval (clj-quickjs-99) | Invalid |
 | execution of parsed async generators | Unsupported at the function during compilation |
-| rest parameters, destructuring for-in/for-of heads without initializers | Unsupported |
 | initialized for-in heads in strict code or with `let`/`const` or a binding pattern; initialized for-of heads in either mode (clj-quickjs-90) | Invalid |
-| object spread `...` (in an object literal) | Unsupported |
 | an optional chain as an assignment/update target (`a?.b = 1`, `a?.b++`), a `new` callee (`new a?.b()`), or before a tagged template in the same chain | Invalid |
 | in object literals: computed shorthand `{[k]}` | UnexpectedToken |
 | misplaced numeric separators (`1__0`, `1_`, `0x_1`, `1_n`, `0_1`) | InvalidToken at the `_` |
@@ -1063,6 +1061,25 @@ delete a[o];
 
 ## Execution
 
+Rest parameters, object spread and destructuring iteration heads execute
+since clj-quickjs-315:
+
+| Form | Execution |
+|------|-----------|
+| `function f(a, ...r)`, `(...[a, b]) => expr`, `function f(...{length: n})` | The final rest binding receives a fresh task-owned array of the remaining actual arguments. Its pattern initializes in parameter order. Function `length` stops before the first default or rest parameter. Rest makes the parameter list non-simple, with unmapped `arguments`; a default, trailing comma, following parameter, setter rest parameter or body `"use strict"` directive is an early error. |
+| `{a: 1, ...source, b: 2}` | CopyDataProperties copies own enumerable string and symbol keys in own-key order, invokes getters once, rechecks each descriptor before reading, and defines ordinary writable/enumerable/configurable data properties. Null and undefined sources are skipped; strings expose their UTF-16 indices. Proxy `ownKeys` and `getOwnPropertyDescriptor` use the shared resumable operations. `__proto__` is copied as a data property. |
+| `for (let/const/var pattern of iterable)`, `for (let/const/var pattern in object)` | Nested array/object patterns, defaults and rest use ordinary destructuring. Lexical names are in TDZ during the RHS and initialize afresh per iteration; closures keep that iteration's cells. `var` names are hoisted and shared. Assignment patterns without declarations also execute. Consumer errors in a for-of pattern close the outer iterator. |
+
+Rest array construction appends one argument per native step. Object spread
+performs each descriptor check, property read and definition in separate
+budgeted steps; own-key snapshots retain the existing OwnKeys leaf behavior.
+Actual-argument snapshots use the existing frame stack limits; spread calls
+retain their 65,535 dynamic argument cap. No additional size cap is introduced.
+All arrays, objects, keys and pattern temporaries are traced task state across
+yields, dependency waits, collection and migration. Tests are synthetic fixtures,
+not light-cljs output: `cargo test --test js_source rest_` and
+`cargo test --test js_source array_and_object_destructuring_waits_collects_and_migrates`.
+
 | Operators (clj-quickjs-314) | Execution |
 | --- | --- |
 | `left ?? right` | Returns the left value unless it is null or undefined; only then evaluates and returns the right. Left-associative, above the conditional operator; unparenthesized mixing with `&&` or `\|\|` is an early SyntaxError. No operand conversion. |
@@ -1526,7 +1543,7 @@ inside brackets (`[d]`, `[]` for an empty description, an empty name when
 absent), with `get ` or `set ` prefixes for accessors. Named functions and
 other expressions retain their names. Rejected forms include `{[key]}`
 shorthand and unparenthesized comma expressions inside the brackets.
-Explicit gaps remain object spread and async generators. Key conversion
+Async generators remain an explicit gap. Object spread executes (-315). Key conversion
 uses the shared OrdinaryToPrimitive path; `Symbol.toPrimitive` protocol
 dispatch remains the existing conversion gap described below.
 
@@ -1662,8 +1679,7 @@ target a property. Rest must be last, without a default or trailing comma.
 let {...r,} = x;
 ```
 
-Explicit gaps: object spread,
-rest parameters and destructuring iteration heads remain rejected.
+Object spread, rest parameters and destructuring iteration heads execute (-315).
 
 Arrays inherit from `Array.prototype`, which supports `push`, `join` and
 `toString`. The latter calls the receiver's `join` method:
@@ -2016,8 +2032,8 @@ Gaps specific to execution:
   `toString`, `arguments`, `caller` still fail with `UnsupportedOperand`. A
   function with a property record (or a read `prototype`) cannot be
   published, and a published function cannot get any (`TypeError`) or
-  create its `prototype` (`UnsupportedOperand`), so `new` on it fails too. No
-  rest parameters. Generators execute through detachable activations
+  create its `prototype` (`UnsupportedOperand`), so `new` on it fails too.
+  Rest parameters execute (-315). Generators execute through detachable activations
   (clj-quickjs-243). Arrows capture their enclosing
   non-arrow function's receiver, or the script global object.
 
@@ -4976,8 +4992,8 @@ a catchable RangeError. A list that cannot fit the task's value stack throws
 the existing catchable StackOverflow at the call. The private packed array is
 never exposed to JavaScript or re-iterated when the call starts.
 
-Rejected forms: object spread, rest parameters and a standalone
-`(...a)` retain their syntax errors. Explicit gaps: compiler-reserved `__rt`
+Object spread and rest parameters execute (-315); a standalone
+`(...a)` retains its syntax error. Explicit gaps: compiler-reserved `__rt`
 intrinsics require statically supplied arguments and reject spread with
 `Unsupported`. Dynamic Function construction supports ordinary and spread calls.
 Direct and indirect eval support ordinary and spread calls.

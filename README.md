@@ -474,7 +474,7 @@ Deferred:
 - (Compiling functions and calls from source: clj-quickjs-21, below.)
 - `arguments`, rest parameters (defaults: clj-quickjs-100, below), and native
   or host-function callees. (Function metadata: clj-quickjs-101, below; `this`:
-  clj-quickjs-116, below.)
+  clj-quickjs-116, below; rest parameters: clj-quickjs-315.)
   (Catching `StackOverflow` and `TypeError`: clj-quickjs-11, below.)
 
 ### Lexical closures and captured bindings (clj-quickjs-20)
@@ -2374,8 +2374,8 @@ Supported (`cargo test --test js_functions function_length_and_name`,
   0/empty-string fallback. Published functions are immutable and report
   non-configurable metadata descriptors without attaching a record.
 
-Deferred: rest parameters;
-their syntax remains rejected. See `docs/architecture.md`, "Function own properties".
+Rest parameters execute since clj-quickjs-315, including their effect on
+function length. See `docs/architecture.md`, "Function own properties".
 
 ### `Array.prototype.push` (clj-quickjs-155)
 
@@ -3378,10 +3378,30 @@ and `new F(...iterable)` reuse the synchronous iteration protocol. User
 iterator methods and getters may yield, wait on dependencies and migrate.
 Holes become own elements; method receivers are preserved. Argument lists
 above 65,535 values throw RangeError; task stack limits still apply.
-Compiler-reserved `__rt` intrinsics require static arguments. Object spread,
-rest parameters remain deferred. Object patterns execute since clj-quickjs-132. Verify with
+Compiler-reserved `__rt` intrinsics require static arguments. Object spread and
+rest parameters execute since clj-quickjs-315. Object patterns execute since clj-quickjs-132. Verify with
 `cargo test --test js_source spread_`, `cargo test --test need iterator_next_waits_on_dependency`
 and `cargo test --lib frontend::tests::spread_forms`.
+
+### Rest parameters, object spread and iteration patterns (clj-quickjs-315)
+
+Rest parameters accept identifiers and array/object patterns; each call gets
+a fresh task-owned rest array. Function `length` excludes the rest parameter
+and everything after the first default; `arguments` remains unmapped.
+Object spread copies own enumerable string and symbol properties in key order,
+invokes getters, rechecks descriptors, skips nullish sources, and uses the
+existing Proxy own-key and descriptor protocols. It defines data properties,
+including `__proto__`, without invoking inherited setters.
+Destructuring `let`/`const` loop heads initialize fresh bindings per iteration;
+`var` heads share hoisted bindings. Assignment patterns also execute.
+
+Rest arrays append one element per native step. Object spread descriptor
+checks, reads and writes are separate budgeted steps; key snapshots use the
+existing OwnKeys leaf operation. No new size cap is imposed: actual-argument
+snapshots use existing task stack limits, and spread calls retain the 65,535
+dynamic argument cap. Patterns and native state survive yields, waits, collection
+and migration. Verify with `cargo test --test js_source rest_` and
+`cargo test --test js_source array_and_object_destructuring_waits_collects_and_migrates`.
 
 ### RegExp match indices (clj-quickjs-193)
 
@@ -3490,7 +3510,7 @@ patterns, defaults for undefined values, rest arrays and property assignment
 targets. Patterns consume the shared synchronous iterator protocol and close
 live iterators on early completion or consumer errors. Iterator callbacks,
 defaults and setters can wait, yield and migrate. Object patterns execute since
-clj-quickjs-132; rest parameters and destructuring iteration heads remain deferred. Run:
+clj-quickjs-132; rest parameters and destructuring iteration heads execute since clj-quickjs-315. Run:
 `CARGO_BUILD_JOBS=3 cargo test --test js_source array_destructuring -- --test-threads=3`.
 
 ### Intl.Collator root order (clj-quickjs-218)
@@ -3579,7 +3599,7 @@ keys, nested array/object patterns and object rest. Rest copies own enumerable
 string and symbol properties in key order into a fresh ordinary object. Getters,
 setters and key conversions can wait, yield, collect and migrate. Null/undefined
 sources throw TypeError; other primitives use their property-read behavior.
-Object spread, rest parameters and destructuring iteration heads remain deferred. Verify with
+Object spread, rest parameters and destructuring iteration heads execute since clj-quickjs-315. Verify with
 `CARGO_BUILD_JOBS=3 cargo test --test js_source destructuring -- --test-threads=3`.
 
 ### Intl.DateTimeFormat date fields (clj-quickjs-215)
@@ -3654,7 +3674,7 @@ conversion. Own definitions bypass inherited setters; computed `__proto__`
 defines a property. Methods keep their home object, and anonymous function
 values/methods infer names from strings or bracketed symbol descriptions.
 Computed async methods execute through async function support (clj-quickjs-248).
-Computed shorthand and object spread remain rejected; super properties execute in methods and accessors (-138).
+Computed shorthand remains rejected; object spread executes (-315), and super properties execute in methods and accessors (-138).
 
 Checks: `cargo test --lib frontend::tests::computed_property_names -- --exact`,
 `cargo test --test js_source computed_prop`,

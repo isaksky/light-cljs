@@ -1266,16 +1266,18 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 let name = self.parse_binding_pattern("a variable name")?;
                 if self.is_of() {
-                    let name = name.identifier().cloned().ok_or_else(|| {
-                        self.unsupported(name.span, "destructuring iteration heads are")
-                    })?;
-                    return self.parse_for_of_rest(ForInHead::Lexical(kind, name));
+                    let head = match name.identifier() {
+                        Some(ident) => ForInHead::Lexical(kind, ident.clone()),
+                        None => ForInHead::Pattern(Some(kind), Box::new(name)),
+                    };
+                    return self.parse_for_of_rest(head);
                 }
                 if self.is_keyword(Keyword::In) {
-                    let name = name.identifier().cloned().ok_or_else(|| {
-                        self.unsupported(name.span, "destructuring iteration heads are")
-                    })?;
-                    return self.parse_for_in_rest(ForInHead::Lexical(kind, name));
+                    let head = match name.identifier() {
+                        Some(ident) => ForInHead::Lexical(kind, ident.clone()),
+                        None => ForInHead::Pattern(Some(kind), Box::new(name)),
+                    };
+                    return self.parse_for_in_rest(head);
                 }
                 let declarators = self.parse_declarators(Some(kind), Some(keyword), Some(name))?;
                 Some(ForInit::Lexical(LexicalDecl { kind, declarators }))
@@ -1284,16 +1286,18 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 let name = self.parse_binding_pattern("a variable name")?;
                 if self.is_of() {
-                    let name = name.identifier().cloned().ok_or_else(|| {
-                        self.unsupported(name.span, "destructuring iteration heads are")
-                    })?;
-                    return self.parse_for_of_rest(ForInHead::Var(name, None));
+                    let head = match name.identifier() {
+                        Some(ident) => ForInHead::Var(ident.clone(), None),
+                        None => ForInHead::Pattern(None, Box::new(name)),
+                    };
+                    return self.parse_for_of_rest(head);
                 }
                 if self.is_keyword(Keyword::In) {
-                    let name = name.identifier().cloned().ok_or_else(|| {
-                        self.unsupported(name.span, "destructuring iteration heads are")
-                    })?;
-                    return self.parse_for_in_rest(ForInHead::Var(name, None));
+                    let head = match name.identifier() {
+                        Some(ident) => ForInHead::Var(ident.clone(), None),
+                        None => ForInHead::Pattern(None, Box::new(name)),
+                    };
+                    return self.parse_for_in_rest(head);
                 }
                 let mut declarators = self.parse_declarators(None, Some(keyword), Some(name))?;
                 if self.is_keyword(Keyword::In) {
@@ -1309,6 +1313,17 @@ impl<'a> Parser<'a> {
                 let outer = std::mem::replace(&mut self.no_in, true);
                 let init = self.parse_expression()?;
                 self.no_in = outer;
+                if (self.is_of() || self.is_keyword(Keyword::In))
+                    && matches!(init.kind, ExprKind::Array(_) | ExprKind::Object(_))
+                {
+                    let target = self.assignment_pattern(init)?;
+                    let head = ForInHead::Assignment(Box::new(target));
+                    return if self.is_of() {
+                        self.parse_for_of_rest(head)
+                    } else {
+                        self.parse_for_in_rest(head)
+                    };
+                }
                 if self.is_keyword(Keyword::In) {
                     let head = if is_property_target(&init) {
                         ForInHead::Member(Box::new(init))
@@ -2133,7 +2148,7 @@ impl<'a> Parser<'a> {
             return Err(self.error(
                 SyntaxErrorKind::Invalid,
                 *span,
-                "a \"use strict\" directive is not allowed in a function with default parameter values",
+                "a \"use strict\" directive is not allowed in a function with non-simple parameters",
             ));
         }
         Ok(())
@@ -2153,11 +2168,32 @@ impl<'a> Parser<'a> {
         Ok((name, params))
     }
 
-    /// `(` [ Param { `,` Param } [ `,` ] ] `)` with Param =
-    /// BindingIdentifier [ `=` AssignmentExpression ] (a default value,
-    /// clj-quickjs-100): distinct plain identifiers (strict mode, arrows and
-    /// lists with a default; the subset also rejects duplicates in sloppy
-    /// functions, `docs/grammar.md`), each with its default, if any.
+    /// Keep rest binding construction off the formal-parameter frame, which
+    /// stays live across recursively nested default expressions.
+    #[inline(never)]
+    fn parse_parameter_binding(&mut self) -> PResult<(Pattern, bool)> {
+        let start = self.tok.span.start;
+        let rest = self.eat_punct(Punct::Ellipsis)?;
+        let param = self.parse_binding_pattern("a parameter name")?;
+        if !rest {
+            return Ok((param, false));
+        }
+        let param = Pattern {
+            height: param.height + 1,
+            span: self.span_from(start),
+            kind: PatternKind::Rest(Box::new(param)),
+        };
+        self.check_height(param.height)?;
+        if !self.is_punct(Punct::RParen) {
+            return Err(self.error(
+                SyntaxErrorKind::Invalid,
+                self.tok.span,
+                "rest parameter must be last and cannot have a default or trailing comma",
+            ));
+        }
+        Ok((param, true))
+    }
+
     #[inline(never)]
     fn parse_formal_parameters(&mut self) -> PResult<Params> {
         let parameters = std::mem::replace(&mut self.suspension.parameters, true);
@@ -2166,10 +2202,7 @@ impl<'a> Parser<'a> {
         let mut params: Vec<Pattern> = Vec::new();
         let mut defaults: Vec<Option<Expr>> = Vec::new();
         while !self.is_punct(Punct::RParen) {
-            if self.is_punct(Punct::Ellipsis) {
-                return Err(self.unsupported(self.tok.span, "rest parameters are"));
-            }
-            let param = self.parse_binding_pattern("a parameter name")?;
+            let (param, rest) = self.parse_parameter_binding()?;
             let mut names: Vec<&Ident> = params.iter().flat_map(|p| p.names()).collect();
             for name in param.names() {
                 if names.iter().any(|p| p.name == name.name) {
@@ -2182,6 +2215,10 @@ impl<'a> Parser<'a> {
                 names.push(name);
             }
             params.push(param);
+            if rest {
+                defaults.push(None);
+                break;
+            }
             defaults.push(if self.eat_punct(Punct::Assign)? {
                 Some(self.parse_assignment()?)
             } else {
@@ -2637,6 +2674,7 @@ impl<'a> Parser<'a> {
                     + 1
             }
             PatternKind::Identifier(_) => 1,
+            PatternKind::Rest(target) => target.height + 1,
             PatternKind::Target(e) => e.height + 1,
             PatternKind::Default { target, value } => target.height.max(value.height) + 1,
             PatternKind::Array { elements, rest } => {
@@ -2943,10 +2981,20 @@ impl<'a> Parser<'a> {
     #[inline(never)]
     fn parse_object_cover_property(&mut self) -> PResult<Option<PropertyDef>> {
         let span = self.tok.span;
+        if self.eat_punct(Punct::Ellipsis)? {
+            let value = self.parse_assignment()?;
+            let spread = self.expr(
+                ExprKind::Spread(Box::new(value)),
+                self.span_from(span.start),
+            )?;
+            return Ok(Some(PropertyDef {
+                name: PropertyName::Identifier(String::new()),
+                name_span: span,
+                value: spread,
+                shorthand: false,
+            }));
+        }
         let cover = match &self.tok.kind {
-            TokenKind::Punct(Punct::Ellipsis) => {
-                Some(self.unsupported(span, "spread properties are"))
-            }
             TokenKind::Identifier(_)
                 if self
                     .peek_next()
@@ -2962,19 +3010,6 @@ impl<'a> Parser<'a> {
         };
         if let Some(error) = cover {
             self.object_cover_errors.push(error);
-            if self.eat_punct(Punct::Ellipsis)? {
-                let value = self.parse_assignment()?;
-                let spread = self.expr(
-                    ExprKind::Spread(Box::new(value)),
-                    self.span_from(span.start),
-                )?;
-                return Ok(Some(PropertyDef {
-                    name: PropertyName::Identifier(String::new()),
-                    name_span: span,
-                    value: spread,
-                    shorthand: false,
-                }));
-            }
             self.check_pattern_shorthand()?;
             let value = self.parse_assignment()?;
             let ExprKind::Assign { target, .. } = &value.kind else {
@@ -2994,7 +3029,7 @@ impl<'a> Parser<'a> {
     /// shorthand IdentifierReference. A PropertyName is an IdentifierName
     /// (reserved words included), a string/numeric literal, or `[expr]`.
     /// Concise methods and accessors are functions with a home object.
-    /// Spread remains rejected explicitly.
+    /// Spread properties are parsed as a value carrying `ExprKind::Spread`.
     /// A `__proto__: value` (identifier or string name, not a
     /// shorthand) sets the prototype (clj-quickjs-121); a second one in the
     /// same literal (`proto_seen`) is an early error.
@@ -3130,7 +3165,12 @@ impl<'a> Parser<'a> {
         self.super_call = outer_super;
         if let Some(kind) = accessor {
             let arity = usize::from(kind == FunctionKind::Setter);
-            if function.params.len() != arity {
+            if function.params.len() != arity
+                || function
+                    .params
+                    .iter()
+                    .any(|p| matches!(p.kind, PatternKind::Rest(_)))
+            {
                 return Err(self.error(
                     SyntaxErrorKind::Invalid,
                     span,
@@ -3247,9 +3287,6 @@ impl<'a> Parser<'a> {
         let span = self.tok.span;
         let next_is = |p: Punct| next.is_some_and(|t| t.kind == TokenKind::Punct(p));
         match &self.tok.kind {
-            TokenKind::Punct(Punct::Ellipsis) => {
-                Some(self.unsupported(span, "spread properties are"))
-            }
             TokenKind::Identifier(_) if next_is(Punct::Assign) => Some(self.error(
                 SyntaxErrorKind::Invalid,
                 span,
