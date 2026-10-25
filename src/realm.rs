@@ -224,11 +224,12 @@ pub(crate) enum Global {
     Set = 46,
     WeakSet = 47,
     Boolean = 48,
+    AggregateError = 49,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 49] = [
+    const ALL: [Global; 50] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -278,6 +279,7 @@ impl Global {
         Global::Set,
         Global::WeakSet,
         Global::Boolean,
+        Global::AggregateError,
     ];
 
     /// The JavaScript name.
@@ -309,6 +311,7 @@ impl Global {
             Global::URIError => "URIError",
             Global::InternalError => "InternalError",
             Global::SuppressedError => "SuppressedError",
+            Global::AggregateError => "AggregateError",
             Global::DisposableStack => "DisposableStack",
             Global::AsyncDisposableStack => "AsyncDisposableStack",
             Global::Json => "JSON",
@@ -596,6 +599,9 @@ impl Intrinsics {
             }
             Global::SuppressedError => {
                 Value::Object(self.native_errors[NativeErrorKind::Suppressed as usize].0)
+            }
+            Global::AggregateError => {
+                Value::Object(self.native_errors[NativeErrorKind::Aggregate as usize].0)
             }
             Global::Json => Value::Object(self.json),
 
@@ -1285,11 +1291,18 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
         ("reject", Builtin::PromiseReject, promise),
         ("then", Builtin::PromiseThen, promise_prototype),
         ("catch", Builtin::PromiseCatch, promise_prototype),
+        ("all", Builtin::PromiseAll, promise),
+        ("race", Builtin::PromiseRace, promise),
+        ("allSettled", Builtin::PromiseAllSettled, promise),
+        ("any", Builtin::PromiseAny, promise),
+        ("withResolvers", Builtin::PromiseWithResolvers, promise),
+        ("finally", Builtin::PromiseFinally, promise_prototype),
     ] {
         let function = b.function(which, &[])?;
         b.add(target, name, function, PropertyFlags::METHOD)?;
     }
 
+    promise_species(&mut b, promise)?;
     let (intl_number_format_prototype, intl_number_format_bound) =
         intl_number_format_intrinsics(&mut b, object_prototype, intl)?;
     date_string_intrinsics(&mut b, date_prototype)?;
@@ -1670,6 +1683,32 @@ fn async_generator_intrinsics(
 
 // Keep the new registration's allocation temporaries out of the large realm
 // builder, which also runs on first use by 64 KiB migrating workers.
+#[inline(never)]
+fn promise_species(b: &mut Build<'_>, constructor: ObjectId) -> Option<()> {
+    let getter = b.function(Builtin::ArraySpecies, &[])?;
+    let key = b
+        .heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("species"))?;
+    b.heap
+        .with_object_mut(constructor, |o| match o {
+            HeapObject::Builtin(f) => {
+                f.properties.define_own_property(
+                    key,
+                    &PropertyDescriptor {
+                        get: Some(Value::Object(getter)),
+                        set: Some(Value::Undefined),
+                        enumerable: Some(false),
+                        configurable: Some(true),
+                        ..Default::default()
+                    },
+                ) == DefineOutcome::Done
+            }
+            _ => false,
+        })?
+        .then_some(())
+}
+
 #[inline(never)]
 fn array_mutator_intrinsics(
     b: &mut Build<'_>,
@@ -3245,10 +3284,10 @@ mod tests {
         assert_eq!(Global::from_u16(11), Some(Global::Error));
         for (offset, kind) in NativeErrorKind::ALL.into_iter().enumerate() {
             // Later error globals append after the original global inventory.
-            let operand = if kind == NativeErrorKind::Suppressed {
-                42
-            } else {
-                12 + offset as u16
+            let operand = match kind {
+                NativeErrorKind::Suppressed => 42,
+                NativeErrorKind::Aggregate => 49,
+                _ => 12 + offset as u16,
             };
             assert_eq!(Global::from_u16(operand), Global::from_name(kind.name()));
         }

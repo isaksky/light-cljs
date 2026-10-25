@@ -3214,11 +3214,33 @@ Promises publish across tasks; settlement enqueues jobs without executing
 JavaScript or waking a dependency wait. Task-owned results remain confined
 to their settling task; foreign reactions reject with TypeError.
 
-Deferred: Promise subclass
-capabilities/species, arbitrary own-property mutation on promises,
-combinators and finally. Test with
+Constructor capabilities/species, combinators and finally are supported
+(clj-quickjs-317, below). Deferred: arbitrary own-property mutation on promises. Test with
 `cargo test --test promises -- --test-threads=3`.
 Thenable adoption: `cargo test --test js_source promise_thenable_adoption -- --exact`.
+
+### Promise combinators and finally (clj-quickjs-317)
+
+Supported: `Promise.all`, `race`, `allSettled`, `any`, `withResolvers`, and
+`Promise.prototype.finally`. Static methods use their receiver constructor;
+`resolve`/`reject` and `then` also honor constructor capabilities, and `then`
+and `finally` use `Symbol.species`. Combinators cache `C.resolve`, consume
+the iterator protocol, close an active iterator on a failing resolve/then
+operation, and preserve input order in result/error arrays. Iterator step
+failures reject without closing an iterator already marked done by the
+protocol. `finally` awaits its callback result before forwarding the original
+fulfillment/rejection. `AggregateError(errors, message?, options?)` accepts any
+iterable and creates a non-enumerable `errors` array, with Error inheritance,
+message, cause, stack, and derived-constructor support.
+
+All observable getters, calls, iterator steps and construction are resumable
+and budgeted; saved values and private callback environments are GC roots.
+The environments are task-owned and cannot publish across tasks. Intrinsic
+promises/resolvers keep cross-task settlement and enqueue callbacks on their
+registering task. Aggregate result arrays and `AggregateError.errors` use the
+existing JavaScript array limit of 2^32 - 1 entries (RangeError on overflow);
+`race` has no result array or additional input-count limit.
+Tests: `CARGO_BUILD_JOBS=3 cargo test --test promises -- --test-threads=3`.
 
 Date host inputs and local fields (clj-quickjs-182): `Host::current_time_millis`
 supplies `Date.now()` and `new Date()` as unrecorded leaf effects; reruns may see
@@ -4705,8 +4727,9 @@ through their observable `then` method.
 
 Symbol and BigInt remain nonconstructible. Proxy has no `prototype` for class
 heritage, and transparent constructor proxies retain `new.target` identity under
-the supported Proxy trap subset. `Reflect.construct`, Promise subclass
-capabilities/species, and existing method-specific species gaps remain deferred.
+the supported Proxy trap subset. Promise capabilities/species are supported
+(clj-quickjs-317); `Reflect.construct` and other method-specific species gaps
+remain deferred.
 
 Validation: `CARGO_BUILD_JOBS=3 cargo test --test builtin_subclasses -- --test-threads=3`.
 

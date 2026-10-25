@@ -806,7 +806,12 @@ impl VmState {
         }
         self.handlers.push(Handler {
             frame: self.frame_index(),
-            height: self.stack.len(),
+            // A native may catch while consuming a delivered result. Its
+            // exception continuation resumes with an empty operand area.
+            height: match &kind {
+                HandlerKind::NativeCatch { native } => self.natives[*native].base(),
+                _ => self.stack.len(),
+            },
             kind,
         });
         Ok(())

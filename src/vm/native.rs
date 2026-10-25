@@ -858,6 +858,9 @@ pub(crate) fn detach(
 }
 
 impl NativeFrame {
+    pub(super) fn base(&self) -> usize {
+        self.base
+    }
     pub(crate) fn depth(&self) -> usize {
         self.depth
     }
@@ -1730,6 +1733,13 @@ pub(crate) fn start_builtin(
             | Builtin::PromiseCatch
             | Builtin::PromiseResolver(_, _)
             | Builtin::PromiseReaction(_)
+            | Builtin::PromiseAll
+            | Builtin::PromiseRace
+            | Builtin::PromiseAllSettled
+            | Builtin::PromiseAny
+            | Builtin::PromiseWithResolvers
+            | Builtin::PromiseFinally
+            | Builtin::PromiseCallback(_, _)
             | Builtin::PromiseResolveThenable(_)
     ) {
         return start_promise(heap, state, which, this, args, construct, popped);
@@ -3320,6 +3330,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
         NativeState::AddEntries(entries) => entries.catches_step(),
         NativeState::ListFormat(format) => format.catches_step(),
         NativeState::MathSumPrecise(sum) => sum.catches_step(),
+        NativeState::Promise(promise) => promise.catches(),
         _ => false,
     } {
         state.push_handler(super::exception::HandlerKind::NativeCatch {
@@ -3481,6 +3492,15 @@ fn apply_action(
             Ok(Flow::Next)
         }
         Action::Instruction { instr, operands } => {
+            if state
+                .natives
+                .last()
+                .is_some_and(|frame| frame.state.catches())
+            {
+                state.push_handler(super::exception::HandlerKind::NativeCatch {
+                    native: state.natives.len() - 1,
+                })?;
+            }
             set_awaiting(state, Awaiting::CallResult)?;
             for value in operands {
                 state.push(value);

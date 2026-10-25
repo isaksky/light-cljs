@@ -525,6 +525,14 @@ pub(crate) enum Builtin {
     StringAt,
     StringLocaleCompare,
     StringNormalize,
+
+    PromiseAll,
+    PromiseRace,
+    PromiseAllSettled,
+    PromiseAny,
+    PromiseWithResolvers,
+    PromiseFinally,
+    PromiseCallback(ObjectId, super::promise::standard::Callback),
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -538,10 +546,11 @@ pub(crate) enum NativeErrorKind {
     Uri,
     Internal,
     Suppressed,
+    Aggregate,
 }
 
 impl NativeErrorKind {
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Type,
         Self::Range,
         Self::Reference,
@@ -550,6 +559,7 @@ impl NativeErrorKind {
         Self::Uri,
         Self::Internal,
         Self::Suppressed,
+        Self::Aggregate,
     ];
 
     pub(crate) fn name(self) -> &'static str {
@@ -562,6 +572,7 @@ impl NativeErrorKind {
             Self::Uri => "URIError",
             Self::Internal => "InternalError",
             Self::Suppressed => "SuppressedError",
+            Self::Aggregate => "AggregateError",
         }
     }
 }
@@ -725,6 +736,13 @@ impl Builtin {
             Builtin::GeneratorReturn | Builtin::AsyncGeneratorReturn => "return",
             Builtin::GeneratorThrow | Builtin::AsyncGeneratorThrow => "throw",
             Builtin::PromiseCatch => "catch",
+            Builtin::PromiseAll => "all",
+            Builtin::PromiseRace => "race",
+            Builtin::PromiseAllSettled => "allSettled",
+            Builtin::PromiseAny => "any",
+            Builtin::PromiseWithResolvers => "withResolvers",
+            Builtin::PromiseFinally => "finally",
+            Builtin::PromiseCallback(_, _) => "",
             Builtin::PromiseResolver(_, _)
             | Builtin::PromiseReaction(_)
             | Builtin::PromiseResolveThenable(_) => "",
@@ -1015,6 +1033,13 @@ impl Builtin {
             | Builtin::RegExpFlag(_) => 0,
 
             Builtin::PromiseThen => 2,
+            Builtin::PromiseAll
+            | Builtin::PromiseRace
+            | Builtin::PromiseAllSettled
+            | Builtin::PromiseAny
+            | Builtin::PromiseFinally => 1,
+            Builtin::PromiseWithResolvers => 0,
+            Builtin::PromiseCallback(_, callback) => callback.length(),
             Builtin::GeneratorNext
             | Builtin::GeneratorReturn
             | Builtin::GeneratorThrow
@@ -1146,6 +1171,7 @@ impl Builtin {
             Builtin::Error => 1,
             Builtin::ErrorPrototypeToString => 0,
             Builtin::NativeError(NativeErrorKind::Suppressed) => 3,
+            Builtin::NativeError(NativeErrorKind::Aggregate) => 2,
             Builtin::NativeError(_) => 1,
             Builtin::JsonParse => 2,
             Builtin::StringRaw => 1,
@@ -1169,6 +1195,7 @@ impl Trace for BuiltinFunction {
             Builtin::PromiseResolver(id, _)
             | Builtin::PromiseReaction(id)
             | Builtin::PromiseResolveThenable(id) => visit(id.into()),
+            Builtin::PromiseCallback(id, _) => visit(id.into()),
             _ => {}
         }
     }
@@ -1413,6 +1440,13 @@ pub(crate) fn call(
         | Builtin::PromiseCatch
         | Builtin::PromiseResolver(_, _)
         | Builtin::PromiseReaction(_)
+        | Builtin::PromiseAll
+        | Builtin::PromiseRace
+        | Builtin::PromiseAllSettled
+        | Builtin::PromiseAny
+        | Builtin::PromiseWithResolvers
+        | Builtin::PromiseFinally
+        | Builtin::PromiseCallback(_, _)
         | Builtin::PromiseResolveThenable(_) => {
             Err(Fault::Internal("promise builtin requires VM state"))
         }

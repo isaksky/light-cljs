@@ -769,13 +769,13 @@ fn promises_and_resolvers_are_shareable_with_task_local_results_guarded() {
 
 #[test]
 fn promise_executors_and_then_getters_wait_without_replay() {
-    for source in [
+    for (index, source) in [
         "class P extends Promise {} let p = new P(r => r(8)); Object.defineProperty(P.prototype,'constructor',{get(){__rt.effect(0,1); __rt.need(246,1); return Promise;}}); Promise.resolve(p).then(x => __rt.effect(0,x)); 42;",
         "class P extends Promise {} let p = new P(r => r(8)); Object.defineProperty(P.prototype,'constructor',{get(){__rt.effect(0,1); __rt.need(246,1); return Promise;}}); async function f(){__rt.effect(0,await p);} f(); 42;",
         "new Promise(resolve => { __rt.effect(0, 1); resolve(__rt.need(246, 1)); }).then(x => __rt.effect(0, x)); 42;",
         "Promise.resolve({get then() { __rt.effect(0, 1); __rt.need(246, 1); return undefined; }}).then(() => __rt.effect(0, 8)); 42;",
         "Promise.prototype.catch.call({get then() { __rt.effect(0, 1); __rt.need(246, 1); return function(a, b) { b(8); }; }}, x => __rt.effect(0, x)); 42;",
-    ] {
+    ].into_iter().enumerate() {
         let rt = Runtime::new();
         let task = rt
             .spawn(&compile_script("executor-wait.js", source).unwrap(), &[])
@@ -792,7 +792,11 @@ fn promise_executors_and_then_getters_wait_without_replay() {
             task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
             RunOutcome::Complete(_)
         ));
-        assert_eq!(host.0, [Primitive::Number(1.), Primitive::Number(8.)]);
+        // Promise.resolve observes constructor for identity, then the public
+        // then observes it again for SpeciesConstructor. Await uses the
+        // internal PerformPromiseThen and has no second constructor read.
+        let expected = if index == 0 { vec![1., 1., 8.] } else { vec![1., 8.] };
+        assert_eq!(host.0, expected.into_iter().map(Primitive::Number).collect::<Vec<_>>());
     }
 }
 
@@ -1631,5 +1635,521 @@ fn async_generator_cancellation_unwinds_attached_finally_and_discards_requests()
         assert!(!weak.is_live());
         assert_eq!(rt.heap_usage().objects.generator, 0);
         assert_eq!(rt.heap_usage().objects.async_state, 0);
+    }
+}
+
+#[test]
+fn promise_standard_methods_and_aggregate_error() {
+    let (result, effects) = run(r#"
+        Promise.all([3, Promise.resolve(4)]).then(x => __rt.effect(0, x.join(',')));
+        Promise.race([Promise.resolve(5), 6]).then(x => __rt.effect(0, x));
+        Promise.allSettled([7, Promise.reject(8)]).then(x => __rt.effect(0,
+            x[0].status + ':' + x[0].value + ',' + x[1].status + ':' + x[1].reason));
+        Promise.any([Promise.reject(9), 10]).then(x => __rt.effect(0, x));
+        Promise.any([Promise.reject(11), Promise.reject(12)]).catch(e =>
+            __rt.effect(0, e instanceof AggregateError && e.errors.join(',') === '11,12'));
+        let c = Promise.withResolvers(); c.resolve(13); c.reject(99);
+        c.promise.finally(() => Promise.resolve()).then(x => __rt.effect(0, x));
+        Promise.reject(14).finally(() => {}).catch(x => __rt.effect(0, x));
+        let e = new AggregateError(new Set([1, 2]), 'message', {cause: 3});
+        e instanceof Error && e.name === 'AggregateError' && e.message === 'message' &&
+            e.cause === 3 && e.errors.join(',') === '1,2' &&
+            !Object.getOwnPropertyDescriptor(e, 'errors').enumerable &&
+            Promise.withResolvers.length === 0 && Promise.all.length === 1 &&
+            Promise.prototype.finally.length === 1;
+    "#);
+    assert_eq!(result, ValueView::Bool(true));
+    assert_eq!(effects.len(), 7);
+    for expected in [
+        Primitive::String("3,4".into()),
+        Primitive::Number(5.),
+        Primitive::String("fulfilled:7,rejected:8".into()),
+        Primitive::Number(10.),
+        Primitive::Bool(true),
+        Primitive::Number(13.),
+        Primitive::Number(14.),
+    ] {
+        assert!(
+            effects.contains(&expected),
+            "missing {expected:?}: {effects:?}"
+        );
+    }
+}
+
+#[test]
+fn promise_combinator_empty_inputs_and_iteration_order() {
+    let (result, effects) = run(r#"
+        Promise.all([]).then(x => __rt.effect(0, 'all:' + x.length));
+        Promise.allSettled([]).then(x => __rt.effect(0, 'settled:' + x.length));
+        Promise.any([]).catch(e => __rt.effect(0, 'any:' + e.errors.length));
+        Promise.race([]).then(() => __rt.effect(0, 'unexpected'));
+        let a = Promise.withResolvers(); let b = Promise.withResolvers();
+        Promise.all([a.promise, b.promise]).then(x => __rt.effect(0, x.join(',')));
+        Promise.any([a.promise, b.promise]).then(x => __rt.effect(0, x));
+        b.resolve(2); a.resolve(1);
+        Promise.all('abc').then(x => __rt.effect(0, x.join('')));
+        Promise.all(new Set([4, 5])).then(x => __rt.effect(0, x.join(',')));
+        Promise.all({length: 1, 0: 7}).catch(e => __rt.effect(0, e instanceof TypeError));
+        let n = 0;
+        let iterable = {[Symbol.iterator]() { return {next() {
+            n++; return n <= 3 ? {value: n, done: false} : {done: true};
+        }}; }};
+        Promise.race(iterable).then(x => __rt.effect(0, 'race:' + x));
+        n === 4;
+    "#);
+    assert_eq!(result, ValueView::Bool(true));
+    assert_eq!(effects.len(), 9);
+    for expected in [
+        Primitive::String("all:0".into()),
+        Primitive::String("settled:0".into()),
+        Primitive::String("any:0".into()),
+        Primitive::String("1,2".into()),
+        Primitive::Number(2.),
+        Primitive::String("abc".into()),
+        Primitive::String("4,5".into()),
+        Primitive::Bool(true),
+        Primitive::String("race:1".into()),
+    ] {
+        assert!(
+            effects.contains(&expected),
+            "missing {expected:?}: {effects:?}"
+        );
+    }
+}
+
+#[test]
+fn promise_constructor_capabilities_and_species() {
+    let (result, effects) = run(r#"
+        class P extends Promise {}
+        let p = P.resolve(7);
+        let c = P.withResolvers(); c.resolve(8);
+        let all = P.all([p, c.promise]);
+        all.then(x => __rt.effect(0, x.join(',')));
+        let chained = p.then(x => x + 1);
+        let final = p.finally(() => P.resolve());
+        final.then(x => __rt.effect(0, x));
+        let rejected = P.reject(9); rejected.catch(x => __rt.effect(0, x));
+        class Q extends Promise { static get [Symbol.species]() { return Promise; } }
+        let q = Q.resolve(10);
+        let log = '';
+        function Custom(executor) {
+            log += 'c'; executor(x => { this.value = x; }, x => { this.error = x; });
+        }
+        Object.defineProperty(Custom, 'resolve', {get() { log += 'r'; return function(x) {
+            if (this !== Custom) throw 'this';
+            log += x;
+            return {then(resolve) { log += 't'; resolve(x); }};
+        }; }});
+        let custom = Promise.all.call(Custom, [1, 2]);
+        let wr = Promise.withResolvers.call(Custom); wr.resolve(3);
+        let bad = 0;
+        for (let method of [Promise.all, Promise.race, Promise.allSettled, Promise.any, Promise.withResolvers]) {
+            try { method.call(() => {}, []); } catch(e) { if(e instanceof TypeError) bad++; }
+        }
+        p instanceof P && P.resolve(p) === p && all instanceof P && chained instanceof P &&
+            final instanceof P && c.promise instanceof P && rejected instanceof P &&
+            Object.getPrototypeOf(q.then(x => x)) === Promise.prototype &&
+            Object.getPrototypeOf(q.finally(() => {})) === Promise.prototype &&
+            custom instanceof Custom && custom.value.join(',') === '1,2' && wr.promise.value === 3 &&
+            log === 'cr1t2tc' && bad === 5;
+    "#);
+    assert_eq!(result, ValueView::Bool(true));
+    assert_eq!(effects.len(), 3);
+    assert!(effects.contains(&Primitive::String("7,8".into())));
+    assert!(effects.contains(&Primitive::Number(7.)));
+    assert!(effects.contains(&Primitive::Number(9.)));
+}
+
+#[test]
+fn promise_combinators_close_on_resolve_and_then_abrupt_completion() {
+    let (result, effects) = run(r#"
+        let closed = 0; let next = 0; let log = '';
+        function iterable() { return {[Symbol.iterator]() { return {
+            next() { next++; return {done: false, value: 1}; },
+            get return() { log += 'g'; return function() { closed++; throw 'close'; }; }
+        }; }}; }
+        class ResolveThrows extends Promise { static resolve(x) { throw 17; } }
+        class ThenThrows extends Promise { static resolve(x) { return {get then() { throw 18; }}; } }
+        class ThenCallThrows extends Promise { static resolve(x) { return {then() { throw 19; }}; } }
+        for (let method of [Promise.all, Promise.race, Promise.allSettled, Promise.any]) {
+            method.call(ResolveThrows, iterable()).catch(x => __rt.effect(0, x));
+            method.call(ThenThrows, iterable()).catch(x => __rt.effect(0, x));
+            method.call(ThenCallThrows, iterable()).catch(x => __rt.effect(0, x));
+        }
+        let getterReads = 0; let iteratorReads = 0;
+        class BadResolve extends Promise { static get resolve() { getterReads++; throw 20; } }
+        Promise.all.call(BadResolve, {get [Symbol.iterator]() { iteratorReads++; throw 99; }})
+            .catch(x => __rt.effect(0, x));
+        let noClose = {[Symbol.iterator]() { return { next() { throw 21; }, return() { throw 99; } }; }};
+        Promise.all(noClose).catch(x => __rt.effect(0, x));
+        Promise.all({[Symbol.iterator]() { return {next() { return {get done() { throw 22; }}; },
+            return() { throw 99; }}; }}).catch(x => __rt.effect(0, x));
+        Promise.all({[Symbol.iterator]() { return {next() { return {done: false, get value() { throw 23; }}; },
+            return() { throw 99; }}; }}).catch(x => __rt.effect(0, x));
+        closed === 12 && next === 12 && log.length === 12 && getterReads === 1 && iteratorReads === 0;
+    "#);
+    assert_eq!(result, ValueView::Bool(true));
+    assert_eq!(
+        effects,
+        [
+            17., 18., 19., 17., 18., 19., 17., 18., 19., 17., 18., 19., 20., 21., 22., 23.
+        ]
+        .map(Primitive::Number)
+    );
+}
+
+#[test]
+fn promise_element_callbacks_share_first_call_guards() {
+    let (result, effects) = run(r#"
+        class Sync extends Promise {
+            static resolve(x) { return {then(resolve, reject) {
+                resolve(x); resolve(99); reject(88);
+            }}; }
+        }
+        Sync.all([1, 2]).then(x => __rt.effect(0, x.join(',')), e => __rt.effect(0, e));
+        Sync.allSettled([1, 2]).then(x => __rt.effect(0,
+            x.map(y => y.status + ':' + y.value).join(',')));
+        class RejectSync extends Promise {
+            static resolve(x) { return {then(resolve, reject) {
+                reject(x); reject(99); resolve(88);
+            }}; }
+        }
+        RejectSync.any([3, 4]).then(x => __rt.effect(0, x), e => __rt.effect(0, e.errors.join(',')));
+        RejectSync.allSettled([3, 4]).then(x => __rt.effect(0,
+            x.map(y => y.status + ':' + y.reason).join(',')));
+        let c = Promise.withResolvers();
+        Promise.any([c.promise, Promise.reject(6)]).catch(e => __rt.effect(0, e.errors.join(',')));
+        c.reject(5);
+        let caught = 0;
+        function Double(executor) { executor(() => {}, () => {}); executor(() => {}, () => {}); }
+        try { Promise.withResolvers.call(Double); } catch(e) { caught += e instanceof TypeError; }
+        function Invalid(executor) { executor(1, 2); }
+        try { Promise.withResolvers.call(Invalid); } catch(e) { caught += e instanceof TypeError; }
+        function Unset(executor) {}
+        try { Promise.withResolvers.call(Unset); } catch(e) { caught += e instanceof TypeError; }
+        caught === 3;
+    "#);
+    assert_eq!(result, ValueView::Bool(true));
+    // all's rejection handler is the capability's reject, so a hostile then
+    // can reject the aggregate before iteration finishes (unlike allSettled).
+    assert_eq!(effects.len(), 5);
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|v| **v == Primitive::Number(88.))
+            .count(),
+        2
+    );
+    for expected in ["fulfilled:1,fulfilled:2", "rejected:3,rejected:4", "5,6"] {
+        assert!(
+            effects.contains(&Primitive::String(expected.into())),
+            "{effects:?}"
+        );
+    }
+    // any passes its resolve directly; the hostile then fulfills it with 88.
+    assert!(!effects.contains(&Primitive::String("3,4".into())));
+}
+
+#[test]
+fn promise_finally_generic_species_and_settlement_preservation() {
+    let (result, effects) = run(r#"
+        Promise.resolve(1).finally(() => 2).then(x => __rt.effect(0, x));
+        Promise.reject(3).finally(() => 4).catch(x => __rt.effect(0, x));
+        Promise.resolve(5).finally(() => { throw 6; }).catch(x => __rt.effect(0, x));
+        Promise.reject(7).finally(() => Promise.reject(8)).catch(x => __rt.effect(0, x));
+        Promise.resolve(9).finally(10).then(x => __rt.effect(0, x));
+        let log = ''; let handlers;
+        function Species(executor) { executor(() => {}, () => {}); }
+        let generic = {
+            get constructor() { log += 'c'; return {get [Symbol.species]() { log += 's'; return Species; }}; },
+            get then() { log += 't'; return function(a, b) { handlers = [a,b]; return 11; }; }
+        };
+        let ret = Promise.prototype.finally.call(generic, 12);
+        let bad = 0;
+        try { Promise.prototype.finally.call(1, () => {}); } catch(e) { bad += e instanceof TypeError; }
+        try { Promise.prototype.finally.call({constructor: 1}, 0); } catch(e) { bad += e instanceof TypeError; }
+        try { Promise.prototype.finally.call({constructor: {[Symbol.species]: () => {}}}, 0); } catch(e) { bad += e instanceof TypeError; }
+        let order = '';
+        let c = Promise.withResolvers();
+        Promise.resolve(13).finally(() => { order += 'f'; return c.promise; }).then(x => {
+            order += 't'; __rt.effect(0, x); __rt.effect(0, order);
+        });
+        Promise.resolve().then(() => { order += 'r'; c.resolve(); });
+        ret === 11 && log === 'cst' && handlers[0] === 12 && handlers[1] === 12 && bad === 3;
+    "#);
+    assert_eq!(result, ValueView::Bool(true));
+    assert_eq!(effects.len(), 7);
+    for expected in [
+        Primitive::Number(1.),
+        Primitive::Number(3.),
+        Primitive::Number(6.),
+        Primitive::Number(8.),
+        Primitive::Number(9.),
+        Primitive::Number(13.),
+        Primitive::String("frt".into()),
+    ] {
+        assert!(
+            effects.contains(&expected),
+            "missing {expected:?}: {effects:?}"
+        );
+    }
+}
+
+#[test]
+fn promise_combinator_callbacks_do_not_overcount_synchronous_thenables() {
+    let (_, effects) = run(r#"
+        class ResolveOnly extends Promise { static resolve(x) {
+            return {then(resolve) { resolve(x); resolve(99); }};
+        }}
+        class RejectOnly extends Promise { static resolve(x) {
+            return {then(resolve, reject) { reject(x); reject(99); }};
+        }}
+        ResolveOnly.all([1, 2, 3]).then(x => __rt.effect(0, x.join(',')));
+        RejectOnly.any([4, 5, 6]).catch(e => __rt.effect(0, e.errors.join(',')));
+        42;
+    "#);
+    assert_eq!(
+        effects,
+        [
+            Primitive::String("1,2,3".into()),
+            Primitive::String("4,5,6".into())
+        ]
+    );
+}
+
+#[test]
+fn promise_combinators_and_finally_trace_every_budget_boundary() {
+    let rt = Runtime::new();
+    let task = function(
+        &rt,
+        r#"function body() {
+        let calls = 0; let reads = 0; let steps = 0;
+        class P extends Promise {
+            static get resolve() { reads++; return function(x) {
+                calls++; return Promise.resolve(x);
+            }; }
+            static get [Symbol.species]() { return Promise; }
+        }
+        let iterable = {[Symbol.iterator]() { return {next() {
+            steps++; return steps <= 3 ? {value: {n: steps}, done: false} : {done: true};
+        }}; }};
+        P.all(iterable).finally(() => ({then(resolve) { resolve(); }})).then(x => {
+            __rt.effect(0, x.map(y => y.n).join(','));
+            __rt.effect(0, calls === 7 && reads === 3 && steps === 4);
+        });
+        P.allSettled([Promise.resolve({n: 4}), Promise.reject({n: 5})]).then(x =>
+            __rt.effect(0, x[0].value.n + x[1].reason.n));
+        P.any([Promise.reject({n: 6}), Promise.reject({n: 7})]).catch(e =>
+            __rt.effect(0, e.errors[0].n + e.errors[1].n));
+        Promise.reject({n: 8}).finally(() => Promise.resolve()).catch(x => __rt.effect(0, x.n));
+        return 42;
+    }"#,
+        &[],
+    );
+    let mut host = Effects::default();
+    let mut completed = false;
+    for _ in 0..10000 {
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Number(42.));
+                completed = true;
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(completed);
+    assert_eq!(host.0.len(), 5);
+    for expected in [
+        Primitive::String("1,2,3".into()),
+        Primitive::Bool(true),
+        Primitive::Number(9.),
+        Primitive::Number(13.),
+        Primitive::Number(8.),
+    ] {
+        assert!(host.0.contains(&expected), "{host:?}", host = host.0);
+    }
+    assert!(task.unhandled_rejections().entries.is_empty());
+    drop(task);
+    rt.collect().unwrap();
+    assert_eq!(rt.heap_usage().objects.promise_reaction, 0);
+    assert_eq!(rt.heap_usage().objects.promise_resolving, 0);
+}
+
+#[test]
+fn promise_combinator_user_calls_wait_without_replay() {
+    for source in [
+        "let n = 0; class P extends Promise { constructor(executor) { __rt.effect(0, 1); __rt.need(317,1); super(executor); } static resolve(x) { return Promise.resolve(x); } static get [Symbol.species]() { return Promise; } } P.all([8]).then(x => __rt.effect(0, x[0])); 42;",
+        "class P extends Promise { static get resolve() { __rt.effect(0, 1); __rt.need(317,1); return Promise.resolve; } } P.all([8]).then(x => __rt.effect(0, x[0])); 42;",
+        "class P extends Promise { static resolve(x) { __rt.effect(0, 1); __rt.need(317,1); return Promise.resolve(x); } } P.race([8]).then(x => __rt.effect(0, x)); 42;",
+        "Promise.all({[Symbol.iterator]() { __rt.effect(0, 1); __rt.need(317,1); return [8][Symbol.iterator](); }}).then(x => __rt.effect(0, x[0])); 42;",
+        "let n = 0; Promise.all({[Symbol.iterator]() { return {next() { if(n++) return {done:true}; __rt.effect(0, 1); __rt.need(317,1); return {value:8}; }}; }}).then(x => __rt.effect(0, x[0])); 42;",
+        "class P extends Promise { static resolve(x) { return {get then() { __rt.effect(0, 1); __rt.need(317,1); return r => r(x); }}; } } P.any([8]).then(x => __rt.effect(0, x)); 42;",
+        "class P extends Promise { static resolve(x) { return {then(r) { __rt.effect(0, 1); __rt.need(317,1); r(x); }}; } } P.allSettled([8]).then(x => __rt.effect(0, x[0].value)); 42;",
+        "Promise.resolve(8).finally(() => { __rt.effect(0, 1); __rt.need(317,1); return Promise.resolve(); }).then(x => __rt.effect(0, x)); 42;",
+        "class P extends Promise { static resolve(x) { throw 8; } } P.all({[Symbol.iterator]() { return {next() { return {value:1}; }, return() { __rt.effect(0, 1); __rt.need(317,1); return {}; }}; }}).catch(x => __rt.effect(0,x)); 42;",
+    ] {
+        let rt = Runtime::new();
+        let task = rt
+            .spawn(
+                &compile_script("promise-combinator-wait.js", source).unwrap(),
+                &[],
+            )
+            .unwrap();
+        let mut host = Effects::default();
+        assert!(
+            matches!(
+                task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+                RunOutcome::Waiting(_)
+            ),
+            "{source}"
+        );
+        assert_eq!(host.0, [Primitive::Number(1.)], "{source}");
+        rt.collect().unwrap();
+        satisfy(&rt, &task);
+        let resumed = task.clone();
+        let (out, host) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                (
+                    resumed.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+                    host,
+                )
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(matches!(out, RunOutcome::Complete(_)), "{source}: {out:?}");
+        assert_eq!(host.0, [1., 8.].map(Primitive::Number), "{source}");
+        assert!(task.unhandled_rejections().entries.is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn promise_combinators_observe_cross_task_settlement() {
+    for (method, result, expected) in [
+        ("all", "x[0]", 8.),
+        ("race", "x", 8.),
+        ("any", "x", 8.),
+        ("allSettled", "x[0].value", 8.),
+    ] {
+        let rt = Runtime::new();
+        let maker = function(
+            &rt,
+            "function make() { let c = Promise.withResolvers(); return __rt.vector(c.promise, c.resolve); }",
+            &[],
+        );
+        let pair = finish(&maker);
+        let get = |i: u8| {
+            finish(&function(
+                &rt,
+                &format!("function get(pair) {{ return __rt.nth(pair, {i}); }}"),
+                std::slice::from_ref(&pair),
+            ))
+        };
+        let promise = get(0);
+        let resolve = get(1);
+        rt.publish(&promise).unwrap();
+        rt.publish(&resolve).unwrap();
+        let consumer = function(
+            &rt,
+            &format!(
+                "function consume(p) {{ Promise.{method}([p]).then(x => __rt.effect(0,{result})); __rt.need(317,1); return 42; }}"
+            ),
+            &[promise],
+        );
+        let mut host = Effects::default();
+        assert!(matches!(
+            consumer.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+            RunOutcome::Waiting(_)
+        ));
+        let setter = function(
+            &rt,
+            "function settle(resolve) { resolve(8); return 0; }",
+            &[resolve],
+        );
+        finish(&setter);
+        assert!(host.0.is_empty());
+        rt.collect().unwrap();
+        satisfy(&rt, &consumer);
+        assert!(matches!(
+            consumer.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+            RunOutcome::Complete(_)
+        ));
+        assert_eq!(host.0, [Primitive::Number(expected)]);
+        assert!(consumer.unhandled_rejections().entries.is_empty());
+    }
+}
+
+#[test]
+fn promise_then_and_finally_use_custom_species_capabilities() {
+    let (result, effects) = run(r#"
+        function Custom(executor) {
+            executor(x => { this.value = x; }, e => { this.error = e; });
+        }
+        class P extends Promise { static get [Symbol.species]() { return Custom; } }
+        let p = P.resolve(7);
+        let derived = p.then(x => x + 1);
+        let thrown = p.then(() => { throw 9; });
+        Promise.resolve().then(() => __rt.effect(0, derived.value));
+        Promise.resolve().then(() => __rt.effect(0, thrown.error));
+        class Cleanup extends Promise { static get resolve() { throw 99; } }
+        class Q extends Promise { static get [Symbol.species]() { return Cleanup; } }
+        let q = Q.resolve(10).finally(() => ({then(r) { r(11); }}));
+        q.then(x => __rt.effect(0, x));
+        let c = Promise.withResolvers.call(Cleanup.bind(null));
+        c.resolve(12); c.promise.then(x => __rt.effect(0,x));
+        derived instanceof Custom && thrown instanceof Custom && q instanceof Cleanup &&
+            c.promise instanceof Cleanup;
+    "#);
+    assert_eq!(result, ValueView::Bool(true));
+    assert_eq!(effects.len(), 4);
+    for expected in [8., 9., 10., 12.] {
+        assert!(
+            effects.contains(&Primitive::Number(expected)),
+            "{effects:?}"
+        );
+    }
+}
+
+#[test]
+fn aggregate_error_constructor_observes_message_cause_then_iterator() {
+    let (result, _) = run(r#"
+        let log = '';
+        let errors = {[Symbol.iterator]() { log += 'i'; return [1, 2][Symbol.iterator](); }};
+        class E extends AggregateError {}
+        let e = new E(errors, {toString() { log += 'm'; return 'msg'; }},
+            {get cause() { log += 'c'; return 3; }});
+        let callable = AggregateError('ab');
+        let bad = 0;
+        try { new AggregateError(1); } catch(e) { bad += e instanceof TypeError; }
+        try { new AggregateError({[Symbol.iterator]() { return {next() { return 1; }}; }}); }
+            catch(e) { bad += e instanceof TypeError; }
+        log === 'mci' && e instanceof E && e instanceof AggregateError && e instanceof Error &&
+            e.message === 'msg' && e.cause === 3 && e.errors.join(',') === '1,2' &&
+            typeof e.stack === 'string' && callable.errors.join(',') === 'a,b' &&
+            Object.getPrototypeOf(AggregateError) === Error && AggregateError.length === 2 &&
+            bad === 2;
+    "#);
+    assert_eq!(result, ValueView::Bool(true));
+}
+
+#[test]
+fn promise_internal_callbacks_cannot_publish_task_owned_environments() {
+    let rt = Runtime::new();
+    for body in [
+        "let saved; class P extends Promise { static resolve(x) { return {then(r) { saved = r; }}; } } P.all([1]); return saved;",
+        "let saved; Promise.prototype.finally.call({then(r) { saved = r; }}, () => 1); return saved;",
+        "let saved; function C(executor) { saved = executor; executor(() => {}, () => {}); } Promise.withResolvers.call(C); return saved;",
+    ] {
+        let task = function(&rt, &format!("function make() {{ {body} }}"), &[]);
+        let callback = finish(&task);
+        assert!(rt.publish(&callback).is_err(), "{body}");
+        drop(task);
+        rt.collect().unwrap();
+        assert!(rt.publish(&callback).is_err(), "{body}");
     }
 }

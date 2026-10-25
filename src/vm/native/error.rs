@@ -17,6 +17,11 @@ pub(super) enum ErrorState {
         message: Value,
         options: Value,
         suppressed: Option<(Value, Value)>,
+        errors: Option<Value>,
+        iterator: Value,
+        next: Value,
+        current: Value,
+        list: Value,
         stack: JsString,
         stage: u8,
     },
@@ -35,11 +40,22 @@ impl Trace for ErrorState {
                 message,
                 options,
                 suppressed,
+                errors,
+                iterator,
+                next,
+                current,
+                list,
                 ..
             } => {
                 object.trace(visit);
                 message.trace(visit);
                 options.trace(visit);
+                for value in [iterator, next, current, list] {
+                    value.trace(visit);
+                }
+                if let Some(value) = errors {
+                    value.trace(visit);
+                }
                 if let Some((error, suppressed)) = suppressed {
                     error.trace(visit);
                     suppressed.trace(visit);
@@ -74,10 +90,17 @@ impl ErrorState {
             .alloc(HeapObject::Plain(object))
             .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
         let suppressed = kind == Some(NativeErrorKind::Suppressed);
+        let aggregate = kind == Some(NativeErrorKind::Aggregate);
         Ok(Self::Constructor {
             object: Value::Object(id),
             message: args
-                .get(if suppressed { 2 } else { 0 })
+                .get(if suppressed {
+                    2
+                } else if aggregate {
+                    1
+                } else {
+                    0
+                })
                 .cloned()
                 .unwrap_or(Value::Undefined),
             // SuppressedError has no options argument (ECMAScript). In
@@ -85,7 +108,9 @@ impl ErrorState {
             options: if suppressed {
                 Value::Undefined
             } else {
-                args.get(1).cloned().unwrap_or(Value::Undefined)
+                args.get(if aggregate { 2 } else { 1 })
+                    .cloned()
+                    .unwrap_or(Value::Undefined)
             },
             suppressed: suppressed.then(|| {
                 (
@@ -93,6 +118,11 @@ impl ErrorState {
                     args.get(1).cloned().unwrap_or(Value::Undefined),
                 )
             }),
+            errors: aggregate.then(|| args.first().cloned().unwrap_or(Value::Undefined)),
+            iterator: Value::Undefined,
+            next: Value::Undefined,
+            current: Value::Undefined,
+            list: Value::Undefined,
             stack,
             stage: 0,
         })
@@ -123,6 +153,11 @@ impl ErrorState {
                 message,
                 options,
                 suppressed,
+                errors,
+                iterator,
+                next,
+                current,
+                list,
                 stack,
                 stage,
             } => {
@@ -137,8 +172,59 @@ impl ErrorState {
                     1 => define(heap, object, "message", delivered)?,
                     2 => {
                         define(heap, object, "cause", delivered)?;
-                        define(heap, object, "stack", Value::String(stack.clone()))?;
-                        return Ok(Action::Return(object.clone()));
+                        *options = Value::Undefined;
+                    }
+                    3 => {
+                        *iterator =
+                            property::get_field(heap, task, &delivered, &"iterator".into())?;
+                        *next = property::get_field(heap, task, &delivered, &"next".into())?;
+                        *list = property::new_array(heap, task)?;
+                        *stage = 4;
+                        return Ok(Action::Continue);
+                    }
+                    4 => {
+                        *stage = 5;
+                        return Ok(Action::Call {
+                            callee: next.clone(),
+                            this: iterator.clone(),
+                            args: vec![],
+                        });
+                    }
+                    5 => {
+                        if !matches!(delivered, Value::Object(_)) {
+                            return Err(Fault::TypeError(
+                                "iterator result must be an object".into(),
+                            ));
+                        }
+                        *current = delivered;
+                        *stage = 6;
+                        return Ok(Action::Instruction {
+                            instr: crate::vm::instr::Instr::GetElem,
+                            operands: vec![current.clone(), Value::String("done".into())],
+                        });
+                    }
+                    6 => {
+                        if delivered.truthy() {
+                            define(heap, object, "errors", list.clone())?;
+                            return Ok(Action::Return(object.clone()));
+                        }
+                        *stage = 7;
+                        return Ok(Action::Instruction {
+                            instr: crate::vm::instr::Instr::GetElem,
+                            operands: vec![current.clone(), Value::String("value".into())],
+                        });
+                    }
+                    7 => {
+                        if property::get_field(heap, task, list, &"length".into())?
+                            == Value::Number(f64::from(u32::MAX))
+                        {
+                            return Err(Fault::RangeError(
+                                "invalid AggregateError errors array length".into(),
+                            ));
+                        }
+                        property::append(heap, task, list, Some(delivered))?;
+                        *stage = 4;
+                        return Ok(Action::Continue);
                     }
                     _ => return Err(Fault::Internal("invalid Error constructor stage")),
                 }
@@ -156,6 +242,13 @@ impl ErrorState {
                     define(heap, object, "suppressed", suppressed.clone())?;
                 }
                 define(heap, object, "stack", Value::String(stack.clone()))?;
+                if let Some(errors) = errors {
+                    *stage = 3;
+                    return Ok(Action::Instruction {
+                        instr: crate::vm::instr::Instr::GetIterator,
+                        operands: vec![errors.clone()],
+                    });
+                }
                 Ok(Action::Return(object.clone()))
             }
             Self::ToString { this, name, stage } => {

@@ -1561,3 +1561,15 @@ are independently compared over the entire domain with the pinned QuickJS
 checked against its NFC result. Unicode v3 terms are in `docs/UNICODE-LICENSE`;
 the QuickJS MIT notice remains in the verified import and provenance. Runtime
 builds never compile or link C or invoke data generation.
+
+## Promise standard methods (clj-quickjs-317)
+
+`research/quickjs/quickjs.c` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`: `js_promise_all`,
+`js_promise_all_resolve_element`, `js_promise_race`,
+`js_promise_withResolvers`, `js_promise_finally`,
+`js_promise_then_finally_func`, and `js_aggregate_error_constructor` were read
+as semantic references. The Rust implementation uses traced task-owned native
+continuations and private closure environments rather than C frames or
+reference counting. No source was copied; new cases in `tests/promises.rs`
+are original synthetic JavaScript fixtures, not light-cljs output.

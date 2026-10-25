@@ -14,6 +14,8 @@ use crate::job::{Job, JobInbox};
 use crate::object::{OrdinaryObject, PropertyFlags};
 use crate::value::{JsString, Value, share};
 
+pub(crate) mod standard;
+
 #[derive(Debug)]
 pub(crate) struct Promise {
     pub(crate) prototype: ObjectId,
@@ -127,6 +129,7 @@ pub(crate) struct Reaction {
     // exposing the foreign value. The forwarding reaction returns undefined.
     forwarding: Option<ObjectId>,
     async_state: Option<ObjectId>,
+    capability: Option<standard::Capability>,
 }
 impl Trace for Reaction {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
@@ -139,6 +142,9 @@ impl Trace for Reaction {
         }
         if let Some(id) = self.async_state {
             visit(id.into());
+        }
+        if let Some(cap) = &self.capability {
+            cap.trace(visit);
         }
     }
 }
@@ -307,6 +313,7 @@ fn settle(
 }
 #[derive(Debug)]
 pub(crate) enum PromiseState {
+    Standard(Box<standard::State>),
     AsyncRejectTypeError {
         id: ObjectId,
         called: bool,
@@ -323,7 +330,6 @@ pub(crate) enum PromiseState {
         message: &'static str,
         called: bool,
     },
-    Return(Value),
     IntrinsicResolve {
         value: Value,
         awaiting: bool,
@@ -376,6 +382,7 @@ pub(crate) enum PromiseState {
 impl Trace for PromiseState {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match self {
+            Self::Standard(state) => state.trace(visit),
             Self::AsyncRejectTypeError { id, .. } => visit((*id).into()),
             Self::Await {
                 promise,
@@ -397,7 +404,7 @@ impl Trace for PromiseState {
                     visit((*guard).into());
                 }
             }
-            Self::Return(value) | Self::IntrinsicResolve { value, .. } => value.trace(visit),
+            Self::IntrinsicResolve { value, .. } => value.trace(visit),
             Self::Static {
                 promise,
                 resolve,
@@ -464,6 +471,9 @@ impl Trace for PromiseState {
 }
 impl PromiseState {
     pub(crate) fn catches(&self) -> bool {
+        if let Self::Standard(state) = self {
+            return state.catches();
+        }
         matches!(
             self,
             Self::Constructor { .. }
@@ -473,6 +483,10 @@ impl PromiseState {
         )
     }
     pub(crate) fn failed(&mut self, value: Value) {
+        if let Self::Standard(state) = self {
+            state.failed(value);
+            return;
+        }
         let (promise, guard, constructor) = match self {
             Self::Constructor { promise, guard, .. } => (*promise, Some(*guard), true),
             Self::Thenable { promise, guard, .. } => (*promise, Some(*guard), false),
@@ -495,6 +509,7 @@ impl PromiseState {
         input: Input,
     ) -> Result<Action, Fault> {
         match self {
+            Self::Standard(state) => state.step(heap, task, inbox, input),
             Self::IntrinsicResolve {
                 value,
                 awaiting,
@@ -595,7 +610,6 @@ impl PromiseState {
                 }
                 Ok(Action::Return(Value::Undefined))
             }
-            Self::Return(value) => Ok(Action::Return(value.clone())),
             Self::Static {
                 promise,
                 resolve,
@@ -711,6 +725,29 @@ impl PromiseState {
                 Ok(Action::Return(Value::Undefined))
             }
             Self::Reaction { reaction, called } => {
+                if let Some(cap) = reaction.capability.clone() {
+                    let result = heap
+                        .read(reaction.source, |o| match o {
+                            HeapObject::Promise(p) => p.result.clone(),
+                            _ => None,
+                        })
+                        .flatten()
+                        .ok_or(Fault::Internal("reaction source is pending"))?;
+                    let handler = if result.rejected {
+                        reaction.rejected.clone()
+                    } else {
+                        reaction.fulfilled.clone()
+                    };
+                    *self = Self::Standard(Box::new(standard::State::reaction(
+                        cap,
+                        handler,
+                        result.value,
+                        result.rejected,
+                        result.owner.is_some_and(|owner| owner != task),
+                        reaction.forwarding,
+                    )));
+                    return Ok(Action::Continue);
+                }
                 if *called {
                     let Input::CallResult(value) = input else {
                         return Err(Fault::Internal("reaction missing result"));
@@ -829,19 +866,26 @@ pub(crate) fn start(
     let native_capacity = vm.natives.len() < vm.forward_limits(vm.stack_len()).1;
     let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
     Ok(Some(match which {
-        Builtin::PromiseResolve if !construct => {
-            let intrinsic = crate::realm::intrinsics(heap)
-                .ok_or(Fault::OutOfMemory("realm exhausted"))?
-                .global(crate::realm::Global::Promise);
-            if *this != intrinsic {
-                return Err(Fault::Unsupported(
-                    "Promise subclass capabilities are not supported".into(),
-                ));
-            }
-            intrinsic_resolve(heap, task, arg(0), false)?
-        }
-        Builtin::PromiseReject | Builtin::PromiseThen if !construct => {
-            PromiseState::Return(leaf(heap, task, inbox, which, this, args)?)
+        Builtin::PromiseResolve
+        | Builtin::PromiseReject
+        | Builtin::PromiseThen
+        | Builtin::PromiseAll
+        | Builtin::PromiseRace
+        | Builtin::PromiseAllSettled
+        | Builtin::PromiseAny
+        | Builtin::PromiseWithResolvers
+        | Builtin::PromiseFinally
+        | Builtin::PromiseCallback(_, _)
+            if !construct =>
+        {
+            PromiseState::Standard(Box::new(standard::State::start(
+                heap,
+                task,
+                which,
+                this.clone(),
+                args,
+                vm.forward_limits(vm.stack_len()).1,
+            )?))
         }
         Builtin::Promise if construct => {
             let prototype = crate::realm::intrinsics(heap)
@@ -897,67 +941,6 @@ pub(crate) fn start(
         },
         _ => return Err(Fault::Internal("invalid promise native")),
     }))
-}
-
-pub(crate) fn leaf(
-    heap: &Heap,
-    task: TaskId,
-    inbox: &Weak<JobInbox>,
-    which: Builtin,
-    this: &Value,
-    args: &[Value],
-) -> Result<Value, Fault> {
-    let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
-    match which {
-        Builtin::PromiseReject => {
-            let intrinsic = crate::realm::intrinsics(heap)
-                .ok_or(Fault::OutOfMemory("realm exhausted"))?
-                .global(crate::realm::Global::Promise);
-            if *this != intrinsic {
-                return Err(Fault::Unsupported(
-                    "Promise subclass capabilities are not supported".into(),
-                ));
-            }
-            let promise = new(heap)?;
-            settle(heap, task, inbox, promise, true, arg(0))?;
-            Ok(Value::Object(promise))
-        }
-        Builtin::PromiseThen => {
-            let source = receiver(heap, this)?;
-            heap.read(source, |o| match o {
-                HeapObject::Promise(p) => p.check_owner(task),
-                _ => Err(Fault::Internal("promise changed kind")),
-            })
-            .ok_or(Fault::Internal("promise reclaimed"))??;
-            let derived = new(heap)?;
-            let handler = |i| {
-                let value = arg(i);
-                if dispatch::callee(heap, &value).is_ok() {
-                    value
-                } else {
-                    Value::Undefined
-                }
-            };
-            let fulfilled = handler(0);
-            let rejected = handler(1);
-            let forwarding = forwarding_guard(heap, &fulfilled, &rejected);
-            let record = alloc(
-                heap,
-                HeapObject::PromiseReaction(Reaction {
-                    source,
-                    derived,
-                    fulfilled,
-                    rejected,
-                    forwarding,
-                    async_state: None,
-                }),
-            )?;
-            let callable = function(heap, Builtin::PromiseReaction(record))?;
-            register(heap, inbox, source, callable)?;
-            Ok(Value::Object(derived))
-        }
-        _ => Err(Fault::Internal("invalid promise leaf")),
-    }
 }
 
 pub(crate) fn capability(heap: &Heap) -> Result<(ObjectId, Value, Value), Fault> {
@@ -1029,6 +1012,7 @@ pub(crate) fn await_then(
             rejected: Value::Undefined,
             forwarding: None,
             async_state: Some(state),
+            capability: None,
         }),
     )?;
     let callable = function(heap, Builtin::PromiseReaction(record))?;
