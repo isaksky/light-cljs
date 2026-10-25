@@ -4,10 +4,10 @@
 //! one adapted QuickJS test (`quickjs_closure.js`, with its notice) and
 //! inline snippets.
 
-use clj_quickjs::frontend::{
+use big_boy_pants_js::frontend::{
     ScriptOptions, SyntaxErrorKind, compile_function, compile_script, compile_script_with,
 };
-use clj_quickjs::{
+use big_boy_pants_js::{
     Budget, CollectionError, Completion, DependencyId, DependencyKey, Executable, Host, HostCall,
     Opcode, Primitive, PublishError, ResultKind, RunOutcome, Runtime, ValueView, VmError,
     VmErrorKind, VmLimits,

@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::sync::Barrier;
 use std::thread;
 
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{
     Budget, Cancel, CellStatus, Completion, DependencyId, DependencyKey, Host, HostCall, Need,
     NeedError, Primitive, ResultKind, RunError, RunOutcome, Runtime, Task, TaskId, TaskStatus,
     ValueView, Wake, WakeHandle,

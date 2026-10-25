@@ -6,7 +6,7 @@
 
 use std::thread;
 
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, Budget, Executable, Host, HostCall, Opcode, Primitive, RunOutcome, Runtime, TaskId,
     ValueView,
 };

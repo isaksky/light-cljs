@@ -1,8 +1,8 @@
 //! Adapted QuickJS cases; synthetic fixtures, not light-cljs output.
 //! Each fixture carries its source ranges, adaptations and license notice.
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::host::sim::SimHost;
-use clj_quickjs::{Budget, RunOutcome, Runtime, Task, ValueView};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::host::sim::SimHost;
+use big_boy_pants_js::{Budget, RunOutcome, Runtime, Task, ValueView};
 
 const GENERATOR: &str = include_str!("fixtures/js/quickjs_test_generator.js");
 const ASYNC_GC: &str = include_str!("fixtures/js/quickjs_test_async_gc.js");

@@ -21,8 +21,8 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView};
 
 #[derive(Default)]
 struct Effects(Vec<Primitive>);
@@ -329,7 +329,10 @@ fn rejection_reports_wait_for_dependency_resume_and_discard_on_abort() {
             RunOutcome::Complete(_) => assert!(abort.is_empty()),
             RunOutcome::Failed(_) => assert_eq!(abort, "throw 7;"),
             RunOutcome::Waiting(_) => {
-                assert!(matches!(task.cancel(), clj_quickjs::Cancel::Runnable(_)));
+                assert!(matches!(
+                    task.cancel(),
+                    big_boy_pants_js::Cancel::Runnable(_)
+                ));
                 assert!(matches!(task.run().unwrap(), RunOutcome::Cancelled));
             }
             other => panic!("{other:?}"),
@@ -364,7 +367,7 @@ fn binary_reports_unhandled_rejections_and_exits_nonzero() {
         ),
     ] {
         std::fs::write(&path, source).unwrap();
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_clj-quickjs"))
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_big-boy-pants-js"))
             .arg(&path)
             .output()
             .unwrap();
@@ -379,28 +382,32 @@ fn binary_reports_unhandled_rejections_and_exits_nonzero() {
     std::fs::remove_file(path).unwrap();
 }
 
-fn finish(task: &clj_quickjs::Task) -> clj_quickjs::Rooted {
+fn finish(task: &big_boy_pants_js::Task) -> big_boy_pants_js::Rooted {
     let out = task.run().unwrap();
     let RunOutcome::Complete(value) = out else {
         panic!("{out:?}")
     };
     value
 }
-fn function(rt: &Runtime, source: &str, args: &[clj_quickjs::Rooted]) -> clj_quickjs::Task {
+fn function(
+    rt: &Runtime,
+    source: &str,
+    args: &[big_boy_pants_js::Rooted],
+) -> big_boy_pants_js::Task {
     rt.spawn(
-        &clj_quickjs::frontend::compile_function(source).unwrap(),
+        &big_boy_pants_js::frontend::compile_function(source).unwrap(),
         &args.iter().collect::<Vec<_>>(),
     )
     .unwrap()
 }
-fn satisfy(rt: &Runtime, task: &clj_quickjs::Task) {
+fn satisfy(rt: &Runtime, task: &big_boy_pants_js::Task) {
     let request = task.take_producer_requests().pop().unwrap();
     let value = rt.root(Primitive::Number(8.0));
     let wakes = rt
         .complete(
             request.key(),
             request.producer(),
-            clj_quickjs::Completion::Ready(&value),
+            big_boy_pants_js::Completion::Ready(&value),
         )
         .unwrap();
     assert_eq!(wakes.task_ids(), [task.id()]);
@@ -437,7 +444,7 @@ fn promise_reaction_waits_and_resumes() {
     };
     assert_eq!(value.view(), ValueView::Number(42.0));
     assert_eq!(host.0, [0., 1., 3., 4., 5.].map(Primitive::Number));
-    assert_eq!(task.status(), clj_quickjs::TaskStatus::Finished);
+    assert_eq!(task.status(), big_boy_pants_js::TaskStatus::Finished);
 }
 
 #[test]
@@ -477,7 +484,7 @@ fn thenable_then_waits_and_resumes() {
     };
     assert_eq!(value.view(), ValueView::Number(42.));
     assert_eq!(host.0, [0., 1., 2., 8.].map(Primitive::Number));
-    assert_eq!(task.status(), clj_quickjs::TaskStatus::Finished);
+    assert_eq!(task.status(), big_boy_pants_js::TaskStatus::Finished);
 }
 
 #[test]
@@ -557,7 +564,7 @@ fn promise_publication_and_cross_task_settlement_do_not_run_callbacks() {
     );
     thread.join().unwrap();
     assert!(host.0.is_empty());
-    assert_eq!(consumer.status(), clj_quickjs::TaskStatus::Waiting);
+    assert_eq!(consumer.status(), big_boy_pants_js::TaskStatus::Waiting);
     rt.collect().unwrap();
     satisfy(&rt, &consumer);
     assert!(matches!(
@@ -588,7 +595,10 @@ fn promise_cancellation_releases_queued_jobs_and_runs_finally() {
     ));
     rt.collect().unwrap();
     assert!(weak.is_live());
-    assert!(matches!(task.cancel(), clj_quickjs::Cancel::Runnable(_)));
+    assert!(matches!(
+        task.cancel(),
+        big_boy_pants_js::Cancel::Runnable(_)
+    ));
     assert!(matches!(
         task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
         RunOutcome::Cancelled
@@ -1030,7 +1040,7 @@ fn thenable_resolvers_settle_after_then_returns() {
                 outcome => panic!("{outcome:?}"),
             }
         }
-        assert_eq!(task.status(), clj_quickjs::TaskStatus::Finished);
+        assert_eq!(task.status(), big_boy_pants_js::TaskStatus::Finished);
     }
 }
 
@@ -1209,7 +1219,7 @@ fn promise_dependency_failure_rejects_after_resume() {
         .complete(
             request.key(),
             request.producer(),
-            clj_quickjs::Completion::Failed(&failure),
+            big_boy_pants_js::Completion::Failed(&failure),
         )
         .unwrap();
     assert_eq!(wakes.task_ids(), [task.id()]);
@@ -1235,7 +1245,7 @@ fn promise_dependency_failure_rejects_after_resume() {
             Primitive::Number(4.),
         ],
     );
-    assert_eq!(task.status(), clj_quickjs::TaskStatus::Finished);
+    assert_eq!(task.status(), big_boy_pants_js::TaskStatus::Finished);
 }
 
 #[test]
@@ -1386,7 +1396,7 @@ fn async_resume_jobs_belong_to_the_awaiting_task() {
         );
         finish(&settler);
         assert!(host.0.is_empty());
-        assert_eq!(consumer.status(), clj_quickjs::TaskStatus::Waiting);
+        assert_eq!(consumer.status(), big_boy_pants_js::TaskStatus::Waiting);
         rt.collect().unwrap();
         satisfy(&rt, &consumer);
         assert!(matches!(
@@ -1460,7 +1470,10 @@ fn async_cancellation_unwinds_attached_finally_and_discards_resumes() {
     ));
     rt.collect().unwrap();
     assert!(weak.is_live());
-    assert!(matches!(task.cancel(), clj_quickjs::Cancel::Runnable(_)));
+    assert!(matches!(
+        task.cancel(),
+        big_boy_pants_js::Cancel::Runnable(_)
+    ));
     assert!(matches!(
         task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
         RunOutcome::Cancelled
@@ -1473,9 +1486,9 @@ fn async_cancellation_unwinds_attached_finally_and_discards_resumes() {
 
 #[test]
 fn async_settlement_overflow_rejects_instead_of_stalling() {
-    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+    let rt = Runtime::with_limits(big_boy_pants_js::VmLimits {
         max_call_depth: 2,
-        ..clj_quickjs::VmLimits::DEFAULT
+        ..big_boy_pants_js::VmLimits::DEFAULT
     });
     let task=rt.spawn(&compile_script("async-overflow", "Promise.resolve().then(async () => 1).then(x => __rt.effect(0,x), e => __rt.effect(0,e instanceof Error ? 99 : 98)); 42;").unwrap(),&[]).unwrap();
     let mut host = Effects::default();
@@ -1527,7 +1540,7 @@ fn async_generator_resume_jobs_belong_to_the_owning_task() {
             &[resolve],
         ));
         assert!(host.0.is_empty());
-        assert_eq!(consumer.status(), clj_quickjs::TaskStatus::Waiting);
+        assert_eq!(consumer.status(), big_boy_pants_js::TaskStatus::Waiting);
         rt.collect().unwrap();
         satisfy(&rt, &consumer);
         let (outcome, host) = std::thread::Builder::new()
@@ -1553,9 +1566,9 @@ fn async_generator_resume_jobs_belong_to_the_owning_task() {
 
 #[test]
 fn async_generator_settlement_overflow_rejects_instead_of_stalling() {
-    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+    let rt = Runtime::with_limits(big_boy_pants_js::VmLimits {
         max_call_depth: 2,
-        ..clj_quickjs::VmLimits::DEFAULT
+        ..big_boy_pants_js::VmLimits::DEFAULT
     });
     let task = rt.spawn(&compile_script("async-generator-overflow", "let it=(async function*() { yield 1; })(); it.next().then(x => __rt.effect(0,x.value), e => __rt.effect(0,e instanceof Error ? 99 : 98)); 42;").unwrap(), &[]).unwrap();
     let mut host = Effects::default();
@@ -1566,9 +1579,9 @@ fn async_generator_settlement_overflow_rejects_instead_of_stalling() {
 
 #[test]
 fn async_generator_handler_overflow_preserves_driver() {
-    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+    let rt = Runtime::with_limits(big_boy_pants_js::VmLimits {
         max_stack_values: 16,
-        ..clj_quickjs::VmLimits::DEFAULT
+        ..big_boy_pants_js::VmLimits::DEFAULT
     });
     let nested = format!(
         "{}it.next();{}",
@@ -1625,7 +1638,10 @@ fn async_generator_cancellation_unwinds_attached_finally_and_discards_requests()
         ));
         rt.collect().unwrap();
         assert!(weak.is_live());
-        assert!(matches!(task.cancel(), clj_quickjs::Cancel::Runnable(_)));
+        assert!(matches!(
+            task.cancel(),
+            big_boy_pants_js::Cancel::Runnable(_)
+        ));
         assert!(matches!(
             task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
             RunOutcome::Cancelled

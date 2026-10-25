@@ -5,10 +5,10 @@
 //! truncation sweep reuses the adapted QuickJS corpus fixtures (see their
 //! headers and `docs/attribution.md` for the upstream notice).
 
-use clj_quickjs::frontend::{
+use big_boy_pants_js::frontend::{
     ScriptOptions, SyntaxError, SyntaxErrorKind, compile_script_with, parse_module,
 };
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, Budget, ConstructorKind, Executable, ExecutableSpec, Host, HostCall, Opcode,
     Primitive, RunOutcome, Runtime, ValidationError, ValidationErrorKind, VmErrorKind,
 };
@@ -128,7 +128,7 @@ fn seed_completes(name: &str, program: &str) {
     {
         RunOutcome::Complete(value) => {
             assert!(
-                matches!(value.view(), clj_quickjs::ValueView::Number(_)),
+                matches!(value.view(), big_boy_pants_js::ValueView::Number(_)),
                 "{name} seed completed with {:?}",
                 value.view()
             );

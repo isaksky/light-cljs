@@ -1,7 +1,7 @@
 //! Synthetic JavaScript fixtures, not light-cljs output.
 
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{
     Budget, Completion, Executable, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView,
 };
 

@@ -73,7 +73,7 @@ fn rest_spread_publication() {
     };
     assert!(matches!(
         rt.publish(&array),
-        Err(clj_quickjs::PublishError::NotShareable { .. })
+        Err(big_boy_pants_js::PublishError::NotShareable { .. })
     ));
     for source in ["({...{a: 1}})", "function f(...r) { return () => r; } f(1)"] {
         let RunOutcome::Complete(value) = rt.spawn(&exe(source), &[]).unwrap().run().unwrap()
@@ -82,7 +82,7 @@ fn rest_spread_publication() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
     }
 }
@@ -725,11 +725,11 @@ fn intl_list_format() {
     }
 }
 
-use clj_quickjs::frontend::{
+use big_boy_pants_js::frontend::{
     ScriptOptions, SyntaxErrorKind, compile_function, compile_function_with, compile_script,
     compile_script_with,
 };
-use clj_quickjs::{
+use big_boy_pants_js::{
     Budget, Cancel, Completion, DependencyId, DependencyKey, Executable, Host, HostCall, Opcode,
     Primitive, ResultKind, RunOutcome, Runtime, ValidationErrorKind, ValueView, VmError,
     VmErrorKind,
@@ -924,7 +924,7 @@ fn super_property_access_sloppy_immutable_receivers() {
         panic!("function")
     };
     rt.publish(&function).unwrap();
-    let code = clj_quickjs::frontend::compile_function_with("function check(f) { let o = {m() { super.x = 1; }}; let ok = false; try { o.m.call(f); } catch(e) { ok = e instanceof TypeError; } return ok; }", ScriptOptions::SLOPPY).unwrap();
+    let code = big_boy_pants_js::frontend::compile_function_with("function check(f) { let o = {m() { super.x = 1; }}; let ok = false; try { o.m.call(f); } catch(e) { ok = e instanceof TypeError; } return ok; }", ScriptOptions::SLOPPY).unwrap();
     assert!(!code.is_strict());
     let RunOutcome::Complete(result) = rt.spawn(&code, &[&function]).unwrap().run().unwrap() else {
         panic!("complete")
@@ -1001,8 +1001,8 @@ fn super_property_access_in_suspended_methods() {
     );
     #[derive(Default)]
     struct Log(Vec<Primitive>);
-    impl clj_quickjs::Host for Log {
-        fn effect(&mut self, call: clj_quickjs::HostCall) -> Result<Primitive, String> {
+    impl big_boy_pants_js::Host for Log {
+        fn effect(&mut self, call: big_boy_pants_js::HostCall) -> Result<Primitive, String> {
             self.0.push(call.arg);
             Ok(Primitive::Undefined)
         }
@@ -1240,7 +1240,7 @@ fn base_classes_bytecode_roundtrip() {
     );
     assert_eq!(
         code.to_spec().functions[0].to_spec().constructor_kind,
-        clj_quickjs::ConstructorKind::BaseClass
+        big_boy_pants_js::ConstructorKind::BaseClass
     );
     let loaded = Executable::load(code.to_spec()).unwrap();
     let RunOutcome::Complete(value) = run(&loaded, &[]) else {
@@ -1501,7 +1501,7 @@ fn non_constructors_reject_new() {
 
 #[test]
 fn constructor_kind_survives_code_round_trip() {
-    use clj_quickjs::ConstructorKind;
+    use big_boy_pants_js::ConstructorKind;
     for (source, expected) in [
         ("function F() {}", ConstructorKind::Ordinary),
         ("function* G() {}", ConstructorKind::None),
@@ -2095,7 +2095,7 @@ fn sloppy_eval_environment_lifetime_and_validation() {
     };
     assert!(matches!(
         rt.publish(&value),
-        Err(clj_quickjs::PublishError::NotShareable {
+        Err(big_boy_pants_js::PublishError::NotShareable {
             found: "binding cell",
             ..
         })
@@ -2104,7 +2104,8 @@ fn sloppy_eval_environment_lifetime_and_validation() {
     let spec = code.to_spec().functions[0].to_spec();
     assert_eq!(spec.eval_sites[0].environments.len(), 1);
     let mut bad = spec.clone();
-    bad.eval_sites[0].environments[0] = clj_quickjs::vm::executable::EvalSource::Local(u16::MAX);
+    bad.eval_sites[0].environments[0] =
+        big_boy_pants_js::vm::executable::EvalSource::Local(u16::MAX);
     assert_eq!(
         Executable::load(bad).unwrap_err().kind,
         ValidationErrorKind::InvalidEvalSite
@@ -2336,7 +2337,7 @@ fn eval_in_parameter_expressions() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable {
+            Err(big_boy_pants_js::PublishError::NotShareable {
                 found: "binding cell",
                 ..
             })
@@ -2374,7 +2375,7 @@ fn direct_eval_capture_publication_and_roundtrip() {
         assert!(
             matches!(
                 rt.publish(&value),
-                Err(clj_quickjs::PublishError::NotShareable {
+                Err(big_boy_pants_js::PublishError::NotShareable {
                     found: "binding cell",
                     ..
                 })
@@ -2406,7 +2407,8 @@ fn direct_eval_capture_publication_and_roundtrip() {
         ValidationErrorKind::InvalidEvalSite
     );
     let mut bad = spec.clone();
-    bad.eval_sites[0].bindings[0].source = clj_quickjs::vm::executable::EvalSource::Local(u16::MAX);
+    bad.eval_sites[0].bindings[0].source =
+        big_boy_pants_js::vm::executable::EvalSource::Local(u16::MAX);
     assert_eq!(
         Executable::load(bad).unwrap_err().kind,
         ValidationErrorKind::InvalidEvalSite
@@ -2750,7 +2752,7 @@ fn indirect_eval_on_small_worker_stacks() {
         |n| format!("{}2{}", "(".repeat(n), ")".repeat(n)),
         |n| format!("{}2{}", "{".repeat(n), "}".repeat(n)),
     ] {
-        let n = (1..=clj_quickjs::frontend::MAX_NESTING)
+        let n = (1..=big_boy_pants_js::frontend::MAX_NESTING)
             .find(|&n| compile_script("probe", &nested(n)).is_err())
             .unwrap();
         sources.push(nested(n - 1));
@@ -3103,9 +3105,9 @@ fn spread_protocol_errors_and_order() {
         ),
         ValueView::Bool(true)
     );
-    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+    let rt = Runtime::with_limits(big_boy_pants_js::VmLimits {
         max_stack_values: 128,
-        ..clj_quickjs::VmLimits::DEFAULT
+        ..big_boy_pants_js::VmLimits::DEFAULT
     });
     let task = rt
         .spawn(&exe("(function() {})(...new Array(200))"), &[])
@@ -3366,9 +3368,9 @@ fn generator_yield_star_handlers_and_nested_delegates() {
 fn generator_rejected_resume_preserves_suspension() {
     // Synthetic fixture, not light-cljs output. The deepest caller fits,
     // but attaching the generator above it exceeds the task's frame limit.
-    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+    let rt = Runtime::with_limits(big_boy_pants_js::VmLimits {
         max_call_depth: 3,
-        ..clj_quickjs::VmLimits::default()
+        ..big_boy_pants_js::VmLimits::default()
     });
     let script = exe(r#"
         function* f() { yield 7; return 8; }
@@ -4016,7 +4018,9 @@ fn bigint_literals_and_strict_equality() {
         value.bigint().unwrap().to_string(),
         "515377520732011331036461129765621272702107522001"
     );
-    let host = rt.root(Primitive::BigInt(clj_quickjs::JsBigInt::from(i64::MIN)));
+    let host = rt.root(Primitive::BigInt(big_boy_pants_js::JsBigInt::from(
+        i64::MIN,
+    )));
     let inspect =
         compile_function("function f(n) { return !!n && typeof n === 'bigint'; }").unwrap();
     assert!(
@@ -4221,7 +4225,7 @@ fn bigint_signed_coercion_and_unordered_comparisons() {
             "n == -9223372036854775808 && n < 0n && n <= -9223372036854775808",
         ),
     ] {
-        let n = clj_quickjs::JsBigInt::from_sign_magnitude(true, limbs).unwrap();
+        let n = big_boy_pants_js::JsBigInt::from_sign_magnitude(true, limbs).unwrap();
         let root = rt.root(Primitive::BigInt(n));
         let script = compile_function(&format!("function f(n) {{ return {checks}; }}")).unwrap();
         let result = rt.spawn(&script, &[&root]).unwrap().run().unwrap();
@@ -4472,7 +4476,7 @@ fn bigint_to_string_yields_collects_and_migrates() {
                     waits += 1;
                     assert_eq!(waits, 1);
                     let request = task.take_producer_requests().pop().unwrap();
-                    let value = clj_quickjs::JsBigInt::from_digits(&digits, 10).unwrap();
+                    let value = big_boy_pants_js::JsBigInt::from_digits(&digits, 10).unwrap();
                     let value = rt.root(Primitive::BigInt(value));
                     task = rt
                         .complete(request.key(), request.producer(), Completion::Ready(&value))
@@ -4945,7 +4949,7 @@ fn typed_array_publication_and_foreign_access_rejected() {
     };
     assert!(matches!(
         rt.publish(&array),
-        Err(clj_quickjs::PublishError::NotShareable { .. })
+        Err(big_boy_pants_js::PublishError::NotShareable { .. })
     ));
     assert!(rt.new_atom(&array).is_err());
     for body in [
@@ -5166,7 +5170,7 @@ fn array_buffer_publication_rejected() {
     };
     assert!(matches!(
         rt.publish(&buffer),
-        Err(clj_quickjs::PublishError::NotShareable { .. })
+        Err(big_boy_pants_js::PublishError::NotShareable { .. })
     ));
     assert!(rt.new_atom(&buffer).is_err());
     for source in [
@@ -5382,7 +5386,7 @@ fn date_to_iso_string() {
 /// Synthetic fixtures, not light-cljs output: QuickJS's non-locale formats.
 #[test]
 fn date_to_string_formats() {
-    use clj_quickjs::host::{TimeZone, sim::SimTimeHost};
+    use big_boy_pants_js::host::{TimeZone, sim::SimTimeHost};
 
     for (offset, time, date, clock, utc) in [
         (
@@ -5731,7 +5735,7 @@ fn date_coercion_waits_collects_and_migrates() {
 /// publication or foreign-task reads, even after freezing or detaching prototypes.
 #[test]
 fn date_objects_are_task_owned() {
-    use clj_quickjs::PublishError;
+    use big_boy_pants_js::PublishError;
     let rt = Runtime::new();
     for source in ["new Date(7)", "Object.freeze(new Date(7))"] {
         let owner = rt.spawn(&exe(source), &[]).unwrap();
@@ -5815,7 +5819,7 @@ fn array_constructor_and_is_array() {
 /// the same task ownership and publication rules as array literals.
 #[test]
 fn constructed_arrays_are_task_owned() {
-    use clj_quickjs::PublishError;
+    use big_boy_pants_js::PublishError;
     let rt = Runtime::new();
     for source in ["Array(3)", "new Array({n: 7}, 2)"] {
         let owner = rt.spawn(&exe(source), &[]).unwrap();
@@ -6097,7 +6101,7 @@ fn tagged_templates_reject_literal_append() {
         };
         rt.publish(&array).unwrap();
         for op in [Opcode::AppendElement, Opcode::AppendHole] {
-            let mut asm = clj_quickjs::Assembler::new();
+            let mut asm = big_boy_pants_js::Assembler::new();
             asm.get_local(0);
             if op == Opcode::AppendElement {
                 asm.op(Opcode::NewArray);
@@ -7424,20 +7428,20 @@ fn string_code_unit_construction_yields_during_coercion() {
     let rt = Runtime::new();
     // Repeated references to a rope exercise aggregate coercion work. A
     // single 1M-unit whitespace input must also yield within that argument.
-    let rope = clj_quickjs::JsString::from(" ".repeat(8192).as_str())
-        .concat(&clj_quickjs::JsString::from("65"))
+    let rope = big_boy_pants_js::JsString::from(" ".repeat(8192).as_str())
+        .concat(&big_boy_pants_js::JsString::from("65"))
         .unwrap();
     for (input, count, expected, minimum_yields, reject) in [
         (rope, 16, "AAAAAAAAAAAAAAAA", 16 * 8192 / 256, false),
         (
-            clj_quickjs::JsString::from(" ".repeat(1_048_576).as_str()),
+            big_boy_pants_js::JsString::from(" ".repeat(1_048_576).as_str()),
             1,
             "\\0",
             1_048_576 / 256,
             false,
         ),
         (
-            clj_quickjs::JsString::from(format!("{}1.5", " ".repeat(65536)).as_str()),
+            big_boy_pants_js::JsString::from(format!("{}1.5", " ".repeat(65536)).as_str()),
             1,
             "",
             65536 / 256,
@@ -7531,9 +7535,9 @@ fn string_code_unit_construction_yields_during_coercion() {
 
 #[test]
 fn string_code_unit_native_recursion_obeys_depth_limit() {
-    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+    let rt = Runtime::with_limits(big_boy_pants_js::VmLimits {
         max_call_depth: 8,
-        ..clj_quickjs::VmLimits::DEFAULT
+        ..big_boy_pants_js::VmLimits::DEFAULT
     });
     let script =
         exe("let o = {}; o.valueOf = String.fromCharCode.bind(null, o); String.fromCharCode(o)");
@@ -8362,12 +8366,14 @@ fn json_parse_depth_and_error_messages() {
 #[test]
 fn json_parse_error_stack_survives_suspension() {
     let code = compile_function("function parse(text) {\n  function make() {\n    try { JSON.parse({toString() { __rt.need(1, 162); return text; }}); }\n    catch(e) { return e; }\n  }\n  let e = make(); __rt.need(2, 162);\n  try { throw e; } catch (saved) {\n    let d = Object.getOwnPropertyDescriptor(saved, 'stack');\n    if (!(saved instanceof SyntaxError) || !d.writable || !d.configurable || d.enumerable) throw 42;\n    return saved.stack;\n  }\n}").unwrap();
-    let mut text = clj_quickjs::JsString::from(" ".repeat(1024).as_str());
+    let mut text = big_boy_pants_js::JsString::from(" ".repeat(1024).as_str());
     for _ in 0..128 {
-        text = text.concat(&clj_quickjs::JsString::from("\r\n")).unwrap();
+        text = text
+            .concat(&big_boy_pants_js::JsString::from("\r\n"))
+            .unwrap();
     }
     text = text
-        .concat(&clj_quickjs::JsString::from("{ \"a\": tru }"))
+        .concat(&big_boy_pants_js::JsString::from("{ \"a\": tru }"))
         .unwrap();
     let rt = Runtime::new();
     let root = rt.root(Primitive::String(text));
@@ -15243,7 +15249,7 @@ fn property_access_on_values_that_are_not_ordinary_objects() {
     let rt = Runtime::new();
     let one = rt.root(Primitive::Number(1.0));
     let occurrence = rt.scope(|s| {
-        let at = clj_quickjs::Provenance {
+        let at = big_boy_pants_js::Provenance {
             source: 1,
             line: 1,
             column: 1,
@@ -16210,7 +16216,7 @@ fn with_statement_resolution() {
     };
     assert!(matches!(
         rt.publish(&value),
-        Err(clj_quickjs::PublishError::NotShareable { .. })
+        Err(big_boy_pants_js::PublishError::NotShareable { .. })
     ));
     let plain = compile_function_with(
         "function f() { const x=1; return ()=>x; }",
@@ -19387,9 +19393,9 @@ fn primitive_wrapper_conversion_waits_yields_collects_and_migrates() {
 
 #[test]
 fn primitive_wrapper_native_recursion_obeys_depth_limit() {
-    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+    let rt = Runtime::with_limits(big_boy_pants_js::VmLimits {
         max_call_depth: 8,
-        ..clj_quickjs::VmLimits::DEFAULT
+        ..big_boy_pants_js::VmLimits::DEFAULT
     });
     let script = exe(
         "let o = {}; o.valueOf = Number.bind(null, o); let caught = false; try { Number(o); } catch(e) { caught = true; } caught",
@@ -20063,7 +20069,7 @@ fn error_callbacks_wait_yield_collect_and_migrate() {
 /// ordinary-object publication policy, including dependency failures.
 #[test]
 fn error_objects_are_task_owned_and_cannot_be_published_as_failures() {
-    use clj_quickjs::{CompleteError, PublishError};
+    use big_boy_pants_js::{CompleteError, PublishError};
     let rt = Runtime::new();
     let owner = rt
         .spawn(&exe("Error('owned', {cause: {n: 42}})"), &[])
@@ -21057,7 +21063,7 @@ fn json_stringify_indentation_is_budgeted() {
 /// flatten a large rope nor traverse a deep prefix in a single native step.
 #[test]
 fn json_stringify_space_strings_are_budgeted() {
-    use clj_quickjs::JsString;
+    use big_boy_pants_js::JsString;
     for body in [
         "return JSON.stringify([1], null, text);",
         "let s = new String(''); s.toString = function(){return text;}; return JSON.stringify([1], null, s);",
@@ -21176,7 +21182,7 @@ fn json_stringify_long_strings_are_budgeted() {
         compile_function("function stringify(text) { return JSON.stringify(text); }").unwrap();
     for (unit, expected) in [(0xd800, "\\ud800"), (0x61, "a"), (0x0, "\\u0000")] {
         let root = rt.root(Primitive::String(
-            clj_quickjs::JsString::from_code_units(vec![unit; 65536]).unwrap(),
+            big_boy_pants_js::JsString::from_code_units(vec![unit; 65536]).unwrap(),
         ));
         let task = rt.spawn(&code, &[&root]).unwrap();
         drop(root);
@@ -21211,7 +21217,7 @@ fn json_stringify_long_strings_are_budgeted() {
 /// one instruction must not flatten its entire input before quoting can yield.
 #[test]
 fn json_stringify_rope_quoting_is_budgeted() {
-    use clj_quickjs::JsString;
+    use big_boy_pants_js::JsString;
 
     let rt = Runtime::new();
     let task = rt
@@ -22082,9 +22088,9 @@ fn bigint_additive_and_multiplicative_operators() {
 #[test]
 fn bigint_arithmetic_size_errors_are_catchable_and_leave_bindings_unchanged() {
     let rt = Runtime::new();
-    let cap = clj_quickjs::JsBigInt::from_sign_magnitude(
+    let cap = big_boy_pants_js::JsBigInt::from_sign_magnitude(
         false,
-        vec![u32::MAX; clj_quickjs::MAX_BIGINT_BITS / 32],
+        vec![u32::MAX; big_boy_pants_js::MAX_BIGINT_BITS / 32],
     )
     .unwrap();
     let root = rt.root(Primitive::BigInt(cap));
@@ -22463,7 +22469,7 @@ fn intl_locale_task_ownership() {
     };
     assert!(matches!(
         rt.publish(&locale),
-        Err(clj_quickjs::PublishError::NotShareable { .. })
+        Err(big_boy_pants_js::PublishError::NotShareable { .. })
     ));
     for body in [
         "value.language",
@@ -23115,7 +23121,7 @@ fn regexp_coercions_wait_yield_collect_and_migrate() {
 /// remain catchable, including cached failures after bytecode serialization.
 #[test]
 fn regexp_compilation_limit_is_catchable() {
-    let pattern = "a".repeat(clj_quickjs::regexp::matcher::MAX_MATCH_STEPS);
+    let pattern = "a".repeat(big_boy_pants_js::regexp::matcher::MAX_MATCH_STEPS);
     for constructor in ["RegExp", "new RegExp"] {
         let code = compile_function(&format!(
             "function f(pattern) {{ let caught = false; try {{ {constructor}(pattern); }} catch(e) {{ caught = e instanceof RangeError && e.message.indexOf('step limit') >= 0; }} return caught; }}"
@@ -23285,7 +23291,7 @@ fn bigint_string_comparisons_use_integer_grammar() {
 /// to parsed strings too; invalid strings retain SyntaxError precedence.
 #[test]
 fn bigint_string_parsing_enforces_size_cap() {
-    use clj_quickjs::MAX_BIGINT_BITS;
+    use big_boy_pants_js::MAX_BIGINT_BITS;
     let code =
         compile_function("function f(s) { return BigInt(s) === (1n << 1048575n); }").unwrap();
     for text in [
@@ -24843,7 +24849,7 @@ fn intl_number_format_host_default_and_ownership() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
         let body = if source.ends_with(".format") {
             "value(1)"
@@ -25012,7 +25018,7 @@ fn intl_number_format_large_bigint_yields_collects_and_migrates() {
                     assert_eq!(waits, 1);
                     rt.collect().unwrap();
                     let request = task.take_producer_requests().pop().unwrap();
-                    let bigint = clj_quickjs::JsBigInt::from_digits(&digits, 10).unwrap();
+                    let bigint = big_boy_pants_js::JsBigInt::from_digits(&digits, 10).unwrap();
                     let value = rt.root(Primitive::BigInt(bigint));
                     task = rt
                         .complete(request.key(), request.producer(), Completion::Ready(&value))
@@ -25326,7 +25332,7 @@ fn intl_plural_rules_ownership_and_abrupt_options() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
         for body in [
             "Intl.PluralRules.prototype.select.call(value,1)",
@@ -25536,7 +25542,7 @@ fn intl_number_format_currency_callbacks_wait_collect_and_migrate() {
 // THE SOFTWARE.
 #[test]
 fn date_parse_iso_strings() {
-    use clj_quickjs::host::{TimeZone, sim::SimTimeHost};
+    use big_boy_pants_js::host::{TimeZone, sim::SimTimeHost};
 
     for offset in [0, 3600] {
         let rt = Runtime::new();
@@ -25673,7 +25679,7 @@ fn date_parse_iso_strings() {
 // THE SOFTWARE.
 #[test]
 fn date_parse_fallback_strings() {
-    use clj_quickjs::host::{TimeZone, sim::SimTimeHost};
+    use big_boy_pants_js::host::{TimeZone, sim::SimTimeHost};
 
     for offset in [0, 3600, -18000] {
         let rt = Runtime::new();
@@ -26045,13 +26051,15 @@ fn intl_collator_tailoring_waits_and_rope_budget() {
         ("tr", "default", "ı", "i", -1),
     ] {
         let rt = Runtime::new();
-        let mut rope = clj_quickjs::JsString::from("");
+        let mut rope = big_boy_pants_js::JsString::from("");
         for _ in 0..1500 {
-            rope = rope.concat(&clj_quickjs::JsString::from(left)).unwrap();
+            rope = rope
+                .concat(&big_boy_pants_js::JsString::from(left))
+                .unwrap();
         }
         let flat = right.repeat(1500);
         let a = rt.root(Primitive::String(rope));
-        let b = rt.root(Primitive::String(clj_quickjs::JsString::from(
+        let b = rt.root(Primitive::String(big_boy_pants_js::JsString::from(
             flat.as_str(),
         )));
         let code = compile_function(&format!(
@@ -26269,10 +26277,10 @@ fn intl_collator_callbacks_wait_collect_and_migrate() {
 fn intl_collator_long_ropes_are_budgeted() {
     for numeric in [false, true] {
         let rt = Runtime::new();
-        let mut rope = clj_quickjs::JsString::from("x");
+        let mut rope = big_boy_pants_js::JsString::from("x");
         for _ in 0..3000 {
             rope = rope
-                .concat(&clj_quickjs::JsString::from(if numeric {
+                .concat(&big_boy_pants_js::JsString::from(if numeric {
                     "1"
                 } else {
                     "0"
@@ -26280,11 +26288,11 @@ fn intl_collator_long_ropes_are_budgeted() {
                 .unwrap();
         }
         rope = rope
-            .concat(&clj_quickjs::JsString::from("2a\u{315}\u{300}"))
+            .concat(&big_boy_pants_js::JsString::from("2a\u{315}\u{300}"))
             .unwrap();
         let flat = format!("x{}2à\u{315}", if numeric { "1" } else { "0" }.repeat(3000));
         let a = rt.root(Primitive::String(rope));
-        let b = rt.root(Primitive::String(clj_quickjs::JsString::from(
+        let b = rt.root(Primitive::String(big_boy_pants_js::JsString::from(
             flat.as_str(),
         )));
         let code = compile_function(&format!("function f(a,b){{return new Intl.Collator('en',{{numeric:{numeric}}}).compare(a,b) === 0;}}")).unwrap();
@@ -26336,17 +26344,17 @@ fn intl_collator_rope_utf16_semantics() {
     for &(suffix, expected, order) in cases {
         let rt = Runtime::new();
         // Exceed the small-concat threshold before appending surrogate leaves.
-        let mut rope = clj_quickjs::JsString::from("x".repeat(40).as_str());
+        let mut rope = big_boy_pants_js::JsString::from("x".repeat(40).as_str());
         for &unit in suffix {
             rope = rope
-                .concat(&clj_quickjs::JsString::from_code_units(vec![unit]).unwrap())
+                .concat(&big_boy_pants_js::JsString::from_code_units(vec![unit]).unwrap())
                 .unwrap();
         }
         let mut flat = vec![u16::from(b'x'); 40];
         flat.extend_from_slice(expected);
         let a = rt.root(Primitive::String(rope));
         let b = rt.root(Primitive::String(
-            clj_quickjs::JsString::from_code_units(flat).unwrap(),
+            big_boy_pants_js::JsString::from_code_units(flat).unwrap(),
         ));
         let code = compile_function(&format!(
             "function f(a,b){{let c=new Intl.Collator('en');return c.compare(a,b) === {order} && c.compare(b,a) === {};}}",
@@ -26385,7 +26393,7 @@ fn intl_collator_rope_utf16_semantics() {
 #[test]
 fn intl_collator_ownership_and_host_default() {
     let rt = Runtime::new();
-    let mut host = clj_quickjs::host::sim::SimHost::new(&rt);
+    let mut host = big_boy_pants_js::host::sim::SimHost::new(&rt);
     host.set_default_locale("fr");
     let task = rt
         .spawn(
@@ -26406,7 +26414,7 @@ fn intl_collator_ownership_and_host_default() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
         for body in [
             "value.compare",
@@ -26464,9 +26472,11 @@ fn intl_collator_numeric_exact_runs() {
 #[test]
 fn intl_collator_long_option_ropes_are_budgeted() {
     let rt = Runtime::new();
-    let mut rope = clj_quickjs::JsString::from("abc");
+    let mut rope = big_boy_pants_js::JsString::from("abc");
     for _ in 0..3000 {
-        rope = rope.concat(&clj_quickjs::JsString::from("-def")).unwrap();
+        rope = rope
+            .concat(&big_boy_pants_js::JsString::from("-def"))
+            .unwrap();
     }
     let text = rt.root(Primitive::String(rope));
     let code = compile_function("function f(text){return new Intl.Collator('en',{collation:text}).resolvedOptions().collation === 'default';}").unwrap();
@@ -26815,7 +26825,7 @@ fn intl_date_time_format_ownership() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
         for body in [
             "value.format",
@@ -27404,9 +27414,9 @@ fn intl_list_format_large_lists_and_ropes_are_budgeted() {
         }
     }
     let rt = Runtime::new();
-    let mut rope = clj_quickjs::JsString::from("a");
+    let mut rope = big_boy_pants_js::JsString::from("a");
     for _ in 0..500 {
-        rope = rope.concat(&clj_quickjs::JsString::from("b")).unwrap();
+        rope = rope.concat(&big_boy_pants_js::JsString::from("b")).unwrap();
     }
     let input = rt.root(Primitive::String(rope));
     for (method, check) in [
@@ -27485,7 +27495,7 @@ fn intl_list_format_ownership_and_host_default() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
         for body in [
             "Intl.ListFormat.prototype.format.call(value,['A','B'])",
@@ -27499,7 +27509,7 @@ fn intl_list_format_ownership_and_host_default() {
             );
         }
     }
-    let mut host = clj_quickjs::host::sim::SimHost::new(&rt);
+    let mut host = big_boy_pants_js::host::sim::SimHost::new(&rt);
     host.set_default_locale("en-GB");
     let task = rt
         .spawn(
@@ -27601,7 +27611,7 @@ fn quickjs_loop_and_label_cases_run_unmodified() {
 /// including the direct eval of a NUL-containing RegExp literal.
 #[test]
 fn quickjs_date_regexp_cases_run_unmodified() {
-    use clj_quickjs::host::{TimeZone, sim::SimTimeHost};
+    use big_boy_pants_js::host::{TimeZone, sim::SimTimeHost};
     let fixture = include_str!("fixtures/js/quickjs_test_builtin_date_regexp.js");
     let (definitions, calls) = fixture.rsplit_once("\ntest_date();\n").unwrap();
     assert_eq!(calls, "test_regexp();\n");
@@ -27955,7 +27965,7 @@ fn intl_relative_time_format_host_and_ownership() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
         for body in [
             "Intl.RelativeTimeFormat.prototype.format.call(value,1,'day')",
@@ -27996,7 +28006,7 @@ fn intl_relative_time_format_all_units_and_locale_data() {
         ),
         ValueView::Bool(true)
     );
-    for locale in clj_quickjs::intl::LOCALES {
+    for locale in big_boy_pants_js::intl::LOCALES {
         let source = format!(
             "let r=new Intl.RelativeTimeFormat('{locale}'); let units=['second','minute','hour','day','week','month','quarter','year']; let ok=true; for(let i=0;i<units.length;i++){{let p=r.formatToParts(1234.5678,units[i]); let text=''; for(let j=0;j<p.length;j++){{text+=p[j].value; ok=ok && (p[j].type === 'literal' || p[j].unit === units[i]);}} ok=ok && text === r.format(1234.5678,units[i]);}} ok"
         );
@@ -28157,11 +28167,11 @@ fn intl_segmenter_long_scans_are_budgeted() {
     let rt = Runtime::new();
     // A deep rope ending in one long combining sequence exercises flatten,
     // scanning and substring copying independently, with no timer assertions.
-    let mut text = clj_quickjs::JsString::from("a");
+    let mut text = big_boy_pants_js::JsString::from("a");
     for _ in 0..1000 {
-        text = text.concat(&clj_quickjs::JsString::from("́")).unwrap();
+        text = text.concat(&big_boy_pants_js::JsString::from("́")).unwrap();
     }
-    let text = text.concat(&clj_quickjs::JsString::from("!")).unwrap();
+    let text = text.concat(&big_boy_pants_js::JsString::from("!")).unwrap();
     let input = rt.root(Primitive::String(text));
     for granularity in ["grapheme", "word"] {
         let source = r#"function f(text){
@@ -28216,7 +28226,7 @@ fn intl_segmenter_ownership_and_default_locale() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
         let body = if source.contains("[Symbol.iterator]") {
             "value.next()"
@@ -28235,7 +28245,7 @@ fn intl_segmenter_ownership_and_default_locale() {
             matches!(caller.run().unwrap(),RunOutcome::Failed(error) if matches!(error.kind(),VmErrorKind::ForeignObject{..}))
         );
     }
-    let mut host = clj_quickjs::host::sim::SimHost::new(&rt);
+    let mut host = big_boy_pants_js::host::sim::SimHost::new(&rt);
     host.set_default_locale("ja");
     let task = rt
         .spawn(
@@ -28543,7 +28553,7 @@ fn intl_display_names_host_and_ownership() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
         for body in [
             "Intl.DisplayNames.prototype.of.call(value,'US')",
@@ -28569,12 +28579,14 @@ fn intl_display_names_long_calendar_budget() {
         }
     }
     let rt = Runtime::new();
-    let mut upper = clj_quickjs::JsString::from("ABC");
+    let mut upper = big_boy_pants_js::JsString::from("ABC");
     for _ in 0..600 {
-        upper = upper.concat(&clj_quickjs::JsString::from("-DEF")).unwrap();
+        upper = upper
+            .concat(&big_boy_pants_js::JsString::from("-DEF"))
+            .unwrap();
     }
     let upper = rt.root(Primitive::String(upper));
-    let lower = rt.root(Primitive::String(clj_quickjs::JsString::from(
+    let lower = rt.root(Primitive::String(big_boy_pants_js::JsString::from(
         format!("abc{}", "-def".repeat(600)).as_str(),
     )));
     for fallback in ["code", "none"] {
@@ -28893,7 +28905,7 @@ fn intl_duration_format_host_and_ownership() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
         for body in [
             "Intl.DurationFormat.prototype.format.call(value,{hours:1})",
@@ -29311,7 +29323,7 @@ fn proxy_publication_is_task_owned() {
         };
         assert!(matches!(
             rt.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
     }
 }
@@ -30241,9 +30253,9 @@ fn array_copy_yield_and_collect() {
 
 #[test]
 fn array_copy_depth_limit_and_small_worker() {
-    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+    let rt = Runtime::with_limits(big_boy_pants_js::VmLimits {
         max_call_depth: 8,
-        ..clj_quickjs::VmLimits::default()
+        ..big_boy_pants_js::VmLimits::default()
     });
     let task = rt.spawn(&exe("let a=[]; a[0]=a; let caught=false; try { a.flat(Infinity); } catch(e) { caught=true; } caught"), &[]).unwrap();
     let mut completed = false;
@@ -30308,9 +30320,9 @@ fn array_copy_bound_constructor_hop_limit() {
                 "r.n === 1 && r.length === 1 && r[0] === 7",
             ),
         ] {
-            let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+            let rt = Runtime::with_limits(big_boy_pants_js::VmLimits {
                 max_call_depth: 2,
-                ..clj_quickjs::VmLimits::default()
+                ..big_boy_pants_js::VmLimits::default()
             });
             let source = format!(
                 "function C(n) {{ this.n=n; }} let B=C; for(let i=0;i<{wrappers};i++) B=B.bind(null); let r={operation}; {check}"

@@ -1,6 +1,6 @@
 //! Synthetic JavaScript fixtures, not light-cljs output.
-use clj_quickjs::host::{TimeZone, sim::SimTimeHost};
-use clj_quickjs::{Budget, Host, RunOutcome, Runtime, ValueView, frontend::compile_script};
+use big_boy_pants_js::host::{TimeZone, sim::SimTimeHost};
+use big_boy_pants_js::{Budget, Host, RunOutcome, Runtime, ValueView, frontend::compile_script};
 
 fn evaluate(runtime: &Runtime, host: &mut dyn Host, source: &str) -> ValueView {
     let task = runtime
@@ -185,7 +185,7 @@ fn date_rule_table_coverage_and_seconds() {
 
 #[test]
 fn date_local_coercion_waits_collects_and_migrates() {
-    use clj_quickjs::{Completion, Primitive};
+    use big_boy_pants_js::{Completion, Primitive};
     let runtime = Runtime::new();
     let source = "let log = ''; let d = new Date({valueOf() {log += 'y'; __rt.need(1, 1); return 2020;}}, 2, 29, 0, 30); let result = d.setHours({get valueOf() {log += 'g'; __rt.need(2, 1); return function() {log += 'h'; __rt.need(3, 1); return 2;};}}, {valueOf() {log += 'm'; __rt.need(4, 1); return 30;}}); result === Date.UTC(2020, 2, 29, 1, 30) && d.getHours() === 3 && log === 'yghm'";
     let mut task = runtime
@@ -231,7 +231,7 @@ fn date_local_coercion_waits_collects_and_migrates() {
 
 #[test]
 fn date_time_host_calls_are_leaf_and_unrecorded() {
-    use clj_quickjs::{HostCall, Primitive, RunError};
+    use big_boy_pants_js::{HostCall, Primitive, RunError};
     struct GuardHost {
         runtime: Runtime,
         reads: usize,

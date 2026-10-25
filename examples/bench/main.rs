@@ -35,7 +35,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
-use clj_quickjs::Runtime;
+use big_boy_pants_js::Runtime;
 use workloads::{ConsumerKind, Fixtures, Probe};
 
 // ---------------------------------------------------------------------------
@@ -203,7 +203,7 @@ fn rss() -> String {
 }
 
 fn environment(o: &Options) {
-    println!("clj-quickjs measurement harness (examples/bench)");
+    println!("big-boy-pants-js measurement harness (examples/bench)");
     println!(
         "  build profile: {}",
         if cfg!(debug_assertions) {
@@ -691,8 +691,8 @@ fn main() -> ExitCode {
 
 fn strings(o: &Options) {
     header("string concatenation, first flatten, then indexed reads");
-    let build = clj_quickjs::frontend::compile_function(workloads::STRING_CONCAT).unwrap();
-    let read = clj_quickjs::frontend::compile_function(workloads::STRING_READ).unwrap();
+    let build = big_boy_pants_js::frontend::compile_function(workloads::STRING_CONCAT).unwrap();
+    let read = big_boy_pants_js::frontend::compile_function(workloads::STRING_READ).unwrap();
     for n in if o.quick {
         [1_000, 2_000, 10_000]
     } else {

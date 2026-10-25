@@ -79,12 +79,12 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, ThreadId};
 use std::time::Duration;
 
-use clj_quickjs::exec::{
+use big_boy_pants_js::exec::{
     CollectionEvent, EnqueueReason, Event, EventKind, Executor, ExecutorConfig, OutcomeKind,
     Placement, WorkerId,
 };
-use clj_quickjs::frontend::compile_function;
-use clj_quickjs::{
+use big_boy_pants_js::frontend::compile_function;
+use big_boy_pants_js::{
     CellStatus, Completion, DependencyId, DependencyKey, Executable, Host, HostCall, Primitive,
     ProducerId, ProducerRequest, ResultKind, Rooted, RunOutcome, Runtime, SourceLocation, Task,
     TaskId, TaskStatus, ValueView, VmError, WorldId,

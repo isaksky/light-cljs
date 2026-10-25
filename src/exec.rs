@@ -491,7 +491,7 @@ impl ExecutorConfig {
         for index in 0..workers {
             let worker_shared = Arc::clone(&shared);
             let spawned = thread::Builder::new()
-                .name(format!("clj-quickjs-worker-{index}"))
+                .name(format!("big-boy-pants-js-worker-{index}"))
                 .spawn(move || worker_main(&worker_shared, WorkerId(index)));
             match spawned {
                 Ok(handle) => handles.push(handle),

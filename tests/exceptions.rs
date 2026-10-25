@@ -7,8 +7,10 @@
 //! Effects are observed through a recording host: `__rt.effect(1, x)` logs
 //! `x` and returns it.
 
-use clj_quickjs::frontend::{ScriptOptions, SyntaxErrorKind, compile_script, compile_script_with};
-use clj_quickjs::{
+use big_boy_pants_js::frontend::{
+    ScriptOptions, SyntaxErrorKind, compile_script, compile_script_with,
+};
+use big_boy_pants_js::{
     Budget, Executable, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView, VmError,
     VmErrorKind,
 };
@@ -136,7 +138,7 @@ fn run_quickjs_using(
     rt: &Runtime,
     src: &str,
     host: &mut dyn Host,
-) -> (RunOutcome, clj_quickjs::UnhandledRejections) {
+) -> (RunOutcome, big_boy_pants_js::UnhandledRejections) {
     // Preserve upstream's non-strict script mode (clj-quickjs-95).
     let executable = compile_script_with("quickjs_test_language_using", src, ScriptOptions::SLOPPY)
         .expect("the QuickJS fixture compiles");
@@ -594,7 +596,7 @@ fn engine_errors_are_error_instances() {
 
 #[test]
 fn engine_error_publication_follows_ordinary_object_ownership() {
-    use clj_quickjs::{CompleteError, Completion, PublishError};
+    use big_boy_pants_js::{CompleteError, Completion, PublishError};
     for expression in ["e", "Object.freeze(e)", "(() => e)"] {
         let rt = Runtime::new();
         let task = rt

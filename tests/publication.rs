@@ -8,8 +8,8 @@
 
 use std::thread;
 
-use clj_quickjs::frontend::{compile_function, compile_script};
-use clj_quickjs::{
+use big_boy_pants_js::frontend::{compile_function, compile_script};
+use big_boy_pants_js::{
     Assembler, Executable, HandleError, KeyName, Local, Opcode, PathStep, Primitive, Provenance,
     PublishError, Rooted, RunOutcome, Runtime, Scope, TaskId, ValueView, VmErrorKind,
 };
@@ -1235,7 +1235,7 @@ fn dispose_symbols_publish_with_identity() {
 /// is task-owned, so atom creation and replacement must reject it.
 #[test]
 fn javascript_maps_cannot_be_published_through_atoms() {
-    use clj_quickjs::AtomError;
+    use big_boy_pants_js::AtomError;
     let rt = Runtime::new();
     for src in [
         "new Map()",
@@ -1270,7 +1270,7 @@ fn javascript_maps_cannot_be_published_through_atoms() {
 /// or frozen. Persistent wrappers and closures cannot hide its ownership.
 #[test]
 fn weak_maps_are_task_owned_at_publication_boundaries() {
-    use clj_quickjs::AtomError;
+    use big_boy_pants_js::AtomError;
     let rt = Runtime::new();
     for src in [
         "new WeakMap()",
@@ -1320,7 +1320,7 @@ fn weak_maps_are_task_owned_at_publication_boundaries() {
 /// WeakRef never transfers its job keep-alive authority to another task.
 #[test]
 fn weak_refs_are_task_owned_at_publication_boundaries() {
-    use clj_quickjs::AtomError;
+    use big_boy_pants_js::AtomError;
     let rt = Runtime::new();
     for src in [
         "new WeakRef({})",
@@ -1368,7 +1368,7 @@ fn weak_refs_are_task_owned_at_publication_boundaries() {
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn finalization_registries_are_task_owned_at_publication_boundaries() {
-    use clj_quickjs::AtomError;
+    use big_boy_pants_js::AtomError;
     let rt = Runtime::new();
     for src in [
         "new FinalizationRegistry(() => 0)",
@@ -1462,7 +1462,7 @@ fn async_generators_are_task_owned() {
 /// even when frozen, wrapped in a persistent vector or captured by a closure.
 #[test]
 fn sets_are_task_owned_at_publication_boundaries() {
-    use clj_quickjs::AtomError;
+    use big_boy_pants_js::AtomError;
     let rt = Runtime::new();
     for kind in ["Set", "WeakSet"] {
         for expression in [

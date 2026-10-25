@@ -20,8 +20,8 @@ use std::collections::HashSet;
 use std::sync::{Barrier, mpsc};
 use std::thread;
 
-use clj_quickjs::exec::{EventKind, OutcomeKind, Placement};
-use clj_quickjs::{
+use big_boy_pants_js::exec::{EventKind, OutcomeKind, Placement};
+use big_boy_pants_js::{
     Assembler, CasOutcome, Completion, DemandSite, DependencyGraph, DependencyId, DependencyKey,
     Executable, Opcode, Primitive, ResultKind, Rooted, RunOutcome, Runtime, TaskId, ValueView,
     VmErrorKind, WeakHandle,

@@ -17,7 +17,7 @@ use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, Budget, CellStatus, Completion, DependencyId, DependencyKey, Host, HostCall, Need,
     Opcode, Primitive, ResultKind, RunError, RunOutcome, Runtime, Task, TaskId, TaskStatus,
     ValueView, Wake, WakeHandle,

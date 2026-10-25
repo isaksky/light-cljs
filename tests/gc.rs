@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, Budget, CollectError, Executable, HandleError, Host, HostCall, Opcode, Primitive,
     Rooted, RunOutcome, Runtime, ValueView,
 };
@@ -28,7 +28,7 @@ fn complete(outcome: RunOutcome) -> Rooted {
 /// script's kept-object boundary, with and without an ordinary strong root.
 #[test]
 fn weak_ref_cleared_after_job_and_collection() {
-    use clj_quickjs::frontend::compile_script;
+    use big_boy_pants_js::frontend::compile_script;
     #[derive(Default)]
     struct Record(Vec<bool>);
     impl Host for Record {
@@ -64,7 +64,7 @@ fn weak_ref_cleared_after_job_and_collection() {
 /// retains the constructor target while the owning task is Waiting.
 #[test]
 fn kept_objects_survive_need_wait() {
-    use clj_quickjs::frontend::compile_script;
+    use big_boy_pants_js::frontend::compile_script;
     for (target, kind) in [("{}", "object"), ("Symbol('target')", "symbol")] {
         let rt = Runtime::new();
         let source = format!(
@@ -81,7 +81,7 @@ fn kept_objects_survive_need_wait() {
             .complete(
                 request.key(),
                 request.producer(),
-                clj_quickjs::Completion::Ready(&ready),
+                big_boy_pants_js::Completion::Ready(&ready),
             )
             .unwrap();
         assert_eq!(wakes.task_ids(), [task.id()]);
@@ -95,7 +95,7 @@ fn kept_objects_survive_need_wait() {
 /// forwarded/native deref, and every subsequent job have separate lifetimes.
 #[test]
 fn weak_ref_deref_keeps_target_until_its_job_ends() {
-    use clj_quickjs::frontend::compile_script;
+    use big_boy_pants_js::frontend::compile_script;
     #[derive(Default)]
     struct Record(Vec<Primitive>);
     impl Host for Record {
@@ -146,7 +146,7 @@ fn weak_ref_deref_keeps_target_until_its_job_ends() {
                 .complete(
                     request.key(),
                     request.producer(),
-                    clj_quickjs::Completion::Ready(&ready),
+                    big_boy_pants_js::Completion::Ready(&ready),
                 )
                 .unwrap();
             assert_eq!(wakes.task_ids(), [task.id()]);
@@ -174,7 +174,7 @@ fn weak_ref_deref_keeps_target_until_its_job_ends() {
 /// so the constructor's kept root is the sole strong path to each target.
 #[test]
 fn weak_ref_constructor_keeps_target_at_collection_point() {
-    use clj_quickjs::frontend::compile_script;
+    use big_boy_pants_js::frontend::compile_script;
     for (target, kind) in [("{}", "object"), ("Symbol('target')", "symbol")] {
         let rt = Runtime::new();
         let source =
@@ -198,7 +198,7 @@ fn weak_ref_constructor_keeps_target_at_collection_point() {
 /// ordinary property/prototype edges, and those edges die with their owner.
 #[test]
 fn weak_ref_properties_and_prototype_are_traced() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     let rt = Runtime::new();
     let code = compile_function("function make() { let p = {}; let v = {}; let w = new WeakRef({}); w.own = v; Object.setPrototypeOf(w, p); return __rt.vector(w, p, v); }").unwrap();
     let task = rt.spawn(&code, &[]).unwrap();
@@ -226,11 +226,11 @@ fn weak_ref_properties_and_prototype_are_traced() {
 /// a detached generator activation ends the enclosing task's current job.
 #[test]
 fn weak_ref_kept_objects_survive_yields_and_generator_suspend() {
-    use clj_quickjs::frontend::compile_script;
+    use big_boy_pants_js::frontend::compile_script;
     let rt = Runtime::new();
     let code = compile_script("weak-ref-generator", "function* make() { let w = new WeakRef({}); yield 0; return typeof w.deref() === 'object'; } let g = make(); g.next(); g.next().value").unwrap();
     let task = rt.spawn(&code, &[]).unwrap();
-    let mut host = clj_quickjs::host::sim::SimHost::new(&rt);
+    let mut host = big_boy_pants_js::host::sim::SimHost::new(&rt);
     // A fixed instruction bound fails instead of hanging on a broken resume.
     for _ in 0..1000 {
         match task.run_with(Budget::instructions(1), &mut host).unwrap() {
@@ -251,7 +251,7 @@ fn weak_ref_kept_objects_survive_yields_and_generator_suspend() {
 fn suspended_generator_operands_and_completions_are_traced() {
     // Synthetic fixtures, not light-cljs output. Only a saved operand or
     // pending completion retains the object while the task waits.
-    use clj_quickjs::frontend::compile_script;
+    use big_boy_pants_js::frontend::compile_script;
     for body in [
         "function read(a,b) { return a; } return read({n:17}, yield 0);",
         "try { return {n:17}; } finally { yield 0; }",
@@ -273,7 +273,7 @@ fn suspended_generator_operands_and_completions_are_traced() {
             .complete(
                 request.key(),
                 request.producer(),
-                clj_quickjs::Completion::Ready(&ready),
+                big_boy_pants_js::Completion::Ready(&ready),
             )
             .unwrap()
             .into_runnable();
@@ -294,7 +294,7 @@ fn suspended_generator_operands_and_completions_are_traced() {
 fn suspended_generator_is_traced_and_reclaimed() {
     // Synthetic source fixture, not light-cljs output. Only the saved
     // activation retains `held` after the first next returns.
-    use clj_quickjs::frontend::compile_script;
+    use big_boy_pants_js::frontend::compile_script;
     let rt = Runtime::new();
     let exe = compile_script(
         "generator-roots",
@@ -323,7 +323,7 @@ fn suspended_generator_is_traced_and_reclaimed() {
         .complete(
             request.key(),
             request.producer(),
-            clj_quickjs::Completion::Ready(&ready),
+            big_boy_pants_js::Completion::Ready(&ready),
         )
         .unwrap()
         .into_runnable();
@@ -671,7 +671,7 @@ fn root_changes_on_another_thread_interleave_safely_with_collection() {
 #[test]
 fn strings_in_frames_captures_and_collections_survive_collections() {
     let rt = Runtime::new();
-    let exe = clj_quickjs::frontend::compile_script(
+    let exe = big_boy_pants_js::frontend::compile_script(
         "strings",
         // Block locals isolate string storage from the script global
         // environment's independently allocated lexical cells.
@@ -709,7 +709,7 @@ fn strings_in_frames_captures_and_collections_survive_collections() {
 /// only root path to both objects after the task and host roots are dropped.
 #[test]
 fn map_entries_are_traced() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     let rt = Runtime::new();
     let key = new_rooted_object(&rt);
     let value = new_rooted_object(&rt);
@@ -736,7 +736,7 @@ fn map_entries_are_traced() {
 /// Tombstones retain positions, never the removed key/value heap edges.
 #[test]
 fn map_deleted_and_cleared_entries_are_reclaimed() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     for operation in ["m.delete(k)", "m.clear()"] {
         let rt = Runtime::new();
         let key = new_rooted_object(&rt);
@@ -761,7 +761,7 @@ fn map_deleted_and_cleared_entries_are_reclaimed() {
 /// of the entry storage, and the Map is their only remaining root path.
 #[test]
 fn map_properties_and_prototype_are_traced() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     let rt = Runtime::new();
     let prototype = new_rooted_object(&rt);
     let property = new_rooted_object(&rt);
@@ -787,7 +787,7 @@ fn map_properties_and_prototype_are_traced() {
 /// property/prototype edges are reachable only through the returned view.
 #[test]
 fn typed_array_retains_buffer_and_properties() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     let rt = Runtime::new();
     let property = new_rooted_object(&rt);
     let prototype = new_rooted_object(&rt);
@@ -819,7 +819,7 @@ fn typed_array_retains_buffer_and_properties() {
 /// MIT permission notice: docs/attribution.md, "JavaScript WeakMap tests".
 #[test]
 fn weak_map_drops_entries_of_unreachable_keys() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     let rt = Runtime::new();
     let code = compile_function(
         r#"function make() {
@@ -861,7 +861,7 @@ fn weak_map_drops_entries_of_unreachable_keys() {
 /// The second value is also an object so both value lifetimes are observable.
 #[test]
 fn weak_map_cycles_are_reclaimed() {
-    use clj_quickjs::frontend::{compile_function, compile_script};
+    use big_boy_pants_js::frontend::{compile_function, compile_script};
     let rt = Runtime::new();
     let code = compile_function(
         r#"function make() {
@@ -923,7 +923,7 @@ fn weak_map_cycles_are_reclaimed() {
             .complete(
                 r.key(),
                 r.producer(),
-                clj_quickjs::Completion::Ready(&ready),
+                big_boy_pants_js::Completion::Ready(&ready),
             )
             .unwrap();
         assert_eq!(wakeups.task_ids(), vec![task.id()]);
@@ -944,7 +944,7 @@ fn weak_map_cycles_are_reclaimed() {
 /// participates in exactly the same ephemeron fixpoint as an object key.
 #[test]
 fn weak_map_value_kept_while_key_reachable() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     for key in ["{}", "Symbol('s')"] {
         let rt = Runtime::new();
         let code = compile_function(&format!("function make() {{ let m = new WeakMap(); let k = {key}; let v = {{}}; m.set(k, v); return __rt.vector(m, k, v); }}")).unwrap();
@@ -975,7 +975,7 @@ fn weak_map_value_kept_while_key_reachable() {
 /// Only symbol values/keys reached through the tracing graph activate entries.
 #[test]
 fn weak_map_symbol_keys_follow_traced_reachability() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     for holder in [
         "(function() { let o = {}; o[s] = 1; return o; })()",
         "{symbol: s}",
@@ -1026,7 +1026,7 @@ fn weak_map_symbol_keys_follow_traced_reachability() {
 
 #[test]
 fn weak_map_ephemeron_values_activate_symbol_keys() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     let rt = Runtime::new();
     let code = compile_function("function make() { let a = new WeakMap(); let b = new WeakMap(); let k = {}; let s = Symbol(); let v = {}; a.set(k, s); b.set(s, v); return __rt.vector(a, b, k, v); }").unwrap();
     let task = rt.spawn(&code, &[]).unwrap();
@@ -1058,7 +1058,7 @@ fn weak_map_ephemeron_values_activate_symbol_keys() {
 
 #[test]
 fn weak_map_properties_and_prototype_are_traced() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     let rt = Runtime::new();
     let prototype = new_rooted_object(&rt);
     let property = new_rooted_object(&rt);
@@ -1082,7 +1082,7 @@ fn weak_map_properties_and_prototype_are_traced() {
 /// while its value getter waits in a resumable native frame.
 #[test]
 fn weak_map_symbol_key_in_native_continuation_is_traced() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     let rt = Runtime::new();
     let value = new_rooted_object(&rt);
     let weak = value.downgrade();
@@ -1107,7 +1107,7 @@ fn weak_map_symbol_key_in_native_continuation_is_traced() {
         .complete(
             r.key(),
             r.producer(),
-            clj_quickjs::Completion::Ready(&ready),
+            big_boy_pants_js::Completion::Ready(&ready),
         )
         .unwrap();
     assert_eq!(wakeups.task_ids(), vec![task.id()]);
@@ -1124,7 +1124,7 @@ fn weak_map_symbol_key_in_native_continuation_is_traced() {
 
 #[test]
 fn weak_map_unreachable_owner_does_not_retain_values() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     let rt = Runtime::new();
     let key = new_rooted_object(&rt);
     let value = new_rooted_object(&rt);
@@ -1146,7 +1146,7 @@ fn weak_map_unreachable_owner_does_not_retain_values() {
 /// numeric constant through ExecutableSpec to exercise host-loaded symbols.
 #[test]
 fn weak_map_symbol_keys_in_descendant_code_are_traced() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     let rt = Runtime::new();
     let value = new_rooted_object(&rt);
     let weak = value.downgrade();
@@ -1170,7 +1170,8 @@ fn weak_map_symbol_keys_in_descendant_code_are_traced() {
         .iter()
         .position(|v| matches!(v, Primitive::Number(173.0)))
         .unwrap();
-    child.constants[index] = Primitive::Symbol(clj_quickjs::JsSymbol::new(Some("constant".into())));
+    child.constants[index] =
+        Primitive::Symbol(big_boy_pants_js::JsSymbol::new(Some("constant".into())));
     factory.functions[0] = Executable::load(child).unwrap();
     owner.functions[0] = Executable::load(factory).unwrap();
     let code = Executable::load(owner).unwrap();
@@ -1189,7 +1190,7 @@ fn weak_map_symbol_keys_in_descendant_code_are_traced() {
         .complete(
             r.key(),
             r.producer(),
-            clj_quickjs::Completion::Ready(&ready),
+            big_boy_pants_js::Completion::Ready(&ready),
         )
         .unwrap();
     assert_eq!(wakeups.task_ids(), vec![task.id()]);
@@ -1237,7 +1238,7 @@ fn weak_map_symbol_keys_in_descendant_code_are_traced() {
 /// reachable during collection. Runtime::collect substitutes for std.gc().
 #[test]
 fn test_async_gc_suspended_activation() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     #[derive(Default)]
     struct Marker(bool);
     impl Host for Marker {
@@ -1310,7 +1311,7 @@ fn unreachable_async_cycle_can_be_collected_before_task_completion() {
     let rt = Runtime::new();
     let object = rt.scope(|s| s.persist(s.new_object()));
     let weak = object.downgrade();
-    let code = clj_quickjs::frontend::compile_function(
+    let code = big_boy_pants_js::frontend::compile_function(
         r#"function body(obj) {
         (async function run() {
             let done=()=>{ obj; __rt.need(248,7); return obj; };
@@ -1338,7 +1339,7 @@ fn unreachable_async_cycle_can_be_collected_before_task_completion() {
         .complete(
             request.key(),
             request.producer(),
-            clj_quickjs::Completion::Ready(&ready),
+            big_boy_pants_js::Completion::Ready(&ready),
         )
         .unwrap()
         .into_runnable();
@@ -1367,7 +1368,7 @@ impl Host for FinalizationEffects {
 #[test]
 fn finalization_callbacks_run_as_jobs_after_collection() {
     let rt = Runtime::new();
-    let code = clj_quickjs::frontend::compile_script(
+    let code = big_boy_pants_js::frontend::compile_script(
         "finalization",
         r#"
         __rt.effect(0, 0);
@@ -1415,7 +1416,7 @@ fn finalization_callbacks_run_as_jobs_after_collection() {
 #[test]
 fn finalization_unregister_prevents_callback() {
     let rt = Runtime::new();
-    let code = clj_quickjs::frontend::compile_script("unregister", r#"
+    let code = big_boy_pants_js::frontend::compile_script("unregister", r#"
         const r = new FinalizationRegistry(() => { throw 'unregistered cleanup'; });
         const token = {};
         r.register({}, 1, token); r.register({}, 2, token);
@@ -1435,7 +1436,7 @@ fn finalization_held_value_is_strong() {
     let held = new_rooted_object(&rt);
     let weak = held.downgrade();
     let target = new_rooted_object(&rt);
-    let code = clj_quickjs::frontend::compile_function(
+    let code = big_boy_pants_js::frontend::compile_function(
         r#"function body(target, held) {
         let r = new FinalizationRegistry(v => { __rt.effect(0, 1); });
         r.register(target, held); target = null; held = null; r = null;
@@ -1458,7 +1459,7 @@ fn finalization_held_value_is_strong() {
         .complete(
             request.key(),
             request.producer(),
-            clj_quickjs::Completion::Ready(&ready),
+            big_boy_pants_js::Completion::Ready(&ready),
         )
         .unwrap();
     assert_eq!(wakes.task_ids(), [task.id()]);
@@ -1479,7 +1480,7 @@ fn finalization_owner_finished_drops_cleanup() {
     let weak_target = target.downgrade();
     let held = new_rooted_object(&rt);
     let weak_held = held.downgrade();
-    let code = clj_quickjs::frontend::compile_function(
+    let code = big_boy_pants_js::frontend::compile_function(
         r#"function body(target, held) {
         const r = new FinalizationRegistry(() => { throw 'finished owner cleanup'; });
         r.register(target, held); return r;
@@ -1494,7 +1495,10 @@ fn finalization_owner_finished_drops_cleanup() {
     assert!(!weak_target.is_live(), "target was actually collected");
     assert!(!weak_held.is_live(), "closed inbox retains no cleanup job");
     assert!(registry.downgrade().is_live());
-    assert!(matches!(task.run(), Err(clj_quickjs::RunError::Finished)));
+    assert!(matches!(
+        task.run(),
+        Err(big_boy_pants_js::RunError::Finished)
+    ));
 }
 
 /// Synthetic fixture, not light-cljs output. Empty registries still trace
@@ -1502,7 +1506,7 @@ fn finalization_owner_finished_drops_cleanup() {
 #[test]
 fn finalization_registry_properties_and_callback_are_traced() {
     let rt = Runtime::new();
-    let code = clj_quickjs::frontend::compile_function(
+    let code = big_boy_pants_js::frontend::compile_function(
         r#"function make() {
         let capture = {}; let property = {}; let prototype = {};
         let r = new FinalizationRegistry(() => capture);
@@ -1549,7 +1553,7 @@ fn finalization_targets_and_tokens_are_weak() {
         );
         let task = rt
             .spawn(
-                &clj_quickjs::frontend::compile_script("weak-finalization", &source).unwrap(),
+                &big_boy_pants_js::frontend::compile_script("weak-finalization", &source).unwrap(),
                 &[],
             )
             .unwrap();
@@ -1563,7 +1567,7 @@ fn finalization_targets_and_tokens_are_weak() {
 #[test]
 fn finalization_cleanup_jobs_can_wait_and_migrate() {
     let rt = Runtime::new();
-    let code = clj_quickjs::frontend::compile_function(
+    let code = big_boy_pants_js::frontend::compile_function(
         r#"function body() {
         let r = new FinalizationRegistry(v => { __rt.need(177, 2); __rt.effect(0, v); });
         r.register({}, 7); r = null; __rt.need(177, 1); return 42;
@@ -1580,7 +1584,7 @@ fn finalization_cleanup_jobs_can_wait_and_migrate() {
         rt.complete(
             request.key(),
             request.producer(),
-            clj_quickjs::Completion::Ready(&ready),
+            big_boy_pants_js::Completion::Ready(&ready),
         )
         .unwrap()
     };
@@ -1610,7 +1614,7 @@ fn finalization_cancelled_owner_releases_registry_roots() {
     let rt = Runtime::new();
     let held = new_rooted_object(&rt);
     let weak = held.downgrade();
-    let code = clj_quickjs::frontend::compile_function(
+    let code = big_boy_pants_js::frontend::compile_function(
         r#"function body(held) {
         let r = new FinalizationRegistry(() => { throw 'cancelled cleanup'; });
         r.register({}, held); held = null; r = null;
@@ -1621,7 +1625,10 @@ fn finalization_cancelled_owner_releases_registry_roots() {
     let task = rt.spawn(&code, &[&held]).unwrap();
     drop(held);
     assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
-    assert!(matches!(task.cancel(), clj_quickjs::Cancel::Runnable(_)));
+    assert!(matches!(
+        task.cancel(),
+        big_boy_pants_js::Cancel::Runnable(_)
+    ));
     assert!(matches!(task.run().unwrap(), RunOutcome::Cancelled));
     rt.collect().unwrap();
     assert!(!weak.is_live());
@@ -1637,7 +1644,7 @@ fn finalization_dropped_owner_releases_held_values() {
     let held = new_rooted_object(&rt);
     let weak = held.downgrade();
     let weak_target = target.downgrade();
-    let code = clj_quickjs::frontend::compile_function(
+    let code = big_boy_pants_js::frontend::compile_function(
         r#"function body(target, held) {
         const r = new FinalizationRegistry(() => { throw 'dropped owner'; });
         r.register(target, held); return r;
@@ -1661,7 +1668,7 @@ fn finalization_dropped_owner_releases_held_values() {
 /// consume a replacement cell nor remove its owner-task retention root.
 #[test]
 fn finalization_delayed_notification_preserves_replacement_cell() {
-    use clj_quickjs::{CollectionObserver, CollectionReport};
+    use big_boy_pants_js::{CollectionObserver, CollectionReport};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     struct Gate {
@@ -1688,7 +1695,7 @@ fn finalization_delayed_notification_preserves_replacement_cell() {
     let target = new_rooted_object(&rt);
     let held = new_rooted_object(&rt);
     let weak_held = held.downgrade();
-    let code = clj_quickjs::frontend::compile_function(
+    let code = big_boy_pants_js::frontend::compile_function(
         r#"function body(old, token, target, held) {
         let r = new FinalizationRegistry(v => { __rt.effect(0, v === 0 ? 0 : 1); });
         r.register(old, 0, token); old = null;
@@ -1717,7 +1724,7 @@ fn finalization_delayed_notification_preserves_replacement_cell() {
         rt.complete(
             request.key(),
             request.producer(),
-            clj_quickjs::Completion::Ready(&ready),
+            big_boy_pants_js::Completion::Ready(&ready),
         )
         .unwrap()
     };
@@ -1777,7 +1784,7 @@ fn finalization_delayed_notification_preserves_replacement_cell() {
 #[test]
 fn finalization_bulk_cleanup_preserves_once_per_cell() {
     let rt = Runtime::new();
-    let code = clj_quickjs::frontend::compile_script(
+    let code = big_boy_pants_js::frontend::compile_script(
         "bulk-finalization",
         r#"
         let count = 0; let sum = 0; const seen = [];
@@ -1804,7 +1811,7 @@ fn finalization_bulk_cleanup_preserves_once_per_cell() {
 /// must not strand a cell after its target slot was permanently cleared.
 #[test]
 fn finalization_observer_unwind_consumes_cleared_cells() {
-    use clj_quickjs::{CollectionObserver, CollectionReport};
+    use big_boy_pants_js::{CollectionObserver, CollectionReport};
     use std::sync::Arc;
     struct Panic;
     impl CollectionObserver for Panic {
@@ -1816,7 +1823,7 @@ fn finalization_observer_unwind_consumes_cleared_cells() {
     let target = new_rooted_object(&rt);
     let held = new_rooted_object(&rt);
     let weak = held.downgrade();
-    let code = clj_quickjs::frontend::compile_function("function body(target, held) { const r = new FinalizationRegistry(() => 0); r.register(target, held); return r; }").unwrap();
+    let code = big_boy_pants_js::frontend::compile_function("function body(target, held) { const r = new FinalizationRegistry(() => 0); r.register(target, held); return r; }").unwrap();
     let task = rt.spawn(&code, &[&target, &held]).unwrap();
     let registry = complete(task.run().unwrap());
     drop((task, target, held));
@@ -1833,7 +1840,7 @@ fn finalization_observer_unwind_consumes_cleared_cells() {
 /// strong path to a Set element; deletion and clear remove that path.
 #[test]
 fn set_entries_are_traced_and_removed_entries_reclaimed() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     for operation in ["", "s.delete(k)", "s.clear()"] {
         let rt = Runtime::new();
         let key = new_rooted_object(&rt);
@@ -1858,7 +1865,7 @@ fn set_entries_are_traced_and_removed_entries_reclaimed() {
 /// source slot can retain the Set and its member after the task is dropped.
 #[test]
 fn set_cursor_retains_source_and_elements() {
-    use clj_quickjs::frontend::compile_function;
+    use big_boy_pants_js::frontend::compile_function;
     for method in ["values", "entries"] {
         let rt = Runtime::new();
         let key = new_rooted_object(&rt);

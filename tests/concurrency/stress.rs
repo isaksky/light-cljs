@@ -11,8 +11,8 @@
 use std::collections::HashSet;
 use std::thread;
 
-use clj_quickjs::exec::{OutcomeKind, Placement};
-use clj_quickjs::{
+use big_boy_pants_js::exec::{OutcomeKind, Placement};
+use big_boy_pants_js::{
     CellStatus, ClaimError, CompleteError, Completion, DependencyId, DependencyKey,
     ProducerRequest, ResultKind, Rooted, RunOutcome, Task, TaskId, TaskStatus, Wake, WorldId,
 };

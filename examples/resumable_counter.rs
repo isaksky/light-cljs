@@ -26,8 +26,8 @@
 
 use std::collections::VecDeque;
 
-use clj_quickjs::frontend::compile_function;
-use clj_quickjs::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime, Task, ValueView};
+use big_boy_pants_js::frontend::compile_function;
+use big_boy_pants_js::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime, Task, ValueView};
 
 /// Host operation selector for "increment the counter".
 const INCREMENT: u16 = 0;
@@ -67,7 +67,7 @@ fn main() {
     };
 
     println!(
-        "JavaScript source examples/resumable_counter.js, compiled by the clj_quickjs frontend"
+        "JavaScript source examples/resumable_counter.js, compiled by the big_boy_pants_js frontend"
     );
     let rt = Runtime::new();
     let mut ready: VecDeque<(&str, Task)> = VecDeque::new();

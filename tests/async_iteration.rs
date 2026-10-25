@@ -1,7 +1,7 @@
 //! Synthetic fixtures, not light-cljs output.
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::host::sim::SimHost;
-use clj_quickjs::{Budget, RunOutcome, Runtime, ValueView};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::host::sim::SimHost;
+use big_boy_pants_js::{Budget, RunOutcome, Runtime, ValueView};
 
 fn run(source: &str) {
     let rt = Runtime::new();

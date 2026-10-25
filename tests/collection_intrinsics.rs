@@ -7,7 +7,7 @@
 
 use std::thread;
 
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, Budget, BuilderError, CollectionError, Executable, Opcode, PersistentKind,
     Primitive, Rooted, RunError, RunOutcome, Runtime, Task, TaskStatus, ValueView, VmError,
     VmErrorKind,
@@ -439,7 +439,7 @@ fn constructor_operand_counts_are_validated_at_load() {
     assert!(
         matches!(
             err.kind,
-            clj_quickjs::ValidationErrorKind::StackUnderflow {
+            big_boy_pants_js::ValidationErrorKind::StackUnderflow {
                 opcode: Opcode::NewVector,
                 depth: 1
             }
@@ -456,7 +456,7 @@ fn constructor_operand_counts_are_validated_at_load() {
     assert!(
         matches!(
             err.kind,
-            clj_quickjs::ValidationErrorKind::StackUnderflow {
+            big_boy_pants_js::ValidationErrorKind::StackUnderflow {
                 opcode: Opcode::NewMap,
                 depth: 3
             }
@@ -798,8 +798,8 @@ fn drive_across_threads(rt: &Runtime, task: &Task, budget: u64) -> (Rooted, usiz
 
 struct NoEffects;
 
-impl clj_quickjs::Host for NoEffects {
-    fn effect(&mut self, _: clj_quickjs::HostCall) -> Result<Primitive, String> {
+impl big_boy_pants_js::Host for NoEffects {
+    fn effect(&mut self, _: big_boy_pants_js::HostCall) -> Result<Primitive, String> {
         Err("no effects expected".into())
     }
 }

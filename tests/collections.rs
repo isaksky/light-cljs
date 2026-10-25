@@ -8,7 +8,7 @@
 
 use std::thread;
 
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, CollectionError, Executable, Local, Opcode, PersistentKind, Primitive, Provenance,
     Rooted, RunOutcome, Runtime, Scope, ValueView,
 };

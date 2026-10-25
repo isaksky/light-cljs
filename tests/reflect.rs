@@ -1,9 +1,12 @@
 //! Synthetic JavaScript fixtures, not light-cljs output.
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{Budget, Host, RunOutcome, Runtime, ValueView};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{Budget, Host, RunOutcome, Runtime, ValueView};
 struct NoHost;
 impl Host for NoHost {
-    fn effect(&mut self, _: clj_quickjs::HostCall) -> Result<clj_quickjs::Primitive, String> {
+    fn effect(
+        &mut self,
+        _: big_boy_pants_js::HostCall,
+    ) -> Result<big_boy_pants_js::Primitive, String> {
         Err("unexpected effect".into())
     }
 }
@@ -238,7 +241,7 @@ fn proxy_definition_keeps_resolved_target_during_coercion() {
 }
 
 fn check_waiting(source: &str) {
-    use clj_quickjs::{Completion, Primitive};
+    use big_boy_pants_js::{Completion, Primitive};
     let code = compile_script("reflect-wait.js", source).unwrap();
     let runtime = Runtime::new();
     // Initialize realm on the host before entering a 64 KiB worker stack.
@@ -280,7 +283,7 @@ fn check_waiting(source: &str) {
         }
     }
     assert!(
-        matches!(task.status(), clj_quickjs::TaskStatus::Finished),
+        matches!(task.status(), big_boy_pants_js::TaskStatus::Finished),
         "instruction bound: {source}"
     );
 }

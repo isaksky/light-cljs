@@ -16,8 +16,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clj_quickjs::frontend::compile_function;
-use clj_quickjs::{
+use big_boy_pants_js::frontend::compile_function;
+use big_boy_pants_js::{
     Budget, Cancel, Completion, DependencyId, DependencyKey, Executable, Host, HostCall, Primitive,
     ProducerRequest, ResultKind, Rooted, RunOutcome, Runtime, Task, TaskStatus, ValueView,
     VmErrorKind, Wakeups, WeakHandle,

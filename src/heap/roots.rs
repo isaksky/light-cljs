@@ -19,14 +19,14 @@
 //!   it a compile error to let a `Local` outlive or escape its scope:
 //!
 //! ```compile_fail
-//! use clj_quickjs::Runtime;
+//! use big_boy_pants_js::Runtime;
 //! let rt = Runtime::new();
 //! // error: the returned Local would outlive its scope.
 //! let escaped = rt.scope(|s| s.new_object());
 //! ```
 //!
 //! ```compile_fail,E0521
-//! use clj_quickjs::Runtime;
+//! use big_boy_pants_js::Runtime;
 //! let rt = Runtime::new();
 //! let mut stash = None;
 //! // error: borrowed data escapes the closure.
@@ -36,7 +36,7 @@
 //! Handles from different scopes cannot be mixed either (the brands differ):
 //!
 //! ```compile_fail,E0521
-//! use clj_quickjs::Runtime;
+//! use big_boy_pants_js::Runtime;
 //! let rt = Runtime::new();
 //! rt.scope(|outer| {
 //!     let o = outer.new_object();
@@ -49,7 +49,7 @@
 //! collecting thread's back:
 //!
 //! ```compile_fail,E0277
-//! use clj_quickjs::Runtime;
+//! use big_boy_pants_js::Runtime;
 //! let rt = Runtime::new();
 //! rt.scope(|s| {
 //!     std::thread::scope(|t| {
@@ -579,7 +579,7 @@ impl<'s> Scope<'s> {
     /// still delays collections (see [`crate::heap::gc`]).
     ///
     /// ```compile_fail,E0277
-    /// use clj_quickjs::Runtime;
+    /// use big_boy_pants_js::Runtime;
     /// let rt = Runtime::new();
     /// rt.scope(|s| {
     ///     // error: the scope cannot be used while released.

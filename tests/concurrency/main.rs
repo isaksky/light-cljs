@@ -46,7 +46,7 @@ mod harness;
 mod matrix;
 mod stress;
 
-use clj_quickjs::Executable;
+use big_boy_pants_js::Executable;
 
 use harness::compile;
 
@@ -69,8 +69,8 @@ mod self_test {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use clj_quickjs::RunOutcome;
-    use clj_quickjs::exec::Placement;
+    use big_boy_pants_js::RunOutcome;
+    use big_boy_pants_js::exec::Placement;
 
     use crate::harness::{Config, scenario, w};
     use crate::{blocker_exe, consumer_exe};

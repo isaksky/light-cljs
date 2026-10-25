@@ -27,7 +27,7 @@ mod scenario;
 
 use std::process::ExitCode;
 
-use clj_quickjs::exec::{Event, EventKind, OutcomeKind};
+use big_boy_pants_js::exec::{Event, EventKind, OutcomeKind};
 
 use scenario::{ConsumerEnd, PublishedAs, Trace, Variant};
 

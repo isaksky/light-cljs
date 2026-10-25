@@ -1,6 +1,6 @@
 //! Synthetic JavaScript fixtures, not light-cljs output.
-use clj_quickjs::exec::{ExecutorConfig, Placement, WorkerId};
-use clj_quickjs::{
+use big_boy_pants_js::exec::{ExecutorConfig, Placement, WorkerId};
+use big_boy_pants_js::{
     Budget, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView, frontend::compile_script,
 };
 use std::sync::{Arc, Condvar, Mutex};
@@ -46,7 +46,7 @@ fn timer_callbacks_use_ordinary_call_dispatch() {
     }
     assert_eq!(
         outcomes,
-        vec![(Some(clj_quickjs::VmErrorKind::TypeError), vec![]); 4],
+        vec![(Some(big_boy_pants_js::VmErrorKind::TypeError), vec![]); 4],
         "ordinary calls and timer callbacks must reject before running the target"
     );
 }

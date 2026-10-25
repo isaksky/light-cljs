@@ -1,11 +1,14 @@
 //! Synthetic JavaScript fixtures, not light-cljs output.
 
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{Budget, Host, RunOutcome, Runtime, ValueView};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{Budget, Host, RunOutcome, Runtime, ValueView};
 
 struct NoHost;
 impl Host for NoHost {
-    fn effect(&mut self, _: clj_quickjs::HostCall) -> Result<clj_quickjs::Primitive, String> {
+    fn effect(
+        &mut self,
+        _: big_boy_pants_js::HostCall,
+    ) -> Result<big_boy_pants_js::Primitive, String> {
         Err("unexpected effect".into())
     }
 }
@@ -156,7 +159,7 @@ fn promise_private_elements_remain_task_owned_after_publication() {
         };
         runtime.publish(&pair).unwrap();
         runtime.collect().unwrap();
-        let consumer = clj_quickjs::frontend::compile_function(
+        let consumer = big_boy_pants_js::frontend::compile_function(
             r#"function consume(pair) {
                 let p = __rt.nth(pair, 0), operations = __rt.nth(pair, 1), caught = 0;
                 for (let i = 0; i < 5; i++) {
@@ -193,7 +196,7 @@ fn promise_private_storage_claims_respect_existing_ownership() {
             panic!("expected Promise");
         };
         runtime.publish(&promise).unwrap();
-        let stamp = clj_quickjs::frontend::compile_function(
+        let stamp = big_boy_pants_js::frontend::compile_function(
             r#"function stamp(p) {
                 class B { constructor() { return p; } }
                 class C extends B {
@@ -223,7 +226,7 @@ fn promise_private_storage_claims_respect_existing_ownership() {
         }
         runtime.publish(&result).unwrap();
         runtime.collect().unwrap();
-        let foreign = clj_quickjs::frontend::compile_function(
+        let foreign = big_boy_pants_js::frontend::compile_function(
             r#"function foreign(pair) {
                 let p = __rt.nth(pair, 0), operations = __rt.nth(pair, 1), caught = 0;
                 for (let i = 0; i < 3; i++) {
@@ -382,10 +385,10 @@ fn derived_promises_publish_without_exposing_mutable_properties() {
             panic!("expected constructor result");
         };
         runtime.publish(&value).unwrap();
-        let consumer = clj_quickjs::frontend::compile_function(consumer).unwrap();
+        let consumer = big_boy_pants_js::frontend::compile_function(consumer).unwrap();
         let result = runtime.spawn(&consumer, &[&value]).unwrap().run().unwrap();
         assert!(
-            matches!(result, RunOutcome::Failed(e) if matches!(e.kind(), clj_quickjs::VmErrorKind::ForeignObject { .. })),
+            matches!(result, RunOutcome::Failed(e) if matches!(e.kind(), big_boy_pants_js::VmErrorKind::ForeignObject { .. })),
             "{source}"
         );
     }
@@ -403,7 +406,7 @@ fn derived_promise_resolvers_can_be_called_from_another_task() {
             panic!("expected resolver");
         };
         let consumer =
-            clj_quickjs::frontend::compile_function("function settle(r){r(1); return true;}")
+            big_boy_pants_js::frontend::compile_function("function settle(r){r(1); return true;}")
                 .unwrap();
         let result = runtime.spawn(&consumer, &[&value]).unwrap().run().unwrap();
         assert!(
@@ -438,7 +441,7 @@ fn other_slot_bearing_constructors_use_subclass_prototypes() {
 
 #[test]
 fn constructor_callbacks_resume_after_dependency_wait_and_migration() {
-    use clj_quickjs::{Completion, Primitive};
+    use big_boy_pants_js::{Completion, Primitive};
     for source in [
         "class N extends Number {} let n = new N({valueOf(){return __rt.need(309,1);}}); n instanceof N && n.valueOf() === 8",
         "class E extends Error {} let e = new E('x',{get cause(){return __rt.need(309,1);}}); e instanceof E && e.cause === 8 && e.message === 'x'",
@@ -605,12 +608,12 @@ fn regexp_new_target_protocol_order_and_waits() {
         let mut requests = task.take_producer_requests();
         assert_eq!(requests.len(), 1);
         let request = requests.pop().unwrap();
-        let ready = runtime.root(clj_quickjs::Primitive::Undefined);
+        let ready = runtime.root(big_boy_pants_js::Primitive::Undefined);
         let mut runnable = runtime
             .complete(
                 request.key(),
                 request.producer(),
-                clj_quickjs::Completion::Ready(&ready),
+                big_boy_pants_js::Completion::Ready(&ready),
             )
             .unwrap()
             .into_runnable();
@@ -637,12 +640,12 @@ fn new_target_prototype_getter_resumes_once_and_propagates_errors() {
     assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
     runtime.collect().unwrap();
     let request = task.take_producer_requests().pop().unwrap();
-    let ready = runtime.root(clj_quickjs::Primitive::Undefined);
+    let ready = runtime.root(big_boy_pants_js::Primitive::Undefined);
     let mut runnable = runtime
         .complete(
             request.key(),
             request.producer(),
-            clj_quickjs::Completion::Ready(&ready),
+            big_boy_pants_js::Completion::Ready(&ready),
         )
         .unwrap()
         .into_runnable();

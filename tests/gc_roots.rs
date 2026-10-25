@@ -25,9 +25,9 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clj_quickjs::exec::{CollectionEvent, Event, EventKind, ExecutorConfig, OutcomeKind};
-use clj_quickjs::frontend::compile_function;
-use clj_quickjs::{
+use big_boy_pants_js::exec::{CollectionEvent, Event, EventKind, ExecutorConfig, OutcomeKind};
+use big_boy_pants_js::frontend::compile_function;
+use big_boy_pants_js::{
     Budget, CasOutcome, CellStatus, CollectionObserver, CollectionReport, Completion, DependencyId,
     DependencyKey, Executable, Executor, HandleError, Host, HostCall, MutatorState, Placement,
     Primitive, Provenance, ResultKind, Rooted, RunOutcome, Runtime, Task, TaskId, ValueView,
@@ -37,7 +37,8 @@ use clj_quickjs::{
 #[test]
 fn array_buffer_reclaimed_when_unreachable() {
     let rt = Runtime::new();
-    let code = clj_quickjs::frontend::compile_script("buffer", "new ArrayBuffer(1024)").unwrap();
+    let code =
+        big_boy_pants_js::frontend::compile_script("buffer", "new ArrayBuffer(1024)").unwrap();
     let task = rt.spawn(&code, &[]).unwrap();
     let RunOutcome::Complete(buffer) = task.run().unwrap() else {
         panic!("expected buffer")
@@ -2141,7 +2142,7 @@ fn intl_number_format_bound_cache_retains_and_reclaims() {
     for result in ["n", "n.format"] {
         let rt = Runtime::new();
         let source = format!("let n=new Intl.NumberFormat('de'); n.format; {result}");
-        let code = clj_quickjs::frontend::compile_script("formatter", &source).unwrap();
+        let code = big_boy_pants_js::frontend::compile_script("formatter", &source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         let RunOutcome::Complete(value) = task.run().unwrap() else {
             panic!("expected formatter")
@@ -2166,7 +2167,7 @@ fn intl_collator_bound_cache_retains_and_reclaims() {
     for result in ["c", "c.compare"] {
         let rt = Runtime::new();
         let source = format!("let c=new Intl.Collator('en'); c.compare; {result}");
-        let code = clj_quickjs::frontend::compile_script("collator", &source).unwrap();
+        let code = big_boy_pants_js::frontend::compile_script("collator", &source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         let RunOutcome::Complete(value) = task.run().unwrap() else {
             panic!("expected Collator")
@@ -2245,7 +2246,7 @@ fn intl_date_time_format_bound_cache_retains_and_reclaims() {
     for result in ["n", "n.format"] {
         let rt = Runtime::new();
         let source = format!("let n=new Intl.DateTimeFormat('de'); n.format; {result}");
-        let code = clj_quickjs::frontend::compile_script("formatter", &source).unwrap();
+        let code = big_boy_pants_js::frontend::compile_script("formatter", &source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         let RunOutcome::Complete(value) = task.run().unwrap() else {
             panic!("expected formatter")

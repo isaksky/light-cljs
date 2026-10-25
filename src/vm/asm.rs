@@ -5,7 +5,7 @@
 //! built here are early VM tests only (`docs/design.md` §14).
 //!
 //! ```
-//! use clj_quickjs::{Assembler, Opcode, Primitive};
+//! use big_boy_pants_js::{Assembler, Opcode, Primitive};
 //! let mut asm = Assembler::new();
 //! asm.constant(Primitive::Number(2.0)).constant(Primitive::Number(3.0));
 //! asm.op(Opcode::Add).op(Opcode::Return);

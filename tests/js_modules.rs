@@ -3,9 +3,13 @@
 
 use std::collections::HashMap;
 
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::module::{ModuleHost, ModuleKey, ModuleLoadErrorKind, ModuleLoader, ModuleSource};
-use clj_quickjs::{Budget, Host, HostCall, JsString, Primitive, RunOutcome, Runtime, ValueView};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::module::{
+    ModuleHost, ModuleKey, ModuleLoadErrorKind, ModuleLoader, ModuleSource,
+};
+use big_boy_pants_js::{
+    Budget, Host, HostCall, JsString, Primitive, RunOutcome, Runtime, ValueView,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 enum Event {
@@ -607,7 +611,7 @@ fn default_export_initializers_dispose_module_resources_on_throw() {
         );
         let (outcome, effects) = execute_modules(&[("entry.js", &source)], Budget::instructions(1));
         assert!(
-            matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::Thrown),
+            matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::Thrown),
             "{outcome:?}"
         );
         assert_eq!(effects, vec![Primitive::String("disposed".into())]);
@@ -638,7 +642,7 @@ fn default_class_declaration_keeps_outer_and_inner_bindings() {
 
 #[test]
 fn default_exports_wait_collect_migrate_and_keep_task_instances_separate() {
-    use clj_quickjs::Completion;
+    use big_boy_pants_js::Completion;
     let runtime = Runtime::new();
     let world = runtime.new_world();
     let mut host = RecordingHost::default();
@@ -793,7 +797,7 @@ fn quickjs_test_cyclic_import_detects_a_wrong_result() {
     let RunOutcome::Failed(error) = outcome else {
         panic!("wrong result must fail the upstream assertion: {outcome:?}");
     };
-    assert_eq!(error.kind(), clj_quickjs::VmErrorKind::Thrown);
+    assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::Thrown);
     assert!(
         error
             .message()
@@ -1008,7 +1012,7 @@ fn missing_export_fails_at_link() {
     let RunOutcome::Failed(error) = outcome else {
         panic!("{outcome:?}");
     };
-    assert_eq!(error.kind(), clj_quickjs::VmErrorKind::SyntaxError);
+    assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::SyntaxError);
     assert!(
         error
             .message()
@@ -1048,7 +1052,7 @@ fn module_body_throw_fails_entry() {
     let RunOutcome::Failed(error) = outcome else {
         panic!("{outcome:?}");
     };
-    assert_eq!(error.kind(), clj_quickjs::VmErrorKind::Thrown);
+    assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::Thrown);
     assert!(error.message().contains("42"));
     assert!(effects.is_empty());
 }
@@ -1129,7 +1133,7 @@ fn json_module_parse_error_fails_load() {
     ];
     let (outcome, effects) = execute_modules(&sources, Budget::UNLIMITED);
     assert!(
-        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError),
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError),
         "{outcome:?}"
     );
     let RunOutcome::Failed(error) = outcome else {
@@ -1177,7 +1181,7 @@ fn ambiguous_star_import_fails_before_any_body() {
         Budget::UNLIMITED,
     );
     assert!(
-        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError && e.message().contains("ambiguous") && e.message().contains("n")),
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError && e.message().contains("ambiguous") && e.message().contains("n")),
         "{outcome:?}"
     );
     assert!(effects.is_empty());
@@ -1212,7 +1216,7 @@ fn explicit_export_overrides_star_ambiguity_and_default_is_excluded() {
         Budget::UNLIMITED,
     );
     assert!(
-        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError && e.message().contains("default")),
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError && e.message().contains("default")),
         "{outcome:?}"
     );
     assert!(effects.is_empty());
@@ -1220,7 +1224,7 @@ fn explicit_export_overrides_star_ambiguity_and_default_is_excluded() {
 
 #[test]
 fn module_need_waits_collects_and_migrates_without_replaying() {
-    use clj_quickjs::Completion;
+    use big_boy_pants_js::Completion;
     let runtime = Runtime::new();
     let world = runtime.new_world();
     let mut host = RecordingHost::default();
@@ -1311,7 +1315,7 @@ fn separate_tasks_get_fresh_instances_and_failed_tasks_cannot_replay() {
         errors.push(error.message().to_string());
         assert!(matches!(
             task.run_with(Budget::UNLIMITED, &mut host),
-            Err(clj_quickjs::RunError::Finished)
+            Err(big_boy_pants_js::RunError::Finished)
         ));
         assert!(task.dependency_log().edges().is_empty());
     }
@@ -1333,7 +1337,7 @@ fn unused_missing_indirect_export_fails_at_link() {
         Budget::UNLIMITED,
     );
     assert!(
-        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError && e.message().contains("missing")),
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError && e.message().contains("missing")),
         "{outcome:?}"
     );
     assert!(effects.is_empty());
@@ -1414,7 +1418,7 @@ fn module_bindings_are_instantiated_before_body() {
 
 #[test]
 fn module_linking_yields_and_migrates() {
-    use clj_quickjs::module::ModulePhase;
+    use big_boy_pants_js::module::ModulePhase;
     let runtime = Runtime::new();
     let mut host = RecordingHost::default();
     host.add("entry.js", "import {n} from './0.js'; __rt.effect(0, n);");
@@ -1519,7 +1523,7 @@ fn module_cancellation_stops_linking_and_runs_dependency_finally() {
 
 #[test]
 fn module_linker_cells_retain_and_reclaim() {
-    use clj_quickjs::module::ModulePhase;
+    use big_boy_pants_js::module::ModulePhase;
     let runtime = Runtime::new();
     let mut host = RecordingHost::default();
     host.add("entry.js", "export let n = 7;");
@@ -1581,7 +1585,7 @@ fn cyclic_let_read_before_init_throws_reference_error() {
         Budget::instructions(1),
     );
     assert!(
-        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::ReferenceError),
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::ReferenceError),
         "{outcome:?}"
     );
     assert!(effects.is_empty());
@@ -1603,7 +1607,7 @@ fn circular_reexport_fails_at_link_with_syntax_error() {
         Budget::instructions(1),
     );
     assert!(
-        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError && e.message().contains("x") && e.message().contains(".js") && e.message().contains("circular")),
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError && e.message().contains("x") && e.message().contains(".js") && e.message().contains("circular")),
         "{outcome:?}"
     );
     assert!(effects.is_empty());
@@ -1671,7 +1675,7 @@ fn star_exports_through_cycles_resolve_origins_and_ambiguity() {
         Budget::instructions(1),
     );
     assert!(
-        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError && e.message().contains("ambiguous")),
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError && e.message().contains("ambiguous")),
         "{outcome:?}"
     );
     assert!(effects.is_empty());
@@ -1689,7 +1693,7 @@ fn cycle_body_throw_fails_all_members() {
     ];
     let (outcome, effects) = execute_modules(&sources, Budget::instructions(1));
     assert!(
-        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::Thrown && e.message().contains("42")),
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::Thrown && e.message().contains("42")),
         "{outcome:?}"
     );
     assert_eq!(
@@ -1769,7 +1773,7 @@ fn cyclic_import_through_namespace() {
 
 #[test]
 fn cycle_waits_collects_and_migrates_without_replaying() {
-    use clj_quickjs::Completion;
+    use big_boy_pants_js::Completion;
     let runtime = Runtime::new();
     let mut host = RecordingHost::default();
     host.add(
@@ -2042,7 +2046,7 @@ fn cyclic_namespace_waits_collects_and_migrates() {
 }
 
 fn assert_namespace_waits_collects_and_migrates(cyclic: bool) {
-    use clj_quickjs::Completion;
+    use big_boy_pants_js::Completion;
     let runtime = Runtime::new();
     let mut host = RecordingHost::default();
     host.add("entry.js", "import * as m from './m.js'; import {ns} from './barrel.js'; __rt.effect(0, m===ns && m.n===12); m.inc(); __rt.effect(0, ns.n===13);");
@@ -2296,7 +2300,7 @@ fn json_module_named_import_fails_link() {
     let RunOutcome::Failed(error) = outcome else {
         panic!("{outcome:?}")
     };
-    assert_eq!(error.kind(), clj_quickjs::VmErrorKind::SyntaxError);
+    assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::SyntaxError);
     assert!(error.message().contains("export 'x'"), "{error:?}");
     assert!(error.message().contains("message.json"), "{error:?}");
     assert!(effects.is_empty());
@@ -2315,7 +2319,7 @@ fn json_module_classified_by_host() {
     // Neither attributes nor QuickJS's json5 extension are accepted.
     for kind in ["json", "json5"] {
         assert!(
-            clj_quickjs::frontend::parse_module(&format!(
+            big_boy_pants_js::frontend::parse_module(&format!(
                 "import msg from './message.json' with {{ type: '{kind}' }};"
             ))
             .is_err()
@@ -2393,7 +2397,7 @@ fn json_module_primitives_and_strict_json() {
             Budget::UNLIMITED,
         );
         assert!(
-            matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == clj_quickjs::VmErrorKind::SyntaxError),
+            matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError),
             "{text}: {outcome:?}"
         );
         assert!(effects.is_empty());
@@ -2402,7 +2406,7 @@ fn json_module_primitives_and_strict_json() {
 
 #[test]
 fn json_module_instances_survive_budgets_collection_and_migration() {
-    use clj_quickjs::Completion;
+    use big_boy_pants_js::Completion;
     let runtime = Runtime::new();
     let mut host = RecordingHost::default();
     host.add("entry.js", "import msg from './message.json'; import * as ns from './message.json'; msg.x += 1; __rt.need(76, 0); __rt.effect(0, msg === ns.default && msg.x === 2 && msg.padding.length === 512 && msg.padding[511].value === 5 && msg.tab[2] === 3);");
@@ -2483,7 +2487,7 @@ fn json_module_errors_keep_utf16_positions_and_parser_limits() {
         let RunOutcome::Failed(error) = outcome else {
             panic!("{outcome:?}")
         };
-        assert_eq!(error.kind(), clj_quickjs::VmErrorKind::SyntaxError);
+        assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::SyntaxError);
         assert!(
             error.message().contains(&format!("value.json:{position}")),
             "{error:?}"
@@ -2525,7 +2529,7 @@ fn json_module_later_parse_error_prevents_all_bodies() {
         let RunOutcome::Failed(error) = outcome else {
             panic!("{outcome:?}")
         };
-        assert_eq!(error.kind(), clj_quickjs::VmErrorKind::SyntaxError);
+        assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::SyntaxError);
         assert!(error.message().contains("b.json:1:8"), "{error:?}");
         assert!(effects.is_empty());
     }

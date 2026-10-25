@@ -14,14 +14,14 @@
 //! enqueues, the wake delivery kinds, effect counts (no replay) and the
 //! cell's final state. Woken tasks migrate (placement hook).
 //!
-//! [`RunGuard::need`]: clj_quickjs::RunGuard::need
-//! [`RunGuard::park`]: clj_quickjs::RunGuard::park
+//! [`RunGuard::need`]: big_boy_pants_js::RunGuard::need
+//! [`RunGuard::park`]: big_boy_pants_js::RunGuard::park
 
 use std::sync::Barrier;
 use std::thread;
 
-use clj_quickjs::exec::{EnqueueReason, OutcomeKind, Placement};
-use clj_quickjs::{
+use big_boy_pants_js::exec::{EnqueueReason, OutcomeKind, Placement};
+use big_boy_pants_js::{
     Cancel, CellStatus, Completion, DependencyId, DependencyKey, ResultKind, Rooted, Task,
     TaskStatus, VmErrorKind, Wake,
 };
@@ -78,7 +78,7 @@ fn assert_pending(
     h: &Harness,
     key: DependencyKey,
     producer: bool,
-    waiters: &[clj_quickjs::TaskId],
+    waiters: &[big_boy_pants_js::TaskId],
 ) {
     match h.rt().cell_status(key) {
         CellStatus::Pending {
@@ -95,7 +95,7 @@ fn assert_pending(
 /// After a consumer was cancelled with its cell still pending: another
 /// consumer is not affected, and the cell's producer (if one was claimed)
 /// can still complete it for that consumer.
-fn second_consumer_still_served(h: &Harness, request: Option<clj_quickjs::ProducerRequest>) {
+fn second_consumer_still_served(h: &Harness, request: Option<big_boy_pants_js::ProducerRequest>) {
     let key = key(h);
     let other = spawn_consumer(h, 90.0);
     let id = h.submit(&other, Placement::Any);
@@ -153,7 +153,10 @@ fn before_registration(action: Action) {
             if cancelled_consumer {
                 // The need is an observation point: the run ends Cancelled
                 // there, whether or not the result is ready.
-                assert!(matches!(h.outcome(id), clj_quickjs::RunOutcome::Cancelled));
+                assert!(matches!(
+                    h.outcome(id),
+                    big_boy_pants_js::RunOutcome::Cancelled
+                ));
                 assert!(h.effects(id, POST).is_empty());
                 assert_eq!(task.status(), TaskStatus::Cancelled);
                 if action == Action::CancelConsumer {
@@ -279,7 +282,10 @@ fn subscribed_before_park(action: Action) {
                 Action::CancelConsumer | Action::ReadyAndCancel => {
                     // Cancellation takes precedence over parking and over a
                     // remembered wake: terminal cleanup withdraws the waiter.
-                    assert!(matches!(h.outcome(id), clj_quickjs::RunOutcome::Cancelled));
+                    assert!(matches!(
+                        h.outcome(id),
+                        big_boy_pants_js::RunOutcome::Cancelled
+                    ));
                     let (rel, enq) = events(h);
                     assert_eq!(rel, [OutcomeKind::Cancelled]);
                     assert_eq!(enq, [Submitted]);
@@ -411,7 +417,10 @@ fn parked(action: Action) {
                 Action::CancelConsumer | Action::ReadyAndCancel => {
                     // Woken or not, the next run starts by observing the
                     // cancellation: no code after the need runs.
-                    assert!(matches!(h.outcome(id), clj_quickjs::RunOutcome::Cancelled));
+                    assert!(matches!(
+                        h.outcome(id),
+                        big_boy_pants_js::RunOutcome::Cancelled
+                    ));
                     assert!(h.effects(id, POST).is_empty());
                     assert_eq!(task.dependency_log().waiting(), None);
                 }
@@ -490,7 +499,10 @@ fn completion_racing_consumer_cancellation_enqueues_once() {
                     "exactly one side enqueues (woken {woken}, cancel {cancelled})"
                 );
                 busy.release(h);
-                assert!(matches!(h.outcome(id), clj_quickjs::RunOutcome::Cancelled));
+                assert!(matches!(
+                    h.outcome(id),
+                    big_boy_pants_js::RunOutcome::Cancelled
+                ));
                 assert_eq!(enqueues(&h.events(), id).len(), 2);
                 assert!(h.effects(id, POST).is_empty());
                 assert!(

@@ -1,9 +1,9 @@
 //! Adapted QuickJS text; synthetic fixture, not light-cljs output.
 //! Every case body and expected string is unmodified; adapted rows: none.
 
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::host::{TimeZone, sim::SimTimeHost};
-use clj_quickjs::{Budget, Host, RunOutcome, Runtime};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::host::{TimeZone, sim::SimTimeHost};
+use big_boy_pants_js::{Budget, Host, RunOutcome, Runtime};
 
 #[test]
 fn quickjs_test_intl_cases() {

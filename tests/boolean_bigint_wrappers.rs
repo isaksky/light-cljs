@@ -1,11 +1,14 @@
 //! Synthetic JavaScript fixtures, not light-cljs output.
 
-use clj_quickjs::frontend::{ScriptOptions, compile_script, compile_script_with};
-use clj_quickjs::{Budget, Host, RunOutcome, Runtime, ValueView};
+use big_boy_pants_js::frontend::{ScriptOptions, compile_script, compile_script_with};
+use big_boy_pants_js::{Budget, Host, RunOutcome, Runtime, ValueView};
 
 struct NoHost;
 impl Host for NoHost {
-    fn effect(&mut self, _: clj_quickjs::HostCall) -> Result<clj_quickjs::Primitive, String> {
+    fn effect(
+        &mut self,
+        _: big_boy_pants_js::HostCall,
+    ) -> Result<big_boy_pants_js::Primitive, String> {
         Err("unexpected effect".into())
     }
 }
@@ -133,7 +136,7 @@ fn wrappers_are_task_owned_and_survive_migration() {
         };
         assert!(matches!(
             runtime.publish(&value),
-            Err(clj_quickjs::PublishError::NotShareable { .. })
+            Err(big_boy_pants_js::PublishError::NotShareable { .. })
         ));
     }
     let code = compile_script("wrapper-migration.js", "let a = Object(false), b = Object(123456789012345678901234567890n); let calls = 0; let radix = {valueOf() { calls++; __rt.need(302, 1); return 16; }}; a.valueOf() === false && b.toString(radix) === '18ee90ff6c373e0ee4e3f0ad2' && calls === 1").unwrap();
@@ -161,12 +164,12 @@ fn wrappers_are_task_owned_and_survive_migration() {
                 assert_eq!(waits, 1);
                 runtime.collect().unwrap();
                 let request = task.take_producer_requests().pop().unwrap();
-                let value = runtime.root(clj_quickjs::Primitive::Null);
+                let value = runtime.root(big_boy_pants_js::Primitive::Null);
                 task = runtime
                     .complete(
                         request.key(),
                         request.producer(),
-                        clj_quickjs::Completion::Ready(&value),
+                        big_boy_pants_js::Completion::Ready(&value),
                     )
                     .unwrap()
                     .into_runnable()
@@ -213,7 +216,7 @@ fn boolean_primitive_reads_allocate_no_wrappers() {
     let runtime = Runtime::new();
     let init = compile_script("init", "Boolean").unwrap();
     runtime.spawn(&init, &[]).unwrap().run().unwrap();
-    let code = clj_quickjs::frontend::compile_function("function f() { let b = false; for(let i = 0; i < 100; i++) { if(b.valueOf() !== false || b.toString() !== 'false') return false; } return true; }").unwrap();
+    let code = big_boy_pants_js::frontend::compile_function("function f() { let b = false; for(let i = 0; i < 100; i++) { if(b.valueOf() !== false || b.toString() !== 'false') return false; } return true; }").unwrap();
     let before = runtime.heap_stats().objects;
     let result = runtime.spawn(&code, &[]).unwrap().run().unwrap();
     assert!(matches!(result, RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)));

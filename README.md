@@ -1,4 +1,4 @@
-# clj-quickjs
+# big-boy-pants-js
 
 A Rust-native JavaScript runtime for concurrent compile-time execution. This is
 an implemented **architectural slice**, with a broad tested JavaScript subset,

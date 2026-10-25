@@ -34,7 +34,7 @@
 
 use std::thread;
 
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, Budget, Executable, ExecutableSpec, Host, HostCall, Opcode, PathStep, Primitive,
     PublishError, Rooted, RunOutcome, Runtime, Task, TaskId, ValidationErrorKind, ValueView,
     VmError, VmErrorKind,

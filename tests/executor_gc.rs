@@ -14,8 +14,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clj_quickjs::exec::{CollectionEvent, Event, EventKind, ExecutorConfig, Placement, WorkerId};
-use clj_quickjs::{
+use big_boy_pants_js::exec::{
+    CollectionEvent, Event, EventKind, ExecutorConfig, Placement, WorkerId,
+};
+use big_boy_pants_js::{
     Assembler, Budget, CollectError, Completion, DependencyId, DependencyKey, Host, HostCall,
     MutatorState, Need, Opcode, Primitive, ResultKind, Rooted, RunGuard, RunOutcome, Runtime, Task,
     TaskId, WeakHandle,
@@ -140,7 +142,7 @@ fn executor(
     spin: &Spin,
     spinners: Vec<TaskId>,
     parkers: Vec<TaskId>,
-) -> clj_quickjs::Executor {
+) -> big_boy_pants_js::Executor {
     let spin = spin.clone();
     ExecutorConfig::new()
         .host(move |_| {
@@ -175,7 +177,7 @@ fn parked(events: &[Event], task: TaskId) -> bool {
         e.task == Some(task)
             && matches!(
                 e.kind,
-                EventKind::Released(clj_quickjs::exec::OutcomeKind::Waiting(_))
+                EventKind::Released(big_boy_pants_js::exec::OutcomeKind::Waiting(_))
             )
     })
 }
@@ -191,7 +193,7 @@ fn collections(events: &[Event]) -> Vec<CollectionEvent> {
 }
 
 /// Wait for the recorded collection number `number` and return it.
-fn collection(exec: &clj_quickjs::Executor, number: u64) -> CollectionEvent {
+fn collection(exec: &big_boy_pants_js::Executor, number: u64) -> CollectionEvent {
     let mut found = None;
     assert!(
         exec.wait_for(TIMEOUT, |ev| {

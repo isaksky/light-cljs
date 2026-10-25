@@ -38,12 +38,12 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clj_quickjs::exec::{
+use big_boy_pants_js::exec::{
     CollectionEvent, EnqueueReason, Event, EventKind, ExecutorConfig, OutcomeKind, Placement,
     RunContext, WorkerId,
 };
-use clj_quickjs::frontend::compile_function;
-use clj_quickjs::{
+use big_boy_pants_js::frontend::compile_function;
+use big_boy_pants_js::{
     DependencyId, DependencyKey, Executable, Executor, Host, HostCall, Need, NeedError, Primitive,
     ProducerRequest, ResultKind, Rooted, RunGuard, RunOutcome, Runtime, Task, TaskId, TaskStatus,
     WakeHandle, Wakeups, WorldId,
@@ -439,7 +439,7 @@ impl Rng {
 
 fn placement(
     route: Route,
-) -> impl Fn(&clj_quickjs::exec::DispatchRequest) -> Placement + Send + Sync {
+) -> impl Fn(&big_boy_pants_js::exec::DispatchRequest) -> Placement + Send + Sync {
     let rng = Mutex::new(Rng::new(match route {
         Route::Seeded(seed) => seed,
         _ => 0,
@@ -539,7 +539,7 @@ impl Harness {
         let drivers = Arc::clone(&shared);
         let exec = ExecutorConfig::new()
             .workers(config.workers)
-            .budget(clj_quickjs::Budget::instructions(config.budget))
+            .budget(big_boy_pants_js::Budget::instructions(config.budget))
             .host(move |worker| {
                 Box::new(HarnessHost {
                     worker,
@@ -606,7 +606,7 @@ impl Harness {
     }
 
     /// The error kind of `task`'s terminal outcome, which must be a failure.
-    pub fn failure(&self, task: TaskId) -> clj_quickjs::VmErrorKind {
+    pub fn failure(&self, task: TaskId) -> big_boy_pants_js::VmErrorKind {
         match self.outcome(task) {
             RunOutcome::Failed(e) => e.kind(),
             other => self.fail(format!("{task} should fail, got {other:?}")),
@@ -818,7 +818,7 @@ impl Harness {
     pub fn publish(
         &self,
         request: &ProducerRequest,
-        completion: clj_quickjs::Completion<'_>,
+        completion: big_boy_pants_js::Completion<'_>,
     ) -> Delivered {
         let wakeups = self
             .0
@@ -1002,9 +1002,9 @@ impl Delivered {
         for (handle, wake) in wakeups.deliveries() {
             d.handles.push(*handle);
             let list = match wake {
-                clj_quickjs::Wake::Runnable(_) => &mut d.runnable,
-                clj_quickjs::Wake::Remembered => &mut d.remembered,
-                clj_quickjs::Wake::Stale => &mut d.stale,
+                big_boy_pants_js::Wake::Runnable(_) => &mut d.runnable,
+                big_boy_pants_js::Wake::Remembered => &mut d.remembered,
+                big_boy_pants_js::Wake::Stale => &mut d.stale,
             };
             list.push(handle.task());
         }

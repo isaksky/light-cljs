@@ -1,4 +1,4 @@
-//! clj-quickjs: a Rust-native JavaScript runtime for concurrent compile-time
+//! big-boy-pants-js: a Rust-native JavaScript runtime for concurrent compile-time
 //! execution. Requirements: `docs/design.md`.
 //!
 //! # Embedding boundary

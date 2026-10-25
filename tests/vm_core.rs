@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, Executable, ExecutableSpec, HandleError, Opcode, Primitive, Rooted, RunError,
     RunOutcome, Runtime, TaskStatus, ValidationErrorKind, ValueView,
 };
@@ -114,7 +114,7 @@ fn invalid_bytecode_is_rejected_at_load_time() {
         functions: vec![],
         captures: 0,
         strict: true,
-        constructor_kind: clj_quickjs::ConstructorKind::None,
+        constructor_kind: big_boy_pants_js::ConstructorKind::None,
         eval_sites: Vec::new(),
     };
     let cases = [
@@ -286,7 +286,7 @@ fn constant_pool_index_limit_is_enforced() {
         functions: vec![],
         captures: 0,
         strict: true,
-        constructor_kind: clj_quickjs::ConstructorKind::None,
+        constructor_kind: big_boy_pants_js::ConstructorKind::None,
         eval_sites: Vec::new(),
     })
     .unwrap();

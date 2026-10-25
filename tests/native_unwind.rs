@@ -17,11 +17,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use clj_quickjs::exec::{
+use big_boy_pants_js::exec::{
     EnqueueReason, EventKind, ExecutorConfig, OutcomeKind, Placement, WorkerId,
 };
-use clj_quickjs::frontend::compile_function;
-use clj_quickjs::{
+use big_boy_pants_js::frontend::compile_function;
+use big_boy_pants_js::{
     Budget, Cancel, CellStatus, Completion, DependencyId, DependencyKey, Host, HostCall, Primitive,
     ProducerRequest, ResultKind, Rooted, RunOutcome, Runtime, Task, TaskStatus, ValueView,
     VmErrorKind, Wakeups, WeakHandle,
@@ -152,7 +152,7 @@ fn fail(rt: &Runtime, request: &ProducerRequest, error: &Rooted) -> Task {
 }
 
 /// The source line of a failure.
-fn line(error: &clj_quickjs::VmError) -> u32 {
+fn line(error: &big_boy_pants_js::VmError) -> u32 {
     error.diagnostic().source.expect("a source location").line
 }
 
@@ -350,9 +350,9 @@ fn a_producer_failure_inside_a_callback_unwinds_through_the_fold() {
 /// finally block runs once, and the task can still wait and resume after.
 #[test]
 fn a_refused_callback_call_unwinds_the_native_into_the_callers_catch() {
-    let rt = Runtime::with_limits(clj_quickjs::VmLimits {
+    let rt = Runtime::with_limits(big_boy_pants_js::VmLimits {
         max_call_depth: 1,
-        ..clj_quickjs::VmLimits::DEFAULT
+        ..big_boy_pants_js::VmLimits::DEFAULT
     });
     let task = spawn(
         &rt,
@@ -486,7 +486,7 @@ fn a_task_waiting_in_a_callback_resumes_on_another_worker_with_its_builder() {
     exec.submit_with(task.clone(), Placement::Worker(WorkerId::new(0)))
         .unwrap();
     let id = task.id();
-    let parked = |events: &[clj_quickjs::exec::Event]| {
+    let parked = |events: &[big_boy_pants_js::exec::Event]| {
         events.iter().any(|e| {
             e.task == Some(id) && e.kind == EventKind::Released(OutcomeKind::Waiting(need))
         })

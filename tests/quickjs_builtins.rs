@@ -1,8 +1,8 @@
 //! Adapted QuickJS text; synthetic fixture, not light-cljs output.
 //! The selected upstream lines and assertions are unmodified.
 
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime};
 
 struct NoEffects;
 

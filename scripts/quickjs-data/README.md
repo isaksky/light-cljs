@@ -157,7 +157,7 @@ Regenerate entirely inside a worktree (`target/intl-import` must be new):
 
 ```sh
 nix develop --command bash scripts/quickjs-data/verify.sh \
-  /home/dev/projects/clj-quickjs/research/quickjs target/intl-import
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/intl-import
 nix develop --command perl scripts/quickjs-data/repack-intl.pl \
   target/intl-import/first target/intl-repacked-new
 cp target/intl-repacked-new/*.rs target/intl-repacked-new/provenance.txt \
@@ -181,7 +181,7 @@ license. Regenerate inside a worktree (both output directories must be new):
 
 ```sh
 nix develop --command bash scripts/quickjs-data/verify.sh \
-  /home/dev/projects/clj-quickjs/research/quickjs target/tz-import
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/tz-import
 nix develop --command perl scripts/quickjs-data/repack-timezone.pl \
   target/tz-import/first target/tz-repacked
 cp target/tz-repacked/{tables.rs,provenance.txt,QUICKJS-LICENSE} src/host/timezone/
@@ -249,12 +249,12 @@ for file in emoji-sequences.txt emoji-zwj-sequences.txt; do
   curl -fsSL "https://www.unicode.org/Public/17.0.0/emoji/$file" -o "target/ucd-17/$file"
 done
 nix develop --command bash scripts/quickjs-data/verify.sh \
-  /home/dev/projects/clj-quickjs/research/quickjs target/unicode-import
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/unicode-import
 nix develop --command bash scripts/gen-unicode-ident.sh \
-  target/unicode-import/first /home/dev/projects/clj-quickjs/research/quickjs \
+  target/unicode-import/first /home/dev/projects/big-boy-pants-js/research/quickjs \
   target/ucd-17 target/unicode-repacked-new
 nix develop --command bash scripts/quickjs-data/verify.sh \
-  /home/dev/projects/clj-quickjs/research/quickjs target/unicode-check-new target/ucd-17
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/unicode-check-new target/ucd-17
 ```
 
 The optional third verification argument also checks byte-identical repeated
@@ -336,7 +336,7 @@ corrupted generated scalar is detected. Regenerate with new output directories:
 
 ```sh
 nix develop --command bash scripts/quickjs-data/verify.sh \
-  /home/dev/projects/clj-quickjs/research/quickjs target/collation-import-new
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/collation-import-new
 cp target/collation-import-new/collation-first/collation.rs src/intl/data/
 cp target/collation-import-new/collation-first/provenance.txt \
   src/intl/data/collation_provenance.txt
@@ -378,7 +378,7 @@ an unpinned selector. Regenerate inside a worktree with a new output directory:
 
 ```sh
 nix develop --command bash scripts/quickjs-data/verify.sh \
-  /home/dev/projects/clj-quickjs/research/quickjs target/list-import-new
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/list-import-new
 cp target/list-import-new/lists-first/lists.rs src/intl/data/lists.rs
 cp target/list-import-new/lists-first/provenance.txt src/intl/data/list_provenance.txt
 CARGO_BUILD_JOBS=3 cargo test --test js_source intl_list_format -- --test-threads=3
@@ -424,7 +424,7 @@ Regenerate in a worktree (output directory must be new):
 
 ```sh
 nix develop --command bash scripts/quickjs-data/verify.sh \
-  /home/dev/projects/clj-quickjs/research/quickjs target/duration-import-new
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/duration-import-new
 cp target/duration-import-new/intl-first/units.rs src/intl/data/units.rs
 cp target/duration-import-new/intl-first/provenance.txt src/intl/data/unit_provenance.txt
 ```
@@ -448,7 +448,7 @@ Regenerate inside the worktree with a new directory, then install the two files:
 
 ```sh
 nix develop --command bash scripts/quickjs-data/verify.sh \
-  /home/dev/projects/clj-quickjs/research/quickjs target/display-names-import-new
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/display-names-import-new
 cp target/display-names-import-new/intl-first/display_names.rs src/intl/data/
 cp target/display-names-import-new/intl-first/provenance.txt src/intl/data/
 CARGO_BUILD_JOBS=3 cargo test --test js_source intl_display_names -- --test-threads=3

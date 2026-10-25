@@ -10,11 +10,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use clj_quickjs::frontend::compile_function;
-use clj_quickjs::host::sim::{
+use big_boy_pants_js::frontend::compile_function;
+use big_boy_pants_js::host::sim::{
     ANALYSIS, BINDING, CALLABLE, INITIALIZED, Producer, SimError, SimEvent, SimHost, WorldSpec,
 };
-use clj_quickjs::{
+use big_boy_pants_js::{
     CellStatus, Completion, DependencyId, DependencyKey, Primitive, ResultKind, Rooted, Runtime,
     TaskId, ValueView, WorldId,
 };
@@ -1035,7 +1035,7 @@ fn a_call_demand_that_closes_a_cycle_fails_its_produced_cell() {
 /// Synthetic fixture, not light-cljs output.
 #[test]
 fn intl_default_locale_resolution() {
-    use clj_quickjs::{Budget, RunOutcome};
+    use big_boy_pants_js::{Budget, RunOutcome};
     let rt = Runtime::new();
     let mut host = SimHost::new(&rt);
     host.set_default_locale("de");
@@ -1043,7 +1043,7 @@ fn intl_default_locale_resolution() {
         "new Intl.PluralRules().resolvedOptions().locale === 'de'",
         "new Intl.PluralRules('xx').resolvedOptions().locale === 'de'",
     ] {
-        let code = clj_quickjs::frontend::compile_script("plural-default", source).unwrap();
+        let code = big_boy_pants_js::frontend::compile_script("plural-default", source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         match task
             .run_with(Budget::instructions(10000), &mut host)
@@ -1060,7 +1060,7 @@ fn intl_default_locale_resolution() {
 /// the matcher getter and its string coercion, even across dependency waits.
 #[test]
 fn intl_default_locale_resolution_after_matcher_wait() {
-    use clj_quickjs::{Budget, RunOutcome};
+    use big_boy_pants_js::{Budget, RunOutcome};
     for locales in ["undefined", "'xx'"] {
         let rt = Runtime::new();
         let mut host = SimHost::new(&rt);
@@ -1069,7 +1069,8 @@ fn intl_default_locale_resolution_after_matcher_wait() {
             "let p=new Intl.PluralRules({locales},{{get localeMatcher(){{__rt.need(2121,1);return {{toString(){{__rt.need(2122,1);return 'lookup';}}}};}}}}); p.resolvedOptions().locale === 'de'"
         );
         let code =
-            clj_quickjs::frontend::compile_script("plural-default-after-matcher", &source).unwrap();
+            big_boy_pants_js::frontend::compile_script("plural-default-after-matcher", &source)
+                .unwrap();
         let mut task = rt.spawn(&code, &[]).unwrap();
         for locale in ["fr", "de"] {
             assert!(matches!(
@@ -1097,8 +1098,8 @@ fn intl_default_locale_resolution_after_matcher_wait() {
         }
     }
     struct NoLocale;
-    impl clj_quickjs::Host for NoLocale {
-        fn effect(&mut self, _: clj_quickjs::HostCall) -> Result<Primitive, String> {
+    impl big_boy_pants_js::Host for NoLocale {
+        fn effect(&mut self, _: big_boy_pants_js::HostCall) -> Result<Primitive, String> {
             unreachable!()
         }
         fn default_locale(&mut self) -> String {
@@ -1110,7 +1111,8 @@ fn intl_default_locale_resolution_after_matcher_wait() {
         let source = format!(
             "let caught=false; try {{new Intl.PluralRules(undefined,{{get localeMatcher(){{{matcher}}}}});}} catch(e){{caught=e === 9 || e instanceof RangeError;}} caught"
         );
-        let code = clj_quickjs::frontend::compile_script("plural-abrupt-matcher", &source).unwrap();
+        let code =
+            big_boy_pants_js::frontend::compile_script("plural-abrupt-matcher", &source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         assert!(
             matches!(task.run_with(Budget::instructions(10000), &mut NoLocale).unwrap(),RunOutcome::Complete(value) if value.view()==ValueView::Bool(true))
@@ -1144,10 +1146,10 @@ fn intl_default_locale_resolution_after_matcher_wait() {
 /// Synthetic fixture, not light-cljs output.
 #[test]
 fn intl_date_time_format_date_fields() {
-    use clj_quickjs::{Budget, RunOutcome, host::TimeZone};
+    use big_boy_pants_js::{Budget, RunOutcome, host::TimeZone};
     for zone in [TimeZone::UTC, TimeZone::fixed_offset_seconds(3600).unwrap()] {
         let rt = Runtime::new();
-        let mut host = clj_quickjs::host::sim::SimTimeHost::new(1506098258091.0, zone);
+        let mut host = big_boy_pants_js::host::sim::SimTimeHost::new(1506098258091.0, zone);
         let source = r#"
         let d = new Date(2017, 11, 12, 6, 0, 0, 0);
         if (new Intl.DateTimeFormat('en', { month: 'long', day: 'numeric', year: 'numeric' }).format(d) !== "December 12, 2017") throw "en dateTimeFormat long month";
@@ -1193,7 +1195,7 @@ fn intl_date_time_format_date_fields() {
         if (new Intl.DateTimeFormat('en', {timeZone:'UTC',year:'numeric',month:'short',day:'numeric'}).format() !== 'Sep 22, 2017') throw 'clock';
         true
         "#;
-        let code = clj_quickjs::frontend::compile_script("dtf-date-fields", source).unwrap();
+        let code = big_boy_pants_js::frontend::compile_script("dtf-date-fields", source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         match task
             .run_with(Budget::instructions(100000), &mut host)
@@ -1210,7 +1212,7 @@ fn intl_date_time_format_date_fields() {
 /// formatter only when selected by the embedding host, with the Date rules.
 #[test]
 fn intl_date_time_format_host_zones_and_transitions() {
-    use clj_quickjs::{
+    use big_boy_pants_js::{
         Budget, RunOutcome,
         host::{TimeZone, sim::SimTimeHost},
     };
@@ -1239,7 +1241,7 @@ fn intl_date_time_format_host_zones_and_transitions() {
         && lower.resolvedOptions().timeZone === 'America/New_York' && lower.format(0) === '1969'
         && alias.resolvedOptions().timeZone === 'America/New_York' && alias.format(0) === '1969'
     "#;
-    let code = clj_quickjs::frontend::compile_script("dtf-host-zone", source).unwrap();
+    let code = big_boy_pants_js::frontend::compile_script("dtf-host-zone", source).unwrap();
     let task = rt.spawn(&code, &[]).unwrap();
     match task
         .run_with(Budget::instructions(100000), &mut host)
@@ -1250,7 +1252,7 @@ fn intl_date_time_format_host_zones_and_transitions() {
     }
     // Date and all subsequent formatters keep the runtime's first zone.
     host.zone = TimeZone::UTC;
-    let code = clj_quickjs::frontend::compile_script("dtf-same-zone", "new Intl.DateTimeFormat().resolvedOptions().timeZone === 'America/New_York' && new Date(1970,0,1).getTime() === 18000000").unwrap();
+    let code = big_boy_pants_js::frontend::compile_script("dtf-same-zone", "new Intl.DateTimeFormat().resolvedOptions().timeZone === 'America/New_York' && new Date(1970,0,1).getTime() === 18000000").unwrap();
     let task = rt.spawn(&code, &[]).unwrap();
     assert!(
         matches!(task.run_with(Budget::instructions(10000), &mut host).unwrap(), RunOutcome::Complete(value) if value.view() == ValueView::Bool(true))
@@ -1262,13 +1264,13 @@ fn intl_date_time_format_host_zones_and_transitions() {
 /// precision, while explicit Intl offset options must use minute precision.
 #[test]
 fn intl_date_time_format_fixed_second_host_zone() {
-    use clj_quickjs::{
+    use big_boy_pants_js::{
         Budget, RunOutcome,
         host::{TimeZone, sim::SimTimeHost},
     };
     let rt = Runtime::new();
     let mut host = SimTimeHost::new(0.0, TimeZone::fixed_offset_seconds(3630).unwrap());
-    let code = clj_quickjs::frontend::compile_script("dtf-fixed-second-zone", r#"
+    let code = big_boy_pants_js::frontend::compile_script("dtf-fixed-second-zone", r#"
         let d=new Intl.DateTimeFormat('en',{year:'numeric'});
         let minute=new Intl.DateTimeFormat('en',{year:'numeric',timeZone:'+01:00'});
         let caught=false;
@@ -1287,7 +1289,7 @@ fn intl_date_time_format_fixed_second_host_zone() {
 /// after the saved matcher getter and coercion have completed.
 #[test]
 fn intl_date_time_format_host_default_locale() {
-    use clj_quickjs::{Budget, RunOutcome};
+    use big_boy_pants_js::{Budget, RunOutcome};
     for locales in ["undefined", "'xx'"] {
         let rt = Runtime::new();
         let mut host = SimHost::new(&rt);
@@ -1295,7 +1297,7 @@ fn intl_date_time_format_host_default_locale() {
         let source = format!(
             "let d=new Intl.DateTimeFormat({locales},{{month:'long'}}); d.resolvedOptions().locale === 'de' && d.format(0) === 'Januar'"
         );
-        let code = clj_quickjs::frontend::compile_script("dtf-host-locale", &source).unwrap();
+        let code = big_boy_pants_js::frontend::compile_script("dtf-host-locale", &source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         assert!(
             matches!(task.run_with(Budget::instructions(10000), &mut host).unwrap(), RunOutcome::Complete(value) if value.view() == ValueView::Bool(true))
@@ -1305,8 +1307,8 @@ fn intl_date_time_format_host_default_locale() {
         let source = format!(
             "let d=new Intl.DateTimeFormat({locales},{{get localeMatcher(){{__rt.need(2151,1);return {{toString(){{__rt.need(2152,1);return 'lookup';}}}};}},month:'long'}}); d.resolvedOptions().locale === 'de' && d.format(0) === 'Januar'"
         );
-        let code =
-            clj_quickjs::frontend::compile_script("dtf-locale-after-matcher", &source).unwrap();
+        let code = big_boy_pants_js::frontend::compile_script("dtf-locale-after-matcher", &source)
+            .unwrap();
         host.set_default_locale("en-US");
         let mut task = rt.spawn(&code, &[]).unwrap();
         for locale in ["fr", "de"] {
@@ -1338,10 +1340,10 @@ fn intl_date_time_format_host_default_locale() {
 /// Spanish U+202F inside a. m. and Japanese's trailing 午前, as QuickJS asserts.
 #[test]
 fn intl_date_time_format_time_fields() {
-    use clj_quickjs::{Budget, RunOutcome, host::TimeZone};
+    use big_boy_pants_js::{Budget, RunOutcome, host::TimeZone};
     for zone in [TimeZone::UTC, TimeZone::fixed_offset_seconds(3600).unwrap()] {
         let rt = Runtime::new();
-        let mut host = clj_quickjs::host::sim::SimTimeHost::new(1506098258091.0, zone);
+        let mut host = big_boy_pants_js::host::sim::SimTimeHost::new(1506098258091.0, zone);
         let source = r#"
             let d=new Date(2017,11,12,6,0,0,0);
             if(new Intl.DateTimeFormat('en',{hour:'numeric',minute:'numeric',hour12:true}).format(d) !== '6:00 AM') throw 'en time';
@@ -1357,7 +1359,7 @@ fn intl_date_time_format_time_fields() {
             if(!caught) throw 'invalid cycle';
             true
         "#;
-        let code = clj_quickjs::frontend::compile_script("dtf-time-fields", source).unwrap();
+        let code = big_boy_pants_js::frontend::compile_script("dtf-time-fields", source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         match task
             .run_with(Budget::instructions(100000), &mut host)
@@ -1375,10 +1377,10 @@ fn intl_date_time_format_time_fields() {
 /// Synthetic fixture, not light-cljs output.
 #[test]
 fn intl_date_time_format_date_style() {
-    use clj_quickjs::{Budget, RunOutcome, host::TimeZone};
+    use big_boy_pants_js::{Budget, RunOutcome, host::TimeZone};
     for zone in [TimeZone::UTC, TimeZone::fixed_offset_seconds(3600).unwrap()] {
         let rt = Runtime::new();
-        let mut host = clj_quickjs::host::sim::SimTimeHost::new(0.0, zone);
+        let mut host = big_boy_pants_js::host::sim::SimTimeHost::new(0.0, zone);
         let source = r#"
             let d = new Date(2023, 0, 15);
             if (new Intl.DateTimeFormat('en-US', {dateStyle:'short'}).format(d) !== '1/15/23') throw 'en-US short';
@@ -1403,7 +1405,7 @@ fn intl_date_time_format_date_style() {
             if (r.dateStyle !== 'long' || r.year !== undefined || r.month !== undefined || r.day !== undefined || r.hourCycle !== undefined) throw 'resolved style';
             true
         "#;
-        let code = clj_quickjs::frontend::compile_script("dtf-date-style", source).unwrap();
+        let code = big_boy_pants_js::frontend::compile_script("dtf-date-style", source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         match task
             .run_with(Budget::instructions(100000), &mut host)
@@ -1420,10 +1422,10 @@ fn intl_date_time_format_date_style() {
 /// their literal spaces, punctuation and position of the day period.
 #[test]
 fn intl_date_time_format_time_style() {
-    use clj_quickjs::{Budget, RunOutcome, host::TimeZone};
+    use big_boy_pants_js::{Budget, RunOutcome, host::TimeZone};
     for zone in [TimeZone::UTC, TimeZone::fixed_offset_seconds(3600).unwrap()] {
         let rt = Runtime::new();
-        let mut host = clj_quickjs::host::sim::SimTimeHost::new(0.0, zone);
+        let mut host = big_boy_pants_js::host::sim::SimTimeHost::new(0.0, zone);
         let source = r#"
             let d = new Date(2023, 0, 15, 18, 5, 9);
             if (new Intl.DateTimeFormat('en', {timeStyle:'short'}).format(d) !== '6:05 PM') throw 'en short';
@@ -1455,7 +1457,7 @@ fn intl_date_time_format_time_style() {
             if (new Intl.DateTimeFormat('en', {timeStyle:'full',timeZone:'+01:30'}).format(0) !== '1:30:00 AM +01:30') throw 'offset full';
             true
         "#;
-        let code = clj_quickjs::frontend::compile_script("dtf-time-style", source).unwrap();
+        let code = big_boy_pants_js::frontend::compile_script("dtf-time-style", source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         match task
             .run_with(Budget::instructions(100000), &mut host)
@@ -1471,7 +1473,7 @@ fn intl_date_time_format_time_style() {
 /// the host zone's offset at the formatted instant, including DST boundaries.
 #[test]
 fn intl_date_time_format_style_zone_names() {
-    use clj_quickjs::{Budget, RunOutcome, host::TimeZone};
+    use big_boy_pants_js::{Budget, RunOutcome, host::TimeZone};
     for (name, source) in [
         (
             "America/New_York",
@@ -1520,8 +1522,8 @@ fn intl_date_time_format_style_zone_names() {
     ] {
         let rt = Runtime::new();
         let mut host =
-            clj_quickjs::host::sim::SimTimeHost::new(0.0, TimeZone::named(name).unwrap());
-        let code = clj_quickjs::frontend::compile_script("dtf-style-zone", source).unwrap();
+            big_boy_pants_js::host::sim::SimTimeHost::new(0.0, TimeZone::named(name).unwrap());
+        let code = big_boy_pants_js::frontend::compile_script("dtf-style-zone", source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         match task
             .run_with(Budget::instructions(100000), &mut host)
@@ -1535,7 +1537,7 @@ fn intl_date_time_format_style_zone_names() {
 
 #[test]
 fn string_locale_case_uses_host_default() {
-    use clj_quickjs::{Budget, RunOutcome};
+    use big_boy_pants_js::{Budget, RunOutcome};
     let overlong = format!("tr-{}", "a".repeat(512));
     // Synthetic fixtures, not light-cljs output. All three omitted-locale
     // forms go through the host boundary; explicit locales override it.
@@ -1556,7 +1558,8 @@ fn string_locale_case_uses_host_default() {
         let rt = Runtime::new();
         let mut host = SimHost::new(&rt);
         host.set_default_locale(locale);
-        let code = clj_quickjs::frontend::compile_script("string-host-locale", source).unwrap();
+        let code =
+            big_boy_pants_js::frontend::compile_script("string-host-locale", source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         let mut complete = false;
         for _ in 0..5000 {
@@ -1580,7 +1583,7 @@ fn string_locale_case_uses_host_default() {
 /// snapshot's GMT fallbacks and Vienna names at the formatted instant.
 #[test]
 fn intl_date_time_format_component_zone_names() {
-    use clj_quickjs::{
+    use big_boy_pants_js::{
         Budget, RunOutcome,
         host::{TimeZone, sim::SimTimeHost},
     };
@@ -1642,7 +1645,8 @@ fn intl_date_time_format_component_zone_names() {
     ] {
         let rt = Runtime::new();
         let mut host = SimTimeHost::new(0.0, TimeZone::named(name).unwrap());
-        let code = clj_quickjs::frontend::compile_script("dtf-component-zone", source).unwrap();
+        let code =
+            big_boy_pants_js::frontend::compile_script("dtf-component-zone", source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         let mut completed = false;
         for _ in 0..10000 {
@@ -1672,7 +1676,7 @@ fn intl_date_time_format_component_zone_names() {
         let source = format!(
             "new Intl.DateTimeFormat('en',{{year:'numeric',timeZoneName:'long'}}).format(0) === '{expected}'"
         );
-        let code = clj_quickjs::frontend::compile_script("dtf-second-zone", &source).unwrap();
+        let code = big_boy_pants_js::frontend::compile_script("dtf-second-zone", &source).unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
         assert!(
             matches!(task.run_with(Budget::instructions(10000),&mut host).unwrap(),RunOutcome::Complete(value) if value.view()==ValueView::Bool(true))

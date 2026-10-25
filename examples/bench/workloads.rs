@@ -19,9 +19,9 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use clj_quickjs::exec::{EventKind, ExecutorConfig, OutcomeKind};
-use clj_quickjs::frontend::compile_function;
-use clj_quickjs::{
+use big_boy_pants_js::exec::{EventKind, ExecutorConfig, OutcomeKind};
+use big_boy_pants_js::frontend::compile_function;
+use big_boy_pants_js::{
     Completion, DependencyId, DependencyKey, Executable, HeapUsage, Need, Primitive, ResultKind,
     Rooted, RunOutcome, Runtime, Task, TaskStats, TaskStatus, ValueView,
 };
@@ -146,7 +146,7 @@ pub fn key(rt: &Runtime, def: u64) -> DependencyKey {
 }
 
 /// Complete `def`'s cell with `value` as its claimed producer.
-pub fn publish(rt: &Runtime, def: u64, value: &Rooted) -> clj_quickjs::Wakeups {
+pub fn publish(rt: &Runtime, def: u64, value: &Rooted) -> big_boy_pants_js::Wakeups {
     let key = key(rt, def);
     let request = rt.claim(key).expect("cell is unclaimed");
     rt.complete(key, request.producer(), Completion::Ready(value))
@@ -238,7 +238,7 @@ pub fn ready_reads(rt: &Runtime, fx: &Fixtures, def: u64, n: u64) -> ReadyReads 
 }
 
 /// `n` ready reads of a completed cell from Rust through
-/// [`clj_quickjs::RunGuard::need`] (no VM dispatch; each read returns a new
+/// [`big_boy_pants_js::RunGuard::need`] (no VM dispatch; each read returns a new
 /// persistent root, dropped at once). `def` as for [`ready_reads`].
 pub fn rust_ready_reads(rt: &Runtime, fx: &Fixtures, def: u64, n: u64) -> Duration {
     let one = num(rt, 1.0);
@@ -694,7 +694,7 @@ pub fn work_while_waiting(
         exec.submit(task.clone())
             .map_err(|_| "foreign task".to_string())?;
     }
-    let parked = |events: &[clj_quickjs::exec::Event]| {
+    let parked = |events: &[big_boy_pants_js::exec::Event]| {
         events
             .iter()
             .filter(|e| matches!(e.kind, EventKind::Released(OutcomeKind::Waiting(k)) if k == key))

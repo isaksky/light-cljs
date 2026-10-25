@@ -15,11 +15,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use clj_quickjs::exec::{
+use big_boy_pants_js::exec::{
     EnqueueReason, Event, EventKind, Executor, ExecutorConfig, OutcomeKind, Placement, WorkerId,
 };
-use clj_quickjs::frontend::{compile_function, compile_script};
-use clj_quickjs::{
+use big_boy_pants_js::frontend::{compile_function, compile_script};
+use big_boy_pants_js::{
     Budget, Cancel, CellStatus, Completion, DependencyId, DependencyKey, Host, HostCall, Primitive,
     ResultKind, Rooted, RunOutcome, Runtime, Task, TaskId, TaskStatus, ValueView, VmError,
     VmErrorKind, Wake, Wakeups,
@@ -1631,7 +1631,7 @@ fn a_dependency_failure_inside_a_native_is_caught_around_it() {
 }
 
 // ---------------------------------------------------------------------------
-// Consumer cancellation and finally blocks (`clj_quickjs::task`, module docs,
+// Consumer cancellation and finally blocks (`big_boy_pants_js::task`, module docs,
 // "Cancellation and finally blocks"): not catchable; observed by the task's
 // own run, which runs the pending finally blocks innermost first and then
 // ends `Cancelled`. Nothing may override it or wait during it.

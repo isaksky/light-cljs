@@ -3,8 +3,8 @@
 //! live same-job targets, then a per-iteration timer collects and checks both
 //! references are cleared. The fixture header records the exact changed lines.
 
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime};
 
 struct NoEffects;
 

@@ -12,7 +12,7 @@
 use std::sync::{Barrier, Mutex};
 use std::thread;
 
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, CellStatus, ClaimError, CompleteError, Completion, DependencyId, DependencyKey,
     HandleError, Need, NeedError, Opcode, PathStep, Primitive, ProducerId, PublishError,
     ResultKind, Rooted, RunOutcome, Runtime, Task, TaskId, ValueView, WorldId,

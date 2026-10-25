@@ -1,5 +1,5 @@
 //! Synthetic JavaScript fixtures, not light-cljs output (clj-quickjs-319).
-use clj_quickjs::{
+use big_boy_pants_js::{
     Budget, Completion, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView,
     frontend::compile_script,
     module::{ModuleHost, ModuleKey, ModuleLoader, ModuleSource},
@@ -238,7 +238,7 @@ fn math_random_stream_survives_activation_replacement() {
         }
     }
 
-    fn run(rt: &Runtime, mut task: clj_quickjs::Task, budget: Budget) -> Vec<Primitive> {
+    fn run(rt: &Runtime, mut task: big_boy_pants_js::Task, budget: Budget) -> Vec<Primitive> {
         let mut host = Effects::default();
         for _ in 0..2000 {
             let (next, effects, result) = std::thread::spawn(move || {
@@ -291,7 +291,7 @@ fn math_random_stream_survives_activation_replacement() {
     impl ModuleHost for Modules {
         fn resolve(
             &mut self,
-            specifier: &clj_quickjs::JsString,
+            specifier: &big_boy_pants_js::JsString,
             _: Option<ModuleKey>,
         ) -> Result<ModuleKey, String> {
             match specifier.to_string_lossy().as_str() {

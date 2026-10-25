@@ -31,7 +31,7 @@
 
 use std::thread;
 
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, Budget, Executable, Host, HostCall, Opcode, Primitive, Rooted, RunOutcome, Runtime,
     TaskId, TaskStatus, ValueView, VmError, VmErrorKind, VmLimits,
 };
@@ -715,7 +715,7 @@ fn exceeding_the_stack_value_bound_fails_the_task() {
 #[test]
 fn a_compiled_callee_keeps_its_source_locations_and_error_messages() {
     // Synthetic fixture, not light-cljs output.
-    let f = clj_quickjs::frontend::compile_function(
+    let f = big_boy_pants_js::frontend::compile_function(
         "function f(n) {\n  let x = n + 1;\n  return missing + x;\n}",
     )
     .unwrap();

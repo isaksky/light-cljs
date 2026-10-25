@@ -15,11 +15,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use clj_quickjs::exec::{
+use big_boy_pants_js::exec::{
     EnqueueReason, Event, EventKind, Executor, ExecutorConfig, OutcomeKind, Placement, WorkerId,
 };
-use clj_quickjs::frontend::{SyntaxErrorKind, compile_function, compile_script};
-use clj_quickjs::{
+use big_boy_pants_js::frontend::{SyntaxErrorKind, compile_function, compile_script};
+use big_boy_pants_js::{
     Budget, Cancel, CellStatus, Completion, DependencyId, DependencyKey, Executable, Host,
     HostCall, Primitive, ProducerRequest, ResultKind, RunOutcome, Runtime, Task, TaskStatus,
     ValueView, VmError, VmErrorKind, Wakeups,
@@ -47,10 +47,10 @@ fn logical_assignment_waits_collects_and_migrates() {
         "null ?? (__rt.need(5, 3) + 20)",
     ] {
         let rt = Runtime::new();
-        let code = clj_quickjs::frontend::compile_script_with(
+        let code = big_boy_pants_js::frontend::compile_script_with(
             "logical-wait",
             source,
-            clj_quickjs::frontend::ScriptOptions::SLOPPY,
+            big_boy_pants_js::frontend::ScriptOptions::SLOPPY,
         )
         .unwrap();
         let task = rt.spawn(&code, &[]).unwrap();
@@ -1402,7 +1402,7 @@ fn a_failed_dependency_fails_the_run_at_the_need() {
     assert_eq!(e.kind(), VmErrorKind::DependencyFailed(number_key));
     assert!(e.message().contains("failed with Number(13.0)"), "{e}");
     assert_eq!(line_column(&e), NUMBER_NEED_AT);
-    assert_eq!(e.diagnostic().opcode, Some(clj_quickjs::Opcode::Need));
+    assert_eq!(e.diagnostic().opcode, Some(big_boy_pants_js::Opcode::Need));
     assert_eq!(e.diagnostic().call_chain.len(), 1, "inside `lookup`");
 
     // Published while the consumer waits.
@@ -1519,7 +1519,7 @@ fn need_operands_are_validated() {
     assert!(
         exe.to_spec()
             .code
-            .contains(&(clj_quickjs::Opcode::Need as u8))
+            .contains(&(big_boy_pants_js::Opcode::Need as u8))
     );
     for (src, column) in [
         ("__rt.need(1.5, 2);", 11),

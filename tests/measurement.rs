@@ -13,8 +13,8 @@
 #[path = "../examples/bench/workloads.rs"]
 mod workloads;
 
-use clj_quickjs::frontend::compile_function;
-use clj_quickjs::{Completion, ObjectCounts, RunOutcome, Runtime, TaskStatus};
+use big_boy_pants_js::frontend::compile_function;
+use big_boy_pants_js::{Completion, ObjectCounts, RunOutcome, Runtime, TaskStatus};
 
 use workloads::{ConsumerKind, Fixtures, Probe};
 
@@ -22,7 +22,7 @@ use workloads::{ConsumerKind, Fixtures, Probe};
 /// short flat copies and the first flatten, but exclude input construction.
 #[test]
 fn string_concatenation_is_amortized_linear() {
-    use clj_quickjs::{Budget, Host, JsString};
+    use big_boy_pants_js::{Budget, Host, JsString};
     const N: usize = 100_000;
     let build = compile_function(workloads::STRING_CONCAT).unwrap();
     let read = compile_function(workloads::STRING_READ).unwrap();
@@ -42,8 +42,8 @@ fn string_concatenation_is_amortized_linear() {
         impl Host for NoEffects {
             fn effect(
                 &mut self,
-                call: clj_quickjs::HostCall,
-            ) -> Result<clj_quickjs::Primitive, String> {
+                call: big_boy_pants_js::HostCall,
+            ) -> Result<big_boy_pants_js::Primitive, String> {
                 panic!("unexpected host effect {}", call.op)
             }
         }
@@ -69,7 +69,7 @@ fn string_concatenation_is_amortized_linear() {
             .unwrap();
         assert_eq!(
             workloads::finish(&reader).view(),
-            clj_quickjs::ValueView::Bool(true)
+            big_boy_pants_js::ValueView::Bool(true)
         );
         assert_eq!(
             JsString::copied_code_units(),
@@ -81,7 +81,7 @@ fn string_concatenation_is_amortized_linear() {
 
 #[test]
 fn concat_methods_and_templates_keep_rope_prefixes() {
-    use clj_quickjs::JsString;
+    use big_boy_pants_js::JsString;
     // Synthetic fixtures, not light-cljs output. All concatenation entry
     // points must retain existing prefixes/suffixes without flattening.
     for expression in ["s.concat(c)", "c.concat(s)", "`${s}${c}`", "`${c}${s}`"] {
@@ -260,7 +260,7 @@ fn task_stats_describe_saved_frames_natives_and_pending_needs() {
     )
     .unwrap();
     let v = rt.scope(|s| {
-        let n = |x: f64| s.primitive(clj_quickjs::Primitive::Number(x));
+        let n = |x: f64| s.primitive(big_boy_pants_js::Primitive::Number(x));
         s.persist(s.new_vector(&[n(20.0), n(21.0)]).unwrap())
     });
     let task = rt.spawn(&fold, &[&v]).unwrap();

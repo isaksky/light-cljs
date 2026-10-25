@@ -1,4 +1,4 @@
-//! Thin binary over the `clj_quickjs` library: compile a JavaScript script of
+//! Thin binary over the `big_boy_pants_js` library: compile a JavaScript script of
 //! the documented subset (`docs/grammar.md`) and run it as one task.
 //!
 //! * `cargo run` runs the bundled demo, `examples/demo.js` (a documented
@@ -10,10 +10,10 @@
 //! effects (`__rt.effect(op, x)`) print `effect op: x` (a string lossily,
 //! U+FFFD for a lone surrogate) and return `x`. Compilation errors exit with status 2, run
 //! failures with status 1. No qjsc or C engine is involved: the script is
-//! compiled by `clj_quickjs::frontend` and executed by its VM.
+//! compiled by `big_boy_pants_js::frontend` and executed by its VM.
 
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView};
 
 /// Prints each host effect and returns its argument.
 struct PrintingHost;

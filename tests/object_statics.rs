@@ -1,10 +1,13 @@
 //! Synthetic fixtures, not light-cljs output.
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{Budget, RunOutcome, Runtime, ValueView};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{Budget, RunOutcome, Runtime, ValueView};
 
 struct NoEffects;
-impl clj_quickjs::Host for NoEffects {
-    fn effect(&mut self, _: clj_quickjs::HostCall) -> Result<clj_quickjs::Primitive, String> {
+impl big_boy_pants_js::Host for NoEffects {
+    fn effect(
+        &mut self,
+        _: big_boy_pants_js::HostCall,
+    ) -> Result<big_boy_pants_js::Primitive, String> {
         Err("unexpected effect".into())
     }
 }
@@ -137,7 +140,7 @@ fn object_statics_results_are_task_owned() {
         assert!(
             matches!(
                 runtime.publish(&value),
-                Err(clj_quickjs::PublishError::NotShareable { .. })
+                Err(big_boy_pants_js::PublishError::NotShareable { .. })
             ),
             "{source}"
         );

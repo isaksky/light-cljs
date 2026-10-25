@@ -1,8 +1,8 @@
 //! Adapted QuickJS text; synthetic fixtures, not light-cljs output.
 //! All selected upstream lines and assertions are unmodified; adapted rows: none.
 
-use clj_quickjs::frontend::{ScriptOptions, compile_script_with};
-use clj_quickjs::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView};
+use big_boy_pants_js::frontend::{ScriptOptions, compile_script_with};
+use big_boy_pants_js::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView};
 
 struct NoEffects;
 

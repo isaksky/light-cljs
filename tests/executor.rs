@@ -20,11 +20,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, ThreadId};
 use std::time::Duration;
 
-use clj_quickjs::exec::{
+use big_boy_pants_js::exec::{
     EnqueueReason, Event, EventKind, ExecutorConfig, OutcomeKind, Placement, RunContext, WorkerId,
 };
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{
     Assembler, Budget, Cancel, Completion, DependencyId, DependencyKey, Host, HostCall, Need,
     NeedError, Opcode, Primitive, ResultKind, RunGuard, RunOutcome, Runtime, Task, TaskId,
     TaskStatus, ValueView,

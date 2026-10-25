@@ -3,8 +3,8 @@
 
 use std::time::{Duration, Instant};
 
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{Budget, Host, HostCall, Primitive, RunOutcome, Runtime};
 
 const BIGINT: &str = include_str!("fixtures/js/quickjs_test_bigint.js");
 const PI: &str = include_str!("fixtures/js/quickjs_pi_bigint.js");

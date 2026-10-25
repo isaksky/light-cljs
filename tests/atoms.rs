@@ -1,7 +1,7 @@
 //! Atoms through the embedding API and the VM atom intrinsics: identity
 //! compare-and-set between two writers, single-writer publication, safe
 //! load-to-root across replacement and collection, and publication checks
-//! (`docs/design.md` §6; contract in `clj_quickjs::atom`).
+//! (`docs/design.md` §6; contract in `big_boy_pants_js::atom`).
 //!
 //! Programs are hand-assembled bytecode: early VM tests, not JavaScript
 //! source support. Cross-thread orderings are fixed by channels with a
@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, AtomError, AtomErrorKind, Budget, CasOutcome, Executable, HandleError, Host,
     HostCall, Opcode, PathStep, Primitive, PublishError, Rooted, RunOutcome, Runtime, ValueView,
     VmErrorKind,
@@ -232,7 +232,8 @@ fn cas_compares_identity_and_same_value_never_structure() {
 fn bigint_compare_and_swap() {
     let rt = Runtime::new();
     let bigint = |digits: &str| {
-        let n = clj_quickjs::JsBigInt::from_digits(digits.trim_start_matches('-'), 10).unwrap();
+        let n =
+            big_boy_pants_js::JsBigInt::from_digits(digits.trim_start_matches('-'), 10).unwrap();
         rt.root(Primitive::BigInt(if digits.starts_with('-') {
             n.negated()
         } else {

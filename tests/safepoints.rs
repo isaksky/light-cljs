@@ -13,7 +13,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use clj_quickjs::{
+use big_boy_pants_js::{
     Assembler, Budget, CollectError, Executable, Host, HostCall, Opcode, Primitive, Rooted,
     RunOutcome, Runtime, ValueView,
 };
@@ -490,7 +490,7 @@ fn function_property_allocations_poll_for_collection() {
                __rt.effect(0, null); f['y']; r = r + __rt.effect(1, null);\n\
                __rt.effect(0, null); f['z'] = 2; r = r + __rt.effect(1, null);\n\
                r";
-    let exe = clj_quickjs::frontend::compile_script("polls", src).unwrap();
+    let exe = big_boy_pants_js::frontend::compile_script("polls", src).unwrap();
     let rt = Runtime::new();
     let task = rt.spawn(&exe, &[]).unwrap();
     let (at_tx, at_rx) = mpsc::channel();
@@ -528,7 +528,8 @@ fn delete_function_metadata_allocation_polls_for_collection() {
             let source = format!(
                 "{function} __rt.effect(0,null); delete f.{property}; __rt.effect(1,null);"
             );
-            let program = clj_quickjs::frontend::compile_script("delete-polls", &source).unwrap();
+            let program =
+                big_boy_pants_js::frontend::compile_script("delete-polls", &source).unwrap();
             let rt = Runtime::new();
             let task = rt.spawn(&program, &[]).unwrap();
             let (at_tx, at_rx) = mpsc::channel();
@@ -564,7 +565,7 @@ fn instanceof_lazy_prototype_allocation_polls_for_collection() {
     let src = "let f = function () {}; let o = {}; let r = 0;\n\
                __rt.effect(0, null); let b = o instanceof f; r = r + __rt.effect(1, null);\n\
                b ? -1 : r + (Object.getPrototypeOf(new f()) === f.prototype ? 10 : 0)";
-    let exe = clj_quickjs::frontend::compile_script("polls", src).unwrap();
+    let exe = big_boy_pants_js::frontend::compile_script("polls", src).unwrap();
     let rt = Runtime::new();
     let task = rt.spawn(&exe, &[]).unwrap();
     let (at_tx, at_rx) = mpsc::channel();
@@ -601,7 +602,7 @@ fn in_lookup_polls_for_collection() {
     let src = "let f = function () {}; let r = 0;\n\
                __rt.effect(0, null); let b = 'prototype' in f; r = r + __rt.effect(1, null);\n\
                b ? r + (Object.getPrototypeOf(new f()) === f.prototype ? 10 : 0) : -1";
-    let exe = clj_quickjs::frontend::compile_script("polls", src).unwrap();
+    let exe = big_boy_pants_js::frontend::compile_script("polls", src).unwrap();
     let rt = Runtime::new();
     let task = rt.spawn(&exe, &[]).unwrap();
     let (at_tx, at_rx) = mpsc::channel();

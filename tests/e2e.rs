@@ -16,8 +16,8 @@
 #[path = "../examples/e2e/scenario.rs"]
 mod scenario;
 
-use clj_quickjs::exec::{EnqueueReason, Event, EventKind, OutcomeKind, Placement, WorkerId};
-use clj_quickjs::{
+use big_boy_pants_js::exec::{EnqueueReason, Event, EventKind, OutcomeKind, Placement, WorkerId};
+use big_boy_pants_js::{
     CellStatus, DependencyKey, MutatorState, TaskId, TaskStatus, ValueView, VmErrorKind,
 };
 

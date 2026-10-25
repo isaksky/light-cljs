@@ -25,8 +25,8 @@
 //! OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 //! THE SOFTWARE.
 
-use clj_quickjs::frontend::compile_script;
-use clj_quickjs::{Completion, Primitive, RunOutcome, Runtime, ValueView};
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{Completion, Primitive, RunOutcome, Runtime, ValueView};
 
 fn string(outcome: RunOutcome) -> String {
     let RunOutcome::Complete(value) = outcome else {
@@ -182,8 +182,8 @@ fn stack_preserves_utf16_function_names() {
 
 #[test]
 fn loaded_rope_metadata_is_bounded_for_constructed_and_caught_errors() {
-    use clj_quickjs::JsString;
-    use clj_quickjs::vm::Executable;
+    use big_boy_pants_js::JsString;
+    use big_boy_pants_js::vm::Executable;
 
     // Synthetic fixtures, not light-cljs output. Exercise actual recursion
     // with executable metadata supplied by the embedder, without large data.
@@ -308,7 +308,7 @@ fn constructor_stacks_survive_callback_waits() {
             let request = &requests[0];
             assert_eq!(
                 request.key().dependency(),
-                clj_quickjs::DependencyId::new(expected)
+                big_boy_pants_js::DependencyId::new(expected)
             );
             let ready = rt.root(Primitive::Undefined);
             task = rt
