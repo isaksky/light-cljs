@@ -928,6 +928,7 @@ impl Executable {
                 | Instr::DefineField(v)
                 | Instr::DefineGetter(v)
                 | Instr::DefineSetter(v)
+                | Instr::Rest(v)
                 | Instr::SetComputedName(v) => u32::from(v),
                 Instr::ThrowError(kind) => u32::from(kind as u16),
                 // Branch targets are instruction indices once loaded.

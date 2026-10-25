@@ -477,6 +477,31 @@ fn module_syntax_rejections() {
 }
 
 #[test]
+fn module_iteration_pattern_var_declarations() {
+    // Synthetic fixtures, not light-cljs output. Loop var names contribute
+    // to module export resolution even inside nested statements.
+    for source in [
+        "export {a}; for (var [a] of [[1]]) {}",
+        "export {a}; for (var {length: a} in {abc: 1}) {}",
+        "export {a}; if (true) { for (var [{a}] of [[{a: 1}]]) {} }",
+        "export {a, r}; { for (var {length: a, ...r} in {abc: 1}) {} }",
+    ] {
+        super::parse_module(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+    }
+    for source in [
+        "import {a} from 'm'; for (var [a] of []) {}",
+        "let a; for (var {length: a} in {}) {}",
+        "const a = 1; { for (var [a] of []) {} }",
+    ] {
+        assert_eq!(
+            super::parse_module(source).expect_err(source).kind,
+            SyntaxErrorKind::Invalid,
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn module_default_exports_and_scope() {
     use super::ast::{DefaultExport, ModuleItem};
     use super::parse_module;

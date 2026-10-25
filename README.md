@@ -472,7 +472,7 @@ Supported (VM level; early VM tests use hand-assembled bytecode,
 Deferred:
 
 - (Compiling functions and calls from source: clj-quickjs-21, below.)
-- `arguments`, rest parameters (defaults: clj-quickjs-100, below), and native
+- `arguments` and native
   or host-function callees. (Function metadata: clj-quickjs-101, below; `this`:
   clj-quickjs-116, below; rest parameters: clj-quickjs-315.)
   (Catching `StackOverflow` and `TypeError`: clj-quickjs-11, below.)
@@ -648,7 +648,7 @@ Deferred:
 
 - Property access (`f.call`, methods, objects), `this` (clj-quickjs-116
   below), (string values: clj-quickjs-65 below)
-  `arguments`, rest parameters (defaults: clj-quickjs-100, below) (`new`:
+  `arguments` (rest parameters: clj-quickjs-315; defaults: clj-quickjs-100, below) (`new`:
   clj-quickjs-71, below). (Arrow
   functions: clj-quickjs-53 below; generators: clj-quickjs-243 below.)
 - (A function declaration repeating a parameter or another declaration at
@@ -1209,11 +1209,12 @@ Supported (`cargo test --lib frontend::tests::arrow_functions_and_asi`,
   syntax error, as is a line break before `=>`. Grammar and errors:
   [`docs/grammar.md`](docs/grammar.md).
 
+Rest parameters are supported (-315; defaults: clj-quickjs-100,
+below). Lexical `super` through method arrows and direct eval is supported (-112).
+Lexical `this` and `arguments` are supported by clj-quickjs-98 and -97, below.
+
 Deferred:
 
-- Rest parameters (defaults: clj-quickjs-100,
-  below). Lexical `super` through method arrows and direct eval is supported (-112).
-  Lexical `this` and `arguments` are supported by clj-quickjs-98 and -97, below.
 - QuickJS's `var h = x => x + 1` newline `yield 2` (needs `var` and
   generators) and `() => eval('0.a')` (needs `eval`).
 

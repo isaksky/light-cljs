@@ -88,6 +88,23 @@ fn rest_spread_publication() {
 }
 
 #[test]
+fn rest_parameters_survive_executable_round_trip() {
+    // Synthetic fixtures, not light-cljs output. Reload the entry function
+    // itself so its nonzero Rest operand is encoded and decoded.
+    for source in [
+        "function f(a, ...r) { return a === 1 && r.length === 2 && r[0] === 2 && r[1] === 3; }",
+        "function f(a, b, ...[c]) { return a === 1 && b === 2 && c === 3; }",
+    ] {
+        let code = compile_function(source).unwrap();
+        let loaded = Executable::load(code.to_spec()).unwrap();
+        assert!(
+            matches!(run(&loaded, &[Primitive::Number(1.0), Primitive::Number(2.0), Primitive::Number(3.0)]), RunOutcome::Complete(v) if v.view() == ValueView::Bool(true)),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn rest_spread_on_small_worker_stack() {
     // Synthetic fixture, not light-cljs output. Compile and initialize the
     // realm before moving execution to the 64 KiB worker.

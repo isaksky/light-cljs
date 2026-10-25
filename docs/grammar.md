@@ -143,11 +143,14 @@ ForInit             = Expression[~In] | ( "let" | "const" | "var" ) Declarator[~
 ForInStatement      = "for" "(" ForInHead "in" Expression ")" Statement   (* clj-quickjs-85 *)
 ForOfStatement      = "for" "(" ForOfHead "of" AssignmentExpression ")" Statement (* clj-quickjs-237, -238 *)
 ForInHead           = LeftHandSideExpression   (* an identifier or member reference, possibly parenthesized; clj-quickjs-87 *)
-                    | ( "let" | "const" | "var" ) BindingIdentifier
+                    | AssignmentPattern
+                    | ( "let" | "const" | "var" ) BindingPattern
                     | "var" BindingIdentifier "=" AssignmentExpression[~In] (* non-strict only; Annex B.3.5, clj-quickjs-90 *)
 ForOfHead           = LeftHandSideExpression   (* an identifier, possibly parenthesized *)
-                    | ( "let" | "const" | "var" ) BindingIdentifier
+                    | AssignmentPattern
+                    | ( "let" | "const" | "var" ) BindingPattern
                     | "using" [no LineTerminator here] BindingIdentifier
+AssignmentPattern   = ArrayAssignmentPattern | ObjectAssignmentPattern
 SwitchStatement     = "switch" "(" Expression ")" "{" { CaseClause } "}"   (* at most one "default" *)
 CaseClause          = ( "case" Expression | "default" ) ":" { StatementListItem }
 ReturnStatement     = "return" [no LineTerminator here] [ Expression ] ";"
@@ -178,7 +181,8 @@ PatternPropertyName = PropertyName
 FunctionDeclaration = [ "async" [no LineTerminator here] ] "function" [ "*" ] BindingIdentifier FunctionRest
 FunctionExpression  = [ "async" [no LineTerminator here] ] "function" [ "*" ] [ BindingIdentifier ] FunctionRest
 FunctionRest        = FormalParameters FunctionBody
-FormalParameters    = "(" [ FormalParameter { "," FormalParameter } [ "," ] ] ")"
+FormalParameters    = "(" [ FormalParameter { "," FormalParameter } [ "," [ RestParameter ] ] | RestParameter ] ")"
+RestParameter       = "..." BindingPattern
 FormalParameter     = BindingPattern [ "=" AssignmentExpression ]   (* default value *)
 FunctionBody        = "{" { Directive } { StatementListItem } "}"
 
@@ -244,6 +248,7 @@ TemplateLiteral       = NoSubstitutionTemplate
                            this is a tagged call; invalid escapes have undefined cooked text *)
 ObjectLiteral         = "{" [ PropertyDefinition { "," PropertyDefinition } [ "," ] ] "}"
 PropertyDefinition    = PropertyName ":" AssignmentExpression | Identifier
+                      | "..." AssignmentExpression
                       | PropertyName FormalParameters FunctionBody
                       | [ "async" [no LineTerminator here] ] "*" PropertyName FormalParameters FunctionBody
                       | "async" [no LineTerminator here] PropertyName FormalParameters FunctionBody
@@ -1080,6 +1085,14 @@ yields, dependency waits, collection and migration. Tests are synthetic fixtures
 not light-cljs output: `cargo test --test js_source rest_` and
 `cargo test --test js_source array_and_object_destructuring_waits_collects_and_migrates`.
 
+```js accept
+function gather(a, ...rest) { return a + rest.length; }
+gather(1, 2, 3) === 3 && gather.length === 1;
+let copied = {a: 1, ...{b: 2}, ...null}; copied.b === 2;
+let values = []; for (let [a] of [[1], [2]]) values.push(a);
+for (const {length: size} in {abc: 1}) values.push(size);
+```
+
 | Operators (clj-quickjs-314) | Execution |
 | --- | --- |
 | `left ?? right` | Returns the left value unless it is null or undefined; only then evaluates and returns the right. Left-associative, above the conditional operator; unparenthesized mixing with `&&` or `\|\|` is an early SyntaxError. No operand conversion. |
@@ -1640,7 +1653,8 @@ assignment failure also closes a live iterator, preserving the original throw;
 failures in `next`, `done` or `value` do not close it. All getters, iterator
 methods, defaults and setters can suspend and resume. Non-iterables throw
 `TypeError`. Array patterns require declaration initializers.
-Rest parameters and patterns in iteration heads remain explicit gaps.
+Rest parameters and patterns in iteration heads execute (-315); iteration
+binding patterns receive each key or value without a declaration initializer.
 
 Object patterns (clj-quickjs-132) share these declaration, assignment,
 parameter and catch contexts, and compose with nested array patterns.
@@ -1721,7 +1735,7 @@ explicitly (`UnsupportedOperand`). Function metadata (clj-quickjs-101)
 uses the existing function, initializer, assignment and property-access
 EBNF; no new syntax or rejected forms change. Every function owns `length`
 and `name`: non-writable, non-enumerable, configurable data properties.
-`length` counts parameters before the first default. `name` is the declared
+`length` counts parameters before the first default or rest parameter. `name` is the declared
 name, or the binding/parameter name for an anonymous function or arrow
 directly initializing it or assigned to an identifier. An anonymous
 function/arrow directly used as an object literal's property value infers
@@ -1729,7 +1743,7 @@ that property's string key (except the special `__proto__: value` form).
 Other anonymous functions have the empty name. Parentheses preserve direct
 inference; comma and conditional expressions do not. Array pattern parameters
 count as one parameter; a top-level default still ends the `length` count.
-Rest parameters remain rejected. Object patterns also count as one parameter. Concise method names are their
+Rest parameters end the `length` count (-315). Object patterns also count as one parameter. Concise method names are their
 property's string key (clj-quickjs-126).
 
 Reads, `in`, metadata descriptors, and `Object.getOwnPropertyNames` do not
