@@ -1363,9 +1363,20 @@ mod tests {
 
     #[test]
     fn error_stack_preserves_bounded_rope_names_and_caps_filenames() {
-        let mut name = JsString::from_code_units(vec![0xd800; 32]).unwrap();
-        for _ in 0..3 {
-            name = name.concat(&name).unwrap();
+        let expected_name: Vec<u16> = (0..256)
+            .map(|i| match i {
+                0 => 0xd800,
+                129 => 0xdc00,
+                _ => u16::from(b'a') + i / 32,
+            })
+            .collect();
+        // Distinct children and a skewed, unflattened rope detect reversed
+        // traversal or duplicated children, while retaining lone surrogates.
+        let mut name = JsString::from_code_units(expected_name[..32].to_vec()).unwrap();
+        for chunk in expected_name[32..].chunks(32) {
+            name = name
+                .concat(&JsString::from_code_units(chunk.to_vec()).unwrap())
+                .unwrap();
         }
         let filename = "😀".repeat(300);
         let vm = metadata_state(name, &filename, 100);
@@ -1374,7 +1385,7 @@ mod tests {
         assert_eq!(stack.len(), ERROR_STACK_UNITS);
         assert!(JsString::copied_code_units() - before <= ERROR_STACK_UNITS as u64);
         let units = stack.code_units();
-        assert_eq!(&units[7..263], &[0xd800; 256]);
+        assert_eq!(&units[7..263], expected_name);
         let file_start = 265;
         assert_eq!(
             &units[file_start..file_start + 256],
