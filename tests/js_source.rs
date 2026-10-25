@@ -28680,3 +28680,22 @@ fn array_mutators_species_typed_array_coercion() {
         assert_eq!(eval(src), ValueView::Bool(true), "{src}");
     }
 }
+
+/// Synthetic fixtures, not light-cljs output. A splice result uses
+/// CreateDataProperty, bypassing inherited setters and replacing attributes.
+#[test]
+fn array_mutators_species_creates_own_data_properties() {
+    for constructor in [
+        "function C() { return Object.create({set 0(v) { calls++; throw 42; }}); }",
+        "function C() { let r = {}; Object.defineProperty(r,0,{get() { throw 43; },set(v) { calls++; throw 42; },enumerable:false,configurable:true}); return r; }",
+        "function C() { let r = {}; Object.defineProperty(r,0,{value:9,writable:false,enumerable:false,configurable:true}); return r; }",
+    ] {
+        let source = format!(
+            "let calls = 0; {constructor} let a = [7]; a.constructor = {{[Symbol.species]: C}}; \
+             let r = a.splice(0,1), d = Object.getOwnPropertyDescriptor(r,0); \
+             calls === 0 && a.length === 0 && r.length === 1 && d.value === 7 && \
+             d.writable && d.enumerable && d.configurable && d.get === undefined && d.set === undefined"
+        );
+        assert_eq!(eval(&source), ValueView::Bool(true), "{constructor}");
+    }
+}
