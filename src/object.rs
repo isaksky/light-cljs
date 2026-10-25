@@ -1367,7 +1367,7 @@ mod tests {
         use crate::{Budget, RunOutcome, Runtime, ValueView};
         let source = r#"
             let symbol = Symbol('259-key');
-            let objects = [{}, [], new Map(), new WeakMap(), function() {},
+            let objects = [{}, [], new Map(), new WeakMap(), new Set(), new WeakSet(), function() {},
                 (function() {}).bind(null), new ArrayBuffer(8), new Uint8Array(2),
                 (function*() { yield 1; })(), new WeakRef({}),
                 new FinalizationRegistry(() => {}), new DisposableStack()];

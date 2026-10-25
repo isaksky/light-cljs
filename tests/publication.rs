@@ -1457,3 +1457,58 @@ fn async_generators_are_task_owned() {
         matches!(rt.spawn(&caller, &[&g]).unwrap().run().unwrap(), RunOutcome::Failed(e) if matches!(e.kind(), VmErrorKind::ForeignObject { .. }))
     );
 }
+
+/// Synthetic fixtures, not light-cljs output. Set brands stay task-owned
+/// even when frozen, wrapped in a persistent vector or captured by a closure.
+#[test]
+fn sets_are_task_owned_at_publication_boundaries() {
+    use clj_quickjs::AtomError;
+    let rt = Runtime::new();
+    for kind in ["Set", "WeakSet"] {
+        for expression in [
+            format!("new {kind}()"),
+            format!("new {kind}([{{}}])"),
+            format!("Object.freeze(new {kind}())"),
+        ] {
+            let task = rt
+                .spawn(
+                    &compile_script("set-publication", &expression).unwrap(),
+                    &[],
+                )
+                .unwrap();
+            let set = complete(task.run().unwrap());
+            assert_eq!(
+                not_shareable(rt.publish(&set).unwrap_err()),
+                (vec![], kind, Some(task.id()))
+            );
+            let check = |error| match error {
+                AtomError::NotShareable(e) => {
+                    assert_eq!(not_shareable(e), (vec![], kind, Some(task.id())))
+                }
+                other => panic!("unexpected publication error: {other:?}"),
+            };
+            check(rt.new_atom(&set).unwrap_err());
+            let initial = rt.root(num(0.0));
+            let atom = rt.new_atom(&initial).unwrap();
+            let mut publisher = rt.new_single_writer_atom(&initial).unwrap();
+            check(publisher.publish(&set).unwrap_err());
+            check(rt.atom_compare_and_set(&atom, &initial, &set).unwrap_err());
+            assert_eq!(rt.atom_load(&atom).unwrap().view(), ValueView::Number(0.0));
+        }
+        for expression in [
+            format!("__rt.vector(new {kind}())"),
+            format!("(function() {{let s = new {kind}(); return function() {{return s;}};}})()"),
+        ] {
+            let task = rt
+                .spawn(
+                    &compile_script("set-transitive-publication", &expression).unwrap(),
+                    &[],
+                )
+                .unwrap();
+            let value = complete(task.run().unwrap());
+            let (path, found, owner) = not_shareable(rt.publish(&value).unwrap_err());
+            assert!(!path.is_empty());
+            assert_eq!((found, owner), (kind, Some(task.id())));
+        }
+    }
+}

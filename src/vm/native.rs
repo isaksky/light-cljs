@@ -1494,6 +1494,16 @@ pub(crate) fn start_builtin(
             | Builtin::WeakMapSet
             | Builtin::MapGet
             | Builtin::WeakMapGet
+            | Builtin::SetAdd
+            | Builtin::SetHas
+            | Builtin::SetDelete
+            | Builtin::SetClear
+            | Builtin::SetSize
+            | Builtin::SetValues
+            | Builtin::SetEntries
+            | Builtin::WeakSetAdd
+            | Builtin::WeakSetHas
+            | Builtin::WeakSetDelete
     ) {
         return Ok(false);
     }
@@ -2172,6 +2182,9 @@ fn start_builtin_slow(
     if !construct {
         let arg = |i| args.get(i).cloned().unwrap_or(Value::Undefined);
         let native = match which {
+            Builtin::SetForEach => Some(NativeState::Iterator(Box::new(
+                iterator::State::set_for_each(heap, state.diag.task, this.clone(), arg(0), arg(1))?,
+            ))),
             Builtin::MapForEach => Some(NativeState::Iterator(Box::new(
                 iterator::State::map_for_each(heap, state.diag.task, this.clone(), arg(0), arg(1))?,
             ))),
@@ -5181,6 +5194,18 @@ fn start_error(
         return Ok(true);
     }
     Ok(false)
+}
+
+pub(crate) fn start_add_values(
+    state: &mut VmState,
+    target: Value,
+    items: Value,
+    popped: usize,
+) -> Result<(), Fault> {
+    let mut native = add_entries::State::new(target, items);
+    native.consume_values();
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::AddEntries(Box::new(native)))
 }
 
 #[cfg(test)]

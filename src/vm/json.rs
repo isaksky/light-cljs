@@ -618,8 +618,8 @@ pub(super) fn check_key_snapshot(heap: &Heap, task: TaskId, id: ObjectId) -> Res
                 };
                 (o, virtual_keys)
             }
-            HeapObject::JsMap(m) => (m.object(), 0),
-            HeapObject::WeakMap(m) => (m.object(), 0),
+            HeapObject::JsMap(m) | HeapObject::JsSet(m) => (m.object(), 0),
+            HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => (m.object(), 0),
             HeapObject::WeakRef(m) => (m.object(), 0),
             HeapObject::FinalizationRegistry(m) => (m.object(), 0),
             HeapObject::DisposableStack(m) => (m.object(), 0),

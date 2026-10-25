@@ -60,3 +60,54 @@ impl Trace for WeakMapObject {
         self.entries.trace_conditional(visit);
     }
 }
+
+#[cfg(test)]
+mod set_tests {
+    use super::*;
+    use crate::heap::HeapObject;
+    use crate::{RunOutcome, Runtime};
+
+    /// Synthetic fixture, not light-cljs output. A live WeakSet keeps its
+    /// ordinary properties, but never its object or unregistered symbol keys.
+    #[test]
+    fn weak_set_keys_are_weak_and_properties_strong() {
+        let rt = Runtime::new();
+        let code = crate::frontend::compile_script("weak-set-gc", "let k = {}, y = Symbol(), s = new WeakSet([k,y]), p = {}; s.own = p; __rt.vector(s,k,y,p)").unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let RunOutcome::Complete(result) = task.run().unwrap() else {
+            panic!("fixture failed");
+        };
+        let (set, key, symbol, property) = rt.scope(|scope| {
+            let result = scope.local(&result).unwrap();
+            (
+                scope.persist(scope.nth(result, 0).unwrap()),
+                scope.persist(scope.nth(result, 1).unwrap()),
+                scope.persist(scope.nth(result, 2).unwrap()),
+                scope.downgrade(scope.nth(result, 3).unwrap()),
+            )
+        });
+        let Value::Object(id) = set.value_in(rt.heap()).unwrap() else {
+            unreachable!();
+        };
+        let count = || {
+            rt.heap()
+                .read(id, |o| match o {
+                    HeapObject::WeakSet(s) => s.len(),
+                    _ => unreachable!(),
+                })
+                .unwrap()
+        };
+        drop((task, result, code));
+        rt.collect().unwrap();
+        assert_eq!(count(), 2);
+        let weak_key = key.downgrade();
+        drop((key, symbol));
+        rt.collect().unwrap();
+        assert_eq!(count(), 0);
+        assert!(!weak_key.is_live());
+        assert!(property.is_live());
+        drop(set);
+        rt.collect().unwrap();
+        assert!(!property.is_live());
+    }
+}

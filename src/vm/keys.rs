@@ -294,14 +294,14 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
             }
             Ok(raw)
         }
-        HeapObject::JsMap(m) => {
+        HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
             readable(m.object().owner())?;
             Ok(Raw {
                 named: named(m.object()),
                 ..Raw::default()
             })
         }
-        HeapObject::WeakMap(m) => {
+        HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => {
             readable(m.object().owner())?;
             Ok(Raw {
                 named: named(m.object()),

@@ -104,10 +104,10 @@ pub(crate) fn get_prototype_of(
             HeapObject::Generator(g) => {
                 readable(&g.object, task).map(|()| Some(g.object.prototype()))
             }
-            HeapObject::JsMap(m) => {
+            HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
                 readable(m.object(), task).map(|()| Some(m.object().prototype()))
             }
-            HeapObject::WeakMap(m) => {
+            HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => {
                 readable(m.object(), task).map(|()| Some(m.object().prototype()))
             }
             HeapObject::WeakRef(m) => {
@@ -174,8 +174,8 @@ pub(crate) fn set_prototype_of(
     };
     heap.read(id, |object| match object {
         HeapObject::Plain(o) => writable(o),
-        HeapObject::JsMap(m) => writable(m.object()),
-        HeapObject::WeakMap(m) => writable(m.object()),
+        HeapObject::JsMap(m) | HeapObject::JsSet(m) => writable(m.object()),
+        HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => writable(m.object()),
         HeapObject::WeakRef(m) => writable(m.object()),
         HeapObject::FinalizationRegistry(m) => writable(m.object()),
         HeapObject::DisposableStack(m) => writable(m.object()),
@@ -203,11 +203,11 @@ pub(crate) fn set_prototype_of(
             o.set_prototype(proto);
             Ok(())
         }
-        HeapObject::JsMap(m) => {
+        HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
             m.object_mut().set_prototype(proto);
             Ok(())
         }
-        HeapObject::WeakMap(m) => {
+        HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => {
             m.object_mut().set_prototype(proto);
             Ok(())
         }
@@ -275,8 +275,10 @@ fn check_chain(
                 HeapObject::Generator(g) => {
                     readable(&g.object, task).map(|()| g.object.prototype())
                 }
-                HeapObject::JsMap(m) => readable(m.object(), task).map(|()| m.object().prototype()),
-                HeapObject::WeakMap(m) => {
+                HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
+                    readable(m.object(), task).map(|()| m.object().prototype())
+                }
+                HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => {
                     readable(m.object(), task).map(|()| m.object().prototype())
                 }
                 HeapObject::WeakRef(m) => {

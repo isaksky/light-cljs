@@ -72,6 +72,8 @@ pub struct ObjectCounts {
     pub module_namespace: usize,
     pub disposable_stack: usize,
     pub proxy: usize,
+    pub js_set: usize,
+    pub weak_set: usize,
 }
 
 impl ObjectCounts {
@@ -103,6 +105,8 @@ impl ObjectCounts {
             + self.module_namespace
             + self.disposable_stack
             + self.proxy
+            + self.js_set
+            + self.weak_set
     }
 
     fn count(&mut self, object: &HeapObject) {
@@ -120,6 +124,8 @@ impl ObjectCounts {
             HeapObject::Builtin(_) => &mut self.builtin,
             HeapObject::Array(_) => &mut self.array,
             HeapObject::JsMap(_) => &mut self.js_map,
+            HeapObject::JsSet(_) => &mut self.js_set,
+            HeapObject::WeakSet(_) => &mut self.weak_set,
             HeapObject::WeakMap(_) => &mut self.weak_map,
             HeapObject::WeakRef(_) => &mut self.weak_ref,
             HeapObject::FinalizationRegistry(_) => &mut self.finalization_registry,

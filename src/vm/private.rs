@@ -61,8 +61,8 @@ fn storage<R>(
         let ordinary: Option<&mut OrdinaryObject> = match object {
             HeapObject::Plain(o) => Some(o),
             HeapObject::Array(a) => Some(a.object_mut()),
-            HeapObject::JsMap(m) => Some(m.object_mut()),
-            HeapObject::WeakMap(m) => Some(m.object_mut()),
+            HeapObject::JsMap(m) | HeapObject::JsSet(m) => Some(m.object_mut()),
+            HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => Some(m.object_mut()),
             HeapObject::WeakRef(m) => Some(m.object_mut()),
             HeapObject::FinalizationRegistry(m) => Some(m.object_mut()),
             HeapObject::DisposableStack(m) => Some(m.object_mut()),

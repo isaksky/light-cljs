@@ -1,4 +1,4 @@
-//! AddEntriesFromIterable shared by Map and WeakMap construction. Each
+//! Iterable consumer shared by Map/WeakMap entries and Set/WeakSet values. Each
 //! observable read/call resumes through the trampoline; entry validation is
 //! a separate budgeted step so IteratorStepValue failures do not close.
 use super::*;
@@ -27,6 +27,7 @@ enum Stage {
 #[derive(Debug)]
 pub(super) struct State {
     stage: Stage,
+    values: bool,
     target: Value,
     items: Value,
     adder: Value,
@@ -64,6 +65,7 @@ impl State {
     pub(super) fn new(target: Value, items: Value) -> Self {
         Self {
             stage: Stage::Start,
+            values: false,
             target,
             items,
             adder: Value::Undefined,
@@ -74,6 +76,10 @@ impl State {
             key: Value::Undefined,
             pending: None,
         }
+    }
+
+    pub(super) fn consume_values(&mut self) {
+        self.values = true;
     }
 
     pub(super) fn catches(&self) -> bool {
@@ -149,7 +155,7 @@ impl State {
                     heap,
                     task,
                     self.target.clone(),
-                    property::Key::Name(JsString::from("set")),
+                    property::Key::Name(JsString::from(if self.values { "add" } else { "set" })),
                     Stage::Adder,
                 )
             }
@@ -217,6 +223,14 @@ impl State {
                 Ok(Action::Continue)
             }
             Stage::Entry => {
+                if self.values {
+                    self.stage = Stage::Added;
+                    return Ok(Action::Call {
+                        callee: self.adder.clone(),
+                        this: self.target.clone(),
+                        args: vec![self.result.clone()],
+                    });
+                }
                 if !matches!(self.result, Value::Object(_)) {
                     return Err(Fault::TypeError("iterator entry must be an object".into()));
                 }
@@ -316,6 +330,10 @@ mod tests {
     // task-owned target whose own set can be overridden. All reads/callbacks
     // still execute from source through the ordinary budgeted trampoline.
     fn check(source: &str) {
+        check_consumer(source, false);
+    }
+
+    fn check_consumer(source: &str, values: bool) {
         let heap = Heap::default();
         let code = compile_script("add-entries.js", source).unwrap();
         let task = TaskId::from_raw(294);
@@ -348,8 +366,12 @@ mod tests {
                             .unwrap_or_else(|_| panic!("fixture field"));
                     let items = property::get_field(&heap, task, &global, &JsString::from("items"))
                         .unwrap_or_else(|_| panic!("fixture field"));
-                    start_add_entries(&mut vm, target, items, 0)
-                        .unwrap_or_else(|_| panic!("start consumer"));
+                    if values {
+                        start_add_values(&mut vm, target, items, 0)
+                    } else {
+                        start_add_entries(&mut vm, target, items, 0)
+                    }
+                    .unwrap_or_else(|_| panic!("start consumer"));
                     injected = true;
                 }
                 Exit::Need { .. } => vm.push(Value::Number(7.0)),
@@ -473,6 +495,66 @@ mod tests {
             try { __rt.need(294, 0); } catch(e) { ok = e.tag === 17; }
             ok && closed === 1
         "#,
+        );
+    }
+
+    #[test]
+    fn values_cache_add_before_iterator_and_resume_calls() {
+        for constructor in ["Set", "WeakSet"] {
+            check_consumer(
+                &format!(
+                    r#"
+                let C = {constructor}, original = C.prototype.add, log = '', k = {{}}, n = 0;
+                globalThis.target = new C();
+                Object.defineProperty(target, 'add', {{configurable: true, get() {{
+                    log += 'a'; __rt.need(5,3);
+                    return function(value) {{
+                        log += 'A'; __rt.need(5,3);
+                        Object.defineProperty(target, 'add', {{value: 0, configurable: true}});
+                        if (this !== target || arguments.length !== 1) throw 99;
+                        return original.call(this, value);
+                    }};
+                }} }});
+                globalThis.items = {{get [Symbol.iterator]() {{
+                    log += 'i'; return function() {{return this;}};
+                }}, next() {{return ++n > 2 ? {{done:true}} : {{value:k}};}} }};
+                let s = __rt.need(294,0);
+                s === target && s.has(k) && log === 'aiAA'
+            "#
+                ),
+                true,
+            );
+        }
+    }
+
+    #[test]
+    fn values_add_failures_close_and_root_original_exception() {
+        for close in [
+            "return() {closed++; __rt.need(5,3); return {};}",
+            "get return() {closed++; __rt.need(5,3); throw 99;}",
+            "return() {closed++; throw 99;}",
+        ] {
+            check_consumer(
+                &format!(
+                    r#"
+                let closed = 0, ok = false;
+                globalThis.target = {{add(v) {{__rt.need(5,3); throw {{tag:v.n}};}}}};
+                globalThis.items = {{[Symbol.iterator]() {{return this;}},
+                    next() {{return {{value:{{n:17}}}};}}, {close} }};
+                try {{__rt.need(294,0);}} catch(e) {{ok = e.tag === 17;}}
+                ok && closed === 1
+            "#
+                ),
+                true,
+            );
+        }
+        check_consumer(
+            "let reads = 0, ok = false; globalThis.target = {add:0}; globalThis.items = {get [Symbol.iterator]() {reads++;}}; try {__rt.need(294,0);} catch(e) {ok = e instanceof TypeError;} ok && reads === 0",
+            true,
+        );
+        check_consumer(
+            "globalThis.target = {get add() {throw 99;}}; globalThis.items = null; __rt.need(294,0) === target",
+            true,
         );
     }
 }

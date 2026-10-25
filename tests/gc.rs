@@ -1828,3 +1828,54 @@ fn finalization_observer_unwind_consumes_cleared_cells() {
     assert!(registry.downgrade().is_live());
     assert!(!weak.is_live());
 }
+
+/// Synthetic fixtures, not light-cljs output. Membership is the only
+/// strong path to a Set element; deletion and clear remove that path.
+#[test]
+fn set_entries_are_traced_and_removed_entries_reclaimed() {
+    use clj_quickjs::frontend::compile_function;
+    for operation in ["", "s.delete(k)", "s.clear()"] {
+        let rt = Runtime::new();
+        let key = new_rooted_object(&rt);
+        let weak = key.downgrade();
+        let code = compile_function(&format!(
+            "function make(k) {{let s = new Set([k]); {operation}; return s;}}"
+        ))
+        .unwrap();
+        let task = rt.spawn(&code, &[&key]).unwrap();
+        let set = complete(task.run().unwrap());
+        drop((task, key));
+        rt.collect().unwrap();
+        assert_eq!(weak.is_live(), operation.is_empty());
+        assert!(set.downgrade().is_live());
+        drop(set);
+        rt.collect().unwrap();
+        assert_eq!(weak.upgrade().unwrap_err(), HandleError::Reclaimed);
+    }
+}
+
+/// Synthetic fixture, not light-cljs output. Only the iterator's internal
+/// source slot can retain the Set and its member after the task is dropped.
+#[test]
+fn set_cursor_retains_source_and_elements() {
+    use clj_quickjs::frontend::compile_function;
+    for method in ["values", "entries"] {
+        let rt = Runtime::new();
+        let key = new_rooted_object(&rt);
+        let weak = key.downgrade();
+        let code = compile_function(&format!(
+            "function make(k) {{return new Set([k]).{method}();}}"
+        ))
+        .unwrap();
+        let task = rt.spawn(&code, &[&key]).unwrap();
+        let cursor = complete(task.run().unwrap());
+        drop((task, key));
+        rt.collect().unwrap();
+        assert!(weak.is_live());
+        assert_eq!(rt.heap_usage().objects.js_set, 1);
+        drop(cursor);
+        rt.collect().unwrap();
+        assert!(!weak.is_live());
+        assert_eq!(rt.heap_usage().objects.js_set, 0);
+    }
+}

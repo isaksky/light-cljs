@@ -8965,3 +8965,29 @@ Root inventory: `PrivateElements` is a PersistentHandle holder through ordinary
 objects or proxies. `private_elements_retain_and_reclaim` *(lib, inventory)*
 checks retention and reclamation of private data, method, getter and setter edges
 on each receiver kind, including rejection of stale handles after slot reuse.
+
+### Set and WeakSet storage and resumable construction (clj-quickjs-295)
+
+The append-only `JsSet` and `WeakSet` heap kinds use the existing `MapObject`
+and `WeakMapObject` payloads with distinct receiver brands and realm prototypes.
+Set stores elements as map keys with undefined values; its cursors therefore
+inherit eager deletion/clear reclamation and monotonic insertion positions.
+WeakSet uses ephemeron entries with undefined values, retaining neither object
+nor unregistered-symbol keys. Ordinary properties and prototype edges remain
+strong. Ownership checks, property descriptors, JSON enumeration, integrity
+operations and publication use the same boundaries as Map and WeakMap.
+
+`native::add_entries::State` has a value-consumer mode that reads `add`, sends
+one argument, and bypasses entry-pair reads. IteratorStepValue failures do not
+close; failures from add close exactly once, preserving the original throw.
+The frame traces the target, iterator, cached adder, delivered values and pending
+exception across budgets, waits and migration. Set iterator cursors reuse the
+traced ordinary-object iterator slot and use a dedicated branded prototype.
+
+Root inventory: `JsSet` uses the Map entry holder and `WeakSet` uses the WeakMap
+conditional holder. `set_entries_are_traced_and_removed_entries_reclaimed`
+checks strong membership and eager edge removal; `weak_set_keys_are_weak_and_properties_strong`
+checks live object/symbol keys, weak-key collection and independent property
+retention. `set_frames_survive_collection_and_migration` collects on every
+single-instruction yield through construction, forEach and entries. The native
+consumer tests additionally cover cached add getters, waits and thrown close.

@@ -935,3 +935,60 @@ fn builtin_fold_result_survives_collection() {
     assert!(yields > 3, "{yields}");
     assert_eq!(number(&result), 13.0);
 }
+
+/// Synthetic fixture, not light-cljs output. The native continuation is the
+/// only owner of the Set, callback and thisArg across a dependency wait.
+#[test]
+fn set_for_each_suspends_and_preserves_live_cursor() {
+    let rt = Runtime::new();
+    let exe = compile_function(
+        r#"function iterate() {
+        let s = new Set([{id:1}, {id:2}, {id:3}]), remaining = 3;
+        let callback = function(v,k,set) {
+            if (v !== k) throw 99;
+            if (v.id === 1) { s = null; callback = null; context = null; }
+            __rt.effect(2,v.id);
+            if (v.id === 2) __rt.need(295,0);
+            __rt.effect(3,k.id + this.offset);
+            set.delete(v);
+            if (v.id === 2) { set.clear(); set.add({id:4}); }
+            remaining = set.size;
+        };
+        let context = {offset:10};
+        let result = s.forEach(callback,context);
+        return result === undefined ? remaining : 100;
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&exe, &[]).unwrap();
+    let mut host = Recorder::default();
+    let dependency = key(&rt, 295, 0);
+    assert_eq!(
+        waiting(task.run_with(Budget::UNLIMITED, &mut host).unwrap()),
+        dependency
+    );
+    assert_eq!(host.op(2), [1.0, 2.0]);
+    assert_eq!(host.op(3), [11.0]);
+    let request = one_request(&task, dependency);
+    rt.collect().unwrap();
+    let resumed = only_runnable(publish_number(&rt, &request, 0.0));
+    let resumed_rt = rt.clone();
+    let (outcome, host) = thread::spawn(move || {
+        for _ in 0..10_000 {
+            let outcome = resumed
+                .run_with(Budget::instructions(1), &mut host)
+                .unwrap();
+            if !matches!(outcome, RunOutcome::Yielded) {
+                return (outcome, host);
+            }
+            resumed_rt.collect().unwrap();
+        }
+        panic!("Set forEach exceeded instruction bound");
+    })
+    .join()
+    .unwrap();
+    assert_eq!(number(&complete(outcome)), 0.0);
+    assert_eq!(host.op(2), [1.0, 2.0, 4.0]);
+    assert_eq!(host.op(3), [11.0, 12.0, 14.0]);
+    assert_eq!(task.dependency_log().edges(), &[dependency]);
+}

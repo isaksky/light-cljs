@@ -164,6 +164,8 @@ pub(crate) enum ObjectKind {
     ModuleNamespace,
     DisposableStack,
     Proxy,
+    JsSet,
+    WeakSet,
 }
 
 /// Rust data stored inside a heap object, for native operations.
@@ -249,6 +251,8 @@ pub(crate) enum HeapObject {
     ModuleNamespace(Box<crate::module::namespace::Namespace>),
     DisposableStack(Box<crate::object::disposable_stack::DisposableStack>),
     Proxy(crate::vm::proxy::Proxy),
+    JsSet(Box<crate::object::map::MapObject>),
+    WeakSet(Box<crate::object::weak_map::WeakMapObject>),
 }
 
 impl HeapObject {
@@ -273,6 +277,8 @@ impl HeapObject {
             HeapObject::Builtin(_) => ObjectKind::Builtin,
             HeapObject::Array(_) => ObjectKind::Array,
             HeapObject::JsMap(_) => ObjectKind::JsMap,
+            HeapObject::JsSet(_) => ObjectKind::JsSet,
+            HeapObject::WeakSet(_) => ObjectKind::WeakSet,
             HeapObject::WeakMap(_) => ObjectKind::WeakMap,
             HeapObject::WeakRef(_) => ObjectKind::WeakRef,
             HeapObject::FinalizationRegistry(_) => ObjectKind::FinalizationRegistry,
@@ -305,8 +311,8 @@ impl Trace for HeapObject {
             HeapObject::Atom(a) => a.trace(visit),
             HeapObject::Builtin(f) => f.trace(visit),
             HeapObject::Array(a) => a.trace(visit),
-            HeapObject::JsMap(m) => m.trace(visit),
-            HeapObject::WeakMap(m) => m.trace(visit),
+            HeapObject::JsMap(m) | HeapObject::JsSet(m) => m.trace(visit),
+            HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => m.trace(visit),
             HeapObject::WeakRef(m) => m.trace(visit),
             HeapObject::FinalizationRegistry(m) => m.trace(visit),
             HeapObject::DisposableStack(m) => m.trace(visit),
@@ -338,8 +344,8 @@ impl Trace for HeapObject {
             HeapObject::Builtin(f) => f.trace_conditional(visit),
             HeapObject::Array(a) => a.trace_conditional(visit),
             HeapObject::BoundFunction(f) => f.trace_conditional(visit),
-            HeapObject::JsMap(m) => m.trace_conditional(visit),
-            HeapObject::WeakMap(m) => m.trace_conditional(visit),
+            HeapObject::JsMap(m) | HeapObject::JsSet(m) => m.trace_conditional(visit),
+            HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => m.trace_conditional(visit),
             HeapObject::WeakRef(m) => m.trace_conditional(visit),
             HeapObject::FinalizationRegistry(m) => m.trace_conditional(visit),
             HeapObject::DisposableStack(m) => m.trace_conditional(visit),

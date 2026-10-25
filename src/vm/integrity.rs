@@ -133,8 +133,10 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
     }
     heap.read(id, |object| match object {
         HeapObject::Plain(o) => readable(o.owner()).map(|()| has_level(o, level)),
-        HeapObject::JsMap(m) => readable(m.object().owner()).map(|()| has_level(m.object(), level)),
-        HeapObject::WeakMap(m) => {
+        HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
+            readable(m.object().owner()).map(|()| has_level(m.object(), level))
+        }
+        HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => {
             readable(m.object().owner()).map(|()| has_level(m.object(), level))
         }
         HeapObject::WeakRef(m) => {
@@ -233,7 +235,7 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
             }
             Ok(())
         }
-        HeapObject::JsMap(m) => {
+        HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
             writable(m.object().owner())?;
             match level {
                 Level::NonExtensible => m.object_mut().prevent_extensions(),
@@ -241,7 +243,7 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
             }
             Ok(())
         }
-        HeapObject::WeakMap(m) => {
+        HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => {
             writable(m.object().owner())?;
             match level {
                 Level::NonExtensible => m.object_mut().prevent_extensions(),

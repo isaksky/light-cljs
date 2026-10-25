@@ -493,6 +493,19 @@ pub(crate) enum Builtin {
     ArrayPrototypeToSorted,
     ArrayPrototypeWith,
     ArrayOf,
+    Set,
+    SetAdd,
+    SetHas,
+    SetDelete,
+    SetClear,
+    SetSize,
+    SetForEach,
+    SetValues,
+    SetEntries,
+    WeakSet,
+    WeakSetAdd,
+    WeakSetHas,
+    WeakSetDelete,
 }
 
 /// Append-only kinds; discriminants index the realm's constructor/prototype pairs.
@@ -538,6 +551,16 @@ impl Builtin {
     /// The function's `name` property.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Builtin::Set => "Set",
+            Builtin::WeakSet => "WeakSet",
+            Builtin::SetAdd | Builtin::WeakSetAdd => "add",
+            Builtin::SetHas | Builtin::WeakSetHas => "has",
+            Builtin::SetDelete | Builtin::WeakSetDelete => "delete",
+            Builtin::SetClear => "clear",
+            Builtin::SetSize => "get size",
+            Builtin::SetForEach => "forEach",
+            Builtin::SetValues => "values",
+            Builtin::SetEntries => "entries",
             Builtin::ArrayPrototypeSlice => "slice",
             Builtin::ArrayPrototypeConcat => "concat",
             Builtin::ArrayPrototypeFlat => "flat",
@@ -822,6 +845,19 @@ impl Builtin {
     /// The function's `length` property: its number of declared parameters.
     pub(crate) fn length(self) -> u32 {
         match self {
+            Builtin::Set
+            | Builtin::WeakSet
+            | Builtin::SetClear
+            | Builtin::SetSize
+            | Builtin::SetValues
+            | Builtin::SetEntries => 0,
+            Builtin::SetAdd
+            | Builtin::SetHas
+            | Builtin::SetDelete
+            | Builtin::SetForEach
+            | Builtin::WeakSetAdd
+            | Builtin::WeakSetHas
+            | Builtin::WeakSetDelete => 1,
             Builtin::ArrayPrototypeSlice | Builtin::ArrayPrototypeWith => 2,
             Builtin::ArrayPrototypeConcat | Builtin::ArrayPrototypeToSorted => 1,
             Builtin::ArrayPrototypeFlat
@@ -1161,9 +1197,12 @@ pub(crate) fn call(
             super::native::iterator::Kind::TypedArray,
         ),
         Builtin::IteratorIdentity => Ok(this.clone()),
-        Builtin::StringIterator | Builtin::IteratorNext(_) | Builtin::MapForEach => Err(
-            Fault::Internal("iterator callback requires a resumable frame"),
-        ),
+        Builtin::StringIterator
+        | Builtin::IteratorNext(_)
+        | Builtin::MapForEach
+        | Builtin::SetForEach => Err(Fault::Internal(
+            "iterator callback requires a resumable frame",
+        )),
         Builtin::TypedArraySet | Builtin::TypedArrayFill | Builtin::TypedArrayJoin => Err(
             Fault::Internal("typed array method requires a resumable frame"),
         ),
@@ -1345,6 +1384,27 @@ pub(crate) fn call(
         | Builtin::JsonStringify => Err(Fault::Internal("built-in requires a resumable frame")),
         Builtin::StringRaw => Err(Fault::Internal("String.raw requires a resumable frame")),
         Builtin::Map => Err(Fault::TypeError("Map requires new".to_string())),
+        Builtin::Set | Builtin::WeakSet => {
+            Err(Fault::TypeError(format!("{} requires new", which.name())))
+        }
+        Builtin::SetAdd
+        | Builtin::SetHas
+        | Builtin::SetDelete
+        | Builtin::SetClear
+        | Builtin::SetSize => set_operation(heap, task, which, this, args),
+        Builtin::WeakSetAdd | Builtin::WeakSetHas | Builtin::WeakSetDelete => {
+            weak_set_operation(heap, task, which, this, args)
+        }
+        Builtin::SetValues | Builtin::SetEntries => super::native::iterator::create(
+            heap,
+            task,
+            this,
+            if which == Builtin::SetValues {
+                super::native::iterator::Kind::SetValues
+            } else {
+                super::native::iterator::Kind::SetEntries
+            },
+        ),
         Builtin::WeakMap => Err(Fault::TypeError("WeakMap requires new".to_string())),
         Builtin::WeakRef => Err(Fault::TypeError("WeakRef requires new".into())),
         Builtin::DisposableStack => Err(Fault::TypeError("DisposableStack requires new".into())),
@@ -2380,7 +2440,9 @@ fn to_string_tag(heap: &Heap, task: TaskId, this: &Value) -> Result<&'static str
                 HeapObject::Array(_) => Ok("Array"),
                 HeapObject::Native(_)
                 | HeapObject::JsMap(_)
+                | HeapObject::JsSet(_)
                 | HeapObject::WeakMap(_)
+                | HeapObject::WeakSet(_)
                 | HeapObject::WeakRef(_)
                 | HeapObject::FinalizationRegistry(_)
                 | HeapObject::DisposableStack(_) => Ok("Object"),
@@ -2697,6 +2759,117 @@ fn disposable_stack_method(
         })
     })?;
     Ok(result)
+}
+
+pub(crate) fn set_constructor(heap: &Heap, task: TaskId) -> Result<Value, Fault> {
+    let prototype = realm::intrinsics(heap)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .set_prototype;
+    let map = crate::object::map::MapObject::new(task, prototype);
+    heap.alloc(HeapObject::JsSet(Box::new(map)))
+        .map(Value::Object)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+}
+
+fn set_operation(
+    heap: &Heap,
+    task: TaskId,
+    which: Builtin,
+    this: &Value,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    let invalid = || {
+        Fault::TypeError(format!(
+            "Set.prototype.{} requires a Set receiver",
+            which.name()
+        ))
+    };
+    let Value::Object(id) = this else {
+        return Err(invalid());
+    };
+    // The frame roots receiver and arguments throughout this leaf operation.
+    // The object lock is the same task-owned mutation boundary as plain objects.
+    heap.with_object_mut(*id, |object| {
+        let HeapObject::JsSet(map) = object else {
+            return Err(invalid());
+        };
+        if map.object().owner() != Some(task) {
+            return Err(Fault::ForeignObject {
+                owner: map.object().owner(),
+                caller: task,
+            });
+        }
+        let key = args.first().cloned().unwrap_or(Value::Undefined);
+        Ok(match which {
+            Builtin::SetAdd => {
+                map.set(key, Value::Undefined)
+                    .map_err(|message| Fault::RangeError(message.into()))?;
+                this.clone()
+            }
+            Builtin::SetHas => Value::Bool(map.get(&key).is_some()),
+            Builtin::SetDelete => Value::Bool(map.delete(&key)),
+            Builtin::SetClear => {
+                map.clear();
+                Value::Undefined
+            }
+            Builtin::SetSize => Value::Number(map.size() as f64),
+            _ => return Err(Fault::Internal("not a Set operation")),
+        })
+    })
+    .unwrap_or(Err(Fault::Internal("Set receiver was reclaimed")))
+}
+
+pub(crate) fn weak_set_constructor(heap: &Heap, task: TaskId) -> Result<Value, Fault> {
+    let prototype = realm::intrinsics(heap)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))?
+        .weak_set_prototype;
+    heap.alloc(HeapObject::WeakSet(Box::new(
+        crate::object::weak_map::WeakMapObject::new(task, prototype),
+    )))
+    .map(Value::Object)
+    .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+}
+
+fn weak_set_operation(
+    heap: &Heap,
+    task: TaskId,
+    which: Builtin,
+    this: &Value,
+    args: &[Value],
+) -> Result<Value, Fault> {
+    let invalid = || {
+        Fault::TypeError(format!(
+            "WeakSet.prototype.{} requires a WeakSet receiver",
+            which.name()
+        ))
+    };
+    let Value::Object(id) = this else {
+        return Err(invalid());
+    };
+    // Receiver and arguments are rooted by the frame throughout this leaf.
+    heap.with_object_mut(*id, |object| {
+        let HeapObject::WeakSet(map) = object else {
+            return Err(invalid());
+        };
+        if map.object().owner() != Some(task) {
+            return Err(Fault::ForeignObject {
+                owner: map.object().owner(),
+                caller: task,
+            });
+        }
+        let key = args.first().and_then(crate::object::weak_map::weak_key);
+        Ok(match which {
+            Builtin::WeakSetAdd => {
+                let key = key.ok_or_else(|| Fault::TypeError("invalid WeakSet key".into()))?;
+                map.set(key, Value::Undefined);
+                this.clone()
+            }
+            Builtin::WeakSetHas => Value::Bool(key.is_some_and(|k| map.get(k).is_some())),
+            Builtin::WeakSetDelete => Value::Bool(key.is_some_and(|k| map.delete(k))),
+            _ => return Err(Fault::Internal("not a WeakSet operation")),
+        })
+    })
+    .unwrap_or(Err(Fault::Internal("WeakSet receiver was reclaimed")))
 }
 
 #[cfg(test)]

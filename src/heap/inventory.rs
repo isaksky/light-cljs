@@ -186,7 +186,7 @@ const CATEGORIES: [RootCategory; 7] = [
 
 /// Every object kind; a new one fails to compile in [`holders_of_kind`]
 /// until it is mapped, and must be listed here.
-const KINDS: [ObjectKind; 26] = [
+const KINDS: [ObjectKind; 28] = [
     ObjectKind::PlainObject,
     ObjectKind::Native,
     ObjectKind::Vector,
@@ -213,6 +213,8 @@ const KINDS: [ObjectKind; 26] = [
     ObjectKind::ModuleNamespace,
     ObjectKind::DisposableStack,
     ObjectKind::Proxy,
+    ObjectKind::JsSet,
+    ObjectKind::WeakSet,
 ];
 
 /// The holders whose values the collector reaches as roots of `category`.
@@ -313,6 +315,8 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
         ObjectKind::Array => &[ArrayElement],
         ObjectKind::BoundFunction => &[BoundFunction],
         ObjectKind::JsMap => &[JsMapEntries],
+        ObjectKind::JsSet => &[JsMapEntries],
+        ObjectKind::WeakSet => &[WeakMapEntries],
         ObjectKind::WeakMap => &[WeakMapEntries],
         ObjectKind::WeakRef => &[WeakRefProperties],
         ObjectKind::FinalizationRegistry => &[FinalizationRegistryEdges],
@@ -1039,7 +1043,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 383); // Nine Array copying/iterator built-ins (-299).
+    assert_eq!(ids.len(), 400); // Set/WeakSet: fourteen built-ins and three prototypes (-295).
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();

@@ -414,7 +414,9 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
                 | HeapObject::Atom(_)
                 | HeapObject::Array(_)
                 | HeapObject::JsMap(_)
+                | HeapObject::JsSet(_)
                 | HeapObject::WeakMap(_)
+                | HeapObject::WeakSet(_)
                 | HeapObject::WeakRef(_)
                 | HeapObject::FinalizationRegistry(_)
                 | HeapObject::DisposableStack(_)
@@ -882,14 +884,22 @@ fn construct_target(
             return Ok(Flow::Next);
         }
         Ok(Callee::Code(id, code)) if code.constructor_kind.is_constructor() => (id, code),
-        Ok(Callee::Builtin(which @ (Builtin::Map | Builtin::WeakMap))) => {
-            let result = if which == Builtin::Map {
-                builtin::map_constructor(heap, task)?
-            } else {
-                builtin::weak_map_constructor(heap, task)?
+        Ok(Callee::Builtin(
+            which @ (Builtin::Map | Builtin::WeakMap | Builtin::Set | Builtin::WeakSet),
+        )) => {
+            let result = match which {
+                Builtin::Map => builtin::map_constructor(heap, task)?,
+                Builtin::WeakMap => builtin::weak_map_constructor(heap, task)?,
+                Builtin::Set => builtin::set_constructor(heap, task)?,
+                Builtin::WeakSet => builtin::weak_set_constructor(heap, task)?,
+                _ => unreachable!(),
             };
             let items = args.first().cloned().unwrap_or(Value::Undefined);
-            super::native::start_add_entries(state, result, items, argc + 1)?;
+            if matches!(which, Builtin::Set | Builtin::WeakSet) {
+                super::native::start_add_values(state, result, items, argc + 1)?;
+            } else {
+                super::native::start_add_entries(state, result, items, argc + 1)?;
+            }
             return Ok(Flow::Next);
         }
         Ok(Callee::Builtin(Builtin::WeakRef)) => {
@@ -1352,6 +1362,8 @@ pub(super) fn is_constructor(heap: &Heap, value: &Value, limit: usize) -> Result
                         | Builtin::Array
                         | Builtin::Map
                         | Builtin::WeakMap
+                        | Builtin::Set
+                        | Builtin::WeakSet
                         | Builtin::WeakRef
                         | Builtin::FinalizationRegistry
                         | Builtin::DisposableStack

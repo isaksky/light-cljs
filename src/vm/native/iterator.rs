@@ -14,6 +14,12 @@ pub(crate) enum Kind {
     String,
     ArrayKeys,
     ArrayEntries,
+    SetValues,
+    SetEntries,
+}
+
+fn is_set(kind: Kind) -> bool {
+    matches!(kind, Kind::SetValues | Kind::SetEntries)
 }
 
 #[derive(Clone, Debug)]
@@ -59,15 +65,27 @@ fn map<R>(
     heap: &Heap,
     task: TaskId,
     value: &Value,
+    set: bool,
     f: impl FnOnce(&crate::object::map::MapObject) -> R,
 ) -> Result<R, Fault> {
-    let invalid = || Fault::TypeError("Map.prototype.forEach requires a Map receiver".into());
+    let invalid = || {
+        Fault::TypeError(
+            if set {
+                "Set method requires a Set receiver"
+            } else {
+                "Map.prototype.forEach requires a Map receiver"
+            }
+            .into(),
+        )
+    };
     let Value::Object(id) = value else {
         return Err(invalid());
     };
     heap.read(*id, |o| {
-        let HeapObject::JsMap(map) = o else {
-            return Err(invalid());
+        let map = match o {
+            HeapObject::JsSet(map) if set => map,
+            HeapObject::JsMap(map) if !set => map,
+            _ => return Err(invalid()),
         };
         if map.object().owner() != Some(task) {
             return Err(Fault::ForeignObject {
@@ -110,8 +128,13 @@ pub(crate) fn create(
             return Err(Fault::TypeError("ArrayBuffer is detached".into()));
         }
     }
+    if is_set(kind) {
+        map(heap, task, source, true, |_| ())?;
+    }
     let realm = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("iterator realm"))?;
-    let prototype = if kind == Kind::String {
+    let prototype = if is_set(kind) {
+        realm.set_iterator_prototype
+    } else if kind == Kind::String {
         realm.string_iterator_prototype
     } else {
         realm.array_iterator_prototype
@@ -206,10 +229,28 @@ impl State {
         callback: Value,
         this_arg: Value,
     ) -> Result<Self, Fault> {
-        map(heap, task, &source, |_| ())?;
+        map(heap, task, &source, false, |_| ())?;
         dispatch::callee(heap, &callback)?;
         Ok(Self {
             stage: Stage::MapEntry,
+            callback,
+            this_arg,
+            ..Self::get_iterator(source)
+        })
+    }
+
+    pub(super) fn set_for_each(
+        heap: &Heap,
+        task: TaskId,
+        source: Value,
+        callback: Value,
+        this_arg: Value,
+    ) -> Result<Self, Fault> {
+        map(heap, task, &source, true, |_| ())?;
+        dispatch::callee(heap, &callback)?;
+        Ok(Self {
+            stage: Stage::MapEntry,
+            kind: Kind::SetValues,
             callback,
             this_arg,
             ..Self::get_iterator(source)
@@ -235,7 +276,9 @@ impl State {
         expected: Kind,
     ) -> Result<Self, Fault> {
         let data = cursor(heap, task, iterator, |data| data.clone())?;
-        if (data.kind == Kind::String) != (expected == Kind::String) {
+        if (data.kind == Kind::String) != (expected == Kind::String)
+            || is_set(data.kind) != is_set(expected)
+        {
             return Err(Fault::TypeError("incompatible iterator receiver".into()));
         }
         Ok(Self {
@@ -323,7 +366,7 @@ impl State {
                 // One live entry per budgeted step. The logical cursor
                 // advances before reentry, and the heap read
                 // ends before invoking JavaScript or reaching a safepoint.
-                let entry = map(heap, task, &self.source, |m| {
+                let entry = map(heap, task, &self.source, is_set(self.kind), |m| {
                     m.entry(self.index)
                         .map(|(next, entry)| (next, entry.clone()))
                 })?;
@@ -331,6 +374,11 @@ impl State {
                     return Ok(Action::Return(Value::Undefined));
                 };
                 self.index = next;
+                let value = if is_set(self.kind) {
+                    key.clone()
+                } else {
+                    value
+                };
                 Ok(Action::Call {
                     callee: self.callback.clone(),
                     this: self.this_arg.clone(),
@@ -404,6 +452,20 @@ impl State {
             Stage::Length => {
                 if self.done {
                     return self.result(heap, task, Value::Undefined, true);
+                }
+                if is_set(self.kind) {
+                    let entry = map(heap, task, &self.source, true, |m| {
+                        m.entry(self.index)
+                            .map(|(next, (key, _))| (next, key.clone()))
+                    })?;
+                    let Some((next, mut value)) = entry else {
+                        return self.result(heap, task, Value::Undefined, true);
+                    };
+                    cursor(heap, task, &self.iterator, |data| data.index = next)?;
+                    if self.kind == Kind::SetEntries {
+                        value = builtin::array_constructor(heap, task, &[value.clone(), value])?;
+                    }
+                    return self.result(heap, task, value, false);
                 }
                 if matches!(
                     self.kind,

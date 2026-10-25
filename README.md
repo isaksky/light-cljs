@@ -4597,3 +4597,33 @@ using task-owned targets; constructor source tests preserve that boundary.
 Tests: `cargo test --test map_iterables`,
 `cargo test --test need map_iterable_`,
 and `cargo test --lib vm::native::add_entries::tests`.
+
+### JavaScript Set and WeakSet (clj-quickjs-295)
+
+`new Set(iterable?)` and `new WeakSet(iterable?)` accept synchronous iterables,
+including strings and generators; null/undefined create an empty collection.
+Construction caches the observable `add` method before acquiring the iterator,
+uses budgeted native steps for reads and calls, and closes the iterator after
+an adder failure while preserving the original exception.
+
+Set supports `add`, `has`, `delete`, `clear`, the `size` getter, `forEach`,
+`values`, `keys` (the same function as `values`), `entries` (value/value pairs),
+and `Symbol.iterator` (also `values`). Membership uses SameValueZero, including
+BigInt value equality and canonical positive zero. Iteration follows insertion
+order and observes later appends, deletion/reinsertion and clear through stable
+logical cursors; exhausted iterators stay exhausted. `forEach` receives
+`(value, value, set)` and supports `thisArg`, waits, yields and worker migration.
+Storage reuses Map's eager reclamation and its `u64` insertion-position limit:
+position exhaustion throws RangeError before inserting a new element.
+
+WeakSet exposes `add`, `has` and `delete`, with weak object and unregistered
+symbol keys under the collector's ephemeron machinery. Invalid add arguments
+throw TypeError; invalid has/delete arguments return false. It has no size,
+clear, enumeration or iterator API. Both collection types and Set iterators
+are task-owned and rejected at publication boundaries. Freezing or preventing
+extensions affects ordinary properties, while membership remains mutable.
+Realm prototypes follow Map's immutable intrinsic policy. Built-in subclass
+construction and ES2025 Set algebra methods remain deferred.
+
+Run the synthetic fixtures with
+`cargo test --test sets --test map_iterables -- --test-threads=3`.

@@ -221,11 +221,13 @@ pub(crate) enum Global {
     DisposableStack = 43,
     AsyncDisposableStack = 44,
     Proxy = 45,
+    Set = 46,
+    WeakSet = 47,
 }
 
 impl Global {
     /// Every built-in global, in operand order.
-    const ALL: [Global; 46] = [
+    const ALL: [Global; 48] = [
         Global::Object,
         Global::Number,
         Global::String,
@@ -272,6 +274,8 @@ impl Global {
         Global::DisposableStack,
         Global::AsyncDisposableStack,
         Global::Proxy,
+        Global::Set,
+        Global::WeakSet,
     ];
 
     /// The JavaScript name.
@@ -308,6 +312,8 @@ impl Global {
 
             Global::Symbol => "Symbol",
             Global::Map => "Map",
+            Global::Set => "Set",
+            Global::WeakSet => "WeakSet",
             Global::WeakMap => "WeakMap",
             Global::WeakRef => "WeakRef",
             Global::FinalizationRegistry => "FinalizationRegistry",
@@ -401,6 +407,11 @@ pub(crate) struct Intrinsics {
     symbol: ObjectId,
     pub(crate) map_prototype: ObjectId,
     map: ObjectId,
+    pub(crate) set_prototype: ObjectId,
+    set: ObjectId,
+    pub(crate) weak_set_prototype: ObjectId,
+    weak_set: ObjectId,
+    pub(crate) set_iterator_prototype: ObjectId,
     pub(crate) weak_map_prototype: ObjectId,
     weak_map: ObjectId,
     pub(crate) weak_ref_prototype: ObjectId,
@@ -537,6 +548,8 @@ impl Intrinsics {
             Global::Float64Array => Value::Object(self.typed_array_constructors[9]),
             Global::Object => Value::Object(self.object),
             Global::Map => Value::Object(self.map),
+            Global::Set => Value::Object(self.set),
+            Global::WeakSet => Value::Object(self.weak_set),
             Global::WeakMap => Value::Object(self.weak_map),
             Global::WeakRef => Value::Object(self.weak_ref),
             Global::DisposableStack => Value::Object(self.disposable_stack),
@@ -1155,6 +1168,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
 
     let (map_prototype, map) = map_intrinsics(&mut b, object_prototype)?;
     let (weak_map_prototype, weak_map) = weak_map_intrinsics(&mut b, object_prototype)?;
+    let (set_prototype, set) = set_intrinsics(&mut b, object_prototype)?;
+    let (weak_set_prototype, weak_set) = weak_set_intrinsics(&mut b, object_prototype)?;
     let (weak_ref_prototype, weak_ref) = weak_ref_intrinsics(&mut b, object_prototype)?;
     let (disposable_stack_prototype, disposable_stack) =
         disposable_stack_intrinsics(&mut b, object_prototype, false)?;
@@ -1263,6 +1278,8 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
             string_prototype,
             typed_array_prototypes[0],
         )?;
+    let set_iterator_prototype =
+        set_iterator_intrinsics(&mut b, iterator_prototype, set_prototype)?;
 
     for method in [Builtin::BigIntAsIntN, Builtin::BigIntAsUintN] {
         let function = b.function(method, &[])?;
@@ -1383,6 +1400,11 @@ fn build(heap: &Heap) -> Option<Intrinsics> {
         symbol,
         map_prototype,
         map,
+        set_prototype,
+        set,
+        weak_set_prototype,
+        weak_set,
+        set_iterator_prototype,
         weak_map_prototype,
         weak_map,
         weak_ref_prototype,
@@ -2905,6 +2927,139 @@ fn disposable_stack_intrinsics(
     Some((prototype, constructor))
 }
 
+fn set_intrinsics(b: &mut Build<'_>, object_prototype: ObjectId) -> Option<(ObjectId, ObjectId)> {
+    let prototype = b
+        .heap
+        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+            object_prototype,
+        ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::Set,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    for which in [
+        Builtin::SetAdd,
+        Builtin::SetHas,
+        Builtin::SetDelete,
+        Builtin::SetClear,
+        Builtin::SetForEach,
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
+    }
+    let getter = b.function(Builtin::SetSize, &[])?;
+    let tag = crate::value::symbol::well_known("toStringTag");
+    let tag_key = b.heap.keys().intern_symbol(&tag)?;
+    b.heap
+        .with_object_mut(prototype, |object| match object {
+            HeapObject::Plain(o) => o.define_with(
+                tag_key,
+                Value::String(JsString::from("Set")),
+                PropertyFlags::FUNCTION_INFO,
+            ),
+            _ => false,
+        })?
+        .then_some(())?;
+    let key = b.heap.keys().intern(&JsString::from("size"))?;
+    let desc = PropertyDescriptor {
+        get: Some(Value::Object(getter)),
+        set: Some(Value::Undefined),
+        enumerable: Some(false),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    b.heap
+        .with_object_mut(prototype, |object| match object {
+            HeapObject::Plain(o) => o.define_own_property(key, &desc) == DefineOutcome::Done,
+            _ => false,
+        })?
+        .then_some(())?;
+
+    Some((prototype, constructor))
+}
+
+fn weak_set_intrinsics(
+    b: &mut Build<'_>,
+    object_prototype: ObjectId,
+) -> Option<(ObjectId, ObjectId)> {
+    let prototype = b
+        .heap
+        .alloc(HeapObject::Plain(OrdinaryObject::intrinsic(Some(
+            object_prototype,
+        ))))?;
+    b.all.push(prototype);
+    let constructor = b.function(
+        Builtin::WeakSet,
+        &[("prototype", prototype, PropertyFlags::FIXED)],
+    )?;
+    b.add(prototype, "constructor", constructor, PropertyFlags::METHOD)?;
+    for which in [
+        Builtin::WeakSetAdd,
+        Builtin::WeakSetHas,
+        Builtin::WeakSetDelete,
+    ] {
+        let method = b.function(which, &[])?;
+        b.add(prototype, which.name(), method, PropertyFlags::METHOD)?;
+    }
+    let tag_key = b
+        .heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    b.heap
+        .with_object_mut(prototype, |o| match o {
+            HeapObject::Plain(o) => o.define_with(
+                tag_key,
+                Value::String(JsString::from("WeakSet")),
+                PropertyFlags::FUNCTION_INFO,
+            ),
+            _ => false,
+        })?
+        .then_some(())?;
+    Some((prototype, constructor))
+}
+
+fn set_iterator_intrinsics(
+    b: &mut Build<'_>,
+    iterator: ObjectId,
+    set: ObjectId,
+) -> Option<ObjectId> {
+    let heap = b.heap;
+    let next = b.function(
+        Builtin::IteratorNext(crate::vm::native::iterator::Kind::SetValues),
+        &[],
+    )?;
+    let mut prototype = OrdinaryObject::intrinsic(Some(iterator));
+    define(heap, &mut prototype, "next", next, PropertyFlags::METHOD)?;
+    let tag = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("toStringTag"))?;
+    prototype
+        .define_with(
+            tag,
+            Value::String(JsString::from("Set Iterator")),
+            PropertyFlags::FUNCTION_INFO,
+        )
+        .then_some(())?;
+    let prototype = heap.alloc(HeapObject::Plain(prototype))?;
+    b.all.push(prototype);
+    let values = b.function(Builtin::SetValues, &[])?;
+    b.add(set, "values", values, PropertyFlags::METHOD)?;
+    b.add(set, "keys", values, PropertyFlags::METHOD)?;
+    let entries = b.function(Builtin::SetEntries, &[])?;
+    b.add(set, "entries", entries, PropertyFlags::METHOD)?;
+    let key = heap
+        .keys()
+        .intern_symbol(&crate::value::symbol::well_known("iterator"))?;
+    heap.with_object_mut(set, |o| match o {
+        HeapObject::Plain(o) => o.define_with(key, Value::Object(values), PropertyFlags::METHOD),
+        _ => false,
+    })?
+    .then_some(())?;
+    Some(prototype)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3022,7 +3177,7 @@ mod tests {
         let (prototype, object) = (first.object_prototype, first.object);
         let again = intrinsics(&heap).unwrap();
         assert_eq!((again.object_prototype, again.object), (prototype, object));
-        assert_eq!(first.all.len(), 383); // Nine Array copying/iterator built-ins (-299).
+        assert_eq!(first.all.len(), 400); // Set/WeakSet: fourteen built-ins and three prototypes (-295).
         for &id in &first.all {
             assert_eq!(heap.known_shareable(id), Some(true));
             let category = heap.read(id, classify).unwrap();
@@ -3102,7 +3257,11 @@ mod tests {
         assert_eq!(Global::from_u16(43), Some(Global::DisposableStack));
         assert_eq!(Global::from_u16(44), Some(Global::AsyncDisposableStack));
         assert_eq!(Global::from_u16(45), Some(Global::Proxy));
-        assert_eq!(Global::from_u16(46), None);
+        assert_eq!(Global::from_u16(46), Some(Global::Set));
+        assert_eq!(Global::from_u16(47), Some(Global::WeakSet));
+        assert_eq!(Global::from_name("Set"), Some(Global::Set));
+        assert_eq!(Global::from_name("WeakSet"), Some(Global::WeakSet));
+        assert_eq!(Global::from_u16(48), None);
     }
 
     /// Built-ins inherit from Function.prototype, except NativeErrors whose

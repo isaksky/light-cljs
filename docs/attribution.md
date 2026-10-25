@@ -1502,3 +1502,13 @@ Semantic reference: `research/quickjs/quickjs.c::js_map_constructor` and its
 `7d1c13c5d8f8c6b32893786ed35cdcebd88194d2` (VERSION 2026-06-04).
 The Rust continuation and synthetic source fixtures were written afresh;
 no QuickJS implementation or test source was copied.
+
+### JavaScript Set and WeakSet (clj-quickjs-295)
+
+Semantic references only: `research/quickjs/quickjs.c` at revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`, `js_map_constructor`,
+`js_map_set`, `js_create_map_iterator`, `js_map_iterator_next`,
+`js_set_proto_funcs` and `js_weak_set_proto_funcs` (MAGIC_SET/MAGIC_WEAK).
+Implementation and synthetic fixtures were written fresh over this runtime's
+existing Map storage, conditional tracing and resumable native consumer;
+no QuickJS source or tests were copied or adapted.
