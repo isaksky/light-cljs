@@ -1,0 +1,2536 @@
+//! Static loading and module execution; upstream fixtures retain MIT notices.
+//! Inline JavaScript is synthetic fixture text, not light-cljs output.
+
+use std::collections::HashMap;
+
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::module::{
+    ModuleHost, ModuleKey, ModuleLoadErrorKind, ModuleLoader, ModuleSource,
+};
+use big_boy_pants_js::{
+    Budget, Host, HostCall, JsString, Primitive, RunOutcome, Runtime, ValueView,
+};
+
+#[derive(Debug, PartialEq, Eq)]
+enum Event {
+    Resolve(JsString, Option<ModuleKey>),
+    Fetch(ModuleKey),
+}
+
+#[derive(Default)]
+struct RecordingHost {
+    names: HashMap<String, ModuleKey>,
+    sources: HashMap<ModuleKey, (String, Result<String, String>)>,
+    events: Vec<Event>,
+    effects: Vec<Primitive>,
+}
+
+impl Host for RecordingHost {
+    fn effect(&mut self, call: HostCall) -> Result<Primitive, String> {
+        self.effects.push(call.arg);
+        Ok(Primitive::Undefined)
+    }
+}
+
+impl RecordingHost {
+    fn add(&mut self, name: &str, text: &str) -> ModuleKey {
+        let key = ModuleKey::new(self.names.len() as u64);
+        assert!(self.names.insert(name.into(), key).is_none());
+        self.sources.insert(key, (name.into(), Ok(text.into())));
+        key
+    }
+
+    fn fetches(&self) -> Vec<ModuleKey> {
+        self.events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Fetch(key) => Some(*key),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+impl ModuleHost for RecordingHost {
+    fn resolve(
+        &mut self,
+        specifier: &JsString,
+        referrer: Option<ModuleKey>,
+    ) -> Result<ModuleKey, String> {
+        self.events
+            .push(Event::Resolve(specifier.clone(), referrer));
+        let specifier =
+            String::from_utf16(specifier.code_units()).map_err(|_| "invalid UTF-16 specifier")?;
+        let path = if specifier.starts_with("./") || specifier.starts_with("../") {
+            let directory =
+                referrer.and_then(|key| self.sources[&key].0.rsplit_once('/').map(|(dir, _)| dir));
+            directory.map_or_else(|| specifier.clone(), |dir| format!("{dir}/{specifier}"))
+        } else {
+            specifier
+        };
+        let mut parts = Vec::new();
+        for part in path.split('/') {
+            match part {
+                "." => {}
+                ".." if parts.last().is_some_and(|part| *part != "..") => {
+                    parts.pop();
+                }
+                _ => parts.push(part),
+            }
+        }
+        self.names
+            .get(&parts.join("/"))
+            .copied()
+            .ok_or_else(|| "absent module".into())
+    }
+
+    fn fetch(&mut self, key: ModuleKey) -> Result<ModuleSource, String> {
+        self.events.push(Event::Fetch(key));
+        let (name, text) = &self.sources[&key];
+        Ok(ModuleSource::from_name(name.clone(), text.clone()?))
+    }
+}
+
+#[test]
+fn load_graph_fetches_each_module_once() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add(
+        "tests/test_cyclic_import.js",
+        include_str!("fixtures/modules/test_cyclic_import.js"),
+    );
+    let assert = host.add(
+        "tests/assert.js",
+        include_str!("fixtures/modules/assert.js"),
+    );
+    let cyclic = host.add(
+        "tests/fixture_cyclic_import.js",
+        include_str!("fixtures/modules/fixture_cyclic_import.js"),
+    );
+    let graph = ModuleLoader::new()
+        .load(
+            runtime.world(),
+            &"tests/test_cyclic_import.js".into(),
+            &mut host,
+        )
+        .unwrap();
+    assert_eq!(graph.entry(), entry);
+    assert_eq!(graph.world(), runtime.world());
+    assert_eq!(graph.len(), 3);
+    assert_eq!(host.fetches(), vec![entry, assert, cyclic]);
+    assert_eq!(graph.get(cyclic).unwrap().requested_modules(), &[entry]);
+    assert_eq!(
+        graph
+            .modules()
+            .map(|node| node.module().key())
+            .collect::<Vec<_>>(),
+        vec![entry, assert, cyclic]
+    );
+}
+
+#[test]
+fn load_reports_unresolvable_specifier() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add(
+        "app/entry.js",
+        "import './missing.js'; import './later.js'; throw 1;",
+    );
+    host.add("app/later.js", "throw 2;");
+    let error = ModuleLoader::new()
+        .load(runtime.world(), &"app/entry.js".into(), &mut host)
+        .unwrap_err();
+    assert!(matches!(error.kind, ModuleLoadErrorKind::Resolve(_)));
+    let message = error.to_string();
+    assert!(
+        message.contains("ReferenceError: could not load module"),
+        "{message}"
+    );
+    assert!(
+        message.contains("./missing.js") && message.contains("app/entry.js"),
+        "{message}"
+    );
+    assert_eq!(host.fetches(), vec![entry]);
+    assert_eq!(
+        host.events.last(),
+        Some(&Event::Resolve("./missing.js".into(), Some(entry)))
+    );
+}
+
+#[test]
+fn load_reports_module_syntax_error_with_position() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("app/entry.js", "import './bad.js';");
+    host.add("app/bad.js", "\nexport const = 1;");
+    let error = ModuleLoader::new()
+        .load(runtime.world(), &"app/entry.js".into(), &mut host)
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("./bad.js") && message.contains("app/entry.js"),
+        "{message}"
+    );
+    assert!(
+        message.contains("app/bad.js:2:14: SyntaxError"),
+        "{message}"
+    );
+    assert!(matches!(error.kind, ModuleLoadErrorKind::Syntax { .. }));
+}
+
+#[test]
+fn load_carries_json_source_kind() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add(
+        "examples/hello_module.js",
+        include_str!("fixtures/modules/hello_module.js"),
+    );
+    host.add(
+        "examples/fib_module.js",
+        include_str!("fixtures/modules/fib_module.js"),
+    );
+    let json = host.add("examples/message.json", r#"{"message":"hello"}"#);
+    let graph = ModuleLoader::new()
+        .load(
+            runtime.world(),
+            &"examples/hello_module.js".into(),
+            &mut host,
+        )
+        .unwrap();
+    let module = graph.get(json).unwrap().module();
+    assert_eq!(graph.len(), 3);
+    assert!(
+        matches!(module.source(), ModuleSource::Json { name, text } if name == "examples/message.json" && text == r#"{"message":"hello"}"#)
+    );
+    let record = module.record().unwrap();
+    assert!(record.body().is_empty());
+    assert!(record.requested_modules().is_empty());
+    assert_eq!(record.local_export_entries().len(), 1);
+    assert_eq!(record.local_export_entries()[0].export_name, "default");
+    assert!(graph.get(json).unwrap().requested_modules().is_empty());
+}
+
+#[test]
+fn loader_is_not_called_during_task_runs() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add(
+        "entry.js",
+        "import './dep.js'; throw new Error('must not execute');",
+    );
+    host.add("dep.js", "__rt.need(9, 2); throw 2;");
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(graph.len(), 2);
+    let events = host.events.len();
+    // Loading produces no executable yet. Ordinary tasks retain their script API.
+    let code = compile_script("script-after-load", "let n = 0; while (n < 5) n++; n").unwrap();
+    let task = runtime.spawn(&code, &[]).unwrap();
+    let mut complete = false;
+    for _ in 0..500 {
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {}
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Number(5.0));
+                complete = true;
+                break;
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+    assert!(complete);
+    assert_eq!(host.events.len(), events);
+    assert!(task.dependency_log().edges().is_empty());
+}
+
+#[test]
+fn load_reports_fetch_failure_and_stops() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add("entry.js", "import './bad.js'; import './later.js';");
+    let bad = host.add("bad.js", "");
+    host.sources.get_mut(&bad).unwrap().1 = Err("source unavailable".into());
+    host.add("later.js", "");
+    let error = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap_err();
+    assert!(matches!(error.kind, ModuleLoadErrorKind::Fetch(_)));
+    assert!(error.to_string().contains("source unavailable"));
+    assert!(error.to_string().contains("./bad.js") && error.to_string().contains("entry.js"));
+    assert_eq!(host.fetches(), vec![entry, bad]);
+}
+
+#[test]
+fn records_are_cached_per_world_and_resolved_key() {
+    let runtime = Runtime::new();
+    let mut loader = ModuleLoader::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add(
+        "app/entry.js",
+        "import './shared.js'; import './sub/../shared.js';",
+    );
+    let shared = host.add("app/shared.js", "export let value = 1;");
+    let first = loader
+        .load(runtime.world(), &"app/entry.js".into(), &mut host)
+        .unwrap();
+    let second = loader
+        .load(runtime.world(), &"app/entry.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        first.get(entry).unwrap().requested_modules(),
+        &[shared, shared]
+    );
+    assert!(std::ptr::eq(
+        first.get(shared).unwrap().module(),
+        second.get(shared).unwrap().module()
+    ));
+    assert_eq!(host.fetches(), vec![entry, shared]);
+    host.sources.get_mut(&shared).unwrap().1 = Ok("export let value = 2;".into());
+    let next = loader
+        .load(runtime.new_world(), &"app/entry.js".into(), &mut host)
+        .unwrap();
+    assert!(!std::ptr::eq(
+        first.get(shared).unwrap().module(),
+        next.get(shared).unwrap().module()
+    ));
+    assert_eq!(host.fetches(), vec![entry, shared, entry, shared]);
+    assert!(
+        next.get(shared)
+            .unwrap()
+            .module()
+            .source()
+            .text()
+            .contains("2")
+    );
+    assert!(
+        first
+            .get(shared)
+            .unwrap()
+            .module()
+            .source()
+            .text()
+            .contains("1")
+    );
+}
+
+#[test]
+fn load_walks_depth_first_in_request_order() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add("entry.js", "import './a.js'; import './b.js';");
+    let a = host.add("a.js", "import './leaf.js';");
+    let b = host.add("b.js", "import './leaf.js';");
+    let leaf = host.add("leaf.js", "");
+    ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(host.fetches(), vec![entry, a, leaf, b]);
+}
+
+#[test]
+fn load_accepts_self_import_and_deep_graphs() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    for n in 0..2000 {
+        let next = if n == 1999 { 0 } else { n + 1 };
+        host.add(&format!("{n}.js"), &format!("import './{next}.js';"));
+    }
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"0.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(graph.len(), 2000);
+    assert_eq!(host.fetches().len(), 2000);
+    let mut host = RecordingHost::default();
+    let entry = host.add("self.js", "import './self.js';");
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"self.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(graph.len(), 1);
+    assert_eq!(graph.get(entry).unwrap().requested_modules(), &[entry]);
+}
+
+#[test]
+fn failed_graph_keeps_records_but_retries_failed_fetch() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let entry = host.add("entry.js", "import './dep.js';");
+    let dep = host.add("dep.js", "export let value = 1;");
+    host.sources.get_mut(&dep).unwrap().1 = Err("temporary acquisition error".into());
+    let mut loader = ModuleLoader::new();
+    assert!(
+        loader
+            .load(runtime.world(), &"entry.js".into(), &mut host)
+            .is_err()
+    );
+    host.sources.get_mut(&dep).unwrap().1 = Ok("export let value = 1;".into());
+    let graph = loader
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    assert_eq!(graph.len(), 2);
+    assert_eq!(host.fetches(), vec![entry, dep, dep]);
+}
+
+#[test]
+fn missing_entry_and_lone_surrogate_specifiers_are_reported() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    let error = ModuleLoader::new()
+        .load(runtime.world(), &"absent.js".into(), &mut host)
+        .unwrap_err();
+    assert_eq!(error.referrer, None);
+    assert!(
+        error
+            .to_string()
+            .contains("ReferenceError: could not load module 'absent.js'")
+    );
+    assert!(host.fetches().is_empty());
+    host.add("entry.js", r#"import '\uD800';"#);
+    let error = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap_err();
+    assert_eq!(error.specifier.code_units(), &[0xd800]);
+    assert!(
+        matches!(host.events.last(), Some(Event::Resolve(specifier, Some(_))) if specifier.code_units() == [0xd800])
+    );
+}
+
+fn execute_modules(sources: &[(&str, &str)], budget: Budget) -> (RunOutcome, Vec<Primitive>) {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    for (name, text) in sources {
+        host.add(name, text);
+    }
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &sources[0].0.into(), &mut host)
+        .unwrap();
+    let task = runtime.spawn_module(&graph);
+    for _ in 0..100_000 {
+        match task.run_with(budget, &mut host).unwrap() {
+            RunOutcome::Yielded => {
+                runtime.collect().unwrap();
+            }
+            outcome => return (outcome, host.effects),
+        }
+    }
+    panic!("module task did not finish");
+}
+
+fn assert_effects(sources: &[(&str, &str)], expected: Vec<Primitive>) {
+    let (outcome, effects) = execute_modules(sources, Budget::UNLIMITED);
+    assert!(
+        matches!(outcome, RunOutcome::Complete(ref v) if v.view() == ValueView::Undefined),
+        "{outcome:?}"
+    );
+    assert_eq!(effects, expected);
+}
+
+#[test]
+fn default_export_declarations_and_expressions() {
+    let cases = [
+        ("export default 42;", "d === 42"),
+        (
+            "export default function f(){return f;}",
+            "d.name === 'f' && d() === d",
+        ),
+        (
+            "export default function(){return 42;}",
+            "d.name === 'default' && d() === 42",
+        ),
+        (
+            "export default function*(){yield 42;}",
+            "d.name === 'default' && d().next().value === 42",
+        ),
+        (
+            "export default async function() {return 42;}",
+            "d.name === 'default' && typeof d() === 'object'",
+        ),
+        (
+            "export default async function* g(){yield 42;}",
+            "d.name === 'g' && typeof d().next() === 'object'",
+        ),
+        (
+            "export default async function*(){yield 42;}",
+            "d.name === 'default' && typeof d().next() === 'object'",
+        ),
+        (
+            "export default () => 42;",
+            "d.name === 'default' && d() === 42",
+        ),
+        (
+            "export default (function(){return 42;});",
+            "d.name === 'default' && d() === 42",
+        ),
+        (
+            "export default (function inner(){return inner;});",
+            "d.name === 'inner' && d() === d",
+        ),
+        (
+            "export default class Named {static self(){return Named;}}",
+            "d.name === 'Named' && d.self() === d",
+        ),
+        (
+            "export default class {static self(){return this;}}",
+            "d.name === 'default' && d.self() === d",
+        ),
+        ("export default (class {});", "d.name === 'default'"),
+        ("export default (class Inner {});", "d.name === 'Inner'"),
+        (
+            "export default class extends Array { #x = 42; value(){return this.#x;} static {this.tag = this.name;} }",
+            "d.name === 'default' && d.tag === 'default' && new d().value() === 42",
+        ),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        for (source, check) in cases {
+            let entry = format!(
+                "import d, * as ns from './dep.js'; import {{default as alias}} from './dep.js'; __rt.effect(0, d === ns.default && alias === d && ({check}));"
+            );
+            let (outcome, effects) =
+                execute_modules(&[("entry.js", &entry), ("dep.js", source)], budget);
+            assert!(
+                matches!(outcome, RunOutcome::Complete(_)),
+                "{source}: {outcome:?}"
+            );
+            assert_eq!(effects, vec![Primitive::Bool(true)], "{source}");
+        }
+    }
+}
+
+#[test]
+fn default_arrow_eval_preserves_parameter_capture() {
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(
+            &[
+                (
+                    "entry.js",
+                    "import d from './dep.js'; __rt.effect(0, d(42)() === 42);",
+                ),
+                ("dep.js", "export default x => () => eval('x');"),
+            ],
+            budget,
+        );
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Bool(true)]);
+    }
+}
+
+#[test]
+fn default_exports_keep_live_aliases_and_expression_snapshots() {
+    let sources = [
+        (
+            "entry.js",
+            r#"
+            import d, {original, replace} from './barrel.js';
+            import same, * as ns from './dep.js';
+            import {default as alias, renamed} from './barrel.js';
+            import snapshot, {n, bump} from './snapshot.js';
+            const first = d;
+            __rt.effect(0, d === original && d === same && d === ns.default && alias === d && renamed === d && d() === 1);
+            replace(); bump();
+            __rt.effect(0, d === original && d === same && d === ns.default && alias === d && renamed === d && d() === 2 && first() === 2 && n === 2 && snapshot === 1);
+            let caught = false; try {d = 0;} catch(e) {caught = e instanceof TypeError;}
+            __rt.effect(0, caught && Object.keys(ns).join(',') === 'default,original,replace');
+        "#,
+        ),
+        (
+            "barrel.js",
+            "export {default} from './relay.js'; export {default as renamed} from './dep.js'; export * from './dep.js';",
+        ),
+        (
+            "relay.js",
+            "import d from './dep.js'; export {d as default};",
+        ),
+        (
+            "dep.js",
+            include_str!("fixtures/modules/default_exports.js"),
+        ),
+        (
+            "snapshot.js",
+            "let n = 1; export default n; export {n}; export function bump(){n++;}",
+        ),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Bool(true); 3]);
+    }
+}
+
+#[test]
+fn cyclic_default_function_declarations_are_hoisted() {
+    for declaration in ["function f(){return 42;}", "function(){return 42;}"] {
+        let entry =
+            format!("import d from './dep.js'; export default {declaration} __rt.effect(0, d());");
+        let sources = [
+            ("entry.js", entry.as_str()),
+            (
+                "dep.js",
+                "import d from './entry.js'; const n = d(); export default function(){return n;}",
+            ),
+        ];
+        for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+            let (outcome, effects) = execute_modules(&sources, budget);
+            assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+            assert_eq!(effects, vec![Primitive::Number(42.0)]);
+        }
+    }
+}
+
+#[test]
+fn default_expressions_and_classes_remain_in_tdz() {
+    for declaration in [
+        "42;",
+        "() => 42;",
+        "(function(){return 42;});",
+        "class {}",
+        "class Named {}",
+    ] {
+        let entry = format!("import './dep.js'; export default {declaration}");
+        let sources = [
+            ("entry.js", entry.as_str()),
+            (
+                "dep.js",
+                "import d, * as ns from './entry.js'; let errors=0; try{d;}catch(e){if(e instanceof ReferenceError)errors++;} try{ns.default;}catch(e){if(e instanceof ReferenceError)errors++;} __rt.effect(0, errors === 2);",
+            ),
+        ];
+        for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+            let (outcome, effects) = execute_modules(&sources, budget);
+            assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+            assert_eq!(effects, vec![Primitive::Bool(true)], "{declaration}");
+        }
+    }
+}
+
+#[test]
+fn default_export_initializers_dispose_module_resources_on_throw() {
+    for declaration in ["(function(){throw 42;})();", "class {static {throw 42;}}"] {
+        let source = format!(
+            "using resource = {{[Symbol.dispose](){{__rt.effect(0, 'disposed');}}}}; export default {declaration} __rt.effect(0, 'unreachable');"
+        );
+        let (outcome, effects) = execute_modules(&[("entry.js", &source)], Budget::instructions(1));
+        assert!(
+            matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::Thrown),
+            "{outcome:?}"
+        );
+        assert_eq!(effects, vec![Primitive::String("disposed".into())]);
+    }
+}
+
+#[test]
+fn default_class_declaration_keeps_outer_and_inner_bindings() {
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(
+            &[
+                (
+                    "entry.js",
+                    "import d, {C, replace} from './dep.js'; import * as star from './star.js'; const first=d; __rt.effect(0, d === C && first.self() === first && !Object.keys(star).includes('default')); replace(); __rt.effect(0, d === C && d === 42 && first.self() === first && first.immutable());",
+                ),
+                (
+                    "dep.js",
+                    "export default class C {static self(){return C;} static immutable(){try{C=0;}catch(e){return e instanceof TypeError;} return false;}} export {C}; export function replace(){C=42;}",
+                ),
+                ("star.js", "export * from './dep.js';"),
+            ],
+            budget,
+        );
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Bool(true); 2]);
+    }
+}
+
+#[test]
+fn default_exports_wait_collect_migrate_and_keep_task_instances_separate() {
+    use big_boy_pants_js::Completion;
+    let runtime = Runtime::new();
+    let world = runtime.new_world();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import d, * as ns from './dep.js'; d.n++; __rt.effect(0, d === ns.default && d.n === 43 && d.self() === d);");
+    host.add(
+        "dep.js",
+        "__rt.effect(0, 'once'); export default {n: __rt.need(71, 0), self(){return this;}};",
+    );
+    let graph = ModuleLoader::new()
+        .load(world, &"entry.js".into(), &mut host)
+        .unwrap();
+    let mut waits = 0;
+    // Each task evaluates the default expression afresh, using the same cached
+    // record and dependency value. Imports themselves add no dependency edges.
+    for _ in 0..2 {
+        let mut task = runtime.spawn_module(&graph);
+        let mut done = false;
+        for _ in 0..2000 {
+            let (next_task, next_host, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task.run_with(Budget::instructions(1), &mut host).unwrap();
+                    (task, host, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next_task;
+            host = next_host;
+            runtime.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(key) => {
+                    waits += 1;
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = runtime.root(Primitive::Number(42.0));
+                    task = runtime
+                        .complete(key, request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(value) => {
+                    assert_eq!(value.view(), ValueView::Undefined);
+                    done = true;
+                    break;
+                }
+                outcome => panic!("{outcome:?}"),
+            }
+        }
+        assert!(done, "default export did not finish");
+        assert_eq!(task.dependency_log().edges().len(), 1);
+    }
+    assert_eq!(waits, 1);
+    assert_eq!(
+        host.effects,
+        vec![
+            Primitive::String("once".into()),
+            Primitive::Bool(true),
+            Primitive::String("once".into()),
+            Primitive::Bool(true)
+        ]
+    );
+    assert_eq!(host.fetches().len(), 2);
+}
+
+#[test]
+fn quickjs_cyclic_import_adapted_to_defaults() {
+    // Upstream entry line 9: named import -> default import. Fixture line 2:
+    // named function export -> named default function export. Assertions and
+    // executable bodies are unchanged; the fixtures retain the MIT notices.
+    let entry = QUICKJS_CYCLIC_ENTRY.replace(
+        "import {f} from \"./fixture_cyclic_import.js\"",
+        "import f from \"./fixture_cyclic_import.js\"",
+    );
+    let fixture =
+        QUICKJS_CYCLIC_FIXTURE.replace("export function f(", "export default function f(");
+    assert_ne!(entry, QUICKJS_CYCLIC_ENTRY);
+    assert_ne!(fixture, QUICKJS_CYCLIC_FIXTURE);
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(
+            &[
+                (
+                    "observer.js",
+                    "import './tests/test_cyclic_import.js'; __rt.effect(0, 'default cyclic assertion completed');",
+                ),
+                ("tests/test_cyclic_import.js", &entry),
+                ("tests/fixture_cyclic_import.js", &fixture),
+                ("tests/assert.js", QUICKJS_MODULE_ASSERT),
+            ],
+            budget,
+        );
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(
+            effects,
+            vec![Primitive::String(
+                "default cyclic assertion completed".into()
+            )]
+        );
+    }
+}
+
+const QUICKJS_CYCLIC_ENTRY: &str =
+    include_str!("fixtures/js/quickjs_modules/test_cyclic_import.js");
+const QUICKJS_CYCLIC_FIXTURE: &str =
+    include_str!("fixtures/js/quickjs_modules/fixture_cyclic_import.js");
+const QUICKJS_MODULE_ASSERT: &str = include_str!("fixtures/js/quickjs_modules/assert.js");
+
+fn quickjs_cyclic_sources(fixture: &str) -> [(&str, &str); 4] {
+    [
+        (
+            "observer.js",
+            "import './tests/test_cyclic_import.js'; __rt.effect(0, 'cyclic assertion completed');",
+        ),
+        ("tests/test_cyclic_import.js", QUICKJS_CYCLIC_ENTRY),
+        ("tests/fixture_cyclic_import.js", fixture),
+        ("tests/assert.js", QUICKJS_MODULE_ASSERT),
+    ]
+}
+
+#[test]
+fn quickjs_test_cyclic_import_passes() {
+    // Adapted metadata only: upstream entry lines 1-5 expect a resolution
+    // SyntaxError for a QuickJS limitation. Keep every source byte, including
+    // assert(f(1), 4), and expect success. The observer cannot emit its effect
+    // until the cyclic entry's assertion has run and returned normally.
+    for budget in [Budget::UNLIMITED, Budget::instructions(7)] {
+        let (outcome, effects) =
+            execute_modules(&quickjs_cyclic_sources(QUICKJS_CYCLIC_FIXTURE), budget);
+        assert!(
+            matches!(outcome, RunOutcome::Complete(ref value) if value.view() == ValueView::Undefined),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            effects,
+            vec![Primitive::String("cyclic assertion completed".into())]
+        );
+    }
+}
+
+#[test]
+fn quickjs_test_cyclic_import_detects_a_wrong_result() {
+    // Only negative-control adaptation: fixture_cyclic_import.js line 2,
+    // 2 * -> 3 *. All assert.js exports and the entry assertion stay intact.
+    let original = "export function f(x) { return 2 * a.g(x) }";
+    assert_eq!(QUICKJS_CYCLIC_FIXTURE.matches(original).count(), 1);
+    let broken =
+        QUICKJS_CYCLIC_FIXTURE.replace(original, "export function f(x) { return 3 * a.g(x) }");
+    let (outcome, effects) =
+        execute_modules(&quickjs_cyclic_sources(&broken), Budget::instructions(7));
+    let RunOutcome::Failed(error) = outcome else {
+        panic!("wrong result must fail the upstream assertion: {outcome:?}");
+    };
+    assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::Thrown);
+    assert!(
+        error
+            .message()
+            .contains("assertion failed: got |6|, expected |4|"),
+        "{error:?}"
+    );
+    assert!(error.message().contains("Error:"), "{error:?}");
+    assert_eq!(error.diagnostic().executable.as_ref(), "assert");
+    assert!(
+        error
+            .diagnostic()
+            .call_chain
+            .iter()
+            .any(|site| { site.executable.as_ref() == "tests/test_cyclic_import.js" })
+    );
+    assert!(
+        effects.is_empty(),
+        "the observer must not run after a throw"
+    );
+}
+
+#[test]
+fn quickjs_hello_module_runs() {
+    // Host adaptation only: upstream hello_module.js lines 6-8 use this
+    // recording console binding instead of QuickJS-libc console output.
+    // All six upstream bodies are complete; .json selection needs no import
+    // attributes. The synthetic observer checks actual argument objects,
+    // including the JSON array's shape, without relying on print formatting.
+    let sources = [
+        (
+            "observer.js",
+            r#"
+                import './console.js';
+                import './examples/hello_module.js';
+                import {assert} from './tests/assert.js';
+                const output = globalThis.moduleOutput;
+                assert(output.length, 3);
+                assert(output[0].length, 1);
+                assert(output[0][0], 'Hello World');
+                assert(output[1].length, 2);
+                assert(output[1][0], 'fib(10)=');
+                assert(output[1][1], 55);
+                assert(output[2].length, 2);
+                assert(output[2][0], 'msg=');
+                const msg = output[2][1];
+                assert(typeof msg, 'object');
+                assert(msg.x, 1);
+                assert(Array.isArray(msg.tab));
+                assert(msg.tab.length, 3);
+                assert(msg.tab[0], 1);
+                assert(msg.tab[1], 2);
+                assert(msg.tab[2], 3);
+                __rt.effect(0, output[0][0]);
+                __rt.effect(0, output[1][0]);
+                __rt.effect(0, output[1][1]);
+                __rt.effect(0, output[2][0]);
+                __rt.effect(0, 'message object verified structurally');
+            "#,
+        ),
+        (
+            "console.js",
+            r#"
+                globalThis.moduleOutput = [];
+                globalThis.console = {
+                    log() { globalThis.moduleOutput.push(arguments); }
+                };
+            "#,
+        ),
+        (
+            "examples/hello_module.js",
+            include_str!("fixtures/js/quickjs_modules/hello_module.js"),
+        ),
+        (
+            "examples/fib_module.js",
+            include_str!("fixtures/js/quickjs_modules/fib_module.js"),
+        ),
+        (
+            "examples/message.json",
+            include_str!("fixtures/js/quickjs_modules/message.json"),
+        ),
+        ("tests/assert.js", QUICKJS_MODULE_ASSERT),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(7)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(
+            matches!(outcome, RunOutcome::Complete(ref value) if value.view() == ValueView::Undefined),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            effects,
+            vec![
+                Primitive::String("Hello World".into()),
+                Primitive::String("fib(10)=".into()),
+                Primitive::Number(55.0),
+                Primitive::String("msg=".into()),
+                Primitive::String("message object verified structurally".into()),
+            ]
+        );
+    }
+}
+
+#[test]
+fn using_module_resources_dispose_after_evaluation() {
+    let (outcome, effects) = execute_modules(
+        &[
+            (
+                "entry.js",
+                "import {resource} from './resource.js'; __rt.effect(0, resource.value);",
+            ),
+            (
+                "resource.js",
+                "using resource = {value: 1, [Symbol.dispose]() { this.value = 2; __rt.effect(0, 10); }}; export {resource}; __rt.effect(0, resource.value);",
+            ),
+        ],
+        Budget::instructions(1),
+    );
+    assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(
+        effects,
+        [
+            Primitive::Number(1.0),
+            Primitive::Number(10.0),
+            Primitive::Number(2.0)
+        ]
+    );
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import './resource.js'; __rt.effect(0, 99);"),
+            (
+                "resource.js",
+                "using a = {[Symbol.dispose]() { __rt.effect(0, 1); }}, b = {[Symbol.dispose]() { __rt.effect(0, 2); throw 7; }}; throw 8;",
+            ),
+        ],
+        Budget::UNLIMITED,
+    );
+    assert!(matches!(outcome, RunOutcome::Failed(_)), "{outcome:?}");
+    assert_eq!(effects, [Primitive::Number(2.0), Primitive::Number(1.0)]);
+}
+
+#[test]
+fn named_import_calls_exported_function() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {fib} from './fib.js'; __rt.effect(0, fib(10)); 123;",
+            ),
+            ("fib.js", include_str!("fixtures/modules/fib_module.js")),
+        ],
+        vec![Primitive::Number(55.0)],
+    );
+}
+
+#[test]
+fn imports_are_live_bindings() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {n, inc} from './counter.js'; inc(); inc(); __rt.effect(0, n);",
+            ),
+            (
+                "counter.js",
+                "export let n = 0; export function inc() { n++ }",
+            ),
+        ],
+        vec![Primitive::Number(2.0)],
+    );
+}
+
+#[test]
+fn import_binding_is_immutable() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {n} from './counter.js'; try { n = 7; } catch (e) { __rt.effect(0, e instanceof TypeError); } __rt.effect(0, n);",
+            ),
+            ("counter.js", "export let n = 0;"),
+        ],
+        vec![Primitive::Bool(true), Primitive::Number(0.0)],
+    );
+}
+
+#[test]
+fn reexported_import_resolves_to_origin() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {f as a} from './b.js'; import {f as b} from './c.js'; __rt.effect(0, a === b);",
+            ),
+            ("b.js", "import {f} from './c.js'; export {f};"),
+            ("c.js", "export function f() { return 3; }"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn missing_export_fails_at_link() {
+    let (outcome, effects) = execute_modules(
+        &[
+            (
+                "entry.js",
+                "import {nope} from './dep.js'; __rt.effect(0, 'entry');",
+            ),
+            ("dep.js", "__rt.effect(0, 'dep');"),
+        ],
+        Budget::UNLIMITED,
+    );
+    let RunOutcome::Failed(error) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::SyntaxError);
+    assert!(
+        error
+            .message()
+            .contains("Could not find export 'nope' in module 'dep.js'"),
+        "{error}"
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn evaluation_order_is_post_order() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import './a.js'; import './b.js'; __rt.effect(0, 'entry');",
+            ),
+            ("a.js", "import './leaf.js'; __rt.effect(0, 'a');"),
+            ("b.js", "import './leaf.js'; __rt.effect(0, 'b');"),
+            ("leaf.js", "__rt.effect(0, 'leaf');"),
+        ],
+        ["leaf", "a", "b", "entry"]
+            .map(|s| Primitive::String(s.into()))
+            .to_vec(),
+    );
+}
+
+#[test]
+fn module_body_throw_fails_entry() {
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import './dep.js'; __rt.effect(0, 'entry');"),
+            ("dep.js", "throw 42;"),
+        ],
+        Budget::UNLIMITED,
+    );
+    let RunOutcome::Failed(error) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::Thrown);
+    assert!(error.message().contains("42"));
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn module_body_yields_and_resumes() {
+    let sources = [
+        ("entry.js", "import {n} from './dep.js'; __rt.effect(0, n);"),
+        (
+            "dep.js",
+            "export let n = 0; while(n < 12) { __rt.effect(0, n); n++; }",
+        ),
+    ];
+    let (outcome, effects) = execute_modules(&sources, Budget::instructions(7));
+    assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(effects, execute_modules(&sources, Budget::UNLIMITED).1);
+}
+
+#[test]
+fn module_environments_are_private_and_check_tdz() {
+    assert_effects(
+        &[(
+            "entry.js",
+            r#"
+        export var moduleVar = 4;
+        export function f() { return later; }
+        try { f(); } catch(e) { __rt.effect(0, e instanceof ReferenceError); }
+        export let later = 7;
+        __rt.effect(0, f());
+        __rt.effect(0, this === undefined && (() => this)() === undefined);
+        __rt.effect(0, globalThis.moduleVar === undefined && globalThis.f === undefined);
+        __rt.effect(0, eval('later'));
+    "#,
+        )],
+        vec![
+            Primitive::Bool(true),
+            Primitive::Number(7.0),
+            Primitive::Bool(true),
+            Primitive::Bool(true),
+            Primitive::Number(7.0),
+        ],
+    );
+}
+
+#[test]
+fn import_assignment_through_closure_and_eval_is_immutable() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                r#"import {n} from './dep.js';
+            function set() { n = 2; }
+            for (const action of [set, () => eval('n = 3')]) {
+                try { action(); } catch(e) { __rt.effect(0, e instanceof TypeError); }
+            }
+            __rt.effect(0, n);
+        "#,
+            ),
+            ("dep.js", "export let n = 1;"),
+        ],
+        vec![
+            Primitive::Bool(true),
+            Primitive::Bool(true),
+            Primitive::Number(1.0),
+        ],
+    );
+}
+
+#[test]
+fn json_module_parse_error_fails_load() {
+    let sources = [
+        (
+            "entry.js",
+            "import './effect.js'; import x from './message.json'; __rt.effect(0, 1);",
+        ),
+        ("effect.js", "__rt.effect(0, 2);"),
+        ("message.json", "{ \"x\": }"),
+    ];
+    let (outcome, effects) = execute_modules(&sources, Budget::UNLIMITED);
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError),
+        "{outcome:?}"
+    );
+    let RunOutcome::Failed(error) = outcome else {
+        unreachable!()
+    };
+    assert!(error.message().contains("message.json:1:8"), "{error:?}");
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn star_and_explicit_reexports_preserve_identity_and_liveness() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {n, inc, renamed} from './barrel.js'; inc(); __rt.effect(0, n === 1 && renamed === inc);",
+            ),
+            (
+                "barrel.js",
+                "export * from './a.js'; export * from './b.js'; export {inc as renamed} from './origin.js';",
+            ),
+            ("a.js", "export * from './origin.js';"),
+            ("b.js", "export * from './origin.js';"),
+            (
+                "origin.js",
+                "export let n = 0; export function inc() { n++; }",
+            ),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn ambiguous_star_import_fails_before_any_body() {
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import {n} from './barrel.js';"),
+            (
+                "barrel.js",
+                "export * from './a.js'; export * from './b.js';",
+            ),
+            ("a.js", "export let n = 1; __rt.effect(0, 'a');"),
+            ("b.js", "export let n = 2; __rt.effect(0, 'b');"),
+        ],
+        Budget::UNLIMITED,
+    );
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError && e.message().contains("ambiguous") && e.message().contains("n")),
+        "{outcome:?}"
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn explicit_export_overrides_star_ambiguity_and_default_is_excluded() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {n} from './barrel.js'; __rt.effect(0, n);",
+            ),
+            (
+                "barrel.js",
+                "export * from './a.js'; export * from './b.js'; export {n} from './a.js';",
+            ),
+            ("a.js", "export let n = 1; export {n as default};"),
+            ("b.js", "export let n = 2;"),
+        ],
+        vec![Primitive::Number(1.0)],
+    );
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import n from './barrel.js';"),
+            ("barrel.js", "export * from './a.js';"),
+            (
+                "a.js",
+                "let n = 1; export {n as default}; __rt.effect(0, n);",
+            ),
+        ],
+        Budget::UNLIMITED,
+    );
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError && e.message().contains("default")),
+        "{outcome:?}"
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn module_need_waits_collects_and_migrates_without_replaying() {
+    use big_boy_pants_js::Completion;
+    let runtime = Runtime::new();
+    let world = runtime.new_world();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import {n} from './dep.js'; __rt.effect(0, n);");
+    host.add(
+        "dep.js",
+        "export let n = 5; function update() { let x = {value:n}; const g=eval('() => x.value'); eval('x.value += __rt.need(71, 0)'); return g(); } __rt.effect(0, n); n = update(); __rt.effect(0, n);",
+    );
+    let graph = ModuleLoader::new()
+        .load(world, &"entry.js".into(), &mut host)
+        .unwrap();
+    let mut task = runtime.spawn_module(&graph);
+    assert_eq!(task.world(), world);
+    let mut waits = 0;
+    let mut yields = 0;
+    let mut done = false;
+    for _ in 0..2000 {
+        let (next_task, next_host, outcome) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = task.run_with(Budget::instructions(3), &mut host).unwrap();
+                (task, host, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        task = next_task;
+        host = next_host;
+        runtime.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {
+                yields += 1;
+            }
+            RunOutcome::Waiting(key) => {
+                waits += 1;
+                assert_eq!(waits, 1);
+                assert_eq!(key.world(), world);
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = runtime.root(Primitive::Number(7.0));
+                task = runtime
+                    .complete(key, request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Undefined);
+                done = true;
+                break;
+            }
+            outcome => panic!("{outcome:?}"),
+        }
+    }
+    assert!(done && yields > 0);
+    assert_eq!(waits, 1);
+    assert_eq!(task.dependency_log().edges().len(), 1);
+    assert_eq!(
+        host.effects,
+        vec![
+            Primitive::Number(5.0),
+            Primitive::Number(12.0),
+            Primitive::Number(12.0)
+        ]
+    );
+    assert_eq!(host.fetches().len(), 2);
+}
+
+#[test]
+fn separate_tasks_get_fresh_instances_and_failed_tasks_cannot_replay() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add(
+        "entry.js",
+        "import {n, inc} from './dep.js'; inc(); __rt.effect(0, n); throw 42;",
+    );
+    host.add("dep.js", "export let n = 0; export function inc() { n++; }");
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let first = runtime.spawn_module(&graph);
+    let second = runtime.spawn_module(&graph);
+    let mut errors = Vec::new();
+    for task in [first, second] {
+        let RunOutcome::Failed(error) = task.run_with(Budget::UNLIMITED, &mut host).unwrap() else {
+            panic!("expected failure")
+        };
+        errors.push(error.message().to_string());
+        assert!(matches!(
+            task.run_with(Budget::UNLIMITED, &mut host),
+            Err(big_boy_pants_js::RunError::Finished)
+        ));
+        assert!(task.dependency_log().edges().is_empty());
+    }
+    assert_eq!(errors[0], errors[1]);
+    assert_eq!(
+        host.effects,
+        vec![Primitive::Number(1.0), Primitive::Number(1.0)]
+    );
+}
+
+#[test]
+fn unused_missing_indirect_export_fails_at_link() {
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import './dep.js'; __rt.effect(0, 'entry');"),
+            ("dep.js", "export {missing} from './leaf.js';"),
+            ("leaf.js", "__rt.effect(0, 'leaf');"),
+        ],
+        Budget::UNLIMITED,
+    );
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError && e.message().contains("missing")),
+        "{outcome:?}"
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn module_functions_read_reassigned_cells_and_module_eval_rejects_new_target() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {f, replace} from './dep.js'; const old = f; replace(); __rt.effect(0, old());",
+            ),
+            (
+                "dep.js",
+                "export function f() { return f === replacement; } function replacement() { return 7; } export function replace() { f = replacement; }",
+            ),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+    assert_effects(
+        &[(
+            "entry.js",
+            "try { eval('new.target'); } catch(e) { __rt.effect(0, e instanceof SyntaxError); }",
+        )],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn deep_acyclic_graph_evaluates_without_nested_module_calls() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    for index in 0..1500 {
+        let text = if index == 1499 {
+            "__rt.effect(0, 1499);".to_string()
+        } else {
+            format!("import './{}.js';", index + 1)
+        };
+        host.add(&format!("{index}.js"), &text);
+    }
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"0.js".into(), &mut host)
+        .unwrap();
+    let task = runtime.spawn_module(&graph);
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Complete(_)
+    ));
+    assert_eq!(host.effects, vec![Primitive::Number(1499.0)]);
+}
+
+#[test]
+fn module_bindings_are_instantiated_before_body() {
+    let sources = [
+        ("entry.js", "import {v} from './dep.js'; __rt.effect(0, v);"),
+        (
+            "dep.js",
+            "__rt.effect(0, f()); __rt.effect(0, v === undefined); export function f() { return 7; } export var v = 3;",
+        ),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(
+            matches!(outcome, RunOutcome::Complete(ref value) if value.view() == ValueView::Undefined),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            effects,
+            vec![
+                Primitive::Number(7.0),
+                Primitive::Bool(true),
+                Primitive::Number(3.0)
+            ]
+        );
+    }
+}
+
+#[test]
+fn module_linking_yields_and_migrates() {
+    use big_boy_pants_js::module::ModulePhase;
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import {n} from './0.js'; __rt.effect(0, n);");
+    for index in 0..40 {
+        host.add(
+            &format!("{index}.js"),
+            &format!("export * from './{}.js';", index + 1),
+        );
+    }
+    host.add("40.js", "export let n = 7;");
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let mut task = runtime.spawn_module(&graph);
+    assert_eq!(task.module_phase(), Some(ModulePhase::Linking));
+    let mut linking_slices = 0;
+    let mut instantiating = false;
+    let mut done = false;
+    for _ in 0..3000 {
+        let phase = task.module_phase();
+        if phase == Some(ModulePhase::Linking) {
+            linking_slices += 1;
+            assert!(host.effects.is_empty());
+        }
+        if phase == Some(ModulePhase::Instantiating) {
+            instantiating = true;
+        }
+        let (next, next_host, outcome) = std::thread::spawn(move || {
+            let outcome = task.run_with(Budget::instructions(1), &mut host).unwrap();
+            (task, host, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        host = next_host;
+        runtime.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.view(), ValueView::Undefined);
+                done = true;
+                break;
+            }
+            outcome => panic!("{outcome:?}"),
+        }
+    }
+    assert!(done && instantiating);
+    // Every graph edge and every star table entry requires separate linking
+    // steps, before any instantiation/body instruction can execute.
+    assert!(linking_slices > 200, "{linking_slices}");
+    assert_eq!(task.module_phase(), None);
+    assert_eq!(host.effects, vec![Primitive::Number(7.0)]);
+    assert_eq!(host.fetches().len(), 42);
+}
+
+#[test]
+fn module_cancellation_stops_linking_and_runs_dependency_finally() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import './dep.js'; __rt.effect(0, 'entry');");
+    host.add(
+        "dep.js",
+        "try { __rt.need(73, 0); } finally { __rt.effect(0, 'finally'); }",
+    );
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let linking = runtime.spawn_module(&graph);
+    assert!(matches!(
+        linking
+            .run_with(Budget::instructions(1), &mut host)
+            .unwrap(),
+        RunOutcome::Yielded
+    ));
+    let _ = linking.cancel();
+    assert!(matches!(
+        linking.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Cancelled
+    ));
+    assert!(host.effects.is_empty());
+    let task = runtime.spawn_module(&graph);
+    assert!(matches!(
+        task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+        RunOutcome::Waiting(_)
+    ));
+    let _ = task.cancel();
+    let mut cancelled = false;
+    for _ in 0..100 {
+        runtime.collect().unwrap();
+        match task.run_with(Budget::instructions(1), &mut host).unwrap() {
+            RunOutcome::Yielded => {}
+            RunOutcome::Cancelled => {
+                cancelled = true;
+                break;
+            }
+            outcome => panic!("{outcome:?}"),
+        }
+    }
+    assert!(cancelled);
+    assert_eq!(host.effects, vec![Primitive::String("finally".into())]);
+}
+
+#[test]
+fn module_linker_cells_retain_and_reclaim() {
+    use big_boy_pants_js::module::ModulePhase;
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "export let n = 7;");
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let task = runtime.spawn_module(&graph);
+    assert_eq!(runtime.heap_stats().objects, 0);
+    let mut linked = false;
+    for _ in 0..100 {
+        assert!(matches!(
+            task.run_with(Budget::instructions(1), &mut host).unwrap(),
+            RunOutcome::Yielded
+        ));
+        runtime.collect().unwrap();
+        if task.module_phase() == Some(ModulePhase::Instantiating) {
+            linked = true;
+            break;
+        }
+    }
+    assert!(linked);
+    // No module frame has run: the continuation is the cell's only root.
+    assert_eq!(runtime.collect().unwrap().live, 1);
+    drop(task);
+    let collected = runtime.collect().unwrap();
+    assert_eq!(collected.reclaimed, 1);
+    assert_eq!(collected.live, 0);
+}
+
+#[test]
+fn cyclic_named_imports_call_hoisted_functions() {
+    let sources = [
+        (
+            "a.js",
+            "import {f} from './b.js'; export function g(x) { return x + 1 }; __rt.effect(0, f(1));",
+        ),
+        (
+            "b.js",
+            "import {g} from './a.js'; export function f(x) { return 2 * g(x) }",
+        ),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Number(4.0)]);
+    }
+}
+
+#[test]
+fn cyclic_let_read_before_init_throws_reference_error() {
+    let (outcome, effects) = execute_modules(
+        &[
+            (
+                "a.js",
+                "import './b.js'; export let x = 1; __rt.effect(0, 'a');",
+            ),
+            ("b.js", "import {x} from './a.js'; __rt.effect(0, x);"),
+        ],
+        Budget::instructions(1),
+    );
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::ReferenceError),
+        "{outcome:?}"
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn circular_reexport_fails_at_link_with_syntax_error() {
+    let (outcome, effects) = execute_modules(
+        &[
+            (
+                "a.js",
+                "import {x} from './b.js'; export {x}; __rt.effect(0, 'a');",
+            ),
+            (
+                "b.js",
+                "import {x} from './a.js'; export {x}; __rt.effect(0, 'b');",
+            ),
+        ],
+        Budget::instructions(1),
+    );
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError && e.message().contains("x") && e.message().contains(".js") && e.message().contains("circular")),
+        "{outcome:?}"
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn cycle_evaluates_each_body_once() {
+    assert_effects(
+        &[
+            (
+                "a.js",
+                "import './b.js'; import './leaf.js'; __rt.effect(0, 'a');",
+            ),
+            (
+                "b.js",
+                "import './c.js'; import './leaf.js'; __rt.effect(0, 'b');",
+            ),
+            (
+                "c.js",
+                "import './a.js'; import './leaf.js'; __rt.effect(0, 'c');",
+            ),
+            ("leaf.js", "__rt.effect(0, 'leaf');"),
+        ],
+        ["leaf", "c", "b", "a"]
+            .map(|s| Primitive::String(s.into()))
+            .to_vec(),
+    );
+}
+
+#[test]
+fn self_import_uses_own_live_binding() {
+    assert_effects(
+        &[(
+            "self.js",
+            "import {f as self, n as ownN} from './self.js'; export function f() { return n; } export let n = 3; __rt.effect(0, self() === ownN);",
+        )],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn star_exports_through_cycles_resolve_origins_and_ambiguity() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {n, f} from './a.js'; __rt.effect(0, f() === n);",
+            ),
+            ("a.js", "export * from './b.js'; export let n = 3;"),
+            (
+                "b.js",
+                "export * from './a.js'; export function f() { return 3; }",
+            ),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import {n} from './a.js'; __rt.effect(0, n);"),
+            ("a.js", "export * from './b.js'; export * from './c.js';"),
+            ("b.js", "export * from './a.js'; export * from './d.js';"),
+            ("c.js", "export let n = 1;"),
+            ("d.js", "export let n = 2;"),
+        ],
+        Budget::instructions(1),
+    );
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError && e.message().contains("ambiguous")),
+        "{outcome:?}"
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn cycle_body_throw_fails_all_members() {
+    let sources = [
+        (
+            "entry.js",
+            "import './a.js'; import './b.js'; __rt.effect(0, 'entry');",
+        ),
+        ("a.js", "import './b.js'; __rt.effect(0, 'a'); throw 42;"),
+        ("b.js", "import './a.js'; __rt.effect(0, 'b');"),
+    ];
+    let (outcome, effects) = execute_modules(&sources, Budget::instructions(1));
+    assert!(
+        matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::Thrown && e.message().contains("42")),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        effects,
+        ["b", "a"].map(|s| Primitive::String(s.into())).to_vec()
+    );
+}
+
+#[test]
+fn deep_module_chain_links_without_stack_overflow() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    for n in 0..10_000 {
+        let text = if n == 9999 {
+            "__rt.effect(0, 9999);".into()
+        } else {
+            format!("import './{}.js';", n + 1)
+        };
+        host.add(&format!("{n}.js"), &text);
+    }
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"0.js".into(), &mut host)
+        .unwrap();
+    let task = runtime.spawn_module(&graph);
+    let outcome = std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+            (outcome, host.effects)
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(
+        matches!(outcome.0, RunOutcome::Complete(_)),
+        "{:?}",
+        outcome.0
+    );
+    assert_eq!(outcome.1, vec![Primitive::Number(9999.0)]);
+}
+
+#[test]
+fn cyclic_reexported_import_calls_hoisted_function() {
+    assert_effects(
+        &[
+            (
+                "a.js",
+                "import {f} from './b.js'; export {f}; export function g(x) { return x + 1; } __rt.effect(0, f(1));",
+            ),
+            (
+                "b.js",
+                "import {g} from './a.js'; export function f(x) { return 2 * g(x); }",
+            ),
+        ],
+        vec![Primitive::Number(4.0)],
+    );
+}
+
+#[test]
+fn cyclic_import_through_namespace() {
+    let (outcome, effects) = execute_modules(
+        &[
+            (
+                "a.js",
+                "import {f} from './b.js'; export {f}; export function g(x) { return x + 1; } __rt.effect(0, f(1));",
+            ),
+            (
+                "b.js",
+                "import * as a from './a.js'; export function f(x) { return 2 * a.g(x); }",
+            ),
+        ],
+        Budget::UNLIMITED,
+    );
+    assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(effects, vec![Primitive::Number(4.0)]);
+}
+
+#[test]
+fn cycle_waits_collects_and_migrates_without_replaying() {
+    use big_boy_pants_js::Completion;
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add(
+        "a.js",
+        "import {f} from './b.js'; export function g(x) { return x + 1; } __rt.effect(0, f(1));",
+    );
+    host.add("b.js", "import {g} from './a.js'; export function f(x) { return 2 * g(x); } __rt.effect(0, 'b'); __rt.need(81, 0);");
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"a.js".into(), &mut host)
+        .unwrap();
+    let mut task = runtime.spawn_module(&graph);
+    let mut waits = 0;
+    for _ in 0..2000 {
+        let (next, next_host, outcome) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = task.run_with(Budget::instructions(1), &mut host).unwrap();
+                (task, host, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        task = next;
+        host = next_host;
+        runtime.collect().unwrap();
+        match outcome {
+            RunOutcome::Yielded => {}
+            RunOutcome::Waiting(key) => {
+                waits += 1;
+                assert_eq!(waits, 1);
+                let request = task.take_producer_requests().pop().unwrap();
+                let value = runtime.root(Primitive::Undefined);
+                task = runtime
+                    .complete(key, request.producer(), Completion::Ready(&value))
+                    .unwrap()
+                    .into_runnable()
+                    .pop()
+                    .unwrap();
+            }
+            RunOutcome::Complete(_) => {
+                assert_eq!(waits, 1);
+                assert_eq!(
+                    host.effects,
+                    vec![Primitive::String("b".into()), Primitive::Number(4.0)]
+                );
+                assert_eq!(host.fetches().len(), 2);
+                assert_eq!(task.dependency_log().edges().len(), 1);
+                return;
+            }
+            outcome => panic!("{outcome:?}"),
+        }
+    }
+    panic!("cycle did not complete");
+}
+
+#[test]
+fn cyclic_exports_resolve_later_ancestor_dependencies() {
+    assert_effects(
+        &[
+            (
+                "a.js",
+                "import {n} from './b.js'; export * from './leaf.js'; __rt.effect(0, n);",
+            ),
+            ("b.js", "export {n} from './a.js';"),
+            ("leaf.js", "export let n = 7;"),
+        ],
+        vec![Primitive::Number(7.0)],
+    );
+}
+
+#[test]
+fn deep_cyclic_reexports_resolve_without_stack_overflow() {
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    for n in 0..1000 {
+        let text = if n == 999 {
+            "import './0.js'; export function f() { return 7; }".into()
+        } else if n == 0 {
+            "import {f} from './1.js'; export {f}; __rt.effect(0, f());".into()
+        } else {
+            format!("export {{f}} from './{}.js';", n + 1)
+        };
+        host.add(&format!("{n}.js"), &text);
+    }
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"0.js".into(), &mut host)
+        .unwrap();
+    let task = runtime.spawn_module(&graph);
+    let (outcome, effects) = std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            let outcome = task.run_with(Budget::UNLIMITED, &mut host).unwrap();
+            (outcome, host.effects)
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(effects, vec![Primitive::Number(7.0)]);
+}
+
+#[test]
+fn cyclic_dependency_calls_ancestor_function_before_body() {
+    let sources = [
+        (
+            "a.js",
+            "import './b.js'; export function g(x) { return x + 1; }",
+        ),
+        ("b.js", "import {g} from './a.js'; __rt.effect(0, g(1));"),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Number(2.0)]);
+    }
+}
+
+#[test]
+fn cyclic_star_export_skips_back_edge_and_uses_later_origin() {
+    let sources = [
+        ("entry.js", "import {n} from './a.js'; __rt.effect(0, n);"),
+        ("a.js", "export * from './b.js'; export * from './leaf.js';"),
+        ("b.js", "export * from './a.js';"),
+        ("leaf.js", "export let n = 7;"),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Number(7.0)]);
+    }
+}
+
+#[test]
+fn namespace_import_reads_exports() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; __rt.effect(0, m.g(1) === 2 && m.g() === m && m.missing === undefined);",
+            ),
+            (
+                "m.js",
+                "export function g(x) { if (x === undefined) return this; return x + 1; }",
+            ),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_reads_are_live() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; const d = Object.getOwnPropertyDescriptor(m, 'n'); m.inc(); __rt.effect(0, d.value === 0 && m.n === 1 && Object.getOwnPropertyDescriptor(m, 'n').value === 1);",
+            ),
+            ("m.js", "export let n = 0; export function inc() { n++; }"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_identity_is_per_instance() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; import {ns as a} from './a.js'; import {ns as b} from './b.js'; __rt.effect(0, m === a && a === b && a.n === 7);",
+            ),
+            ("a.js", "import * as ns from './m.js'; export {ns};"),
+            ("b.js", "export * as ns from './m.js';"),
+            ("m.js", "export let n = 7;"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_is_read_only() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; let errors=0; try { m.g=1; } catch(e) { if(e instanceof TypeError) errors++; } try { m.newProp=1; } catch(e) { if(e instanceof TypeError) errors++; } try { delete m.g; } catch(e) { if(e instanceof TypeError) errors++; } try { m=1; } catch(e) { if(e instanceof TypeError) errors++; } __rt.effect(0, errors === 4 && delete m.absent);",
+            ),
+            ("m.js", "export function g() {}"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_reflection_and_definitions() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; const d=Object.getOwnPropertyDescriptor(m, 'a'); const tag=Object.getOwnPropertyDescriptor(m, Symbol.toStringTag); const keys=Object.getOwnPropertyNames(m); let errors=0; try { Object.defineProperty(m,'a',{value:2}); } catch(e) { if(e instanceof TypeError) errors++; } try { Object.defineProperty(m,'a',{writable:false}); } catch(e) { if(e instanceof TypeError) errors++; } try { Object.defineProperty(m,'a',{get(){return 1;}}); } catch(e) { if(e instanceof TypeError) errors++; } try { Object.defineProperty(m,'absent',{value:1}); } catch(e) { if(e instanceof TypeError) errors++; } try { Object.setPrototypeOf(m,{}); } catch(e) { if(e instanceof TypeError) errors++; } Object.setPrototypeOf(m,null); Object.preventExtensions(m); Object.defineProperty(m,'a',{value:1,writable:true,enumerable:true,configurable:false}); Object.defineProperty(m,Symbol.toStringTag,{value:'Module'}); __rt.effect(0, errors===5 && Object.getPrototypeOf(m)===null && !Object.isExtensible(m) && !Object.isFrozen(m) && Object.keys(m).join(',')==='a,b,z' && keys.length===3 && 'a' in m && !('missing' in m) && m[Symbol.toStringTag]==='Module' && d.writable && d.enumerable && !d.configurable && !tag.writable && !tag.enumerable && !tag.configurable && Object.prototype.toString.call(m)==='[object Module]');",
+            ),
+            ("m.js", "export let z=3, a=1, b=2;"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_sorts_utf16_and_omits_ambiguous_stars() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; __rt.effect(0, Object.keys(m).join(',')==='a,𐀀,ﬀ' && !('conflict' in m));",
+            ),
+            (
+                "m.js",
+                "export * from './a.js'; export * from './b.js'; export {a as 𐀀, a as ﬀ}; let a=1; export {a};",
+            ),
+            ("a.js", "let a=1; export {a as conflict};"),
+            ("b.js", "let b=2; export {b as conflict};"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_reexport_paths_share_one_origin() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {ns} from './barrel.js'; import * as m from './m.js'; __rt.effect(0, ns===m);",
+            ),
+            (
+                "barrel.js",
+                "export * from './a.js'; export * from './b.js';",
+            ),
+            ("a.js", "import * as ns from './m.js'; export {ns};"),
+            ("b.js", "export * as ns from './m.js';"),
+            ("m.js", ""),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_empty_freezes_and_inherited_writes_fail() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; import * as empty from './empty.js'; let errors=0; try { Object.freeze(m); } catch(e) { if(e instanceof TypeError) errors++; } const o=Object.create(m); try { o.newProp=1; } catch(e) { if(e instanceof TypeError) errors++; } Object.defineProperty(o,'n',{value:9}); __rt.effect(0, errors===2 && o.n===9 && m.n===1 && Object.freeze(empty)===empty && Object.isFrozen(empty));",
+            ),
+            ("m.js", "export let n=1;"),
+            ("empty.js", ""),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_waits_collects_and_migrates() {
+    assert_namespace_waits_collects_and_migrates(false);
+}
+
+#[test]
+fn cyclic_namespace_waits_collects_and_migrates() {
+    assert_namespace_waits_collects_and_migrates(true);
+}
+
+fn assert_namespace_waits_collects_and_migrates(cyclic: bool) {
+    use big_boy_pants_js::Completion;
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import * as m from './m.js'; import {ns} from './barrel.js'; __rt.effect(0, m===ns && m.n===12); m.inc(); __rt.effect(0, ns.n===13);");
+    host.add("barrel.js", "export * as ns from './m.js';");
+    host.add(
+        "m.js",
+        if cyclic {
+            "import './entry.js'; export let n=5; export function inc(){n++;} n+=__rt.need(75,0);"
+        } else {
+            "export let n=5; export function inc(){n++;} n+=__rt.need(75,0);"
+        },
+    );
+    let graph = ModuleLoader::new()
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    // Each spawn gets fresh cells and namespaces even though records are cached.
+    for _ in 0..2 {
+        let mut task = runtime.spawn_module(&graph);
+        let mut done = false;
+        for _ in 0..1500 {
+            let (next, next_host, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task.run_with(Budget::instructions(1), &mut host).unwrap();
+                    (task, host, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next;
+            host = next_host;
+            runtime.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(key) => {
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = runtime.root(Primitive::Number(7.0));
+                    task = runtime
+                        .complete(key, request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(_) => {
+                    done = true;
+                    break;
+                }
+                outcome => panic!("{outcome:?}"),
+            }
+        }
+        assert!(done);
+        assert_eq!(task.dependency_log().edges().len(), 1);
+        drop(task);
+        runtime.collect().unwrap();
+        assert_eq!(runtime.heap_usage().objects.module_namespace, 0);
+    }
+    assert_eq!(host.effects, vec![Primitive::Bool(true); 4]);
+    assert_eq!(host.fetches().len(), 3);
+}
+
+#[test]
+fn namespace_default_tag_and_enumeration() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; import d from './barrel.js'; let names=''; for(let k in m) names+=k+','; let errors=0; try{delete m[Symbol.toStringTag];}catch(e){if(e instanceof TypeError)errors++;} try{m[Symbol.toStringTag]='x';}catch(e){if(e instanceof TypeError)errors++;} try{Object.defineProperty(m,Symbol.toStringTag,{configurable:true});}catch(e){if(e instanceof TypeError)errors++;} globalThis.ns=m; (0,eval)('ns.n=999; ns.absent=1;'); m.inc(); __rt.effect(0, errors===3 && m.n===2 && m.default===2 && m.absent===undefined && names==='default,inc,n,' && d===m && JSON.stringify(m)==='{\"default\":2,\"n\":2}');",
+            ),
+            ("barrel.js", "export * as default from './m.js';"),
+            (
+                "m.js",
+                "export let n=1; export {n as default}; export function inc(){n++;}",
+            ),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_get_in_tdz_throws_reference_error() {
+    let (outcome, effects) = execute_modules(
+        &[
+            ("entry.js", "import './reader.js'; export let x=1;"),
+            (
+                "reader.js",
+                "import * as m from './entry.js'; try { m.x; } catch(e) { __rt.effect(0,e instanceof ReferenceError); }",
+            ),
+        ],
+        Budget::UNLIMITED,
+    );
+    assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+    assert_eq!(effects, vec![Primitive::Bool(true)]);
+}
+
+#[test]
+fn namespace_definitions_use_same_value() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; Object.defineProperty(m,'nan',{value:NaN}); Object.defineProperty(m,'zero',{value:-0}); const o=m.obj; Object.defineProperty(m,'obj',{value:o}); let errors=0; try { Object.defineProperty(m,'zero',{value:0}); }catch(e){if(e instanceof TypeError)errors++;} try { Object.defineProperty(m,'obj',{value:{}}); }catch(e){if(e instanceof TypeError)errors++;} __rt.effect(0, errors===2 && Object.is(m.zero,-0) && m.obj===o);",
+            ),
+            ("m.js", "export let nan=NaN, zero=-0, obj={};"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn bigint_namespace_definitions_use_same_value() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import * as m from './m.js'; Object.defineProperty(m, 'small', {value: 1n}); Object.defineProperty(m, 'large', {value: 0x10000000000000001n}); Object.defineProperty(m, 'negative', {value: -0x10000000000000001n}); Object.defineProperty(m, 'zero', {value: -0n}); let errors = 0; for (let value of [18446744073709551618n, -18446744073709551617n, 18446744073709551617]) { try { Object.defineProperty(m, 'large', {value}); } catch (e) { if (e instanceof TypeError) errors++; } } __rt.effect(0, errors === 3 && m.small === 1n && m.large === 18446744073709551617n && m.negative === -18446744073709551617n && m.zero === 0n);",
+            ),
+            (
+                "m.js",
+                "export let small = 1n, large = 18446744073709551617n, negative = -18446744073709551617n, zero = 0n;",
+            ),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn namespace_escaped_reexport_names() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {if as ns} from './barrel.js'; __rt.effect(0, ns.n===7);",
+            ),
+            ("barrel.js", r"export * as \u0069f from './m.js';"),
+            ("m.js", "export let n=7;"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn cyclic_namespaces_share_origins_and_remain_live() {
+    // Synthetic fixture, not light-cljs output. Both namespaces contain a
+    // reference to the other before either module body starts.
+    let sources = [
+        (
+            "entry.js",
+            "import * as a from './a.js'; import {ns} from './barrel.js'; a.inc(); __rt.effect(0, ns===a && a.b.a===a && ns.n===2 && a.b.n===3);",
+        ),
+        (
+            "a.js",
+            "export * as b from './b.js'; export let n=1; export function inc(){n++;}",
+        ),
+        (
+            "b.js",
+            "import * as a from './a.js'; export {a}; export let n=3;",
+        ),
+        (
+            "barrel.js",
+            "export * from './left.js'; export * from './right.js';",
+        ),
+        (
+            "left.js",
+            "export * from './barrel.js'; export * as ns from './a.js';",
+        ),
+        ("right.js", "import * as ns from './a.js'; export {ns};"),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Bool(true)]);
+    }
+}
+
+/*
+Adapted data from research/quickjs/examples/message.json at 7d1c13c5d8f8.
+QuickJS Javascript Engine
+Copyright (c) 2017-2021 Fabrice Bellard
+Copyright (c) 2017-2021 Charlie Gordon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+*/
+const MESSAGE_JSON: &str = "{ \"x\" : 1, \"tab\": [ 1, 2, 3 ] }\n\n";
+
+#[test]
+fn json_module_default_import() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import msg from './message.json'; __rt.effect(0, msg.x === 1 && msg.tab.length === 3 && msg.tab[2] === 3);",
+            ),
+            ("message.json", MESSAGE_JSON),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn json_module_value_is_shared_by_importers() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import {a} from './a.js'; import {b} from './b.js'; __rt.effect(0, a === b && b.x === 7);",
+            ),
+            (
+                "a.js",
+                "import msg from './message.json'; msg.x = 7; export {msg as a};",
+            ),
+            (
+                "b.js",
+                "import msg from './message.json'; export {msg as b};",
+            ),
+            ("message.json", MESSAGE_JSON),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn json_module_named_import_fails_link() {
+    let (outcome, effects) = execute_modules(
+        &[
+            (
+                "entry.js",
+                "import './effect.js'; import {x} from './message.json'; __rt.effect(0, x);",
+            ),
+            ("effect.js", "__rt.effect(0, 2);"),
+            ("message.json", MESSAGE_JSON),
+        ],
+        Budget::UNLIMITED,
+    );
+    let RunOutcome::Failed(error) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::SyntaxError);
+    assert!(error.message().contains("export 'x'"), "{error:?}");
+    assert!(error.message().contains("message.json"), "{error:?}");
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn json_module_classified_by_host() {
+    assert!(matches!(
+        ModuleSource::from_name("message.json".into(), MESSAGE_JSON.into()),
+        ModuleSource::Json { .. }
+    ));
+    assert!(matches!(
+        ModuleSource::from_name("message.JSON".into(), MESSAGE_JSON.into()),
+        ModuleSource::JavaScript { .. }
+    ));
+    // Neither attributes nor QuickJS's json5 extension are accepted.
+    for kind in ["json", "json5"] {
+        assert!(
+            big_boy_pants_js::frontend::parse_module(&format!(
+                "import msg from './message.json' with {{ type: '{kind}' }};"
+            ))
+            .is_err()
+        );
+    }
+    assert_effects(&[("message.json", MESSAGE_JSON)], vec![]);
+}
+
+#[test]
+fn json_module_namespace_has_only_default() {
+    assert_effects(
+        &[
+            (
+                "entry.js",
+                "import msg from './message.json'; import * as ns from './message.json'; import * as barrel from './barrel.js'; __rt.effect(0, Object.keys(ns).join(',') === 'default' && ns.default === msg && Object.keys(barrel).length === 0);",
+            ),
+            ("message.json", MESSAGE_JSON),
+            ("barrel.js", "export * from './message.json';"),
+        ],
+        vec![Primitive::Bool(true)],
+    );
+}
+
+#[test]
+fn json_stringify_namespace_snapshot_limits() {
+    // Synthetic fixtures, not light-cljs output. The namespace's virtual
+    // Symbol.toStringTag shares the bound with its exported string keys.
+    for count in [4095, 4096] {
+        let exports: String = (0..count).map(|i| format!("export let x{i}=1;")).collect();
+        let entry = format!(
+            "import * as ns from './exports.js';
+             let caught=false, result; try{{result=JSON.stringify(ns);}}catch(e){{caught=e instanceof RangeError;}}
+             __rt.effect(0, {});",
+            if count == 4095 {
+                "!caught && JSON.parse(result).x4094===1"
+            } else {
+                "caught"
+            }
+        );
+        assert_effects(
+            &[("entry.js", &entry), ("exports.js", &exports)],
+            vec![Primitive::Bool(true)],
+        );
+    }
+}
+
+#[test]
+fn json_module_primitives_and_strict_json() {
+    for text in ["null", "true", "false", "42", "-0", "\"hello\"", "[]"] {
+        assert_effects(
+            &[
+                (
+                    "entry.js",
+                    &format!(
+                        "import value from './value.json'; __rt.effect(0, JSON.stringify(value) === JSON.stringify(JSON.parse({text:?})));"
+                    ),
+                ),
+                ("value.json", text),
+            ],
+            vec![Primitive::Bool(true)],
+        );
+    }
+    for text in [
+        "{x: 1}",
+        "{'x': 1}",
+        "[1,]",
+        "/* json5 */ {}",
+        "{} trailing",
+    ] {
+        let (outcome, effects) = execute_modules(
+            &[
+                ("entry.js", "import './value.json'; __rt.effect(0, 1);"),
+                ("value.json", text),
+            ],
+            Budget::UNLIMITED,
+        );
+        assert!(
+            matches!(outcome, RunOutcome::Failed(ref e) if e.kind() == big_boy_pants_js::VmErrorKind::SyntaxError),
+            "{text}: {outcome:?}"
+        );
+        assert!(effects.is_empty());
+    }
+}
+
+#[test]
+fn json_module_instances_survive_budgets_collection_and_migration() {
+    use big_boy_pants_js::Completion;
+    let runtime = Runtime::new();
+    let mut host = RecordingHost::default();
+    host.add("entry.js", "import msg from './message.json'; import * as ns from './message.json'; msg.x += 1; __rt.need(76, 0); __rt.effect(0, msg === ns.default && msg.x === 2 && msg.padding.length === 512 && msg.padding[511].value === 5 && msg.tab[2] === 3);");
+    let text = format!(
+        "{{\"x\":1,\"tab\":[1,2,3],\"padding\":[{}]}}",
+        vec!["{\"value\":5}"; 512].join(",")
+    );
+    host.add("message.json", &text);
+    let mut loader = ModuleLoader::new();
+    let graph = loader
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let cached = loader
+        .load(runtime.world(), &"entry.js".into(), &mut host)
+        .unwrap();
+    let fetches = host.fetches();
+    assert_eq!(fetches.len(), 2);
+    for graph in [&graph, &cached] {
+        let mut task = runtime.spawn_module(graph);
+        let mut done = false;
+        for _ in 0..2000 {
+            let (next_task, next_host, outcome) = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = task.run_with(Budget::instructions(1), &mut host).unwrap();
+                    (task, host, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            task = next_task;
+            host = next_host;
+            runtime.collect().unwrap();
+            match outcome {
+                RunOutcome::Yielded => {}
+                RunOutcome::Waiting(key) => {
+                    let request = task.take_producer_requests().pop().unwrap();
+                    let value = runtime.root(Primitive::Undefined);
+                    task = runtime
+                        .complete(key, request.producer(), Completion::Ready(&value))
+                        .unwrap()
+                        .into_runnable()
+                        .pop()
+                        .unwrap();
+                }
+                RunOutcome::Complete(_) => {
+                    done = true;
+                    break;
+                }
+                outcome => panic!("{outcome:?}"),
+            }
+        }
+        assert!(done, "JSON module task did not finish");
+        assert_eq!(task.dependency_log().edges().len(), 1);
+        drop(task);
+        runtime.collect().unwrap();
+    }
+    assert_eq!(host.effects, vec![Primitive::Bool(true); 2]);
+    assert_eq!(host.fetches(), fetches);
+}
+
+#[test]
+fn json_module_errors_keep_utf16_positions_and_parser_limits() {
+    let deep = format!("{}0{}", "[".repeat(513), "]".repeat(513));
+    let long_key = format!("{{\"{}\":0}}", "x".repeat(4097));
+    for (text, position) in [
+        ("{\r\n\"😀\": }", "2:7"),
+        (deep.as_str(), "1:513"),
+        (long_key.as_str(), "1:4099"),
+    ] {
+        let (outcome, effects) = execute_modules(
+            &[
+                ("entry.js", "import './value.json'; __rt.effect(0, 1);"),
+                ("value.json", text),
+            ],
+            Budget::instructions(1),
+        );
+        let RunOutcome::Failed(error) = outcome else {
+            panic!("{outcome:?}")
+        };
+        assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::SyntaxError);
+        assert!(
+            error.message().contains(&format!("value.json:{position}")),
+            "{error:?}"
+        );
+        assert!(effects.is_empty());
+    }
+}
+
+#[test]
+fn json_module_multiple_sources_keep_distinct_values() {
+    let sources = [
+        (
+            "entry.js",
+            "import a from './a.json'; import b from './b.json'; import * as ns from './b.json'; __rt.effect(0, a !== b && a.x === 1 && b.x === 2 && ns.default === b); a.x = 7; __rt.effect(0, b.x === 2 && a.tab[2] === 3);",
+        ),
+        ("a.json", MESSAGE_JSON),
+        ("b.json", "{\"x\":2}"),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        assert!(matches!(outcome, RunOutcome::Complete(_)), "{outcome:?}");
+        assert_eq!(effects, vec![Primitive::Bool(true); 2]);
+    }
+}
+
+#[test]
+fn json_module_later_parse_error_prevents_all_bodies() {
+    let sources = [
+        (
+            "entry.js",
+            "import './effect.js'; import a from './a.json'; import b from './b.json'; __rt.effect(0, a.x + b.x);",
+        ),
+        ("effect.js", "__rt.effect(0, 2);"),
+        ("a.json", MESSAGE_JSON),
+        ("b.json", "{ \"x\": }"),
+    ];
+    for budget in [Budget::UNLIMITED, Budget::instructions(1)] {
+        let (outcome, effects) = execute_modules(&sources, budget);
+        let RunOutcome::Failed(error) = outcome else {
+            panic!("{outcome:?}")
+        };
+        assert_eq!(error.kind(), big_boy_pants_js::VmErrorKind::SyntaxError);
+        assert!(error.message().contains("b.json:1:8"), "{error:?}");
+        assert!(effects.is_empty());
+    }
+}

@@ -1,0 +1,164 @@
+//! The compiler-reserved intrinsic binding contract (`docs/design.md` §§5,
+//! 7; `docs/grammar.md`, "Reserved intrinsic binding").
+//!
+//! The compiler, not the program, owns one binding, [`RESERVED_BINDING`]
+//! (`__rt`). It is in scope everywhere, as if declared outside the script,
+//! and it is not a JavaScript value: it denotes a fixed table of private VM
+//! operations. The binding resolver finds it like any other binding (it is
+//! the outermost scope), and the contract makes that resolution unambiguous:
+//!
+//! * **No shadowing.** Declaring `__rt` anywhere (`let`, `const`, a
+//!   parameter, a function declaration or a function expression's name) is a
+//!   compile error, so every `__rt` in a program resolves to the reserved
+//!   binding. Intrinsics are never recognized by the spelling of an arbitrary
+//!   callee: a user function named `vector` or `need` is an ordinary binding.
+//! * **No reassignment.** `__rt = …` and `__rt.name = …` are compile errors.
+//! * **No computed access.** `__rt[name]` is a compile (parse) error: the
+//!   intrinsic must be known statically.
+//! * **No aliasing.** `__rt` may appear only as `__rt.name(arguments)`, a
+//!   direct call. `const r = __rt`, `f(__rt)`, `return __rt` and an uncalled
+//!   `__rt.name` are compile errors, so an intrinsic never becomes a value
+//!   that could escape the contract.
+//! * **Known names and arities.** An unknown name, a wrong argument count or
+//!   a non-literal host operation selector is a compile error.
+//!
+//! Misuse of the binding is reported as
+//! [`SyntaxErrorKind::ReservedWord`](super::SyntaxErrorKind::ReservedWord);
+//! unknown names and bad arguments as
+//! [`SyntaxErrorKind::Invalid`](super::SyntaxErrorKind::Invalid).
+//!
+//! **`__rt.need(definition, kind)`** (clj-quickjs-23, `docs/design.md` §7)
+//! is the dependency read: it lowers to the VM `need` instruction, which
+//! records the dependency on result `kind` of `definition` in the running
+//! task's world (the world is execution context, never an argument) and
+//! evaluates to the shared result, suspending the whole task while the
+//! result is pending and continuing at this call when the task is run
+//! again ([`crate::task`], "Dependency waits in the VM"). Both arguments are
+//! expressions; a numeric literal argument that is not a valid identity (a
+//! non-negative integer, at most 2^53 - 1 for the definition and
+//! 4,294,967,295 for the kind) is rejected at compile time, other values at
+//! run time.
+//!
+//! **`__rt.reduce(f, init, vec)`** and **`__rt.needAll(defs, kind)`**
+//! (clj-quickjs-12) are resumable native operations (`crate::vm::native`):
+//! `reduce` calls the JavaScript function `f(acc, x)` for each element of the
+//! persistent vector `vec` in order and evaluates to the last result (`init`
+//! for an empty vector); `needAll` needs result `kind` of each definition id
+//! in `defs` in order and evaluates to a new vector of the results. Either
+//! may suspend the whole task part-way (in a callback, or at a pending
+//! dependency) and continues where it stopped when the task is run again,
+//! without repeating completed elements.
+//!
+//! A call evaluates its arguments left to right, then runs one VM
+//! instruction; the operand order is the instruction's stack order
+//! ([`crate::vm::intrinsics`] documents operands, results and errors).
+
+use crate::vm::Opcode;
+
+/// The name of the compiler-reserved intrinsic binding.
+pub(crate) const RESERVED_BINDING: &str = "__rt";
+
+/// How many arguments an intrinsic takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Arity {
+    Exactly(usize),
+    /// Any number (up to the instruction's u16 count operand).
+    Any,
+    /// An even number: key/value pairs.
+    Pairs,
+}
+
+/// What a call lowers to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lowering {
+    /// The arguments, then this operand-less instruction.
+    Op(Opcode),
+    /// The arguments, then this instruction with the element count (vector)
+    /// or entry count (map) as its operand.
+    Counted(Opcode),
+    /// `__rt.effect(op, arg)`: `op` must be an integer literal in
+    /// `0..=65535` (the `host_effect` operand); `arg` is evaluated, then
+    /// `host_effect op`.
+    HostEffect,
+    /// `__rt.need(definition, kind)`: both arguments, then `need` (a
+    /// suspension point). Literal arguments are range-checked when compiled.
+    Need,
+}
+
+/// One entry of the intrinsic table.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Intrinsic {
+    pub(crate) name: &'static str,
+    pub(crate) arity: Arity,
+    pub(crate) lowering: Lowering,
+}
+
+const fn op(name: &'static str, n: usize, opcode: Opcode) -> Intrinsic {
+    Intrinsic {
+        name,
+        arity: Arity::Exactly(n),
+        lowering: Lowering::Op(opcode),
+    }
+}
+
+/// The intrinsic table: `__rt.<name>(…)` lowers as listed.
+pub(crate) const INTRINSICS: &[Intrinsic] = &[
+    Intrinsic {
+        name: "vector",
+        arity: Arity::Any,
+        lowering: Lowering::Counted(Opcode::NewVector),
+    },
+    Intrinsic {
+        name: "map",
+        arity: Arity::Pairs,
+        lowering: Lowering::Counted(Opcode::NewMap),
+    },
+    op("count", 1, Opcode::Count),
+    op("nth", 2, Opcode::Nth),
+    op("get", 2, Opcode::Get),
+    op("getOr", 3, Opcode::GetOr),
+    op("assoc", 3, Opcode::Assoc),
+    op("dissoc", 2, Opcode::Dissoc),
+    op("conj", 2, Opcode::Conj),
+    op("popLast", 1, Opcode::PopLast),
+    op("vectorBuilder", 0, Opcode::NewVectorBuilder),
+    op("mapBuilder", 0, Opcode::NewMapBuilder),
+    op("builderConj", 2, Opcode::BuilderConj),
+    op("builderAssoc", 3, Opcode::BuilderAssoc),
+    op("freeze", 1, Opcode::Freeze),
+    Intrinsic {
+        name: "effect",
+        arity: Arity::Exactly(2),
+        lowering: Lowering::HostEffect,
+    },
+    Intrinsic {
+        name: "need",
+        arity: Arity::Exactly(2),
+        lowering: Lowering::Need,
+    },
+    op("reduce", 3, Opcode::Reduce),
+    op("needAll", 2, Opcode::NeedAll),
+];
+
+/// The table entry for `name`, if it is an intrinsic.
+pub(crate) fn lookup(name: &str) -> Option<&'static Intrinsic> {
+    INTRINSICS.iter().find(|i| i.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intrinsic_names_are_distinct() {
+        for (i, a) in INTRINSICS.iter().enumerate() {
+            assert!(
+                INTRINSICS[i + 1..].iter().all(|b| b.name != a.name),
+                "{}",
+                a.name
+            );
+        }
+        assert!(lookup("vector").is_some());
+        assert!(lookup("toString").is_none());
+    }
+}

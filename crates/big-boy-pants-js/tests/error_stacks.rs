@@ -1,0 +1,333 @@
+//! Error stacks from synthetic JavaScript fixtures, not light-cljs output.
+//!
+//! The marker helper and position cases adapt get_string_pos and
+//! test_line_column_numbers in research/quickjs/tests/test_builtin.js,
+//! revision 7d1c13c5d8f8c6b32893786ed35cdcebd88194d2.
+//!
+//! Copyright (c) 2017-2021 Fabrice Bellard
+//! Copyright (c) 2017-2021 Charlie Gordon
+//!
+//! Permission is hereby granted, free of charge, to any person obtaining a copy
+//! of this software and associated documentation files (the "Software"), to deal
+//! in the Software without restriction, including without limitation the rights
+//! to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+//! copies of the Software, and to permit persons to whom the Software is
+//! furnished to do so, subject to the following conditions:
+//!
+//! The above copyright notice and this permission notice shall be included in
+//! all copies or substantial portions of the Software.
+//!
+//! THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//! IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//! FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+//! THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+//! LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+//! OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+//! THE SOFTWARE.
+
+use big_boy_pants_js::frontend::compile_script;
+use big_boy_pants_js::{Completion, Primitive, RunOutcome, Runtime, ValueView};
+
+fn string(outcome: RunOutcome) -> String {
+    let RunOutcome::Complete(value) = outcome else {
+        panic!("expected a string result, got {outcome:?}");
+    };
+    value.string().expect("a stack string").to_string()
+}
+
+fn run(source: &str) -> String {
+    let rt = Runtime::new();
+    let exe = compile_script("stack-test.js", source).unwrap();
+    string(rt.spawn(&exe, &[]).unwrap().run().unwrap())
+}
+
+fn marked(source: &str) -> (String, String) {
+    let marker = source.find('@').expect("one position marker");
+    let before = &source[..marker];
+    let line = before.chars().filter(|&c| c == '\n').count() + 1;
+    let column = before.rsplit('\n').next().unwrap().chars().count() + 1;
+    (source.replacen('@', "", 1), format!(":{line}:{column})"))
+}
+
+#[test]
+fn error_stack_reports_line_and_column() {
+    for (source, caught, level) in [
+        ("\n  Error@(\"hello\").stack;", false, 0),
+        ("\n  throw Error@(\"hello\");", true, 0),
+        ("\n  1 + @not_def", true, 0),
+        ("\n  null @( 1234 );", true, 0),
+        ("function f() { throw Error('hello'); }\n\nf@();", true, 1),
+        (
+            "let p = {valueOf() { throw Error('poison'); }};\n  1 + 2 @* p;",
+            true,
+            1,
+        ),
+        (
+            "let p = {get a() { throw Error('getter'); }};\n  p @. a;",
+            true,
+            1,
+        ),
+        (
+            "let p = {set a(v) { throw Error('setter'); }};\n  p @. a = 1;",
+            true,
+            1,
+        ),
+    ] {
+        let (source, position) = marked(source);
+        let source = if caught {
+            format!("let saved; try {{ {source} }} catch (e) {{ saved = e; }} saved.stack;")
+        } else {
+            source
+        };
+        let stack = run(&source);
+        let frame = stack.lines().nth(level).expect("the requested frame");
+        assert!(
+            frame.ends_with(&position),
+            "{source:?}: {stack:?}, expected {position}"
+        );
+        assert!(frame.contains(" (stack-test.js:"), "{stack:?}");
+    }
+}
+
+#[test]
+fn stacks_survive_waits_migration_and_collection() {
+    for create in [
+        "Error('saved')",
+        "(() => { try { missing; } catch(e) { return e; } })()",
+    ] {
+        let source = format!(
+            "function make() {{ return {create}; }}\nlet e = make();\n__rt.need(5, 3); e.stack;"
+        );
+        let expected = run(&source.replace("__rt.need(5, 3);", ""));
+        let rt = Runtime::new();
+        let exe = compile_script("stack-test.js", &source).unwrap();
+        let task = rt.spawn(&exe, &[]).unwrap();
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+        rt.collect().unwrap();
+        let request = task.take_producer_requests().pop().unwrap();
+        let ready = rt.root(Primitive::Undefined);
+        let mut runnable = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+            .unwrap()
+            .into_runnable();
+        let task = runnable.pop().unwrap();
+        let actual = std::thread::spawn(move || string(task.run().unwrap()))
+            .join()
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn stacks_keep_creation_sites_names_and_bounded_depth() {
+    let stack = run(
+        "function make() { return new Error('saved'); }\nlet e = make();\ntry { throw e; } catch (x) { x.stack; }",
+    );
+    assert_eq!(
+        stack,
+        "    at make (stack-test.js:1:26)\n    at <anonymous> (stack-test.js:2:13)\n"
+    );
+    assert_eq!(
+        run("function recur(n) { return n ? recur(n - 1) : Error().stack; } recur(100);")
+            .lines()
+            .count(),
+        64
+    );
+    let stack = run("const make = () => Error(); make().stack;");
+    assert!(stack.starts_with("    at make (stack-test.js:"), "{stack}");
+    let stack = run("(function () { return Error().stack; })();");
+    assert!(
+        stack.starts_with("    at <anonymous> (stack-test.js:"),
+        "{stack}"
+    );
+    // Diagnostics use immutable metadata and never invoke a function's name getter.
+    let stack = run(
+        "function make() { return Error().stack; } Object.defineProperty(make, 'name', {get() { throw 42; }}); make();",
+    );
+    assert!(stack.starts_with("    at make (stack-test.js:"), "{stack}");
+    // Bound constructors still attribute the Error call to the user's call site.
+    assert_eq!(
+        run("const E = Error.bind(null);\nnew E().stack;"),
+        "    at <anonymous> (stack-test.js:2:1)\n"
+    );
+}
+
+#[test]
+fn stack_property_attributes_follow_error_ownership() {
+    for source in [
+        "let e = Error(); let d = Object.getOwnPropertyDescriptor(e, 'stack'); d.value === e.stack && d.writable && d.configurable && !d.enumerable && Object.keys(e).length === 0;",
+        "let e = Error(); e.stack = 'changed'; e.stack === 'changed' && delete e.stack && e.stack === undefined;",
+        "let keys = Object.getOwnPropertyNames(Error('message', {cause: 0})); keys.length === 3 && keys[0] === 'message' && keys[1] === 'cause' && keys[2] === 'stack';",
+        "let e; try { missing; } catch (x) { e = x; } let d = Object.getOwnPropertyDescriptor(e, 'stack'); 'stack' in e && d.value === e.stack && d.writable && d.configurable && !d.enumerable;",
+        "let e; try { missing; } catch (x) { e = x; } e.stack = 'changed'; e.stack === 'changed' && delete e.stack && e.stack === undefined;",
+    ] {
+        let rt = Runtime::new();
+        let exe = compile_script("stack-test.js", source).unwrap();
+        let RunOutcome::Complete(value) = rt.spawn(&exe, &[]).unwrap().run().unwrap() else {
+            panic!("{source}");
+        };
+        assert_eq!(value.view(), ValueView::Bool(true), "{source}");
+    }
+}
+
+#[test]
+fn stack_preserves_utf16_function_names() {
+    assert_eq!(
+        run(
+            r"const o = {'\ud800': () => Error().stack}; o['\ud800']()[7] === '\ud800' ? 'ok' : 'corrupt';"
+        ),
+        "ok"
+    );
+}
+
+#[test]
+fn loaded_rope_metadata_is_bounded_for_constructed_and_caught_errors() {
+    use big_boy_pants_js::JsString;
+    use big_boy_pants_js::vm::Executable;
+
+    // Synthetic fixtures, not light-cljs output. Exercise actual recursion
+    // with executable metadata supplied by the embedder, without large data.
+    let mut name = JsString::from("rope-name");
+    for _ in 0..10 {
+        name = name.concat(&name).unwrap();
+    }
+    let filename = format!("{}.js", "f".repeat(512));
+    for capture in [
+        "return Error().stack;",
+        "try { missing; } catch(e) { return e.stack; }",
+    ] {
+        let source =
+            format!("function recur(n) {{ if (n) return recur(n - 1); {capture} }} recur(100);");
+        let exe = compile_script(&filename, &source).unwrap();
+        let mut spec = exe.to_spec();
+        let mut function = spec.functions[0].to_spec();
+        function.function_name = Some(name.clone());
+        // Loaded executables use their diagnostic name as the filename.
+        function.name = filename.clone();
+        spec.functions[0] = Executable::load(function).unwrap();
+        let exe = Executable::load(spec).unwrap();
+        let rt = Runtime::new();
+        let stack = string(rt.spawn(&exe, &[]).unwrap().run().unwrap());
+        assert_eq!(stack.encode_utf16().count(), 16_384);
+        assert!(stack.starts_with("    at <truncated> ("));
+        assert!(stack.contains(&format!("{}…)", "f".repeat(256))));
+    }
+}
+
+#[test]
+fn native_error_stacks_share_error_capture() {
+    for name in [
+        "TypeError",
+        "RangeError",
+        "ReferenceError",
+        "SyntaxError",
+        "EvalError",
+        "URIError",
+        "InternalError",
+    ] {
+        for create in [format!("{name}('saved')"), format!("new {name}('saved')")] {
+            let source = format!(
+                "function make() {{ return {create}; }}\nlet e = make();\ntry {{ throw e; }} catch (x) {{ x.stack; }}"
+            );
+            let column = if create.starts_with("new ") {
+                26
+            } else {
+                26 + name.len()
+            };
+            assert_eq!(
+                run(&source),
+                format!(
+                    "    at make (stack-test.js:1:{column})\n    at <anonymous> (stack-test.js:2:13)\n"
+                ),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            run(&format!("const E = {name}.bind(null);\nnew E().stack;")),
+            "    at <anonymous> (stack-test.js:2:1)\n",
+            "{name}"
+        );
+        assert_eq!(
+            run(&format!(
+                "let e = {name}('message', {{cause: 0}}); let d = Object.getOwnPropertyDescriptor(e, 'stack'); let keys = Object.getOwnPropertyNames(e); d.value === e.stack && d.writable && d.configurable && !d.enumerable && keys.length === 3 && keys[2] === 'stack' && Object.keys(e).length === 0 ? 'ok' : 'bad';"
+            )),
+            "ok",
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn suppressed_error_stacks_share_error_capture() {
+    assert_eq!(
+        run(
+            "function make() { return SuppressedError(1, 2, 'saved'); }\nlet e = make();\ntry { throw e; } catch (x) { x.stack; }"
+        ),
+        "    at make (stack-test.js:1:41)\n    at <anonymous> (stack-test.js:2:13)\n",
+    );
+    assert_eq!(
+        run("function make() { return new SuppressedError(1, 2, 'saved'); }\nmake().stack;"),
+        "    at make (stack-test.js:1:26)\n    at <anonymous> (stack-test.js:2:5)\n",
+    );
+    assert_eq!(
+        run("const E = SuppressedError.bind(null, 1, 2);\nnew E().stack;"),
+        "    at <anonymous> (stack-test.js:2:1)\n",
+    );
+}
+
+#[test]
+fn constructor_stacks_survive_callback_waits() {
+    for name in [
+        "Error",
+        "TypeError",
+        "RangeError",
+        "ReferenceError",
+        "SyntaxError",
+        "EvalError",
+        "URIError",
+        "InternalError",
+    ] {
+        // Both the message conversion (including its method getter) and the
+        // accessor cause suspend before the constructor can install its stack.
+        let source = "function make() {\n  return Error({get toString() { __rt.need(1, 1); return function() { __rt.need(2, 1); return 'message'; }; }},\n    {get cause() { __rt.need(3, 1); return 42; }});\n}\nmake().stack;".replace("return Error(", &format!("return {name}("));
+        let rt = Runtime::new();
+        let exe = compile_script("stack-test.js", &source).unwrap();
+        let mut task = rt.spawn(&exe, &[]).unwrap();
+        for expected in 1..=3 {
+            let (next, outcome) = std::thread::spawn(move || {
+                let outcome = task.run().unwrap();
+                (task, outcome)
+            })
+            .join()
+            .unwrap();
+            task = next;
+            assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
+            rt.collect().unwrap();
+            let requests = task.take_producer_requests();
+            assert_eq!(requests.len(), 1);
+            let request = &requests[0];
+            assert_eq!(
+                request.key().dependency(),
+                big_boy_pants_js::DependencyId::new(expected)
+            );
+            let ready = rt.root(Primitive::Undefined);
+            task = rt
+                .complete(request.key(), request.producer(), Completion::Ready(&ready))
+                .unwrap()
+                .into_runnable()
+                .pop()
+                .unwrap();
+        }
+        let stack = std::thread::spawn(move || string(task.run().unwrap()))
+            .join()
+            .unwrap();
+        assert_eq!(
+            stack,
+            format!(
+                "    at make (stack-test.js:2:{})\n    at <anonymous> (stack-test.js:5:5)\n",
+                10 + name.len()
+            ),
+            "{name}"
+        );
+    }
+}

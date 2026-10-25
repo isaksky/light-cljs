@@ -1,0 +1,55 @@
+// Synthetic fixture, not light-cljs output.
+function assert(ok) { if (!ok) throw new Error('array copy assertion'); }
+let names = ['slice','concat','flat','keys','entries','toReversed','toSorted','with'];
+let lengths = [2,1,0,0,0,0,1,2];
+for (let i=0; i<names.length; i++) {
+    let name=names[i], f=Array.prototype[name], d=Object.getOwnPropertyDescriptor(Array.prototype,name);
+    assert(typeof f === 'function' && f.name === name && f.length === lengths[i]);
+    assert(d.writable && d.configurable && !d.enumerable);
+}
+assert(Array.of.name === 'of' && Array.of.length === 0);
+let a=[1,2,3];
+assert(a.slice(1).join() === '2,3' && a.slice(-2,-1).join() === '2');
+assert(a.slice().join() === '1,2,3' && a.slice(Infinity).length === 0);
+assert(a.concat([4,5],6).join() === '1,2,3,4,5,6');
+assert(a.toReversed().join() === '3,2,1' && a.join() === '1,2,3');
+assert(a.with(-1,7).join() === '1,2,7' && a.join() === '1,2,3');
+assert([3,1,2].toSorted().join() === '1,2,3');
+assert(a.toSorted((x,y)=>y-x).join() === '3,2,1');
+assert([10,2,1].toSorted().join() === '1,10,2');
+assert(Array.of(3).length === 1 && Array.of(3)[0] === 3 && Array.of().length === 0);
+let nested=[1,[2,[3]],4];
+assert(nested.flat().length === 4 && nested.flat()[2][0] === 3);
+assert(nested.flat(2).join() === '1,2,3,4' && nested.flat(Infinity).join() === '1,2,3,4');
+assert(nested.flat(0)[1] === nested[1] && nested.flat(-1)[1] === nested[1]);
+let holes=new Array(4); holes[1]=2;
+let proto=Object.create(Array.prototype); proto[2]=7; Object.setPrototypeOf(holes,proto);
+let sliced=holes.slice(), concatted=holes.concat([]);
+assert(sliced.length === 4 && !(0 in sliced) && sliced[1] === 2 && sliced[2] === 7 && !(3 in sliced));
+assert(concatted.length === 4 && !(0 in concatted) && concatted[1] === 2 && concatted[2] === 7 && !(3 in concatted));
+assert(holes.flat().join() === '2,7' && [holes].flat(2).join() === '2,7');
+let reversed=holes.toReversed(), sorted=holes.toSorted(), replaced=holes.with(1,8);
+assert(reversed.length === 4 && 0 in reversed && reversed[1] === 7 && reversed[2] === 2 && 3 in reversed);
+assert(sorted.length === 4 && sorted[0] === 2 && sorted[1] === 7 && 2 in sorted && 3 in sorted);
+assert(replaced.length === 4 && 0 in replaced && replaced[1] === 8 && replaced[2] === 7 && 3 in replaced);
+let spread={0:8,2:9,length:3,[Symbol.isConcatSpreadable]:true};
+let r=[0].concat(spread);
+assert(r.length === 4 && r[1] === 8 && !(2 in r) && r[3] === 9);
+let atomic=[1,2]; atomic[Symbol.isConcatSpreadable]=false;
+assert([].concat(atomic)[0] === atomic);
+let ordinary={0:1,length:1}; assert([].concat(ordinary)[0] === ordinary);
+assert([spread].flat()[0] === spread);
+assert(Array.prototype.slice.call('abc',1).join() === 'b,c');
+assert(Array.prototype.toReversed.call({0:1,2:3,length:3}).join() === '3,,1');
+assert(Array.prototype.flat.call({0:[1,[2]],length:1},2).join() === '1,2');
+assert(Array.prototype.toSorted.call(new Uint8Array([3,1,2])).join() === '1,2,3');
+let keys=holes.keys(), entries=holes.entries();
+assert(Object.getPrototypeOf(keys) === Object.getPrototypeOf(holes.values()));
+assert(keys[Symbol.iterator]() === keys && entries[Symbol.iterator]() === entries);
+assert(keys.next().value === 0 && keys.next().value === 1 && keys.next().value === 2 && keys.next().value === 3 && keys.next().done);
+let e=entries.next().value; assert(e[0] === 0 && e[1] === undefined && Array.isArray(e));
+assert(entries.next().value.join() === '1,2' && entries.next().value.join() === '2,7');
+let growing=[], it=growing.keys(); growing.push(1); assert(it.next().value === 0); growing.push(2); assert(it.next().value === 1 && it.next().done); growing.push(3); assert(it.next().done);
+let stable=[{k:1,id:0},{k:0,id:1},{k:1,id:2}].toSorted((a,b)=>a.k-b.k);
+assert(stable[0].id === 1 && stable[1].id === 0 && stable[2].id === 2);
+true;

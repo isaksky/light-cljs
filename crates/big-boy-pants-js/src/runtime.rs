@@ -1,0 +1,327 @@
+//! The runtime: the embedding entry point.
+//!
+//! A [`Runtime`] owns the shared heap and task bookkeeping. It is a
+//! cheap-to-clone, `Send + Sync` handle. It owns no threads: the embedder
+//! spawns [`Task`]s and drives them by calling [`Task::run`] on threads of its
+//! choosing (`docs/design.md` §3). There is no global interpreter lock; tasks
+//! of one runtime run in parallel and share only the heap's short metadata
+//! locks.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
+
+use crate::dep::{
+    self, CellStatus, ClaimError, CompleteError, Completion, DependencyTable, ProducerRequest,
+    Wakeups,
+};
+use crate::heap::{
+    CollectError, CollectStats, CollectionObserver, HandleError, Heap, HeapStats, HeapUsage,
+    Rooted, Scope, ThreadRegistration,
+};
+use crate::ids::{DependencyKey, ProducerId, TaskId, WorldId};
+use crate::task::Task;
+use crate::value::share::{self, PublishError};
+use crate::value::{Primitive, Value};
+use crate::vm::Executable;
+use crate::vm::frames::{DiagnosticContext, VmLimits, VmState};
+
+#[derive(Debug)]
+struct RuntimeShared {
+    heap: Arc<Heap>,
+    next_task: AtomicU64,
+    world: WorldId,
+    next_world: AtomicU64,
+    deps: Arc<DependencyTable>,
+    /// Resource policy given to every task spawned here.
+    limits: VmLimits,
+}
+
+/// Shared runtime: heap plus execution machinery. See the module docs.
+#[derive(Clone, Debug)]
+pub struct Runtime(Arc<RuntimeShared>);
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Runtime {
+    /// A runtime whose tasks get the default [`VmLimits`].
+    pub fn new() -> Runtime {
+        Runtime::with_limits(VmLimits::DEFAULT)
+    }
+
+    /// A runtime whose tasks run under `limits`: a call beyond them fails the
+    /// task with [`VmErrorKind::StackOverflow`](crate::VmErrorKind::StackOverflow).
+    pub fn with_limits(limits: VmLimits) -> Runtime {
+        let heap = Arc::new(Heap::default());
+        Runtime(Arc::new(RuntimeShared {
+            deps: Arc::new(DependencyTable::new(Arc::clone(&heap))),
+            heap,
+            next_task: AtomicU64::new(1),
+            world: WorldId::INITIAL,
+            next_world: AtomicU64::new(1),
+            limits,
+        }))
+    }
+
+    /// The initial world: where [`Runtime::spawn`] runs tasks.
+    pub fn world(&self) -> WorldId {
+        self.0.world
+    }
+
+    /// Process-unique identity of this runtime (task ids are only unique
+    /// within one runtime).
+    pub(crate) fn runtime_id(&self) -> u64 {
+        self.0.deps.runtime
+    }
+
+    /// Allocate a new world/version identity, distinct from every other world
+    /// of this runtime. Dependency cells of different worlds are distinct, so
+    /// a result published in one never satisfies a need in another.
+    pub fn new_world(&self) -> WorldId {
+        // Relaxed: the counter only needs uniqueness, not ordering.
+        WorldId::from_raw(self.0.next_world.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Open a scope for host access to heap values. [`Local`](crate::Local)
+    /// handles created in it cannot escape `f`; see [`crate::heap::roots`].
+    ///
+    /// # Panics
+    ///
+    /// When called from inside a leaf host effect, which may not access or
+    /// allocate heap values (see [`crate::host`]).
+    pub fn scope<R>(&self, f: impl for<'s> FnOnce(&Scope<'s>) -> R) -> R {
+        assert!(
+            !crate::host::inside_effect(),
+            "a leaf host effect may not open a heap scope"
+        );
+        let scope = Scope::new(&self.0.heap);
+        f(&scope)
+    }
+
+    /// Create a persistent root holding a primitive.
+    pub fn root(&self, value: Primitive) -> Rooted {
+        Rooted::new(&self.0.heap, Value::from(value))
+    }
+
+    /// Check that `value` may be handed to another task: the embedding's
+    /// publication entry point (`docs/design.md` §4).
+    ///
+    /// Succeeds when `value` is a primitive or reaches only persistent
+    /// objects (vectors, maps, occurrences) and explicit concurrent
+    /// references; nothing is copied, so a task given the value afterwards
+    /// sees the same identities. Fails with [`PublishError::NotShareable`],
+    /// naming the path to the first task-owned object found (a transient
+    /// builder in any state, or a plain object), or
+    /// [`PublishError::Handle`] for a handle of another runtime. Cycles and
+    /// deep graphs are walked iteratively; a value known shareable (built
+    /// from shareable parts, or published before) is accepted in O(1). See
+    /// `value::share` for the categories and the cache.
+    pub fn publish(&self, value: &Rooted) -> Result<(), PublishError> {
+        let value = value.value_in(&self.0.heap).map_err(PublishError::Handle)?;
+        share::check(&self.0.heap, &value)
+    }
+
+    /// Create a task that will run `executable` with `args` bound to its
+    /// parameters. The task is not run; the caller drives it.
+    ///
+    /// Arguments are not publication-checked here: the embedder decides what
+    /// each new task receives, and checks values it hands from one task to
+    /// another with [`Runtime::publish`] first. (Task-owned builders stay
+    /// protected regardless: only their owning task's run can use them.)
+    pub fn spawn(&self, executable: &Executable, args: &[&Rooted]) -> Result<Task, HandleError> {
+        self.spawn_in(self.0.world, executable, args)
+    }
+
+    /// Lower each record, then spawn a loaded module graph in its
+    /// world. Graph traversal and export resolution consume the run budget.
+    /// Module cells and
+    /// closures are instantiated independently in this task; no host fetch
+    /// occurs during its runs. Linking errors fail the task with SyntaxError
+    /// before any module body executes. Completion is undefined.
+    pub fn spawn_module(&self, graph: &crate::module::ModuleGraph) -> Task {
+        let linker = crate::module::Linker::new(graph);
+        self.spawn_values(
+            graph.world(),
+            &graph.entry_code(),
+            &[],
+            Some(Box::new(linker)),
+        )
+    }
+
+    /// [`Runtime::spawn`] in world `world`: the task's needs read the
+    /// dependency cells of that world (`docs/design.md` §7). `world` should
+    /// come from [`Runtime::world`] or [`Runtime::new_world`] of this runtime.
+    pub fn spawn_in(
+        &self,
+        world: WorldId,
+        executable: &Executable,
+        args: &[&Rooted],
+    ) -> Result<Task, HandleError> {
+        let args = args
+            .iter()
+            .map(|a| a.value_in(&self.0.heap))
+            .collect::<Result<Vec<Value>, _>>()?;
+        Ok(self.spawn_values(world, executable, &args, None))
+    }
+
+    fn spawn_values(
+        &self,
+        world: WorldId,
+        executable: &Executable,
+        args: &[Value],
+        module_link: Option<Box<crate::module::Linker>>,
+    ) -> Task {
+        // Relaxed: the counter only needs uniqueness, not ordering with other memory.
+        let id = TaskId::from_raw(self.0.next_task.fetch_add(1, Ordering::Relaxed));
+        let diag = DiagnosticContext { task: id, world };
+        let mut vm = VmState::new(&executable.0, args, diag, self.0.limits);
+        vm.module_link = module_link;
+        Task::new(
+            id,
+            world,
+            executable.clone(),
+            Arc::clone(&self.0.heap),
+            Arc::clone(&self.0.deps),
+            vm,
+        )
+    }
+
+    /// Claim the single producer of `key`'s cell without subscribing to it,
+    /// creating the cell if needed: for a host that produces a result before
+    /// (or regardless of whether) any task needs it. Fails if the cell is
+    /// already claimed (by a claim or by the first need) or complete. See
+    /// [`crate::dep`].
+    pub fn claim(&self, key: DependencyKey) -> Result<ProducerRequest, ClaimError> {
+        self.0.deps.claim(key)
+    }
+
+    /// Complete `key`'s cell with its one terminal outcome, as its claimed
+    /// `producer`, and return the wake handles of every task waiting on it,
+    /// in subscription order. The caller enqueues them; nothing is run
+    /// inline (`docs/design.md` §8).
+    ///
+    /// A `Ready` value or `Failed` error must pass the publication check
+    /// ([`Runtime::publish`]); it is not copied, so every reader sees the
+    /// same identities, and it stays alive while the cell exists even after
+    /// the caller drops its handle. Rejected, with the cell left pending and
+    /// its waiters kept: a value reaching task-owned mutation
+    /// ([`CompleteError::NotShareable`]), a `producer` that is not the cell's
+    /// claimed producer, including one claimed for another world or result
+    /// kind ([`CompleteError::NotProducer`]), a handle of another runtime, or
+    /// a cell that is already complete ([`CompleteError::AlreadyComplete`]:
+    /// outcomes are never replaced or reset).
+    pub fn complete(
+        &self,
+        key: DependencyKey,
+        producer: ProducerId,
+        completion: Completion<'_>,
+    ) -> Result<Wakeups, CompleteError> {
+        dep::complete(&self.0.deps, key, producer, completion)
+    }
+
+    /// Cancel `key`'s cell on the embedder's authority: install the terminal
+    /// outcome `Cancelled` whoever its producer is (claimed or not; the
+    /// cell is created if absent, so later needs read it too), and return
+    /// the wakes of every waiting task, delivered exactly as by
+    /// [`Runtime::complete`]. Their next needs read
+    /// [`Need::Cancelled`](crate::Need::Cancelled); the tasks themselves are
+    /// not cancelled. Terminal: a later completion by the producer, claim,
+    /// or second cancellation is rejected (`AlreadyComplete`), the only
+    /// error. A claimed producer can also cancel through `complete`; tasks
+    /// cannot cancel cells. See [`crate::dep`], "Cancellation".
+    pub fn cancel_cell(&self, key: DependencyKey) -> Result<Wakeups, CompleteError> {
+        dep::cancel_cell(&self.0.deps, key)
+    }
+
+    /// A snapshot of `key`'s cell: absent, pending (producer and waiters),
+    /// or its terminal outcome with values rooted for the caller.
+    pub fn cell_status(&self, key: DependencyKey) -> CellStatus {
+        self.0.deps.status(key)
+    }
+
+    /// The shared heap (crate-internal native operations and tests).
+    pub(crate) fn heap(&self) -> &Arc<Heap> {
+        &self.0.heap
+    }
+
+    /// Heap usage counters.
+    pub fn heap_stats(&self) -> HeapStats {
+        self.0.heap.stats()
+    }
+
+    /// A read-only snapshot of the object table: live objects by kind and
+    /// the shallow bytes the table owns ([`HeapUsage`], whose docs say what
+    /// is excluded). Walks every slot under the object lock: for tests and
+    /// measurement, not hot paths.
+    pub fn heap_usage(&self) -> HeapUsage {
+        self.0.heap.usage()
+    }
+
+    /// Collect now: a deterministic, stop-the-world mark/sweep of the shared
+    /// heap. Everything not reachable from a persistent root, an open scope
+    /// on this thread, or a live task's frames and executable constants is
+    /// reclaimed, cycles included; reachable objects keep their identity
+    /// (nothing moves).
+    ///
+    /// Fails without collecting, and without waiting, with
+    /// [`CollectError::MutatorActive`] while this thread holds a
+    /// [`RunGuard`](crate::RunGuard) (including inside a host effect), or
+    /// another thread is in heap access (a run guard, an unreleased scope, an
+    /// atom operation) and not stopped at a safepoint. To wait for running
+    /// mutators instead, use [`Runtime::request_collection`]. See
+    /// [`crate::heap::gc`].
+    pub fn collect(&self) -> Result<CollectStats, CollectError> {
+        self.0.heap.collect()
+    }
+
+    /// Request a collection and block until the safepoint rendezvous
+    /// completes and the collection has run: the deterministic collection
+    /// hook for tests and executors.
+    ///
+    /// Waits until every other thread is outside heap access or stopped at a
+    /// safepoint: a running task polls at its VM poll points (run entry,
+    /// backward branches, calls, returns, allocation) and parks with its
+    /// frames reported as roots; a thread with a scope open delays the
+    /// collection until it closes the scope or releases it
+    /// ([`Scope::released`], [`Scope::safepoint`]). Threads that never enter
+    /// heap access do not delay it. While the request is pending, threads
+    /// entering heap access wait for it. Concurrent requests each collect.
+    ///
+    /// Fails at once with [`CollectError::MutatorActive`], without
+    /// requesting, if this thread holds a run guard (including inside a host
+    /// effect). Scopes open on this thread are fine: their locals are roots.
+    /// It deadlocks only if a thread in heap access waits for this one
+    /// without reaching a safepoint (for example a host effect blocking on
+    /// it); see [`crate::heap::gc`].
+    pub fn request_collection(&self) -> Result<CollectStats, CollectError> {
+        self.0.heap.request_collection()
+    }
+
+    /// Register the calling thread as a collection participant until the
+    /// returned registration drops: every [`CollectionReport`](crate::CollectionReport) names it and
+    /// says how it was stopped. Executor workers hold one for their lifetime.
+    /// It is not heap access and never delays a collection by itself: a
+    /// registered thread holding no run guard, scope or atom operation is
+    /// idle and stopped (an idle worker blocked on its ready queue never
+    /// holds up a request). Never waits.
+    pub fn register_thread(&self) -> ThreadRegistration<'_> {
+        self.0.heap.register_thread()
+    }
+
+    /// Give every later collection's [`CollectionReport`](crate::CollectionReport) to `observer`
+    /// while it is alive (see [`CollectionObserver::collected`] for when and
+    /// where it runs). Executors use it to record collections with their
+    /// own events.
+    pub fn observe_collections(&self, observer: Weak<dyn CollectionObserver>) {
+        self.0.heap.observe_collections(observer);
+    }
+
+    /// True while a collection request is pending ([`Runtime::request_collection`]):
+    /// threads in heap access should reach a safepoint. A snapshot; one atomic load.
+    pub fn collection_requested(&self) -> bool {
+        self.0.heap.collection_requested()
+    }
+}

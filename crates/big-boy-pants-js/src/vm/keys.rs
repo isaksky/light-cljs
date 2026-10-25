@@ -1,0 +1,1189 @@
+//! Own-property key enumeration (clj-quickjs-123): ECMAScript
+//! OrdinaryOwnPropertyKeys and the `Object.keys` /
+//! `Object.getOwnPropertyNames` built-ins, after QuickJS's
+//! `JS_GetOwnPropertyNamesInternal`, `num_keys_cmp`,
+//! `JS_GetOwnPropertyNames2`, `js_object_keys` and
+//! `js_object_getOwnPropertyNames` (`research/quickjs/quickjs.c`, revision
+//! 7d1c13c5d8f8); written fresh over this runtime's object model
+//! (`crate::object`, `crate::object::array`).
+//!
+//! # Order
+//!
+//! [`own_property_keys`] lists an object's own keys in the order of
+//! OrdinaryOwnPropertyKeys:
+//!
+//! 1. every key that is an array index (the canonical numeric string of an
+//!    integer `0 ..= 2^32 - 2`, [`crate::object::array::array_index`]) in
+//!    ascending numeric order: an array's elements (holes are absent), and
+//!    on an ordinary object the index-named properties wherever they were
+//!    created (`{b: 1, 1: 2, 0: 3}` lists `0`, `1`, `b`). `"4294967295"`
+//!    (`2^32 - 1`), `"01"` and `"1.5"` are not array indices;
+//! 2. every other string key in property creation order (a redefinition
+//!    keeps the first position). An array's `length` was created with the
+//!    array, so it comes first among them;
+//! 3. symbol keys (clj-quickjs-127) follow in creation order. Object.keys,
+//!    Object.getOwnPropertyNames and for-in filter them out.
+//!
+//! Each key carries its `enumerable` attribute (clj-quickjs-119), so
+//! `Object.keys` and `for`-`in` (clj-quickjs-85, which reuses this order)
+//! filter with [`KeyFilter::Enumerable`].
+//!
+//! # Which objects
+//!
+//! | Target | Keys |
+//! |--------|------|
+//! | ordinary object or array of the running task, embedder object, realm intrinsic | its own properties as above |
+//! | `Object.prototype` | enumerable keys: none; all keys include the stored non-enumerable `__proto__` accessor (clj-quickjs-261) |
+//! | built-in function | its own `length`, `name`, `prototype` and methods |
+//! | function object (clj-quickjs-125) | enumerable keys: the enumerable properties of its property record (none without one); all keys: initial `length`, `name`, and a constructor's `prototype` without allocation, or the complete property record |
+//! | object or array of another task | `ForeignObject` |
+//! | Error instance | ordinary object keys |
+//! | persistent vector, map, occurrence, builder, atom, binding cell, other native payload | none (no JavaScript properties) |
+//!
+//! The built-ins apply ToObject first: `undefined` and `null` throw a
+//! catchable `TypeError`; another primitive lists the keys of the wrapper
+//! ToObject would make, which is not allocated (clj-quickjs-142): a
+//! string's indices ascending, then its non-enumerable `length`
+//! (`Object.getOwnPropertyNames("ab")` is `["0", "1", "length"]`); a
+//! number or boolean has none. Each returns a fresh array
+//! owned by the running task, inheriting from `Array.prototype`, whose
+//! elements are the key strings.
+//!
+//! # Locks
+//!
+//! The target is read under one object-table lock, collecting interned
+//! keys; their names are looked up in the property-key table after that
+//! lock is released (the key table's lock is a leaf, `crate::object`). No
+//! JavaScript runs and nothing is allocated before the result array, which
+//! the built-ins allocate last.
+//!
+//! # `for`-`in`
+//!
+//! A `for`-`in` loop (clj-quickjs-85) enumerates through a
+//! [`ForInIterator`], after QuickJS's `build_for_in_iterator`,
+//! `js_for_in_prepare_prototype_chain_enum` and `js_for_in_next`
+//! (`research/quickjs/quickjs.c`, revision 7d1c13c5d8f8).
+//! `ForInStart` snapshots the operand's own string keys, enumerable or not,
+//! in the order above (an object's, including a function's property
+//! record), or a string's indices; `null`, `undefined`, numbers and
+//! booleans (whose wrappers have no enumerable own keys) give none. Each
+//! `ForInNext` takes the next enumerable key of the snapshot, re-checks it
+//! with [`property::get_own_property`] and skips it unless it is still an
+//! own enumerable property of the object it was found on (ECMAScript's
+//! informative EnumerateObjectProperties re-reads the descriptor before
+//! each key; QuickJS checks existence only), so a key deleted before it is
+//! reached is not visited; keys added to an object after its snapshot are
+//! not visited. Scanning past skipped keys is bounded by the snapshot and
+//! allocates nothing.
+//!
+//! # Prototype chain
+//!
+//! When an object's keys are used up (clj-quickjs-86), the walk moves to
+//! its prototype (`[[GetPrototypeOf]]`, `crate::vm::prototype`) and
+//! snapshots that object's own keys the same way, so the chain is read
+//! lazily, one object at a time, when the walk reaches it: a prototype
+//! changed or a key added to a prototype before the walk reaches it counts,
+//! and the walk continues on the prototype it is on (and then that
+//! prototype's own chain) when the operand's chain changes under it. A
+//! prototype key is visited only if no object the walk has left had an own
+//! property of that name in its snapshot, enumerable or not (a
+//! non-enumerable own `x` hides an inherited enumerable `x`; QuickJS keeps
+//! these names as the properties of its enumerator object, this enumerator
+//! in two hash sets, of indices and of names). The walk ends:
+//!
+//! - at a `null` prototype;
+//! - at a realm intrinsic (`Object.prototype`, `Array.prototype`, a built-in
+//!   function) when no intrinsic on its chain has an enumerable property,
+//!   which is always so today. The intrinsics are shared and immutable
+//!   (`crate::realm`), so this is decided from the realm's immutable views
+//!   without any lock, and every walk that reaches `Object.prototype` ends
+//!   there with no lock taken for it. (Were an intrinsic's property
+//!   enumerable, its keys would be named from the view under the key
+//!   table's leaf lock, still not the object table's.) The view includes
+//!   the non-enumerable `__proto__` accessor;
+//! - after a built-in function: its prototype is
+//!   `Function.prototype` (clj-quickjs-102), an immutable intrinsic with no
+//!   enumerable property on its chain, so nothing above could be visited.
+//!   Ordinary and bound functions follow their actual prototype links,
+//!   including superclass constructors and their enumerable static properties.
+//!   Error instances use the ordinary object walk, including their keys.
+//!
+//! Prototype links never lead to another task's object
+//! (`crate::vm::prototype`, "Ownership of prototype links"), and chains are
+//! acyclic, so the walk ends.
+//!
+//! The enumerator is a [`HeapObject::Native`] payload: task-owned
+//! (`Shareability::TaskOwned`), traced (its only edge is the object the
+//! walk is on, the operand and then each prototype: a prototype the body
+//! unlinked from the chain stays alive while the walk is on it), and held
+//! only by a scratch local of the loop's frame (`crate::frontend` lowers
+//! the loop), so it lives exactly as long as the frame needs it, survives
+//! yields, waits, collections and migration with the frame, and is never
+//! reachable from JavaScript or published. `ForInNext` uses a traced native
+//! continuation (clj-quickjs-91): a proxy key list and each descriptor may
+//! call JavaScript. Each leaf transition stores the current object and keys
+//! before the next safepoint. Ordinary lookups remain callback-free.
+
+use std::collections::HashSet;
+
+use crate::heap::gc::Trace;
+use crate::heap::{Heap, HeapObject, NativePayload, ObjectId};
+use crate::ids::TaskId;
+use crate::object::PropertyKey;
+use crate::object::array::{ArrayObject, array_index};
+use crate::realm;
+use crate::value::share::Shareability;
+use crate::value::{JsString, Value};
+use crate::vm::dispatch::Fault;
+use crate::vm::function;
+use crate::vm::property::{self, Key};
+use crate::vm::prototype;
+
+/// Which own keys [`own_property_keys`] lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyFilter {
+    /// Only enumerable properties (`Object.keys`, `for`-`in`).
+    Enumerable,
+    /// Every key, including symbols. Object.getOwnPropertyNames filters
+    /// out symbols after enumeration.
+    All,
+}
+
+/// One own property key, in OrdinaryOwnPropertyKeys order.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OwnKey {
+    /// An array index ([`Key::Index`]) or any other name.
+    pub(crate) key: Key,
+    /// The property's `enumerable` attribute.
+    pub(crate) enumerable: bool,
+}
+
+impl OwnKey {
+    /// The key as a property name (an index as its decimal digits).
+    pub(crate) fn name(&self) -> JsString {
+        match &self.key {
+            Key::Index(index) => JsString::from(index.to_string().as_str()),
+            Key::Name(name) => name.clone(),
+            Key::Symbol(_) => unreachable!("symbol is not a property name"),
+        }
+    }
+}
+
+/// What the object-table read collected: element indices and interned
+/// keys, each with its `enumerable` attribute.
+#[derive(Default)]
+struct Raw {
+    elements: Vec<(u32, bool)>,
+    /// An array's or allocated String wrapper's virtual `length`.
+    length: bool,
+    named: Vec<(PropertyKey, bool)>,
+}
+
+/// The own keys of `target` as `task` sees them, in
+/// OrdinaryOwnPropertyKeys order (module docs, "Order"), restricted by
+/// `filter`; or the failure of the module docs' table. The shared key
+/// enumeration of `Object.keys`, `Object.getOwnPropertyNames` and (later)
+/// `for`-`in` and object spread/rest copies.
+pub(crate) fn own_property_keys(
+    heap: &Heap,
+    task: TaskId,
+    target: ObjectId,
+    filter: KeyFilter,
+) -> Result<Vec<OwnKey>, Fault> {
+    let target = super::proxy::forward(heap, task, target, "ownKeys")?;
+    if let Some(keys) = crate::module::namespace::keys(heap, task, target, filter)? {
+        return Ok(keys);
+    }
+    let function = heap
+        .read(target, |o| {
+            matches!(o, HeapObject::Function(_) | HeapObject::BoundFunction(_))
+        })
+        .ok_or(Fault::Internal("key enumeration target was reclaimed"))?;
+    if function {
+        let initial = function::initial_keys(heap, target)?;
+        if !initial.is_empty() {
+            return Ok(if filter == KeyFilter::All {
+                initial
+                    .into_iter()
+                    .map(|name| OwnKey {
+                        key: Key::Name(JsString::from(name)),
+                        enumerable: false,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            });
+        }
+    }
+    let Some(store) = key_store(heap, target)? else {
+        return Ok(Vec::new());
+    };
+    Ok(order(heap, collect_object(heap, task, store)?, filter))
+}
+
+/// Shared detached-aware snapshot for own-key reflection and for-in walks.
+fn collect_object(heap: &Heap, task: TaskId, store: ObjectId) -> Result<Raw, Fault> {
+    let mut raw = heap
+        .read(store, |object| collect(object, task))
+        .unwrap_or(Err(Fault::Internal("key enumeration target was reclaimed")))?;
+    if let Some(view) = crate::object::typed_array::view(heap, task, store)? {
+        raw.elements = (0..view.live_length(heap)? as u32)
+            .map(|i| (i, true))
+            .collect();
+    }
+    Ok(raw)
+}
+
+/// The object that holds `target`'s keys: `target` itself, or a function's
+/// property record (`None` for a function without one, whose only own
+/// keys would be its unstored `length` and `name`).
+fn key_store(heap: &Heap, target: ObjectId) -> Result<Option<ObjectId>, Fault> {
+    let function = heap
+        .read(target, |o| {
+            matches!(o, HeapObject::Function(_) | HeapObject::BoundFunction(_))
+        })
+        .ok_or(Fault::Internal("key enumeration target was reclaimed"))?;
+    if function {
+        function::property_record(heap, target)
+    } else {
+        Ok(Some(target))
+    }
+}
+
+/// Collect the keys of one object under the object-table lock (no key-table
+/// lookups here).
+fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
+    let readable = |owner: Option<TaskId>| match owner {
+        Some(owner) if owner != task => Err(Fault::ForeignObject {
+            owner: Some(owner),
+            caller: task,
+        }),
+        _ => Ok(()),
+    };
+    let named = |o: &crate::object::OrdinaryObject| {
+        o.properties()
+            .map(|(k, p)| (k, p.flags.enumerable))
+            .collect()
+    };
+    match object {
+        HeapObject::Proxy(_) => Err(Fault::Internal("Proxy bypassed resumable key enumeration")),
+        HeapObject::ModuleNamespace(_) => {
+            Err(Fault::Internal("namespace bypassed exotic key enumeration"))
+        }
+        HeapObject::AsyncState(_) => Err(Fault::TypeError(
+            "async state has no public properties".into(),
+        )),
+        HeapObject::Plain(o) => {
+            readable(o.owner())?;
+            let mut raw = Raw {
+                named: named(o),
+                ..Raw::default()
+            };
+            if !o.is_intrinsic()
+                && let Some(crate::object::PrimitiveData::String(s)) = o.primitive_data()
+            {
+                // Merge virtual and stored indices in `order`, so an added
+                // index follows the string indices and precedes `length`.
+                for own in string_own_keys(s, KeyFilter::All)? {
+                    match own.key {
+                        Key::Index(index) => raw.elements.push((index, own.enumerable)),
+                        Key::Name(_) => raw.length = true,
+                        Key::Symbol(_) => unreachable!("string wrapper symbol"),
+                    }
+                }
+            }
+            Ok(raw)
+        }
+        HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
+            readable(m.object().owner())?;
+            Ok(Raw {
+                named: named(m.object()),
+                ..Raw::default()
+            })
+        }
+        HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => {
+            readable(m.object().owner())?;
+            Ok(Raw {
+                named: named(m.object()),
+                ..Raw::default()
+            })
+        }
+        HeapObject::WeakRef(m) => {
+            readable(m.object().owner())?;
+            Ok(Raw {
+                named: named(m.object()),
+                ..Raw::default()
+            })
+        }
+        HeapObject::FinalizationRegistry(m) => {
+            readable(m.object().owner())?;
+            Ok(Raw {
+                named: named(m.object()),
+                ..Raw::default()
+            })
+        }
+        HeapObject::DisposableStack(m) => {
+            readable(m.object().owner())?;
+            Ok(Raw {
+                named: named(m.object()),
+                ..Raw::default()
+            })
+        }
+        HeapObject::ArrayBuffer(b) => {
+            readable(b.object.owner())?;
+            Ok(Raw {
+                named: named(&b.object),
+                ..Raw::default()
+            })
+        }
+        HeapObject::TypedArray(a) => {
+            readable(a.object.owner())?;
+            Ok(Raw {
+                named: named(&a.object),
+                ..Raw::default()
+            })
+        }
+        HeapObject::Builtin(f) => Ok(Raw {
+            named: named(&f.properties),
+            ..Raw::default()
+        }),
+        HeapObject::Array(a) => {
+            readable(a.object().owner())?;
+            Ok(Raw {
+                elements: a.element_keys().collect(),
+                length: true,
+                named: named(a.object()),
+            })
+        }
+        HeapObject::Native(_) => Ok(Raw::default()),
+        HeapObject::Function(_) | HeapObject::BoundFunction(_) => Err(Fault::Internal(
+            "a function's keys are read from its property record",
+        )),
+        HeapObject::Vector(_)
+        | HeapObject::Map(_)
+        | HeapObject::Occurrence(_)
+        | HeapObject::Builder(_)
+        | HeapObject::Cell(_)
+        | HeapObject::Atom(_)
+        | HeapObject::PromiseReaction(_)
+        | HeapObject::PromiseResolving(_) => Ok(Raw::default()),
+        HeapObject::Promise(p) => {
+            p.check_owner(task)?;
+            Ok(Raw {
+                named: p.properties.as_deref().map_or_else(Vec::new, named),
+                ..Raw::default()
+            })
+        }
+        HeapObject::Generator(g) => {
+            readable(g.object.owner())?;
+            Ok(Raw {
+                named: named(&g.object),
+                ..Raw::default()
+            })
+        }
+    }
+}
+
+/// Name the interned keys (outside the object lock) and put everything in
+/// OrdinaryOwnPropertyKeys order.
+fn order(heap: &Heap, raw: Raw, filter: KeyFilter) -> Vec<OwnKey> {
+    let wanted = |enumerable: bool| filter == KeyFilter::All || enumerable;
+    let mut indices: Vec<(u32, bool)> = raw.elements;
+    let mut names: Vec<OwnKey> = Vec::new();
+    let mut symbols: Vec<OwnKey> = Vec::new();
+    if raw.length && wanted(false) {
+        names.push(OwnKey {
+            key: Key::Name(JsString::from("length")),
+            enumerable: false,
+        });
+    }
+    for (key, enumerable) in raw.named {
+        let Some(name) = heap.keys().name(key) else {
+            if filter == KeyFilter::All
+                && let Some(symbol) = heap.keys().symbol(key)
+            {
+                symbols.push(OwnKey {
+                    key: Key::Symbol(symbol),
+                    enumerable,
+                });
+            }
+            continue;
+        };
+        match array_index(&name) {
+            Some(index) => indices.push((index, enumerable)),
+            None if wanted(enumerable) => names.push(OwnKey {
+                key: Key::Name(name),
+                enumerable,
+            }),
+            None => {}
+        }
+    }
+    // An array's elements are already ascending; an ordinary object's index
+    // names are in creation order. Indices are unique, so an unstable sort
+    // is exact.
+    indices.sort_unstable_by_key(|&(index, _)| index);
+    indices
+        .into_iter()
+        .filter(|&(_, enumerable)| wanted(enumerable))
+        .map(|(index, enumerable)| OwnKey {
+            key: Key::Index(index),
+            enumerable,
+        })
+        .chain(names)
+        .chain(symbols)
+        .collect()
+}
+
+/// `Object.keys(o)` (`filter` [`KeyFilter::Enumerable`]) and
+/// `Object.getOwnPropertyNames(o)` ([`KeyFilter::All`]): ToObject, then a
+/// fresh array of the key names (module docs).
+pub(crate) fn object_keys(
+    heap: &Heap,
+    task: TaskId,
+    args: &[Value],
+    filter: KeyFilter,
+) -> Result<Value, Fault> {
+    let target = args.first().cloned().unwrap_or(Value::Undefined);
+    let keys = match target {
+        Value::Object(id) => own_property_keys(heap, task, id, filter)?,
+        Value::Undefined | Value::Null => {
+            return Err(Fault::TypeError(format!(
+                "cannot convert {} to object",
+                target.type_name()
+            )));
+        }
+        // The wrapper ToObject would make, not allocated: a String
+        // wrapper's indices, then its `length` (clj-quickjs-142).
+        Value::String(s) => string_own_keys(&s, filter)?,
+        // Number and Boolean wrappers have no own properties.
+        Value::Number(_) | Value::Bool(_) | Value::Symbol(_) | Value::BigInt(_) => Vec::new(),
+    };
+    let exhausted = || Fault::OutOfMemory("heap object table exhausted");
+    let prototype = realm::intrinsics(heap)
+        .ok_or_else(exhausted)?
+        .array_prototype;
+    let mut array = ArrayObject::with_prototype(task, prototype);
+    for key in &keys {
+        if matches!(key.key, Key::Symbol(_)) {
+            continue;
+        }
+        if !array.push(Some(Value::String(key.name()))) {
+            return Err(Fault::Internal("more than 2^32 - 1 own keys"));
+        }
+    }
+    heap.alloc(HeapObject::Array(Box::new(array)))
+        .map(Value::Object)
+        .ok_or_else(exhausted)
+}
+
+/// The own string keys of the String wrapper of `s`, in
+/// OrdinaryOwnPropertyKeys order (String exotic objects'
+/// `[[OwnPropertyKeys]]`; QuickJS `js_string_obj_get_length` in
+/// `JS_GetOwnPropertyNamesInternal`): the
+/// indices ascending (enumerable), then `length` (not enumerable, so only
+/// with [`KeyFilter::All`]). The list is as long as the string, bounded by
+/// `MAX_STRING_LEN` like any other object's key count.
+fn string_own_keys(s: &JsString, filter: KeyFilter) -> Result<Vec<OwnKey>, Fault> {
+    let len = u32::try_from(s.len())
+        .map_err(|_| Fault::Internal("a string longer than 2^32 - 1 code units"))?;
+    let indices = (0..len).map(|index| OwnKey {
+        key: Key::Index(index),
+        enumerable: true,
+    });
+    let length = (filter == KeyFilter::All).then(|| OwnKey {
+        key: Key::Name(JsString::from("length")),
+        enumerable: false,
+    });
+    Ok(indices.chain(length).collect())
+}
+
+/// Snapshot all own keys for CopyDataProperties. Enumerability is checked
+/// later, immediately before each resumable Get, since earlier getters may
+/// delete properties or change their descriptors.
+pub(crate) fn rest_keys(heap: &Heap, task: TaskId, source: &Value) -> Result<Value, Fault> {
+    let keys = match source {
+        Value::Object(id) => own_property_keys(heap, task, *id, KeyFilter::All)?,
+        Value::String(s) => string_own_keys(s, KeyFilter::All)?,
+        Value::Null | Value::Undefined => {
+            return Err(Fault::TypeError(
+                "cannot destructure null or undefined".into(),
+            ));
+        }
+        _ => Vec::new(),
+    };
+    let array = super::property::new_array(heap, task)?;
+    for own in keys {
+        let value = match own.key {
+            Key::Index(i) => Value::Number(f64::from(i)),
+            Key::Name(n) => Value::String(n),
+            Key::Symbol(s) => Value::Symbol(s),
+        };
+        super::property::append(heap, task, &array, Some(value))?;
+    }
+    Ok(array)
+}
+
+/// The task-owned enumerator of a `for`-`in` loop (clj-quickjs-85, -86;
+/// QuickJS `JSForInIterator`, `build_for_in_iterator`,
+/// `js_for_in_prepare_prototype_chain_enum`, `js_for_in_next`): the object
+/// the walk is on (the operand, then each prototype), a snapshot of that
+/// object's own string keys taken when the walk reached it, the position
+/// of the next one, and the names of every object the walk has left. It
+/// lives in a heap object ([`HeapObject::Native`]) held only by a scratch
+/// local of the loop's frame, so it is traced through that frame, survives
+/// yields, waits, collections and migration with it, and is never
+/// reachable from JavaScript (module docs, "`for`-`in`").
+#[derive(Debug)]
+pub(crate) struct ForInIterator {
+    /// The object whose keys `keys` lists; `None` for a primitive operand
+    /// (whose keys never change and whose chain is not walked) and once the
+    /// walk has ended.
+    object: Option<ObjectId>,
+    /// Every own string key of `object`, enumerable or not: a
+    /// non-enumerable key is never visited, but it hides the name further
+    /// up the chain.
+    keys: Vec<OwnKey>,
+    next: usize,
+    pending_keys: bool,
+    /// The keys of the objects the walk has left (module docs, "Prototype chain").
+    visited: Visited,
+}
+
+/// A set of property keys (`Key` is a name or an index).
+#[derive(Debug, Default)]
+struct Visited {
+    indices: HashSet<u32>,
+    names: HashSet<JsString>,
+}
+
+impl Visited {
+    fn contains(&self, key: &Key) -> bool {
+        match key {
+            Key::Index(index) => self.indices.contains(index),
+            Key::Name(name) => self.names.contains(name),
+            Key::Symbol(_) => false,
+        }
+    }
+
+    fn insert(&mut self, key: Key) {
+        match key {
+            Key::Index(index) => self.indices.insert(index),
+            Key::Name(name) => self.names.insert(name),
+            Key::Symbol(_) => false,
+        };
+    }
+}
+
+/// What [`ForInIterator::step`] found.
+enum Step {
+    /// A candidate key of `object` (`None`: of a primitive operand).
+    Key(Option<ObjectId>, Key),
+    /// The keys of this object are used up: continue with its prototype.
+    Exhausted(ObjectId),
+    /// The walk has ended.
+    Done,
+}
+
+impl ForInIterator {
+    fn new(object: Option<ObjectId>, keys: Vec<OwnKey>) -> Self {
+        ForInIterator {
+            object,
+            keys,
+            next: 0,
+            pending_keys: false,
+            visited: Visited::default(),
+        }
+    }
+
+    /// Advance past the next key that is enumerable in the snapshot and not
+    /// hidden by an object the walk has left. Bounded by the snapshot;
+    /// allocates nothing.
+    fn step(&mut self) -> Step {
+        while let Some(key) = self.keys.get(self.next) {
+            self.next += 1;
+            if !matches!(key.key, Key::Symbol(_))
+                && key.enumerable
+                && !self.visited.contains(&key.key)
+            {
+                return Step::Key(self.object, key.key.clone());
+            }
+        }
+        match self.object {
+            Some(object) => Step::Exhausted(object),
+            None => Step::Done,
+        }
+    }
+
+    /// Leave the current object for `next` (`None`: the walk has ended),
+    /// whose own keys are `keys`.
+    fn enter(&mut self, next: Option<ObjectId>, keys: Vec<OwnKey>) {
+        let left = std::mem::replace(&mut self.keys, keys);
+        if next.is_some() {
+            left.into_iter().for_each(|k| self.visited.insert(k.key));
+        }
+        self.object = next;
+        self.next = 0;
+    }
+}
+
+impl Trace for ForInIterator {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        if let Some(object) = self.object {
+            visit(object.into());
+        }
+        for own in &self.keys {
+            if let Key::Symbol(symbol) = &own.key {
+                visit(crate::heap::gc::TraceEdge::Symbol(symbol.identity()));
+            }
+        }
+    }
+}
+
+impl NativePayload for ForInIterator {
+    fn shareability(&self) -> Shareability {
+        Shareability::TaskOwned
+    }
+}
+
+/// The own string keys (enumerable or not) of the object `id` that the
+/// walk has reached, or `None` when nothing from `id` up its chain can be
+/// visited (module docs, "Prototype chain"): `id` is a realm intrinsic and
+/// no intrinsic on its chain has an enumerable property, decided from the
+/// realm's immutable views without any lock.
+fn walk_keys(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Vec<OwnKey>>, Fault> {
+    if let Some(keys) = crate::module::namespace::keys(heap, task, id, KeyFilter::All)? {
+        return Ok(Some(keys));
+    }
+    if let Some(realm) = heap.realm().get()
+        && let Some(view) = realm.view(id)
+    {
+        // An intrinsic's chain holds only intrinsics; anything else on it
+        // (never the case) is read the general way.
+        let enumerable =
+            std::iter::successors(Some(id), |&p| realm.view(p).and_then(|v| v.prototype)).any(
+                |p| {
+                    realm
+                        .view(p)
+                        .is_none_or(|v| v.own_keys().any(|(_, enumerable)| enumerable))
+                },
+            );
+        if !enumerable {
+            return Ok(None);
+        }
+        // Not the case for any intrinsic yet: name the keys (the key
+        // table's leaf lock), still without the object table.
+        let raw = Raw {
+            named: view.own_keys().collect(),
+            ..Raw::default()
+        };
+        return Ok(Some(order(heap, raw, KeyFilter::All)));
+    }
+    let Some(store) = key_store(heap, id)? else {
+        return Ok(Some(Vec::new()));
+    };
+    let raw = collect_object(heap, task, store)?;
+    Ok(Some(order(heap, raw, KeyFilter::All)))
+}
+
+/// The next object of the walk after `id` (module docs, "Prototype
+/// chain"): its `[[GetPrototypeOf]]`, except that the walk ends at a
+/// built-in function, whose prototype (`Function.prototype`) is an immutable
+/// intrinsic with no enumerable property on its chain. Ordinary and bound
+/// functions may inherit from superclass constructors.
+fn chain_next(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<ObjectId>, Fault> {
+    if let Some(view) = heap.realm().get().and_then(|r| r.view(id)) {
+        return Ok(if view.builtin { None } else { view.prototype });
+    }
+    let fixed = heap
+        .read(id, |object| matches!(object, HeapObject::Builtin(_)))
+        .ok_or(Fault::Internal("prototype was reclaimed"))?;
+    if fixed {
+        return Ok(None);
+    }
+    prototype::get_prototype_of(heap, task, id)
+}
+
+/// `ForInStart`: the enumerator of `value` for the running task `task`, a
+/// new heap object (module docs, "`for`-`in`").
+pub(crate) fn for_in_start(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fault> {
+    let iterator = match value {
+        Value::Object(id) if super::proxy::inspect(heap, task, *id)?.is_some() => {
+            let mut it = ForInIterator::new(Some(*id), vec![]);
+            it.pending_keys = true;
+            it
+        }
+        Value::Object(id) => match walk_keys(heap, task, *id)? {
+            Some(keys) => ForInIterator::new(Some(*id), keys),
+            None => ForInIterator::new(None, Vec::new()),
+        },
+        // A String wrapper's own enumerable keys are its indices; its
+        // prototype has no enumerable properties.
+        Value::String(s) => {
+            let len = u32::try_from(s.len())
+                .map_err(|_| Fault::Internal("a string longer than 2^32 - 1 code units"))?;
+            let index = |i| OwnKey {
+                key: Key::Index(i),
+                enumerable: true,
+            };
+            ForInIterator::new(None, (0..len).map(index).collect())
+        }
+        // `null` and `undefined` run no iteration; a Number or Boolean
+        // wrapper has no own enumerable keys.
+        Value::Undefined
+        | Value::Null
+        | Value::Bool(_)
+        | Value::Number(_)
+        | Value::Symbol(_)
+        | Value::BigInt(_) => ForInIterator::new(None, Vec::new()),
+    };
+    heap.alloc(HeapObject::Native(Box::new(iterator)))
+        .map(Value::Object)
+        .ok_or(Fault::OutOfMemory("heap object table exhausted"))
+}
+
+/// Apply `f` to the enumerator `id` under the object lock.
+fn with_iterator<R>(
+    heap: &Heap,
+    id: ObjectId,
+    f: impl FnOnce(&mut ForInIterator) -> R,
+) -> Result<R, Fault> {
+    heap.with_object_mut(id, |o| match o {
+        HeapObject::Native(payload) => {
+            let any: &mut dyn std::any::Any = &mut **payload;
+            any.downcast_mut::<ForInIterator>().map(f)
+        }
+        _ => None,
+    })
+    .flatten()
+    .ok_or(Fault::Internal("for-in enumerator is not an enumerator"))
+}
+
+/// `ForInNext`: the next key of the enumerator `iterator`, as a string;
+/// `None` when the walk has ended. A key is visited when it is enumerable
+/// in its object's snapshot, no object the walk has left had an own
+/// property of that name, and it is still an own enumerable property of
+/// that object (a key deleted, or made non-enumerable, before it is
+/// reached is skipped). The walk moves to the next prototype when an
+/// object's keys are used up (module docs, "Prototype chain").
+#[cfg(test)]
+pub(crate) fn for_in_next(
+    heap: &Heap,
+    task: TaskId,
+    iterator: &Value,
+) -> Result<Option<JsString>, Fault> {
+    let Value::Object(id) = *iterator else {
+        return Err(Fault::Internal("for-in enumerator is not an object"));
+    };
+    loop {
+        // Each step takes the enumerator's lock alone; the lookups below
+        // take the object lock again, after it is released.
+        match with_iterator(heap, id, ForInIterator::step)? {
+            Step::Done => return Ok(None),
+            Step::Key(object, key) => {
+                let present = match object {
+                    Some(object) => property::get_own_property(heap, task, object, &key)?
+                        .is_some_and(|p| p.flags.enumerable),
+                    None => true,
+                };
+                if present {
+                    return Ok(Some(match key {
+                        Key::Index(index) => JsString::from(index.to_string().as_str()),
+                        Key::Name(name) => name,
+                        Key::Symbol(_) => return Err(Fault::Internal("symbol in for-in")),
+                    }));
+                }
+            }
+            Step::Exhausted(object) => {
+                let (next, keys) = match chain_next(heap, task, object)? {
+                    Some(proto) => match walk_keys(heap, task, proto)? {
+                        Some(keys) => (Some(proto), keys),
+                        None => (None, Vec::new()),
+                    },
+                    None => (None, Vec::new()),
+                };
+                with_iterator(heap, id, |it| it.enter(next, keys))?;
+            }
+        }
+    }
+}
+
+pub(crate) enum ForInRequest {
+    Keys(ObjectId),
+    Descriptor(ObjectId, Key),
+    Key(Key),
+    Done,
+}
+
+pub(crate) fn for_in_set_keys(
+    heap: &Heap,
+    iterator: &Value,
+    mut keys: Vec<OwnKey>,
+) -> Result<(), Fault> {
+    // OwnPropertyKeys carries names only. Even a forwarded non-enumerable
+    // target key must reach the proxy's current descriptor trap.
+    for key in &mut keys {
+        key.enumerable = true;
+    }
+    let Value::Object(id) = iterator else {
+        return Err(Fault::Internal("invalid for-in iterator"));
+    };
+    with_iterator(heap, *id, |it| {
+        it.keys = keys;
+        it.next = 0;
+        it.pending_keys = false;
+    })
+}
+
+pub(crate) fn for_in_missing_key(heap: &Heap, iterator: &Value) -> Result<(), Fault> {
+    let Value::Object(id) = iterator else {
+        return Err(Fault::Internal("invalid for-in iterator"));
+    };
+    with_iterator(heap, *id, |it| {
+        it.next -= 1;
+        it.keys.remove(it.next);
+    })
+}
+
+/// Return the next observable operation, leaving its cursor in the heap before
+/// any callback. Ordinary keys retain their fast, callback-free path.
+pub(crate) fn for_in_request(
+    heap: &Heap,
+    task: TaskId,
+    iterator: &Value,
+) -> Result<ForInRequest, Fault> {
+    let Value::Object(id) = iterator else {
+        return Err(Fault::Internal("invalid for-in iterator"));
+    };
+    loop {
+        if let Some(object) = with_iterator(heap, *id, |it| {
+            it.pending_keys.then_some(it.object).flatten()
+        })? {
+            return Ok(ForInRequest::Keys(object));
+        }
+        match with_iterator(heap, *id, ForInIterator::step)? {
+            Step::Done => return Ok(ForInRequest::Done),
+            Step::Key(Some(object), key) => {
+                if super::proxy::inspect(heap, task, object)?.is_some() {
+                    return Ok(ForInRequest::Descriptor(object, key));
+                }
+                if property::get_own_property(heap, task, object, &key)?
+                    .is_some_and(|p| p.flags.enumerable)
+                {
+                    return Ok(ForInRequest::Key(key));
+                }
+            }
+            Step::Key(None, key) => return Ok(ForInRequest::Key(key)),
+            Step::Exhausted(object) => {
+                let next = chain_next(heap, task, object)?;
+                if let Some(proto) = next {
+                    if super::proxy::inspect(heap, task, proto)?.is_some() {
+                        with_iterator(heap, *id, |it| {
+                            it.enter(Some(proto), vec![]);
+                            it.pending_keys = true;
+                        })?;
+                    } else {
+                        let keys = walk_keys(heap, task, proto)?;
+                        with_iterator(heap, *id, |it| match keys {
+                            Some(keys) => it.enter(Some(proto), keys),
+                            None => it.enter(None, vec![]),
+                        })?;
+                    }
+                } else {
+                    with_iterator(heap, *id, |it| it.enter(None, vec![]))?;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::object::OrdinaryObject;
+
+    fn names(keys: &[OwnKey]) -> Vec<String> {
+        keys.iter().map(|k| k.name().to_string()).collect()
+    }
+
+    fn ok<T>(result: Result<T, Fault>) -> T {
+        result.unwrap_or_else(|_| panic!("unexpected fault"))
+    }
+
+    #[test]
+    fn symbol_keys_follow_all_strings_in_creation_order() {
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let id = heap
+            .alloc(HeapObject::Plain(OrdinaryObject::new(Some(task))))
+            .unwrap();
+        let s = Key::Symbol(crate::value::JsSymbol::new(Some("k".into())));
+        let t = Key::Symbol(crate::value::JsSymbol::new(Some("k".into())));
+        let z = Key::Name("z".into());
+        let a = Key::Name("a".into());
+        let set = |key: &Key, value| {
+            ok(property::define_own_property(
+                &heap,
+                task,
+                id,
+                key,
+                &crate::object::PropertyDescriptor {
+                    value: Some(value),
+                    writable: Some(true),
+                    enumerable: Some(true),
+                    configurable: Some(true),
+                    ..crate::object::PropertyDescriptor::default()
+                },
+            ));
+        };
+        for key in [&s, &z, &Key::Index(2), &t, &a, &Key::Index(0)] {
+            set(key, Value::Null);
+        }
+        let all = || {
+            ok(own_property_keys(&heap, task, id, KeyFilter::All))
+                .into_iter()
+                .map(|k| k.key)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            all(),
+            [
+                Key::Index(0),
+                Key::Index(2),
+                z.clone(),
+                a.clone(),
+                s.clone(),
+                t.clone()
+            ]
+        );
+        // Replacing preserves creation order; delete/re-add moves it last.
+        set(&s, Value::Bool(true));
+        assert_eq!(all()[4], s);
+        let Key::Symbol(symbol) = &s else {
+            unreachable!()
+        };
+        assert!(ok(property::delete(
+            &heap,
+            task,
+            &Value::Object(id),
+            &Value::Symbol(symbol.clone()),
+            true
+        )));
+        set(&s, Value::Null);
+        assert_eq!(all(), [Key::Index(0), Key::Index(2), z, a, t, s]);
+    }
+
+    /// Index-named properties of an ordinary object sort ascending ahead of
+    /// the other names, above the key-index threshold too, and the key
+    /// carries the index form.
+    #[test]
+    fn ordinary_keys_sort_indices_first() {
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let mut o = OrdinaryObject::new(Some(task));
+        let order = ["z", "10", "a", "2", "4294967295", "01", "0", "b", "c", "d"];
+        for name in order {
+            let key = heap.keys().intern(&JsString::from(name)).unwrap();
+            assert!(o.define(key, Value::Null));
+        }
+        let id = heap.alloc(HeapObject::Plain(o)).unwrap();
+        let keys = ok(own_property_keys(&heap, task, id, KeyFilter::All));
+        assert_eq!(
+            names(&keys),
+            ["0", "2", "10", "z", "a", "4294967295", "01", "b", "c", "d"]
+        );
+        assert_eq!(keys[2].key, Key::Index(10));
+        assert_eq!(keys[5].key, Key::Name(JsString::from("4294967295")));
+        // Another task may not enumerate it.
+        assert!(matches!(
+            own_property_keys(&heap, TaskId::from_raw(2), id, KeyFilter::Enumerable),
+            Err(Fault::ForeignObject { .. })
+        ));
+    }
+
+    /// A `for`-`in` enumerator (clj-quickjs-85) snapshots the enumerable
+    /// keys, reports its object as its only edge, skips a key that is no
+    /// longer an own enumerable property, and stays exhausted; another
+    /// task's object cannot be enumerated.
+    #[test]
+    fn for_in_enumerator_rechecks_keys_and_traces_its_object() {
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let mut o = OrdinaryObject::new(Some(task));
+        for name in ["b", "1", "a"] {
+            let key = heap.keys().intern(&JsString::from(name)).unwrap();
+            assert!(o.define(key, Value::Null));
+        }
+        let id = heap.alloc(HeapObject::Plain(o)).unwrap();
+        let it = ok(for_in_start(&heap, task, &Value::Object(id)));
+        let Value::Object(it_id) = it else {
+            panic!("not an object")
+        };
+        let mut edges = Vec::new();
+        heap.read(it_id, |o| o.trace(&mut |e| edges.push(e)))
+            .unwrap();
+        assert_eq!(edges, [id.into()]);
+        let next = |heap: &Heap| ok(for_in_next(heap, task, &it)).map(|s| s.to_string());
+        assert_eq!(next(&heap).as_deref(), Some("1"));
+        // `b` becomes non-enumerable before it is reached.
+        let b = heap.keys().intern(&JsString::from("b")).unwrap();
+        heap.with_object_mut(id, |o| match o {
+            HeapObject::Plain(o) => {
+                let flags = crate::object::PropertyFlags {
+                    writable: true,
+                    enumerable: false,
+                    configurable: true,
+                };
+                assert!(o.define_with(b, Value::Null, flags));
+            }
+            _ => unreachable!(),
+        })
+        .unwrap();
+        assert_eq!(next(&heap).as_deref(), Some("a"));
+        assert_eq!(next(&heap), None);
+        assert_eq!(next(&heap), None);
+        assert!(matches!(
+            for_in_start(&heap, TaskId::from_raw(2), &Value::Object(id)),
+            Err(Fault::ForeignObject { .. })
+        ));
+        // A string's indices; no keys for other primitives.
+        let s = ok(for_in_start(
+            &heap,
+            task,
+            &Value::String(JsString::from("xy")),
+        ));
+        assert_eq!(ok(for_in_next(&heap, task, &s)).unwrap().to_string(), "0");
+        assert_eq!(ok(for_in_next(&heap, task, &s)).unwrap().to_string(), "1");
+        assert!(ok(for_in_next(&heap, task, &s)).is_none());
+        let n = ok(for_in_start(&heap, task, &Value::Number(5.0)));
+        assert!(ok(for_in_next(&heap, task, &n)).is_none());
+    }
+
+    /// The prototype walk (clj-quickjs-86): the enumerator's only edge is
+    /// the object it is on, the operand and then its prototype (which may
+    /// be reachable from nothing else once the chain changes); an own
+    /// non-enumerable key hides the prototype's; and the walk ends at
+    /// `Object.prototype` without entering it (its chain has no enumerable
+    /// property, read from the realm's lock-free views).
+    #[test]
+    fn for_in_enumerator_walks_and_traces_the_prototype_it_is_on() {
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let object_prototype = realm::intrinsics(&heap).unwrap().object_prototype;
+        let key = |name: &str| heap.keys().intern(&JsString::from(name)).unwrap();
+        let hidden = crate::object::PropertyFlags {
+            writable: true,
+            enumerable: false,
+            configurable: true,
+        };
+        let mut proto = OrdinaryObject::new(Some(task));
+        proto.set_prototype(Some(object_prototype));
+        assert!(proto.define(key("h"), Value::Null));
+        assert!(proto.define(key("p"), Value::Null));
+        let proto = heap.alloc(HeapObject::Plain(proto)).unwrap();
+        let mut o = OrdinaryObject::new(Some(task));
+        o.set_prototype(Some(proto));
+        assert!(o.define_with(key("h"), Value::Null, hidden));
+        assert!(o.define(key("a"), Value::Null));
+        let o = heap.alloc(HeapObject::Plain(o)).unwrap();
+
+        let it = ok(for_in_start(&heap, task, &Value::Object(o)));
+        let Value::Object(it_id) = it else {
+            panic!("not an object")
+        };
+        let edges = || {
+            let mut edges = Vec::new();
+            heap.read(it_id, |o| o.trace(&mut |e| edges.push(e)))
+                .unwrap();
+            edges
+        };
+        let next = || ok(for_in_next(&heap, task, &it)).map(|s| s.to_string());
+        assert_eq!(edges(), [o.into()]);
+        assert_eq!(next().as_deref(), Some("a"));
+        assert_eq!(edges(), [o.into()]);
+        assert_eq!(next().as_deref(), Some("p"));
+        assert_eq!(edges(), [proto.into()]);
+        assert_eq!(next(), None);
+        assert!(edges().is_empty(), "Object.prototype was entered");
+        assert_eq!(next(), None);
+    }
+
+    /// Array elements (dense, then sparse) precede `length` and the named
+    /// properties; holes are absent.
+    #[test]
+    fn array_keys_list_elements_then_length() {
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let mut a = ArrayObject::new(Some(task));
+        a.push(None);
+        a.push(Some(Value::Null));
+        assert_eq!(
+            a.set(crate::object::array::MAX_INDEX, Value::Null),
+            crate::object::SetOutcome::Done
+        );
+        let key = heap.keys().intern(&JsString::from("x")).unwrap();
+        assert!(a.object_mut().define(key, Value::Null));
+        let id = heap.alloc(HeapObject::Array(Box::new(a))).unwrap();
+        let all = ok(own_property_keys(&heap, task, id, KeyFilter::All));
+        assert_eq!(names(&all), ["1", "4294967294", "length", "x"]);
+        let enumerable = ok(own_property_keys(&heap, task, id, KeyFilter::Enumerable));
+        assert_eq!(names(&enumerable), ["1", "4294967294", "x"]);
+        // Another task may not enumerate it.
+        assert!(matches!(
+            own_property_keys(&heap, TaskId::from_raw(2), id, KeyFilter::All),
+            Err(Fault::ForeignObject { .. })
+        ));
+    }
+
+    /// A function lists virtual initial keys or its complete property record,
+    /// which only the creating task may read.
+    #[test]
+    fn function_keys_come_from_its_owner_checked_record() {
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let code = crate::frontend::compile_function("function f() {}")
+            .unwrap()
+            .0;
+        let f = function::FunctionObject::new(code, Box::new([]), task);
+        let f = heap.alloc(HeapObject::Function(f)).unwrap();
+        let enumerable =
+            |t: u64| own_property_keys(&heap, TaskId::from_raw(t), f, KeyFilter::Enumerable);
+        assert!(ok(enumerable(1)).is_empty(), "no record, no keys");
+        assert!(
+            ok(enumerable(2)).is_empty(),
+            "immutable keys need no owner access"
+        );
+        assert_eq!(
+            names(&ok(own_property_keys(
+                &heap,
+                TaskId::from_raw(2),
+                f,
+                KeyFilter::All
+            ))),
+            ["length", "name", "prototype"]
+        );
+
+        let mut record = OrdinaryObject::new(Some(task));
+        let x = heap.keys().intern(&JsString::from("x")).unwrap();
+        let hidden = heap.keys().intern(&JsString::from("hidden")).unwrap();
+        assert!(record.define(x, Value::Null));
+        let flags = crate::object::PropertyFlags {
+            writable: true,
+            enumerable: false,
+            configurable: true,
+        };
+        assert!(record.define_with(hidden, Value::Null, flags));
+        let record = heap.alloc(HeapObject::Plain(record)).unwrap();
+        heap.with_object_mut(f, |o| match o {
+            HeapObject::Function(f) => f.properties = Some(record),
+            _ => unreachable!(),
+        })
+        .unwrap();
+
+        assert_eq!(names(&ok(enumerable(1))), ["x"]);
+        assert!(matches!(enumerable(2), Err(Fault::ForeignObject { .. })));
+        assert_eq!(
+            names(&ok(own_property_keys(&heap, task, f, KeyFilter::All))),
+            ["x", "hidden"]
+        );
+    }
+}

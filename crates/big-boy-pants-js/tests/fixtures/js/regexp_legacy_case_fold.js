@@ -1,0 +1,38 @@
+// Synthetic fixture, not light-cljs output.
+function check(v) { if (!v) throw new Error('legacy RegExp Canonicalize assertion'); }
+check(/abc/i.test('ABC'));
+check(RegExp('abc', 'i').test('ABC') && new RegExp('abc', 'i').test('ABC'));
+check(/abc/i.flags === 'i' && /abc/i.ignoreCase && !/abc/i.unicode && !/abc/i.unicodeSets);
+check(/a/gimy.flags === 'gimy');
+check(!/abc/.test('ABC'));
+check(/é/i.test('É') && /Σ/i.test('ς') && /ς/i.test('σ'));
+check(!/ß/i.test('SS') && !/ß/i.test('ẞ') && /ß/iu.test('ẞ'));
+check(!/ſ/i.test('s') && /ſ/iu.test('s'));
+check(!/K/i.test('K') && /K/iu.test('K'));
+check(!/İ/i.test('i') && !/İ/iu.test('i'));
+check(!/ı/i.test('I') && !/ı/iu.test('I'));
+check(!/ﬅ/i.test('ﬆ') && /ﬅ/iu.test('ﬆ'));
+check(/[a-z]/i.test('Z') && /[A-Z]/i.test('z'));
+check(/[é-é]/i.test('É') && /[Σ-Σ]/i.test('ς'));
+check(!/[a-z]/i.test('ſ') && !/[A-Z]/i.test('K'));
+check(!/[ſ-ſ]/i.test('s') && !/[K-K]/i.test('k'));
+check(!/[^a-z]/i.test('A') && !/[^É]/i.test('é'));
+check(/[^a-z]/i.test('ſ') && /[^A-Z]/i.test('K'));
+check(/\w/i.test('A') && !/\w/i.test('ſ') && !/\w/i.test('K'));
+check(/[\W]/i.test('ſ') && /[^\W]/i.test('k') && /\W/i.test('K'));
+check(/\bs\b/i.test('S') && !/\bſ\b/i.test('ſ') && /\Bſ\B/i.test('ſ'));
+check(/(é)\1/i.test('éÉ') && /(Σ)\1/i.test('Σς'));
+check(!/(s)\1/i.test('sſ') && !/(k)\1/i.test('kK') && !/(ß)\1/i.test('ßẞ'));
+check(/(?<letter>é)\k<letter>/i.test('éÉ'));
+check(/(?i:a)(?-i:b)/.test('Ab') && !/(?i:a)(?-i:b)/.test('AB'));
+check(/(?-i:a)b/i.test('aB') && !/(?-i:a)b/i.test('AB'));
+check(/(?i:[a-z])/.test('Z') && !/(?i:[a-z])/.test('ſ'));
+check(/\uD800/i.test('\uD800'));
+check(!/𐐀/i.test('𐐨') && /𐐀/iu.test('𐐨'));
+let r = /([a-z])\1/gi;
+let m = r.exec('aA bB');
+check(m[0] === 'aA' && m[1] === 'a' && r.lastIndex === 2);
+check(r.exec('aA bB')[0] === 'bB' && r.lastIndex === 5);
+check(r.exec('aA bB') === null && r.lastIndex === 0);
+check('aAbB'.replace(/[^b]/gi, 'X') === 'XXbB');
+true;

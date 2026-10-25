@@ -1,0 +1,478 @@
+# Generated QuickJS data experiment
+
+This experiment converts three checked-in QuickJS datasets and NumberFormat
+digit mappings into immutable,
+safe Rust using a repeatable Bash/Perl/C pipeline. It does not integrate them with
+the runtime or alter the reference checkout. All build and generated artifacts
+go into a caller-selected new directory.
+
+## Run
+
+From the repository root, with the repository's development environment:
+
+```sh
+nix develop --command bash scripts/quickjs-data/generate.sh \
+  research/quickjs \
+  /tmp/quickjs-generated-data-new
+```
+
+The last directory must not already exist. The script needs Bash, Perl, a C11
+compiler (`CC`, default `cc`), `rustc`, and standard Unix tools. It performs no
+downloads and requires no Cargo dependencies. The Perl program is internal to
+the script: invoke `generate.sh` so input checks and verification are enforced.
+
+To repeat generation twice, check byte-for-byte reproducibility, run semantic
+edge cases, and test rejection of corrupted output and changed input:
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  research/quickjs \
+  /tmp/quickjs-data-verification-new
+```
+
+## Conversion
+
+Inputs are pinned to QuickJS revision
+`7d1c13c5d8f8c6b32893786ed35cdcebd88194d2`. `inputs.sha256` pins all eleven local
+data/header files read by the exporter. Hashes are checked before and after
+conversion; an upstream change needs an explicit manifest and converter review.
+
+1. A restricted Perl reader inventories declarations, initializers and twelve
+   data record types from the pinned C source and headers. It rejects unknown
+   declaration/field shapes. This is not a general-purpose C parser.
+2. It emits a C exporter that includes the original three data files with
+   `CONFIG_ALL_UNICODE` enabled. The C compiler evaluates numeric expressions,
+   enum constants, macros, strings, and bitfields.
+3. The exporter prints `tables.rs`: immutable statics, fixed-width integers,
+   ordinary Rust structs, slices, and optional references. There are no raw
+   pointers, mutable statics, FFI calls, or C-layout bitfields in that output.
+4. The same C exporter serializes the actual C values into an explicitly
+   little-endian logical stream. A separately compiled Rust program walks every
+   generated static using its Rust type, serializes it, and compares the files.
+   Struct padding, native addresses, and native byte order are never serialized.
+
+String data uses byte slices, preserving UTF-8 bytes, embedded NUL separators,
+and the compiler-added trailing NUL. `NULL` is `None`; an empty C string is
+`Some(b"\x00")`. Pointer references to named arrays become references to the
+corresponding Rust statics. Numbers inside C bitfields become ordinary unsigned
+Rust fields. Array lengths and expected initializer counts are checked.
+
+The generated file and its Rust consumer both use `#![forbid(unsafe_code)]`.
+The verifier builds on stable Rust with warnings denied. C is needed only to
+regenerate/validate data, not to consume the generated Rust.
+
+`generate.sh` also emits `script_names.rs`, an exact subset of the verified
+Unicode 17 `unicode_script_name_table` byte pool. `verify.sh` compares repeated
+output and checks the entire subset against the C-verified pool. RegExp syntax
+validation and matching now share aliases from the repacked property tables.
+
+## Results
+
+Two complete runs produced byte-identical Rust and comparison streams. Both
+C/Rust value comparisons, all four edge-case tests, mutation detection, and
+input-drift rejection passed. The observed results were:
+
+| Item | Observed result |
+| --- | ---: |
+| Exported declarations, including enum constants | 666 |
+| Rust record types | 12 |
+| Locale records | 769 |
+| Likely-subtag entries | 7,788 |
+| Display-name locales | 2 |
+| Zones with transition data | 59 |
+| Available timezone names | 598 |
+| Generated Rust source | 2,395,464 bytes |
+| Logical comparison stream | 1,512,780 bytes |
+
+The generated tables preserve the entire input snapshot, including Unicode's
+compressed arrays. The different counts for timezone names and transition
+records are an upstream coverage limitation, not dropped data. The locale count
+above comes from the compiled data; it is larger than the older count recorded
+in the locale-policy pellet.
+
+`edge_cases.rs` checks embedded NULs in likely subtags and month pools, French
+UTF-8 month names and U+202F grouping, negative timezone offsets, `INT64_MIN`,
+transition ordering, alias indices, packed locale fields, and reference lengths.
+`verify.sh` also changes one generated count and verifies the differential check
+detects it, and changes an input file to prove the hash guard rejects it before
+compilation.
+
+## C2Rust comparison
+
+```sh
+bash scripts/quickjs-data/compare-c2rust.sh \
+  research/quickjs \
+  /tmp/quickjs-c2rust-new
+```
+
+This copies the source outside the reference checkout and runs installed C2Rust
+0.22.1 with `--fail-on-error`. All three translation units transpiled without
+diagnostics after adding explicit exported roots for Unicode's static tables.
+Without those roots, C2Rust silently omitted the unused header tables and
+emitted an almost empty Unicode module.
+
+The resulting C2Rust files total 8,043,979 source bytes and 162,698 lines. They
+contain raw pointers, `static mut`, bitfield support derives, and a feature
+attribute. These are successful translation results, not a claim that the
+generated modules compile or validate as a standalone Rust crate; that step was
+not attempted. Source-size differences do not measure runtime binary size.
+
+For data-only conversion, the direct exporter gives a more suitable result:
+safe Rust that compiles and has a complete value comparison, without a cleanup
+pass or C2Rust support dependencies.
+
+## Limits and next steps
+
+- This verifies data fidelity, not Unicode/Intl/Temporal runtime semantics.
+  Unicode compression remains unchanged; safe decoders or offline expansion
+  still need their own semantic comparisons with QuickJS.
+- This is a snapshot importer. It does not reconstruct the original CLDR
+  release or the system tzdb used by QuickJS's generators. Future upstream-data
+  updates need separately pinned source releases and a reviewed upgrade process.
+- Locale records use wider fields than the C bitfields. Measure linked binary
+  size before selecting a production representation or supported locale subset.
+- Rust exposes C byte pools including terminators; a production API should
+  provide appropriate string/pool accessors, and split modules by service.
+- `provenance.txt` records input and generator hashes plus tool versions.
+  `QUICKJS-LICENSE` accompanies each result. Preserve applicable upstream data
+  notices when preparing a distributable data package.
+- The converter has no build.rs integration, runtime registration, dependency
+  changes, or Pellets edits. It can be evaluated independently of current work.
+
+The generated C is intentionally straightforward and can take tens of seconds
+to compile. Its size and compilation strategy can be improved independently of
+the Rust data layout if this experiment becomes maintained tooling.
+
+## Checked-in Intl modules
+
+The runtime uses the same verified output, repacked by `repack-intl.pl` into
+`src/intl/data/{numbers,dates,locale,display_names,likely_subtags,preferences,relative_time}.rs`.
+The repacker selects the agreed test-locale records plus required parents and
+only their referenced compact-pattern arrays. Shared byte pools and all their
+indices remain intact, including embedded and terminal NULs. Keeping unused
+pool entries is intentional: there is no binary-size cap in this stage.
+Timezone and compressed Unicode integration remain with their consumer pellets.
+
+Regenerate entirely inside a worktree (`target/intl-import` must be new):
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/intl-import
+nix develop --command perl scripts/quickjs-data/repack-intl.pl \
+  target/intl-import/first target/intl-repacked-new
+cp target/intl-repacked-new/*.rs target/intl-repacked-new/provenance.txt \
+  target/intl-repacked-new/QUICKJS-LICENSE src/intl/data/
+```
+
+`data/mod.rs` is handwritten; `docs/UNICODE-LICENSE` holds the Unicode v3
+notice and is not regenerated. The provenance includes the exporter and
+repacker hashes. To check the repack, repeat it against `second` in a fresh
+output directory and compare the seven `.rs` files and `provenance.txt` with
+`cmp`. Run `cargo test --lib intl:: -- --test-threads=3` and
+`cargo test --test js_source intl_namespace_object -- --exact --test-threads=3`
+for consumer semantics. Normal Cargo builds need none of these tools or inputs.
+
+## Checked-in Date timezone module
+
+`repack-timezone.pl` selects the four timezone record types and all timezone
+statics from the verified exporter output, preserving every value, reference,
+name, alias and region. It writes `tables.rs`, `provenance.txt` and the QuickJS
+license. Regenerate inside a worktree (both output directories must be new):
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/tz-import
+nix develop --command perl scripts/quickjs-data/repack-timezone.pl \
+  target/tz-import/first target/tz-repacked
+cp target/tz-repacked/{tables.rs,provenance.txt,QUICKJS-LICENSE} src/host/timezone/
+```
+
+Repeat the repack on `second` into another new directory and compare all three
+files with `cmp`. The safe runtime reader is `src/host/timezone.rs`; its Date
+semantics tests run with `cargo test --test date_host -- --test-threads=3`.
+The 59 transition-bearing zones and 36 aliases are supported; the 598-name
+inventory alone never grants offset coverage. First/last offsets extend beyond
+the recorded transitions without future-rule extrapolation.
+
+### NumberFormat digit mappings (clj-quickjs-213)
+
+`intl/intl.c` is an additional pinned input. The exporter extracts only
+`intl_all_numbering_systems`, `nf_digit_base` and `hanidec_cps`, compiles their
+original initializers alongside the existing data exporter, and compares every
+C/Rust value through the existing wire format. Designated digit-base indices
+are evaluated by C, including zero entries for algorithmic systems. No Intl
+service code is linked or executed. The repacker includes the three immutable
+statics in `numbers.rs`. Verification includes numbering indices, non-BMP digit
+blocks, algorithmic zero slots and Han decimal digits.
+
+## Unicode identifiers, RegExp simple folding and property escapes
+
+`repack-unicode.pl` uses the verified import's `case_conv_*`, alias pools and ID table
+snapshot as the starting data. It checks the input hashes again and compiles
+the pinned `libunicode.c` solely as an offline reference decoder. It emits
+safe immutable Rust mappings/ranges, not a linked C runtime. The extra decoder
+and UCD hashes are pinned in the repacker and recorded in the generated
+`src/regexp/case_fold_provenance.txt`. Unicode and QuickJS notices remain in
+`docs/UNICODE-LICENSE` and `src/intl/data/QUICKJS-LICENSE`.
+
+Unicode 17.0.0 is verified independently: every code point's folding agrees
+with CaseFolding.txt C/S entries, and both identifier properties agree with
+DerivedCoreProperties.txt. The pinned QuickJS reference chooses FB05 as the
+representative of the FB05/FB06 equivalence class; the repacker checks that
+exact exception and reverses it to the normative C/S representative FB06.
+No other difference is permitted. Identifiers replace the old host-Perl
+Unicode 16.0.0 tables; regeneration no longer depends on Perl's UCD version.
+The shared policy for -191/-192/-209 is Unicode 17.0.0, with each additional
+property, normalization, collation or segmentation consumer verifying its own
+data. The locale snapshot does not identify a separately verified CLDR release.
+
+Acquire the versioned inputs once (the repacker rejects a wrong version or
+hash), then regenerate inside the worktree. C, Perl, rustc and the UCD files
+are needed only for this explicit maintenance command:
+
+```sh
+mkdir -p target/ucd-17
+curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt \
+  -o target/ucd-17/CaseFolding.txt
+curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt \
+  -o target/ucd-17/DerivedCoreProperties.txt
+curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt \
+  -o target/ucd-17/SpecialCasing.txt
+for file in UnicodeData.txt PropList.txt DerivedNormalizationProps.txt Scripts.txt ScriptExtensions.txt PropertyValueAliases.txt; do
+  curl -fsSL "https://www.unicode.org/Public/17.0.0/ucd/$file" -o "target/ucd-17/$file"
+done
+curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/extracted/DerivedBinaryProperties.txt \
+  -o target/ucd-17/DerivedBinaryProperties.txt
+curl -fsSL https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt \
+  -o target/ucd-17/emoji-data.txt
+for file in emoji-sequences.txt emoji-zwj-sequences.txt; do
+  curl -fsSL "https://www.unicode.org/Public/17.0.0/emoji/$file" -o "target/ucd-17/$file"
+done
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/unicode-import
+nix develop --command bash scripts/gen-unicode-ident.sh \
+  target/unicode-import/first /home/dev/projects/big-boy-pants-js/research/quickjs \
+  target/ucd-17 target/unicode-repacked-new
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/unicode-check-new target/ucd-17
+```
+
+The optional third verification argument also checks byte-identical repeated
+expansion and provenance, compares the actual installed Rust folding and
+identifier and property consumers across all 1,114,112 code points against the reference,
+and rejects deliberately corrupted decoded values and changed UCD inputs.
+It must be run after installing regenerated data. RegExp semantics are covered
+separately by `cargo test --lib regexp::` and
+`cargo test --test js_source regexp_case_insensitive_unicode -- --exact`.
+
+Legacy RegExp Canonicalize uses a separate `LEGACY_UPPER` mapping emitted by
+the same decoder. Every UTF-16 code unit is independently compared with
+UnicodeData.txt uppercase mappings overridden by unconditional SpecialCasing.txt
+entries. Multi-code-unit results and non-ASCII to ASCII mappings retain the
+original code unit. Verification compares the installed Rust reader across all
+65,536 code units, repeats generation, and rejects corrupted legacy results.
+Run `cargo test --test js_source regexp_case_insensitive_legacy -- --exact`
+for matching semantics; no new runtime work allowance is introduced.
+
+The same command installs `src/regexp/property_data.rs`. It contains all 53
+ECMA-262 binary properties, 38 General_Category values, and 176 values each
+for Script and Script_Extensions; exact aliases come
+from the verified NUL-separated pools. QuickJS-only binary names are filtered
+by an explicit ECMAScript allowlist. Script aliases are independently checked
+against PropertyValueAliases.txt, including Qaai and Qaac. Unicode string
+properties are generated and supported by clj-quickjs-305.
+Every raw set (including derived binary properties) is independently compared
+with pinned Unicode 17.0.0 UCD input. The offline decoder's intervals are
+intersected with U+0000..U+10FFFF, including lone surrogates. Compact ranges
+for extra folded targets are generated separately for members and nonmembers,
+preserving u-mode complement-before-folding semantics. Verification covers
+all aliases, positive/complement membership and both iu images across the
+entire domain, and rejects intentionally corrupted binary and script bits.
+Scripts.txt defaults unlisted code points to Unknown; ScriptExtensions.txt
+overrides Script membership for explicit rows, including Common/Inherited.
+Identical raw/folded range sets share a single immutable array, keeping the
+combined source smaller than the previous binary/category-only table.
+Run language tests with `cargo test --test js_source regexp_property_ -- --test-threads=3`
+and `cargo test --test js_source regexp_script_property_escapes -- --exact --test-threads=3`.
+
+### Properties of strings (clj-quickjs-305)
+
+The same repacker pins Emoji 17.0 `emoji-sequences.txt` and
+`emoji-zwj-sequences.txt`, matching Unicode 17.0.0. It expands every text row,
+compares all seven complete inventories against the offline
+`unicode_sequence_prop` decoder, and emits `string_property_data.rs`.
+QuickJS expands five FAMILY U+1F46A modifier sequences that Emoji 17 excludes:
+the generator verifies exactly those outputs and excludes them from both
+RGI_Emoji_Modifier_Sequence and RGI_Emoji. No other discrepancy is allowed.
+Singletons become disjoint ranges; multi-code-point strings use compact
+length-prefixed scalar pools. The six disjoint categories are stored once;
+RGI_Emoji reuses their union. The normative RGI inventory has 3,953 members.
+
+`gen-unicode-ident.sh` installs this module alongside the other Unicode data.
+The optional UCD argument to `verify.sh` repeats generation byte-for-byte,
+compares every installed sequence reader (including singletons and the union)
+to the independently verified inventory, detects a deliberately corrupted
+sequence, and rejects changed Emoji input hashes. The normal build reads
+only immutable checked-in Rust data. Consumer semantics run with
+`cargo test --lib regexp:: -- --test-threads=3` and
+`cargo test --test js_source regexp_unicode_string_properties -- --exact --test-threads=3`.
+
+## Collator root normalization and folding (clj-quickjs-218)
+
+`repack-collation.pl` consumes a verified export containing compressed combining
+classes, canonical decompositions and case tables. It pins the same decoder
+files as `repack-unicode.pl`, plus `cutils.c` needed for normalization, and
+expands NFD, full case folding and canonical combining classes by compiling the
+snapshot decoder solely as an offline tool. There is no DUCET input: the root
+rule set and its limits live in docs/architecture.md. Normal builds read only
+the checked-in Rust arrays. Folding expands the decoder's one-step outputs to
+their idempotent closure (capital sharp S initially maps to sharp S, then ss).
+The independent Rust verifier completes raw C folds separately, checks their
+idempotence and the maximum expansion bound, and compares the emitted tables.
+
+`verify.sh` now always repeats this expansion, compares every emitted value
+against its C reference stream over U+0000..U+10FFFF, and verifies that a
+corrupted generated scalar is detected. Regenerate with new output directories:
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/collation-import-new
+cp target/collation-import-new/collation-first/collation.rs src/intl/data/
+cp target/collation-import-new/collation-first/provenance.txt \
+  src/intl/data/collation_provenance.txt
+```
+
+Run `cargo test --lib intl::collator:: -- --test-threads=3` and
+`cargo test --test js_source intl_collator -- --test-threads=3` for normalization,
+ordering, option/coercion, bound-function, ownership, GC/migration and long-rope
+budget semantics. Input hashes and Unicode/QuickJS notices follow the existing
+pipeline.
+
+## Collator German and Turkish tailorings (clj-quickjs-219)
+
+The same repacker also pins `intl/collator.c` and extracts `transform_string`
+with its two character-classification helpers into the offline exporter. It
+exports phonebook/search and German default-sort keys for decomposed umlauts,
+and the Turkish dotless-i key. Primary and secondary outputs must agree and
+fit the reserved expansion bound. The generated `PHONEBOOK`, `GERMAN_SORT`
+and `TURKISH` arrays share `collation.rs` and its provenance file; regenerate
+with the commands above. `verify.sh` compares each weight to the C reference
+stream, repeats generation, detects phonebook-weight corruption, and rejects
+modified tailoring source. This uses only the pinned snapshot's rules;
+neither complete Turkish contextual folding nor a separate CLDR release is
+inferred. See the runtime's documented tailoring limits in docs/architecture.md.
+
+## ListFormat separator patterns (clj-quickjs-220)
+
+The pinned snapshot stores list patterns in `intl/listformat.c`, with no list
+fields in locale-data.c. `repack-lists.pl` compiles only its separator selector
+and locale-prefix helpers as an offline exporter. It emits 540 separators:
+15 agreed test locales × 3 types × 3 styles × start/middle/end/pair. The runtime
+preserves QuickJS's finite patterns (including English fallbacks and Spanish
+limitations); it does not claim a newer CLDR dataset. Normal builds use only
+safe immutable Rust strings.
+
+`verify.sh` now repeats list export, compares every separator byte through a
+separate Rust reader, detects a deliberately corrupted conjunction, and rejects
+an unpinned selector. Regenerate inside a worktree with a new output directory:
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/list-import-new
+cp target/list-import-new/lists-first/lists.rs src/intl/data/lists.rs
+cp target/list-import-new/lists-first/provenance.txt src/intl/data/list_provenance.txt
+CARGO_BUILD_JOBS=3 cargo test --test js_source intl_list_format -- --test-threads=3
+```
+
+The existing QuickJS MIT and Unicode notices apply. `list_provenance.txt`
+includes the verified import provenance and selector/repacker hashes.
+
+### Relative-time literals (clj-quickjs-221)
+
+`intl/relativetimeformat.c` is a pinned additional input. The exporter reads
+only literal unit tables, prefixes/suffixes, English narrow forms and the
+literal auto-return switches. It flattens them into string arrays, preserving
+NULL and compiler-added terminal NULs. C evaluates the original string
+literals; the independent Rust wire comparison checks all emitted values.
+No Intl service code is linked or executed. The Intl repacker additionally
+writes `relative_time.rs`; include it when comparing repeated repacks.
+`edge_cases.rs` pins non-ASCII auto phrases, table offsets, and absence of ±2
+phrases. The runtime retains the snapshot's auto fallback and CJK spacing.
+
+### Segmenter heuristic consumer (clj-quickjs-222)
+
+The Segmenter scanner reuses `collation.rs::CCC` for the pinned snapshot's
+nonzero-combining-class heuristic. The existing collation export, repeatability
+and full-domain C/Rust comparison cover this data; no generator or table
+representation changes are required. This is not a Grapheme_Cluster_Break or
+Word_Break dataset and does not claim full UAX #29 coverage. Runtime rule limits
+and regional-indicator pairing corrections are documented in architecture.
+Consumer checks: `cargo test --lib intl::segmenter::` and
+`cargo test --test js_source intl_segmenter -- --test-threads=3`.
+
+### Duration unit patterns (clj-quickjs-225)
+
+The pinned additional input `intl/numberformat.c` supplies 28 UnitPatternEntry
+rows. The exporter reads only their eight literal string/NULL fields and lets
+C evaluate the original escapes. The complete wire comparison verifies every
+byte; `edge_cases.rs` pins British minute plurals, German hour abbreviations,
+nullable singulars and CJK strings. `verify.sh` also repeats the Intl repack,
+compares its unit array with the original exported values and detects a
+corrupted British plural. Normal builds read only immutable Rust values.
+
+Regenerate in a worktree (output directory must be new):
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/duration-import-new
+cp target/duration-import-new/intl-first/units.rs src/intl/data/units.rs
+cp target/duration-import-new/intl-first/provenance.txt src/intl/data/unit_provenance.txt
+```
+
+NumberFormat's unit-pattern data is available; its unit-style options and
+formatting entry point remain explicitly unsupported. DurationFormat consumes
+the shared decimal core plus these patterns, preserving QuickJS's fallback to
+literal unit identifiers where a locale/unit has no row.
+
+### DisplayNames language compounds (clj-quickjs-224)
+
+`intl/displaynames.c` is pinned as an additional input. The exporter extracts
+only the two literal pairs in `dn_fallback_language`, rejects other statement
+shapes, and emits `dn_language_fallbacks`. The original C literals and every
+generated Rust byte pass through the complete wire comparison. Existing
+`dn_en_languages` / `dn_fr_languages` pools remain intact; the Intl repacker
+places the new array in `display_names.rs`. Edge tests pin the Chinese
+compound spellings and English/French language pairs. No service code is linked.
+
+Regenerate inside the worktree with a new directory, then install the two files:
+
+```sh
+nix develop --command bash scripts/quickjs-data/verify.sh \
+  /home/dev/projects/big-boy-pants-js/research/quickjs target/display-names-import-new
+cp target/display-names-import-new/intl-first/display_names.rs src/intl/data/
+cp target/display-names-import-new/intl-first/provenance.txt src/intl/data/
+CARGO_BUILD_JOBS=3 cargo test --test js_source intl_display_names -- --test-threads=3
+CARGO_BUILD_JOBS=3 cargo test --lib display_names -- --test-threads=3
+```
+
+The snapshot contains no locale display-pattern, separator or variant-name
+tables. The runtime documents its en/fr composition punctuation and retains
+canonical codes for unnamed components. All styles use the snapshot language
+pool; its `-alt-short` metadata keys are not language identifiers.
+
+### String case and normalization (clj-quickjs-300)
+
+The Unicode repacker also emits `string_data.rs` from pinned Unicode 17
+UnicodeData, unconditional SpecialCasing, and Full_Composition_Exclusion rows.
+It recursively expands canonical/compatibility decompositions, applies stable
+CCC ordering, and emits 961 canonical composition pairs; Hangul stays
+algorithmic. The same offline C decoder independently checks all nonidentity
+upper/lower/NFD/NFKD/CCC mappings and every emitted pair. `verify-strings.rs`
+checks the installed safe Rust readers against the full-domain reference,
+all composition pairs, composition exclusion and all Hangul syllables.
+`verify.sh` repeats generation and corrupts a String mapping to prove detection.
+The existing third UCD-directory argument enables these checks. Install
+`string_data.rs` and `provenance.txt` as `src/value/string_data.rs` and
+`src/value/string_provenance.txt`; `scripts/gen-unicode-ident.sh` does this too.
+The input acquisition and worktree-local verification commands above apply.
+Runtime context rules and resumable normalization are tested in `js_source`.
