@@ -563,7 +563,7 @@ enum NativeState {
         out: Value,
         remaining: u32,
     },
-    Error(error::ErrorState),
+    Error(Box<error::ErrorState>),
     RegExp(regexp::State),
     StringReplace(Box<string_replace::State>),
     Bind {
@@ -1897,9 +1897,10 @@ fn initialize_builtin_slow(
                 // Error allocates on entry, before message/cause callbacks.
                 if let Some(proto) = prototype
                     && let Some(NativeFrame {
-                        state: NativeState::Error(error::ErrorState::Constructor { object, .. }),
+                        state: NativeState::Error(error),
                         ..
                     }) = state.natives.last()
+                    && let error::ErrorState::Constructor { object, .. } = error.as_ref()
                 {
                     construct::initialize_prototype(heap, task, object, proto)?;
                 }
@@ -5527,7 +5528,7 @@ fn start_error(
     };
     if let Some(native) = error {
         state.truncate_operands(state.stack_len() - popped)?;
-        push_native(state, NativeState::Error(native))?;
+        push_native(state, NativeState::Error(Box::new(native)))?;
         return Ok(true);
     }
     Ok(false)

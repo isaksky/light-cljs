@@ -2218,3 +2218,69 @@ fn promise_finally_runs_cleanup_for_inaccessible_foreign_results() {
     assert_eq!(host.0, [Primitive::Number(1.), Primitive::Bool(true)]);
     assert!(task.unhandled_rejections().entries.is_empty());
 }
+
+#[test]
+fn aggregate_error_iterator_waits_and_traces_without_replay() {
+    for operation in ["next", "done", "value"] {
+        let rt = Runtime::new();
+        let source = format!(
+            r#"function body() {{
+            let operation = '{operation}';
+            let first = {{n: 1}}, second = {{n: 2}};
+            let calls = 0, doneReads = 0, valueReads = 0;
+            function wait(which) {{
+                if (calls === 2 && operation === which) {{
+                    __rt.effect(0, 1); __rt.need(317,1);
+                }}
+            }}
+            let error = new AggregateError({{[Symbol.iterator]() {{ return {{next() {{
+                calls++;
+                if (calls === 3) return {{done: true}};
+                wait('next');
+                let current = calls === 1 ? first : second;
+                return {{
+                    get done() {{ doneReads++; wait('done'); return false; }},
+                    get value() {{ valueReads++; wait('value'); return current; }}
+                }};
+            }} }}; }} }});
+            __rt.effect(0, error.errors.length === 2 && error.errors[0] === first &&
+                error.errors[1] === second && error.errors[0].n === 1 &&
+                calls === 3 && doneReads === 2 && valueReads === 2);
+            return 42;
+        }}"#
+        );
+        let task = function(&rt, &source, &[]);
+        let mut host = Effects::default();
+        assert!(
+            matches!(
+                task.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+                RunOutcome::Waiting(_)
+            ),
+            "{operation}"
+        );
+        assert_eq!(host.0, [Primitive::Number(1.)]);
+        rt.collect().unwrap();
+        satisfy(&rt, &task);
+        let resumed = task.clone();
+        let (out, host) = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                (
+                    resumed.run_with(Budget::UNLIMITED, &mut host).unwrap(),
+                    host,
+                )
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(
+            matches!(out, RunOutcome::Complete(v) if v.view() == ValueView::Number(42.)),
+            "{operation}"
+        );
+        assert_eq!(
+            host.0,
+            [Primitive::Number(1.), Primitive::Bool(true)],
+            "{operation}"
+        );
+    }
+}
