@@ -793,6 +793,83 @@ Clippy reports only the unchanged nine diagnostics in `deprecated`,
 those categories passes, with no source suppressions. Rebase onto `5059ce9c`
 was a no-op, so these checks were reused rather than repeated.
 
+## Guarded numeric instruction fusion (2026-10-25)
+
+light-cljs-487 derives bounded numeric expressions from the unchanged bytecode:
+two local/constant operands, optionally one nested arithmetic operation, and an
+optional local store or forward conditional branch. All operands must already
+be Numbers and the entire expression must fit the remaining instruction budget.
+A miss or a short slice executes the original instructions, including cuts
+inside the expression. Intermediate numeric operands bypass the Value stack;
+conversion, call, native and safepoint behavior is unchanged.
+
+The baseline is **`3ee7a407`**; the measured production implementation is
+**`6b934c4c`** (`635369ff` adds architecture documentation only). Both use the
+workspace release profile (thin LTO, one codegen unit), Homebrew Rust/Cargo
+**1.99.1**, macOS **15.7.3**, Apple M3 Ultra (Virtual), 24 available threads,
+and Node **26.12.1**. The before and after binaries each ran
+`bench kernels reads --rounds 5`, full sizes, four tasks and one worker per
+kernel round, one discarded warmup and five measured rounds. Node ran the
+exact source emitted by `bench --node-kernels kernels --rounds 5` with
+`node --jitless`. No builds, tests or peer benchmarks ran during this window.
+This is one sequential before/after pair, not repeated paired trials.
+Load averages were `3.34 4.05 3.66` before, `3.05 3.96 3.63` between binaries,
+and `2.97 3.91 3.62` after both the optimized binary and Node.
+
+| Kernel | Before ns/iteration median [min..max] | After ns/iteration median [min..max] | Node jitless median [min..max] | After / Node |
+|---|---:|---:|---:|---:|
+| arithmetic | 88.9 [88.4..90.0] | 43.0 [42.1..43.9] | 9.4 [9.4..9.5] | 4.57x |
+| allocate | 2878922.7 [2871640.4..2919474.2] | 2874045.1 [2851552.9..2908085.4] | 131902.6 [131247.4..134496.4] | 21.79x |
+| properties | 479.0 [474.3..492.9] | 487.0 [483.8..496.2] | 35.3 [34.7..35.9] | 13.80x |
+| cljs_map | 4391359.1 [4348997.7..4448382.5] | 4476821.9 [4428561.2..4545083.6] | 334351.6 [325286.5..339460.2] | 13.39x |
+| cljs_protocol | 595379.2 [589367.4..630926.3] | 593066.9 [588804.2..598216.9] | 34753.6 [31398.7..44243.2] | 17.06x |
+
+Arithmetic improves **2.07x**, but these results do **not** demonstrate a broad
+compiler-kernel improvement: allocation and protocols change by −0.17% and
+−0.39%, while properties and emitted maps regress by +1.67% and +1.95% in
+this pair. The simple `reads.js_baseline_loop` improves from
+**65.3 [65.1..67.6]** to **22.1 [21.7..22.9] ns/iteration**.
+`reads.js_need_loop` falls from 148.6 [146.9..149.1] to
+110.4 [109.4..111.5]; the Rust `RunGuard::need` control is
+54.4 [53.6..55.4] before and 54.1 [53.6..55.1] after.
+
+A separate final `bench kernels --rounds 40` supplied profiles, excluded from
+the timings. `sample <pid> 1 1` started at launch during arithmetic;
+`sample <pid> 2 1` started immediately after the arithmetic row during
+allocation. Self counts subtract immediate children in each call tree and
+exclude the main thread, including joins and runtime teardown. There are
+**755 arithmetic** and **1,390 allocation worker samples**. Inlining attributes
+fusion to `execute_budgeted`.
+
+| Kernel / remaining frame | Self samples | Share |
+|---|---:|---:|
+| arithmetic / `execute_budgeted` | 404 | 53.51% |
+| arithmetic / `fmod` | 347 | 45.96% |
+| allocate / `execute_budgeted` | 240 | 17.27% |
+| allocate / `Fault` drop | 114 | 8.20% |
+| allocate / `enter_constructor` | 63 | 4.53% |
+| allocate / `memmove` | 54 | 3.88% |
+| allocate / heap `Directory::slot` | 49 | 3.53% |
+
+**The 3x jitless target remains missed for every kernel.** The group numeric-miss
+fallback is explicit: focused follow-up **light-cljs-488** investigates guarded
+integral remainder, whose general `fmod` path now accounts for nearly half the
+arithmetic samples. It does not promise improvement to call/allocation-heavy
+compiler kernels or duplicate the native collections/protocol work in 477/478.
+
+Validation at `6b934c4c`, with `CARGO_BUILD_JOBS=3` and `--test-threads=3`, passed
+**2,005 tests across 60 result groups** with `cargo test --locked -p
+big-boy-pants-js --all-targets`, including budget, cancellation, GC, safepoint,
+native, conversion and resume coverage, plus **seven doctests** with `--doc`.
+The differential regression checks every budget prefix through completion and
+resumes each cut, including conversion callbacks and throws. Another checks
+all 121 pairs of eleven IEEE-number edge values across ten expressions and
+every short repeated slice, including serialized executable reloads. Engine
+formatting passes. Strict Clippy reports only the existing nine diagnostics in
+`deprecated`, `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`;
+allowing only those categories passes, without source suppressions. These
+checks remain applicable to the following documentation-only commits.
+
 ## Method and limits of the measurements
 
 `examples/bench/main.rs` handles timing, a counting allocator and reports;
