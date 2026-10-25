@@ -1030,7 +1030,7 @@ fn realm_intrinsics_reclaim_with_their_heap() {
         });
         intrinsics.object_prototype
     };
-    assert_eq!(ids.len(), 342); // Proxy constructor (-91).
+    assert_eq!(ids.len(), 350); // Seven array mutators and species getter (-296).
     let task = crate::ids::TaskId::from_raw(1);
     let object = crate::object::OrdinaryObject::with_prototype(task, prototype);
     let child = heap.alloc(HeapObject::Plain(object)).unwrap();
