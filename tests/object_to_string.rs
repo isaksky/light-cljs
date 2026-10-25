@@ -211,6 +211,33 @@ fn intrinsic_tag_descriptors_and_fallbacks() {
 }
 
 #[test]
+fn tag_receiver_native_root_survives_gc() {
+    let rt = Runtime::new();
+    let code = compile_script(
+        "tag-native-root.js",
+        "Object.prototype.toString.call({[Symbol.toStringTag]: 'Ephemeral'})",
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    for _ in 0..500 {
+        match task
+            .run_with(Budget::instructions(1), &mut NoEffects)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {
+                rt.collect().unwrap();
+            }
+            RunOutcome::Complete(value) => {
+                assert_eq!(value.string().unwrap().to_string(), "[object Ephemeral]");
+                return;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    panic!("inline tag receiver did not complete");
+}
+
+#[test]
 fn tag_getter_waits_yields_migrates_and_survives_gc() {
     let rt = Runtime::new();
     let code = compile_script("tag-wait.js", "let n = 0; let o = {get [Symbol.toStringTag]() {n++; return __rt.need(311, 1);}}; Object.prototype.toString.call(o) === '[object Ready]' && n === 1").unwrap();
