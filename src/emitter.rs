@@ -1365,9 +1365,20 @@ const LAZY_CONSTANT_NODES: u32 = 1024;
 /// those constructors and that they check what the inline forms check.)
 const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
 
-/// Native callable collections keep form identity; functions run on this task
-/// and can suspend. This expression captures no task-owned runtime object.
-const NATIVE_INVOKE: &str = "((f, ...a) => { if (typeof f === 'function') return f.call(null, ...a); if (__rt.formKind(__rt.formValue(f)) !== 'vector' && (a.length < 1 || a.length > 2)) throw new Error('Invalid arity: ' + a.length); return __rt.cljInvoke(f, a[0], a.length > 1 ? a[1] : null); })";
+/// Prepare native collection dispatch or read the legacy `.call` method before
+/// evaluating arguments. Retain that method and its receiver across suspension;
+/// the adapter captures no task-owned runtime object.
+const NATIVE_PREPARE_INVOKE: &str = r#"(f => {
+    const kind = __rt.formKind(__rt.formValue(f));
+    if (kind === 'vector' || kind === 'map' || kind === 'set' || kind === 'keyword' || kind === 'symbol') {
+        return (...a) => {
+            if (kind !== 'vector' && (a.length < 1 || a.length > 2)) throw new Error('Invalid arity: ' + a.length);
+            return __rt.cljInvoke(f, a[0], a.length > 1 ? a[1] : null);
+        };
+    }
+    const call = f.call;
+    return (...a) => Reflect.apply(call, f, [null, ...a]);
+})"#;
 
 /// What the pool knows about an expression (indexed by `ExprId`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3781,9 +3792,11 @@ impl<'a> Emitter<'a> {
             }"#
             }
             C::Partial => {
-                r#"(f, ...p) => {
-                if (p.length === 0) return f;
-                const prefix = p.reduce((v, x) => __rt.formConj(v, x), __rt.formVector());
+                r#"(...supplied) => {
+                const f = supplied[0];
+                if (supplied.length === 1) return f;
+                const prefix = supplied.length === 0 ? __rt.formVector(undefined, undefined, undefined)
+                    : supplied.slice(1).reduce((v, x) => __rt.formConj(v, x), __rt.formVector());
                 return (...a) => {
                     const args = [];
                     for (let i = 0, n = __rt.formCount(prefix); i < n; i++) args.push(__rt.formNth(prefix, i));
@@ -3821,9 +3834,9 @@ impl<'a> Emitter<'a> {
         // semantics. It captures no runtime object and preserves occurrences.
         self.output.push_str("((invoke) => (");
         self.output.push_str(constructor);
-        self.output.push_str("))(");
-        self.output.push_str(NATIVE_INVOKE);
-        self.output.push(')');
+        self.output.push_str("))((f, ...a) => ");
+        self.output.push_str(NATIVE_PREPARE_INVOKE);
+        self.output.push_str("(f)(...a))");
         true
     }
 
@@ -8178,12 +8191,10 @@ impl<'a> Emitter<'a> {
                     && specialized.is_none()
                     && !matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_))
                 {
-                    self.output.push_str(NATIVE_INVOKE);
+                    self.output.push_str(NATIVE_PREPARE_INVOKE);
                     self.output.push('(');
                     self.value(*callee);
-                    if !args.is_empty() {
-                        self.output.push_str(", ");
-                    }
+                    self.output.push_str(")(");
                     self.arguments(args);
                     self.output.push(')');
                     return;

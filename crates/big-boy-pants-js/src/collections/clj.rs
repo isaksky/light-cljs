@@ -863,14 +863,21 @@ pub(crate) fn invoke(heap: &Heap, f: &Value, arg: &Value, default: &Value) -> Re
     match &shape {
         Shape::Form(FormKind::Keyword | FormKind::Symbol, _) => get(heap, arg, f, default),
         Shape::Form(FormKind::Map | FormKind::Set, _) => get(heap, f, arg, default),
-        Shape::Form(FormKind::Vector, _) => {
-            if !matches!(form::unwrap(heap, arg.clone()), Value::Number(_)) {
+        Shape::Form(FormKind::Vector, vector) => {
+            let Value::Number(index) = form::unwrap(heap, arg.clone()) else {
                 return Err(CljError::Operands("Key must be integer"));
+            };
+            let FormBody::Vector(items) = vector.body() else {
+                unreachable!("a vector shape has a vector body");
+            };
+            // The legacy callable checks numeric bounds before its bitwise
+            // indexing truncates a fractional index. Keep nth/get's index
+            // contract separate, including rejection of negative fractions.
+            if index >= 0.0 && index < items.len() as f64 {
+                Ok(items.get(index as usize).expect("index within bounds"))
+            } else {
+                Err(CljError::Operands("Index out of bounds"))
             }
-            nth(heap, f, arg, None).map_err(|e| match e {
-                CljError::OutOfBounds => CljError::Operands("Index out of bounds"),
-                other => other,
-            })
         }
         _ => Err(unsupported("invoke", &shape)),
     }

@@ -788,8 +788,18 @@ fn scalar_predicates_and_callable_collections_preserve_occurrences() {
         const m = __rt.formMap(k, no, sym, zero), v = __rt.formVector(no, zero);
         if (__rt.cljInvoke(k, m, null) !== no || __rt.cljInvoke(sym, m, null) !== zero ||
             __rt.cljInvoke(m, sym, null) !== zero || __rt.cljInvoke(v, 0, null) !== no ||
+            __rt.cljInvoke(v, 0.5, null) !== no || __rt.cljInvoke(v, 1.5, null) !== zero ||
+            __rt.cljInvoke(v, zero, null) !== no ||
             __rt.cljInvoke(__rt.formSet(no), false, null) !== no ||
             __rt.cljInvoke(m, 'absent', zero) !== zero) throw new Error('lookup identity');
+        for (const index of [-0.5, 2, NaN, Infinity, -Infinity]) {
+            let message;
+            try { __rt.cljInvoke(v, index, 'ignored'); } catch (e) { message = e.message; }
+            if (message !== 'Index out of bounds') throw new Error('numeric bounds');
+        }
+        // Fractional truncation belongs only to the legacy callable ABI.
+        if (__rt.cljGet(v, 0.5, 'missing') !== 'missing' ||
+            __rt.cljNthOr(v, 0.5, 'missing') !== 'missing') throw new Error('index contract');
         let keyError, boundsError, callableError;
         try { __rt.cljInvoke(v, '0', null); } catch (e) { keyError = e.message; }
         try { __rt.cljInvoke(v, 2, 'ignored'); } catch (e) { boundsError = e.message; }

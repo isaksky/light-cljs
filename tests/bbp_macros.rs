@@ -2034,6 +2034,16 @@ const COMBINATOR_FIXTURES: &[(&str, &str)] = &[
          (js/console.log (pr-str (m)))",
         "[\"Invalid arity: 1\" [false true true] [false false true] \"Key must be integer\"]\n",
     ),
+    (
+        "(defmacro m [x] (let [c comp v [:first :second]] \
+         [(v x) ((comp identity v) x) ((c identity v) x) \
+         ((comp identity v) 1.5) ((comp identity v) -0) \
+         (try ((comp identity v) -0.5) (catch :default e (.-message e))) \
+         (try ((comp identity v) 2) (catch :default e (.-message e))) \
+         (try ((comp identity v) js/NaN) (catch :default e (.-message e)))])) \
+         (js/console.log (pr-str (m 0.5)))",
+        "[:first :first :first :second :first \"Index out of bounds\" \"Index out of bounds\" \"Index out of bounds\"]\n",
+    ),
 ];
 
 #[test]
@@ -2041,6 +2051,61 @@ fn function_combinators_match_the_legacy_compiler_and_run() {
     for (source, expected) in COMBINATOR_FIXTURES {
         assert_native_matches_legacy(source, expected);
     }
+}
+
+#[test]
+fn native_callable_objects_keep_the_legacy_call_abi() {
+    assert_native_matches_legacy(
+        r#"(defmacro m []
+            (let [f (js* "({offset: 1, call: function(_, x) { return this.offset + x; }})")
+                  c comp p partial]
+              [(f 41) ((comp identity f) 41) ((partial f 41))
+               ((c identity f) 41) ((p f 41))]))
+           (js/console.log (pr-str (m)))"#,
+        "[42 42 42 42 42]\n",
+    );
+}
+
+#[test]
+fn native_failed_calls_do_not_evaluate_arguments() {
+    assert_native_matches_legacy(
+        r#"(defmacro m []
+            (let [a (js/Array.) b (js/Array.) f nil
+                  g (js* "({get call() { throw new Error('getter'); }})")]
+              (try (f (.push a 1)) (catch :default e nil))
+              (try (g (.push b 1)) (catch :default e nil))
+              [(vec a) (vec b)]))
+           (js/console.log (pr-str (m)))"#,
+        "[[] []]\n",
+    );
+    // Read the method once before the argument replaces it, retaining its
+    // receiver and the callee's own evaluation effects.
+    assert_native_matches_legacy(
+        r#"(defmacro m []
+            (let [a (js/Array.)
+                  f (js* "({get call() { ~{}.push(0); return this.fn; },
+                            fn: function(_, x) { ~{}.push(2); return x; }})" a a)]
+              [((do (.push a -1) f)
+                (do (.push a 1) (set! (.-fn f) (fn [_ x] 99)) 7))
+               (vec a)]))
+           (js/console.log (pr-str (m)))"#,
+        "[7 [-1 0 1 2]]\n",
+    );
+}
+
+#[test]
+fn partial_zero_arity_matches_legacy() {
+    assert_native_matches_legacy(
+        r#"(defmacro m []
+            (let [p partial f (partial) g (p)]
+              [(nil? f) (nil? g)
+               (js* "(typeof ~{} === 'function')" f)
+               (js* "(typeof ~{} === 'function')" g)
+               (try (f) (catch :default e true))
+               (try (g) (catch :default e true))]))
+           (js/console.log (pr-str (m)))"#,
+        "[false false true true true true]\n",
+    );
 }
 
 #[test]
@@ -2097,6 +2162,13 @@ fn combinator_helpers_publish_once_at_one_two_and_four_slots() {
 #[test]
 fn native_scalar_predicates_and_binding_probes_match_legacy() {
     for (source, expected) in [
+        (
+            "(defmacro m [n f z s] (let [some some?] \
+             [(some? n) (some n) (some? f) (some f) (some? z) (some z) \
+              (some? s) (some s) (some? js/undefined) (some js/undefined)])) \
+             (js/console.log (pr-str (m nil false 0 \"\")))",
+            "[false false true true true true true true false false]\n",
+        ),
         (
             "(defmacro m [z f n] (let [zero zero? no false?] \
           [(zero? z) (zero z) (zero? \"0\") (zero? n) (false? f) (no f) (false? z) (false? n)])) \
