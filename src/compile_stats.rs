@@ -59,6 +59,15 @@ pub struct NativeHelperCounts {
     pub waits: usize,
     pub steps: usize,
     pub migrations: usize,
+    /// Task contexts booted on the runtime: the coordinator's, each
+    /// worker's and each nested producer's.
+    pub contexts: usize,
+    /// Distinct unit sources compiled once into a shared factory.
+    pub units_compiled: usize,
+    /// Unit evaluations served by a shared factory.
+    pub units_shared: usize,
+    /// Unit evaluations compiled by the evaluating task itself.
+    pub units_evaluated: usize,
 }
 
 /// Wall time per phase of a compilation. The phases do not overlap; work a
@@ -611,6 +620,10 @@ impl CompileStats {
             line("native.helpers.waits", &helpers.waits);
             line("native.tasks.steps", &helpers.steps);
             line("native.tasks.migrations", &helpers.migrations);
+            line("native.tasks.contexts", &helpers.contexts);
+            line("native.units.compiled", &helpers.units_compiled);
+            line("native.units.shared", &helpers.units_shared);
+            line("native.units.evaluated", &helpers.units_evaluated);
         }
         line("macro-nodes.peak", &self.peak_macro_nodes);
         line("deferred-units.registered", &self.deferred_units.registered);

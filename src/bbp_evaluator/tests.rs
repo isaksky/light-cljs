@@ -1015,3 +1015,69 @@ fn published_by_two_tasks(declaration: &str, construct: &str, names: &str, check
         );
     });
 }
+
+/// A unit source long enough to take the shared factory path, whose
+/// factory keeps per-task state in the calling task's globals.
+fn shared_unit(tail: &str) -> String {
+    let padding = "/* padding */ ".repeat(SHARED_UNIT_BYTES / 10);
+    format!(
+        "rt => {{ {padding} globalThis.unitCalls = (globalThis.unitCalls || 0) + 1; \
+         return (rt === globalThis.__lightNativeRuntime ? 40 : 0) + globalThis.unitCalls{tail}; }}"
+    )
+}
+
+#[test]
+fn a_unit_source_compiles_once_for_every_task_and_runs_in_each() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let first = shared.evaluator().unwrap();
+    let second = shared.evaluator().unwrap();
+    let roots = second.value_roots().unwrap();
+    let source = shared_unit("");
+    for (evaluator, calls) in [(&first, 1.0), (&second, 1.0), (&first, 2.0)] {
+        let value = evaluator.evaluate_unit(&source).unwrap();
+        // Called with the evaluating task's own runtime, in its own globals.
+        assert!(matches!(
+            evaluator.values.borrow()[&value.index].view(),
+            ValueView::Number(n) if n == 40.0 + calls
+        ));
+        evaluator.release(value).unwrap();
+        assert_eq!(numeric_global(evaluator, "unitCalls"), calls);
+    }
+    // The task's own runtime handle is not counted as a held value.
+    assert_eq!(second.value_roots().unwrap(), roots);
+    let counts = shared.helper_counts();
+    assert_eq!(counts.units_compiled, 1);
+    assert_eq!(counts.units_shared, 3);
+    assert_eq!(counts.contexts, 2);
+}
+
+#[test]
+fn an_unshareable_or_invalid_unit_is_evaluated_by_its_task_with_the_same_diagnostic() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let evaluated = shared.helper_counts().units_evaluated;
+    // A syntax error reports what evaluating the source reports.
+    let invalid = shared_unit(" +");
+    let error = evaluator.evaluate_unit(&invalid).unwrap_err();
+    let reference = shared.evaluator().unwrap();
+    let expected = reference
+        .evaluate(&format!("({invalid})(globalThis.__lightNativeRuntime)"))
+        .unwrap_err();
+    assert_eq!(error.0, expected.0);
+    // A factory capturing mutable state does not publish; it still runs.
+    let padding = "/* padding */ ".repeat(SHARED_UNIT_BYTES / 10);
+    let captured =
+        format!("(() => {{ let n = 0; return rt => {{ {padding} n += 1; return n; }}; }})()");
+    let value = evaluator.evaluate_unit(&captured).unwrap();
+    assert!(matches!(
+        evaluator.values.borrow()[&value.index].view(),
+        ValueView::Number(1.0)
+    ));
+    let counts = shared.helper_counts();
+    assert_eq!(counts.units_compiled, 0);
+    assert_eq!(counts.units_shared, 0);
+    assert_eq!(counts.units_evaluated, evaluated + 2);
+    // Both are remembered as unshareable and not compiled again.
+    assert!(evaluator.evaluate_unit(&invalid).is_err());
+    assert_eq!(shared.0.factories.lock().unwrap().len(), 2);
+}

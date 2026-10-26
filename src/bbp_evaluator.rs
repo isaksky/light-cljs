@@ -355,6 +355,11 @@ struct SharedRuntime {
     generation: Mutex<u64>,
     changed: Condvar,
     graph: Mutex<big_boy_pants_js::DependencyGraph>,
+    /// Compiled unit factories by source ([`SHARED_UNIT_BYTES`]): each
+    /// distinct source is compiled once for the whole runtime and every
+    /// task calls the one published function. `None` records a source
+    /// whose factory cannot be shared, which tasks evaluate themselves.
+    factories: Mutex<HashMap<String, Arc<std::sync::OnceLock<Option<Rooted>>>>>,
     #[cfg(test)]
     on_wait: Mutex<Option<WaitHook>>,
     #[cfg(test)]
@@ -368,11 +373,20 @@ struct NativeCounters {
     waits: AtomicUsize,
     steps: AtomicUsize,
     migrations: AtomicUsize,
+    contexts: AtomicUsize,
+    units_compiled: AtomicUsize,
+    units_shared: AtomicUsize,
+    units_evaluated: AtomicUsize,
     #[cfg(test)]
     cleanups: AtomicUsize,
 }
 #[cfg(test)]
 type WaitHook = Arc<dyn Fn(&Task, DependencyKey) + Send + Sync>;
+
+/// Unit sources at least this long are compiled once per runtime and
+/// shared by its tasks ([`BbpRuntime::factory`]); a shorter one, such as a
+/// root registration, is cheaper to evaluate in the task than to call.
+const SHARED_UNIT_BYTES: usize = 512;
 
 const BINDING: ResultKind = ResultKind::new(2);
 const HELPER: ResultKind = ResultKind::new(3);
@@ -448,6 +462,7 @@ impl BbpRuntime {
             generation: Mutex::new(0),
             changed: Condvar::new(),
             graph: Mutex::new(big_boy_pants_js::DependencyGraph::new()),
+            factories: Mutex::new(HashMap::new()),
             #[cfg(test)]
             on_wait: Mutex::new(None),
             #[cfg(test)]
@@ -475,6 +490,84 @@ impl BbpRuntime {
             waits: c.waits.load(Ordering::Relaxed),
             steps: c.steps.load(Ordering::Relaxed),
             migrations: c.migrations.load(Ordering::Relaxed),
+            contexts: c.contexts.load(Ordering::Relaxed),
+            units_compiled: c.units_compiled.load(Ordering::Relaxed),
+            units_shared: c.units_shared.load(Ordering::Relaxed),
+            units_evaluated: c.units_evaluated.load(Ordering::Relaxed),
+        }
+    }
+    /// The runtime's one published factory for unit `source`, compiled now
+    /// if no task has asked for it yet; `None` if it cannot be shared
+    /// (a syntax error, or a value that does not publish), in which case
+    /// the asking task evaluates the source itself and so reports exactly
+    /// what evaluation reports. Concurrent first requests compile it once:
+    /// the others wait for that compilation, which runs no task code that
+    /// could wait in turn.
+    fn factory(&self, source: &str) -> Result<Option<Rooted>, EvalError> {
+        let cell = self
+            .0
+            .factories
+            .lock()
+            .unwrap()
+            .entry(source.to_owned())
+            .or_default()
+            .clone();
+        let mut failure = None;
+        let factory = cell.get_or_init(|| match self.compile_factory(source) {
+            Ok(factory) => {
+                if factory.is_some() {
+                    self.0
+                        .counters
+                        .units_compiled
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                factory
+            }
+            Err(error) => {
+                failure = Some(error);
+                None
+            }
+        });
+        match failure {
+            // A cancelled or exhausted build: no task may evaluate it later.
+            Some(error) => Err(error),
+            None => Ok(factory.clone()),
+        }
+    }
+    fn compile_factory(&self, source: &str) -> Result<Option<Rooted>, EvalError> {
+        // As indirect eval does: sloppy global code, named `<eval>` in
+        // diagnostics, compiled on a bounded helper stack.
+        let text = format!("({source})");
+        let compiled = std::thread::Builder::new()
+            .name("bbp-unit-compiler".into())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                big_boy_pants_js::frontend::compile_script_with(
+                    "<eval>",
+                    &text,
+                    big_boy_pants_js::frontend::ScriptOptions::SLOPPY,
+                )
+                .ok()
+            })
+            .map_err(error)?
+            .join()
+            .map_err(|_| error("unit compiler panicked"))?;
+        let Some(executable) = compiled else {
+            return Ok(None);
+        };
+        let producer = self.0.runtime.spawn(&executable, &[]).map_err(error)?;
+        loop {
+            self.0.control.poll()?;
+            match producer
+                .run_with(Budget::instructions(10_000), &mut RejectHost)
+                .map_err(error)?
+            {
+                RunOutcome::Complete(value) => {
+                    return Ok(self.0.runtime.publish(&value).is_ok().then_some(value));
+                }
+                RunOutcome::Yielded => {}
+                _ => return Ok(None),
+            }
         }
     }
     #[cfg(test)]
@@ -505,6 +598,9 @@ pub struct BbpEvaluator {
     bridge: Arc<Mutex<Bridge>>,
     stats: Cell<BridgeStats>,
     values: RefCell<HashMap<u64, Rooted>>,
+    /// This task's handle on its `globalThis.__lightNativeRuntime`, which
+    /// shared unit factories are called with; made on first use.
+    native_runtime: Cell<Option<ValueId>>,
 }
 impl BbpEvaluator {
     pub fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
@@ -549,7 +645,13 @@ impl BbpEvaluator {
             bridge,
             stats: Cell::new(BridgeStats::default()),
             values: RefCell::new(HashMap::new()),
+            native_runtime: Cell::new(None),
         };
+        this.shared
+            .0
+            .counters
+            .contexts
+            .fetch_add(1, Ordering::Relaxed);
         this.run()?;
         Ok(this)
     }
@@ -1203,6 +1305,16 @@ impl MacroEvaluator for BbpEvaluator {
         self.session as usize
     }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
+        if source.len() >= SHARED_UNIT_BYTES
+            && let Some(factory) = self.shared.factory(source)?
+        {
+            return self.call_factory(factory);
+        }
+        self.shared
+            .0
+            .counters
+            .units_evaluated
+            .fetch_add(1, Ordering::Relaxed);
         self.evaluate(&format!("({source})(globalThis.__lightNativeRuntime)"))
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
@@ -1312,7 +1424,9 @@ impl CompilerEvaluator for BbpEvaluator {
         self.unsupported_service(name)
     }
     fn value_roots(&self) -> Result<usize, EvalError> {
-        Ok(self.values.borrow().len() + self.bridge.lock().unwrap().imports.len())
+        // The task's own runtime handle is not a value its callers hold.
+        let own = usize::from(self.native_runtime.get().is_some());
+        Ok(self.values.borrow().len() - own + self.bridge.lock().unwrap().imports.len())
     }
     fn collect_garbage(&self) {
         let _ = self.runtime.collect();
@@ -1327,6 +1441,31 @@ impl CompilerEvaluator for BbpEvaluator {
     }
 }
 impl BbpEvaluator {
+    /// Evaluate a unit through its shared factory: the factory enters this
+    /// task as a value and is called with this task's runtime, as the
+    /// evaluated source would have called it.
+    fn call_factory(&self, factory: Rooted) -> Result<ValueId, EvalError> {
+        let runtime = match self.native_runtime.get() {
+            Some(id) => id,
+            None => {
+                let id = self.evaluate("globalThis.__lightNativeRuntime")?;
+                self.native_runtime.set(Some(id));
+                id
+            }
+        };
+        let function = self.id();
+        self.request(1, function, factory)?;
+        let result = self.call(function, &[runtime]);
+        let released = self.release(function);
+        let result = result?;
+        released?;
+        self.shared
+            .0
+            .counters
+            .units_shared
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(result)
+    }
     fn unsupported_service(&self, name: &str) -> Result<(), EvalError> {
         if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
             return Err(error("invalid service name"));
