@@ -381,13 +381,17 @@ const INITIALIZER: ResultKind = ResultKind::new(4);
 ///
 /// `options.memory_limit` is the compilation's one aggregate budget, shared
 /// by every task and worker of the runtime; this is the only place it may
-/// reach the engine. The engine's byte admission (light-cljs-472) is not yet
-/// configurable from outside the engine crate, so the native backend keeps
-/// the default collection policy and does not enforce `memory_limit` until
-/// the public policy is mapped here.
+/// reach the engine. It becomes the engine's accounted-byte admission limit
+/// (`HeapPolicy::hard_limit_bytes`): the booted realm, the runtime's boot
+/// code, every task's objects, strings, forms and saved continuations count
+/// against it, and allocation pressure triggers collections before an
+/// allocation is denied. It is a managed-heap cap, not a process RSS cap
+/// (docs/native-macros.md, "Memory limit").
 fn heap_policy(options: &EvaluatorOptions) -> big_boy_pants_js::HeapPolicy {
-    let _aggregate_bytes = options.memory_limit;
-    big_boy_pants_js::HeapPolicy::default()
+    big_boy_pants_js::HeapPolicy {
+        hard_limit_bytes: Some(options.memory_limit),
+        ..Default::default()
+    }
 }
 
 impl BbpRuntime {
@@ -402,13 +406,21 @@ impl BbpRuntime {
         options: &EvaluatorOptions,
         policy: big_boy_pants_js::HeapPolicy,
     ) -> Result<Self, EvalError> {
-        let runtime = Runtime::with_heap_policy(
+        let runtime = Runtime::try_with_heap_policy(
             big_boy_pants_js::VmLimits {
                 max_stack_values: (options.stack_limit / 16).max(1),
                 ..Default::default()
             },
             policy,
-        );
+        )
+        .map_err(|e| match e {
+            big_boy_pants_js::RuntimeStartError::HeapLimit => EvalError(format!(
+                "macro memory limit of {} bytes cannot hold the native macro runtime's realm \
+                 (about 1.2 MB of accounted heap before any macro runs); raise --macro-memory-limit",
+                options.memory_limit
+            )),
+            e => error(e),
+        })?;
         let keys = crate::CoreFnId::ALL
             .iter()
             .map(|k| format!("{:?}", k.runtime_key()))
@@ -550,6 +562,11 @@ impl BbpEvaluator {
             gc_pause_nanos: gc.pause_total.as_nanos(),
             gc_pause_max_nanos: gc.pause_max.as_nanos(),
             gc_live_objects: gc.last_live_objects,
+            gc_managed_bytes: gc.managed_bytes,
+            gc_peak_managed_bytes: gc.peak_managed_bytes,
+            gc_live_bytes: gc.last_live_bytes,
+            gc_admitted_bytes: gc.admitted_bytes_total,
+            gc_byte_limit: gc.byte_limit.unwrap_or(0),
             ..stats
         }
     }
@@ -696,7 +713,7 @@ impl BbpEvaluator {
             }
             let value = match &result {
                 Ok(value) => value.clone(),
-                Err(error) => self.runtime.root(Primitive::string(&error.to_string())),
+                Err(error) => self.failure_root(&error.to_string()),
             };
             let completion = match result {
                 Ok(_) => Completion::Ready(&value),
@@ -875,7 +892,7 @@ impl BbpEvaluator {
                 Err(e) => return Err(error(e)),
             };
             shared_value = published;
-            self.runtime.scope(|s| {
+            self.host_scope(|s| {
                 let status = s.primitive(Primitive::Bool(published));
                 let value = if published {
                     s.local(&value).map_err(error)?
@@ -915,7 +932,7 @@ impl BbpEvaluator {
         if requests.is_empty() {
             return;
         }
-        let failure = self.runtime.root(Primitive::string(message));
+        let failure = self.failure_root(message);
         for (key, request) in requests {
             self.shared.0.graph.lock().unwrap().resolve(key);
             let _wakeups =
@@ -924,6 +941,26 @@ impl BbpEvaluator {
         }
         *self.shared.0.generation.lock().unwrap() += 1;
         self.shared.0.changed.notify_all();
+    }
+    /// A host scope on this evaluator's thread, outside any run. After a
+    /// byte-limit denial it first collects: the denial's own collection ran
+    /// before the denied macro released its data, and only a run's start
+    /// collects again (`Runtime::byte_starved`). Inside a run or with
+    /// another scope open the request fails at once and the scope proceeds.
+    fn host_scope<R>(&self, f: impl for<'s> FnOnce(&Scope<'s>) -> R) -> R {
+        if self.runtime.byte_starved() {
+            let _ = self.runtime.request_collection();
+        }
+        self.runtime.scope(f)
+    }
+    /// The failure value a producer or initializer completes its waiters
+    /// with. It is charged to the memory limit when it fits; at the limit
+    /// the bounded diagnostic is rooted uncharged instead, because dropping
+    /// it would leave the waiters without their outcome.
+    fn failure_root(&self, message: &str) -> Rooted {
+        self.runtime
+            .try_root(Primitive::string(message))
+            .unwrap_or_else(|| self.runtime.root(Primitive::string(message)))
     }
     fn id(&self) -> ValueId {
         let index = self.next.get();
@@ -942,16 +979,19 @@ impl BbpEvaluator {
     }
     fn request(&self, op: u32, id: ValueId, input: Rooted) -> Result<(), EvalError> {
         self.control.check()?;
+        // Built before the boundary is taken: a denied message leaves the
+        // task waiting at the same boundary for the next request.
+        let message = self.host_scope(|s| {
+            let op = s.primitive(Primitive::Number(op as f64));
+            let id = s.primitive(Primitive::Number(id.index as f64));
+            let message = s.new_vector(&[op, id, s.local(&input).map_err(error)?]);
+            Ok::<_, EvalError>(s.persist(message.map_err(error)?))
+        })?;
         let request = self
             .task
             .take_producer_requests()
             .pop()
             .ok_or_else(|| error("macro task has no request boundary"))?;
-        let message = self.runtime.scope(|s| {
-            let op = s.primitive(Primitive::Number(op as f64));
-            let id = s.primitive(Primitive::Number(id.index as f64));
-            s.persist(s.new_vector(&[op, id, s.local(&input).unwrap()]).unwrap())
-        });
         let _wakeups = self
             .runtime
             .complete(
@@ -993,7 +1033,7 @@ impl BbpEvaluator {
     fn import(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
         self.control.poll()?;
         let started = std::time::Instant::now();
-        let value = self.runtime.scope(|s| {
+        let value = self.host_scope(|s| {
             let v =
                 self.with_bridge(|b| b.import(s, data, limits.depth, &mut limits.nodes.clone()))?;
             Ok::<_, EvalError>(s.persist(v))
@@ -1144,13 +1184,13 @@ impl MacroEvaluator for BbpEvaluator {
         for a in arguments {
             self.check(*a)?;
         }
-        let input = self.runtime.scope(|s| {
+        let input = self.host_scope(|s| {
             let values = std::iter::once(function)
                 .chain(arguments.iter().copied())
                 .map(|v| s.primitive(Primitive::Number(v.index as f64)))
                 .collect::<Vec<_>>();
-            s.persist(s.new_vector(&values).unwrap())
-        });
+            Ok::<_, EvalError>(s.persist(s.new_vector(&values).map_err(error)?))
+        })?;
         let id = self.id();
         self.request(2, id, input)?;
         Ok(id)
@@ -1172,7 +1212,7 @@ impl MacroEvaluator for BbpEvaluator {
     ) -> Result<ValueId, EvalError> {
         self.control.poll()?;
         let started = std::time::Instant::now();
-        let value = self.runtime.scope(|s| {
+        let value = self.host_scope(|s| {
             let v = self.with_bridge(|b| b.environment(s, data, limits))?;
             Ok::<_, EvalError>(s.persist(v))
         })?;
@@ -1190,7 +1230,7 @@ impl MacroEvaluator for BbpEvaluator {
     ) -> Result<Form, EvalError> {
         self.check(id)?;
         let started = std::time::Instant::now();
-        let data = self.runtime.scope(|s| {
+        let data = self.host_scope(|s| {
             let v = self.values.borrow().get(&id.index).unwrap().clone();
             self.with_bridge(|b| {
                 b.export(

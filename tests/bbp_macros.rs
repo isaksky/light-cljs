@@ -768,12 +768,22 @@ fn namespace_stats_report_bridge_work_for_each_native_call() {
     assert!(call.exported > 0);
     assert_eq!(call.reused, 2);
     assert!(call.nanos > 0);
+    // The default --macro-memory-limit is the runtime's accounted-byte cap.
+    assert_eq!(call.gc_byte_limit, 64 << 20);
+    assert!(call.gc_admitted_bytes > 0);
+    assert!(call.gc_managed_bytes > 0 && call.gc_managed_bytes <= call.gc_peak_managed_bytes);
+    assert!(call.gc_peak_managed_bytes <= call.gc_byte_limit);
     let report = stats.report();
     for key in [
         "macro.bridge.0.imported",
         "macro.bridge.0.exported",
         "macro.bridge.0.reused",
         "macro.bridge.0.ns",
+        "macro.gc.0.managed-bytes",
+        "macro.gc.0.peak-managed-bytes",
+        "macro.gc.0.live-bytes",
+        "macro.gc.0.admitted-bytes",
+        "macro.gc.0.byte-limit 67108864",
     ] {
         assert!(report.contains(key), "{report}");
     }
@@ -875,4 +885,50 @@ fn helper_failures_have_the_same_source_diagnostic_at_one_two_and_four_slots() {
             reference = Some(error);
         }
     }
+}
+
+/// `--macro-memory-limit` is the native runtime's aggregate accounted-byte
+/// budget: a macro that retains more than it fails with the engine's
+/// catchable resource error, a macro may catch that error, and the
+/// compilation continues in the same runtime afterwards.
+#[test]
+fn the_macro_memory_limit_denies_allocation_catchably_and_the_build_recovers() {
+    let hog = "(defmacro hog [] (js* \"(() => { const xs = []; try { for (;;) xs.push({v: xs.length}); } catch (e) { xs.length = 0; return e === `heap byte limit exceeded`; } })()\"))";
+    let source =
+        format!("{hog} (defmacro twice [x] (list '+ x x)) (js/console.log (hog) (twice 21) (hog))");
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    host.evaluator_options.memory_limit = 16 << 20;
+    let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host).unwrap();
+    assert_eq!(program_output(&emit_js(&program)), "true 42 true\n");
+
+    let source =
+        "(defmacro hog! [] (js* \"(() => { const xs = []; for (;;) xs.push({}); })()\"))\n(hog!)";
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    host.evaluator_options.memory_limit = 16 << 20;
+    let message = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("heap byte limit exceeded"), "{message}");
+    assert!(message.contains("cljs.user:2:1"), "{message}");
+}
+
+#[test]
+fn a_macro_memory_limit_below_the_native_realm_fails_at_startup_with_a_diagnostic() {
+    let source = "(defmacro twice [x] (list '+ x x)) (twice 21)";
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    host.evaluator_options.memory_limit = 256 << 10;
+    let message = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        message.contains(
+            "macro memory limit of 262144 bytes cannot hold the native macro runtime's realm"
+        ),
+        "{message}"
+    );
 }

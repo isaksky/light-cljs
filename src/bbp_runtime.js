@@ -124,17 +124,24 @@ globalThis.__lightCompilerRoots={};
 const values=new Map();
 globalThis.__lightResult=null;
 globalThis.__lightFailure=null;
+// A command's value enters `values` only once the next command arrives:
+// nothing allocates between a macro's return and the park at `need`, so
+// data a macro released after catching a heap byte denial is collected when
+// the next run starts, before this loop allocates again. A denied entry is
+// retried with the following command.
+let held=false,heldId=0,heldValue=null;
 for(let serial=1;;serial++){
   const command=__rt.need(serial,commandKind);
   const op=__rt.nth(command,0), id=__rt.nth(command,1), input=__rt.nth(command,2);
   globalThis.__lightFailure=null;
   try {
+    if(held){values.set(heldId,heldValue);held=false;heldValue=null;}
     let result;
     if(op===0) result=(0,eval)(input);
     else if(op===1) result=input;
     else if(op===2){const args=[];for(let i=1;i<__rt.count(input);i++)args.push(values.get(__rt.nth(input,i)));result=values.get(__rt.nth(input,0))(...args);}
     else {values.delete(id);result=null;}
-    if(op!==3)values.set(id,result);
+    if(op!==3){held=true;heldId=id;heldValue=result;}
     globalThis.__lightResult=result;
   }catch(e){globalThis.__lightFailure=String(e);globalThis.__lightResult=null;}
 }

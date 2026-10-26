@@ -136,12 +136,44 @@ control. Both unwind saved frames, and a failed task's worker view is retired.
 Bridge depth/node limits and the evaluator's cancellation, poll budget and
 wall-clock deadline bound work. The session keeps imported nodes until teardown,
 so repeated imports trade memory retention for stable identity. The runtime
-automatically collects from allocation pressure. Aggregate native byte accounting
-is not yet provided: `--macro-memory-limit` does not cap native engine allocation.
-The engine's optional object-count admission limit is separate from bytes and is
-not used as a substitute for this compiler option. `BbpRuntime::new` is the one
-place the compilation's runtime is configured; it records `memory_limit`, and
-its `heap_policy` is where the limit will map to the engine's byte policy once
-that is public. Evaluators spawned later share that runtime and cannot reset it.
+automatically collects from allocation pressure.
+
+### Memory limit
+
+`--macro-memory-limit N` (default 64 MiB; `:macro-memory-limit` in a build) is
+the native runtime's one aggregate accounted-byte budget, shared by every task
+and worker of the compilation. `BbpRuntime::new` is the one place it reaches
+the engine: `heap_policy` maps it to `HeapPolicy::hard_limit_bytes` and builds
+the runtime with `Runtime::try_with_heap_policy`. Evaluators spawned later
+share that runtime and cannot reset its budget.
+
+What counts is the engine's managed heap (big-boy-pants-js
+`docs/architecture.md`, "Byte accounting"): the booted realm (about 1.15 MB
+accounted before anything runs; with the evaluator's boot code a macro task is
+roughly another 1.5 MB), objects, strings, native forms, saved continuations
+and retained native scratch, including garbage until a collection sweeps it.
+Executable code, the compiler's own data, Rust stacks and allocator overhead
+are outside it, so it is not a process RSS cap. A limit too small for the realm
+fails when the runtime is built, with the diagnostic "macro memory limit of N
+bytes cannot hold the native macro runtime's realm".
+
+Allocation pressure under the limit triggers collections automatically. An
+allocation that would still exceed it fails with the engine's catchable
+resource error, the primitive string `heap byte limit exceeded`: a macro that
+does not catch it fails its expansion with that message at the call site, and
+one that catches it and releases its data continues. The collection a denial
+requests runs before the handler releases anything, so the evaluator stores a
+command's value only after its next command arrives (nothing allocates between
+a macro's return and its task's park), and opens host scopes for imports and
+requests only after collecting while `Runtime::byte_starved` reports a denial
+not yet relieved. A producer's or initializer's failure message is charged
+when it fits and otherwise rooted uncharged, so waiting consumers always
+receive their outcome.
+
+Namespace stats report the runtime-wide accounting after each native call as
+`macro.gc.N.managed-bytes`, `peak-managed-bytes`, `live-bytes` (after the last
+collection), `admitted-bytes` (volume admitted during the call, by every
+task) and `byte-limit`, next to the existing collection, pause and live-object
+counters.
 Legacy-only unit tests still require the `quickjs` feature; the dedicated
 `bbp_macros` integration target above runs without it.

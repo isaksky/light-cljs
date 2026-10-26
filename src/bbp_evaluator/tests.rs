@@ -36,47 +36,66 @@ fn two_real_consumers_share_one_helper_and_input_across_a_parked_collection() {
     );
 }
 
-/// Automatic collection under an aggregate object cap, with no forced
-/// collection: garbage produced by another task of the shared runtime while
-/// both consumers are parked must not disturb their saved frames or input.
-/// The engine's byte admission is private to the engine crate (see
-/// `heap_policy`), so this pressure is the public object cap and threshold.
-#[test]
-fn parked_consumers_survive_automatic_collection_under_an_object_cap() {
-    let options = EvaluatorOptions::default();
-    // The cap leaves room for two booted consumer tasks and little else.
-    let booted = BbpRuntime::new(&options).unwrap();
-    let evaluator = booted.evaluator().unwrap();
+fn churn(iterations: usize) -> String {
+    format!(
+        "rt => {{ let kept = null; for (let i = 0; i < {iterations}; i++) {{ kept = [i, {{v: i}}]; }} return kept[0]; }}"
+    )
+}
+
+/// The accounted bytes a runtime holds after a collection with three booted
+/// evaluators, and the bytes one iteration of [`churn`] admits, under the
+/// default memory limit.
+fn booted_and_churn_bytes() -> (usize, usize) {
+    let booted = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluators = (0..3)
+        .map(|_| booted.evaluator().unwrap())
+        .collect::<Vec<_>>();
     booted.0.runtime.collect().unwrap();
-    let boot_objects = booted.0.runtime.heap_stats().last_live_objects;
-    drop(evaluator);
-    drop(booted);
-    let cap = boot_objects * 4;
-    let policy = big_boy_pants_js::HeapPolicy {
-        allocation_threshold: Some(256),
-        hard_limit_objects: Some(cap),
+    let stats = booted.0.runtime.heap_stats();
+    let value = evaluators[0].evaluate_unit(&churn(1000)).unwrap();
+    evaluators[0].release(value).unwrap();
+    let admitted = booted.0.runtime.heap_stats().admitted_bytes_total - stats.admitted_bytes_total;
+    (stats.last_live_bytes, admitted.div_ceil(1000))
+}
+
+/// Automatic collection under the compilation's aggregate byte budget
+/// (`options.memory_limit`, mapped by `heap_policy`), with no forced
+/// collection: while both consumers are parked, another task of the shared
+/// runtime allocates several times the whole budget in garbage. Only
+/// automatic collections can admit it, and they must not disturb the parked
+/// consumers' saved frames, input identity or pre-wait effects.
+#[test]
+fn parked_consumers_survive_automatic_collection_under_the_memory_limit() {
+    // Room for the realm, the two consumers, the churning task, the helper
+    // and the garbage between two collections, and little else.
+    let (three, per_iteration) = booted_and_churn_bytes();
+    let options = EvaluatorOptions {
+        memory_limit: three + three / 2,
+        ..Default::default()
     };
-    let shared = BbpRuntime::with_heap_policy(&options, policy).unwrap();
-    let garbage = 20 * boot_objects;
+    let cap = options.memory_limit;
+    let shared = BbpRuntime::new(&options).unwrap();
+    assert_eq!(shared.0.runtime.heap_stats().byte_limit, Some(cap));
+    let iterations = 3 * cap / per_iteration;
     share_one_helper_while_parked(
         shared,
         Arc::new(move |shared: &BbpRuntime| {
-            let before = shared.0.runtime.heap_stats().collections;
-            let churn = shared.evaluator().unwrap();
-            let value = churn
-                .evaluate_unit(&format!(
-                    "rt => {{ let kept = null; for (let i = 0; i < {garbage}; i++) {{ kept = [i, {{v: i}}]; }} return kept[0]; }}"
-                ))
-                .unwrap();
-            churn.release(value).unwrap();
-            drop(churn);
+            let before = shared.0.runtime.heap_stats();
+            let churner = shared.evaluator().unwrap();
+            let value = churner.evaluate_unit(&churn(iterations)).unwrap();
+            churner.release(value).unwrap();
+            drop(churner);
             let after = shared.0.runtime.heap_stats();
             assert!(
-                after.collections >= before + 2,
-                "{} automatic collections while parked",
-                after.collections - before
+                after.admitted_bytes_total - before.admitted_bytes_total >= 2 * cap,
+                "the churn must outgrow the budget: {after:?}"
             );
-            assert!(after.objects <= cap, "{after:?}");
+            assert!(
+                after.collections >= before.collections + 2,
+                "{} automatic collections while parked",
+                after.collections - before.collections
+            );
+            assert!(after.peak_managed_bytes <= cap, "{after:?}");
         }),
     );
 }
@@ -413,7 +432,22 @@ fn falsy_initializer_failures_are_shared_without_repeating_effects() {
 
 #[test]
 fn cancelling_one_parked_consumer_keeps_the_shared_producer_and_peer_alive() {
-    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    cancel_one_parked_consumer(EvaluatorOptions::default());
+}
+
+/// The same cancellation with the realm, three tasks and little else
+/// fitting the memory limit.
+#[test]
+fn cancelling_one_parked_consumer_under_a_tight_memory_limit() {
+    let (three, _) = booted_and_churn_bytes();
+    cancel_one_parked_consumer(EvaluatorOptions {
+        memory_limit: three + three / 2,
+        ..Default::default()
+    });
+}
+
+fn cancel_one_parked_consumer(options: EvaluatorOptions) {
+    let shared = BbpRuntime::new(&options).unwrap();
     let waiting = Arc::new((Mutex::new(Vec::<Task>::new()), Condvar::new()));
     let observed = waiting.clone();
     shared.on_wait(Arc::new(move |task, key| {
@@ -494,6 +528,13 @@ fn cancelling_one_parked_consumer_keeps_the_shared_producer_and_peer_alive() {
     );
     assert_eq!(shared.helper_counts().compiled, 1);
     assert_eq!(shared.0.counters.cleanups.load(Ordering::Relaxed), 2);
+    // Both workers and the cancellation ran under the memory limit.
+    let stats = shared.0.runtime.heap_stats();
+    assert_eq!(stats.byte_limit, Some(options.memory_limit));
+    assert!(
+        stats.peak_managed_bytes <= options.memory_limit,
+        "{stats:?}"
+    );
 }
 
 #[test]
@@ -666,4 +707,37 @@ fn abandoned_handoff_invalidates_its_queued_step_before_task_cleanup() {
     assert_eq!(shared.helper_counts().steps, before);
     assert!(evaluator.run().unwrap_err().0.contains("cancelled"));
     assert!(shared.0.control.poll().is_ok());
+}
+
+/// A task that outgrows `options.memory_limit` observes the engine's
+/// catchable denial; once it drops what it retained, the same task and a
+/// fresh one of the runtime allocate again within the same budget.
+#[test]
+fn memory_limit_denial_is_catchable_and_the_runtime_recovers() {
+    let options = EvaluatorOptions {
+        memory_limit: 16 << 20,
+        ..Default::default()
+    };
+    let shared = BbpRuntime::new(&options).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let hog = "rt => { let kept = [], n = 0; try { for (;;) kept.push({v: kept.length}); } catch (e) { n = kept.length; kept = null; return e === 'heap byte limit exceeded' ? n : -1; } }";
+    for _ in 0..2 {
+        let value = evaluator.evaluate_unit(hog).unwrap();
+        let retained = evaluator.values.borrow()[&value.index].view();
+        assert!(
+            matches!(retained, ValueView::Number(n) if n > 1000.0),
+            "{retained:?}"
+        );
+    }
+    let peer = shared.evaluator().unwrap();
+    let value = peer.evaluate_unit(&churn(1000)).unwrap();
+    assert!(matches!(
+        peer.values.borrow()[&value.index].view(),
+        ValueView::Number(999.0)
+    ));
+    let stats = shared.0.runtime.heap_stats();
+    assert!(
+        stats.peak_managed_bytes <= options.memory_limit,
+        "{stats:?}"
+    );
 }

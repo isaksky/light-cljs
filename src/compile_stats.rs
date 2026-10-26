@@ -33,6 +33,17 @@ pub struct NativeBridgeCall {
     /// Runtime high-water pause through this call, not a per-call delta.
     pub gc_pause_max_nanos: u128,
     pub gc_live_objects: usize,
+    /// Accounted bytes under the memory limit after this call, runtime-wide
+    /// and including unswept garbage (docs/native-macros.md, "Memory limit").
+    pub gc_managed_bytes: usize,
+    /// Runtime high-water accounted bytes through this call.
+    pub gc_peak_managed_bytes: usize,
+    /// Accounted bytes left after the runtime's last collection.
+    pub gc_live_bytes: usize,
+    /// Bytes admitted during this call, by every task of the runtime.
+    pub gc_admitted_bytes: usize,
+    /// The runtime's accounted-byte limit; 0 when it has none.
+    pub gc_byte_limit: usize,
     pub helper_compiled: usize,
     pub helper_published: usize,
     pub helper_per_task: usize,
@@ -562,6 +573,22 @@ impl CompileStats {
                 &call.gc_pause_max_nanos,
             );
             line(&format!("macro.gc.{i}.live-objects"), &call.gc_live_objects);
+            if call.gc_byte_limit > 0 {
+                line(
+                    &format!("macro.gc.{i}.managed-bytes"),
+                    &call.gc_managed_bytes,
+                );
+                line(
+                    &format!("macro.gc.{i}.peak-managed-bytes"),
+                    &call.gc_peak_managed_bytes,
+                );
+                line(&format!("macro.gc.{i}.live-bytes"), &call.gc_live_bytes);
+                line(
+                    &format!("macro.gc.{i}.admitted-bytes"),
+                    &call.gc_admitted_bytes,
+                );
+                line(&format!("macro.gc.{i}.byte-limit"), &call.gc_byte_limit);
+            }
             line(
                 &format!("macro.helpers.{i}.compiled"),
                 &call.helper_compiled,
@@ -772,6 +799,24 @@ mod tests {
         };
         let report = stats.report();
         assert!(report.contains("\nmacro.gc.0.collections 3\nmacro.gc.0.pause-total-ns 40\nmacro.gc.0.pause-max-ns 20\nmacro.gc.0.live-objects 100\n"), "{report}");
+        assert!(!report.contains("macro.gc.0.managed-bytes"), "{report}");
+    }
+
+    #[test]
+    fn report_includes_native_byte_accounting_under_a_memory_limit() {
+        let stats = CompileStats {
+            native_macro_calls: vec![NativeBridgeCall {
+                gc_managed_bytes: 5,
+                gc_peak_managed_bytes: 7,
+                gc_live_bytes: 3,
+                gc_admitted_bytes: 11,
+                gc_byte_limit: 64,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let report = stats.report();
+        assert!(report.contains("\nmacro.gc.0.live-objects 0\nmacro.gc.0.managed-bytes 5\nmacro.gc.0.peak-managed-bytes 7\nmacro.gc.0.live-bytes 3\nmacro.gc.0.admitted-bytes 11\nmacro.gc.0.byte-limit 64\n"), "{report}");
     }
 
     #[test]

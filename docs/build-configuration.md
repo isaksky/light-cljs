@@ -445,7 +445,7 @@ only in the file, the commands and messages.
 | `:macro-expansions` | positive integer | 1024 |
 | `:macro-nodes` | positive integer | 100000 |
 | `:macro-timeout-ms` | positive integer | 10000 |
-| `:macro-memory-limit` | positive integer, bytes; one budget for all isolates under `:compile-threads` (compiler-concurrency.md, "Memory is one budget") | 67108864 |
+| `:macro-memory-limit` | positive integer, bytes; one budget for all isolates under `:compile-threads` (compiler-concurrency.md, "Memory is one budget"); with native macros, the shared runtime's accounted managed-heap cap, not an RSS cap (native-macros.md, "Memory limit") | 67108864 |
 | `:macro-poll-budget` | positive integer | 1000000 |
 
 Shadow-cljs's other compiler options (`:infer-externs`, `:externs`,
