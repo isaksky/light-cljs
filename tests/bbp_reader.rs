@@ -424,6 +424,54 @@ fn native_promise_object_extension_remains_explicit() {
 }
 
 #[test]
+fn native_promise_object_extension_is_atomic() {
+    let source = r##"
+        (defprotocol P (show [x] [x suffix]))
+        (defprotocol Q (fresh [x]))
+        (extend-protocol P default
+          (show ([x] :fallback) ([x suffix] [:fallback suffix])))
+        (extend-type js/Promise
+          IPrintWithWriter (-pr-writer [_ writer opts] (-write writer "#<before>")))
+        (defmacro probe []
+          (let [p (js/Promise.resolve 42)
+                snapshot (fn [] [(show p) (show p :arg)
+                                 (satisfies? P p) (implements? P p)
+                                 (try (fresh p) (catch :default e :missing))
+                                 (satisfies? Q p) (implements? Q p)
+                                 (pr-str p)])
+                before (snapshot)
+                result (try
+                         (extend-type js/Promise
+                           P (show ([_] :promise) ([_ suffix] [:promise suffix]))
+                           Q (fresh [_] :new)
+                           IPrintWithWriter (-pr-writer [_ writer opts] (-write writer "#<after>"))
+                           Object (value [_] 7))
+                         :accepted
+                         (catch :default e (.-message e)))]
+            (extend-type string Q (fresh [_] :string))
+            (list 'quote [before result (snapshot)])))
+        (js/console.log (pr-str (probe)))"##;
+    // The successful extension of another type invalidates cached dispatch
+    // tables, so entries leaked before the rejection cannot stay hidden.
+    let before = "[:fallback [:fallback :arg] true false :missing false false \"#<before>\"]";
+    let native = expand(source, true).unwrap();
+    assert_eq!(
+        output(&native),
+        format!("[{before} \"unsupported operation: native Promise Object extension\" {before}]\n")
+    );
+    #[cfg(feature = "quickjs")]
+    {
+        // Legacy QuickJS accepts Object methods on Promise. The same source
+        // must start with the same dispatch and install every new method.
+        let after = "[:promise [:promise :arg] true true :new true true \"#<after>\"]";
+        assert_eq!(
+            output(&expand(source, false).unwrap()),
+            format!("[{before} :accepted {after}]\n")
+        );
+    }
+}
+
+#[test]
 fn native_promise_printer_extension_matches_quickjs() {
     // The promesa printer that app.main demands while initializing unrelated
     // Transit declarations. Installing it must also change actual dispatch.
