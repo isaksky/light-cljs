@@ -62,12 +62,49 @@ engine source, and includes preloaded helper source.
 ## Supported boundary
 
 This is a finite-form integration, not backend parity. Lists, vectors, maps,
-keywords, symbols, scalar occurrences, metadata, construction, lookup, basic
-finite sequence operations, equality, arithmetic addition/subtraction and native
-truth tests have first-party implementations using native form intrinsics.
-`seq` returns native lists for vectors, map entries (two-element vectors), and
-strings (UTF-16 code units), preserves nonempty lists, and returns nil for nil or
-empty supported inputs. Other input kinds report an unsupported-operation error.
+sets, keywords, symbols, scalar occurrences, metadata, construction, lookup,
+basic finite sequence operations, equality, hashing, arithmetic
+addition/subtraction and native truth tests have first-party implementations
+using native form intrinsics. `seq` returns native lists for vectors, map
+entries (two-element vectors), set members and strings (UTF-16 code units),
+preserves nonempty lists, and returns nil for nil or empty supported inputs.
+Other input kinds report an unsupported-operation error.
+
+### Native core lowering
+
+The backend selects a compile-time emission mode (part of its cache identity)
+in which macro units do not use the JavaScript collection implementations.
+Vector, list, map and set literals, quoted keywords and symbols, and empty
+collections are the engine's `__rt.formVector(…)`, `formList`, `formMap`,
+`formSet`, `formKeyword` and `formSymbol` constructors. Calls of `count`,
+`seq`, `sequence`, `first`, `second`, `rest`, `next`, `cons`, `concat`, `nth`,
+`get` (and keyword invocation), `contains?`, `assoc`, `dissoc`, `conj` and
+`disj` with one key or value, `=` of two values, `hash`, `meta`, `with-meta`,
+`keyword?`, `symbol?`, `vector?`, `map?`, `set?`, `seq?`, `nil?`, `not`,
+`boolean`, `empty?`, and `vector`, `list` and `hash-set` with any arguments
+are the engine's `__rt.clj*` intrinsics (big-boy-pants-js
+`src/collections/clj.rs`): Rust, nil-punning, transparent to input
+occurrences. Truth tests are `__rt.cljTruth`. Other arities, core functions
+used as values (`(map first xs)`) and the remaining operations call the
+runtime object, whose entries use the same intrinsics. `rest` and `next` copy
+the remaining elements into a new list; there are no shared seq views.
+
+Lowering is what lets helper values publish: a function whose body uses only
+lowered operations, literals and other compiler roots captures no task-owned
+runtime object, so its initializer's value is published once and every task
+shares it (`native.helpers.published`), instead of initializing again in each
+consuming task (`native.helpers.per-task`). A function that still reads the
+runtime object (a non-lowered core function, a variadic parameter list) stays
+per-task. Sorted maps and sets, transients, records, lazy sequences, ranges and
+other user types remain JavaScript-only and report an unsupported-operation
+error inside a macro.
+
+Map and set elements that a macro constructs export in the engine's trie order,
+which can differ from the order the legacy engines' array maps keep; inputs
+returned unchanged keep their exact original form. `concat` returns a list
+where the legacy engines return a lazy sequence that their bridge exports with
+an explicit `nil` metadata wrapper. A set literal with non-constant members
+rejects equal members with `Duplicate key`, without the member's printed form.
 Plain JavaScript functions and ordinary interop such as `Math.max` run in the same task.
 Direct JavaScript calls, constructors, method calls, instance checks,
 property/index access and property assignment unwrap imported scalar occurrences. For example,
@@ -85,7 +122,7 @@ and multi-arity source macros work, including syntax quote/unquote and splicing.
 Macros can emit protocol/type declarations for the application; declaration
 registration retains preloaded helpers and reports unsupported demand for any
 other product. Executing user protocols/types inside a macro remains unsupported.
-Lazy sequences, sets, compiler literals, dynamic reader services, compiler build
+Lazy sequences, compiler literals, dynamic reader services, compiler build
 services and generated-symbol services are not implemented. Native
 symbol/keyword component spellings must
 round-trip unambiguously, as described in the engine's native form contract.

@@ -456,10 +456,16 @@ the provenance of the occurrence a macro returns unchanged. Forms are
 `Persistent` for publication (elements, keys, values and metadata are walked,
 with `[i]`, `{:key}` and `.meta` path steps) and traced as `FormEdges`.
 Rust builds and reads them through `Scope::new_keyword` … `Scope::form_value`;
-JavaScript through `__rt.form*`. Sets, sorted maps, lazy and seq views, records,
-user `IEquiv`/`IHash`, and the compiler `Datum` bridge (light-cljs-462) are not
-part of this surface. The module docs carry a runnable example. Tests:
-`tests/forms.rs`, `collections::form::tests`, `form_edges_retain`/`form_edges_reclaim`.
+JavaScript through `__rt.form*`. Sets (light-cljs-477) are a sixth kind with
+structural members, the runtime's `hashUnorderedColl` hash and `__rt.formSet`/
+`formDisj`. The `__rt.clj*` selectors of the same `form_op` instruction
+(`crate::collections::clj`) are ClojureScript core operations for compiled
+macro code: occurrence-transparent, `nil`-punning, sequences as new lists, and
+catchable `TypeError`/`RangeError` diagnostics for unsupported operands.
+Sorted maps, lazy and shared seq views, records, user `IEquiv`/`IHash`, and the
+compiler `Datum` bridge (light-cljs-462) are not part of this surface. The module
+docs carry a runnable example. Tests: `tests/forms.rs`, `collections::form::tests`,
+`collections::clj::tests`, `form_edges_retain`/`form_edges_reclaim`.
 
 ## Atomic references
 

@@ -73,6 +73,9 @@
 //! * Maps are equal with the same count and, for every entry of one, an
 //!   equal key in the other mapping to an equal value; the hash is
 //!   `hashUnorderedColl` of the entries.
+//! * Sets are equal with the same count and an equal member in the other
+//!   for every member of one; the hash is `hashUnorderedColl` of the
+//!   members. A set never equals a map, list or vector.
 //! * Metadata never takes part: `with_meta` changes neither equality nor
 //!   hash.
 //! * Occurrences are transparent: an occurrence equals (and hashes as) the
@@ -196,13 +199,15 @@
 //!
 //! # Supported boundary
 //!
-//! Supported: the five kinds above, metadata, occurrences as elements and
-//! keys, the operations listed, and sequential list/vector equality. Not
+//! Supported: the six kinds above, metadata, occurrences as elements and
+//! keys, the operations listed, sequential list/vector equality, and the
+//! ClojureScript core operations of [`crate::collections::clj`] (whose
+//! `rest` copies into a new list). Not
 //! supported (not claimed): keyword and symbol names whose spelling does
 //! not split back (rejected, see "Names"), and a runtime keyword whose
 //! stored spelling differs from its namespace and name (the runtime's
-//! one-argument `(keyword "a/b/c")`); sets, sorted maps, lazy sequences,
-//! seq views (`rest` and friends; a list is read by index), records and other
+//! one-argument `(keyword "a/b/c")`); sorted maps and sets, lazy sequences,
+//! shared seq views (a list is read by index), records and other
 //! user-defined types, user hashing or equality (`IHash`/`IEquiv`),
 //! interned or cached keyword identity, characters as a separate kind (a
 //! character is a one-unit string; the reader distinction, like exact
@@ -232,8 +237,8 @@ pub enum FormKind {
 }
 
 impl FormKind {
-    /// The kind's ClojureScript name: `keyword`, `symbol`, `list`, `vector`
-    /// or `map` (the result of the `formKind` intrinsic).
+    /// The kind's ClojureScript name: `keyword`, `symbol`, `list`, `vector`,
+    /// `map` or `set` (the result of the `formKind` intrinsic).
     pub fn name(self) -> &'static str {
         match self {
             FormKind::Keyword => "keyword",
