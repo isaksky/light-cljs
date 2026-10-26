@@ -2174,6 +2174,22 @@ fn native_positional_literal_matrix_matches_legacy() {
             r#"(defrecord R [x]) (defmacro probe [] (let [r (map->R '{\a 1 :x 0 "a" 2 :z 3})] (list 'quote [(count r) (get r "a") (:x r) (vec (seq r))]))) (probe)"#,
         ),
         (
+            "lazy-key-equality",
+            r#"(defmacro probe [] (let [k (lazy-seq (throw (js/Error. "hashed lazy key"))) m (assoc '{\a 0 "a" 0} k 7) n (with-meta m {:tag true})] [(= m n) (= n m)])) (probe)"#,
+        ),
+        (
+            "entry-source-order",
+            r#"(defmacro probe [] (let [late (lazy-seq (throw (js/Error. "late entry"))) m (assoc '{\a 0 "a" 0 :late nil} :late late) n '{\a 1 "a" 1 :late [1]}] [(= m n) (= n m) (= (array-map :missing late) (apply hash-map [:other [1]])) (= (apply hash-map [:other [1]]) (array-map :missing late))])) (probe)"#,
+        ),
+        (
+            "mixed-representation-equality",
+            r#"(defmacro probe [] (let [a '#{0 0.0} b (set [0 2147483647]) p (array-map a :value) h (apply hash-map [b :value]) q (array-map b :value) j (apply hash-map [a :value])] [(= a b) (= b a) (= p h) (= h p) (= q j) (= j q) (= '#{1 1.0} (set [1 2])) (= (set [1 2]) '#{1 1.0}) (= '{:b 2 :a 1} (apply hash-map [:a 1 :b 2])) (= (apply hash-map [:a 1 :b 2]) '{:b 2 :a 1})])) (probe)"#,
+        ),
+        (
+            "identity-user-keys",
+            r#"(def events (atom [])) (deftype K [] IHash (-hash [_] (swap! events conj :hash) 17) IEquiv (-equiv [this other] (swap! events conj :equal) (identical? this other))) (defmacro probe [] (let [k (K.) m (assoc '{} k 7) s (conj '#{} k)] (reset! events []) [(get m k) (contains? m k) (identical? k (get s k :missing)) (contains? s k) (= m (with-meta m {:tag true})) (count @events)])) (probe)"#,
+        ),
+        (
             "bridge",
             r#"(defmacro probe [m s] (list 'quote [(count m) (get m "a") (vec (seq m)) (count s) (vec (seq s)) (get (assoc m "a" 9) "a") (vec (seq (disj s 1)))])) (probe {\a 1 "a" 2} #{1 1.0})"#,
         ),

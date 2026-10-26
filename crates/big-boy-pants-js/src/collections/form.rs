@@ -108,7 +108,7 @@
 //! Equality decides each distinct pair of form objects once, so its work is
 //! linear in the distinct pairs it compares and their children; a map
 //! entry whose full hash `c` keys of the other map share tries up to `c`
-//! candidates (backtracking past unequal ones) instead of one. A lookup
+//! candidates (stopping at the first equal key) instead of one. A lookup
 //! compares the probe with each stored key of its full hash in turn.
 //! User `IEquiv`/`IHash` implementations and protocols are outside this
 //! contract and never enter engine bookkeeping.
@@ -479,21 +479,6 @@ impl FormMap {
         let mut out = Vec::with_capacity(self.len());
         self.for_each(|k, v| out.push((k.clone(), v.clone())));
         out
-    }
-
-    fn for_each_hashed(&self, heap: &Heap, mut f: impl FnMut(u64, &Value, &Value)) {
-        match self {
-            Self::Hashed(map) => map.for_each_hashed(f),
-            Self::Positional(_) => self.for_each(|k, v| f(trie_hash(hash(heap, k)), k, v)),
-        }
-    }
-
-    fn entries_with_hash(&self, h: u64) -> Vec<(Value, Value)> {
-        match self {
-            Self::Hashed(map) => map.entries_with_hash(h),
-            // Array-map lookup compares keys without consulting their hash.
-            Self::Positional(_) => self.to_vec(),
-        }
     }
 }
 
@@ -1809,13 +1794,11 @@ fn seq_split(heap: &Heap, mut c: SeqCursor) -> Split {
 ///
 /// An explicit-stack goal machine: no recursion on the native stack, so
 /// depth is bounded only by memory. A pair of forms expands into an
-/// *all-of* goal over its children: element pairs, or for each entry of
-/// one map the entries of the other with the same stored full hash. One
-/// such candidate is the only possible match (the other map's keys are
-/// pairwise unequal and equal keys hash alike), so its key and value pairs
-/// join the all-of goal; several candidates (distinct keys sharing a full
-/// hash) become a *one-of* goal that tries each candidate's key and value
-/// pairs in turn, backtracking past a failed candidate.
+/// *all-of* goal over its children: element pairs, or a first-match lookup
+/// for each map entry or set member, in traversal order. Hashed lookups
+/// consider only the stored full hash's candidates. Positional lookups
+/// share the destination's persistent operand vector and advance an index,
+/// without hashing the query or copying the candidate entries.
 ///
 /// The result of every expanded pair of form identities is recorded,
 /// equal or unequal, and reused when the pair is met again (persistent
@@ -1828,11 +1811,10 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
     /// One thing to establish inside an all-of goal.
     enum Step {
         Pair(Value, Value),
-        /// Candidate (key pair, value pair) alternatives for one entry.
-        OneOf(Vec<[(Value, Value); 2]>),
-        /// Array-map lookup stops at the first equal key, even when its
-        /// value differs. Keep key comparison on this explicit work stack.
-        Lookup(Value, Option<Value>, bool, Vec<(Value, Value)>),
+        /// Lookup stops at the first equal key, even when its value differs.
+        /// A source trie already knows the query's hash; a positional source
+        /// computes it only when this step runs and the destination needs it.
+        Lookup(Value, Option<Value>, bool, FormMap, Option<u64>),
         /// The rest of two sequences, compared element by element so that
         /// an unequal element ends the comparison before a tail is
         /// realized (light-cljs-479).
@@ -1842,18 +1824,33 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
     /// sequences cycle and are equal so far. Per comparison, so a failed
     /// alternative leaves nothing behind.
     type Positions = std::rc::Rc<std::cell::RefCell<HashSet<(SeqState, SeqState)>>>;
+    enum Candidates {
+        Positional(PVector, usize),
+        Hashed(std::vec::IntoIter<(Value, Value)>),
+    }
+    impl Candidates {
+        fn next(&mut self) -> Option<(Value, Value)> {
+            match self {
+                Self::Positional(pairs, index) => {
+                    let key = pairs.get(*index)?;
+                    let value = pairs.get(*index + 1).unwrap();
+                    *index += 2;
+                    Some((key, value))
+                }
+                Self::Hashed(entries) => entries.next(),
+            }
+        }
+    }
     enum Frame {
         /// Every step must hold; `memo` is the form pair it decides.
         All {
             memo: Option<(ObjectId, ObjectId)>,
             pending: Vec<Step>,
         },
-        /// One alternative must hold.
-        Any(Vec<[(Value, Value); 2]>),
         Lookup {
             key: Value,
             value: Option<Value>,
-            candidates: Vec<(Value, Value)>,
+            candidates: Candidates,
             found: Option<Value>,
             checking_value: bool,
             reverse_value: bool,
@@ -1862,10 +1859,28 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
     /// What comparing one pair yields.
     enum Outcome {
         Decided(bool),
-        /// The form pair is unequal, found after reading its entries.
-        Refuted((ObjectId, ObjectId)),
         Expand((ObjectId, ObjectId), Vec<Step>),
     }
+    let map_steps = |p: &FormMap, q: &FormMap, values: bool| {
+        let mut steps = Vec::with_capacity(p.len());
+        let mut entry = |h, k: &Value, v: &Value| {
+            steps.push(Step::Lookup(
+                k.clone(),
+                values.then(|| v.clone()),
+                !p.positional(),
+                q.clone(),
+                h,
+            ));
+        };
+        match p {
+            FormMap::Hashed(map) => map.for_each_hashed(|h, k, v| entry(Some(h), k, v)),
+            FormMap::Positional(_) => p.for_each(|k, v| entry(None, k, v)),
+        }
+        // All-of goals pop last-first; lookup and value comparison must
+        // short-circuit in the source's traversal order.
+        steps.reverse();
+        steps
+    };
     let mut equal: HashSet<(ObjectId, ObjectId)> = HashSet::new();
     let mut unequal: HashSet<(ObjectId, ObjectId)> = HashSet::new();
     // Pairs being expanded: met again inside their own expansion (only
@@ -1932,76 +1947,13 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                 if p.len() != q.len() {
                     return Outcome::Decided(false);
                 }
-                let mut members = Vec::with_capacity(p.len());
-                p.for_each_hashed(heap, |h, k, _| members.push((h, k.clone())));
-                let mut steps = Vec::with_capacity(members.len());
-                for (h, k) in members {
-                    let mut candidates = q.entries_with_hash(h);
-                    if q.positional() {
-                        candidates.reverse();
-                        steps.push(Step::Lookup(k, None, false, candidates));
-                        continue;
-                    }
-                    match candidates.len() {
-                        0 => return Outcome::Refuted((ia, ib)),
-                        1 => steps.push(Step::Pair(k, candidates.pop().unwrap().0)),
-                        // A member pair with a trivially equal "value" pair.
-                        _ => steps.push(Step::OneOf(
-                            candidates
-                                .into_iter()
-                                .rev()
-                                .map(|(qk, _)| [(k.clone(), qk), (Value::Null, Value::Null)])
-                                .collect(),
-                        )),
-                    }
-                }
-                Outcome::Expand((ia, ib), steps)
+                Outcome::Expand((ia, ib), map_steps(p, q, false))
             }
             (FormBody::Map(p), FormBody::Map(q)) => {
                 if p.len() != q.len() {
                     return Outcome::Decided(false);
                 }
-                let mut entries = Vec::with_capacity(p.len());
-                p.for_each_hashed(heap, |h, k, v| entries.push((h, k.clone(), v.clone())));
-                let mut steps = Vec::with_capacity(2 * entries.len());
-                for (h, k, v) in entries {
-                    let mut candidates = q.entries_with_hash(h);
-                    if q.positional() {
-                        candidates.reverse();
-                        steps.push(Step::Lookup(k, Some(v), !p.positional(), candidates));
-                        continue;
-                    }
-                    match candidates.len() {
-                        0 => return Outcome::Refuted((ia, ib)),
-                        1 => {
-                            let (qk, qv) = candidates.pop().unwrap();
-                            // Popped last-first: the (cheaper) value first.
-                            steps.push(Step::Pair(k, qk));
-                            steps.push(if p.positional() {
-                                Step::Pair(v, qv)
-                            } else {
-                                Step::Pair(qv, v)
-                            });
-                        }
-                        _ => steps.push(Step::OneOf(
-                            candidates
-                                .into_iter()
-                                .rev()
-                                .map(|(qk, qv)| {
-                                    [
-                                        (k.clone(), qk),
-                                        if p.positional() {
-                                            (v.clone(), qv)
-                                        } else {
-                                            (qv, v.clone())
-                                        },
-                                    ]
-                                })
-                                .collect(),
-                        )),
-                    }
-                }
-                Outcome::Expand((ia, ib), steps)
+                Outcome::Expand((ia, ib), map_steps(p, q, true))
             }
             // Records of the same type with equal fields and extension
             // entries; a deftype only to itself (decided above).
@@ -2017,52 +1969,15 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                 if pe.len() != qe.len() {
                     return Outcome::Decided(false);
                 }
-                let mut steps: Vec<Step> = p
-                    .fields
-                    .to_vec()
-                    .into_iter()
-                    .zip(q.fields.to_vec())
-                    .rev()
-                    .map(|(a, b)| Step::Pair(a, b))
-                    .collect();
-                let mut entries = Vec::with_capacity(pe.len());
-                pe.for_each_hashed(heap, |h, k, v| entries.push((h, k.clone(), v.clone())));
-                for (h, k, v) in entries {
-                    let mut candidates = qe.entries_with_hash(h);
-                    if qe.positional() {
-                        candidates.reverse();
-                        steps.push(Step::Lookup(k, Some(v), !pe.positional(), candidates));
-                        continue;
-                    }
-                    match candidates.len() {
-                        0 => return Outcome::Refuted((ia, ib)),
-                        1 => {
-                            let (qk, qv) = candidates.pop().unwrap();
-                            steps.push(Step::Pair(k, qk));
-                            steps.push(if pe.positional() {
-                                Step::Pair(v, qv)
-                            } else {
-                                Step::Pair(qv, v)
-                            });
-                        }
-                        _ => steps.push(Step::OneOf(
-                            candidates
-                                .into_iter()
-                                .rev()
-                                .map(|(qk, qv)| {
-                                    [
-                                        (k.clone(), qk),
-                                        if pe.positional() {
-                                            (v.clone(), qv)
-                                        } else {
-                                            (qv, v.clone())
-                                        },
-                                    ]
-                                })
-                                .collect(),
-                        )),
-                    }
-                }
+                let mut steps = map_steps(pe, qe, true);
+                steps.extend(
+                    p.fields
+                        .to_vec()
+                        .into_iter()
+                        .zip(q.fields.to_vec())
+                        .rev()
+                        .map(|(a, b)| Step::Pair(a, b)),
+                );
                 Outcome::Expand((ia, ib), steps)
             }
             _ => Outcome::Decided(false),
@@ -2093,10 +2008,6 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                     Some(Step::Pair(a, b)) => match compare(a, b, &equal, &unequal, &active) {
                         Outcome::Decided(true) => {}
                         Outcome::Decided(false) => returned = Some(false),
-                        Outcome::Refuted(pair) => {
-                            unequal.insert(pair);
-                            returned = Some(false);
-                        }
                         Outcome::Expand(pair, steps) => {
                             active.insert(pair);
                             frames.push(Frame::All {
@@ -2105,8 +2016,16 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                             });
                         }
                     },
-                    Some(Step::OneOf(alternatives)) => frames.push(Frame::Any(alternatives)),
-                    Some(Step::Lookup(key, value, reverse_value, candidates)) => {
+                    Some(Step::Lookup(key, value, reverse_value, target, h)) => {
+                        let candidates = match target {
+                            FormMap::Positional(pairs) => Candidates::Positional(pairs, 0),
+                            FormMap::Hashed(map) => Candidates::Hashed(
+                                map.entries_with_hash(
+                                    h.unwrap_or_else(|| trie_hash(hash(heap, &key))),
+                                )
+                                .into_iter(),
+                            ),
+                        };
                         frames.push(Frame::Lookup {
                             key,
                             value,
@@ -2158,7 +2077,7 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                         frames.pop();
                         returned = Some(true);
                     }
-                } else if let Some((other, candidate_value)) = candidates.pop() {
+                } else if let Some((other, candidate_value)) = candidates.next() {
                     *found = Some(candidate_value);
                     let key = key.clone();
                     frames.push(Frame::All {
@@ -2170,22 +2089,6 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                     returned = Some(false);
                 }
             }
-            Frame::Any(alternatives) => match returned.take() {
-                Some(true) => {
-                    frames.pop();
-                    returned = Some(true);
-                }
-                _ => match alternatives.pop() {
-                    Some([key, value]) => frames.push(Frame::All {
-                        memo: None,
-                        pending: vec![Step::Pair(key.0, key.1), Step::Pair(value.0, value.1)],
-                    }),
-                    None => {
-                        frames.pop();
-                        returned = Some(false);
-                    }
-                },
-            },
         }
     }
     returned.unwrap_or(true)
@@ -2660,6 +2563,52 @@ impl<'s> Scope<'s> {
 mod tests {
     use super::*;
 
+    // Count requested host bytes only during one comparison, on its thread.
+    // Persistent payloads are built before measurement, so copying their
+    // candidate entries would be visible here despite bypassing Heap's budget.
+    mod allocations {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            static BYTES: Cell<Option<usize>> = const { Cell::new(None) };
+        }
+
+        struct Counting;
+
+        #[global_allocator]
+        static GLOBAL: Counting = Counting;
+
+        // SAFETY: allocation and deallocation forward unchanged to System.
+        // The const thread-local counter never allocates or runs destructors.
+        unsafe impl GlobalAlloc for Counting {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                // SAFETY: the caller supplies a valid allocation layout.
+                let ptr = unsafe { System.alloc(layout) };
+                if !ptr.is_null() {
+                    let _ = BYTES.try_with(|bytes| {
+                        if let Some(n) = bytes.get() {
+                            bytes.set(Some(n + layout.size()));
+                        }
+                    });
+                }
+                ptr
+            }
+
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                // SAFETY: ptr and layout came from this allocator's System.
+                unsafe { System.dealloc(ptr, layout) };
+            }
+        }
+
+        pub fn during(f: impl FnOnce() -> bool) -> (bool, usize) {
+            BYTES.with(|bytes| bytes.set(Some(0)));
+            let result = f();
+            let bytes = BYTES.with(|bytes| bytes.replace(None).unwrap());
+            (result, bytes)
+        }
+    }
+
     fn n(x: f64) -> Value {
         Value::Number(x)
     }
@@ -2700,6 +2649,36 @@ mod tests {
         }
         assert!(equals(&heap, &a, &b));
         assert_eq!(hash(&heap, &a), hash(&heap, &b));
+    }
+
+    #[test]
+    fn positional_equality_auxiliary_storage_is_linear() {
+        let heap = Arc::new(Heap::default());
+        let _scope = Scope::new(&heap);
+        let meta = new_map(&heap, &[(s("tag"), n(1.0))]).unwrap();
+        for set in [false, true] {
+            let measure = |len| {
+                // Equal duplicates match the first candidate: the comparison
+                // itself is linear too, independently of positional scanning.
+                let value = if set {
+                    new_literal_set(&heap, &vec![n(0.0); len]).unwrap()
+                } else {
+                    new_literal_map(&heap, &vec![n(0.0); 2 * len]).unwrap()
+                };
+                let copy = with_meta(&heap, &value, &meta).unwrap();
+                assert!(!value.same_object(&copy));
+                let (equal, bytes) = allocations::during(|| equals(&heap, &value, &copy));
+                assert!(equal);
+                bytes
+            };
+            let small = measure(256);
+            let medium = measure(1024);
+            // A 4x input increase stays near 4x host allocation, rather than
+            // the 16x increase from per-query copies of all candidates.
+            assert!(medium <= 5 * small, "set={set}: {small} -> {medium}");
+            let large = measure(10_000);
+            assert!(large <= 1024 * 10_000, "set={set}: {large} host bytes");
+        }
     }
 
     #[test]

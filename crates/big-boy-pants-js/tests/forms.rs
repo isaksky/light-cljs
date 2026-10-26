@@ -285,6 +285,48 @@ fn map_to_record_preserves_positional_extensions() {
 }
 
 #[test]
+fn positional_equality_does_not_hash_lazy_keys() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function check() {
+        const key = __rt.lazySeq(() => { throw 'hashed lazy key'; });
+        const m = __rt.formLiteralMap(__rt.formVector('a', 1, 'a', 1, key, 2));
+        const s = __rt.formLiteralSet(__rt.formVector(1, 1, key));
+        const meta = __rt.formMap('tag', true);
+        const n = __rt.formWithMeta(m, meta), t = __rt.formWithMeta(s, meta);
+        return __rt.formEquals(m, n) && __rt.formEquals(n, m) &&
+            __rt.formEquals(s, t) && __rt.formEquals(t, s);
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
+fn positional_equality_short_circuits_in_source_order() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function check() {
+        const late = __rt.lazySeq(() => { throw 'compared late entry'; });
+        const m = __rt.formLiteralMap(__rt.formVector('a', 0, 'a', 0, 'late', late));
+        const n = __rt.formLiteralMap(__rt.formVector('a', 1, 'a', 1, 'late', __rt.formVector(1)));
+        const s = __rt.formLiteralSet(__rt.formVector(1, 1, late));
+        const t = __rt.formLiteralSet(__rt.formVector(2, 2, __rt.formVector(1)));
+        // An absent key must also short-circuit before its lazy value.
+        const missing = __rt.formLiteralMap(__rt.formVector('missing', late));
+        const other = __rt.formMap('other', __rt.formVector(1));
+        return !__rt.formEquals(m, n) && !__rt.formEquals(n, m) &&
+            !__rt.formEquals(s, t) && !__rt.formEquals(t, s) &&
+            !__rt.formEquals(missing, other) && !__rt.formEquals(other, missing);
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
 fn positional_forms_publish_and_trace_every_duplicate_and_metadata() {
     let rt = Runtime::new();
     let (root, weak) = rt.scope(|s| {
