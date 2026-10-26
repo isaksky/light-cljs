@@ -451,7 +451,11 @@ its first `/` (the reader's split; `AmbiguousName` otherwise), because the
 runtime compares names by spelling but hashes namespace and name, so
 `(keyword nil "a/b")` is `=` to `:a/b` with another hash. They reuse
 the vector trie and the HAMT storage (the trie operations take key hash and
-equality as parameters; the SameValueZero map API is unchanged). Equality and
+equality as parameters; the SameValueZero map API is unchanged). The `seq`,
+`rest` and `next` of a form list or vector (`src/collections/clj.rs`) are lists
+over the same trie with a hidden prefix (`PVector::drop_first`, light-cljs-502):
+O(1), no node allocated or charged, and the hidden elements are never read,
+traced, published or compared. Equality and
 the 32-bit hash are the light-cljs runtime's `=`/`hash` for these values: lists
 and vectors are sequentially equal, map keys are structural, metadata and
 provenance never take part, and the walks use explicit heap stacks (also across

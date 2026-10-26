@@ -286,6 +286,45 @@ nodes (`Node::drop_slow` 40) and `FormObject` bodies (14), and
 `mark_and_sweep` (19). Sharing the trie in `next` and `rest` instead of
 copying the remainder is light-cljs-502.
 
+#### Shared tails (light-cljs-502)
+
+`seq`, `rest` and `next` of a native vector or list now return a list over the
+same trie with a hidden prefix (`PVector::drop_first`): O(1), one list object
+and no trie node, so the `(loop [s (seq v)] … (recur (next s)))` walk is linear.
+
+October 26, 2026, same script and flags (five rounds), `before` = master
+`2d5ba2d9` (native-only, sha256 `454b7d82…`), `after` = this change on it
+(native-only, sha256 `0222c7b3…`), V8 from the shared cache
+(`LIGHT_CLJS_V8_CACHE=require`, sha256 `de4939d0…`); macOS aarch64, 24 CPUs,
+Rust 1.99.1, Node 24.22.1; peers mostly idle, one short `rustc` at the end
+(load averages 3.1–3.2 falling from 4.5). Analysis ms, median [min–max] of
+five:
+
+| `n` | V8 | before | after | k before | k after |
+| ---: | --- | --- | --- | ---: | ---: |
+| 0 | 24.3 [23.9–25.4] | 9.0 [8.9–9.3] | 9.0 [8.5–9.6] | – | – |
+| 100 | 29.4 [28.9–32.4] | 12.3 [12.0–13.2] | 12.0 [11.8–12.4] | 0.6 | 0.6 |
+| 400 | 36.1 [35.7–36.7] | 25.7 [25.3–26.5] | 23.1 [22.5–23.2] | 1.4 | 1.2 |
+
+k at n = 400 is 1.2. The engine's macro time grows 4.7x from n = 100 to 400
+(3.0 to 14.1 ms; before 5.1x, V8 2.3x; an earlier run at load 4.2 gave 4.8x
+and 5.1x), short of the ~4.5x aimed for. Part of that step is a threshold:
+at n = 400 the four calls make one collection (1.35 ms) and at n = 100 none;
+without it the growth is 4.3x. Past n = 400 the time is linear (three rounds,
+same binaries): 13.4, 50.4 and 103.6 ms of macro time at n = 400, 1,600 and
+3,200 (3.8x for 4x, then 2.1x for 2x; 3 and 7 collections), against V8's
+12.2, 31.5 and 56.2 ms (k 1.1, 1.6, 1.8). What remains of the 100-to-400
+step is not the walk; the light-cljs-498 analysis above attributes it to map
+path copies widening as second-level HAMT nodes fill (not re-measured here).
+
+At n = 3200 with sixteen `churn` calls (to get enough samples; 480 ms
+analysis, before: 1,071 ms), two `/usr/bin/sample` runs of 303 and 301
+samples have `clj::tail` in 3 and 4 (inclusive; before: 203 of 735, with
+`PVector::to_vec` 130 and `try_from_values` 91) and no `to_vec` or
+`try_from_values` under it. The top frames are now the interpreter
+(`execute_budgeted` 55 and 48 self), `memmove`, `Fault` drop glue, HAMT
+`Entry` copies and drops, and `mark_and_sweep` (26 and 37 inclusive).
+
 ## Protocols and types (light-cljs-478), October 26, 2026
 
 `bb benchmarks/native-macros-k.bb OUTPUT --workload protocol v8=BIN NAME=BIN`

@@ -101,8 +101,9 @@ explicitly (`(symbol (keyword "" "x"))`, the legacy runtimes' unqualified
 `/x`, too). A keyword converts to a symbol through its spelling, as in the
 legacy runtimes; invalid operands throw a plain `Error` with the legacy
 message.
-`rest` and `next` copy the remaining elements into a new list; there are no
-shared seq views. Lazy `map`, `filter` and friends are not implemented
+`seq`, `rest` and `next` of a vector or list return a list that shares its
+trie (light-cljs-502), so walking one with `next` is linear; those of a map,
+set or string copy the remaining elements into a new list. Lazy `map`, `filter` and friends are not implemented
 (light-cljs-479 owns lazy sequences), which still stops the generated
 benchmark project.
 
