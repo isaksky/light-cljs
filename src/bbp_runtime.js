@@ -31,9 +31,22 @@ const decl = (() => {
   // code runs outside any bundle is an overlay after every bundle's, in the
   // order run, visible at every frontier.
   let overlays = 0;
+  // A type's `Object` methods (`Object/m`, the emitter's munged member
+  // name) are tables too: one per fixed arity, and arity -1 for a variadic
+  // overload. `objectArities` holds each member's fixed arities.
+  const objectArities = new Map();
   const extend = (target, specs) => {
-    const key = keyOf(target), overlay = order === 0 ? ++overlays : 0;
-    for (const [name, arity, fn] of specs) methodTable(name, arity).entries.push({order, overlay, key, fn});
+    const key = keyOf(target), overlay = order === 0 ? ++overlays : 0, info = views.get(key);
+    for (const [name, arity, fn, , variadic] of specs) {
+      const object = name.startsWith('Object/');
+      const n = object && variadic != null ? -1 : arity;
+      methodTable(name, n).entries.push({order, overlay, key, fn});
+      if (!object) continue;
+      let arities = objectArities.get(name);
+      if (arities === undefined) objectArities.set(name, arities = new Set());
+      if (n >= 0) arities.add(n);
+      if (info !== undefined) objectMember(info, name.slice(7));
+    }
     version++;
     return null;
   };
@@ -133,28 +146,61 @@ const decl = (() => {
   const satisfies = (key, x) => resolve(methodTable(key, 0), x) != null;
   // `implements?`: the value's own type implements the protocol, not a
   // host-type or default extension.
+  // The key of a direct implementation for `x`: its struct type, a mutable
+  // type instance's type, or a core collection's native kind (`extend-type
+  // PersistentVector`); never a host tag or `default`.
+  const directKinds = new Set(['keyword', 'symbol', 'vector', 'map', 'set']);
+  const directKey = x => {
+    const ty = __rt.structTypeOf(x);
+    if (ty !== null) return ty;
+    const value = __rt.formValue(x), kind = __rt.formKind(value);
+    if (kind === 'list') return __rt.formCount(value) === 0 ? 'empty-list' : 'list';
+    if (kind !== null) return directKinds.has(kind) ? kind : null;
+    return value !== null && typeof value === 'object' ? value.__lightNativeType ?? null : null;
+  };
   const implementsDirectly = (key, x) => {
     const t = methodTable(key, 0);
     resolve(t, x);
-    let ty = __rt.structTypeOf(x);
-    if (ty === null && __rt.formKind(__rt.formValue(x)) === null && x !== null && typeof x === 'object') ty = x.__lightNativeType ?? null;
-    return ty !== null && __rt.getOr(t.map, ty, null) !== null;
+    const direct = directKey(x);
+    return direct !== null && __rt.getOr(t.map, direct, null) !== null;
   };
-  // A type's `Object` methods, as JavaScript methods taking the receiver.
-  const objectMethods = specs => specs.filter(([name]) => name.startsWith('Object/'))
-    .map(([name, , fn]) => [name.slice(7), fn]);
+  // A call of the `Object` method `member` on `x` (a struct or a mutable
+  // type's instance), resolved at the current frontier as the legacy
+  // runtimes' `installMethods` does: one fixed overload takes any call, else
+  // the overload of the call's arity, else the variadic one.
+  const objectCall = (member, x, args) => {
+    const name = 'Object/' + member;
+    declare(x);
+    let only = null, count = 0, exact = null;
+    for (const n of objectArities.get(name) ?? []) {
+      const m = lookup(methodTable(name, n), x);
+      if (m == null) continue;
+      count++; only = m;
+      if (n === args.length + 1) exact = m;
+    }
+    const rest = lookup(methodTable(name, -1), x);
+    const m = rest == null && count === 1 ? only : exact ?? rest;
+    if (m == null) throw new Error('Invalid arity: ' + args.length);
+    return m.call(x, x, ...args);
+  };
+  // `member`, an `Object` method of the type `info` describes from now on:
+  // a mutable type's instances inherit it, and struct views get it.
+  const objectMember = (info, member) => {
+    if (info.members.has(member)) return;
+    info.members.add(member);
+    if (info.mutable) info.view.prototype[member] = function (...a) { return objectCall(member, this, a); };
+  };
   // A type: a native struct type, or with a mutable field the constructor
   // of task-owned JavaScript instances. `view` constructs the JavaScript
   // object a struct's interop reads.
   const type = (fields, specs, view, mutable, ty) => {
-    const objects = objectMethods(specs);
-    views.set(ty, {view, fields, objects, record: __rt.formKind(__rt.structNew(ty)) === 'record'});
+    views.set(ty, {view, fields, members: new Set(), mutable, record: __rt.formKind(__rt.structNew(ty)) === 'record'});
+    if (mutable) {
+      view.__lightNativeType = ty;
+      view.prototype.__lightNativeType = ty;
+    }
     extend(ty, specs);
-    if (!mutable) return ty;
-    view.__lightNativeType = ty;
-    view.prototype.__lightNativeType = ty;
-    for (const [member, fn] of objects) view.prototype[member] = function (...a) { return fn.call(this, this, ...a); };
-    return view;
+    return mutable ? view : ty;
   };
   const viewOf = s => {
     declare(s);
@@ -163,7 +209,7 @@ const decl = (() => {
     const args = info.fields.map(f => __rt.structField(s, f));
     if (info.record) args.push(__rt.cljMeta(s), null, null);
     const v = new info.view(...args);
-    for (const [member, fn] of info.objects) v[member] = (...a) => fn.call(s, s, ...a);
+    for (const member of info.members) v[member] = (...a) => objectCall(member, s, a);
     return v;
   };
   const register = (names, indices, location, once, unit) => {

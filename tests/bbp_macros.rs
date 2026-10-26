@@ -1306,11 +1306,42 @@ const PROTOCOL_FIXTURES: &[(&str, &str)] = &[
          (defmacro m [] [(.value (T. 7)) (.value (U. 1))]) (js/console.log (pr-str (m)))",
         "[7 2]\n",
     ),
-    // `instance?` of struct types.
+    // `instance?` of struct types: records, a deftype with methods and a
+    // methodless one, directly, through an expression-valued class and
+    // through a saved `instance?`.
     (
-        "(deftype T []) (deftype U []) (defmacro m [] [(instance? T (T.)) (instance? U (T.))]) \
+        "(defprotocol P (p [x])) (defrecord R []) (deftype T [a] P (p [_] a)) (deftype U [b]) \
+         (defmacro m [] (let [i instance? c (if (= 1 (count [1])) T U)] [(instance? T (T. 1)) (instance? U (T. 1)) \
+         (instance? U (U. 1)) (instance? R (->R)) (instance? T (->R)) (instance? c (T. 1)) (instance? c (U. 1)) \
+         (i T (T. 1)) (i R (T. 1))])) (js/console.log (pr-str (m)))",
+        "[true false true true false true false true false]\n",
+    ),
+    // Object methods follow later extensions, inside a macro too, for
+    // struct and mutable instances.
+    (
+        "(deftype T [x] Object (f [_] 1)) (deftype U [^:mutable y] Object (f [_] 1)) \
+         (extend-type T Object (g [_] :g)) \
+         (defn install [] (extend-type T Object (f [_] 2)) (extend-type U Object (f [_] 2) (g [_] :u))) \
+         (defmacro m [] (let [a [(.f (T. 0)) (.f (U. 0)) (.g (T. 0))]] (install) [a (.f (T. 0)) (.f (U. 0)) (.g (U. 0))])) \
          (js/console.log (pr-str (m)))",
-        "[true false]\n",
+        "[[1 1 :g] 2 2 :u]\n",
+    ),
+    // Object method overloads by arity, and punctuated member names.
+    (
+        "(deftype T [a] Object (f [_] 1) (f [_ x] [a x]) (foo-bar [_] 7)) \
+         (deftype U [^:mutable a] Object (f [_] 1) (f [_ x] [a x]) (foo-bar [_] 8)) \
+         (defmacro m [] [(.f (T. 0)) (.f (T. 0) 5) (.f (U. 0)) (.f (U. 0) 5) (.foo-bar (T. 0)) (.foo-bar (U. 0))]) \
+         (js/console.log (pr-str (m)))",
+        "[1 [0 5] 1 [0 5] 7 8]\n",
+    ),
+    // `implements?` of extended core collection types.
+    (
+        "(defprotocol P (p [x])) (extend-type PersistentVector P (p [_] 1)) (extend-type EmptyList P (p [_] 2)) \
+         (extend-type Keyword P (p [_] 3)) (extend-protocol P string (p [_] 4)) \
+         (defmacro m [] [(implements? P []) (satisfies? P []) (implements? P '()) (satisfies? P '()) \
+         (implements? P '(1)) (satisfies? P '(1)) (implements? P :k) (implements? P \"s\") (satisfies? P \"s\")]) \
+         (js/console.log (pr-str (m)))",
+        "[true true true true false false true false true]\n",
     ),
     // An extension that macro code runs overrides the type's own.
     (

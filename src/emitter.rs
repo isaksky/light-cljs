@@ -6229,24 +6229,16 @@ impl<'a> Emitter<'a> {
     /// instances (light-cljs-478): one with a `^:mutable`,
     /// `^:unsynchronized-mutable` or `^:volatile-mutable` field, or a raw
     /// `deftype*` type, whose body may install prototype members.
-    fn mutable_type(
-        &self,
-        record: bool,
-        layout: &crate::analyzer::TypeLayout,
-        methods: &[(MethodDispatch, FnMethod)],
-    ) -> bool {
-        debug_assert!(
-            methods
-                .iter()
-                .all(|(_, m)| self.struct_fields(m.target) != layout.mutable)
-        );
+    fn mutable_type(record: bool, layout: &crate::analyzer::TypeLayout) -> bool {
         if layout.body.is_some() {
             return !record;
         }
         layout.mutable
     }
 
-    /// Whether no field of the method `target`'s type is mutable. A record's
+    /// Whether the method `target`'s type is a native struct type: not
+    /// [`Emitter::mutable_type`]. A field read with no type method target
+    /// reads a struct unless a field of `target` is mutable. A record's
     /// `^:mutable __hash` does not count: a native record caches its hash
     /// in an atomic, idempotent slot instead.
     fn struct_fields(&self, target: crate::analyzer::RecurTargetId) -> bool {
@@ -6255,6 +6247,20 @@ impl<'a> Emitter<'a> {
             .borrow_mut()
             .entry(target)
             .or_insert_with(|| {
+                let owner = self.program.exprs.iter().find_map(|expr| match &expr.kind {
+                    ExprKind::DefType {
+                        record,
+                        layout,
+                        methods,
+                        ..
+                    } if methods.iter().any(|(_, m)| m.target == target) => {
+                        Some(!Self::mutable_type(*record, layout))
+                    }
+                    _ => None,
+                });
+                if let Some(owner) = owner {
+                    return owner;
+                }
                 !self
                     .program
                     .field_bindings
@@ -6304,7 +6310,7 @@ impl<'a> Emitter<'a> {
             fields,
             ..
         } = layout;
-        let mutable = self.mutable_type(record, layout, methods);
+        let mutable = Self::mutable_type(record, layout);
         let wrapper = self.iife_open(id, true);
         self.output.push(' ');
         self.product(global);
@@ -6889,6 +6895,15 @@ impl<'a> Emitter<'a> {
                     {
                         self.keep_runtime(root);
                     }
+                    // The native runtime installs an `Object` method under
+                    // the member name interop reads (`(.foo-bar x)` reads
+                    // `foo_bar`), as the legacy `installMethods` munges it.
+                    let name = match name.strip_prefix("Object/") {
+                        Some(member) if self.native_forms => {
+                            format!("Object/{}", crate::analyzer::munge_js_member(member))
+                        }
+                        _ => name.clone(),
+                    };
                     self.string_units(&name.encode_utf16().collect::<Vec<_>>());
                     name == "IFn/-invoke"
                 }
