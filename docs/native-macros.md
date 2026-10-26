@@ -421,6 +421,40 @@ CARGO_BUILD_JOBS=3 cargo nextest run --locked --no-default-features --features q
   --test provenance --test v8_cache --no-fail-fast -j 8
 ```
 
+Review corrections at `38edd314` restore `src/js_runtime.js` exactly to
+`d83372e5`; native occurrence/callback adaptations are applied only when
+assembling the native parser. The unchanged size-ratchet test runs under
+QuickJS: every ceiling passes, with ordinary `none`/`prepare` output 871 bytes
+smaller than `10567070` (keyword-case 497,211 bytes; pure-defs at prepare
+498,176 bytes). Manifest regeneration leaves the runtime unchanged. The existing
+temporary runner under `target/` loads the original reader, map-reader,
+runtime-manifest, optimization and size-ratchet modules without copying their
+tests: 72 pass and one remains normally ignored. The full compiler target and
+QuickJS all-target Clippy still cannot read the same eight pinned research
+includes; no research files or symlinks were changed.
+
+On the same Rust/Node versions, the final native-only selection passes 123
+tests, including nine reader/Promise tests. The native-plus-QuickJS library,
+binary, macro, reader and Proxy targets pass all 422 tests, with one normally
+skipped test. QuickJS's available targets again
+pass 822 of 824 tests, with the same playground workspace-discovery and
+`ps` permission failures described above. The engine all-target suite passes
+2,123 tests at `f44ee730`; the subsequent map-conj traversal change is covered
+by all 29 form tests, seven Clojure collection unit tests and the expanded
+native/QuickJS reader table. All seven engine doctests pass. Both Penpot
+commands were rebuilt and rerun at `38edd314`, with the five absolute roots
+and budgets from the Penpot reproduction below: both exit 1 with the identical
+`core.reduceKv` diagnostic quoted above and tracked by light-cljs-518.
+
+Final native/native-plus-QuickJS scoped Clippy and engine all-target Clippy pass
+when allowing only the same three baseline categories above. Strict engine/native checks retain
+the same eight library/nine all-target engine diagnostics. QuickJS-only and
+engine-free library/binary checks pass strictly. Native-only all-target Clippy
+also reaches unavailable legacy evaluator methods in the compiler benchmark
+and `unused_enumerate_index` in `tests/execution.rs:1772`; those benchmark,
+execution and evaluator files are unchanged from `d83372e5`. Full V8/default
+validation remains with the orchestrator.
+
 ### Bootstrap macro audit (light-cljs-509, 2026-10-26)
 
 The native branch of `compiler_bootstrap::build_in` keeps an empty bootstrap
