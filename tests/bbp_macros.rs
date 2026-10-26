@@ -801,3 +801,44 @@ fn native_expansions_match_the_legacy_compiler_output() {
         );
     }
 }
+
+#[test]
+fn helper_namespace_output_is_deterministic_with_one_two_and_four_slots() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/pool");
+    let mut reference = None;
+    for jobs in [1, 2, 4] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut stats = light_cljs::CompileStats::new();
+        let mut warnings = Vec::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "demand.app",
+            std::slice::from_ref(&root),
+            &mut host,
+            Default::default(),
+            &mut warnings,
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("jobs {jobs}: {error}"));
+        let js = emit_js(&program);
+        assert_eq!(program_output(&js), "42 42 3\n");
+        assert_eq!(stats.native_helpers.compiled, 1);
+        assert_eq!(stats.native_helpers.published, 0);
+        assert!(stats.native_helpers.per_task >= 1);
+        assert!(warnings.is_empty());
+        if let Some(reference) = &reference {
+            assert_eq!(&js, reference);
+        } else {
+            reference = Some(js);
+        }
+        if jobs > 1 {
+            assert!(stats.deferred_units.pool_engine_workers > 0);
+            assert!(stats.deferred_units.pool.helped > 0);
+        }
+    }
+}

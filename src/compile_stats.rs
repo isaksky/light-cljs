@@ -33,6 +33,17 @@ pub struct NativeBridgeCall {
     pub helper_waits: usize,
 }
 
+/// Actual native-runtime work across all tasks, counted once per event.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeHelperCounts {
+    pub compiled: usize,
+    pub published: usize,
+    pub per_task: usize,
+    pub waits: usize,
+    pub steps: usize,
+    pub migrations: usize,
+}
+
 /// Wall time per phase of a compilation. The phases do not overlap; work a
 /// phase demands of another (such as a deferred unit a macro needs while a
 /// namespace's top level is analyzed) counts in the phase that demanded it.
@@ -125,6 +136,7 @@ pub struct DeferredUnitCounts {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompileStats {
     pub native_macro_calls: Vec<NativeBridgeCall>,
+    pub native_helpers: NativeHelperCounts,
     pub phases: PhaseTimes,
     /// From the start of the compilation to the end of its last recorded
     /// phase.
@@ -547,6 +559,15 @@ impl CompileStats {
                 &call.helper_per_task,
             );
             line(&format!("macro.helpers.{i}.waits"), &call.helper_waits);
+        }
+        if self.native_helpers.steps > 0 {
+            let helpers = &self.native_helpers;
+            line("native.helpers.compiled", &helpers.compiled);
+            line("native.helpers.published", &helpers.published);
+            line("native.helpers.per-task", &helpers.per_task);
+            line("native.helpers.waits", &helpers.waits);
+            line("native.tasks.steps", &helpers.steps);
+            line("native.tasks.migrations", &helpers.migrations);
         }
         line("macro-nodes.peak", &self.peak_macro_nodes);
         line("deferred-units.registered", &self.deferred_units.registered);

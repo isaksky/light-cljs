@@ -598,6 +598,11 @@ pub(crate) struct MacroEnvironment {
     tables: MacroTables,
 }
 impl MacroEnvironment {
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn native_macro_backend(&self) -> bool {
+        (self.tables.native_macros || !cfg!(any(light_quickjs, light_v8)))
+            && !self.tables.interactive
+    }
     /// The options a worker's own engine is made with.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn evaluator_options(&self) -> &crate::evaluator::EvaluatorOptions {

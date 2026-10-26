@@ -1,0 +1,5 @@
+(ns demand.app (:require [demand.macros :refer [demand]]))
+(defn left [] (demand 40))
+(defn right [] (demand 40))
+(defn other [] (+ 1 2))
+(js/console.log (left) (right) (other))

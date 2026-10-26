@@ -439,6 +439,7 @@ struct Demand<'a> {
     /// ([`CompilationSession::analyze_held`]).
     held: bool,
     server: Option<BuildServer<'a>>,
+    help: Option<&'a dyn Fn() -> Result<bool, String>>,
 }
 /// What the coordinator does with a unit's analysis once it has it
 /// ([`CompilationSession::analyze_in`]).
@@ -480,6 +481,10 @@ struct AnalysisThread {
 /// analysis, engine entry or large destructor runs under it.
 #[derive(Default)]
 pub(crate) struct SharedCatalog {
+    #[cfg(all(test, feature = "bbp-macros"))]
+    on_native_submit: Mutex<Option<NativeSubmitHook>>,
+    #[cfg(all(test, feature = "bbp-macros"))]
+    on_native_run: Mutex<Option<NativeHook>>,
     catalog: Mutex<Catalog>,
     /// Notified when a unit stops being analyzed.
     settled: Condvar,
@@ -522,6 +527,10 @@ pub(crate) struct SharedCatalog {
     #[cfg(test)]
     on_wake: Mutex<Option<ClaimHook>>,
 }
+#[cfg(all(test, feature = "bbp-macros"))]
+type NativeHook = Arc<dyn Fn(big_boy_pants_js::TaskId, usize) + Send + Sync>;
+#[cfg(all(test, feature = "bbp-macros"))]
+type NativeSubmitHook = Arc<dyn Fn(big_boy_pants_js::TaskId, usize, bool) + Send + Sync>;
 const _: () = {
     const fn send_sync<T: Send + Sync>() {}
     send_sync::<SharedCatalog>();
@@ -564,11 +573,18 @@ enum Claim {
 }
 /// Runs on the thread that claimed a unit, before it analyzes the unit.
 #[cfg(test)]
-type ClaimHook = Box<dyn Fn(usize) + Send>;
+type ClaimHook = Arc<dyn Fn(usize) + Send + Sync>;
 const DEPTH_LIMIT: &str = "compiler macro expansion depth limit exceeded in deferred units";
 /// Why a wait for a pooled unit after a failed one ends ([`SharedCatalog::claim`]).
 const SKIPPED_AFTER_FAILURE: &str = "an earlier unit in unit order failed";
 impl SharedCatalog {
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn native_counts(&self) -> crate::compile_stats::NativeHelperCounts {
+        self.native_runtime
+            .get()
+            .and_then(|r| r.as_ref().ok())
+            .map_or_default(|r| r.helper_counts())
+    }
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn select_native(&self) {
         self.native_units
@@ -621,13 +637,16 @@ impl SharedCatalog {
     /// is for the ones with an engine only ([`ENGINE_PHASE`]).
     fn unit_jobs(&self, units: Vec<usize>, mixed: bool) -> Vec<UnitJob> {
         if !mixed {
-            return units.into_iter().map(|id| UnitJob(id, 0)).collect();
+            return units
+                .into_iter()
+                .map(|id| UnitJob::Analyze(id, 0))
+                .collect();
         }
         let catalog = self.lock();
         (units.into_iter())
             .map(|id| match catalog.units[id].macro_free {
-                true => UnitJob(id, 0),
-                false => UnitJob(id, ENGINE_PHASE),
+                true => UnitJob::Analyze(id, 0),
+                false => UnitJob::Analyze(id, ENGINE_PHASE),
             })
             .collect()
     }
@@ -681,12 +700,23 @@ impl SharedCatalog {
     ///
     /// While it waits, the coordinator serves its `light.build` requests
     /// that workers forward with `server` ([`Self::forward_build`]).
+    #[cfg(test)]
     fn claim(
         &self,
         thread: usize,
         id: usize,
         queued: bool,
         server: Option<BuildServer<'_>>,
+    ) -> Result<Claim, String> {
+        self.claim_help(thread, id, queued, server, None)
+    }
+    fn claim_help(
+        &self,
+        thread: usize,
+        id: usize,
+        queued: bool,
+        server: Option<BuildServer<'_>>,
+        help: Option<&dyn Fn() -> Result<bool, String>>,
     ) -> Result<Claim, String> {
         // Dropped after the lock is released.
         let mut _released = None;
@@ -737,6 +767,33 @@ impl SharedCatalog {
                 }
                 if _blocked.is_none() {
                     _blocked = Some(crate::compile_trace::wait(id));
+                }
+                if let Some(help) = help {
+                    drop(guard);
+                    let helped = help();
+                    guard = self.lock();
+                    match helped {
+                        Ok(true) => continue,
+                        Err(error) => {
+                            if guard.threads[thread].waiting.take().is_some() {
+                                guard.waiting -= 1;
+                                guard.units[id].waiters -= 1;
+                            }
+                            return Err(error);
+                        }
+                        Ok(false) => {}
+                    }
+                    // Recheck after releasing the lock to help: a producer
+                    // may have settled while this worker ran another job.
+                    if !matches!(guard.units[id].state, AnalysisState::Analyzing(_)) {
+                        continue;
+                    }
+                    guard = self
+                        .settled
+                        .wait_timeout(guard, std::time::Duration::from_millis(20))
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                    continue;
                 }
                 guard = self
                     .settled
@@ -2297,6 +2354,7 @@ impl CompilationSession {
             id,
             engine,
             Demand {
+                help: None,
                 queued,
                 on_worker: false,
                 held: matches!(take, Take::Hold | Take::Defer),
@@ -2461,17 +2519,19 @@ fn analyze_unit(
         on_worker,
         held,
         server,
+        help,
     } = demand;
-    let (inputs, depth, name, macro_free) = match shared.claim(thread, id, queued, server)? {
-        Claim::Reuse(program, warnings) => return Ok((program, warnings)),
-        Claim::TooDeep(inputs, depth) => {
-            let (binding, _) = binding();
-            crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
-            drop((inputs, binding));
-            return Err(DEPTH_LIMIT.to_owned());
-        }
-        Claim::Analyze(inputs, depth, name, macro_free) => (inputs, depth, name, macro_free),
-    };
+    let (inputs, depth, name, macro_free) =
+        match shared.claim_help(thread, id, queued, server, help)? {
+            Claim::Reuse(program, warnings) => return Ok((program, warnings)),
+            Claim::TooDeep(inputs, depth) => {
+                let (binding, _) = binding();
+                crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
+                drop((inputs, binding));
+                return Err(DEPTH_LIMIT.to_owned());
+            }
+            Claim::Analyze(inputs, depth, name, macro_free) => (inputs, depth, name, macro_free),
+        };
     // From here on, however the analysis ends, even by unwinding, the unit
     // settles and its waiters wake.
     let mut guard = AnalysisGuard {
@@ -2482,11 +2542,13 @@ fn analyze_unit(
         held: 0,
     };
     #[cfg(test)]
-    if let Some(hook) = &*shared
+    let on_claim = shared
         .on_claim
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-    {
+        .clone();
+    #[cfg(test)]
+    if let Some(hook) = on_claim {
         hook(id);
     }
     let UnitInputs {
@@ -2767,6 +2829,16 @@ fn prepare_engine(
 /// [`WorkerView`] of the shared catalog (docs/compiler-concurrency.md, "As
 /// built (light-cljs-334)" and "As built (light-cljs-335)").
 pub(crate) trait CatalogView {
+    fn help(&self) -> Result<bool, String> {
+        Ok(false)
+    }
+    #[cfg(feature = "bbp-macros")]
+    fn run_native(
+        &self,
+        step: crate::bbp_evaluator::NativeStep,
+    ) -> Result<big_boy_pants_js::RunOutcome, String> {
+        step.run()
+    }
     /// `__lightCompileUnit`: unit `id`'s initializer, analyzed first if it
     /// is not yet, with the registration it needs evaluated in `active`.
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String>;
@@ -2854,6 +2926,9 @@ impl CatalogView for CompilationSession {
 /// the roots it evaluates are its own engine's. Made, used and dropped on
 /// the worker's thread.
 pub(crate) struct WorkerView {
+    help: RefCell<Option<crate::compiler_evaluator::WaitService>>,
+    #[cfg(feature = "bbp-macros")]
+    runner: RefCell<Option<crate::compiler_evaluator::NativeRunner>>,
     shared: Arc<SharedCatalog>,
     thread: usize,
     /// The worker's host ([`MacroHost::bind`]), whose binding each unit's
@@ -2876,6 +2951,9 @@ impl WorkerView {
         let view = Rc::new_cyclic(|view| {
             host.engine.worker = Some(view.clone());
             Self {
+                help: RefCell::new(None),
+                #[cfg(feature = "bbp-macros")]
+                runner: RefCell::new(None),
                 shared,
                 thread,
                 host,
@@ -2939,12 +3017,17 @@ impl WorkerView {
         engine: Option<&dyn MacroEvaluator>,
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
         self.install(engine)?;
+        let help = || self.help();
         analyze_unit(
             &self.shared,
             self.thread,
             id,
             engine,
             Demand {
+                help: self
+                    .host
+                    .native_macro_backend()
+                    .then_some(&help as &dyn Fn() -> Result<bool, String>),
                 queued: false,
                 on_worker: true,
                 held: false,
@@ -2957,17 +3040,32 @@ impl WorkerView {
 /// A deferred unit for a pool worker to analyze, in its phase: 0 for one
 /// any worker takes, 1 for one only the workers with an engine take, in a
 /// pool that has workers of both kinds ([`ENGINE_PHASE`]).
-struct UnitJob(usize, usize);
+enum UnitJob {
+    Analyze(usize, usize),
+    #[cfg(feature = "bbp-macros")]
+    Native(
+        crate::bbp_evaluator::NativeStep,
+        std::sync::mpsc::SyncSender<Result<big_boy_pants_js::RunOutcome, String>>,
+    ),
+}
 /// The phase of a unit that may enter a compile-time engine, in a pool
 /// whose first workers have engines and the rest none (light-cljs-437).
 const ENGINE_PHASE: usize = 1;
 impl crate::scheduler::Job for UnitJob {
     fn phase(&self) -> usize {
-        self.1
+        match self {
+            Self::Analyze(_, phase) => *phase,
+            #[cfg(feature = "bbp-macros")]
+            Self::Native(..) => 0,
+        }
     }
     #[cfg(debug_assertions)]
     fn key(&self) -> u64 {
-        self.0 as u64
+        match self {
+            Self::Analyze(id, _) => *id as u64,
+            #[cfg(feature = "bbp-macros")]
+            Self::Native(..) => u64::MAX,
+        }
     }
 }
 /// How a build's unit pool analyzes (docs/compiler-concurrency.md, "As
@@ -3306,6 +3404,15 @@ fn worker_view(
     let started = std::time::Instant::now();
     let engine: Option<Rc<dyn crate::compiler_evaluator::CompilerEvaluator>> = match engines {
         PoolEngines::None => None,
+        #[cfg(feature = "bbp-macros")]
+        PoolEngines::Persistent | PoolEngines::Fresh if environment.native_macro_backend() => {
+            Some(Rc::new(
+                shared
+                    .native_runtime(environment.evaluator_options())
+                    .and_then(|runtime| runtime.evaluator())
+                    .map_err(|e| e.to_string())?,
+            ))
+        }
         #[cfg(light_v8)]
         PoolEngines::Persistent | PoolEngines::Fresh => Some(Rc::new(
             match shared.resources() {
@@ -3372,6 +3479,152 @@ struct WorkerSlot {
 /// The pool's thread: run the scheduler, submitting each batch the inbox
 /// gets and consuming outcomes, until the inbox closes and every job has
 /// run. A worker's panic stops the pool and ends every wait in the catalog.
+fn help_pool(
+    helper: &crate::scheduler::HelpHandle<UnitJob, ()>,
+    engines: PoolEngines,
+    shared: &Arc<SharedCatalog>,
+    environment: &MacroEnvironment,
+) -> Result<bool, String> {
+    match helper
+        .help(
+            |_| WorkerSlot {
+                view: None,
+                engines,
+                _trace: None,
+            },
+            |slot, job, worker| execute_pool_job(slot, job, worker, shared, environment),
+        )
+        .map_err(|e| e.to_string())?
+    {
+        crate::scheduler::Help::Ran => Ok(true),
+        crate::scheduler::Help::Idle => Ok(false),
+        crate::scheduler::Help::DepthLimit => Err("compiler help nesting limit exceeded".into()),
+    }
+}
+
+fn execute_pool_job(
+    slot: &mut WorkerSlot,
+    job: UnitJob,
+    worker: &crate::scheduler::Worker<'_, UnitJob, ()>,
+    shared: &Arc<SharedCatalog>,
+    environment: &MacroEnvironment,
+) {
+    let id = match job {
+        UnitJob::Analyze(id, _) => id,
+        #[cfg(feature = "bbp-macros")]
+        UnitJob::Native(step, reply) => {
+            #[cfg(test)]
+            {
+                let hook = shared.on_native_run.lock().unwrap().clone();
+                if let Some(hook) = hook {
+                    hook(step.task_id(), worker.slot());
+                }
+            }
+            let _ = reply.send(step.run());
+            return;
+        }
+    };
+    if !shared.admits(id) {
+        return shared.skipped();
+    }
+    let view = match slot.view.take() {
+        Some(view) => view,
+        None => match worker_view(shared, slot.engines, environment) {
+            Ok(view) => view,
+            Err(error) => {
+                shared.fail_unstarted(id, error);
+                return shared.note_job(id);
+            }
+        },
+    };
+    let engines = slot.engines;
+    let control = view
+        .host
+        .engine
+        .bootstrap
+        .as_ref()
+        .filter(|b| b.evaluator.native_forms())
+        .map(|b| b.evaluator.control());
+    let wait_control = control.clone();
+    let helper = worker.help_handle();
+    let catalog = shared.clone();
+    let settings = environment.clone();
+    *view.help.borrow_mut() = Some(Rc::new(move || {
+        if let Some(control) = &wait_control {
+            control.poll().map_err(|e| e.to_string())?;
+        }
+        help_pool(&helper, engines, &catalog, &settings)
+    }));
+    #[cfg(feature = "bbp-macros")]
+    {
+        let helper = worker.help_handle();
+        let catalog = shared.clone();
+        let settings = environment.clone();
+        #[cfg(test)]
+        let owner = worker.slot();
+        *view.runner.borrow_mut() = Some(Rc::new(move |step| {
+            let (send, receive) = std::sync::mpsc::sync_channel(1);
+            #[cfg(test)]
+            let task = step.task_id();
+            #[cfg(test)]
+            {
+                let hook = catalog.on_native_submit.lock().unwrap().clone();
+                if let Some(hook) = hook {
+                    hook(task, owner, false);
+                }
+            }
+            helper.push_urgent(UnitJob::Native(step, send));
+            #[cfg(test)]
+            {
+                let hook = catalog.on_native_submit.lock().unwrap().clone();
+                if let Some(hook) = hook {
+                    hook(task, owner, true);
+                }
+            }
+            loop {
+                match receive.try_recv() {
+                    Ok(outcome) => return outcome,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        return Err("native task worker stopped".into());
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+                if helper.cancelled() {
+                    return Err("compiler pool cancelled".into());
+                }
+                if let Some(control) = &control {
+                    control.poll().map_err(|e| e.to_string())?;
+                }
+                if help_pool(&helper, engines, &catalog, &settings)? {
+                    continue;
+                }
+                match receive.recv_timeout(std::time::Duration::from_millis(20)) {
+                    Ok(outcome) => return outcome,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err("native task worker stopped".into());
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+        }));
+    }
+    let started = std::time::Instant::now();
+    if let Err(error) = view.analyze(id, None) {
+        shared.fail_unstarted(id, error);
+    }
+    shared.note_job(id);
+    PoolCounters::add(&shared.counters.unit_ns, started);
+    if slot.engines == PoolEngines::None {
+        shared
+            .counters
+            .engine_less_units
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if slot.engines != PoolEngines::Fresh && !view.terminal() && !view.holds_excess_headroom() {
+        slot.view = Some(view);
+    }
+}
+
 fn serve_pool(
     inbox: &Inbox,
     shared: &Arc<SharedCatalog>,
@@ -3415,41 +3668,7 @@ fn serve_pool(
             },
             _trace: traced.then(|| crate::compile_trace::record_worker(slot)),
         },
-        |slot, UnitJob(id, _), _worker| {
-            // The outcome is in the catalog; a failed unit is reported by
-            // the coordinator when it reaches it, as a serial drain would,
-            // and no job after it starts.
-            if !shared.admits(id) {
-                return shared.skipped();
-            }
-            let view = match slot.view.take() {
-                Some(view) => view,
-                None => match worker_view(shared, slot.engines, environment) {
-                    Ok(view) => view,
-                    Err(error) => {
-                        shared.fail_unstarted(id, error);
-                        return shared.note_job(id);
-                    }
-                },
-            };
-            let started = std::time::Instant::now();
-            // A view that failed before claiming the unit, installing the
-            // catalog's registrations, fails it.
-            if let Err(error) = view.analyze(id, None) {
-                shared.fail_unstarted(id, error);
-            }
-            shared.note_job(id);
-            PoolCounters::add(&shared.counters.unit_ns, started);
-            if slot.engines == PoolEngines::None {
-                (shared.counters.engine_less_units).fetch_add(1, relaxed);
-            }
-            if slot.engines != PoolEngines::Fresh
-                && !view.terminal()
-                && !view.holds_excess_headroom()
-            {
-                slot.view = Some(view);
-            }
-        },
+        |slot, job, worker| execute_pool_job(slot, job, worker, shared, environment),
         |pool| -> Result<(), String> {
             let served = loop {
                 match pool.next_outcome() {
@@ -3493,6 +3712,21 @@ fn serve_pool(
     }
 }
 impl CatalogView for WorkerView {
+    fn help(&self) -> Result<bool, String> {
+        let help = self.help.borrow().clone();
+        help.map_or(Ok(false), |help| help())
+    }
+    #[cfg(feature = "bbp-macros")]
+    fn run_native(
+        &self,
+        step: crate::bbp_evaluator::NativeStep,
+    ) -> Result<big_boy_pants_js::RunOutcome, String> {
+        let runner = self.runner.borrow().clone();
+        match runner {
+            Some(run) => run(step),
+            None => step.run(),
+        }
+    }
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
         self.install(Some(active))?;
         (self.shared.counters.initializations).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3531,6 +3765,23 @@ pub(crate) fn install_catalog_services(
     build: crate::build_services::SharedBuild,
     log: Rc<RefCell<Option<crate::dependency_manifest::ObservationLog>>>,
 ) -> Result<(), String> {
+    let waiting = view.clone();
+    evaluator.install_wait_service(Rc::new(move || {
+        waiting
+            .upgrade()
+            .ok_or("compilation session expired")?
+            .help()
+    }));
+    #[cfg(feature = "bbp-macros")]
+    {
+        let running = view.clone();
+        evaluator.install_native_runner(Rc::new(move |step| {
+            running
+                .upgrade()
+                .ok_or("compilation session expired")?
+                .run_native(step)
+        }));
+    }
     // `light.build`: a request names the units whose initializers run; the
     // catalog knows the units being analyzed. The runtime also reports on it
     // the first extension environment data could reach, which is this
@@ -4049,8 +4300,13 @@ mod worker_tests {
     /// A coordinator's session whose catalog holds the units `source`
     /// registers, unanalyzed, by name, and the environment a worker binds.
     fn registered(source: &str) -> (CompilationSession, HashMap<String, usize>, MacroEnvironment) {
+        registered_with_host(source, MacroHost::new())
+    }
+    fn registered_with_host(
+        source: &str,
+        mut host: MacroHost,
+    ) -> (CompilationSession, HashMap<String, usize>, MacroEnvironment) {
         RETAINED.set(Some(Vec::new()));
-        let mut host = MacroHost::new();
         // Whether or not the compilation's own analyses succeed.
         let _ = crate::compile_with_macros(source, &mut host);
         let jobs = RETAINED.take().unwrap();
@@ -4078,9 +4334,160 @@ mod worker_tests {
 
     /// Hold each claimed unit's analysis until `waiters` threads wait for
     /// a unit.
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_pool_helps_parked_consumers_and_migrates_a_saved_continuation() {
+        use big_boy_pants_js::{DependencyId, ResultKind, Task, TaskId, ValueView};
+        #[derive(Default)]
+        struct Progress {
+            tasks: HashMap<TaskId, Task>,
+            useful: bool,
+            held: Option<(TaskId, usize)>,
+            migrated: bool,
+        }
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let (session, units, environment) = registered_with_host(
+            include_str!("../tests/fixtures/native-helper-demand/pool.cljs"),
+            host,
+        );
+        let shared = session.shared();
+        shared.select_native();
+        let runtime = shared
+            .native_runtime(environment.evaluator_options())
+            .unwrap();
+        let helper = units["cljs.user/helper"];
+        let left = units["cljs.user/left"];
+        let right = units["cljs.user/right"];
+        let other = units["cljs.user/other"];
+        let progress = Arc::new((Mutex::new(Progress::default()), Condvar::new()));
+        let state = progress.clone();
+        runtime.on_wait(Arc::new(move |task, key| {
+            if key.kind() == ResultKind::new(3)
+                && key.dependency() == DependencyId::new(helper as u64)
+            {
+                state
+                    .0
+                    .lock()
+                    .unwrap()
+                    .tasks
+                    .insert(task.id(), task.clone());
+                state.1.notify_all();
+            }
+        }));
+        let state = progress.clone();
+        let started = std::sync::Barrier::new(2);
+        *shared.on_claim.lock().unwrap() = Some(Arc::new(move |unit| {
+            if unit == left || unit == right {
+                started.wait();
+            }
+            if unit == other {
+                let mut p = state.0.lock().unwrap();
+                assert_eq!(p.tasks.len(), 2, "useful work runs while both macros wait");
+                p.useful = true;
+                state.1.notify_all();
+            }
+            if unit == helper {
+                let mut p = state.0.lock().unwrap();
+                while p.tasks.len() != 2 || !p.useful {
+                    let (next, timeout) = state
+                        .1
+                        .wait_timeout(p, std::time::Duration::from_secs(5))
+                        .unwrap();
+                    p = next;
+                    assert!(
+                        !timeout.timed_out(),
+                        "waiting consumers did not help their pool"
+                    );
+                }
+            }
+        }));
+        let state = progress.clone();
+        *shared.on_native_submit.lock().unwrap() = Some(Arc::new(move |task, owner, queued| {
+            let mut p = state.0.lock().unwrap();
+            if !p.tasks.contains_key(&task) || p.migrated {
+                return;
+            }
+            if !queued {
+                p.held.get_or_insert((task, owner));
+                return;
+            }
+            if p.held != Some((task, owner)) {
+                return;
+            }
+            // This worker cannot execute its own saved continuation. Its peer,
+            // still helping from the other macro's wait, must claim the step.
+            while !p.migrated {
+                let (next, timeout) = state
+                    .1
+                    .wait_timeout(p, std::time::Duration::from_secs(5))
+                    .unwrap();
+                p = next;
+                assert!(!timeout.timed_out(), "a peer did not resume the saved task");
+            }
+        }));
+        let state = progress.clone();
+        *shared.on_native_run.lock().unwrap() = Some(Arc::new(move |task, worker| {
+            let mut p = state.0.lock().unwrap();
+            if let Some((held, owner)) = p.held
+                && task == held
+                && !p.migrated
+            {
+                assert_ne!(worker, owner);
+                p.migrated = true;
+                state.1.notify_all();
+            }
+        }));
+        let mut config = crate::scheduler::Config::new(crate::scheduler::Slots::new(3).unwrap(), 1);
+        config.stack_size = Some(8 << 20);
+        config.limits.batch_jobs = 1;
+        let counts = crate::scheduler::run(
+            &config,
+            |_| WorkerSlot {
+                view: None,
+                engines: PoolEngines::Persistent,
+                _trace: None,
+            },
+            |slot, job, worker| execute_pool_job(slot, job, worker, &shared, &environment),
+            |pool| {
+                pool.submit_batch([left, right, other].map(|id| UnitJob::Analyze(id, 0)));
+                loop {
+                    match pool.next_outcome().unwrap() {
+                        crate::scheduler::Next::Outcome(()) => {}
+                        crate::scheduler::Next::Quiescent => break,
+                        other => panic!("unexpected {other:?}"),
+                    }
+                }
+                pool.counts()
+            },
+        )
+        .unwrap();
+        assert!(counts.helped > 0);
+        let p = progress.0.lock().unwrap();
+        assert!(p.useful && p.migrated);
+        assert_eq!(p.tasks.len(), 2);
+        for task in p.tasks.values() {
+            for name in ["beforeDemand", "afterDemand"] {
+                assert_eq!(
+                    task.global_value(name).unwrap().unwrap().view(),
+                    ValueView::Number(1.0)
+                );
+            }
+        }
+        let counters = runtime.helper_counts();
+        assert_eq!(counters.compiled, 1);
+        assert!(counters.migrations > 0);
+        for id in [left, right, other] {
+            assert!(matches!(
+                shared.lock().units[id].state,
+                AnalysisState::Analyzed(..)
+            ));
+        }
+    }
+
     fn hold_claims(shared: &Arc<SharedCatalog>, waiters: usize) {
         let catalog = Arc::downgrade(shared);
-        *shared.on_claim.lock().unwrap() = Some(Box::new(move |_| {
+        *shared.on_claim.lock().unwrap() = Some(Arc::new(move |_| {
             let catalog = catalog.upgrade().unwrap();
             while catalog.lock().waiting < waiters {
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -4349,7 +4756,7 @@ mod worker_tests {
         hold_claims(&shared, 1);
         // A waiter wakes only once the application has taken the program.
         let catalog = Arc::downgrade(&shared);
-        *shared.on_wake.lock().unwrap() = Some(Box::new(move |id| {
+        *shared.on_wake.lock().unwrap() = Some(Arc::new(move |id| {
             let catalog = catalog.upgrade().unwrap();
             while !matches!(catalog.lock().units[id].state, AnalysisState::Prepared(..)) {
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -4390,7 +4797,7 @@ mod worker_tests {
         let id = units["cljs.user/plain"];
         let shared = session.shared().clone();
         let catalog = Arc::downgrade(&shared);
-        *shared.on_claim.lock().unwrap() = Some(Box::new(move |_| {
+        *shared.on_claim.lock().unwrap() = Some(Arc::new(move |_| {
             let catalog = catalog.upgrade().unwrap();
             while catalog.lock().waiting < 2 {
                 std::thread::sleep(std::time::Duration::from_millis(1));

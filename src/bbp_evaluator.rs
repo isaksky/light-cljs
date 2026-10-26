@@ -3,7 +3,9 @@
 use crate::{
     CollectionKind as C,
     compiler_data::{Datum, DatumKind as D, ExpansionOrigin, Form, Name},
-    compiler_evaluator::{CompilerEvaluator, StringService, UnitService},
+    compiler_evaluator::{
+        CompilerEvaluator, NativeRunner, StringService, UnitService, WaitService,
+    },
     evaluator::{
         EvalError, EvaluatorOptions, ExecutionControl, MacroEvaluator, NEXT_SESSION, ValueId,
     },
@@ -20,7 +22,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicUsize, Ordering},
     },
 };
 
@@ -335,6 +337,7 @@ impl Bridge {
 #[derive(Clone)]
 pub struct BbpRuntime(Arc<SharedRuntime>);
 struct SharedRuntime {
+    counters: Arc<NativeCounters>,
     runtime: Runtime,
     executable: Executable,
     bridge: Arc<Mutex<Bridge>>,
@@ -346,6 +349,15 @@ struct SharedRuntime {
     graph: Mutex<big_boy_pants_js::DependencyGraph>,
     #[cfg(test)]
     on_wait: Mutex<Option<WaitHook>>,
+}
+#[derive(Default)]
+struct NativeCounters {
+    compiled: AtomicUsize,
+    published: AtomicUsize,
+    per_task: AtomicUsize,
+    waits: AtomicUsize,
+    steps: AtomicUsize,
+    migrations: AtomicUsize,
 }
 #[cfg(test)]
 type WaitHook = Arc<dyn Fn(&Task, DependencyKey) + Send + Sync>;
@@ -372,6 +384,7 @@ impl BbpRuntime {
         .map_err(error)?;
         let control = ExecutionControl::new(options)?;
         Ok(Self(Arc::new(SharedRuntime {
+            counters: Arc::new(NativeCounters::default()),
             runtime,
             executable,
             bridge: Arc::new(Mutex::new(Bridge {
@@ -392,6 +405,21 @@ impl BbpRuntime {
     pub fn evaluator(&self) -> Result<BbpEvaluator, EvalError> {
         BbpEvaluator::in_runtime(self.clone(), 0)
     }
+    pub fn helper_counts(&self) -> crate::compile_stats::NativeHelperCounts {
+        let c = &self.0.counters;
+        crate::compile_stats::NativeHelperCounts {
+            compiled: c.compiled.load(Ordering::Relaxed),
+            published: c.published.load(Ordering::Relaxed),
+            per_task: c.per_task.load(Ordering::Relaxed),
+            waits: c.waits.load(Ordering::Relaxed),
+            steps: c.steps.load(Ordering::Relaxed),
+            migrations: c.migrations.load(Ordering::Relaxed),
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn on_wait(&self, hook: WaitHook) {
+        *self.0.on_wait.lock().unwrap() = Some(hook);
+    }
 }
 
 pub struct BbpEvaluator {
@@ -405,7 +433,11 @@ pub struct BbpEvaluator {
     initializers: RefCell<HashMap<DependencyKey, ProducerRequest>>,
     service_depth: usize,
     service: RefCell<Option<UnitService>>,
-    strings: RefCell<Vec<StringService>>,
+    help: RefCell<Option<WaitService>>,
+    runner: RefCell<Option<NativeRunner>>,
+    resumable: Cell<bool>,
+    per_task: Arc<AtomicUsize>,
+    last_thread: Arc<Mutex<std::thread::ThreadId>>,
     registrations: RefCell<Vec<String>>,
     session: u64,
     next: Cell<u64>,
@@ -444,7 +476,11 @@ impl BbpEvaluator {
             initializers: RefCell::new(HashMap::new()),
             service_depth,
             service: RefCell::new(None),
-            strings: RefCell::new(Vec::new()),
+            help: RefCell::new(None),
+            runner: RefCell::new(None),
+            resumable: Cell::new(false),
+            per_task: Arc::new(AtomicUsize::new(0)),
+            last_thread: Arc::new(Mutex::new(std::thread::current().id())),
             registrations: RefCell::new(Vec::new()),
             control: control.clone(),
             session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
@@ -457,11 +493,28 @@ impl BbpEvaluator {
         Ok(this)
     }
     pub fn bridge_stats(&self) -> BridgeStats {
-        self.stats.get()
+        let mut stats = self.stats.get();
+        stats.helper_per_task += self.per_task.load(Ordering::Relaxed);
+        stats
     }
     fn note(&self, update: impl FnOnce(&mut BridgeStats)) {
         let mut stats = self.stats.get();
+        let before = stats;
         update(&mut stats);
+        let c = &self.shared.0.counters;
+        for (counter, delta) in [
+            (&c.compiled, stats.helper_compiled - before.helper_compiled),
+            (
+                &c.published,
+                stats.helper_published - before.helper_published,
+            ),
+            (&c.per_task, stats.helper_per_task - before.helper_per_task),
+            (&c.waits, stats.helper_waits - before.helper_waits),
+        ] {
+            if delta != 0 {
+                counter.fetch_add(delta, Ordering::Relaxed);
+            }
+        }
         self.stats.set(stats);
     }
     fn with_bridge<T>(&self, work: impl FnOnce(&mut Bridge) -> T) -> T {
@@ -505,7 +558,7 @@ impl BbpEvaluator {
             while matches!(
                 self.task.run_with(
                     Budget::instructions(10_000),
-                    &mut ServiceHost(&self.strings, &self.stats)
+                    &mut NativeHost(&self.per_task, &self.shared.0.counters)
                 ),
                 Ok(RunOutcome::Yielded)
             ) {}
@@ -515,13 +568,24 @@ impl BbpEvaluator {
     fn run_inner(&self) -> Result<(), EvalError> {
         loop {
             self.control.poll()?;
-            let outcome = self
-                .task
-                .run_with(
-                    Budget::instructions(10_000),
-                    &mut ServiceHost(&self.strings, &self.stats),
-                )
-                .map_err(error)?;
+            let step = NativeStep {
+                task: self.task.clone(),
+                per_task: self.per_task.clone(),
+                counters: self.shared.0.counters.clone(),
+                last_thread: self.last_thread.clone(),
+            };
+            // Before the first helper wait, the worker already owns this
+            // runnable task. Only suspended continuations need pool handoff.
+            let runner = self
+                .resumable
+                .get()
+                .then(|| self.runner.borrow().clone())
+                .flatten();
+            let outcome = match runner {
+                Some(run) => run(step),
+                None => step.run(),
+            }
+            .map_err(error)?;
             {
                 let mut graph = self.shared.0.graph.lock().unwrap();
                 for key in self.task.dependency_log().edges() {
@@ -553,6 +617,9 @@ impl BbpEvaluator {
         }
     }
     fn demand(&self, key: DependencyKey) -> Result<(), EvalError> {
+        if [HELPER, INITIALIZER].contains(&key.kind()) {
+            self.resumable.set(true);
+        }
         #[cfg(test)]
         if let Some(hook) = self.shared.0.on_wait.lock().unwrap().clone() {
             hook(&self.task, key);
@@ -593,6 +660,21 @@ impl BbpEvaluator {
             self.control.poll()?;
             if self.task.cancel_requested() {
                 return Err(error("macro task cancelled"));
+            }
+            if let Some(help) = self.help.borrow().clone() {
+                drop(generation);
+                let helped = help().map_err(error)?;
+                generation = shared.generation.lock().unwrap();
+                if helped {
+                    continue;
+                }
+                // Publication could have arrived while this thread helped.
+                if !matches!(
+                    self.runtime.cell_status(key),
+                    big_boy_pants_js::CellStatus::Pending { .. }
+                ) {
+                    break;
+                }
             }
             generation = shared
                 .changed
@@ -635,7 +717,8 @@ impl BbpEvaluator {
             active.task.id(),
         );
         *active.service.borrow_mut() = Some(callback.clone());
-        *active.strings.borrow_mut() = self.strings.borrow().clone();
+        *active.help.borrow_mut() = self.help.borrow().clone();
+        *active.runner.borrow_mut() = self.runner.borrow().clone();
         let registrations = self.registrations.borrow().clone();
         for source in &registrations {
             let value = active.evaluate_unit(source)?;
@@ -851,25 +934,46 @@ impl big_boy_pants_js::Host for RejectHost {
         Err(format!("unsupported operation: host effect {}", call.op))
     }
 }
-struct ServiceHost<'a>(&'a RefCell<Vec<StringService>>, &'a Cell<BridgeStats>);
-impl big_boy_pants_js::Host for ServiceHost<'_> {
+/// A bounded, owned VM step. It carries no analyzer or thread-local callback.
+pub(crate) struct NativeStep {
+    task: Task,
+    per_task: Arc<AtomicUsize>,
+    counters: Arc<NativeCounters>,
+    last_thread: Arc<Mutex<std::thread::ThreadId>>,
+}
+impl NativeStep {
+    #[cfg(test)]
+    pub(crate) fn task_id(&self) -> big_boy_pants_js::TaskId {
+        self.task.id()
+    }
+    pub(crate) fn run(self) -> Result<RunOutcome, String> {
+        let current = std::thread::current().id();
+        let previous = std::mem::replace(&mut *self.last_thread.lock().unwrap(), current);
+        self.counters.steps.fetch_add(1, Ordering::Relaxed);
+        if previous != current {
+            self.counters.migrations.fetch_add(1, Ordering::Relaxed);
+        }
+        self.task
+            .run_with(
+                Budget::instructions(10_000),
+                &mut NativeHost(&self.per_task, &self.counters),
+            )
+            .map_err(|e| e.to_string())
+    }
+}
+struct NativeHost<'a>(&'a AtomicUsize, &'a NativeCounters);
+impl big_boy_pants_js::Host for NativeHost<'_> {
     fn effect(&mut self, call: big_boy_pants_js::HostCall) -> Result<Primitive, String> {
         if call.op == 65535 {
-            let mut stats = self.1.get();
-            stats.helper_per_task += 1;
-            self.1.set(stats);
-            return Ok(Primitive::Null);
+            self.0.fetch_add(1, Ordering::Relaxed);
+            self.1.per_task.fetch_add(1, Ordering::Relaxed);
+            Ok(Primitive::Null)
+        } else {
+            Err(format!(
+                "unsupported operation: native host effect {}",
+                call.op
+            ))
         }
-        let callback = self
-            .0
-            .borrow()
-            .get(call.op as usize)
-            .cloned()
-            .ok_or_else(|| format!("unknown compiler string service: {}", call.op))?;
-        let Primitive::String(request) = call.arg else {
-            return Err("compiler service expects a string".into());
-        };
-        Ok(Primitive::string(&callback(&request.to_string_lossy())))
     }
 }
 impl MacroEvaluator for BbpEvaluator {
@@ -992,6 +1096,12 @@ impl MacroEvaluator for BbpEvaluator {
     }
 }
 impl CompilerEvaluator for BbpEvaluator {
+    fn install_wait_service(&self, callback: WaitService) {
+        *self.help.borrow_mut() = Some(callback);
+    }
+    fn install_native_runner(&self, callback: NativeRunner) {
+        *self.runner.borrow_mut() = Some(callback);
+    }
     fn native_forms(&self) -> bool {
         true
     }
@@ -1009,14 +1119,16 @@ impl CompilerEvaluator for BbpEvaluator {
         *self.service.borrow_mut() = Some(callback);
         Ok(())
     }
-    fn install_string_service(&self, name: &str, callback: StringService) -> Result<(), EvalError> {
+    fn install_string_service(
+        &self,
+        name: &str,
+        _callback: StringService,
+    ) -> Result<(), EvalError> {
         if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
             return Err(error("invalid service name"));
         }
-        let op = self.strings.borrow().len();
-        self.strings.borrow_mut().push(callback);
         let source = format!(
-            "rt => {{ globalThis.{name} = request => __rt.effect({op}, request); return null; }}"
+            "rt => {{ globalThis.{name} = () => {{ throw new Error('unsupported operation: native compiler service {name}'); }}; return null; }}"
         );
         let value = self.evaluate_unit(&source)?;
         self.release(value)?;

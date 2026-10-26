@@ -32,7 +32,7 @@ use std::{
     num::NonZeroUsize,
     panic::{self, AssertUnwindSafe},
     sync::{
-        Condvar, Mutex, MutexGuard, TryLockError,
+        Arc, Condvar, Mutex, MutexGuard, TryLockError, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
@@ -762,6 +762,7 @@ impl<J: Job, O> State<J, O> {
 
 /// The state every slot shares.
 struct Shared<J, O> {
+    owner: Weak<Shared<J, O>>,
     state: Mutex<State<J, O>>,
     /// Workers waiting for runnable work.
     work: Condvar,
@@ -865,7 +866,48 @@ pub enum Help {
     DepthLimit,
 }
 
+/// A thread-local handle for a suspended analyzer's callback. It owns only
+/// scheduler bookkeeping, never the active slot state or an execution closure.
+/// A retained handle becomes idle when the pool shuts down.
+pub struct HelpHandle<J: Job, O> {
+    shared: Arc<Shared<J, O>>,
+    index: usize,
+    slot: usize,
+    depth: usize,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+impl<J: Job, O> HelpHandle<J, O> {
+    pub fn cancelled(&self) -> bool {
+        self.shared.cancelled.load(Ordering::Relaxed)
+    }
+    pub fn push_urgent(&self, job: J) {
+        self.shared.submit_urgent(job);
+    }
+    pub fn help<W>(
+        &self,
+        make: impl Fn(usize) -> W + Sync,
+        execute: impl Fn(&mut W, J, &Worker<'_, J, O>) -> O + Sync,
+    ) -> Result<Help, WorkerPanic> {
+        Worker {
+            shared: &self.shared,
+            index: self.index,
+            slot: self.slot,
+            depth: self.depth,
+        }
+        .help(make, execute)
+    }
+}
+
 impl<J: Job, O> Worker<'_, J, O> {
+    pub fn help_handle(&self) -> HelpHandle<J, O> {
+        HelpHandle {
+            shared: self.shared.owner.upgrade().expect("a running pool"),
+            index: self.index,
+            slot: self.slot,
+            depth: self.depth,
+            _thread: std::marker::PhantomData,
+        }
+    }
     /// A hard bound on retained Rust analyzer frames during nested helping.
     pub const MAX_HELP_DEPTH: usize = 16;
 
@@ -1328,7 +1370,8 @@ where
 {
     let workers = config.slots.workers();
     let state = State::new(config, workers.max(1));
-    let shared = Shared {
+    let shared = Arc::new_cyclic(|owner| Shared {
+        owner: owner.clone(),
         restricted: state.restricted,
         state: Mutex::new(state),
         work: Condvar::new(),
@@ -1339,10 +1382,11 @@ where
         phases: config.phases,
         #[cfg(debug_assertions)]
         perturbation: config.perturbation.clone(),
-    };
+    });
     let make: MakeSlot<'_, W> = &make;
     let execute: Execute<'_, J, O, W> = &execute;
     let result = if workers == 0 {
+        let _guard = ShutdownGuard(&shared);
         let mut coordinator = Coordinator {
             shared: &shared,
             slots: config.slots,
@@ -1377,11 +1421,8 @@ where
             Ok(coordinate(&mut coordinator))
         })?
     };
-    let state = shared
-        .state
-        .into_inner()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match state.panic {
+    let failure = shared.lock().panic.clone();
+    match failure {
         Some(panic) => Err(PoolError::Panic(panic)),
         None => Ok(result),
     }

@@ -1,6 +1,6 @@
 # Native form macros (experimental)
 
-Build and run the bounded serial big-boy-pants-js backend without linking V8 or
+Build and run the bounded big-boy-pants-js backend without linking V8 or
 QuickJS:
 
 ```sh
@@ -88,7 +88,7 @@ symbol/keyword component spellings must
 round-trip unambiguously, as described in the engine's native form contract.
 JavaScript dynamic compilation currently limits each emitted unit to 16,384 UTF-16
 code units. Engine syntax/operation errors are reported with the macro's call and
-definition locations. `--jobs` must be 1.
+definition locations.
 
 Ordinary source helpers are compiled on demand. A macro parks at a dependency
 read while the compiler analyzes the helper using separate task state on the
@@ -99,6 +99,8 @@ for publication: immutable results are shared; values reaching task-owned
 mutation initialize once in each consuming task. The first task keeps its
 already initialized value in that case. `macro.helpers.N.*` reports actual
 compiled factories, published values, per-task initializations and waits.
+Namespace builds also report aggregate `native.helpers.*`, `native.tasks.steps`
+and `native.tasks.migrations` counts, including worker activity.
 
 Embedders can also explicitly preload a self-contained helper expression:
 
@@ -111,12 +113,15 @@ host.preload_native_helper("cljs.user/helper", "(fn [x] (list '+ x 2))")?;
 ```
 
 Preload configuration is installed anew in each session. Declaration-bundle
-products such as protocols still report unsupported demand. Compiler pool
-scheduling and task migration are not enabled yet; namespace builds still
-require `--jobs 1`. The evaluator tests exercise two concurrent consumers of a
-real `.cljs` helper, one producer, shared native input and collection while both
-consumers are parked. That is runtime integration evidence, not a claim that the
-compiler's deferred-unit pool uses this path.
+products such as protocols still report unsupported demand. Namespace builds
+support `--jobs 1`, `2` and higher through the existing compiler pool. A waiting
+worker helps ready compiler jobs with fresh, bounded nested state. After a helper
+wait, owned VM steps may resume on another worker; analyzer callbacks remain on
+their owning thread. The pool test forces two consumers to park, one helper to
+compile, unrelated analysis during the wait, and a continuation to migrate without
+replaying effects. Namespace output is compared at one, two and four slots.
+Evaluator tests also collect while both consumers are parked and check shared
+input identity and `finally` execution.
 
 Bridge depth/node limits and the evaluator's cancellation, poll budget and
 wall-clock deadline bound work. The session keeps imported nodes until teardown,

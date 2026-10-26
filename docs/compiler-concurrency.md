@@ -3105,8 +3105,11 @@ real ClojureScript consumers on two OS threads, force collection while both wait
 for one compiler producer, and verify retained input identity and one execution
 of the code before the wait and in `finally`.
 
-These are separate delivered mechanisms: the compiler's deferred-unit pool does
-not yet schedule native task resumes or connect its helper to native waits.
-Native namespace compilation therefore retains the `--jobs 1` guard. The old
-per-isolate implementation above describes the legacy backends; it is not a
-shared-heap scheduling guarantee for native macros.
+The compiler's deferred-unit pool connects these mechanisms: native waits help
+ready analysis jobs with fresh worker views, and owned bounded VM steps go to
+the urgent queue after the first helper wait. No thread-local analyzer callback
+crosses a worker boundary. A deterministic pool test holds two consumers on one
+unprepared helper, requires unrelated analysis during their wait, and forces a
+saved continuation onto the other OS worker. Real namespace output agrees at
+one, two and four slots. Aggregate helper and task counters include all workers.
+The old per-isolate implementation above continues to describe legacy backends.
