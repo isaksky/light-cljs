@@ -2142,6 +2142,10 @@ fn native_positional_literal_matrix_matches_legacy() {
             r#"(defmacro probe [] (let [m '{\a 1 "a" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8} s '#{1 1.0 2 3 4 5 6 7}] [(count (assoc m :h 9)) (get (assoc m :h 9) "a") (count (conj s 8)) (count (assoc m "a" 9)) (get (assoc m "a" 9) "a")])) (probe)"#,
         ),
         (
+            "promotion-member-metadata",
+            r#"(defmacro probe [] (let [s '#{^{:tag :first} [\a] ^{:tag :last} ["a"] 2 3 4 5 6 7} t (conj s 8)] (list 'quote [(count t) (meta (get s ["a"])) (meta (get t ["a"])) (meta (first (filter #(= % ["a"]) t)))]))) (probe)"#,
+        ),
+        (
             "equality-hash",
             r#"(defmacro probe [] (let [m '{:b 2 :a 1} h (apply hash-map [:a 1 :b 2]) s '#{2 1} t (set [1 2])] [(= m h) (= h m) (= (hash m) (hash h)) (= s t) (= t s) (= (hash s) (hash t)) (= '{\a 1 "a" 2} '{\a 1 "a" 2}) (= '#{1 1.0} '#{1 2})])) (probe)"#,
         ),

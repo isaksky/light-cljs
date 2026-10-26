@@ -931,6 +931,18 @@ fn set_add(heap: &Heap, set: &FormMap, member: Value) -> Result<Option<FormMap>,
     if map_get(heap, set, &member).is_some() {
         return Ok(None);
     }
+    if set.positional() && set.len() >= 8 {
+        // Promotion keeps each first stored member, including its metadata
+        // and occurrence identity. Map promotion's last value would instead
+        // make lookup return a later equal member while seq kept the first.
+        let mut promoted = FormMap::default();
+        for item in set.to_vec().into_iter().map(|(k, _)| k).chain([member]) {
+            if let Some(updated) = set_add(heap, &promoted, item)? {
+                promoted = updated;
+            }
+        }
+        return Ok(Some(promoted));
+    }
     map_assoc(heap, set, member.clone(), member)
 }
 
@@ -1505,8 +1517,8 @@ pub(crate) fn nth_at(heap: &Heap, coll: &Value, index: &Value) -> Result<Value, 
     })
 }
 
-/// The elements of a list or vector, in order, or the members of a set in
-/// unspecified (deterministic) trie order.
+/// The elements of a list or vector, or the members of a set: source order
+/// for positional literals, deterministic trie order for hashed sets.
 pub(crate) fn items(heap: &Heap, coll: &Value) -> Result<Vec<Value>, CollectionError> {
     if let Some(FormBody::Set(set)) = form_object(heap, coll).as_deref().map(FormObject::body) {
         let mut members = Vec::with_capacity(set.len());
@@ -1519,7 +1531,8 @@ pub(crate) fn items(heap: &Heap, coll: &Value) -> Result<Vec<Value>, CollectionE
     }
 }
 
-/// The entries of a map, in unspecified (deterministic) trie order.
+/// Map entries in source order for positional literals, deterministic trie
+/// order for hashed maps.
 pub(crate) fn entries(heap: &Heap, map: &Value) -> Result<Vec<(Value, Value)>, CollectionError> {
     Ok(map_body(heap, map)?.to_vec())
 }
@@ -2537,13 +2550,14 @@ impl<'s> Scope<'s> {
         self.result(nth(self.heap(), &self.local_value(coll), index))
     }
 
-    /// The elements of a list or vector, in order, or a set's members in
-    /// unspecified (deterministic) order.
+    /// The elements of a list or vector, or a set's members (source order
+    /// for positional literals, deterministic trie order for hashed sets).
     pub fn form_items(&self, coll: Local<'s>) -> Result<Vec<Local<'s>>, CollectionError> {
         Ok(self.new_locals(items(self.heap(), &self.local_value(coll))?))
     }
 
-    /// The entries of a map, in unspecified (deterministic) order.
+    /// Map entries in source order for positional literals, deterministic
+    /// trie order for hashed maps.
     pub fn form_entries(
         &self,
         map: Local<'s>,

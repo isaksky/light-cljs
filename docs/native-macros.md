@@ -864,8 +864,9 @@ survive collection and pruning; releasing the metadata reclaims every descendant
 A real emitted macro saves its first
 environment in task state across an envelope update, input-handle release,
 collection and pruning; the old/new slot values and shared namespace identity
-remain intact. After this review fix, the forced-final-collection regression
-reproduces the table's exact live and peak managed byte counts at both sizes.
+remain intact. Before positional input storage, the forced-final-collection
+regression reproduced the table's exact live and peak managed byte counts at
+both sizes; these measurements describe that earlier representation.
 
 Review-fix validation on the same toolchain: all 33 native evaluator tests and
 all 66 native `bbp_macros` tests pass, as does the pool stress with

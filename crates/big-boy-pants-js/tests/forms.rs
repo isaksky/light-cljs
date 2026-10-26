@@ -209,6 +209,10 @@ fn positional_forms_share_equality_hash_and_first_match_update_contracts() {
         if (__rt.formConj(dup, 1) !== dup || __rt.formDisj(dup, 7) !== dup ||
             __rt.formCount(__rt.formConj(dup, 3)) !== 4 ||
             __rt.formCount(__rt.formDisj(dup, 1)) !== 2) throw 'set updates';
+        const firstMember = __rt.formWithMeta(__rt.formVector('a'), __rt.formMap('tag', 'first'));
+        const lastMember = __rt.formWithMeta(__rt.formList('a'), __rt.formMap('tag', 'last'));
+        const promoted = __rt.formConj(set(__rt.formVector(firstMember, lastMember, 2, 3, 4, 5, 6, 7)), 8);
+        if (__rt.formCount(promoted) !== 8 || __rt.formGet(promoted, __rt.formList('a'), null) !== firstMember) throw 'promotion member identity';
         // Legacy duplicate sets have directional membership equality, including
         // after hashing both operands. Hash caches must not change that result.
         const left = set(__rt.formVector(1, 1)), right = set(__rt.formVector(1, 2));
