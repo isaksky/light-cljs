@@ -269,7 +269,10 @@ data-sized payload is not):
   shape metadata), array dense capacity and sparse/attribute entries, Map/Set
   and weak tables, private elements, atom versions and the property-key table;
 - string bodies (two bytes per unit plus 256 per body, ropes including their
-  possible flattened copy), BigInt limbs, ArrayBuffer stores, native persistent
+  possible flattened copy; a formatter's accumulated output charges each
+  node once and the whole output's flattened copy, its shared first piece
+  included, at the extension that makes it a rope, and the returned body keeps
+  that credit for its cached copy), BigInt limbs, ArrayBuffer stores, native persistent
   vectors/maps/forms and builders, RegExp programs and captures;
 - saved continuations: detached activations, closure captures, bound arguments,
   promise reactions, queued jobs, disposable resources, async-generator queues;
@@ -286,9 +289,8 @@ allocator overhead and fragmentation, Rust and VM stacks of running frames,
 transient values that exist only within one leaf step (bounded by the step's
 inputs), and the embedder's own data. Accounted bytes therefore approximate and
 do not bound RSS; `docs/measurement.md` records the realm's accounted footprint.
-Known retained-storage gaps, not yet charged: the cached flat copy of an
-accumulated rope whose first piece was shared (light-cljs-491), and strings
-produced by string index reads and the Date formatters (light-cljs-492). The
+Known retained-storage gaps, not yet charged: strings produced by string index
+reads and the Date formatters (light-cljs-492). The
 two heap-limit exception messages share one uncharged body each.
 
 A denial fails the requesting operation with `VmErrorKind::HeapLimit`,

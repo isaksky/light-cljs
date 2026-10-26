@@ -45,7 +45,7 @@ pub(super) struct State {
     option: usize,
     slots: Option<DisplayNames>,
     calendar: Option<UnitCursor>,
-    normalized: JsString,
+    normalized: crate::value::string::StringAccumulator,
     subtag_len: usize,
     discard: Option<UnitCursor>,
     failure: Option<&'static str>,
@@ -91,7 +91,7 @@ impl State {
             option: 0,
             slots,
             calendar: None,
-            normalized: JsString::from(""),
+            normalized: Default::default(),
             subtag_len: 0,
             discard: None,
             failure: None,
@@ -99,10 +99,9 @@ impl State {
     }
     fn reject(&mut self, kind: &'static str) -> Action {
         self.failure = Some(kind);
-        self.discard = Some(UnitCursor::new(std::mem::replace(
-            &mut self.normalized,
-            JsString::from(""),
-        )));
+        self.discard = Some(UnitCursor::new(
+            std::mem::take(&mut self.normalized).finish(),
+        ));
         self.stage = Stage::Cleanup;
         Action::Continue
     }
@@ -321,9 +320,12 @@ impl State {
                     }
                 }
                 if self.slots.as_ref().unwrap().fallback == "code" {
-                    self.normalized = self
-                        .normalized
-                        .append_accounted(heap, &JsString::from(chunk.as_str()))
+                    // A fresh body, which the output shares when it is the
+                    // first chunk: charge it as its own.
+                    let ticket = JsString::reserve(heap, chunk.len(), 1)?;
+                    let chunk = JsString::from(chunk.as_str()).with_reservation(ticket);
+                    self.normalized
+                        .push(heap, &chunk)
                         .map_err(|fault| match fault {
                             Fault::StringTooLong => {
                                 Fault::RangeError("calendar code too long".into())
@@ -338,7 +340,7 @@ impl State {
                         if self.slots.as_ref().unwrap().fallback == "none" {
                             Value::Undefined
                         } else {
-                            Value::String(self.normalized.clone())
+                            Value::String(std::mem::take(&mut self.normalized).finish())
                         },
                     ));
                 }

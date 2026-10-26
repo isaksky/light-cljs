@@ -377,6 +377,37 @@ fn retained_key_snapshots_and_intl_buffers_are_charged() {
 }
 
 #[test]
+fn list_format_large_first_item_precharges_flattening() {
+    // The 3 MB item fits, but the formatted output's flattened copy (read by
+    // charCodeAt) would need another 3 MB: the format itself is denied.
+    let (rt, limit) = with_headroom(5 * 1024 * 1024);
+    caught(
+        &rt,
+        "const s = 'x'.repeat(1500000); kept.push(s); \
+         const t = new Intl.ListFormat('en').format([s, 'y']); kept.push(t); \
+         kept.push(t.charCodeAt(0));",
+    );
+    assert!(rt.heap_stats().peak_managed_bytes <= limit);
+    // With room for both, the output owns its copy's charge before it is read.
+    let (rt, _) = with_headroom(16 * 1024 * 1024);
+    let before = rt.heap_stats().managed_bytes;
+    let outcome = run_sliced(
+        &rt,
+        "function f() { const t = new Intl.ListFormat('en').format(['x'.repeat(1500000), 'y']); \
+         return t.charCodeAt(1500005) === 121 ? t : 'wrong'; }",
+    );
+    let RunOutcome::Complete(result) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(result.string().unwrap().len(), 1_500_006);
+    let held = rt.heap_stats().managed_bytes - before;
+    assert!(
+        held >= 2 * 2 * 1_500_000,
+        "item and flat copy: {held} bytes"
+    );
+}
+
+#[test]
 fn eight_workers_share_one_byte_limit_and_all_recover() {
     use std::sync::Barrier;
     let (rt, limit) = with_headroom(4 * 1024 * 1024);

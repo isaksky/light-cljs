@@ -59,6 +59,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
 const FLAT_CONCAT_LIMIT: usize = 32;
+/// The byte charge of one string body's fixed part (header, cache and
+/// storage descriptor), conservatively.
+const BODY_BYTES: usize = 256;
 
 thread_local! {
     static COPIED_CODE_UNITS: Cell<u64> = const { Cell::new(0) };
@@ -149,6 +152,102 @@ impl Drop for Body {
     }
 }
 
+/// A formatter's output (ListFormat, DisplayNames), extended one piece at a
+/// time across native steps. [`JsString::concat_accounted`] charges the
+/// whole result on every call, which a retained rope chain would accumulate
+/// quadratically. Here each appended rope node is charged once, for itself
+/// and its piece's body, and one cumulative credit covers the eventual
+/// flattened copy of the whole output: every piece's units, the shared first
+/// piece included, plus the copy's body. Flattening is infallible
+/// ([`JsString::code_units`]), so the copy must be admitted before it can be
+/// made. [`StringAccumulator::finish`] moves the credit into the returned
+/// body, whose flatten cache shares that body's reservation: the credit
+/// lives as long as either the rope or its cached flat copy, whichever is
+/// released last.
+#[derive(Debug)]
+pub(crate) struct StringAccumulator {
+    /// Only the accumulator holds the latest node until `finish`, so the
+    /// credit can still be moved into it.
+    text: JsString,
+    /// Charge for the flattened copy of `text`; uncharged until the first
+    /// piece is extended.
+    flat_credit: crate::heap::budget::ByteReservation,
+}
+
+impl Default for StringAccumulator {
+    fn default() -> Self {
+        Self {
+            text: JsString::from(""),
+            flat_credit: Default::default(),
+        }
+    }
+}
+
+impl StringAccumulator {
+    /// Append `piece`. A denial leaves the accumulated output unchanged.
+    pub(crate) fn push(
+        &mut self,
+        heap: &crate::heap::Heap,
+        piece: &JsString,
+    ) -> Result<(), crate::vm::dispatch::Fault> {
+        use crate::vm::dispatch::Fault;
+        if piece.is_empty() {
+            return Ok(());
+        }
+        if self.text.is_empty() {
+            // Shared, not copied: its body is its owner's charge.
+            self.text = piece.clone();
+            return Ok(());
+        }
+        let len = self
+            .text
+            .len()
+            .checked_add(piece.len())
+            .filter(|&n| n <= MAX_STRING_LEN)
+            .ok_or(Fault::StringTooLong)?;
+        // The node and the piece's body (a separator or chunk may be fresh),
+        // then this extension's share of the flattened copy: the piece's
+        // units, or on the first extension the whole output and its body.
+        // A limited budget marks even a zero-byte charge as charged.
+        let node = JsString::reserve_owned(heap, piece.len(), 2)?;
+        let flat = if self.flat_credit.is_charged() {
+            JsString::reserve_owned(heap, piece.len(), 0)?
+        } else {
+            JsString::reserve_owned(heap, len, 1)?
+        };
+        self.text = self
+            .text
+            .concat(piece)
+            .expect("checked length")
+            .with_reservation(node.is_charged().then(|| Arc::new(node)));
+        self.flat_credit.merge(flat);
+        Ok(())
+    }
+
+    /// The accumulated output, owning the flattened copy's credit.
+    pub(crate) fn finish(self) -> JsString {
+        let Self {
+            mut text,
+            flat_credit,
+        } = self;
+        if !flat_credit.is_charged() {
+            return text;
+        }
+        // Every charged extension made `text` a fresh body that only this
+        // accumulator holds, with an unshared node charge (no flatten cache
+        // can have cloned it: the output was never read).
+        let body = Arc::get_mut(&mut text.0).expect("accumulator owns its output body");
+        Arc::get_mut(
+            body.reservation
+                .as_mut()
+                .expect("a charged extension charges its node"),
+        )
+        .expect("unshared node charge")
+        .merge(flat_credit);
+        text
+    }
+}
+
 impl JsString {
     pub(crate) fn import(&self, heap: &crate::heap::Heap) -> Option<Self> {
         if !heap.has_byte_limit()
@@ -185,45 +284,26 @@ impl JsString {
         units: usize,
         bodies: usize,
     ) -> Result<Option<Arc<crate::heap::budget::ByteReservation>>, crate::vm::dispatch::Fault> {
-        let bytes = units
-            .checked_mul(2)
-            .and_then(|n| bodies.checked_mul(256).and_then(|b| n.checked_add(b)))
-            .ok_or(crate::vm::dispatch::Fault::HeapLimit)?;
-        let reservation = heap
-            .reserve_bytes(bytes)
-            .ok_or(crate::vm::dispatch::Fault::HeapLimit)?;
+        let reservation = Self::reserve_owned(heap, units, bodies)?;
         Ok(reservation.is_charged().then(|| Arc::new(reservation)))
     }
 
-    /// Append `piece` to an accumulator that is extended many times (a
-    /// formatter's output). [`JsString::concat_accounted`] charges the whole
-    /// result on every call, which a retained rope chain would accumulate
-    /// quadratically; this charges only the piece, at the same per-unit rate
-    /// (its rope node and its share of a later flattened copy). Each
-    /// accumulated node keeps its own charge, so the total stays linear.
-    pub(crate) fn append_accounted(
-        &self,
+    /// The charge of `units` code units in `bodies` string bodies, before
+    /// any owner holds it.
+    fn reserve_owned(
         heap: &crate::heap::Heap,
-        piece: &Self,
-    ) -> Result<Self, crate::vm::dispatch::Fault> {
-        if self.is_empty() {
-            return Ok(piece.clone());
-        }
-        if piece.is_empty() {
-            return Ok(self.clone());
-        }
-        let reservation = Self::reserve(
-            heap,
-            piece
-                .len()
-                .checked_mul(16)
-                .ok_or(crate::vm::dispatch::Fault::HeapLimit)?,
-            2,
-        )?;
-        Ok(self
-            .concat(piece)
-            .ok_or(crate::vm::dispatch::Fault::StringTooLong)?
-            .with_reservation(reservation))
+        units: usize,
+        bodies: usize,
+    ) -> Result<crate::heap::budget::ByteReservation, crate::vm::dispatch::Fault> {
+        units
+            .checked_mul(2)
+            .and_then(|n| {
+                bodies
+                    .checked_mul(BODY_BYTES)
+                    .and_then(|b| n.checked_add(b))
+            })
+            .and_then(|bytes| heap.reserve_bytes(bytes))
+            .ok_or(crate::vm::dispatch::Fault::HeapLimit)
     }
 
     pub(crate) fn concat_accounted(
@@ -2651,6 +2731,65 @@ mod byte_budget_tests {
         drop(left);
         assert!(heap.byte_budget().used() > baseline);
         assert_eq!(flat.code_units(), &[120; 2000]);
+        drop(flat);
+        assert_eq!(heap.byte_budget().used(), baseline);
+    }
+
+    /// A large shared first piece and short later pieces: the output's
+    /// flattened copy is admitted with the extension, not after it.
+    fn accumulate(heap: &crate::heap::Heap, first: &JsString) -> JsString {
+        let mut output = StringAccumulator::default();
+        for piece in [first, &JsString::from(", "), &JsString::from("y")] {
+            output.push(heap, piece).ok().unwrap();
+        }
+        output.finish()
+    }
+
+    #[test]
+    fn accumulator_precharges_the_flat_copy_of_a_shared_first_piece() {
+        const UNITS: usize = 100_000;
+        let heap = crate::heap::Heap::with_byte_limit(4 * UNITS);
+        let first = JsString::copy_units(&heap, &[120; UNITS]).unwrap();
+        let used = heap.byte_budget().used();
+        // The first piece is shared without a charge, but its extension
+        // needs room for the whole output's flat copy, which is not left.
+        let mut output = StringAccumulator::default();
+        output.push(&heap, &first).ok().unwrap();
+        assert_eq!(heap.byte_budget().used(), used);
+        assert!(matches!(
+            output.push(&heap, &JsString::from(", ")),
+            Err(crate::vm::dispatch::Fault::HeapLimit)
+        ));
+        assert_eq!(heap.byte_budget().used(), used, "a denial keeps no charge");
+        let text = output.finish();
+        assert!(
+            text.same_body(&first),
+            "a denial leaves the output unchanged"
+        );
+    }
+
+    #[test]
+    fn accumulated_flat_copy_keeps_its_credit_after_the_rope_and_pieces_drop() {
+        const UNITS: usize = 100_000;
+        let heap = crate::heap::Heap::with_byte_limit(16 * UNITS);
+        let baseline = heap.byte_budget().used();
+        let first = JsString::copy_units(&heap, &[120; UNITS]).unwrap();
+        let shared = heap.byte_budget().used();
+        let rope = accumulate(&heap, &first);
+        assert_eq!(rope.len(), UNITS + 3);
+        assert!(heap.byte_budget().used() - shared >= 2 * rope.len());
+        assert_eq!(rope.code_units()[UNITS..], [44, 32, 121]);
+        // The cached flat copy outlives the rope, every accumulated node and
+        // the first piece, as when a later concatenation adopts it.
+        let flat = rope.concat_operand();
+        assert!(!flat.same_body(&rope));
+        drop(rope);
+        drop(first);
+        let retained = heap.byte_budget().used() - baseline;
+        assert!(
+            retained >= 2 * flat.len(),
+            "flat copy uncharged: {retained}"
+        );
         drop(flat);
         assert_eq!(heap.byte_budget().used(), baseline);
     }

@@ -57,7 +57,7 @@ pub(super) struct State {
     items: Vec<JsString>,
     /// An iterable may yield one string any number of times: charge each slot.
     items_charge: crate::heap::budget::GrowthCharge,
-    text: JsString,
+    text: crate::value::string::StringAccumulator,
     index: usize,
     pending: Option<Exception>,
 }
@@ -129,7 +129,7 @@ impl State {
             output: Value::Undefined,
             items: Vec::new(),
             items_charge: Default::default(),
-            text: JsString::from(""),
+            text: Default::default(),
             index: 0,
             pending: None,
         })
@@ -393,7 +393,7 @@ impl State {
             return Ok(Action::Return(if self.parts {
                 self.output.clone()
             } else {
-                Value::String(self.text.clone())
+                Value::String(std::mem::take(&mut self.text).finish())
             }));
         }
         let item = self.items[self.index].clone();
@@ -428,7 +428,7 @@ impl State {
             )?;
             property::append(heap, task, &self.output, Some(part))
         } else {
-            self.text = self.text.append_accounted(heap, &text)?;
+            self.text.push(heap, &text)?;
             Ok(())
         }
     }
