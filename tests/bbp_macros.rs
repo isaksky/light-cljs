@@ -2387,6 +2387,186 @@ fn native_helpers_use_zero_in_the_verbatim_mutual_recursion_fixture() {
     assert_native_matches_legacy(source, "true\n");
 }
 
+/// Stateful cuerdas pipeline and each new call shape, compared in one table
+/// against QuickJS when built with `bbp-macros,quickjs`. The common operands
+/// are imported forms, so scalar and element occurrences are exercised too.
+#[test]
+fn native_transducer_call_shapes_match_legacy() {
+    for (body, expected) in [
+        (
+            r#"[(into [] (partition-by odd?) xs)
+                (into [] (comp (partition-by odd?) (filter some?) (mapcat identity)) xs)
+                (into [] (comp (filter odd?) (map inc)) xs)]"#,
+            "[[[1 1] [2] [3 3]] [1 1 2 3 3] [2 2 4 4]]",
+        ),
+        (
+            r#"(let [p partition-by f filter m map mc mapcat i into]
+                 [(i [] (p odd?) xs)
+                  (i [] (comp (p odd?) (f some?) (mc identity)) xs)
+                  (i [] (comp (f odd?) (m inc)) xs)])"#,
+            "[[[1 1] [2] [3 3]] [1 1 2 3 3] [2 2 4 4]]",
+        ),
+        (
+            r#"[(into) (into xs) (into [] nil) (into [] [])
+                (into [] (partition-by odd?) nil) (into [] (partition-by odd?) [])
+                (into [] (filter some?) nil) (into [] (map inc) [])
+                (into [] (mapcat identity) nil) (into [] (mapcat identity) []) (vec (map))
+                (into [] (mapcat (fn [x] nil)) xs)
+                (into [] (filter some?) [nil false 0 ""])]"#,
+            "[[] [1 1 2 3 3] [] [] [] [] [] [] [] [] [] [] [false 0 \"\"]]",
+        ),
+        (
+            r#"[(into '(9) (filter odd?) xs) (into nil (map inc) [1 2])
+                (into {:a 1} (map identity) [[:b 2]])
+                (meta (into (with-meta [] {:tag :kept}) (map inc) xs))
+                (into #{1} (filter odd?) xs)]"#,
+            "[(3 3 1 1 9) (3 2) {:a 1, :b 2} {:tag :kept} #{1 3}]",
+        ),
+        (
+            r#"(let [s string? r reduced p reduced? e ensure-reduced u unreduced
+                       v (r text) nested (reduced v)]
+                 [(string? text) (s text) (string? nil) (s false) (s 0)
+                  (p v) (p text) (= text @v) (= text (u v))
+                  (identical? v (e v)) (reduced? (e nil))
+                  (identical? v (unreduced nested)) (= text (unreduced text))
+                  (= (r 1) (r 1)) (= v v)])"#,
+            "[true true false false false true false true true true true true true false true]",
+        ),
+        (
+            r#"[(into [] (partition-by (fn [x] [(odd? x)])) xs)
+                (into [] (partition-by identity) [:cljs.core/none 1 2])
+                (vec (map vec (partition-by odd? xs)))
+                (vec (partition-by odd? nil))
+                (vec (mapcat vector [1 2] [3 4]))
+                (vec (filter some? [nil false 0 ""]))]"#,
+            "[[[1 1] [2] [3 3]] [[:cljs.core/none 1] [2]] [[1 1] [2] [3 3]] [] [1 3 2 4] [false 0 \"\"]]",
+        ),
+        (
+            r#"(let [log (js/Array.)
+                       xf (comp (partition-by (fn [x] (.push log (str "k" x)) (odd? x)))
+                                (filter (fn [p] (.push log (str "f" (count p))) true))
+                                (mapcat (fn [p] (.push log (str "m" (count p))) p)))
+                       result (into [] xf xs)]
+                 [result (.join log ",")])"#,
+            "[[1 1 2 3 3] \"k1,k1,k2,f2,m2,k3,f1,m1,k3,f2,m2\"]",
+        ),
+        (
+            r#"(let [xf (comp (partition-by odd?) (filter some?) (mapcat identity))]
+                 [(into [] xf xs) (into [] xf []) (into [] xf [2 2]) (into [] xf xs)])"#,
+            "[[1 1 2 3 3] [] [2 2] [1 1 2 3 3]]",
+        ),
+        (
+            r#"[(transduce (map inc) + xs) (transduce (map inc) + 100 xs)
+                (transduce (filter odd?) + nil) (transduce (filter odd?) + 10 [])
+                (transduce (map inc) (completing + (fn [x] (* 10 x))) xs)
+                (transduce (map inc) (completing +) 100 xs)
+                (let [c completing t transduce] (t (map inc) (c + (fn [x] (* 10 x))) 100 xs))]"#,
+            "[15 115 0 10 150 115 1150]",
+        ),
+        (
+            r#"[(reduce (fn [r x] (reduced (+ r x))) [1 2 100])
+                (reduce (fn [r x] (if (= x 2) (reduced (conj r x)) (conj r x))) []
+                        (cons 1 (lazy-seq (cons 2 (lazy-seq (throw (js/Error. "tail")))))))
+                (reduce + []) (reduce + nil) (reduce + 10 nil)
+                (reduced? (reduce (fn [r x] (reduced (reduced x))) 0 [1 2]))]"#,
+            "[3 [1 2] 0 0 10 true]",
+        ),
+        (
+            r#"(let [log (js/Array.)
+                       xf (mapcat (fn [x] (.push log (str "map" x)) [x x]))
+                       rf (fn ([] []) ([r] (.push log "done") r)
+                            ([r x] (.push log (str "step" x)) (reduced (conj r x))))
+                       result (transduce xf rf [1 2 3])]
+                 [result (.join log ",")])"#,
+            "[[1] \"map1,step1,done\"]",
+        ),
+        (
+            r#"(let [log (js/Array.)
+                       xf (comp (partition-by (fn [x] (.push log x) (odd? x))) (mapcat identity))
+                       rf (fn ([r] (.push log "done") r) ([r x] (reduced (conj r x))))
+                       result (transduce xf rf [] xs)]
+                 [result (.join log ",")])"#,
+            "[[1] \"1,1,2,done\"]",
+        ),
+        (
+            r#"(let [log (js/Array.)
+                       rf (fn ([r] (.push log "done") r)
+                            ([r p] (.push log "step") (reduced (conj r p))))]
+                 [(transduce (partition-by odd?) rf [] [1 1])
+                  (transduce (partition-by odd?) rf [] [1 1 2 3])
+                  (.join log ",")])"#,
+            "[[[1 1]] [[1 1]] \"step,done,step,done\"]",
+        ),
+        (
+            r#"(let [xf (partition-by odd?) rf (completing conj)
+                       a (xf rf) b (xf rf)
+                       a0 (a) b0 (b)
+                       a1 (a a0 1) b1 (b b0 2)
+                       a2 (a a1 2) b2 (b b1 3)]
+                 [(a a2) (b b2) (a []) (b [])])"#,
+            "[[[1] [2]] [[2] [3]] [] []]",
+        ),
+        (
+            r#"[(into [] (fn [rf] (fn ([] (rf)) ([r] (conj (rf r) :done)) ([r x] (rf r x)))) [])
+                (let [f ((map vector) (completing conj))] [(f) (f []) (f [] 1 2)])
+                (let [f ((mapcat vector) (completing conj))] [(f) (f []) (f [] 1 2)])
+                (let [f ((filter some?) (completing conj))] [(f) (f []) (f [] false)])]"#,
+            "[[:done] [[] [] [[1 2]]] [[] [] [1 2]] [[] [] [false]]]",
+        ),
+        (
+            r#"(let [error (fn [f a] (try (apply f a) :ok (catch :default e (.-message e))))]
+                 [(error map []) (error mapcat []) (error filter []) (error filter [identity nil nil])
+                  (error partition-by []) (error partition-by [identity nil nil])
+                  (error into [nil nil nil nil]) (error transduce []) (error transduce [identity +])
+                  (error transduce [identity + nil nil nil])
+                  (error completing []) (error completing [+ identity identity])
+                  (error ((partition-by identity) (completing conj)) [[] 1 2])
+                  (error ((filter identity) (completing conj)) [[] 1 2])])"#,
+            "[:ok \"Invalid arity: 0\" \"Invalid arity: 0\" \"Invalid arity: 3\" \"Invalid arity: 0\" \"Invalid arity: 3\" \"Invalid arity: 4\" \"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 5\" \"Invalid arity: 0\" \"Invalid arity: 3\" \"Invalid arity: 3\" \"Invalid arity: 3\"]",
+        ),
+    ] {
+        let source = format!(
+            "(defmacro m [xs text] (list 'quote {body})) \
+             (js/console.log (pr-str (m [1 1 2 3 3] \"s\")))"
+        );
+        assert_native_matches_legacy(&source, &format!("{expected}\n"));
+    }
+}
+
+#[test]
+fn native_verbatim_cuerdas_unsafe_concat_pipeline() {
+    // Reduced from vendor/cuerdas/core.cljc in the read-only Penpot port.
+    // The helper and unsafe-concat bodies are verbatim; c aliases cljs.core.
+    let source = include_str!("fixtures/native-helper-demand/cuerdas/cuerdas/repro.cljc");
+    let root = temp_dir::TempDir::new("native-cuerdas-transducers");
+    std::fs::create_dir(root.join("cuerdas")).unwrap();
+    std::fs::write(root.join("cuerdas/repro.cljc"), source).unwrap();
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let native = light_cljs::compiler::analyze_namespace_entry(
+        "cuerdas.repro",
+        &[root.path().to_path_buf()],
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let native = emit_js(&native);
+    assert_eq!(program_output(&native), "abXcd  ab\n");
+    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+    {
+        let legacy = light_cljs::compiler::analyze_namespace_entry(
+            "cuerdas.repro",
+            &[root.path().to_path_buf()],
+            &mut MacroHost::new(),
+            Default::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(native, emit_js(&legacy));
+    }
+}
+
 /// Macro code over lazy sequences, which the native unit runs on the
 /// engine's once-realized cells (light-cljs-479; docs/native-macros.md,
 /// "Lazy sequences"). Each expands as the legacy compiler does and runs.

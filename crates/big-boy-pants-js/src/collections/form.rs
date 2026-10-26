@@ -285,6 +285,8 @@ pub enum FormKind {
     /// A sequence cell: realized elements followed by a lazy tail
     /// (`crate::collections::lazy`, "Sequences").
     Cons,
+    /// An immutable early-termination marker, with identity equality.
+    Reduced,
 }
 
 impl FormKind {
@@ -303,6 +305,7 @@ impl FormKind {
             FormKind::Type => "type",
             FormKind::Lazy => "lazy-seq",
             FormKind::Cons => "cons",
+            FormKind::Reduced => "reduced",
         }
     }
 
@@ -396,6 +399,8 @@ pub(crate) enum FormBody {
     Lazy(Arc<LazyCell>),
     /// Realized elements followed by a lazy tail.
     Cons(ConsBody),
+    /// `reduced`: opaque to sequence operations; its value is traced.
+    Reduced(Value),
 }
 
 /// What a struct type is: its name, its field names in order and whether
@@ -480,6 +485,7 @@ impl FormObject {
             FormBody::Type(_) => FormKind::Type,
             FormBody::Lazy(_) => FormKind::Lazy,
             FormBody::Cons(_) => FormKind::Cons,
+            FormBody::Reduced(_) => FormKind::Reduced,
         }
     }
 
@@ -524,7 +530,7 @@ impl FormObject {
             FormBody::Set(set) => set.for_each(|k, _| f(k)),
             // A deftype's hash is its identity's; a record's reads its
             // field values and extension entries.
-            FormBody::Type(_) => {}
+            FormBody::Type(_) | FormBody::Reduced(_) => {}
             FormBody::Struct(s) => {
                 if s.info.record {
                     s.fields.for_each(&mut f);
@@ -557,6 +563,7 @@ impl Trace for FormObject {
             }
             FormBody::Lazy(cell) => cell.trace(visit),
             FormBody::Cons(c) => c.trace(visit),
+            FormBody::Reduced(value) => value.trace(visit),
         }
         if let Some(meta) = &self.meta {
             meta.trace(visit);
@@ -659,6 +666,17 @@ fn map_get(heap: &Heap, map: &PMap, key: &Value) -> Option<Value> {
 }
 
 // ---- Construction ----
+
+/// A fresh `reduced` marker. Allocation and its payload use the ordinary
+/// persistent-form budget, tracing and publication rules.
+pub(crate) fn new_reduced(heap: &Heap, value: Value) -> Result<Value, CollectionError> {
+    let parts = [value.clone()];
+    alloc(
+        heap,
+        FormObject::new(FormBody::Reduced(value), None),
+        &parts,
+    )
+}
 
 /// A new keyword or symbol (`kind` is one of the two); `AmbiguousName`
 /// unless its spelling splits back into `namespace` and `name`.
@@ -1442,8 +1460,10 @@ pub(crate) fn with_meta(heap: &Heap, v: &Value, meta: &Value) -> Result<Value, C
     let expected = "symbol, list, form vector, form map, form set or record";
     let f = match form_object(heap, v) {
         Some(f)
-            if !matches!(f.kind(), FormKind::Keyword | FormKind::Type)
-                && (f.kind() != FormKind::Struct || f.record().is_some()) =>
+            if !matches!(
+                f.kind(),
+                FormKind::Keyword | FormKind::Type | FormKind::Reduced
+            ) && (f.kind() != FormKind::Struct || f.record().is_some()) =>
         {
             f
         }
@@ -2041,7 +2061,7 @@ fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
         }
         // Identity-hashed: set where the object identity is known
         // ([`identity_hash`]); never reached through it.
-        FormBody::Struct(_) | FormBody::Type(_) => 0,
+        FormBody::Struct(_) | FormBody::Type(_) | FormBody::Reduced(_) => 0,
     }
 }
 
@@ -2050,7 +2070,7 @@ fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
 fn identity_hash(f: &FormObject, id: ObjectId) -> Option<i32> {
     match &f.body {
         FormBody::Struct(s) if s.info.record => None,
-        FormBody::Struct(_) | FormBody::Type(_) => {
+        FormBody::Struct(_) | FormBody::Type(_) | FormBody::Reduced(_) => {
             Some(*f.hash.get_or_init(|| scalar_hash(&Value::Object(id))))
         }
         _ => None,

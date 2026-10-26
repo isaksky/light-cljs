@@ -531,6 +531,7 @@ impl Children {
                     // `[i]` (light-cljs-478), a record's extension entries
                     // `{key}`.
                     FormBody::Type(_) => {}
+                    FormBody::Reduced(value) => f(Step::NativeEdge(0), value),
                     FormBody::Struct(s) => {
                         f(Step::NativeEdge(0), &s.ty);
                         let mut index = 0;

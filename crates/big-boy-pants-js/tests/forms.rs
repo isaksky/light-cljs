@@ -812,6 +812,71 @@ fn scalar_predicates_and_callable_collections_preserve_occurrences() {
 }
 
 #[test]
+fn reduced_markers_preserve_payload_identity_and_trace_it_through_collection() {
+    let rt = Runtime::new();
+    let (payload, weak) = rt.scope(|s| {
+        let value = s.primitive(Primitive::Number(42.0));
+        let occurrence = s.new_occurrence(value, at(2, 3)).unwrap();
+        let payload = s.new_form_vector(&[occurrence]).unwrap();
+        (
+            s.persist(payload),
+            [s.downgrade(payload), s.downgrade(occurrence)],
+        )
+    });
+    let marker = call(
+        &rt,
+        "function wrap(x) { return __rt.cljReduced(x); }",
+        &[&payload],
+    );
+    rt.publish(&marker).unwrap();
+    drop(payload);
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| w.is_live()));
+    let result = call(
+        &rt,
+        r#"function check(marker) {
+        const payload = __rt.cljUnreduced(marker), nested = __rt.cljReduced(marker);
+        if (!__rt.cljIsReduced(marker) || __rt.cljIsReduced(payload) ||
+            __rt.cljUnreduced(nested) !== marker || __rt.cljUnreduced(payload) !== payload ||
+            __rt.formEquals(marker, __rt.cljReduced(payload)) || !__rt.formEquals(marker, marker) ||
+            __rt.formKind(marker) !== 'reduced') throw new Error('marker semantics');
+        const keyed = __rt.formMap(marker, payload);
+        if (__rt.formGet(keyed, marker, null) !== payload) throw new Error('identity key');
+        let unsupported = false;
+        try { __rt.cljSeq(marker); } catch (e) { unsupported = e instanceof TypeError; }
+        if (!unsupported) throw new Error('opaque marker');
+        return payload;
+    }"#,
+        &[&marker],
+    );
+    rt.scope(|s| {
+        assert!(s.same_object(s.local(&result).unwrap(), s.upgrade(&weak[0]).unwrap()));
+        let occurrence = s.form_nth(s.local(&result).unwrap(), 0).unwrap();
+        assert!(s.same_object(occurrence, s.upgrade(&weak[1]).unwrap()));
+    });
+    drop(result);
+    drop(marker);
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| !w.is_live()));
+}
+
+#[test]
+fn reduced_markers_do_not_publish_task_owned_payloads() {
+    let rt = Runtime::new();
+    for expression in ["{}", "[]", "(() => { let x = 0; return () => ++x; })()"] {
+        let marker = call(
+            &rt,
+            &format!("function make() {{ return __rt.cljReduced({expression}); }}"),
+            &[],
+        );
+        let PublishError::NotShareable { path, .. } = rt.publish(&marker).unwrap_err() else {
+            panic!("published {expression}");
+        };
+        assert_eq!(path.steps()[0], PathStep::NativeEdge(0));
+    }
+}
+
+#[test]
 fn map_entry_calls_require_exact_indices_and_preserve_stored_occurrences() {
     let rt = Runtime::new();
     let [zero, no] = rt.scope(|s| {

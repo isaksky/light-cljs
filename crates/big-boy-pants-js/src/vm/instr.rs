@@ -1494,11 +1494,17 @@ pub enum FormOp {
     CljIsFalse = 59,
     /// callable collection arg default argument-count → lookup result (`cljInvoke`).
     CljInvoke = 60,
+    /// v → a fresh early-termination marker (`cljReduced`).
+    CljReduced = 61,
+    /// v → whether it is an early-termination marker (`cljIsReduced`).
+    CljIsReduced = 62,
+    /// v → a marker's value, or v itself (`cljUnreduced`).
+    CljUnreduced = 63,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 61] = [
+    pub const ALL: [FormOp; 64] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1560,6 +1566,9 @@ impl FormOp {
         FormOp::CljIsZero,
         FormOp::CljIsFalse,
         FormOp::CljInvoke,
+        FormOp::CljReduced,
+        FormOp::CljIsReduced,
+        FormOp::CljUnreduced,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1581,6 +1590,9 @@ impl FormOp {
             | FormOp::CljTruth
             | FormOp::CljIsZero
             | FormOp::CljIsFalse
+            | FormOp::CljReduced
+            | FormOp::CljIsReduced
+            | FormOp::CljUnreduced
             | FormOp::CljCount
             | FormOp::CljSeq
             | FormOp::CljFirst
@@ -1697,6 +1709,9 @@ impl FormOp {
             FormOp::CljRangeCons => "cljRangeCons",
             FormOp::CljIsZero => "cljIsZero",
             FormOp::CljIsFalse => "cljIsFalse",
+            FormOp::CljReduced => "cljReduced",
+            FormOp::CljIsReduced => "cljIsReduced",
+            FormOp::CljUnreduced => "cljUnreduced",
             FormOp::CljInvoke => "cljInvoke",
         }
     }

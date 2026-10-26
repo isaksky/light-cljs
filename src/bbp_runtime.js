@@ -360,7 +360,7 @@ const native = (() => {
       if (Object.is(__rt.atomCas(a, current, v), current)) return current;
     }
   };
-  const deref = a => { lane(a); return __rt.atomLoad(a); };
+  const deref = a => { if (__rt.cljIsReduced(a)) return __rt.cljUnreduced(a); lane(a); return __rt.atomLoad(a); };
   const reset = (a, v) => { lane(a); store(a, v); return v; };
   const swapPair = (a, f, args) => {
     lane(a);
@@ -482,7 +482,65 @@ const native = (() => {
     const p = takeN(takeN, n, s);
     return __rt.cljCount(p) === n ? __rt.cljCons(p, self(self, n, step, dropN(step, s))) : null;
   });
-  const reduceSeq = (f, init, c) => { let acc = init; for (let s = seqOf(c); s !== null; s = __rt.cljNext(s)) acc = invoke(f, acc, __rt.cljFirst(s)); return acc; };
+  // Reducer callbacks run on the task VM and can suspend without replay.
+  // Stop before reading the next source element and unwrap one marker only;
+  // nested markers let a flattening reducer propagate termination outward.
+  const reduceSeq = (f, init, c) => {
+    let acc = init;
+    for (let s = seqOf(c); s !== null; s = __rt.cljNext(s)) {
+      acc = invoke(f, acc, __rt.cljFirst(s));
+      if (__rt.cljIsReduced(acc)) return __rt.cljUnreduced(acc);
+    }
+    return acc;
+  };
+  const reducing = (rf, step, complete = result => invoke(rf, result)) => (...a) => {
+    if (a.length === 0) return invoke(rf);
+    if (a.length === 1) return complete(a[0]);
+    if (a.length === 2) return step(a[0], a[1]);
+    return arity(a.length);
+  };
+  const mapTransform = f => rf => (...a) => a.length < 2 ? invoke(rf, ...a) : invoke(rf, a[0], invoke(f, ...a.slice(1)));
+  const filterTransform = f => rf => reducing(rf, (result, x) => truth(invoke(f, x)) ? invoke(rf, result, x) : result);
+  const mapcatTransform = f => rf => (...a) => {
+    if (a.length < 2) return invoke(rf, ...a);
+    let result = a[0];
+    for (let s = seqOf(invoke(f, ...a.slice(1))); s !== null; s = __rt.cljNext(s)) {
+      result = invoke(rf, result, __rt.cljFirst(s));
+      if (__rt.cljIsReduced(result)) return result;
+    }
+    return result;
+  };
+  const partitionByTransform = f => rf => {
+    const none = __rt.formKeyword('cljs.core', 'none');
+    let buffer = __rt.formVector(), prior = none;
+    const flush = result => { const group = buffer; buffer = __rt.formVector(); return invoke(rf, result, group); };
+    return reducing(rf, (result, x) => {
+      const previous = prior, key = invoke(f, x); prior = key;
+      if (__rt.formEquals(previous, none) || __rt.formEquals(previous, key)) { buffer = __rt.formConj(buffer, x); return result; }
+      const ret = flush(result);
+      if (!__rt.cljIsReduced(ret)) buffer = __rt.formConj(buffer, x);
+      return ret;
+    }, result => {
+      if (__rt.formCount(buffer)) result = __rt.cljUnreduced(flush(result));
+      return invoke(rf, result);
+    });
+  };
+  // The collection overload keeps the legacy lazy partition/run shape and
+  // predicate order, including re-reading the boundary to start the next run.
+  const partitionByFrom = (self, f, c) => lazy(() => {
+    const s = seqOf(c);
+    if (s === null) return null;
+    const x = __rt.cljFirst(s), key = invoke(f, x);
+    const run = __rt.cljCons(x, takeWhileFrom(takeWhileFrom, y => __rt.formEquals(key, invoke(f, y)), __rt.cljNext(s)));
+    return __rt.cljCons(run, self(self, f, lazy(() => dropN(__rt.cljCount(run), s))));
+  });
+  const transduce = (...a) => {
+    if (a.length !== 3 && a.length !== 4) return arity(a.length);
+    const xf = a[0], rf = a[1], init = a.length === 3 ? invoke(rf) : a[2], coll = a[a.length - 1];
+    const transformed = invoke(xf, rf);
+    return invoke(transformed, reduceSeq(transformed, init, coll));
+  };
+  const intoReducer = (...a) => a.length === 1 ? a[0] : a.length === 2 ? __rt.cljConj(a[0], a[1]) : arity(a.length);
   const core = {
     assertions:true,
     invoke, truth, get, identity:x=>x, macroReaderFunction:f=>f,
@@ -501,7 +559,7 @@ const native = (() => {
     apply:(f,...xs)=>invoke(f,...xs.slice(0,-1),...arr(xs[xs.length-1])),
     assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
     dissoc:(m,...ks)=>each((m,k)=>__rt.cljDissoc(m,k),m,ks),
-    conj:(m,...xs)=>each((m,x)=>__rt.cljConj(m,x),m,xs),
+    conj:(...a)=>a.length===0?__rt.formVector():each((m,x)=>__rt.cljConj(m,x),a[0],a.slice(1)),
     disj:(s,...xs)=>each((s,x)=>__rt.cljDisj(s,x),s,xs),
     contains:(c,k)=>__rt.cljContains(c,k),
     keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:list(arr(s).map(e=>__rt.formNth(e,0)));}
@@ -511,7 +569,9 @@ const native = (() => {
     isKeyword:x=>__rt.formKind(val(x))==='keyword', isSymbol:x=>__rt.formKind(val(x))==='symbol',
     isVector:x=>__rt.formKind(val(x))==='vector', isMap:x=>{const k=__rt.formKind(val(x));return k==='map'||k==='record';}, isSeq:x=>{const k=__rt.formKind(val(x));return k==='list'||k==='lazy-seq'||k==='cons';},
     isSet:x=>__rt.formKind(val(x))==='set',
-    isNil:x=>val(x)==null, isSome:x=>val(x)!=null, isFalse:x=>__rt.cljIsFalse(x), not:x=>!truth(x), boolean:truth,
+    isNil:x=>val(x)==null, isSome:x=>val(x)!=null, isFalse:x=>__rt.cljIsFalse(x), isString:x=>typeof val(x)==='string', not:x=>!truth(x), boolean:truth,
+    reduced:x=>__rt.cljReduced(x), isReduced:x=>__rt.cljIsReduced(x), unreduced:x=>__rt.cljUnreduced(x),
+    ensureReduced:x=>__rt.cljIsReduced(x)?x:__rt.cljReduced(x),
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
     name:x=>{if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
     namespace:x=>{if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support namespace: '+__rt.formName(val(x)));return __rt.formNamespace(val(x));},
@@ -529,10 +589,11 @@ const native = (() => {
     // An explicit `(LazySeq. meta fn s hash)`: a realized one (no `fn`) holds `s`.
     LazySeq:function(m,f,s){const x=f==null?__rt.lazySeq(()=>s):__rt.lazySeq(f);return m==null?x:__rt.cljWithMeta(x,m);},
     realized:x=>__rt.cljRealized(x),
-    mapSeq:(f,...cs)=>cs.length===0?arity(1):cs.length===1?mapOne(mapOne,f,cs[0]):mapMany(mapMany,f,list(cs)),
+    mapSeq:(...a)=>a.length===0?lazy(()=>null):a.length===1?mapTransform(a[0]):a.length===2?mapOne(mapOne,a[0],a[1]):mapMany(mapMany,a[0],list(a.slice(1))),
     mapIndexed:(f,c)=>mapIndexedFrom(mapIndexedFrom,f,c,0),
-    filter:(f,c)=>select(select,f,c,0), remove:(f,c)=>select(select,f,c,1), keep:(f,c)=>select(select,f,c,2),
-    mapcat:(f,...cs)=>catSeqs(catSeqs,core.mapSeq(f,...cs)),
+    filter:(...a)=>a.length===1?filterTransform(a[0]):a.length===2?select(select,a[0],a[1],0):arity(a.length), remove:(f,c)=>select(select,f,c,1), keep:(f,c)=>select(select,f,c,2),
+    mapcat:(...a)=>a.length===0?arity(0):a.length===1?mapcatTransform(a[0]):catSeqs(catSeqs,core.mapSeq(...a)),
+    partitionBy:(...a)=>a.length===1?partitionByTransform(a[0]):a.length===2?partitionByFrom(partitionByFrom,a[0],a[1]):arity(a.length),
     take:(n,c)=>takeN(takeN,val(n),c), drop:(n,c)=>dropN(val(n),c),
     takeWhile:(f,c)=>takeWhileFrom(takeWhileFrom,f,c), dropWhile:(f,c)=>dropWhileFrom(f,c),
     interleave:(...cs)=>cs.length===0?__rt.formList():cs.length===1?((c)=>lazy(()=>seqOf(c)))(cs[0]):interleaveAll(interleaveAll,list(cs)),
@@ -543,7 +604,9 @@ const native = (() => {
     partition:(...a)=>a.length===2?partitionFrom(partitionFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionFrom(partitionFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
     reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);const s=seqOf(a[0]);
       return s===null?invoke(f):reduceSeq(f,__rt.cljFirst(s),__rt.cljRest(s));},
-    into:(to,...a)=>a.length===1?each((m,x)=>__rt.cljConj(m,x),to,arr(a[0])):arity(a.length+1),
+    transduce,
+    completing:(...a)=>a.length===1||a.length===2?reducing(a[0],(result,x)=>invoke(a[0],result,x),a.length===1?result=>result:result=>invoke(a[1],result)):arity(a.length),
+    into:(...a)=>a.length===0?__rt.formVector():a.length===1?a[0]:a.length===2?reduceSeq(intoReducer,a[0],a[1]):a.length===3?transduce(a[1],intoReducer,a[0],a[2]):arity(a.length),
     every:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s))if(!truth(invoke(f,__rt.cljFirst(s))))return false;return true;},
     some:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s)){const v=invoke(f,__rt.cljFirst(s));if(truth(v))return v;}return null;},
     notEvery:(f,c)=>!core.every(f,c), notAny:(f,c)=>!truth(core.some(f,c)),

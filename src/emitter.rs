@@ -3625,6 +3625,12 @@ impl<'a> Emitter<'a> {
             self.value(args[0]);
             return true;
         }
+        if args.len() == 1 && self.native_transducer(core) {
+            self.output.push('(');
+            self.arguments(args);
+            self.output.push(')');
+            return true;
+        }
         if self.native_combinator(core) {
             self.output.push('(');
             self.arguments(args);
@@ -3670,6 +3676,17 @@ impl<'a> Emitter<'a> {
             (C::Boolean, 1) => ("", "cljTruth", false, ""),
             (C::IsZero, 1) => ("", "cljIsZero", false, ""),
             (C::IsFalse, 1) => ("", "cljIsFalse", false, ""),
+            (C::IsString, 1) => ("(typeof ", "formValue", false, " === 'string')"),
+            (C::Reduced, 1) => ("", "cljReduced", false, ""),
+            (C::IsReduced, 1) => ("", "cljIsReduced", false, ""),
+            (C::Unreduced, 1) => ("", "cljUnreduced", false, ""),
+            (C::EnsureReduced, 1) => {
+                self.output
+                    .push_str("(x => __rt.cljIsReduced(x) ? x : __rt.cljReduced(x))(");
+                self.value(args[0]);
+                self.output.push(')');
+                return true;
+            }
             (C::IsNil, 1) => ("(", "formValue", false, " == null)"),
             (C::IsSome, 1) => ("(", "formValue", false, " != null)"),
             (C::IsEmpty, 1) => ("(", "cljSeq", false, " === null)"),
@@ -3765,6 +3782,72 @@ impl<'a> Emitter<'a> {
         }
         self.output.push(')');
         self.output.push_str(after);
+        true
+    }
+
+    /// A transducer factory captures only immutable inputs. Stateful reducers
+    /// allocate their cells when applied, on the consuming task, and therefore
+    /// cannot publish. Keep the core-value adapters in `bbp_runtime.js` equivalent.
+    fn native_transducer(&mut self, core: crate::CoreFnId) -> bool {
+        use crate::CoreFnId as C;
+        let constructor = match core {
+            C::Filter => {
+                r#"f => rf => (...a) => {
+                if (a.length === 0) return invoke(rf);
+                if (a.length === 1) return invoke(rf, a[0]);
+                if (a.length === 2) return __rt.cljTruth(invoke(f, a[1])) ? invoke(rf, ...a) : a[0];
+                throw new Error('Invalid arity: ' + a.length);
+            }"#
+            }
+            C::MapSeq => {
+                r#"f => rf => (...a) => {
+                if (a.length < 2) return invoke(rf, ...a);
+                return invoke(rf, a[0], invoke(f, ...a.slice(1)));
+            }"#
+            }
+            C::Mapcat => {
+                r#"f => rf => (...a) => {
+                if (a.length < 2) return invoke(rf, ...a);
+                let result = a[0];
+                for (let s = __rt.cljSeq(invoke(f, ...a.slice(1))); s !== null; s = __rt.cljNext(s)) {
+                    result = invoke(rf, result, __rt.cljFirst(s));
+                    if (__rt.cljIsReduced(result)) return result;
+                }
+                return result;
+            }"#
+            }
+            C::PartitionBy => {
+                r#"f => rf => {
+                const none = __rt.formKeyword('cljs.core', 'none');
+                let buffer = __rt.formVector(), prior = none;
+                const flush = result => {
+                    const group = buffer; buffer = __rt.formVector();
+                    return invoke(rf, result, group);
+                };
+                return (...a) => {
+                    if (a.length === 0) return invoke(rf);
+                    if (a.length === 1) {
+                        const result = __rt.formCount(buffer) === 0 ? a[0] : __rt.cljUnreduced(flush(a[0]));
+                        return invoke(rf, result);
+                    }
+                    if (a.length !== 2) throw new Error('Invalid arity: ' + a.length);
+                    const previous = prior, key = invoke(f, a[1]); prior = key;
+                    if (__rt.formEquals(previous, none) || __rt.formEquals(previous, key)) {
+                        buffer = __rt.formConj(buffer, a[1]); return a[0];
+                    }
+                    const result = flush(a[0]);
+                    if (!__rt.cljIsReduced(result)) buffer = __rt.formConj(buffer, a[1]);
+                    return result;
+                };
+            }"#
+            }
+            _ => return false,
+        };
+        self.output.push_str("((invoke) => (");
+        self.output.push_str(constructor);
+        self.output.push_str("))((f, ...a) => ");
+        self.output.push_str(NATIVE_PREPARE_INVOKE);
+        self.output.push_str("(f)(...a))");
         true
     }
 

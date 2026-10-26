@@ -236,7 +236,8 @@ fn collection_items(heap: &Heap, op: &'static str, v: &Value) -> Result<Option<V
             FormBody::Keyword(_)
             | FormBody::Symbol(_)
             | FormBody::Struct(_)
-            | FormBody::Type(_) => return Err(unsupported(op, &shape)),
+            | FormBody::Type(_)
+            | FormBody::Reduced(_) => return Err(unsupported(op, &shape)),
         },
         Shape::Other(_) => return Err(unsupported(op, &shape)),
     }))
@@ -314,6 +315,24 @@ pub(crate) fn is_false(heap: &Heap, v: &Value) -> bool {
     matches!(form::unwrap(heap, v.clone()), Value::Bool(false))
 }
 
+/// `reduced?`, transparent to input occurrences.
+pub(crate) fn is_reduced(heap: &Heap, v: &Value) -> bool {
+    form::kind(heap, &form::unwrap(heap, v.clone())) == Some(FormKind::Reduced)
+}
+
+/// Unwrap exactly one early-termination marker, preserving other operands
+/// (including occurrences) by identity.
+pub(crate) fn unreduced(heap: &Heap, v: &Value) -> Value {
+    let unwrapped = form::unwrap(heap, v.clone());
+    match form::form_object(heap, &unwrapped)
+        .as_deref()
+        .map(|f| f.body())
+    {
+        Some(FormBody::Reduced(value)) => value.clone(),
+        _ => v.clone(),
+    }
+}
+
 /// `count`: elements, entries, members or UTF-16 code units; `nil` is 0.
 /// A lazy or cons sequence is realized to its end.
 pub(crate) fn count(heap: &Heap, v: &Value) -> Result<Value> {
@@ -335,6 +354,7 @@ pub(crate) fn count(heap: &Heap, v: &Value) -> Result<Value> {
             | FormBody::Symbol(_)
             | FormBody::Struct(_)
             | FormBody::Type(_)
+            | FormBody::Reduced(_)
             | FormBody::Lazy(_)
             | FormBody::Cons(_) => return Err(unsupported("count", &shape)),
         },
@@ -421,7 +441,11 @@ pub(crate) fn first(heap: &Heap, v: &Value) -> Result<Value> {
             }
             FormBody::Cons(c) => return Ok(c.first()),
             FormBody::Set(_) | FormBody::Map(_) | FormBody::Struct(_) => {}
-            FormBody::Keyword(_) | FormBody::Symbol(_) | FormBody::Type(_) | FormBody::Lazy(_) => {
+            FormBody::Keyword(_)
+            | FormBody::Symbol(_)
+            | FormBody::Type(_)
+            | FormBody::Lazy(_)
+            | FormBody::Reduced(_) => {
                 return Err(unsupported("first", &shape));
             }
         },
@@ -1105,6 +1129,7 @@ pub(crate) fn dispatch_key(heap: &Heap, v: &Value) -> Option<Value> {
                     FormBody::Set(_) => key_string(11),
                     FormBody::Lazy(_) => Value::String(JsString::from("lazy-seq")),
                     FormBody::Cons(_) => Value::String(JsString::from("cons")),
+                    FormBody::Reduced(_) => Value::String(JsString::from("reduced")),
                 });
             }
             return heap

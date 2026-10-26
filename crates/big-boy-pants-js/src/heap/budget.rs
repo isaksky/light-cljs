@@ -608,8 +608,10 @@ mod tests {
         };
         let forms = retained("__rt.formVector");
         let vectors = retained("__rt.vector");
+        let reduced = retained("__rt.cljReduced");
         let body = std::mem::size_of::<crate::collections::form::FormObject>();
         assert!(forms >= vectors + 1000 * body, "{forms} vs {vectors}");
+        assert!(reduced >= 1000 * body, "reduced marker bodies: {reduced}");
     }
 
     #[test]

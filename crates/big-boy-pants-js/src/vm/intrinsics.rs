@@ -456,6 +456,9 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::CljTruth => Some(Value::Bool(clj::truth(heap, &a(0)))),
         FormOp::CljIsZero => Some(Value::Bool(clj::is_zero(heap, &a(0)))),
         FormOp::CljIsFalse => Some(Value::Bool(clj::is_false(heap, &a(0)))),
+        FormOp::CljReduced => Some(form::new_reduced(heap, a(0))?),
+        FormOp::CljIsReduced => Some(Value::Bool(clj::is_reduced(heap, &a(0)))),
+        FormOp::CljUnreduced => Some(clj::unreduced(heap, &a(0))),
         FormOp::CljInvoke => Some(clj::invoke(
             heap,
             &a(0),
@@ -586,6 +589,9 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         FormOp::CljTruth
         | FormOp::CljIsZero
         | FormOp::CljIsFalse
+        | FormOp::CljReduced
+        | FormOp::CljIsReduced
+        | FormOp::CljUnreduced
         | FormOp::CljInvoke
         | FormOp::CljCount
         | FormOp::CljSeq
