@@ -1565,7 +1565,8 @@ pub(crate) fn nth_at(heap: &Heap, coll: &Value, index: &Value) -> Result<Value, 
 }
 
 /// The elements of a list or vector, or the members of a set: source order
-/// for positional literals, deterministic trie order for hashed sets.
+/// for positional literals, deterministic trie order for ordinary hashed sets,
+/// and legacy hash traversal for runtime reader sets.
 pub(crate) fn items(heap: &Heap, coll: &Value) -> Result<Vec<Value>, CollectionError> {
     if let Some(f) = form_object(heap, coll)
         && let FormBody::Set(set) = f.body()
@@ -1583,7 +1584,7 @@ pub(crate) fn items(heap: &Heap, coll: &Value) -> Result<Vec<Value>, CollectionE
 }
 
 /// Map entries in source order for positional literals, deterministic trie
-/// order for hashed maps.
+/// order for ordinary hashed maps, and legacy hash traversal for reader maps.
 pub(crate) fn entries(heap: &Heap, map: &Value) -> Result<Vec<(Value, Value)>, CollectionError> {
     let body = map_body(heap, map)?;
     let mut entries = body.to_vec();
@@ -1624,7 +1625,7 @@ fn legacy_order(heap: &Heap, map: &FormMap, entries: &mut [(Value, Value)]) {
 
 /// The native lookup trie spreads hashes for its own routing. Printing uses
 /// ClojureScript's five-bit hash paths instead, with nil before the trie.
-/// This does not change language lookup or the native seq contract.
+/// This does not change language lookup or ordinary native seq traversal.
 pub(crate) fn print_items(heap: &Heap, value: &Value) -> Result<Value, CollectionError> {
     let wrong = || CollectionError::WrongType {
         expected: "form map, set or record",
@@ -2616,8 +2617,8 @@ impl<'s> Scope<'s> {
     }
 
     /// Map/record entries (two-element vectors), or set members, in the
-    /// legacy printer and compiler-form export order. Lookup and native seq
-    /// traversal keep their existing deterministic trie order.
+    /// legacy printer and compiler-form export order. Lookup and ordinary
+    /// native seq traversal keep their existing deterministic trie order.
     pub fn form_print_items(&self, coll: Local<'s>) -> Result<Vec<Local<'s>>, CollectionError> {
         let ordered = print_items(self.heap(), &self.local_value(coll))?;
         Ok(self.new_locals(items(self.heap(), &ordered)?))

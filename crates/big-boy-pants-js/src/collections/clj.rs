@@ -213,10 +213,10 @@ fn collection_items(heap: &Heap, op: &'static str, v: &Value) -> Result<Option<V
         }
         Shape::Form(_, f) => match f.body() {
             FormBody::List(items) | FormBody::Vector(items) => items.to_vec(),
-            FormBody::Set(_) => form::items(heap, v)?,
+            FormBody::Set(_) => form::items(heap, &form::unwrap(heap, v.clone()))?,
             FormBody::Map(map) => {
                 let mut entries = Vec::with_capacity(map.len());
-                for (k, v) in form::entries(heap, v)? {
+                for (k, v) in form::entries(heap, &form::unwrap(heap, v.clone()))? {
                     entries.push(entry(heap, &k, &v)?);
                 }
                 entries
