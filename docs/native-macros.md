@@ -69,6 +69,73 @@ engine source, and includes preloaded helper source.
 
 ## Supported boundary
 
+### Printing and namespace services (light-cljs-513 checkpoint)
+
+At `ddd609b9`, native printers cover nil, booleans, Numbers (including negative
+zero and nonfinite values), exact UTF-16 strings and characters, named values,
+lists, vectors, maps, sets, lazy/cons sequences, immutable and mutable types,
+records, Reduced markers, shared atoms, regexes and Namespace values. The
+printing table in `tests/bbp_macros.rs` compares real source macros with
+QuickJS, including the existing printing-fixture rows, metadata, print limits,
+readability, namespace maps, explicit options, custom printer/writer protocols,
+errors and restoration after a thrown lazy printer. Plain host objects, arrays
+and ordinary functions still fail explicitly. There is no legacy fallback.
+
+**Collection order is not complete on this base.** `formPrintItems` restores
+legacy five-bit hash traversal, including nil-first traversal, independently of
+the native lookup trie's hash spreading. The current hashed-only representation
+does not retain small array-map/set insertion order or record extension-map
+insertion order. The differential table deliberately continues to fail those
+rows. Positional storage from light-cljs-496 must be integrated before routing
+the corresponding constructors, updates and printer traversal through it;
+reader-distinct literal printing also needs to join that same table. These
+remain acceptance work in light-cljs-513. The worker did not edit the concurrent
+worker's `emitter.rs`, `collections/form.rs` or `collections/clj.rs`.
+
+The macro wrapper binds `*ns*` from the existing `&env` namespace name and
+restores it on success or failure. Namespace name slots retain their original
+symbol occurrences and metadata. Initializer demands publish immutable
+namespace snapshots in dependency kind 7; a namespace read joins the existing
+source-order lane and selects its earliest direct or inherited caller. Explicit
+bindings inside initializers take precedence along that ancestry. Snapshots
+also distinguish Namespace objects from explicitly bound nil or symbols. Task
+migration does not consult worker thread-local namespace state. The namespace
+fixture matches QuickJS's emitted program and diagnostic message/provenance at
+jobs 1/2/4, including seeded scheduling, a held earlier caller, nested helper
+compilation, nested initializers, metadata, exceptions and task reuse. Engine
+stack frames and the native error prefix are compared separately.
+
+On macOS arm64, Homebrew Rust/Cargo 1.99.1 and Node 26.12.1, the checkpoint's
+native-only `--test bbp_macros` passes 74 tests. With `bbp-macros,quickjs`, 75
+pass and the single printing differential test fails the ordering rows above.
+The native evaluator module passes 36 tests. The engine suite passes 2,103
+tests and seven doctests at `b355b8e2`; its engine sources are unchanged at
+`ddd609b9`, so those results are reused. QuickJS-only library and
+integration runs pass 819 tests, with two environment failures: the nested
+playground crate discovers the main checkout's workspace, and a watch CPU-time
+test cannot spawn sandbox-denied `ps`. The compiler integration binary cannot
+build without eight pinned `research/clojurescript` include files; `research/`
+was left untouched. Format checks pass. Strict engine Clippy retains its eight
+library/nine all-target diagnostics; allowing only `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` passes engine
+all-target checks and compiler library/binary/native-macro checks. V8 validation
+remains with the orchestrator because its machine cache is inaccessible here.
+
+Using the Penpot reproduction above with five absolute source roots, jobs 1,
+no cache and the documented budgets, `app.render` at this checkpoint passes
+`core.prStr` and reaches this distinct next engine boundary, filed as
+light-cljs-514:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/geom/matrix.cljc:251:4: macro expansion: while expanding app.common.data.macros/assert!: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/geom/matrix.cljc:251:4: macro app.common.data.macros/assert!: big-boy-pants-js: TypeError: /Users/admin/src/light-cljs/research/penpot-light/vendor/cognitect/transit.cljs:84:1: extension: unsupported Proxy trap: has; definition /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/data/macros.cljc:105:1 (bytes 6545..6573)
+```
+
+An earlier, uncommitted implementation build completed `app.main` with the
+same command: 922 namespaces, 93,997 macro calls and 1,109 seconds wall time.
+That run predates the namespace snapshot refinements; a final-tree `app.main`
+rerun remains required after the ordering integration. The pellet is not closed
+by this checkpoint.
+
 ### Bootstrap macro audit (light-cljs-509, 2026-10-26)
 
 The native branch of `compiler_bootstrap::build_in` keeps an empty bootstrap
