@@ -1081,3 +1081,36 @@ fn an_unshareable_or_invalid_unit_is_evaluated_by_its_task_with_the_same_diagnos
     assert!(evaluator.evaluate_unit(&invalid).is_err());
     assert_eq!(shared.0.factories.lock().unwrap().len(), 2);
 }
+
+#[test]
+fn replayed_registration_blocks_run_in_order_and_full_blocks_compile_once() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let registrations = (0..REPLAY_BLOCK + 3)
+        .map(|i| {
+            format!(
+                "rt => {{ globalThis.order = (globalThis.order || '') + '{i},'; \
+                 globalThis.own = (globalThis.own ?? true) && rt === globalThis.__lightNativeRuntime; \
+                 return null; }}"
+            )
+        })
+        .collect::<Vec<_>>();
+    let expected = (0..REPLAY_BLOCK + 3)
+        .map(|i| format!("{i},"))
+        .collect::<String>();
+    for _ in 0..2 {
+        let evaluator = shared.evaluator().unwrap();
+        for block in registrations.chunks(REPLAY_BLOCK) {
+            let value = evaluator.evaluate_unit(&replay_source(block)).unwrap();
+            evaluator.release(value).unwrap();
+        }
+        let global = |name| evaluator.task.global_value(name).unwrap().unwrap();
+        assert_eq!(
+            global("order").string().map(|s| s.to_string_lossy()),
+            Some(expected.clone())
+        );
+        assert_eq!(global("own").view(), ValueView::Bool(true));
+    }
+    // The full block and the three-registration tail, once each.
+    let counts = shared.helper_counts();
+    assert_eq!((counts.units_compiled, counts.units_shared), (2, 4));
+}

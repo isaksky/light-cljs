@@ -1551,7 +1551,7 @@ fn native_build(
 /// and steal victims, fixed assignments, one-job admission) match the
 /// unperturbed one-slot build: JavaScript or error, source maps, warnings
 /// and compiled helper factories. Seed 1, or 1 to `LIGHT_CLJS_STRESS_SEEDS`
-/// (12 for the acceptance stress, about 110 s in a debug build).
+/// (12 for the acceptance stress, about five minutes in a debug build).
 #[cfg(debug_assertions)]
 #[test]
 fn native_pool_builds_match_one_slot_under_seeded_scheduling_stress() {
@@ -1560,7 +1560,7 @@ fn native_pool_builds_match_one_slot_under_seeded_scheduling_stress() {
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(1u64);
-    for entry in ["stress.app", "demand.app", "demand.failure"] {
+    for entry in ["many.app", "stress.app", "demand.app", "demand.failure"] {
         let (reference, serial) = native_build(entry, 1, None);
         if entry != "demand.failure" {
             let js = reference.output.as_ref().unwrap();

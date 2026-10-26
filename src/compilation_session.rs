@@ -2979,17 +2979,28 @@ impl WorkerView {
     }
     /// Install in this thread's engine the registrations made since it last
     /// looked, through `active` while the engine runs code that demands.
+    ///
+    /// A native producer task (big-boy-pants-js) is not this thread's
+    /// engine but a task of its own beside it, and is dropped once its
+    /// helper is compiled: it gets the registrations, and the engine still
+    /// lacks them and takes them at its next analysis. (A legacy engine's
+    /// nested demand runs in the engine itself.)
     fn install(&self, active: Option<&dyn MacroEvaluator>) -> Result<(), String> {
         let Some(bootstrap) = &self.host.engine.bootstrap else {
             return Ok(());
         };
+        let producer = active.is_some_and(|active| {
+            active.native_bridge_stats().is_some() && active.heap() != bootstrap.evaluator.heap()
+        });
         let pending = {
             let c = self.shared.lock();
             if c.registrations.len() == self.installed.get() {
                 return Ok(());
             }
             let pending = c.registrations[self.installed.get()..].to_vec();
-            self.installed.set(c.registrations.len());
+            if !producer {
+                self.installed.set(c.registrations.len());
+            }
             pending
         };
         let engine = active.unwrap_or(bootstrap.evaluator.as_ref());

@@ -388,6 +388,22 @@ type WaitHook = Arc<dyn Fn(&Task, DependencyKey) + Send + Sync>;
 /// root registration, is cheaper to evaluate in the task than to call.
 const SHARED_UNIT_BYTES: usize = 512;
 
+/// How many registrations a producer task replays per evaluation.
+const REPLAY_BLOCK: usize = 64;
+
+/// One unit that evaluates `registrations` in order, each as evaluating it
+/// alone would: called with the task's native runtime.
+fn replay_source(registrations: &[String]) -> String {
+    let mut source = String::from("rt => { ");
+    for registration in registrations {
+        source.push('(');
+        source.push_str(registration);
+        source.push_str(")(rt); ");
+    }
+    source.push_str("return null; }");
+    source
+}
+
 const BINDING: ResultKind = ResultKind::new(2);
 const HELPER: ResultKind = ResultKind::new(3);
 const INITIALIZER: ResultKind = ResultKind::new(4);
@@ -900,8 +916,11 @@ impl BbpEvaluator {
         *active.help.borrow_mut() = self.help.borrow().clone();
         *active.runner.borrow_mut() = self.runner.borrow().clone();
         let registrations = self.registrations.borrow().clone();
-        for source in &registrations {
-            let value = active.evaluate_unit(source)?;
+        // Replayed in fixed blocks from the first registration: a full
+        // block's text never changes, so every producer task calls the one
+        // factory compiled for it (`evaluate_unit`).
+        for block in registrations.chunks(REPLAY_BLOCK) {
+            let value = active.evaluate_unit(&replay_source(block))?;
             active.release(value)?;
         }
         *active.registrations.borrow_mut() = registrations;
