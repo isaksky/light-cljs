@@ -97,10 +97,10 @@ pub(crate) fn resolved(heap: &Heap, task: TaskId, value: &Value) -> Result<Value
         heap,
         task,
         [
-            ("locale", Value::String(JsString::from(locale.as_str()))),
+            ("locale", super::service::text_option(heap, &locale)?),
             (
                 "granularity",
-                Value::String(JsString::from(if word { "word" } else { "grapheme" })),
+                super::service::fixed_option(if word { "word" } else { "grapheme" }),
             ),
         ],
     )

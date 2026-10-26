@@ -2,7 +2,7 @@
 use crate::{
     heap::{Heap, HeapObject},
     ids::TaskId,
-    value::{JsString, Value},
+    value::Value,
     vm::dispatch::Fault,
 };
 
@@ -53,12 +53,9 @@ impl ListFormat {
             heap,
             task,
             [
-                (
-                    "locale",
-                    Value::String(JsString::from(self.locale.as_str())),
-                ),
-                ("type", Value::String(JsString::from(self.kind))),
-                ("style", Value::String(JsString::from(self.style))),
+                ("locale", super::service::text_option(heap, &self.locale)?),
+                ("type", super::service::fixed_option(self.kind)),
+                ("style", super::service::fixed_option(self.style)),
             ],
         )
     }

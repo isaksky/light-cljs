@@ -49,13 +49,16 @@ impl DisplayNames {
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
         let mut fields = vec![
-            ("locale", string(&self.locale)),
-            ("style", string(self.style)),
-            ("type", string(self.kind)),
-            ("fallback", string(self.fallback)),
+            ("locale", service::text_option(heap, &self.locale)?),
+            ("style", service::fixed_option(self.style)),
+            ("type", service::fixed_option(self.kind)),
+            ("fallback", service::fixed_option(self.fallback)),
         ];
         if self.kind == "language" {
-            fields.push(("languageDisplay", string(self.language_display)));
+            fields.push((
+                "languageDisplay",
+                service::fixed_option(self.language_display),
+            ));
         }
         service::resolved_options(heap, task, fields)
     }

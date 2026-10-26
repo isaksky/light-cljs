@@ -101,7 +101,7 @@ use crate::ids::TaskId;
 use crate::object::array::ArrayObject;
 use crate::object::{OrdinaryObject, PrimitiveData};
 use crate::realm;
-use crate::value::string::number_to_string_radix;
+use crate::value::string::{FixedText, number_to_string_radix};
 use crate::value::{JsString, Value};
 use crate::vm::descriptor;
 use crate::vm::dispatch::{Fault, to_js_string_accounted, to_number};
@@ -1816,7 +1816,9 @@ pub(crate) fn call(
                         caller: task,
                     })
                 }
-                HeapObject::TypedArray(array) => Ok(Value::String(array.view.kind.name().into())),
+                HeapObject::TypedArray(array) => {
+                    Ok(Value::String(JsString::fixed(array.view.kind.name())))
+                }
                 _ => Ok(Value::Undefined),
             })
             .ok_or(Fault::Internal("typed array was reclaimed"))?
@@ -1932,13 +1934,17 @@ pub(crate) fn call(
         )),
         Builtin::BigIntPrototypeValueOf => this_bigint_value(heap, task, this).map(Value::BigInt),
         Builtin::BooleanPrototypeValueOf => this_boolean_value(heap, task, this).map(Value::Bool),
-        Builtin::BooleanPrototypeToString => Ok(Value::String(JsString::from(
-            if this_boolean_value(heap, task, this)? {
-                "true"
+        Builtin::BooleanPrototypeToString => {
+            // One shared body per spelling: nothing for the byte budget to count.
+            static TRUE: FixedText = FixedText::new("true");
+            static FALSE: FixedText = FixedText::new("false");
+            let text = if this_boolean_value(heap, task, this)? {
+                &TRUE
             } else {
-                "false"
-            },
-        ))),
+                &FALSE
+            };
+            Ok(Value::String(text.get()))
+        }
         Builtin::NumberPrototypeToString => {
             let n = this_number_value(heap, task, this, "toString")?;
             number_to_string(heap, n, &arg(0))

@@ -667,6 +667,21 @@ fn join_and_raw_keep_part_charges_across_string_build_yields() {
 /// keep. Writing them over a preallocated array's existing slots grows no
 /// other charged storage, so only the outputs' own charges can reach the
 /// limit (light-cljs-492).
+/// Bindings the retained-output loops below read from.
+const SETUP: &str = "const s = 'xyz'; const w = new String('xyz'); const d = new Date(0); \
+                     const invalid = new Date(NaN); const f = new Intl.DateTimeFormat('en'); \
+                     const numberLike = {valueOf() { return 0; }}; \
+                     const styled = new Intl.DateTimeFormat('en', {dateStyle: 'full', timeStyle: 'full'}); \
+                     const money = new Intl.NumberFormat('en', {style: 'currency', currency: 'EUR'}); \
+                     const seg = new Intl.Segmenter('en'); const t = true; \
+                     const ta = new Uint8Array(1); const pr = new Intl.PluralRules('en'); \
+                     const coll = new Intl.Collator('en'); const nf = new Intl.NumberFormat('en'); \
+                     const lf = new Intl.ListFormat('en'); \
+                     const dn = new Intl.DisplayNames('en', {type: 'region'}); \
+                     const rtf = new Intl.RelativeTimeFormat('en'); \
+                     const meters = new Intl.NumberFormat('en', {style: 'unit', unit: 'meter'}); \
+                     const du = new Intl.DurationFormat('en');";
+
 #[test]
 fn retained_leaf_string_outputs_obey_byte_limit() {
     const SLOTS: usize = 40_000;
@@ -685,11 +700,22 @@ fn retained_leaf_string_outputs_obey_byte_limit() {
         "f.format()",
         "Date()",
         "styled.format(0)",
+        // Data-dependent resolvedOptions() fields: a field read out of the
+        // options object outlives the object's charge.
+        "f.resolvedOptions().locale",
+        "f.resolvedOptions().timeZone",
+        "money.resolvedOptions().currency",
+        "seg.resolvedOptions().locale",
+        "meters.resolvedOptions().unit",
+        "coll.resolvedOptions().locale",
+        "nf.resolvedOptions().locale",
+        "pr.resolvedOptions().locale",
+        "lf.resolvedOptions().locale",
+        "dn.resolvedOptions().locale",
+        "rtf.resolvedOptions().locale",
+        "du.resolvedOptions().locale",
     ];
-    let setup = "const s = 'xyz'; const w = new String('xyz'); const d = new Date(0); \
-                 const invalid = new Date(NaN); const f = new Intl.DateTimeFormat('en'); \
-                 const numberLike = {valueOf() { return 0; }}; \
-                 const styled = new Intl.DateTimeFormat('en', {dateStyle: 'full', timeStyle: 'full'});";
+    let setup = SETUP;
     let host = || {
         SimTimeHost::new(
             1506098258091.0,
@@ -728,5 +754,142 @@ fn retained_leaf_string_outputs_obey_byte_limit() {
         assert!(result.string().is_none(), "{output}: {:?}", result.view());
         let held = rt.heap_stats().managed_bytes - before;
         assert!(held >= SLOTS * 256, "{output}: {held} bytes held");
+    }
+}
+
+/// Live bytes the system allocator holds for the current thread (allocations
+/// minus frees made on it). Each test runs its engine tasks on its own
+/// thread, so concurrent tests do not disturb one another's count.
+mod live {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static LIVE: Cell<i64> = const { Cell::new(0) };
+    }
+
+    fn count(delta: i64) {
+        // A const-initialized Cell has no destructor, so this never fails,
+        // even while the thread exits.
+        let _ = LIVE.try_with(|live| live.set(live.get() + delta));
+    }
+
+    pub fn bytes() -> i64 {
+        LIVE.with(Cell::get)
+    }
+
+    struct Counting;
+
+    #[global_allocator]
+    static GLOBAL: Counting = Counting;
+
+    // SAFETY: every method forwards its arguments unchanged to `System`,
+    // which implements `GlobalAlloc` correctly; the counting touches only a
+    // const thread-local Cell and never allocates, so it cannot recurse.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: the caller upholds `alloc`'s contract for `layout`.
+            let p = unsafe { System.alloc(layout) };
+            if !p.is_null() {
+                count(layout.size() as i64);
+            }
+            p
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: as for `alloc`.
+            let p = unsafe { System.alloc_zeroed(layout) };
+            if !p.is_null() {
+                count(layout.size() as i64);
+            }
+            p
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: `ptr` came from this allocator (hence `System`) with
+            // `layout`.
+            unsafe { System.dealloc(ptr, layout) };
+            count(-(layout.size() as i64));
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            // SAFETY: `ptr`/`layout` came from this allocator (hence
+            // `System`) and `new_size` is valid for `layout`'s alignment.
+            let p = unsafe { System.realloc(ptr, layout, new_size) };
+            if !p.is_null() {
+                count(new_size as i64 - layout.size() as i64);
+            }
+            p
+        }
+    }
+}
+
+/// Fixed-text results share one body per spelling (as an executable's
+/// constants do), so retaining one in every slot of an array allocates
+/// nothing the byte budget would have to count. Each output is measured
+/// against a loop doing the same work but storing a literal instead, after
+/// a collection: the difference is what the retained results themselves
+/// hold, well under one string body per slot.
+#[test]
+fn retained_fixed_text_outputs_share_one_body() {
+    const SLOTS: usize = 40_000;
+    let outputs = [
+        "typeof i",
+        "typeof a",
+        "true.toString()",
+        "t.toString()",
+        "ta[Symbol.toStringTag]",
+        "pr.select(1)",
+        "pr.select(i)",
+        "pr.resolvedOptions().type",
+        "f.resolvedOptions().calendar",
+        "f.resolvedOptions().numberingSystem",
+        "coll.resolvedOptions().usage",
+        "nf.resolvedOptions().style",
+        "nf.resolvedOptions().notation",
+        "lf.resolvedOptions().type",
+        "dn.resolvedOptions().fallback",
+        "rtf.resolvedOptions().numeric",
+        "seg.resolvedOptions().granularity",
+        "meters.resolvedOptions().unitDisplay",
+        "du.resolvedOptions().style",
+        "du.resolvedOptions().hours",
+        "du.resolvedOptions().hoursDisplay",
+        "du.resolvedOptions().numberingSystem",
+    ];
+    let host = || {
+        SimTimeHost::new(
+            1506098258091.0,
+            TimeZone::fixed_offset_seconds(3600).unwrap(),
+        )
+    };
+    let retained = |output: &str| {
+        let (rt, _) = with_headroom(64 * 1024 * 1024);
+        let start = live::bytes();
+        let outcome = run_sliced_on(
+            &rt,
+            &format!(
+                "function f() {{ {SETUP} const a = new Array({SLOTS}).fill(0); \
+                 for (let i = 0; i < a.length; i++) a[i] = {output}; \
+                 return typeof a[0] === 'string' ? a : 'wrong'; }}"
+            ),
+            &mut host(),
+        );
+        let RunOutcome::Complete(result) = &outcome else {
+            panic!("{output}: {outcome:?}");
+        };
+        assert!(result.string().is_none(), "{output}: {:?}", result.view());
+        rt.collect().unwrap();
+        let held = live::bytes() - start;
+        drop(outcome);
+        held
+    };
+    for output in outputs {
+        let same_work = retained(&format!("({output}, 'k')"));
+        let held = retained(output);
+        assert!(
+            held - same_work < (SLOTS * 16) as i64,
+            "{output}: {held} bytes live against {same_work} storing a literal"
+        );
     }
 }

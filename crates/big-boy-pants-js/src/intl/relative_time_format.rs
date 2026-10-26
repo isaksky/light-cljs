@@ -31,10 +31,13 @@ impl RelativeTimeFormat {
             heap,
             task,
             [
-                ("locale", string(&self.digits.locale)),
-                ("style", string(self.style)),
-                ("numeric", string(self.numeric)),
-                ("numberingSystem", string(self.digits.numbering)),
+                ("locale", service::text_option(heap, &self.digits.locale)?),
+                ("style", service::fixed_option(self.style)),
+                ("numeric", service::fixed_option(self.numeric)),
+                (
+                    "numberingSystem",
+                    service::fixed_option(self.digits.numbering),
+                ),
             ],
         )
     }

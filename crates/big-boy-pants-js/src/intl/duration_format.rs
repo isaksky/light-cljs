@@ -107,14 +107,17 @@ impl DurationFormat {
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
         let mut fields = vec![
-            ("locale", string(&self.digits.locale)),
-            ("numberingSystem", string(self.digits.numbering)),
-            ("style", string(self.style)),
+            ("locale", service::text_option(heap, &self.digits.locale)?),
+            (
+                "numberingSystem",
+                service::fixed_option(self.digits.numbering),
+            ),
+            ("style", service::fixed_option(self.style)),
         ];
         for i in 0..10 {
             fields.push((
                 UNITS[i],
-                string(if self.units[i] == "fractional" {
+                service::fixed_option(if self.units[i] == "fractional" {
                     "numeric"
                 } else {
                     self.units[i]
@@ -122,7 +125,7 @@ impl DurationFormat {
             ));
             fields.push((
                 DISPLAYS[i],
-                string(if self.always[i] { "always" } else { "auto" }),
+                service::fixed_option(if self.always[i] { "always" } else { "auto" }),
             ));
         }
         if let Some(n) = self.fractional {

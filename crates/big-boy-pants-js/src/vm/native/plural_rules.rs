@@ -278,6 +278,6 @@ impl State {
     fn select(&self, heap: &Heap, task: TaskId, value: Value) -> Result<Action, Fault> {
         let result =
             plural_rules::record(heap, task, &self.this)?.select(dispatch::to_number(&value)?)?;
-        Ok(Action::Return(Value::String(JsString::from(result))))
+        Ok(Action::Return(Value::String(JsString::fixed(result))))
     }
 }

@@ -272,10 +272,11 @@ data-sized payload is not):
   possible flattened copy; a formatter's accumulated output charges each
   node once and the whole output's flattened copy, its shared first piece
   included, at the extension that makes it a rope, and the returned body keeps
-  that credit for its cached copy; a string index read's one-unit result and
-  the Date and `Intl.DateTimeFormat` formatters' outputs, each charged before
-  its body is made, while presence and attribute checks of a string's index
-  make no string), BigInt limbs, ArrayBuffer stores, native persistent
+  that credit for its cached copy; a string index read's one-unit result,
+  the Date and `Intl.DateTimeFormat` formatters' outputs and the
+  data-dependent `resolvedOptions()` fields (locale, time zone, unit,
+  currency), each charged before its body is made, while presence and
+  attribute checks of a string's index make no string), BigInt limbs, ArrayBuffer stores, native persistent
   vectors/maps/forms and builders, RegExp programs and captures;
 - saved continuations: detached activations, closure captures, bound arguments,
   promise reactions, queued jobs, disposable resources, async-generator queues;
@@ -292,11 +293,16 @@ allocator overhead and fragmentation, Rust and VM stacks of running frames,
 transient values that exist only within one leaf step (bounded by the step's
 inputs), and the embedder's own data. Accounted bytes therefore approximate and
 do not bound RSS; `docs/measurement.md` records the realm's accounted footprint.
-Known retained-storage gaps, not yet charged: the fresh fixed-text strings of
-`typeof`, `Boolean.prototype.toString`, the TypedArray `Symbol.toStringTag`
-getter, `Intl.PluralRules.prototype.select` and Intl `resolvedOptions()` fields
-(light-cljs-493). The two heap-limit exception messages share one uncharged
-body each.
+Fixed-text leaf results are process-wide constants like executable constants:
+`typeof`'s type names, `Boolean.prototype.toString`, the TypedArray
+`Symbol.toStringTag` getter, `Intl.PluralRules.prototype.select` and the fixed
+spellings of Intl `resolvedOptions()` fields each return one shared body per
+spelling (`JsString::fixed`, `FixedText`), made on first use and never
+released, so retaining one allocates nothing. The two heap-limit exception
+messages share one uncharged body each. Known retained-storage gaps, not yet
+charged: `Intl.RelativeTimeFormat` and `Intl.DurationFormat` `format` and
+`formatToParts` outputs, `Intl.DisplayNames.prototype.of`, and the `type` of
+NumberFormat and ListFormat parts (light-cljs-494).
 
 A denial fails the requesting operation with `VmErrorKind::HeapLimit`,
 catchable as the primitive string `heap byte limit exceeded` (no Error object

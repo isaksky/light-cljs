@@ -110,6 +110,18 @@ pub(crate) fn number_option(value: &Value, min: usize, max: usize) -> Result<usi
     }
     Ok(n.floor() as usize)
 }
+/// A `resolvedOptions()` field's fixed spelling (`"long"`, `"gregory"`):
+/// one shared body, so a field read out of the object and retained
+/// allocates nothing the byte budget would have to count.
+pub(crate) fn fixed_option(text: &'static str) -> Value {
+    Value::String(JsString::fixed(text))
+}
+/// A `resolvedOptions()` field's data-dependent text (a locale or time-zone
+/// identifier, a unit or currency code), charged to `heap`: a field read
+/// out of the object outlives the object's own charge.
+pub(crate) fn text_option(heap: &Heap, text: &str) -> Result<Value, Fault> {
+    JsString::from_str_accounted(heap, text).map(Value::String)
+}
 pub(crate) fn resolved_options(
     heap: &Heap,
     task: TaskId,

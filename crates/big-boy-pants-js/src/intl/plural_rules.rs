@@ -9,7 +9,7 @@ use super::{
 use crate::{
     heap::{Heap, HeapObject},
     ids::TaskId,
-    value::{JsString, Value},
+    value::Value,
     vm::dispatch::Fault,
 };
 
@@ -151,9 +151,9 @@ impl PluralRules {
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
         let d = &self.digits;
-        let string = |s: &str| Value::String(JsString::from(s));
+        let string = service::fixed_option;
         let mut fields = vec![
-            ("locale", string(&d.locale)),
+            ("locale", service::text_option(heap, &d.locale)?),
             (
                 "type",
                 string(if self.ordinal { "ordinal" } else { "cardinal" }),

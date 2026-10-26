@@ -51,12 +51,12 @@ impl Collator {
         }
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
-        let text = |s: &str| Value::String(JsString::from(s));
+        let text = service::fixed_option;
         service::resolved_options(
             heap,
             task,
             [
-                ("locale", text(&self.locale)),
+                ("locale", service::text_option(heap, &self.locale)?),
                 ("usage", text(self.usage)),
                 ("sensitivity", text(self.sensitivity)),
                 ("ignorePunctuation", Value::Bool(self.ignore_punctuation)),

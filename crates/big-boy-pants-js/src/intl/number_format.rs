@@ -346,25 +346,22 @@ impl NumberFormat {
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
         let mut fields = vec![
-            (
-                "locale",
-                Value::String(JsString::from(self.locale.as_str())),
-            ),
+            ("locale", super::service::text_option(heap, &self.locale)?),
             (
                 "numberingSystem",
-                Value::String(JsString::from(self.numbering)),
+                super::service::fixed_option(self.numbering),
             ),
-            ("style", Value::String(JsString::from(self.style))),
+            ("style", super::service::fixed_option(self.style)),
         ];
         if self.style == "unit" {
             fields.extend([
                 (
                     "unit",
-                    Value::String(JsString::from(self.unit.as_deref().unwrap())),
+                    super::service::text_option(heap, self.unit.as_deref().unwrap())?,
                 ),
                 (
                     "unitDisplay",
-                    Value::String(JsString::from(self.unit_display)),
+                    super::service::fixed_option(self.unit_display),
                 ),
             ]);
         }
@@ -372,15 +369,15 @@ impl NumberFormat {
             fields.extend([
                 (
                     "currency",
-                    Value::String(JsString::from(self.currency.as_deref().unwrap())),
+                    super::service::text_option(heap, self.currency.as_deref().unwrap())?,
                 ),
                 (
                     "currencyDisplay",
-                    Value::String(JsString::from(self.currency_display)),
+                    super::service::fixed_option(self.currency_display),
                 ),
                 (
                     "currencySign",
-                    Value::String(JsString::from(self.currency_sign)),
+                    super::service::fixed_option(self.currency_sign),
                 ),
             ]);
         }
@@ -412,15 +409,15 @@ impl NumberFormat {
                 if self.grouping == "false" {
                     Value::Bool(false)
                 } else {
-                    Value::String(JsString::from(self.grouping))
+                    super::service::fixed_option(self.grouping)
                 },
             ),
-            ("notation", Value::String(JsString::from("standard"))),
-            ("signDisplay", Value::String(JsString::from("auto"))),
+            ("notation", super::service::fixed_option("standard")),
+            ("signDisplay", super::service::fixed_option("auto")),
             ("roundingIncrement", Value::Number(1.0)),
-            ("roundingMode", Value::String(JsString::from(self.rounding))),
-            ("roundingPriority", Value::String(JsString::from("auto"))),
-            ("trailingZeroDisplay", Value::String(JsString::from("auto"))),
+            ("roundingMode", super::service::fixed_option(self.rounding)),
+            ("roundingPriority", super::service::fixed_option("auto")),
+            ("trailingZeroDisplay", super::service::fixed_option("auto")),
         ]);
         super::service::resolved_options(heap, task, fields)
     }

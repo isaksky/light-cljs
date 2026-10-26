@@ -470,6 +470,32 @@ fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
     })
 }
 
+/// `typeof`'s result as a string: one shared body per type name, so a
+/// retained result allocates nothing the byte budget would have to count.
+fn type_name(name: &'static str) -> JsString {
+    use crate::value::string::FixedText;
+    static UNDEFINED: FixedText = FixedText::new("undefined");
+    static OBJECT: FixedText = FixedText::new("object");
+    static BOOLEAN: FixedText = FixedText::new("boolean");
+    static NUMBER: FixedText = FixedText::new("number");
+    static STRING: FixedText = FixedText::new("string");
+    static SYMBOL: FixedText = FixedText::new("symbol");
+    static BIGINT: FixedText = FixedText::new("bigint");
+    static FUNCTION: FixedText = FixedText::new("function");
+    match name {
+        "undefined" => &UNDEFINED,
+        "object" => &OBJECT,
+        "boolean" => &BOOLEAN,
+        "number" => &NUMBER,
+        "string" => &STRING,
+        "symbol" => &SYMBOL,
+        "bigint" => &BIGINT,
+        "function" => &FUNCTION,
+        _ => return JsString::fixed(name),
+    }
+    .get()
+}
+
 /// JavaScript `==` (IsLooselyEqual, QuickJS `js_eq_slow`) for the supported
 /// value types. `null` and `undefined` equal each other and nothing else;
 /// two values of one type compare strictly (two strings by content). A
@@ -2588,7 +2614,7 @@ fn step_instruction(
         }
         Instr::Typeof => {
             let v = state.pop()?;
-            state.push(Value::String(JsString::from(type_of(heap, &v)?)));
+            state.push(Value::String(type_name(type_of(heap, &v)?)));
         }
         Instr::ToString => {
             let v = state.pop()?;

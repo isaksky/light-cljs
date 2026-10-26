@@ -657,12 +657,12 @@ impl DateTimeFormat {
         Ok(result)
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
-        let string = |s: &str| Value::String(JsString::from(s));
+        let string = service::fixed_option;
         let mut fields = vec![
-            ("locale", string(&self.locale)),
+            ("locale", service::text_option(heap, &self.locale)?),
             ("calendar", string("gregory")),
             ("numberingSystem", string(self.numbering)),
-            ("timeZone", string(&self.time_zone)),
+            ("timeZone", service::text_option(heap, &self.time_zone)?),
         ];
         if self.hour.is_some() || self.time_style.is_some() {
             fields.push(("hourCycle", string(self.hour_cycle)));

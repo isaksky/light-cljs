@@ -290,6 +290,33 @@ impl JsString {
         Ok(Self::from(text).with_reservation(ticket))
     }
 
+    /// The one shared body of a fixed spelling a leaf returns (an Intl
+    /// option such as `"long"`, a plural category, a typed array's name),
+    /// interned process-wide by content and never released. Like an
+    /// executable's constants, the byte budget does not count it: retaining
+    /// it allocates nothing. `text` is static, so the table is bounded by
+    /// the binary's own spellings. Hot paths use a [`FixedText`] instead,
+    /// which reaches its body without the table's lock.
+    pub(crate) fn fixed(text: &'static str) -> Self {
+        use std::collections::HashMap;
+        use std::sync::{LazyLock, PoisonError, RwLock};
+        static TABLE: LazyLock<RwLock<HashMap<&'static str, JsString>>> =
+            LazyLock::new(Default::default);
+        if let Some(body) = TABLE
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(text)
+        {
+            return body.clone();
+        }
+        TABLE
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(text)
+            .or_insert_with(|| Self::from(text))
+            .clone()
+    }
+
     /// [`JsString::code_unit_at`] for a result that may be retained
     /// (`s[i]`): the fresh one-unit body is charged to `heap` first.
     pub(crate) fn code_unit_at_accounted(
@@ -864,6 +891,28 @@ impl StringBuild {
             }
         }
         None
+    }
+}
+
+/// One fixed spelling's shared body, held in its own `static` (`typeof`'s
+/// type names, `"true"`/`"false"`): [`JsString::fixed`] without the
+/// table lookup, for operations on the instruction hot path.
+pub(crate) struct FixedText {
+    text: &'static str,
+    body: OnceLock<JsString>,
+}
+
+impl FixedText {
+    pub(crate) const fn new(text: &'static str) -> Self {
+        Self {
+            text,
+            body: OnceLock::new(),
+        }
+    }
+
+    /// The shared body, made on first use and never released.
+    pub(crate) fn get(&self) -> JsString {
+        self.body.get_or_init(|| JsString::from(self.text)).clone()
     }
 }
 
@@ -2739,6 +2788,21 @@ mod tests {
         assert_eq!(a.content_hash(), b.content_hash());
         assert_ne!(a.content_hash(), JsString::from("ba").content_hash());
         assert_eq!(a, "ab");
+    }
+
+    #[test]
+    fn fixed_spellings_share_one_body_across_threads() {
+        static TEXT: FixedText = FixedText::new("fixed-text-probe");
+        let here = (JsString::fixed("fixed-probe"), TEXT.get());
+        let there = std::thread::spawn(|| (JsString::fixed("fixed-probe"), TEXT.get()))
+            .join()
+            .unwrap();
+        assert!(here.0.same_body(&there.0));
+        assert!(here.1.same_body(&there.1));
+        assert!(here.1.same_body(&TEXT.get()));
+        assert_eq!(here.0, "fixed-probe");
+        assert_eq!(here.1, "fixed-text-probe");
+        assert!(!JsString::fixed("fixed-probe-other").same_body(&here.0));
     }
 
     #[test]
