@@ -179,9 +179,9 @@ nesting256, the 64 KiB VM stack boundary, dynamic eval's 16,384 UTF-16-unit
 cap, cancellation and aggregate heap accounting are unchanged. Application
 and legacy macro emission keep their existing output.
 
-Fresh native-only builds with the same five absolute source roots and
-`--jobs 1 --no-cache` budgets above pass both former failure sites. Their
-next first errors are:
+At `10c261f0` on macOS arm64, Homebrew Rust/Cargo 1.99.1, fresh native-only
+builds with the same five absolute source roots and `--jobs 1 --no-cache`
+budgets above pass both former failure sites. Their next first errors are:
 
 `--entry app.render`:
 
@@ -195,7 +195,8 @@ light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/com
 light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/logging.cljc:306:24: macro expansion: while expanding str/ffmt: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/logging.cljc:306:24: macro cuerdas.core/ffmt: big-boy-pants-js: Error: unsupported operation: native macro runtime core.reSeq; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:1056:1 (bytes 11076..11141)
 ```
 
-Neither entry completes natively yet. These are runtime core-service gaps.
+Neither entry completes natively yet. These are runtime core-service gaps;
+light-cljs-512 covers compiler-owned `gensym`.
 `tests/fixtures/native-helper-demand/frontend` retains the two original
 macro declarations with their MPL notices and unrelated definitions removed.
 `penpot_macro_declarations_fit_the_native_frontend` builds them natively and
