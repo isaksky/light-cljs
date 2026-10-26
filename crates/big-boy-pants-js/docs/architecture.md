@@ -294,7 +294,7 @@ the denial in a thread-local flag that the VM converts at the same instruction
 or native-step boundary. Allocation never parks, so there is no last-resort
 collection at the allocation itself: a denial instead requests a collection at
 the next safe boundary (where a handler may already have released data), and
-until a collection leaves an eighth of the limit free, every run slice begins
+until a collection leaves an eighth of the limit free, every run slice (unless `allocation_threshold` is `None`, which disables all automatic collection) begins
 with one, so a task started after others released their data succeeds. The
 collection a denial requests usually runs before its handler has released
 anything, so data a handler drops is reclaimed only by such a later

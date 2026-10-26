@@ -110,11 +110,13 @@ impl Runtime {
             let _scope = Scope::new(heap);
             let started = crate::realm::intrinsics(heap).is_some()
                 && crate::realm::new_global_object(heap, TaskId::from_raw(0)).is_some();
-            if !started {
-                // Classify while this thread's allocator registration (which
-                // records the denial) is still open.
-                let limited = heap.take_byte_denial() || heap.take_limit_failure();
-                return Err(if limited {
+            // Any admission failure recorded while building is a failed
+            // start, even one a builder did not report as `None`.
+            // Classified while this thread's allocator registration (which
+            // records the denial) is still open.
+            let denied = heap.take_byte_denial() || heap.take_limit_failure();
+            if !started || denied {
+                return Err(if denied {
                     RuntimeStartError::HeapLimit
                 } else {
                     RuntimeStartError::OutOfMemory

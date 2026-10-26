@@ -606,6 +606,11 @@ impl Heap {
     pub(crate) fn byte_starved(&self) -> bool {
         self.byte_budget.starved()
     }
+    /// `HeapPolicy::allocation_threshold` is set: the runtime may collect
+    /// on its own, including after a byte-limit denial.
+    pub(crate) fn automatic_collection_enabled(&self) -> bool {
+        self.policy.allocation_threshold.is_some()
+    }
     pub(crate) fn take_byte_denial(&self) -> bool {
         self.byte_budget.take_denial()
     }

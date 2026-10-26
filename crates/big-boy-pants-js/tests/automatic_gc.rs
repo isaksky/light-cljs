@@ -215,6 +215,18 @@ fn checked_startup_fails_without_panicking_at_every_tight_byte_limit() {
         }
     }
     assert!(failed >= 256, "every limit below the realm footprint fails");
+    // Every byte below a successful probe's peak fails, including the last
+    // charges (the global object's own `globalThis` property).
+    let peak = byte_limited(usize::MAX / 2)
+        .unwrap()
+        .heap_stats()
+        .peak_managed_bytes;
+    for limit in peak - 1024..=peak {
+        match byte_limited(limit) {
+            Err(error) => assert!(limit < peak && error == RuntimeStartError::HeapLimit),
+            Ok(_) => assert_eq!(limit, peak, "started below its peak"),
+        }
+    }
     let rt = byte_limited(realm * 2).unwrap();
     let code = compile_function("function f() { return [1, 2, 3].join('-'); }").unwrap();
     let task = rt.spawn(&code, &[]).unwrap();
@@ -542,4 +554,35 @@ fn promise_settlement_preserves_reactions_at_the_byte_limit() {
         Some("settled 1,2,3,4,5,6,7,8,9")
     );
     assert!(rt.heap_stats().peak_managed_bytes <= limit);
+}
+
+/// `allocation_threshold: None` disables automatic collection, including
+/// the run-entry collections that follow a byte-limit denial; the embedder
+/// still sees the starvation and can collect explicitly.
+#[test]
+fn byte_denial_respects_disabled_automatic_collection() {
+    let limit = realm_bytes() + 1024 * 1024;
+    let rt = Runtime::try_with_heap_policy(
+        Default::default(),
+        HeapPolicy {
+            allocation_threshold: None,
+            hard_limit_bytes: Some(limit),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = rt.heap_stats().collections;
+    caught(&rt, "for (;;) kept.push({a: 1, b: 2});");
+    assert!(rt.byte_starved());
+    let _ = run_sliced(
+        &rt,
+        "function f() { let n = 0; for (let i = 0; i < 1000; i++) n += i; return n; }",
+    );
+    assert_eq!(
+        rt.heap_stats().collections,
+        before,
+        "no automatic collection"
+    );
+    rt.request_collection().unwrap();
+    assert!(!rt.byte_starved());
 }

@@ -701,7 +701,9 @@ pub(crate) fn new_global_object(heap: &Heap, task: crate::ids::TaskId) -> Option
     let mut object = OrdinaryObject::with_prototype(heap, task, intrinsics.object_prototype);
     for global in Global::ALL {
         let key = heap.keys().intern(&JsString::from(global.name()))?;
-        object.define_with(key, intrinsics.global(global), PropertyFlags::METHOD);
+        object
+            .define_with(key, intrinsics.global(global), PropertyFlags::METHOD)
+            .then_some(())?;
     }
     for (name, value) in [
         ("undefined", Value::Undefined),
@@ -709,16 +711,21 @@ pub(crate) fn new_global_object(heap: &Heap, task: crate::ids::TaskId) -> Option
         ("Infinity", Value::Number(f64::INFINITY)),
     ] {
         let key = heap.keys().intern(&JsString::from(name))?;
-        object.define_with(key, value, PropertyFlags::FIXED);
+        object
+            .define_with(key, value, PropertyFlags::FIXED)
+            .then_some(())?;
     }
     let key = heap.keys().intern(&JsString::from("globalThis"))?;
     let id = heap.alloc(HeapObject::Plain(object))?;
-    heap.with_object_mut(id, |object| {
-        if let HeapObject::Plain(object) = object {
-            object.define_with(key, Value::Object(id), PropertyFlags::METHOD);
+    // A denied definition leaves an incomplete global: fail like the
+    // definitions above, so checked startup reports it.
+    heap.with_object_mut(id, |object| match object {
+        HeapObject::Plain(object) => {
+            object.define_with(key, Value::Object(id), PropertyFlags::METHOD)
         }
-    })?;
-    Some(id)
+        _ => false,
+    })?
+    .then_some(id)
 }
 
 /// GlobalDeclarationInstantiation for a script's object bindings. Lexical

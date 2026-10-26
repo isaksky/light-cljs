@@ -1361,8 +1361,10 @@ impl RunGuard<'_> {
             let mut budget = budget.0;
             // After a byte-limit denial, start each slice with a collection
             // until one frees enough: the garbage that caused the denial may
-            // have been released after the pause it requested.
-            if task.heap.byte_starved()
+            // have been released after the pause it requested. A policy
+            // without automatic collection keeps that to the embedder.
+            if task.heap.automatic_collection_enabled()
+                && task.heap.byte_starved()
                 && task.heap.can_collect_at_point()
                 && let Some(vm) = self.vm()
             {
