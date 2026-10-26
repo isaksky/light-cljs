@@ -227,11 +227,10 @@ const decl = (() => {
   // A type: a native struct type, or with a mutable field the constructor
   // of task-owned JavaScript instances. `view` constructs the JavaScript
   // object a struct's interop reads.
-  const type = (fields, specs, view, mutable, ty) => {
+  const type = (fields, specs, view, mutable, ty, fieldMembers) => {
     const record = __rt.formKind(__rt.structNew(ty)) === 'record';
-    // The generated constructor assigns fields in declaration order, already
-    // munged for JavaScript. Reuse those names when printing mutable records.
-    const fieldMembers = mutable && record ? Object.keys(new view()).slice(0, fields.length) : null;
+    // Keep one compiler-munged member per declared field: multiple fields
+    // may share a member, and property enumeration may reorder names.
     views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), mutable, record});
     if (mutable) {
       view.__lightNativeType = ty;
@@ -376,7 +375,10 @@ const native = (() => {
   };
   const printOption = (options,name,root) => options==null?core[root]:get(options,__rt.cljKeyword(name));
   const writers=new WeakSet();
-  const stringWriter=()=>new StringBufferWriter({text:'',append(text){this.text+=text;return this;}});
+  const stringWriter=()=>{
+    const buffer={text:'',append(text){this.text+=text;return this;}};
+    return {buffer,writer:new StringBufferWriter(buffer)};
+  };
   function StringBufferWriter(sb){this.sb=sb;writers.add(this);}
   const write = (writer,text) => {
     if(writers.has(writer))return writer.sb.append(val(text));
@@ -470,11 +472,11 @@ const native = (() => {
     throw new Error('unsupported operation: native macro runtime pr-str of '+(kind??typeof x));
   };
   const printValues = (values,options) => {
-    const writer=stringWriter();let printed=false;
+    const {buffer,writer}=stringWriter();let printed=false;
     for(let s=seq(values);s!==null;s=__rt.cljNext(s)){
       if(printed)write(writer,' ');printWriter(__rt.cljFirst(s),writer,options);printed=true;
     }
-    flushWriter(writer);return writer.sb.text;
+    flushWriter(writer);return buffer.text;
   };
   const prStr = (...values) => printValues(vector(values),null);
   const prWriter = (x,w,o) => {
@@ -797,7 +799,7 @@ const native = (() => {
     prStr, printStr, prnStr:(...xs)=>prStr(...xs)+'\n', printlnStr:(...xs)=>printStr(...xs)+'\n',
     prStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1]):arity(a.length),
     prnStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1])+'\n':arity(a.length),
-    prWriter, prStrStar:x=>{const w=stringWriter();prWriter(x,w,null);flushWriter(w);return w.sb.text;},
+    prWriter, prStrStar:x=>{const {buffer,writer}=stringWriter();prWriter(x,writer,null);flushWriter(writer);return buffer.text;},
     printMetaQ:(...a)=>{
       if(a.length!==2)return arity(a.length);
       if(!truth(printOption(a[0],'meta','printMeta')))return false;
@@ -856,7 +858,7 @@ const native = (() => {
       if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}
       if(kind==='type')return __rt.formName(x);
       if(kind==='struct'||kind==='record')return String(interop(x));
-      if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const w=stringWriter();printWriterImpl(x,w,null,true);flushWriter(w);return w.sb.text;}finally{core.printReadably=saved;}}return String(x);}).join(''),
+      if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const {buffer,writer}=stringWriter();printWriterImpl(x,writer,null,true);flushWriter(writer);return buffer.text;}finally{core.printReadably=saved;}}return String(x);}).join(''),
     identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     divide:(...xs)=>xs.length===0?NaN:xs.length===1?1/val(xs[0]):xs.slice(1).reduce((a,b)=>a/val(b),val(xs[0])),
@@ -1024,7 +1026,7 @@ const native = (() => {
     protocolPredicate:(protocol,key,x,direct)=>direct?decl.implementsDirectly(key,x):decl.satisfies(key,x),
     extendType:(target,specs)=>decl.extend(target,specs),
     extendInstance:unsupported('extendInstance'),
-    nativeType:(fields,specs,record,name,view,mutable,ty)=>decl.type(fields,specs,view,mutable,ty),
+    nativeType:(fields,specs,record,name,view,mutable,ty,fieldMembers)=>decl.type(fields,specs,view,mutable,ty,fieldMembers),
     keyword:(ns,n)=>__rt.formKeyword(ns,n),symbol:(ns,n)=>__rt.formSymbol(ns,n),get,
     vector:(...xs)=>vector(xs),vectorFromArray:vector,listFromArray:list,mapFromArray:literalMap,arrayMapFromArray:arrayMap,constantMapFromArray:constantMap,
     mapFromArrays:(ks,vs)=>map(ks.flatMap((k,i)=>[k,vs[i]])),

@@ -6628,7 +6628,9 @@ impl<'a> Emitter<'a> {
             "__rt.structType({}, __rt.formVector({names}), {record})",
             quoted(&name)
         ));
-        write!(self.output, " }}, {mutable}, __lightUnitType{index}); ").unwrap();
+        write!(self.output, " }}, {mutable}, __lightUnitType{index}, ").unwrap();
+        self.type_field_names(&members[..fields.len()]);
+        self.output.push_str("); ");
         if let Some(constructor) = constructor {
             self.product(*constructor);
             if mutable {
