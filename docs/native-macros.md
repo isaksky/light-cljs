@@ -440,3 +440,29 @@ task) and `byte-limit`, next to the existing collection, pause and live-object
 counters.
 Legacy-only unit tests still require the `quickjs` feature; the dedicated
 `bbp_macros` integration target above runs without it.
+
+## Seeded 200k namespace build (2026-10-26)
+
+At `26ca6516` (light-cljs-505), the seed-42 generated project builds completely
+with the native-only release compiler at `--jobs 1`. It passes the former
+`macros/workload/trildorplus.cljc:6:1` failure (`RangeError: eval source exceeds
+16,384 UTF-16 code units`); there is no next compiler failure. The generated
+fixture has 199,129 nonblank lines, 213,984 physical lines, 9,966,430 source bytes,
+and 450 worker namespaces. The generated configuration disables the compiler
+cache and gives macros a 2 GiB heap budget and a one-hour deadline.
+
+Reproduce from the repository root (destination must be absent):
+
+```sh
+bb benchmarks/generated-project/generate.bb target/generated-native-200k --seed 42 --lines 200k
+CARGO_BUILD_JOBS=3 cargo build --locked --release --no-default-features --features bbp-macros --bin light-cljs
+cd target/generated-native-200k
+../release/light-cljs release bench --jobs 1
+node run-light.mjs 42 3
+bb oracle.bb 42 3
+```
+
+Both executions print `484264`. This was checked on macOS aarch64 with Homebrew
+Rust/Cargo 1.99.1 and Babashka 1.12.218. It demonstrates this seeded build and
+application result; the unsupported operations listed above remain boundaries
+for other macro workloads.
