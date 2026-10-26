@@ -653,6 +653,24 @@ pub(crate) fn new_list(heap: &Heap, items: &[Value]) -> Result<Value, Collection
     alloc(heap, FormObject::new(body, None), items)
 }
 
+/// A list of `items`, a body taken from the list or vector `source` (or a
+/// [`PVector::drop_first`] view of it) that shares its trie: the `seq`,
+/// `rest` or `next` of `source`, allocated without copying an element.
+/// `items`' elements are some of `source`'s, so `source` stands for them in
+/// the new object's known-shareable bit.
+pub(crate) fn list_sharing(
+    heap: &Heap,
+    items: PVector,
+    source: &Value,
+) -> Result<Value, CollectionError> {
+    let body = FormBody::List(items);
+    alloc(
+        heap,
+        FormObject::new(body, None),
+        std::slice::from_ref(source),
+    )
+}
+
 pub(crate) fn new_vector(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
     let body = FormBody::Vector(PVector::try_from_values(heap, items)?);
     alloc(heap, FormObject::new(body, None), items)

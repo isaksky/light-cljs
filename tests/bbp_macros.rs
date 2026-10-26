@@ -867,6 +867,13 @@ const COLLECTION_FIXTURES: &[(&str, &str)] = &[
         "10\n",
     ),
     (
+        // A tail past the first trie leaf (light-cljs-502): returned,
+        // compared, counted, given metadata and updated as the list it is.
+        "(defmacro tail-of [v] (loop [s (seq v) i 0] (if (= i 33) (list 'quote [s (rest s) (= s (seq (vec s))) (count s) (seq? s) (conj s :x) (:k (meta (with-meta s {:k 1})))]) (recur (next s) (+ i 1))))) \
+         (js/console.log (pr-str (tail-of [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35])))",
+        "[(33 34 35) (34 35) true 3 true (:x 33 34 35) 1]\n",
+    ),
+    (
         "(defmacro built [] (list 'quote (list (vector 1 2) (hash-set 3) (cons 0 [5])))) (js/console.log (pr-str (built)))",
         "([1 2] #{3} (0 5))\n",
     ),

@@ -11,6 +11,15 @@
 //! Elements are raw [`Value`]s. Heap references among them are reported by
 //! [`Trace`]; the trie nodes themselves are not heap objects (see the
 //! storage boundary in [`crate::collections`]).
+//!
+//! A version may hide a prefix of its trie ([`PVector::drop_first`]): the
+//! trie holds `start + len` elements and the version is the last `len` of
+//! them, sharing every node with the version it came from (the `seq`,
+//! `rest` and `next` of a native form list or vector, light-cljs-502). The
+//! hidden elements belong to other versions only: no operation of this one
+//! reads, traces, publishes or compares them, so they may name objects that
+//! have since been collected. Updates index the trie at `start + index`, so
+//! it stays left-packed from its first hidden element.
 
 use std::sync::{Arc, LazyLock};
 
@@ -91,6 +100,8 @@ fn uncharged<T>(result: Result<T, CollectionError>) -> T {
 /// An immutable vector body. Cloning is O(1) (one `Arc` clone).
 #[derive(Clone, Debug)]
 pub(crate) struct PVector {
+    /// Hidden elements at the front of the trie (see the module docs).
+    start: usize,
     len: usize,
     shift: u32,
     root: Arc<Node>,
@@ -99,6 +110,7 @@ pub(crate) struct PVector {
 impl Default for PVector {
     fn default() -> Self {
         PVector {
+            start: 0,
             len: 0,
             shift: 0,
             root: Arc::clone(&EMPTY),
@@ -152,16 +164,29 @@ impl PVector {
         value: Value,
     ) -> Result<Self, CollectionError> {
         let len = self.len.checked_add(1).ok_or(CollectionError::HeapLimit)?;
-        fn leaves<'a>(node: &'a Node, out: &mut Vec<&'a [Value]>) {
-            match &node.kind {
-                Kind::Branch(children) => children.iter().for_each(|c| leaves(c, out)),
-                Kind::Leaf(values) => out.push(values),
-            }
-        }
-        let mut parts = Vec::with_capacity(self.len.div_ceil(WIDTH));
-        leaves(&self.root, &mut parts);
+        let mut parts = Vec::with_capacity(self.len.div_ceil(WIDTH) + 1);
+        self.for_each_slice(|slice| parts.push(slice));
         let values = std::iter::once(value).chain(parts.into_iter().flatten().cloned());
         Self::build(NodeCharge::of(heap), len, values)
+    }
+
+    /// This version without its first `n` elements, sharing every trie node
+    /// with it: O(1), allocating (and charging) nothing. Empty, and sharing
+    /// nothing, when `n >= len`.
+    pub(crate) fn drop_first(&self, n: usize) -> PVector {
+        if n >= self.len {
+            return PVector::default();
+        }
+        PVector {
+            start: self.start + n,
+            len: self.len - n,
+            ..self.clone()
+        }
+    }
+
+    /// The number of elements the trie holds, hidden ones included.
+    fn end(&self) -> usize {
+        self.start + self.len
     }
 
     /// A vector of `values`, built bottom-up in O(n).
@@ -200,7 +225,12 @@ impl PVector {
             shift += BITS;
         }
         let root = level.pop().expect("a nonempty vector has a root");
-        Ok(PVector { len, shift, root })
+        Ok(PVector {
+            start: 0,
+            len,
+            shift,
+            root,
+        })
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -212,6 +242,7 @@ impl PVector {
         if index >= self.len {
             return None;
         }
+        let index = self.start + index;
         let mut node = &*self.root;
         let mut level = self.shift;
         loop {
@@ -251,6 +282,7 @@ impl PVector {
         value: Value,
     ) -> Result<PVector, CollectionError> {
         debug_assert!(index < self.len);
+        let index = self.start + index;
         Ok(PVector {
             root: Arc::new(set_in(charge, &self.root, self.shift, index, value)?),
             ..self.clone()
@@ -262,25 +294,28 @@ impl PVector {
         charge: NodeCharge<'_>,
         value: Value,
     ) -> Result<PVector, CollectionError> {
-        if self.len == usize::MAX {
+        let end = self.end();
+        if end == usize::MAX {
             return Err(CollectionError::HeapLimit);
         }
         // `checked_shl` fails only for a 64-level-deep trie, which cannot exist.
         let capacity = 1usize.checked_shl(self.shift + BITS).unwrap_or(usize::MAX);
-        if self.len == capacity {
+        if end == capacity {
             let path = Arc::new(new_path(charge, self.shift, value)?);
             let root = Node::branch(charge, 2, |children| {
                 children.push(Arc::clone(&self.root));
                 children.push(path);
             })?;
             Ok(PVector {
+                start: self.start,
                 len: self.len + 1,
                 shift: self.shift + BITS,
                 root: Arc::new(root),
             })
         } else {
-            let root = push_in(charge, &self.root, self.shift, self.len, value)?;
+            let root = push_in(charge, &self.root, self.shift, end, value)?;
             Ok(PVector {
+                start: self.start,
                 len: self.len + 1,
                 shift: self.shift,
                 root: Arc::new(root),
@@ -294,7 +329,7 @@ impl PVector {
         if self.len <= 1 {
             return Ok(PVector::default());
         }
-        let Some(root) = pop_in(charge, &self.root, self.shift, self.len - 1)? else {
+        let Some(root) = pop_in(charge, &self.root, self.shift, self.end() - 1)? else {
             return Ok(PVector::default());
         };
         let mut root = Arc::new(root);
@@ -310,6 +345,7 @@ impl PVector {
             shift -= BITS;
         }
         Ok(PVector {
+            start: self.start,
             len: self.len - 1,
             shift,
             root,
@@ -318,13 +354,31 @@ impl PVector {
 
     /// Call `f` on every element in index order.
     pub(crate) fn for_each(&self, mut f: impl FnMut(&Value)) {
-        fn walk(node: &Node, f: &mut dyn FnMut(&Value)) {
+        self.for_each_slice(|slice| slice.iter().for_each(&mut f));
+    }
+
+    /// Call `f` on the elements in index order, a leaf's run at a time,
+    /// without visiting the hidden prefix (or any subtree wholly inside it).
+    fn for_each_slice<'a>(&'a self, mut f: impl FnMut(&'a [Value])) {
+        /// The elements below `node`, whose children are indexed at
+        /// `level`, from its `skip`th on.
+        fn walk<'a>(node: &'a Node, level: u32, skip: usize, f: &mut dyn FnMut(&'a [Value])) {
             match &node.kind {
-                Kind::Branch(children) => children.iter().for_each(|c| walk(c, f)),
-                Kind::Leaf(values) => values.iter().for_each(f),
+                Kind::Branch(children) => {
+                    let first = skip >> level;
+                    let within = skip & ((1 << level) - 1);
+                    for (i, child) in children.iter().enumerate().skip(first) {
+                        let skip = if i == first { within } else { 0 };
+                        walk(child, level - BITS, skip, f);
+                    }
+                }
+                Kind::Leaf(values) => match values.get(skip..) {
+                    Some(run) if !run.is_empty() => f(run),
+                    _ => {}
+                },
             }
         }
-        walk(&self.root, &mut f);
+        walk(&self.root, self.shift, self.start, &mut f);
     }
 
     /// Every element in index order.
@@ -536,6 +590,10 @@ mod tests {
                     m.pop();
                     (v.pop().unwrap(), m)
                 }
+                3 if !model.is_empty() => {
+                    let k = 1 + next() % model.len().min(40);
+                    (v.drop_first(k), model[k..].to_vec())
+                }
                 1 | 2 if !model.is_empty() => {
                     let i = next() % model.len();
                     let mut m = model.clone();
@@ -580,6 +638,46 @@ mod tests {
         );
     }
 
+    /// A view without a prefix shares every node of its source and reads,
+    /// iterates and updates as a vector of the remaining elements, across
+    /// leaf and level boundaries of the hidden prefix.
+    #[test]
+    fn dropping_a_prefix_shares_the_trie_and_updates_the_remainder() {
+        let model: Vec<Value> = (0..1100).map(num).collect();
+        let whole = PVector::from_values(&model);
+        for k in [0, 1, 31, 32, 33, 1023, 1024, 1025, 1099] {
+            let view = whole.drop_first(k);
+            let rest = &model[k..];
+            check(&view, rest);
+            assert_eq!(view.node_addresses(), whole.node_addresses(), "k = {k}");
+            let mut seen = Vec::new();
+            view.for_each_slice(|run| seen.push(run.len()));
+            assert_eq!(seen.iter().sum::<usize>(), rest.len(), "k = {k}");
+            // A view of a view drops from where the first one starts.
+            check(&view.drop_first(1), &rest[1..]);
+            check(&view.push(num(7)), &[rest, &[num(7)]].concat());
+            check(
+                &view.set(0, num(7)).unwrap(),
+                &[&[num(7)], &rest[1..]].concat(),
+            );
+            check(&view.pop().unwrap(), &rest[..rest.len() - 1]);
+            check(&view.push(num(7)).pop().unwrap(), rest);
+            let heap = crate::heap::Heap::default();
+            check(
+                &view.try_prepend(&heap, num(7)).unwrap(),
+                &[&[num(7)], rest].concat(),
+            );
+        }
+        // Pushing a view across the trie's capacity grows a root level.
+        let full = PVector::from_values(&model[..1024]).drop_first(1000);
+        check(
+            &full.push(num(1)),
+            &[&model[1000..1024], &[num(1)]].concat(),
+        );
+        assert_eq!(whole.drop_first(1100).len(), 0);
+        assert_eq!(whole.drop_first(5000).node_addresses().len(), 1);
+    }
+
     /// The bytes charged for every distinct node reachable from `vectors`
     /// (the shared empty leaf is not charged).
     fn reachable_node_bytes<'a>(vectors: impl IntoIterator<Item = &'a PVector>) -> usize {
@@ -619,11 +717,17 @@ mod tests {
         let mut live = vec![PVector::try_from_values(&heap, &model).unwrap()];
         for step in 0..3000 {
             let v = live[next() % live.len()].clone();
-            let updated = match next() % 10 {
+            let updated = match next() % 11 {
                 0 if v.len() > 0 => v.try_pop(&heap).unwrap(),
                 1 | 2 if v.len() > 0 => v.try_set(&heap, next() % v.len(), num(step)).unwrap(),
                 3 => v.try_prepend(&heap, num(step)).unwrap(),
                 4 => PVector::try_from_values(&heap, &model[..next() % 70]).unwrap(),
+                5 => {
+                    let before = budget.used();
+                    let view = v.drop_first(next() % 40);
+                    assert_eq!(budget.used(), before, "a view allocates nothing");
+                    view
+                }
                 _ => v.try_push(&heap, num(step)).unwrap(),
             };
             drop(v);

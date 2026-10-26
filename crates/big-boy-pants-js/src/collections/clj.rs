@@ -20,7 +20,10 @@
 //!   vectors and a set's members (both in their trie order), and a string's
 //!   UTF-16 code units as one-unit strings. A nonempty list is its own
 //!   `seq` (the same value, occurrence included). There is no lazy or
-//!   chunked sequence: `rest` copies the remaining elements.
+//!   chunked sequence. The `seq`, `rest` and `next` of a list or vector
+//!   share its trie (light-cljs-502): O(1), allocating one list object and
+//!   no trie node, so walking one with `next` is linear. Those of a map, set
+//!   or string copy the remaining elements.
 //! * **Unchanged updates return their input.** An `assoc` of an identical
 //!   value, a `dissoc` or `disj` of an absent key, a `conj` of a present set
 //!   member and `with-meta` of the same metadata return the operand itself
@@ -225,16 +228,21 @@ pub(crate) fn count(heap: &Heap, v: &Value) -> Result<Value> {
     Ok(Value::Number(n as f64))
 }
 
-/// `seq`: `nil` when empty, a nonempty list itself, otherwise a new list.
+/// `seq`: `nil` when empty, a nonempty list itself, otherwise a new list
+/// (a vector's sharing its trie).
 pub(crate) fn seq(heap: &Heap, v: &Value) -> Result<Value> {
-    if let Shape::Form(FormKind::List, f) = shape(heap, v)
-        && let FormBody::List(items) = f.body()
-    {
-        return Ok(if items.len() == 0 {
-            Value::Null
-        } else {
-            v.clone()
-        });
+    if let Shape::Form(_, f) = shape(heap, v) {
+        match f.body() {
+            FormBody::List(items) | FormBody::Vector(items) if items.len() == 0 => {
+                return Ok(Value::Null);
+            }
+            FormBody::List(_) => return Ok(v.clone()),
+            FormBody::Vector(items) => {
+                let source = form::unwrap(heap, v.clone());
+                return Ok(form::list_sharing(heap, items.clone(), &source)?);
+            }
+            _ => {}
+        }
     }
     match seq_items(heap, "seq", v)? {
         None => Ok(Value::Null),
@@ -265,28 +273,46 @@ pub(crate) fn first(heap: &Heap, v: &Value) -> Result<Value> {
 }
 
 /// The elements after the first, as `rest` and `next` see them.
-fn tail(heap: &Heap, op: &'static str, v: &Value) -> Result<Vec<Value>> {
+enum Tail {
+    /// Of a list or vector: its trie without the first element
+    /// ([`PVector::drop_first`](super::PVector::drop_first)), and the
+    /// (unwrapped) list or vector it shares it with.
+    Shared(super::PVector, Value),
+    /// Of a map, set, record or string: a copy.
+    Copied(Vec<Value>),
+}
+
+fn tail(heap: &Heap, op: &'static str, v: &Value) -> Result<Tail> {
     if let Shape::Form(_, f) = shape(heap, v)
         && let FormBody::List(items) | FormBody::Vector(items) = f.body()
     {
-        let items = items.to_vec();
-        return Ok(items.get(1..).map(<[Value]>::to_vec).unwrap_or_default());
+        return Ok(Tail::Shared(
+            items.drop_first(1),
+            form::unwrap(heap, v.clone()),
+        ));
     }
-    Ok(seq_items(heap, op, v)?
-        .map(|items| items.into_iter().skip(1).collect())
-        .unwrap_or_default())
+    Ok(Tail::Copied(
+        seq_items(heap, op, v)?
+            .map(|items| items.into_iter().skip(1).collect())
+            .unwrap_or_default(),
+    ))
 }
 
 /// `rest`: the elements after the first, as a list (empty, never `nil`).
 pub(crate) fn rest(heap: &Heap, v: &Value) -> Result<Value> {
-    let items = tail(heap, "rest", v)?;
-    Ok(form::new_list(heap, &items)?)
+    match tail(heap, "rest", v)? {
+        Tail::Shared(items, source) => Ok(form::list_sharing(heap, items, &source)?),
+        Tail::Copied(items) => Ok(form::new_list(heap, &items)?),
+    }
 }
 
 /// `next`: the elements after the first, as a list, or `nil` for none.
 pub(crate) fn next(heap: &Heap, v: &Value) -> Result<Value> {
-    let items = tail(heap, "next", v)?;
-    list_or_nil(heap, &items)
+    match tail(heap, "next", v)? {
+        Tail::Shared(items, _) if items.len() == 0 => Ok(Value::Null),
+        Tail::Shared(items, source) => Ok(form::list_sharing(heap, items, &source)?),
+        Tail::Copied(items) => list_or_nil(heap, &items),
+    }
 }
 
 /// `cons`: a new list of `x` followed by the elements of `coll`.
@@ -815,6 +841,99 @@ mod tests {
         let list = form::new_list(&heap, &[n(1.0)]).unwrap();
         let occ = new_occurrence(&heap, list, Provenance::default()).unwrap();
         assert!(seq(&heap, &occ).unwrap().same_object(&occ));
+    }
+
+    fn trie(heap: &Heap, v: &Value) -> Vec<usize> {
+        match form::form_object(heap, &form::unwrap(heap, v.clone()))
+            .as_deref()
+            .map(form::FormObject::body)
+        {
+            Some(FormBody::List(items) | FormBody::Vector(items)) => items.node_addresses(),
+            _ => panic!("not sequential"),
+        }
+    }
+
+    /// `seq`, `rest` and `next` of a vector or list share its trie and are
+    /// lists equal to (and hashing like) a copy of the remaining elements;
+    /// each allocates one list object, whatever the length.
+    #[test]
+    fn seq_rest_and_next_share_the_trie() {
+        let heap = Arc::new(Heap::with_byte_limit(usize::MAX / 2));
+        let _scope = Scope::new(&heap);
+        let items: Vec<Value> = (0..1100).map(|i| n(f64::from(i))).collect();
+        let v = form::new_vector(&heap, &items).unwrap();
+        let occ = new_occurrence(&heap, v.clone(), Provenance::default()).unwrap();
+        let shared = trie(&heap, &v);
+        let mut s = seq(&heap, &occ).unwrap();
+        let mut walked = Vec::new();
+        while s != Value::Null {
+            assert_eq!(form::kind(&heap, &s), Some(FormKind::List));
+            assert_eq!(trie(&heap, &s), shared);
+            walked.push(first(&heap, &s).unwrap());
+            s = next(&heap, &s).unwrap();
+        }
+        assert_eq!(walked, items);
+        let mut r = occ.clone();
+        for k in 1..=1100 {
+            r = rest(&heap, &r).unwrap();
+            if [1, 31, 32, 33, 1024, 1099, 1100].contains(&k) {
+                let copy = form::new_list(&heap, &items[k..]).unwrap();
+                assert!(form::equals(&heap, &r, &copy), "k = {k}");
+                assert_eq!(form::hash(&heap, &r), form::hash(&heap, &copy), "k = {k}");
+                assert_eq!(count(&heap, &r).unwrap(), n((1100 - k) as f64));
+                assert_eq!(elements(&heap, &r), &items[k..]);
+                assert_eq!(meta(&heap, &r), Value::Null);
+                assert_eq!(
+                    nth(&heap, &r, &n(0.0), Some(&Value::Null)).unwrap(),
+                    items.get(k).cloned().unwrap_or(Value::Null)
+                );
+            }
+        }
+        assert_eq!(next(&heap, &r).unwrap(), Value::Null);
+        assert_eq!(count(&heap, &rest(&heap, &r).unwrap()).unwrap(), n(0.0));
+        // Updates of a shared tail see only its elements.
+        let tail = rest(&heap, &rest(&heap, &v).unwrap()).unwrap();
+        let more = conj(&heap, &tail, &n(-1.0)).unwrap();
+        assert_eq!(elements(&heap, &more)[..2], [n(-1.0), n(2.0)]);
+        assert_eq!(count(&heap, &more).unwrap(), n(1099.0));
+        let joined = cons(&heap, &n(-1.0), &tail).unwrap();
+        assert!(form::equals(&heap, &joined, &more));
+        // A tail costs its list object only, however long the remainder.
+        let budget = heap.byte_budget();
+        let short = form::new_vector(&heap, &items[..2]).unwrap();
+        let cost = |coll: &Value| {
+            let before = budget.used();
+            let tail = rest(&heap, coll).unwrap();
+            (budget.used() - before, tail)
+        };
+        let (long_cost, _long) = cost(&v);
+        let (short_cost, _short) = cost(&short);
+        assert_eq!(long_cost, short_cost);
+    }
+
+    /// A shared tail traces its own elements only: once the vector it came
+    /// from is gone, its hidden first element can be collected.
+    #[test]
+    fn a_shared_tail_keeps_its_elements_and_not_the_hidden_ones() {
+        let heap = Arc::new(Heap::default());
+        let (a, b, tail) = {
+            let _scope = Scope::new(&heap);
+            let a = form::new_list(&heap, &[n(1.0)]).unwrap();
+            let b = form::new_list(&heap, &[n(2.0)]).unwrap();
+            let v = form::new_vector(&heap, &[a.clone(), b.clone()]).unwrap();
+            let tail = crate::heap::Rooted::new(&heap, next(&heap, &v).unwrap());
+            (a, b, tail)
+        };
+        heap.collect().unwrap();
+        let id = |v: &Value| match v {
+            Value::Object(id) => *id,
+            _ => panic!("not an object"),
+        };
+        assert!(!heap.is_live(id(&a)));
+        assert!(heap.is_live(id(&b)));
+        let _scope = Scope::new(&heap);
+        let tail = tail.value_in(&heap).unwrap();
+        assert!(first(&heap, &tail).unwrap().same_object(&b));
     }
 
     #[test]
