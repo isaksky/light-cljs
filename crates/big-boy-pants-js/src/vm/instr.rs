@@ -1466,11 +1466,33 @@ pub enum FormOp {
     CljDispatch = 46,
     /// v → whether it is an atom (`cljIsAtom`, light-cljs-480).
     CljIsAtom = 47,
+    // Lazy and chunked sequences (light-cljs-479).
+    /// thunk → lazy sequence (`lazySeq`).
+    LazySeq = 48,
+    /// v → whether a lazy sequence is realized (`cljRealized`).
+    CljRealized = 49,
+    /// v → every element of its seq, realized, as a list (`cljList`).
+    CljList = 50,
+    /// v → `chunked-seq?` (`cljChunkedSeq`).
+    CljChunkedSeq = 51,
+    /// s → its first chunk, a form vector (`cljChunkFirst`).
+    CljChunkFirst = 52,
+    /// s → what follows its first chunk (`cljChunkRest`).
+    CljChunkRest = 53,
+    /// s → the seq of what follows its first chunk (`cljChunkNext`).
+    CljChunkNext = 54,
+    /// chunk rest → chunked sequence (`cljChunkCons`).
+    CljChunkCons = 55,
+    /// v → v with every lazy sequence inside realized into a list
+    /// (`cljRealizeAll`).
+    CljRealizeAll = 56,
+    /// chunk rest → a finite range's chunked sequence (`cljRangeCons`).
+    CljRangeCons = 57,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 48] = [
+    pub const ALL: [FormOp; 58] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1519,6 +1541,16 @@ impl FormOp {
         FormOp::RecordFromMap,
         FormOp::CljDispatch,
         FormOp::CljIsAtom,
+        FormOp::LazySeq,
+        FormOp::CljRealized,
+        FormOp::CljList,
+        FormOp::CljChunkedSeq,
+        FormOp::CljChunkFirst,
+        FormOp::CljChunkRest,
+        FormOp::CljChunkNext,
+        FormOp::CljChunkCons,
+        FormOp::CljRealizeAll,
+        FormOp::CljRangeCons,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1548,6 +1580,14 @@ impl FormOp {
             | FormOp::CljKeyword
             | FormOp::StructTypeOf
             | FormOp::CljIsAtom
+            | FormOp::LazySeq
+            | FormOp::CljRealized
+            | FormOp::CljList
+            | FormOp::CljChunkedSeq
+            | FormOp::CljChunkFirst
+            | FormOp::CljChunkRest
+            | FormOp::CljChunkNext
+            | FormOp::CljRealizeAll
             | FormOp::CljSymbol => 1,
             FormOp::Keyword
             | FormOp::Symbol
@@ -1570,6 +1610,8 @@ impl FormOp {
             | FormOp::StructField
             | FormOp::RecordFromMap
             | FormOp::CljDispatch
+            | FormOp::CljChunkCons
+            | FormOp::CljRangeCons
             | FormOp::CljSymbolNs => 2,
             FormOp::Get
             | FormOp::Assoc
@@ -1631,6 +1673,16 @@ impl FormOp {
             FormOp::RecordFromMap => "recordFromMap",
             FormOp::CljDispatch => "cljDispatch",
             FormOp::CljIsAtom => "cljIsAtom",
+            FormOp::LazySeq => "lazySeq",
+            FormOp::CljRealized => "cljRealized",
+            FormOp::CljList => "cljList",
+            FormOp::CljChunkedSeq => "cljChunkedSeq",
+            FormOp::CljChunkFirst => "cljChunkFirst",
+            FormOp::CljChunkRest => "cljChunkRest",
+            FormOp::CljChunkNext => "cljChunkNext",
+            FormOp::CljChunkCons => "cljChunkCons",
+            FormOp::CljRealizeAll => "cljRealizeAll",
+            FormOp::CljRangeCons => "cljRangeCons",
         }
     }
 }

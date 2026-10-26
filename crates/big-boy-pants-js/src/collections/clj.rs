@@ -16,14 +16,19 @@
 //!   `(get nil k)` are `nil`, `(assoc nil k v)` is `{k v}`, `(conj nil x)`
 //!   is `(x)`, `(contains? nil k)` is `false`.
 //! * **Sequences are lists.** `seq`, `rest`, `next` and `cons` return form
-//!   lists (or `nil`): a vector's elements, a map's entries as two-element
+//!   lists (or `nil`): a vector's elements (its `seq` in chunks, below), a map's entries as two-element
 //!   vectors and a set's members (both in their trie order), and a string's
 //!   UTF-16 code units as one-unit strings. A nonempty list is its own
-//!   `seq` (the same value, occurrence included). There is no lazy or
-//!   chunked sequence. The `seq`, `rest` and `next` of a list or vector
-//!   share its trie (light-cljs-502): O(1), allocating one list object and
-//!   no trie node, so walking one with `next` is linear. Those of a map, set
-//!   or string copy the remaining elements.
+//!   `seq` (the same value, occurrence included). The `rest` and `next` of
+//!   a list or vector share its trie (light-cljs-502): O(1), allocating one
+//!   list object and no trie node, so walking one with `next` is linear.
+//!   Those of a map, set or string copy the remaining elements. The seq of a
+//!   vector of more than 32 elements is a chunked cons sequence over its
+//!   trie (32 elements a chunk, as the runtime's `ChunkedSeq`). Lazy and cons sequences (light-cljs-479,
+//!   [`crate::collections::lazy`]) are read through, realizing what an
+//!   operation needs: `first`, `rest` and `cons` realize one cell, `count`,
+//!   `nth` as far as they read; `cons` and `conj` keep a lazy sequence as an
+//!   unrealized tail, and a `concat` involving one is lazy.
 //! * **Unchanged updates return their input.** An `assoc` of an identical
 //!   value, a `dissoc` or `disj` of an absent key, a `conj` of a present set
 //!   member and `with-meta` of the same metadata return the operand itself
@@ -41,7 +46,7 @@
 //! `HeapLimit`/`OutOfMemory` failure.
 
 use super::form::{self, FormBody, FormKind};
-use super::{CollectionError, index_from_value};
+use super::{CollectionError, PVector, index_from_value, lazy};
 use crate::heap::{Heap, HeapObject};
 use crate::value::{JsString, Value};
 
@@ -60,11 +65,27 @@ pub(crate) enum CljError {
     /// A constructor's operands have the wrong types (a plain `Error` with
     /// the message of the JavaScript function it replaces).
     Operands(&'static str),
+    /// The operation needs this unrealized lazy sequence realized first
+    /// (light-cljs-479): not an error, a request the VM performs before
+    /// executing the operation again ([`crate::collections::lazy`]).
+    Realize(Value),
+    /// A realized lazy sequence contains itself: it is infinite (a
+    /// `RangeError`).
+    Infinite,
 }
 
 impl From<CollectionError> for CljError {
     fn from(e: CollectionError) -> Self {
         CljError::Collection(e)
+    }
+}
+
+impl From<form::SeqError> for CljError {
+    fn from(e: form::SeqError) -> Self {
+        match e {
+            form::SeqError::Pending(v) => CljError::Realize(v),
+            form::SeqError::Cycle => CljError::Infinite,
+        }
     }
 }
 
@@ -78,6 +99,8 @@ impl CljError {
             }
             CljError::OutOfBounds => "index out of bounds".to_string(),
             CljError::Operands(message) => (*message).to_string(),
+            CljError::Realize(_) => "lazy sequence realization pending".to_string(),
+            CljError::Infinite => "infinite lazy sequence: it contains itself".to_string(),
         }
     }
 }
@@ -144,8 +167,32 @@ fn entry(heap: &Heap, key: &Value, value: &Value) -> Result<Value> {
     Ok(form::new_vector(heap, &[key.clone(), value.clone()])?)
 }
 
-/// The elements `seq` of `v` would hold, or `None` for `nil`.
+/// The elements `seq` of `v` would hold, or `None` for `nil`. A lazy or
+/// cons sequence is read through, realizing what it needs (light-cljs-479).
 fn seq_items(heap: &Heap, op: &'static str, v: &Value) -> Result<Option<Vec<Value>>> {
+    if matches!(shape(heap, v), Shape::Nil) {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    let mut visited = lazy::Visited::default();
+    let mut cur = v.clone();
+    loop {
+        let head = form::realized_head(heap, cur, &mut visited)?;
+        if let Shape::Form(FormKind::Cons, f) = shape(heap, &head)
+            && let FormBody::Cons(c) = f.body()
+        {
+            out.extend(c.elements());
+            cur = c.rest.clone();
+            continue;
+        }
+        out.extend(collection_items(heap, op, &head)?.unwrap_or_default());
+        return Ok(Some(out));
+    }
+}
+
+/// The elements of one collection, string or `nil` (not a lazy or cons
+/// sequence), or `None` for `nil`.
+fn collection_items(heap: &Heap, op: &'static str, v: &Value) -> Result<Option<Vec<Value>>> {
     let shape = shape(heap, v);
     Ok(Some(match &shape {
         Shape::Nil => return Ok(None),
@@ -180,6 +227,8 @@ fn seq_items(heap: &Heap, op: &'static str, v: &Value) -> Result<Option<Vec<Valu
                 }
                 entries
             }
+            // Read by `seq_items`, never here.
+            FormBody::Lazy(_) | FormBody::Cons(_) => return Err(unsupported(op, &shape)),
             FormBody::Keyword(_)
             | FormBody::Symbol(_)
             | FormBody::Struct(_)
@@ -187,6 +236,51 @@ fn seq_items(heap: &Heap, op: &'static str, v: &Value) -> Result<Option<Vec<Valu
         },
         Shape::Other(_) => return Err(unsupported(op, &shape)),
     }))
+}
+
+/// Whether `v` (occurrences unwrapped, lazy forms not followed) is a lazy
+/// or cons sequence.
+fn is_lazy_seq(heap: &Heap, v: &Value) -> bool {
+    matches!(
+        form::kind(heap, &form::unwrap(heap, v.clone())),
+        Some(FormKind::Lazy | FormKind::Cons)
+    )
+}
+
+/// The head of `v` with realized lazy sequences followed, and its shape.
+fn head(heap: &Heap, v: &Value) -> Result<(Value, Shape)> {
+    let head = form::realized_head(heap, v.clone(), &mut lazy::Visited::default())?;
+    let shape = shape(heap, &head);
+    Ok((head, shape))
+}
+
+/// The cons body of a shape, if it is one.
+fn cons_body(shape: &Shape) -> Option<&lazy::ConsBody> {
+    match shape {
+        Shape::Form(_, f) => match f.body() {
+            FormBody::Cons(c) => Some(c),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// What a thunk's value is stored as: a sequence (`nil`, a list, or a lazy
+/// or cons sequence) as it is, a collection or string as the list of its
+/// seq (`nil` when empty), anything else as it is (reading it later fails
+/// as `seq` of it does).
+pub(crate) fn realized_seq(heap: &Heap, v: &Value) -> Result<Value> {
+    match shape(heap, v) {
+        Shape::Nil | Shape::Other(_) => Ok(v.clone()),
+        Shape::Form(FormKind::List | FormKind::Lazy | FormKind::Cons, _) => Ok(v.clone()),
+        Shape::Form(FormKind::Keyword | FormKind::Symbol | FormKind::Type, _) => Ok(v.clone()),
+        Shape::Form(FormKind::Struct, f) if f.record().is_none() => Ok(v.clone()),
+        Shape::Form(FormKind::Vector, f) => match f.body() {
+            FormBody::Vector(items) => vector_seq(heap, items, v),
+            _ => Ok(v.clone()),
+        },
+        _ => list_or_nil(heap, &collection_items(heap, "seq", v)?.unwrap_or_default()),
+    }
 }
 
 /// A new list of `items`, or `nil` when there are none.
@@ -207,7 +301,12 @@ pub(crate) fn truth(heap: &Heap, v: &Value) -> bool {
 }
 
 /// `count`: elements, entries, members or UTF-16 code units; `nil` is 0.
+/// A lazy or cons sequence is realized to its end.
 pub(crate) fn count(heap: &Heap, v: &Value) -> Result<Value> {
+    if is_lazy_seq(heap, v) {
+        let n = seq_items(heap, "count", v)?.map_or(0, |items| items.len());
+        return Ok(Value::Number(n as f64));
+    }
     let shape = shape(heap, v);
     let n = match &shape {
         Shape::Nil => 0,
@@ -221,45 +320,94 @@ pub(crate) fn count(heap: &Heap, v: &Value) -> Result<Value> {
             FormBody::Keyword(_)
             | FormBody::Symbol(_)
             | FormBody::Struct(_)
-            | FormBody::Type(_) => return Err(unsupported("count", &shape)),
+            | FormBody::Type(_)
+            | FormBody::Lazy(_)
+            | FormBody::Cons(_) => return Err(unsupported("count", &shape)),
         },
         Shape::Other(_) => return Err(unsupported("count", &shape)),
     };
     Ok(Value::Number(n as f64))
 }
 
-/// `seq`: `nil` when empty, a nonempty list itself, otherwise a new list
-/// (a vector's sharing its trie).
+/// `seq`: `nil` when empty, a nonempty list itself, otherwise a new list.
+/// A lazy sequence's seq is the seq of what it realized (realizing it
+/// first); a cons sequence is its own.
 pub(crate) fn seq(heap: &Heap, v: &Value) -> Result<Value> {
-    if let Shape::Form(_, f) = shape(heap, v) {
-        match f.body() {
-            FormBody::List(items) | FormBody::Vector(items) if items.len() == 0 => {
-                return Ok(Value::Null);
-            }
-            FormBody::List(_) => return Ok(v.clone()),
-            FormBody::Vector(items) => {
-                let source = form::unwrap(heap, v.clone());
-                return Ok(form::list_sharing(heap, items.clone(), &source)?);
-            }
-            _ => {}
-        }
+    let (head_value, head_shape) = head(heap, v)?;
+    // A value that is not lazy keeps its occurrence.
+    let own_is_lazy = form::kind(heap, &form::unwrap(heap, v.clone())) == Some(FormKind::Lazy);
+    let own = if is_lazy_seq(heap, v) {
+        head_value
+    } else {
+        v.clone()
+    };
+    if let Shape::Form(FormKind::List, f) = &head_shape
+        && let FormBody::List(items) = f.body()
+    {
+        return Ok(if items.len() == 0 { Value::Null } else { own });
     }
-    match seq_items(heap, "seq", v)? {
+    if let Some(c) = cons_body(&head_shape) {
+        // The seq of a lazy sequence (a `concat` is one) has no metadata,
+        // as the runtime's seq of a `LazySeq` has none.
+        let through_lazy = own_is_lazy || matches!(c.kind, lazy::ConsKind::Concat { .. });
+        if through_lazy && c.kind.plain() != c.kind {
+            return Ok(form::cons_sharing(
+                heap,
+                c.items.clone(),
+                c.start,
+                c.rest.clone(),
+                c.kind.plain(),
+                &form::unwrap(heap, own),
+            )?);
+        }
+        return Ok(own);
+    }
+    // A vector's seq is chunked, as the runtime's `ChunkedSeq` is.
+    if let Shape::Form(FormKind::Vector, f) = &head_shape
+        && let FormBody::Vector(items) = f.body()
+    {
+        return vector_seq(heap, items, &own);
+    }
+    match collection_items(heap, "seq", &own)? {
         None => Ok(Value::Null),
         Some(items) => list_or_nil(heap, &items),
     }
 }
 
+/// The seq of the vector `source` of `items` (nonempty): a chunked sequence
+/// over its trie, read 32 elements a chunk (`chunk-first`); O(1), copying
+/// nothing.
+fn vector_seq(heap: &Heap, items: &PVector, source: &Value) -> Result<Value> {
+    if items.len() == 0 {
+        return Ok(Value::Null);
+    }
+    let source = form::unwrap(heap, source.clone());
+    // The runtime's seq of a vector of at most 32 elements is an unchunked
+    // `IndexedSeq`.
+    if items.len() <= CHUNK {
+        return Ok(form::list_sharing(heap, items.clone(), &source)?);
+    }
+    Ok(form::cons_sharing(
+        heap,
+        items.clone(),
+        0,
+        Value::Null,
+        lazy::ConsKind::ChunkedSeq,
+        &source,
+    )?)
+}
+
 /// `first`: the first element of the sequence, or `nil`.
 pub(crate) fn first(heap: &Heap, v: &Value) -> Result<Value> {
-    let shape = shape(heap, v);
+    let (v, shape) = head(heap, v)?;
     match &shape {
         Shape::Form(_, f) => match f.body() {
             FormBody::List(items) | FormBody::Vector(items) => {
                 return Ok(items.get(0).unwrap_or(Value::Null));
             }
+            FormBody::Cons(c) => return Ok(c.first()),
             FormBody::Set(_) | FormBody::Map(_) | FormBody::Struct(_) => {}
-            FormBody::Keyword(_) | FormBody::Symbol(_) | FormBody::Type(_) => {
+            FormBody::Keyword(_) | FormBody::Symbol(_) | FormBody::Type(_) | FormBody::Lazy(_) => {
                 return Err(unsupported("first", &shape));
             }
         },
@@ -267,12 +415,13 @@ pub(crate) fn first(heap: &Heap, v: &Value) -> Result<Value> {
         Shape::Nil => return Ok(Value::Null),
         Shape::Other(_) => return Err(unsupported("first", &shape)),
     }
-    Ok(seq_items(heap, "first", v)?
+    Ok(collection_items(heap, "first", &v)?
         .and_then(|items| items.into_iter().next())
         .unwrap_or(Value::Null))
 }
 
-/// The elements after the first, as `rest` and `next` see them.
+/// The elements after the first, as `rest` and `next` see them, of a value
+/// that is not a lazy or cons sequence.
 enum Tail {
     /// Of a list or vector: its trie without the first element
     /// ([`PVector::drop_first`](super::PVector::drop_first)), and the
@@ -292,54 +441,167 @@ fn tail(heap: &Heap, op: &'static str, v: &Value) -> Result<Tail> {
         ));
     }
     Ok(Tail::Copied(
-        seq_items(heap, op, v)?
+        collection_items(heap, op, v)?
             .map(|items| items.into_iter().skip(1).collect())
             .unwrap_or_default(),
     ))
 }
 
-/// `rest`: the elements after the first, as a list (empty, never `nil`).
+/// The rest of a cons sequence: its next element on, or its tail (`()` for
+/// none). The tail is returned as it is, so a lazy tail is not realized.
+fn cons_rest(heap: &Heap, c: &lazy::ConsBody, source: &Value) -> Result<Value> {
+    if c.len() > 1 {
+        return Ok(form::cons_sharing(
+            heap,
+            c.items.clone(),
+            c.start + 1,
+            c.rest.clone(),
+            c.kind.rest(),
+            source,
+        )?);
+    }
+    match &c.rest {
+        Value::Null | Value::Undefined => Ok(form::new_list(heap, &[])?),
+        rest => Ok(rest.clone()),
+    }
+}
+
+/// `rest`: the elements after the first, as a list (empty, never `nil`);
+/// for a lazy or cons sequence, the rest of its seq, whose lazy tail stays
+/// unrealized.
 pub(crate) fn rest(heap: &Heap, v: &Value) -> Result<Value> {
-    match tail(heap, "rest", v)? {
+    let (v, shape) = head(heap, v)?;
+    if let Some(c) = cons_body(&shape) {
+        return cons_rest(heap, c, &v);
+    }
+    match tail(heap, "rest", &v)? {
         Tail::Shared(items, source) => Ok(form::list_sharing(heap, items, &source)?),
         Tail::Copied(items) => Ok(form::new_list(heap, &items)?),
     }
 }
 
-/// `next`: the elements after the first, as a list, or `nil` for none.
+/// `next`: the elements after the first, as a list, or `nil` for none; of
+/// a lazy or cons sequence, the seq of its rest.
 pub(crate) fn next(heap: &Heap, v: &Value) -> Result<Value> {
-    match tail(heap, "next", v)? {
+    let (v, shape) = head(heap, v)?;
+    if let Some(c) = cons_body(&shape) {
+        let rest = cons_rest(heap, c, &v)?;
+        return seq(heap, &rest);
+    }
+    match tail(heap, "next", &v)? {
         Tail::Shared(items, _) if items.len() == 0 => Ok(Value::Null),
         Tail::Shared(items, source) => Ok(form::list_sharing(heap, items, &source)?),
         Tail::Copied(items) => list_or_nil(heap, &items),
     }
 }
 
-/// `cons`: a new list of `x` followed by the elements of `coll`.
+/// `cons`: a new list of `x` followed by the elements of `coll`; onto a
+/// lazy or cons sequence, a cons sequence whose tail is `coll`, unrealized.
 pub(crate) fn cons(heap: &Heap, x: &Value, coll: &Value) -> Result<Value> {
+    if is_lazy_seq(heap, coll) {
+        let items = PVector::try_from_values(heap, std::slice::from_ref(x))?;
+        return Ok(form::new_cons(
+            heap,
+            items,
+            0,
+            coll.clone(),
+            lazy::ConsKind::Cons,
+        )?);
+    }
     let mut items = vec![x.clone()];
     items.extend(seq_items(heap, "cons", coll)?.unwrap_or_default());
     Ok(form::new_list(heap, &items)?)
 }
 
-/// `concat` of two collections: a new list of the elements of `a` and then
-/// those of `b` (empty when both are; `nil` contributes none).
-pub(crate) fn concat(heap: &Heap, a: &Value, b: &Value) -> Result<Value> {
-    let mut items = seq_items(heap, "concat", a)?.unwrap_or_default();
-    items.extend(seq_items(heap, "concat", b)?.unwrap_or_default());
+/// The concatenation of `colls`: a new list of their elements when none is
+/// a lazy or cons sequence (realizing them runs nothing), otherwise a lazy
+/// `concat` ([`concat_step`]) that realizes them one at a time, as
+/// ClojureScript's `concat` does.
+fn concat_onto(heap: &Heap, colls: &[Value]) -> Result<Value> {
+    if colls.iter().any(|c| is_lazy_seq(heap, c)) {
+        let colls = form::new_list(heap, colls)?;
+        return Ok(form::new_lazy_concat(heap, colls)?);
+    }
+    let mut items = Vec::new();
+    for coll in colls {
+        items.extend(seq_items(heap, "concat", coll)?.unwrap_or_default());
+    }
     Ok(form::new_list(heap, &items)?)
+}
+
+/// Realize a lazy `concat` of the list `colls`: the elements of the first
+/// collection's first segment (a list's or vector's, a cons sequence's), as
+/// a cons sequence (chunked when that collection's seq is) whose tail is
+/// the lazy `concat` of the rest of that collection and the others; `nil`
+/// when all are empty. Realizes only the first collection with elements.
+pub(crate) fn concat_step(heap: &Heap, colls: &Value) -> Result<Value> {
+    let colls = sequential_items(heap, "concat", colls)?;
+    for (i, coll) in colls.iter().enumerate() {
+        let (head, shape) = head(heap, coll)?;
+        let (items, start, tail, chunked) = match &shape {
+            Shape::Nil => continue,
+            Shape::Form(_, f) => match f.body() {
+                FormBody::List(items) => (items.clone(), 0, Value::Null, false),
+                FormBody::Vector(items) => (items.clone(), 0, Value::Null, items.len() > CHUNK),
+                FormBody::Cons(c) => (c.items.clone(), c.start, c.rest.clone(), c.chunked()),
+                _ => {
+                    let items = collection_items(heap, "concat", &head)?.unwrap_or_default();
+                    (
+                        PVector::try_from_values(heap, &items)?,
+                        0,
+                        Value::Null,
+                        false,
+                    )
+                }
+            },
+            _ => {
+                let items = collection_items(heap, "concat", &head)?.unwrap_or_default();
+                (
+                    PVector::try_from_values(heap, &items)?,
+                    0,
+                    Value::Null,
+                    false,
+                )
+            }
+        };
+        if start >= items.len() {
+            continue;
+        }
+        let mut rest: Vec<Value> = Vec::new();
+        if !matches!(tail, Value::Null | Value::Undefined) {
+            rest.push(tail);
+        }
+        rest.extend(colls[i + 1..].iter().cloned());
+        let rest = if rest.is_empty() {
+            Value::Null
+        } else {
+            let rest = form::new_list(heap, &rest)?;
+            form::new_lazy_concat(heap, rest)?
+        };
+        let kind = if chunked {
+            lazy::ConsKind::ChunkedSeq
+        } else {
+            lazy::ConsKind::Cons
+        };
+        return Ok(form::new_cons(heap, items, start, rest, kind)?);
+    }
+    Ok(Value::Null)
+}
+
+/// `concat` of two collections: a new list of the elements of `a` and then
+/// those of `b` (empty when both are; `nil` contributes none); lazy when
+/// either is a lazy or cons sequence.
+pub(crate) fn concat(heap: &Heap, a: &Value, b: &Value) -> Result<Value> {
+    concat_onto(heap, &[a.clone(), b.clone()])
 }
 
 /// `concat` of any number of collections, given as the elements of the
 /// list `colls`: one new list of all their elements, in order (`nil`
 /// contributes none). The lowering of `(concat a b c …)`, flat however many
-/// operands there are.
+/// operands there are. Lazy when one is a lazy or cons sequence.
 pub(crate) fn concat_all(heap: &Heap, colls: &Value) -> Result<Value> {
-    let mut items = Vec::new();
-    for coll in sequential_items(heap, "concat", colls)? {
-        items.extend(seq_items(heap, "concat", &coll)?.unwrap_or_default());
-    }
-    Ok(form::new_list(heap, &items)?)
+    let colls = sequential_items(heap, "concat", colls)?;
+    concat_onto(heap, &colls)
 }
 
 /// The elements of a list or vector (the operand lists of the flat
@@ -506,6 +768,17 @@ pub(crate) fn symbol_ns(heap: &Heap, ns: &Value, name: &Value) -> Result<Value> 
 pub(crate) fn nth(heap: &Heap, coll: &Value, i: &Value, default: Option<&Value>) -> Result<Value> {
     let shape = shape(heap, coll);
     let index = index_from_value(&form::unwrap(heap, i.clone())).ok();
+    if is_lazy_seq(heap, coll) {
+        let found = match index {
+            Some(index) => nth_of_sequence(heap, coll, index)?,
+            None => None,
+        };
+        return match (found, default) {
+            (Some(v), _) => Ok(v),
+            (None, Some(d)) => Ok(d.clone()),
+            (None, None) => Err(CljError::OutOfBounds),
+        };
+    }
     let found = match &shape {
         Shape::Nil => return Ok(default.cloned().unwrap_or(Value::Null)),
         Shape::Str(s) => match index {
@@ -522,6 +795,28 @@ pub(crate) fn nth(heap: &Heap, coll: &Value, i: &Value, default: Option<&Value>)
         (Some(v), _) => Ok(v),
         (None, Some(d)) => Ok(d.clone()),
         (None, None) => Err(CljError::OutOfBounds),
+    }
+}
+
+/// The element at `index` of a lazy or cons sequence, realizing only as far
+/// as it.
+fn nth_of_sequence(heap: &Heap, coll: &Value, index: usize) -> Result<Option<Value>> {
+    let mut visited = lazy::Visited::default();
+    let mut cur = coll.clone();
+    let mut skip = index;
+    loop {
+        let head = form::realized_head(heap, cur, &mut visited)?;
+        let shape = shape(heap, &head);
+        if let Some(c) = cons_body(&shape) {
+            if skip < c.len() {
+                return Ok(c.items.get(c.start + skip));
+            }
+            skip -= c.len();
+            cur = c.rest.clone();
+            continue;
+        }
+        let items = collection_items(heap, "nth", &head)?.unwrap_or_default();
+        return Ok(items.get(skip).cloned());
     }
 }
 
@@ -637,6 +932,10 @@ pub(crate) fn disj(heap: &Heap, coll: &Value, member: &Value) -> Result<Value> {
 /// map adds a `[key value]` vector's entry or merges a map; `nil` becomes
 /// the list `(x)`.
 pub(crate) fn conj(heap: &Heap, coll: &Value, x: &Value) -> Result<Value> {
+    // Onto a lazy or cons sequence: `cons`, as `LazySeq`'s `-conj` does.
+    if is_lazy_seq(heap, coll) {
+        return cons(heap, x, coll);
+    }
     let shape = shape(heap, coll);
     let target = form::unwrap(heap, coll.clone());
     let updated = match &shape {
@@ -739,6 +1038,8 @@ pub(crate) fn dispatch_key(heap: &Heap, v: &Value) -> Option<Value> {
                     FormBody::Vector(_) => key_string(9),
                     FormBody::Map(_) => key_string(10),
                     FormBody::Set(_) => key_string(11),
+                    FormBody::Lazy(_) => Value::String(JsString::from("lazy-seq")),
+                    FormBody::Cons(_) => Value::String(JsString::from("cons")),
                 });
             }
             return heap
@@ -783,6 +1084,300 @@ pub(crate) fn with_meta(heap: &Heap, v: &Value, m: &Value) -> Result<Value> {
     let m = form::unwrap(heap, m.clone());
     let updated = form::with_meta(heap, &target, &m)?;
     Ok(same_or(heap, v, updated))
+}
+
+// ---- Lazy and chunked sequences (light-cljs-479) ----
+
+/// The elements of a chunk: ClojureScript's `ArrayChunk` size.
+const CHUNK: usize = 32;
+
+/// `(lazy-seq …)`: a new lazy sequence realized by calling `thunk`.
+pub(crate) fn lazy_seq(heap: &Heap, thunk: &Value) -> Result<Value> {
+    Ok(form::new_lazy(heap, thunk.clone())?)
+}
+
+/// `realized?` of a lazy sequence.
+pub(crate) fn realized(heap: &Heap, v: &Value) -> Result<Value> {
+    let shape = shape(heap, v);
+    match &shape {
+        Shape::Form(_, f) => match f.lazy_cell() {
+            Some(cell) => Ok(Value::Bool(cell.realized().is_some())),
+            None => Err(unsupported("realized?", &shape)),
+        },
+        _ => Err(unsupported("realized?", &shape)),
+    }
+}
+
+/// Every element of `v`'s seq, realized, as a new list (`()` for none):
+/// what the runtime's array helpers read.
+pub(crate) fn to_list(heap: &Heap, v: &Value) -> Result<Value> {
+    let items = seq_items(heap, "seq", v)?.unwrap_or_default();
+    Ok(form::new_list(heap, &items)?)
+}
+
+/// `chunked-seq?`: a vector's seq (read in chunks of 32), a finite range or
+/// a sequence `chunk-cons` built. Lists and lazy sequences are not.
+pub(crate) fn chunked_seq(heap: &Heap, v: &Value) -> bool {
+    match shape(heap, v) {
+        Shape::Form(_, f) => match f.body() {
+            FormBody::Cons(c) => c.chunked(),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Where the chunk of a chunked cons sequence that starts at its first
+/// element ends: a `chunk-cons` chunk is all of its elements; a vector's
+/// seq (or a range's) is read in the 32-element chunks of its trie's leaves.
+fn chunk_end(c: &lazy::ConsBody) -> usize {
+    match c.kind {
+        lazy::ConsKind::ChunkedSeq => c.items.len().min((c.start / CHUNK + 1) * CHUNK),
+        _ => c.items.len(),
+    }
+}
+
+/// `chunk-first` of a chunked seq: its first chunk as a form vector.
+pub(crate) fn chunk_first(heap: &Heap, v: &Value) -> Result<Value> {
+    let shape = shape(heap, v);
+    if let Shape::Form(_, f) = &shape {
+        match f.body() {
+            FormBody::Cons(c) if c.chunked() => {
+                let chunk: Vec<Value> = (c.start..chunk_end(c))
+                    .filter_map(|i| c.items.get(i))
+                    .collect();
+                return Ok(form::new_vector(heap, &chunk)?);
+            }
+            _ => {}
+        }
+    }
+    Err(unsupported("chunk-first", &shape))
+}
+
+/// `chunk-rest` of a chunked seq: what follows its first chunk (`()` for
+/// nothing), unrealized.
+pub(crate) fn chunk_rest(heap: &Heap, v: &Value) -> Result<Value> {
+    let shape = shape(heap, v);
+    if let Shape::Form(_, f) = &shape {
+        match f.body() {
+            FormBody::Cons(c) if c.chunked() => {
+                let end = chunk_end(c);
+                if end < c.items.len() {
+                    let source = form::unwrap(heap, v.clone());
+                    return Ok(form::cons_sharing(
+                        heap,
+                        c.items.clone(),
+                        end,
+                        c.rest.clone(),
+                        c.kind,
+                        &source,
+                    )?);
+                }
+                return match &c.rest {
+                    Value::Null | Value::Undefined => Ok(form::new_list(heap, &[])?),
+                    rest => Ok(rest.clone()),
+                };
+            }
+            _ => {}
+        }
+    }
+    Err(unsupported("chunk-rest", &shape))
+}
+
+/// `chunk-next`: the seq of `chunk-rest`.
+pub(crate) fn chunk_next(heap: &Heap, v: &Value) -> Result<Value> {
+    let rest = chunk_rest(heap, v)?;
+    seq(heap, &rest)
+}
+
+/// `chunk-cons`: the elements of `chunk` (a vector a `chunk` call froze, or
+/// a form vector or list) followed by `rest`, unrealized; `rest` itself for
+/// an empty chunk. A `range` chunk (`range`) is a finite range's sequence,
+/// which the runtime's `IntegerRange` stands for: chunked, without metadata.
+pub(crate) fn chunk_cons(heap: &Heap, chunk: &Value, rest: &Value, range: bool) -> Result<Value> {
+    let chunk = form::unwrap(heap, chunk.clone());
+    let items = match &chunk {
+        Value::Object(id) => heap
+            .read(*id, |o| match o {
+                HeapObject::Vector(items) => Some(items.clone()),
+                HeapObject::Form(f) => match f.body() {
+                    FormBody::List(items) | FormBody::Vector(items) => Some(items.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .flatten(),
+        _ => None,
+    };
+    let Some(items) = items else {
+        return Err(unsupported("chunk-cons", &shape(heap, &chunk)));
+    };
+    if items.len() == 0 {
+        return Ok(rest.clone());
+    }
+    // The tail of a sequence cell is `nil`, a list, or a lazy or cons
+    // sequence.
+    let rest = match shape(heap, rest) {
+        Shape::Nil => Value::Null,
+        Shape::Form(FormKind::List | FormKind::Lazy | FormKind::Cons, _) => rest.clone(),
+        _ => to_list(heap, rest)?,
+    };
+    let kind = if range {
+        lazy::ConsKind::ChunkedSeq
+    } else {
+        lazy::ConsKind::Chunked
+    };
+    Ok(form::new_cons(heap, items, 0, rest, kind)?)
+}
+
+/// `v` with every lazy and cons sequence inside it (elements, keys,
+/// values and metadata, at any depth) replaced by a list of its realized
+/// elements, realizing them; parts without one keep their identity. A
+/// macro's result is converted so before the bridge exports it, which
+/// reads finite forms only. An explicit stack: no native recursion.
+pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
+    #[derive(Clone, Copy)]
+    enum Rebuild {
+        /// A lazy or cons sequence; whether it exports with metadata
+        /// (`nil` when none was given), as the light-cljs runtime's
+        /// `LazySeq` and `ChunkedCons` do and its `Cons` does not.
+        Seq(bool),
+        /// Another form (a symbol): only its metadata.
+        Meta,
+        List,
+        Vector,
+        Set,
+        Map,
+    }
+    enum Work {
+        Enter(Value),
+        Exit {
+            id: crate::heap::ObjectId,
+            original: Value,
+            rebuild: Rebuild,
+            children: Vec<Value>,
+            meta: Option<Value>,
+        },
+    }
+    // Only objects are ever replaced: a primitive result is its input.
+    let kept = |a: &Value, b: &Value| !matches!(a, Value::Object(_)) || a.same_object(b);
+    let mut memo: std::collections::HashMap<crate::heap::ObjectId, Value> =
+        std::collections::HashMap::new();
+    let mut work = vec![Work::Enter(v.clone())];
+    let mut results: Vec<Value> = Vec::new();
+    // Forms being converted: one met again inside itself is a lazy
+    // sequence that contains itself.
+    let mut active: std::collections::HashSet<crate::heap::ObjectId> =
+        std::collections::HashSet::new();
+    while let Some(item) = work.pop() {
+        match item {
+            Work::Enter(v) => {
+                let Value::Object(id) = v else {
+                    results.push(v);
+                    continue;
+                };
+                if let Some(done) = memo.get(&id) {
+                    results.push(done.clone());
+                    continue;
+                }
+                let Some(f) = form::form_object(heap, &v) else {
+                    results.push(v);
+                    continue;
+                };
+                let (rebuild, children) = match f.body() {
+                    FormBody::Lazy(_) => (
+                        Rebuild::Seq(true),
+                        seq_items(heap, "seq", &v)?.unwrap_or_default(),
+                    ),
+                    FormBody::Cons(c) => (
+                        Rebuild::Seq(c.has_metadata()),
+                        seq_items(heap, "seq", &v)?.unwrap_or_default(),
+                    ),
+                    FormBody::List(items) => (Rebuild::List, items.to_vec()),
+                    FormBody::Vector(items) => (Rebuild::Vector, items.to_vec()),
+                    FormBody::Set(set) => {
+                        let mut members = Vec::with_capacity(set.len());
+                        set.for_each(|k, _| members.push(k.clone()));
+                        (Rebuild::Set, members)
+                    }
+                    FormBody::Map(map) => (
+                        Rebuild::Map,
+                        map.to_vec().into_iter().flat_map(|(k, v)| [k, v]).collect(),
+                    ),
+                    _ if f.meta().is_some() => (Rebuild::Meta, Vec::new()),
+                    _ => {
+                        results.push(v);
+                        continue;
+                    }
+                };
+                if !active.insert(id) {
+                    return Err(CljError::Infinite);
+                }
+                let meta = f.meta().cloned();
+                // Popped last-first: the children in order, then the
+                // metadata, then the rebuild.
+                let enter_meta = meta.clone().map(Work::Enter);
+                let enter_children: Vec<Work> =
+                    children.iter().rev().cloned().map(Work::Enter).collect();
+                work.push(Work::Exit {
+                    id,
+                    original: v,
+                    rebuild,
+                    children,
+                    meta,
+                });
+                work.extend(enter_meta);
+                work.extend(enter_children);
+            }
+            Work::Exit {
+                id,
+                original,
+                rebuild,
+                children,
+                meta,
+            } => {
+                let new_meta = match meta {
+                    Some(_) => results.pop(),
+                    None => None,
+                };
+                active.remove(&id);
+                let new_children = results.split_off(results.len() - children.len());
+                let unchanged = !matches!(rebuild, Rebuild::Seq(_))
+                    && meta
+                        .as_ref()
+                        .zip(new_meta.as_ref())
+                        .is_none_or(|(a, b)| kept(a, b))
+                    && children.iter().zip(&new_children).all(|(a, b)| kept(a, b));
+                let result = if unchanged {
+                    original
+                } else {
+                    let rebuilt = match rebuild {
+                        Rebuild::Meta => original.clone(),
+                        Rebuild::Seq(_) | Rebuild::List => form::new_list(heap, &new_children)?,
+                        Rebuild::Vector => form::new_vector(heap, &new_children)?,
+                        Rebuild::Set => form::new_set(heap, &new_children)?,
+                        Rebuild::Map => {
+                            let entries: Vec<(Value, Value)> = new_children
+                                .as_chunks::<2>()
+                                .0
+                                .iter()
+                                .map(|[k, v]| (k.clone(), v.clone()))
+                                .collect();
+                            form::new_map(heap, &entries)?
+                        }
+                    };
+                    let explicit_nil = matches!(rebuild, Rebuild::Seq(true));
+                    match new_meta.or(explicit_nil.then_some(Value::Null)) {
+                        Some(m) => form::with_exported_meta(heap, &rebuilt, m)?,
+                        None => rebuilt,
+                    }
+                };
+                memo.insert(id, result.clone());
+                results.push(result);
+            }
+        }
+    }
+    Ok(results.pop().unwrap_or(Value::Null))
 }
 
 /// A sequential view used by tests: the elements of a list or vector.
@@ -849,6 +1444,7 @@ mod tests {
             .map(form::FormObject::body)
         {
             Some(FormBody::List(items) | FormBody::Vector(items)) => items.node_addresses(),
+            Some(FormBody::Cons(c)) => c.items.node_addresses(),
             _ => panic!("not sequential"),
         }
     }
@@ -867,7 +1463,9 @@ mod tests {
         let mut s = seq(&heap, &occ).unwrap();
         let mut walked = Vec::new();
         while s != Value::Null {
-            assert_eq!(form::kind(&heap, &s), Some(FormKind::List));
+            // A vector's seq is a chunked cons sequence over its trie
+            // (light-cljs-479).
+            assert_eq!(form::kind(&heap, &s), Some(FormKind::Cons));
             assert_eq!(trie(&heap, &s), shared);
             walked.push(first(&heap, &s).unwrap());
             s = next(&heap, &s).unwrap();

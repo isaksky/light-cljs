@@ -1,0 +1,7 @@
+(ns seqs.app (:require [seqs.macros :refer [total listing summed walked shared]]))
+(defn a [] (total))
+(defn b [] (listing :p :q))
+(defn c [] (summed 1 2))
+(defn d [] (walked [1 2 3]))
+(defn e [] (shared))
+(js/console.log (a) (pr-str (b)) (c) (pr-str (d)) (pr-str (e)) (pr-str (shared)))

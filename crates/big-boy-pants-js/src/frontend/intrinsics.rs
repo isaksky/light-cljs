@@ -56,7 +56,9 @@
 //! [`crate::vm::intrinsics`] ("Form intrinsics"). **`__rt.formSet(…)`**,
 //! **`__rt.formDisj(s, x)`** and the **`__rt.clj*`** ClojureScript core
 //! operations (`cljCount(c)` … `cljWithMeta(v, m)`, light-cljs-477;
-//! [`crate::collections::clj`]) are in the same table.
+//! [`crate::collections::clj`]) are in the same table, and so are the lazy
+//! sequence operations `__rt.lazySeq(thunk)` and `__rt.cljChunk*`
+//! (light-cljs-479; [`crate::collections::lazy`]).
 //!
 //! A call evaluates its arguments left to right, then runs one VM
 //! instruction; the operand order is the instruction's stack order
@@ -239,6 +241,17 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::RecordFromMap),
     form_op(FormOp::CljDispatch),
     form_op(FormOp::CljIsAtom),
+    // Lazy and chunked sequences (light-cljs-479).
+    form_op(FormOp::LazySeq),
+    form_op(FormOp::CljRealized),
+    form_op(FormOp::CljList),
+    form_op(FormOp::CljChunkedSeq),
+    form_op(FormOp::CljChunkFirst),
+    form_op(FormOp::CljChunkRest),
+    form_op(FormOp::CljChunkNext),
+    form_op(FormOp::CljChunkCons),
+    form_op(FormOp::CljRealizeAll),
+    form_op(FormOp::CljRangeCons),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {

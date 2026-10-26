@@ -355,6 +355,13 @@ pub enum PathStep {
     /// A form's metadata map (`crate::collections::form`). Displayed
     /// `.meta`.
     Metadata,
+    /// An unrealized lazy sequence's thunk (light-cljs-479,
+    /// `crate::collections::lazy`). Displayed `.thunk`.
+    LazyThunk,
+    /// What a lazy sequence realized. Displayed `.realized`.
+    LazyValue,
+    /// The tail of a cons sequence. Displayed `.rest`.
+    Rest,
 }
 
 /// A path from a published value to one object it reaches. Displayed as
@@ -385,6 +392,9 @@ impl fmt::Display for ValuePath {
                 PathStep::FunctionProperties => f.write_str(".properties")?,
                 PathStep::HomeObject => f.write_str(".home_object")?,
                 PathStep::Metadata => f.write_str(".meta")?,
+                PathStep::LazyThunk => f.write_str(".thunk")?,
+                PathStep::LazyValue => f.write_str(".realized")?,
+                PathStep::Rest => f.write_str(".rest")?,
             }
         }
         Ok(())
@@ -441,6 +451,9 @@ enum Step {
     FunctionProperties,
     HomeObject,
     Metadata,
+    LazyThunk,
+    LazyValue,
+    Rest,
 }
 
 /// What one object contributes to the walk.
@@ -464,6 +477,14 @@ enum Children {
     /// A form's elements (`[i]`), or its keys and values (`{key}`), then
     /// its metadata (`.meta`).
     Form(Arc<FormObject>),
+    /// A lazy sequence: its thunk (`.thunk`) or what it realized
+    /// (`.realized`), as one read saw it, then its metadata.
+    Lazy {
+        cell: Arc<crate::collections::lazy::LazyCell>,
+        realized: bool,
+        edge: Value,
+        meta: Option<Value>,
+    },
     Native(Vec<ObjectId>),
     /// A closure's captured values and its own-property record, if it has
     /// one. Its code's constants are primitives by construction
@@ -524,8 +545,32 @@ impl Children {
                             });
                         }
                     }
+                    // Read through `Children::Lazy`.
+                    FormBody::Lazy(_) => {}
+                    FormBody::Cons(c) => {
+                        for (index, v) in c.elements().iter().enumerate() {
+                            f(Step::Index(index), v);
+                        }
+                        f(Step::Rest, &c.rest);
+                    }
                 }
                 if let Some(meta) = form.meta() {
+                    f(Step::Metadata, meta);
+                }
+            }
+            Children::Lazy {
+                realized,
+                edge,
+                meta,
+                ..
+            } => {
+                let step = if *realized {
+                    Step::LazyValue
+                } else {
+                    Step::LazyThunk
+                };
+                f(step, edge);
+                if let Some(meta) = meta {
                     f(Step::Metadata, meta);
                 }
             }
@@ -569,7 +614,20 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
             HeapObject::Vector(vec) => Children::Vector(vec.clone()),
             HeapObject::Map(map) => Children::Map(map.clone()),
             HeapObject::Occurrence(occ) => Children::Occurrence(occ.value.clone()),
-            HeapObject::Form(form) => Children::Form(form.clone()),
+            // A lazy sequence: what it holds now, read once under its lock
+            // (light-cljs-479).
+            HeapObject::Form(form) => match form.lazy_cell() {
+                Some(cell) => {
+                    let (realized, edge) = cell.publication_edge();
+                    Children::Lazy {
+                        cell: cell.clone(),
+                        realized,
+                        edge,
+                        meta: form.meta().cloned(),
+                    }
+                }
+                None => Children::Form(form.clone()),
+            },
             HeapObject::Function(func) => Children::Function {
                 captures: func.captures.clone(),
                 properties: func.properties,
@@ -617,7 +675,14 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
     // (module docs, "Functions with own properties"). Each function gains a
     // record at most once, so this ends.
     loop {
-        let proven = walk(heap, root, expanded)?;
+        let (proven, lazies) = walk(heap, root, expanded)?;
+        // A lazy sequence is marked shared under its lock against the state
+        // the walk read; one realized since is read again (light-cljs-479,
+        // `crate::collections::lazy`, "Sharing"). Each is realized at most
+        // once, so this ends.
+        if !lazies.iter().all(|(cell, saw)| cell.mark_shared(*saw)) {
+            continue;
+        }
         let gained_properties = |o: &HeapObject| match o {
             HeapObject::Function(f) => f.properties.is_some(),
             HeapObject::BoundFunction(f) => f.properties.is_some(),
@@ -629,9 +694,17 @@ fn check_counted(heap: &Heap, value: &Value, expanded: &mut usize) -> Result<(),
     }
 }
 
+/// The lazy sequence cells a walk expanded, with whether each was realized.
+type LazySeen = Vec<(Arc<crate::collections::lazy::LazyCell>, bool)>;
+
 /// One breadth-first walk of [`check`] from `root`: the persistent objects
-/// it expanded, or the rejection.
-fn walk(heap: &Heap, root: ObjectId, expanded: &mut usize) -> Result<Vec<ObjectId>, PublishError> {
+/// it expanded and the lazy cells among them, or the rejection.
+fn walk(
+    heap: &Heap,
+    root: ObjectId,
+    expanded: &mut usize,
+) -> Result<(Vec<ObjectId>, LazySeen), PublishError> {
+    let mut lazies = Vec::new();
     // Each discovered object maps to the step that first reached it.
     let mut parents: HashMap<ObjectId, Option<(ObjectId, Step)>> = HashMap::new();
     parents.insert(root, None);
@@ -654,6 +727,9 @@ fn walk(heap: &Heap, root: ObjectId, expanded: &mut usize) -> Result<Vec<ObjectI
             Node::Expand(children) => {
                 *expanded += 1;
                 proven.push(id);
+                if let Children::Lazy { cell, realized, .. } = &children {
+                    lazies.push((cell.clone(), *realized));
+                }
                 children.for_each(|step, child| {
                     if let Value::Object(child) = *child
                         && let Entry::Vacant(slot) = parents.entry(child)
@@ -665,7 +741,7 @@ fn walk(heap: &Heap, root: ObjectId, expanded: &mut usize) -> Result<Vec<ObjectI
             }
         }
     }
-    Ok(proven)
+    Ok((proven, lazies))
 }
 
 /// How [`into_properties`] reaches a child: an array element or a named
@@ -786,6 +862,9 @@ fn name_step(heap: &Heap, step: Step) -> PathStep {
         Step::FunctionProperties => PathStep::FunctionProperties,
         Step::HomeObject => PathStep::HomeObject,
         Step::Metadata => PathStep::Metadata,
+        Step::LazyThunk => PathStep::LazyThunk,
+        Step::LazyValue => PathStep::LazyValue,
+        Step::Rest => PathStep::Rest,
     }
 }
 
@@ -1121,7 +1200,7 @@ mod tests {
             assert!(!known(&heap, &holder));
 
             // The walk reads `f` without a record ...
-            let proven = walk(&heap, id(&holder), &mut 0).unwrap();
+            let (proven, _) = walk(&heap, id(&holder), &mut 0).unwrap();
             assert_eq!(proven.len(), if bound { 4 } else { 2 });
             // ... then its owner attaches one ...
             let record = plain(&heap);
@@ -1237,7 +1316,7 @@ mod tests {
             let g = function();
             let holder = coll::new_vector(&heap, std::slice::from_ref(&g)).unwrap();
             let record = id(&plain(&heap));
-            let proven = walk(&heap, id(&holder), &mut 0).unwrap();
+            let (proven, _) = walk(&heap, id(&holder), &mut 0).unwrap();
             let (inside_tx, inside_rx) = mpsc::channel();
             let (go_tx, go_rx) = mpsc::channel::<()>();
             let attached = std::thread::scope(|s| {

@@ -478,11 +478,35 @@ Structs (light-cljs-478) are records and immutable deftype instances: a
 struct type form is the type's identity, records follow the runtime's record
 methods, equality and hash (cached in the form's atomic slot), and
 `__rt.cljDispatch` reads a protocol table, a SameValueZero persistent map from
-a type identity or kind string to the method. Sorted maps, lazy and shared seq
-views, user `IEquiv`/`IHash` on structs, and the compiler `Datum` bridge
+a type identity or kind string to the method. Sorted maps, shared seq views of
+lists, user `IEquiv`/`IHash` on structs, and the compiler `Datum` bridge
 (light-cljs-462) are not part of this surface. The module
 docs carry a runnable example. Tests: `tests/forms.rs`, `collections::form::tests`,
 `collections::clj::tests`, `form_edges_retain`/`form_edges_reclaim`.
+
+Lazy sequences (light-cljs-479, `crate::collections::lazy`) are a form kind
+whose body is a once-realized cell: a dependency cell local to a value. A clj
+operation that meets an unrealized cell does not complete; its instruction
+starts a `Realize` native frame holding its operands, which claims the cell
+and calls the thunk in the claiming task, installs the value under the cell's
+leaf lock and executes the instruction again (intrinsics are pure). A task
+that meets a cell another task is realizing subscribes its wake handle and
+parks (`Exit::LazyWait`, then `RunOutcome::Waiting` with a `LAZY_REALIZATION`
+key); the settlement drains the waiters under the lock and wakes them with no
+lock held, queuing the runnable ones for `Runtime::take_lazy_wakeups`, and
+`Runtime::cell_status` reports the key pending until they are woken. A thunk
+that throws leaves the cell unrealized, as ClojureScript's `LazySeq` does; the
+readers parked on that attempt receive the failure (the thrown value when it
+is shareable, an `Error` with its message otherwise), and a later reader
+runs the thunk again. A dropped or cancelled realizing frame gives its claim up.
+The cell is persistent for publication through its thunk (`.thunk`) or its
+value (`.realized`); a successful publication check marks it shared, after
+which a realized value must be shareable. Equality and hashing record a
+realization request in a thread-local slot instead of returning one, and the
+instruction takes it. Cons cells (realized elements before an unrealized tail)
+and `__rt.cljChunk*` operations give chunked sequences; `__rt.cljRealizeAll`
+replaces every lazy sequence inside a form with a list. Tests:
+`tests/lazy_seqs.rs`.
 
 ## Atomic references
 

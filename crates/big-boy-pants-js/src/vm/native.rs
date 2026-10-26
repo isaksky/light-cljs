@@ -262,6 +262,7 @@ use crate::vm::{descriptor, property, prototype};
 mod copy_properties;
 pub(crate) mod error;
 mod object_statics;
+pub(crate) mod realize;
 
 /// What a native frame is waiting for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -373,6 +374,9 @@ pub(crate) enum Action {
         dependency: DependencyId,
         kind: ResultKind,
     },
+    /// Park the task until the lazy sequence this realization waits for is
+    /// realized by another task (light-cljs-479); then step again.
+    WaitLazy,
     /// Complete with this value.
     Return(Value),
     /// Async resource validation returns the snapshotted method and hint.
@@ -560,6 +564,8 @@ enum NativeState {
         wrap: Option<(u64, bool)>,
     },
     Promise(super::promise::PromiseState),
+    /// Realizing a lazy sequence for an instruction (light-cljs-479).
+    Realize(Box<realize::Realize>),
     Error(Box<error::ErrorState>),
     RegExp(regexp::State),
     StringRegExp(Box<string_regexp::State>),
@@ -1044,6 +1050,7 @@ impl Trace for NativeFrame {
                 defs.trace(visit);
                 out.trace(visit);
             }
+            NativeState::Realize(realize) => realize.trace(visit),
             NativeState::Convert { operands, .. }
             | NativeState::MathHypot { operands, .. }
             | NativeState::BigIntParse { operands, .. } => {
@@ -3446,6 +3453,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::ToString(_)
             | Action::Builtin { .. }
             | Action::Need { .. }
+            | Action::WaitLazy
             | Action::Return(_)
             | Action::ReturnPair(..)
             | Action::Await(_)
@@ -3477,6 +3485,17 @@ pub(crate) fn discard(natives: &mut Vec<NativeFrame>, frame: usize, heap: &Heap)
 
 /// The starting instruction of the running native frame, if one is running
 /// (no call frame above it).
+/// The lazy sequence cell and attempt the running native frame parks on
+/// ([`Action::WaitLazy`]), if it is a realization waiting for another task.
+pub(crate) fn lazy_wait(
+    state: &VmState,
+) -> Option<(std::sync::Arc<crate::collections::lazy::LazyCell>, u64)> {
+    match &state.natives.last()?.state {
+        NativeState::Realize(realize) => realize.waiting(),
+        _ => None,
+    }
+}
+
 pub(crate) fn running(state: &VmState) -> Option<usize> {
     state
         .natives
@@ -3817,6 +3836,8 @@ fn apply_action(
             set_awaiting(state, Awaiting::Dependency)?;
             Ok(Flow::Need(dependency, kind))
         }
+        // The frame steps again (`Start`) when the task runs next.
+        Action::WaitLazy => Ok(Flow::LazyWait),
         Action::Await(value) => {
             state.push_handler(super::exception::HandlerKind::NativeCatch {
                 native: state.natives.len() - 1,
@@ -3871,6 +3892,7 @@ pub(crate) fn catch(
         NativeState::ListFormat(format) if format.catches() => format.failed(exception),
         NativeState::MathSumPrecise(sum) if sum.catches() => sum.failed(exception),
         NativeState::Generator { failed, .. } => *failed = Some(exception),
+        NativeState::Realize(realize) if realize.catches() => realize.failed(exception),
         _ => return Err("invalid native catch"),
     }
     frame.awaiting = Awaiting::Nothing;
@@ -4089,6 +4111,7 @@ impl NativeState {
     fn catches(&self) -> bool {
         match self {
             Self::Async(_) => true,
+            Self::Realize(realize) => realize.catches(),
             Self::AsyncGenerator(a) => a.catches(),
             Self::Disposal(disposal) => disposal.catches(),
             Self::Promise(promise) => promise.catches(),
@@ -4117,6 +4140,7 @@ impl NativeState {
             NativeState::DefineProperty(_) => self.step_define_property(heap, task, input),
             NativeState::Proxy(proxy) => proxy.step(heap, task, input),
             NativeState::RegExp(regexp) => regexp.step(heap, task, input),
+            NativeState::Realize(realize) => realize.step(heap, task, input),
             // Locale parsing descends into Intl helpers. Avoid reserving the
             // unrelated step_other temporaries on 64 KiB workers.
             NativeState::StringMethods(method) => method.step(heap, task, input),
@@ -4373,6 +4397,7 @@ impl NativeState {
         match self {
             NativeState::BuiltinConstruct(_) => unreachable!("constructor dispatched separately"),
             NativeState::Reflect(_) => unreachable!("Reflect dispatched separately"),
+            NativeState::Realize(_) => unreachable!("realization dispatched separately"),
             NativeState::Async(a) => a.step(heap, input),
             NativeState::CopyProperties(_)
             | NativeState::Rest { .. }
@@ -5577,6 +5602,8 @@ impl NativeState {
     fn fail(&mut self, failure: Failure) -> Action {
         match (self, failure) {
             (NativeState::BigIntParse { .. } | NativeState::BigIntFormat(_), _) => Action::Unwind,
+            // Dropping the frame gives an unsettled claim up.
+            (NativeState::Realize(_), _) => Action::Unwind,
             (
                 NativeState::Eval(_)
                 | NativeState::Reflect(_)

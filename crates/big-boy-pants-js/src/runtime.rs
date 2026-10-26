@@ -330,6 +330,15 @@ impl Runtime {
         self.0.deps.status(key)
     }
 
+    /// The tasks that settlements of lazy sequences woke since the last
+    /// call (light-cljs-479, `crate::collections::lazy`): readers parked on
+    /// a sequence another task realized, now runnable. A realization runs
+    /// inside the realizing task's run, which cannot return them, so they
+    /// wait here for the embedder to enqueue, each exactly once.
+    pub fn take_lazy_wakeups(&self) -> Vec<crate::Task> {
+        self.0.deps.lazy.take_woken()
+    }
+
     /// The shared heap (crate-internal native operations and tests).
     pub(crate) fn heap(&self) -> &Arc<Heap> {
         &self.0.heap

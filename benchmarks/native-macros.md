@@ -139,7 +139,11 @@ before `native.helpers.published 0`, `per-task 1`; after `published 1`,
 largest workload this backend supports is still these fixtures and the
 `tests/bbp_macros.rs` namespaces: the seeded generated project (20k lines,
 seed 42) now passes native sets and `vec` but stops at lazy `map`
-(`core.mapSeq`, light-cljs-479). In `tests/fixtures/native-helper-demand`,
+(`core.mapSeq`, light-cljs-479). With native lazy sequences (light-cljs-479)
+the 20k and 200k projects (seed 42) at `--jobs 1` get past
+`workload.fonam/buvaiskum` and stop at `workload/trildorplus.cljc:6:1`: the reader-namespace
+registration unit (21,246 code units by then in the 200k project) exceeds
+the 16,384-unit eval limit (light-cljs-505). In `tests/fixtures/native-helper-demand`,
 `pool` goes from 0 published / at least 1 per-task to 1 / 0, and the new
 `collections` namespace (a set constant and two collection helpers) publishes
 3 of 3 at one and two slots.
@@ -458,3 +462,44 @@ drop glue 71, SipHash 56, `lookup_cached` 40, the heap slot directory 37,
 `enter_constructor` 30 and `cached_callee` 27. The miss of k <= ~4 is
 light-cljs-501: lower arithmetic and core calls in native units and call
 protocol implementations without `Function.prototype.call`.
+
+## Lazy sequences (light-cljs-479), October 26, 2026
+
+`bb benchmarks/native-macros-k.bb OUTPUT --workload lazy v8=BIN NAME=BIN`
+measures k on a lazy-sequence macro: `(churn n)` takes `(vec (range n))`, a
+`for` with `:when` over it, `filter`, `map` and `reduce`, and counts a
+`doall` of `take-while` over `iterate` (one unchunked cell per element). Before
+this pellet the native backend could not run it (`core.mapSeq` and `for` were
+unsupported). Release binaries of this branch after the review fixes
+(`1fd4c3c0`, rebased on master `032d00af`, whose vector and list tails share
+their trie): native-only (`--no-default-features --features bbp-macros`,
+sha256 `836967b8…`) and the default V8 build (`LIGHT_CLJS_V8_CACHE=require`,
+sha256 `c361c8b8…`, V8 path unchanged). macOS aarch64, 24 CPUs, Rust 1.99.1
+(Homebrew), Node 24.22.1; two peer workers (load averages 3.8–6.1). Analysis
+time, median [min–max] of five, ms:
+
+| `n` | V8 | native | k |
+| ---: | --- | --- | ---: |
+| 0 | 25.6 [25.5–26.3] | 12.5 [12.2–13.4] | – |
+| 100 | 31.0 [30.5–31.7] | 18.4 [18.0–18.6] | 1.1 |
+| 400 | 38.2 [37.8–38.7] | 39.2 [38.2–40.3] | 2.1 |
+| 1,600 | 61.8 [61.3–61.9] | 120.4 [119.8–122.8] | 3.0 |
+
+k is inside the win condition (k <= ~4) at every measured `n`. An operation
+that reads a whole sequence (`count`, and so `doall`, the runtime's array
+helpers behind `vec`, `into` and the like, and the realization of a macro's
+result) realizes the rest of the chain inside one realization frame. Earlier
+builds of this branch measured, at `n = 400` and 1,600: 89.5 and 827.5 ms
+(k 6.0 and 22.5) when such an operation executed again after every cell, and
+53.5 and 246.4 ms (k 3.3 and 6.6) before the rebase and the review fixes
+(sha256 `bc913db7…`), when a vector's seq copied its elements. Hashing an
+unrealized sequence still executes again per cell.
+
+The `churn` workload on the same machine, master `2ea9cb19` (sha256
+`7851e3b7…`) against this branch at `877fb682` (before the rebase): k 3.5 →
+3.3 at `n = 100` and 12.8 → 12.4 at `n = 400`, within the run-to-run spread;
+`n = 0` rises from 9.7 to 11.9 ms (the larger runtime the engine compiles at
+start).
+
+The 20k and 200k generated projects (seed 42) now stop natively at `--jobs 1`
+at `workload/trildorplus.cljc:6:1` (light-cljs-505), above.

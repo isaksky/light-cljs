@@ -323,7 +323,10 @@ pub enum RunOutcome {
     /// [`Wakeups`](crate::Wakeups) of the completion that publishes the
     /// result. Produced by [`RunGuard::park`], which a run also uses when a
     /// VM `need` (`__rt.need`) finds its result pending (module docs,
-    /// "Dependency waits in the VM").
+    /// "Dependency waits in the VM"). A key of kind
+    /// [`LAZY_REALIZATION`](crate::LAZY_REALIZATION) is a wait for a lazy
+    /// sequence another task is realizing (light-cljs-479): its wake comes
+    /// from [`Runtime::take_lazy_wakeups`](crate::Runtime::take_lazy_wakeups).
     Waiting(DependencyKey),
     /// The task is runnable and should be run again: it used up its
     /// execution [`Budget`] (its instruction position, operands and locals
@@ -583,6 +586,18 @@ pub(crate) fn deliver_wake(task: &Weak<TaskInner>, handle: WakeHandle) -> Wake {
 /// A resumable unit of execution. See the module docs.
 #[derive(Clone, Debug)]
 pub struct Task(Arc<TaskInner>);
+
+impl Task {
+    /// A non-owning reference, for a queue that must not keep the task alive.
+    pub(crate) fn downgrade(&self) -> Weak<TaskInner> {
+        Arc::downgrade(&self.0)
+    }
+
+    /// The task a [`Task::downgrade`] reference names, if it still exists.
+    pub(crate) fn upgrade(task: &Weak<TaskInner>) -> Option<Task> {
+        task.upgrade().map(Task)
+    }
+}
 
 /// The execution claim held by a run guard. Ending it is the guard's last
 /// state transition; dropping it unended makes the task runnable again
@@ -1076,6 +1091,28 @@ impl RunGuard<'_> {
         Ok((key, read))
     }
 
+    /// Subscribe this run to the lazy sequence cell its running native
+    /// frame waits for (`crate::collections::lazy`): true if it parked a
+    /// waiter on the realization in progress, which [`RunGuard::park`] then
+    /// parks on; false if that realization is already over.
+    fn subscribe_lazy(&mut self) -> bool {
+        let waiter = Waiter {
+            handle: self.wake_handle(),
+            task: Arc::downgrade(self.task),
+        };
+        let world = self.task.world;
+        let waits = self.task.deps.lazy.clone();
+        let Some((cell, attempt)) = self.vm().and_then(|vm| crate::vm::native::lazy_wait(vm))
+        else {
+            return false;
+        };
+        if !cell.subscribe(waiter, attempt, &waits) {
+            return false;
+        }
+        self.subscribed = Some(crate::collections::lazy::lazy_key(world, cell.serial()));
+        true
+    }
+
     /// The task's VM state; `None` only for a finished body, which
     /// `try_begin_run` never hands out.
     fn vm(&mut self) -> Option<&mut VmState> {
@@ -1467,6 +1504,22 @@ impl RunGuard<'_> {
                             .expect("body returned"),
                     );
                 }
+                // A lazy sequence another task realizes (light-cljs-479):
+                // park on its cell like at a pending need, or step the
+                // realization again at once if it finished meanwhile.
+                if let Exit::LazyWait { budget: left } = exit {
+                    budget = left;
+                    if !self.subscribe_lazy() {
+                        continue;
+                    }
+                    if task.exec.snapshot().cancelled {
+                        if !self.begin_cleanup() {
+                            return self.end_cancelled();
+                        }
+                        continue;
+                    }
+                    return self.park();
+                }
                 let Exit::Need {
                     dependency,
                     kind,
@@ -1548,6 +1601,12 @@ impl RunGuard<'_> {
                     VmErrorKind::Internal,
                     "need left unhandled",
                     pc,
+                )),
+                Exit::LazyWait { .. } => RunOutcome::Failed(guard_failure(
+                    task,
+                    VmErrorKind::Internal,
+                    "lazy realization wait left unhandled",
+                    0,
                 )),
                 Exit::CollectionPoint => unreachable!("collection point handled by driver"),
                 Exit::ModuleFrame => unreachable!("module frame selected by driver"),

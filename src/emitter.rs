@@ -3652,7 +3652,61 @@ impl<'a> Emitter<'a> {
                 "))",
             ),
             (C::IsSet, 1) => kind_test(") === \"set\")"),
-            (C::IsSeq, 1) => kind_test(") === \"list\")"),
+            // Lazy and cons sequences are seqs too (light-cljs-479).
+            (C::IsSeq, 1) => (
+                "((k) => k === \"list\" || k === \"lazy-seq\" || k === \"cons\")(__rt.formKind(",
+                "formValue",
+                false,
+                "))",
+            ),
+            // Lazy and chunked sequences (light-cljs-479): what `for` and
+            // `doseq` expand to, so that their helper values publish.
+            (C::Realized, 1) => ("", "cljRealized", false, ""),
+            (C::IsChunkedSeq, 1) => ("", "cljChunkedSeq", false, ""),
+            (C::ChunkFirst, 1) => ("", "cljChunkFirst", false, ""),
+            (C::ChunkRest, 1) => ("", "cljChunkRest", false, ""),
+            (C::ChunkNext, 1) => ("", "cljChunkNext", false, ""),
+            (C::ChunkCons, 2) => ("", "cljChunkCons", false, ""),
+            (C::Chunk, 1) => ("", "freeze", false, ""),
+            (C::NthProtocol, 2) => ("", "cljNth", false, ""),
+            (C::NthProtocol, 3) => ("", "cljNthOr", false, ""),
+            // The arithmetic `for` and `doseq` count chunks with, as the
+            // runtime object's entries compute it on unwrapped operands.
+            (C::Less | C::LessEqual | C::Greater | C::GreaterEqual, 2) => {
+                let operator = match core {
+                    C::Less => " < ",
+                    C::LessEqual => " <= ",
+                    C::Greater => " > ",
+                    _ => " >= ",
+                };
+                self.output.push_str("(__rt.formValue(");
+                self.value(args[0]);
+                write!(self.output, "){operator}__rt.formValue(").unwrap();
+                self.value(args[1]);
+                self.output.push_str("))");
+                return true;
+            }
+            (C::Inc | C::Dec, 1) => {
+                self.output.push_str("(__rt.formValue(");
+                self.value(args[0]);
+                self.output
+                    .push_str(if core == C::Inc { ") + 1)" } else { ") - 1)" });
+                return true;
+            }
+            // A chunk buffer is a task-owned vector builder; its capacity
+            // operand is evaluated and ignored.
+            (C::ChunkBuffer, 1) => {
+                self.output.push('(');
+                self.value(args[0]);
+                self.output.push_str(", __rt.vectorBuilder())");
+                return true;
+            }
+            (C::ChunkAppend, 2) => {
+                self.output.push_str("(__rt.builderConj(");
+                self.arguments(args);
+                self.output.push_str("), null)");
+                return true;
+            }
             (C::Vector, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formVector", false, ""),
             (C::List, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formList", false, ""),
             (C::HashSet, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formSet", false, ""),
@@ -6997,6 +7051,26 @@ impl<'a> Emitter<'a> {
                 self.output.push(')');
             }
             ExprKind::LoadableType => self.rt(RuntimeName::export("Loadable")),
+            // `(lazy-seq …)` in a native compile-time unit: the engine's
+            // once-realized lazy sequence of the thunk (light-cljs-479), when
+            // the other constructor operands are the literal `nil`s the
+            // analyzer gives `lazy-seq`; any other construction is the
+            // runtime object's `LazySeq`.
+            ExprKind::Construct { callee, args }
+                if self.native_forms
+                    && matches!(
+                        self.program.exprs[callee.0].kind,
+                        ExprKind::CoreFn(crate::CoreFnId::LazySeq)
+                    )
+                    && args.len() == 4
+                    && [0, 2, 3]
+                        .iter()
+                        .all(|&i| matches!(self.program.exprs[args[i].0].kind, ExprKind::Nil)) =>
+            {
+                self.output.push_str("__rt.lazySeq(");
+                self.value(args[1]);
+                self.output.push(')');
+            }
             // In a native compile-time unit, a constructor that is a struct
             // type (an immutable `deftype` or `defrecord`, light-cljs-478)
             // makes the engine's native struct; any other is `new`. The

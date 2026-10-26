@@ -300,6 +300,9 @@ pub(crate) struct DependencyTable {
     pub(crate) runtime: u64,
     cells: RwLock<HashMap<DependencyKey, Arc<Cell>>>,
     next_producer: AtomicU64,
+    /// Readers parked on lazy sequences (light-cljs-479,
+    /// `crate::collections::lazy`).
+    pub(crate) lazy: Arc<crate::collections::lazy::LazyWaits>,
     #[cfg(test)]
     pub(crate) hooks: Hooks,
 }
@@ -321,6 +324,7 @@ impl DependencyTable {
             runtime: NEXT_RUNTIME.fetch_add(1, Ordering::Relaxed),
             cells: RwLock::new(HashMap::new()),
             next_producer: AtomicU64::new(1),
+            lazy: Arc::default(),
             #[cfg(test)]
             hooks: Hooks::default(),
         }
@@ -535,6 +539,17 @@ impl DependencyTable {
     /// The embedder-facing status of `key`'s cell. A terminal value is
     /// copied without a lock and rooted (see [`root_terminal`]).
     pub(crate) fn status(&self, key: DependencyKey) -> CellStatus {
+        if key.kind() == crate::collections::lazy::LAZY_REALIZATION {
+            // A lazy realization wait: pending until its readers are woken.
+            return if self.lazy.is_pending(key.dependency().get()) {
+                CellStatus::Pending {
+                    producer: None,
+                    waiters: Vec::new(),
+                }
+            } else {
+                CellStatus::Absent
+            };
+        }
         let Some(cell) = self.existing(key) else {
             return CellStatus::Absent;
         };

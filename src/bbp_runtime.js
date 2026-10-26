@@ -294,15 +294,13 @@ const native = (() => {
   // Macro units call them directly; these entries serve the core values a
   // unit passes around (`(map first xs)`) and variadic calls.
   const truth = x => __rt.cljTruth(x);
+  // The elements of a collection or sequence; a lazy sequence is realized
+  // to its end (light-cljs-479).
   const arr = x => {
     if (Array.isArray(x)) return x;
     let value = val(x);
     const kind = __rt.formKind(value);
-    if (kind !== 'list' && kind !== 'vector') {
-      const items = __rt.cljSeq(x);
-      if (items === null) return [];
-      value = val(items);
-    }
+    if (kind !== 'list' && kind !== 'vector') value = __rt.cljList(x);
     const out = [];
     for (let i = 0, n = __rt.formCount(value); i < n; i++) out.push(__rt.formNth(value, i));
     return out;
@@ -371,6 +369,115 @@ const native = (() => {
     store(a, n);
     return true;
   };
+  // Lazy sequences (light-cljs-479; docs/native-macros.md, "Lazy
+  // sequences"): engine once-realized cells. Each step function takes
+  // itself as its first argument instead of naming itself, so its thunks
+  // capture only their arguments and publish whenever those do: a lazy
+  // sequence a helper initializer returns is shared by every task. Chunked
+  // sources (a vector's seq, a range and `chunk-cons` sequences) are read
+  // 32 elements at a time, as in ClojureScript; lists one at a time.
+  const lazy = f => __rt.lazySeq(f);
+  const seqOf = x => __rt.cljSeq(x);
+  const chunked = (s, step) => {
+    const ch = __rt.cljChunkFirst(s), b = __rt.vectorBuilder();
+    for (let i = 0, n = __rt.cljCount(ch); i < n; i++) step(b, __rt.cljNth(ch, i));
+    return __rt.freeze(b);
+  };
+  const mapOne = (self, f, c) => lazy(() => {
+    const s = seqOf(c);
+    if (s === null) return null;
+    if (__rt.cljChunkedSeq(s)) return __rt.cljChunkCons(chunked(s, (b, x) => __rt.builderConj(b, invoke(f, x))), self(self, f, __rt.cljChunkRest(s)));
+    return __rt.cljCons(invoke(f, __rt.cljFirst(s)), self(self, f, __rt.cljRest(s)));
+  });
+  // `cs`: a list of the collections.
+  const seqsOf = cs => { const ss = []; for (const c of arr(cs)) { const s = seqOf(c); if (s === null) return null; ss.push(s); } return ss; };
+  const mapMany = (self, f, cs) => lazy(() => {
+    const ss = seqsOf(cs);
+    if (ss === null) return null;
+    return __rt.cljCons(invoke(f, ...ss.map(s => __rt.cljFirst(s))), self(self, f, list(ss.map(s => __rt.cljRest(s)))));
+  });
+  const mapIndexedFrom = (self, f, c, i) => lazy(() => {
+    const s = seqOf(c);
+    if (s === null) return null;
+    if (__rt.cljChunkedSeq(s)) {
+      let k = i;
+      const ch = chunked(s, (b, x) => __rt.builderConj(b, invoke(f, k++, x)));
+      return __rt.cljChunkCons(ch, self(self, f, __rt.cljChunkRest(s), k));
+    }
+    return __rt.cljCons(invoke(f, i, __rt.cljFirst(s)), self(self, f, __rt.cljRest(s), i + 1));
+  });
+  // `filter` (keep when `keep`), `remove` (keep when not), `keep` (keep
+  // non-nil values of `f`).
+  const select = (self, f, c, mode) => lazy(() => {
+    for (let s = seqOf(c); s !== null; s = seqOf(__rt.cljRest(s))) {
+      if (__rt.cljChunkedSeq(s)) {
+        const kept = chunked(s, (b, x) => {
+          const v = invoke(f, x);
+          if (mode === 2) { if (val(v) != null) __rt.builderConj(b, v); }
+          else if (__rt.cljTruth(v) === (mode === 0)) __rt.builderConj(b, x);
+        });
+        return __rt.cljChunkCons(kept, self(self, f, __rt.cljChunkRest(s), mode));
+      }
+      const x = __rt.cljFirst(s), v = invoke(f, x);
+      if (mode === 2 ? val(v) != null : __rt.cljTruth(v) === (mode === 0)) return __rt.cljCons(mode === 2 ? v : x, self(self, f, __rt.cljRest(s), mode));
+    }
+    return null;
+  });
+  const takeN = (self, n, c) => lazy(() => {
+    if (!(n > 0)) return null;
+    const s = seqOf(c);
+    return s === null ? null : __rt.cljCons(__rt.cljFirst(s), self(self, n - 1, __rt.cljRest(s)));
+  });
+  const dropN = (n, c) => lazy(() => {
+    let s = seqOf(c);
+    for (let i = 0; i < n && s !== null; i++) s = __rt.cljNext(s);
+    return s;
+  });
+  const takeWhileFrom = (self, f, c) => lazy(() => {
+    const s = seqOf(c);
+    if (s === null) return null;
+    const x = __rt.cljFirst(s);
+    return __rt.cljTruth(invoke(f, x)) ? __rt.cljCons(x, self(self, f, __rt.cljRest(s))) : null;
+  });
+  const dropWhileFrom = (f, c) => lazy(() => {
+    let s = seqOf(c);
+    while (s !== null && __rt.cljTruth(invoke(f, __rt.cljFirst(s)))) s = __rt.cljNext(s);
+    return s;
+  });
+  // The concatenation of the collections in the sequence `cs`.
+  const catSeqs = (self, cs) => lazy(() => {
+    for (let s = seqOf(cs); s !== null; s = __rt.cljNext(s)) {
+      const c = seqOf(__rt.cljFirst(s));
+      if (c !== null) return __rt.cljConcat(c, self(self, __rt.cljRest(s)));
+    }
+    return null;
+  });
+  const interleaveAll = (self, cs) => lazy(() => {
+    const ss = seqsOf(cs);
+    if (ss === null) return null;
+    return __rt.cljConcat(list(ss.map(s => __rt.cljFirst(s))), self(self, list(ss.map(s => __rt.cljRest(s)))));
+  });
+  const iterateFrom = (self, f, x) => __rt.cljCons(x, lazy(() => self(self, f, invoke(f, x))));
+  const repeatForever = (self, x) => lazy(() => __rt.cljCons(x, self(self, x)));
+  // A range: its first chunk of 32 numbers, then the rest lazily, as the
+  // runtime's `IntegerRange` (a chunked sequence without metadata); `()`
+  // when empty. A thunk never assigns what it captured: that would make the
+  // binding a task-owned cell and the sequence unpublishable.
+  const rangeFrom = (self, start, end, step) => {
+    const b = __rt.vectorBuilder();
+    let k = 0, x = start;
+    for (; k < 32 && (step > 0 ? x < end : step < 0 ? x > end : true); k++) { __rt.builderConj(b, x); x += step; }
+    if (k === 0) return __rt.formList();
+    const next = x;
+    return __rt.cljRangeCons(__rt.freeze(b), lazy(() => self(self, next, end, step)));
+  };
+  const partitionFrom = (self, n, step, c) => lazy(() => {
+    const s = seqOf(c);
+    if (s === null) return null;
+    const p = takeN(takeN, n, s);
+    return __rt.cljCount(p) === n ? __rt.cljCons(p, self(self, n, step, dropN(step, s))) : null;
+  });
+  const reduceSeq = (f, init, c) => { let acc = init; for (let s = seqOf(c); s !== null; s = __rt.cljNext(s)) acc = invoke(f, acc, __rt.cljFirst(s)); return acc; };
   const core = {
     assertions:true,
     invoke, truth, get, identity:x=>x, macroReaderFunction:f=>f,
@@ -384,7 +491,7 @@ const native = (() => {
     count:x=>__rt.cljCount(x),
     seq, isEmpty:x=>__rt.cljSeq(x)===null,
     rest:x=>__rt.cljRest(x), next:x=>__rt.cljNext(x),
-    cons:(x,xs)=>__rt.cljCons(x,xs), concat:(...xs)=>list(xs.flatMap(arr)),
+    cons:(x,xs)=>__rt.cljCons(x,xs), concat:(...xs)=>__rt.cljConcatAll(list(xs)),
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),
     apply:(f,...xs)=>invoke(f,...xs.slice(0,-1),...arr(xs[xs.length-1])),
     assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
@@ -397,7 +504,7 @@ const native = (() => {
     vals:m=>{const k=core.keys(m);return k===null?null:list(arr(k).map(key=>__rt.cljGet(m,key,null)));},
     meta:x=>__rt.cljMeta(x), withMeta:(x,m)=>__rt.cljWithMeta(x,m),
     isKeyword:x=>__rt.formKind(val(x))==='keyword', isSymbol:x=>__rt.formKind(val(x))==='symbol',
-    isVector:x=>__rt.formKind(val(x))==='vector', isMap:x=>{const k=__rt.formKind(val(x));return k==='map'||k==='record';}, isSeq:x=>__rt.formKind(val(x))==='list',
+    isVector:x=>__rt.formKind(val(x))==='vector', isMap:x=>{const k=__rt.formKind(val(x));return k==='map'||k==='record';}, isSeq:x=>{const k=__rt.formKind(val(x));return k==='list'||k==='lazy-seq'||k==='cons';},
     isSet:x=>__rt.formKind(val(x))==='set',
     isNil:x=>val(x)==null, not:x=>!truth(x), boolean:truth,
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
@@ -413,6 +520,47 @@ const native = (() => {
     swap:(a,f,...args)=>swapPair(a,f,args)[1],
     swapVals:(a,f,...args)=>{const [o,n]=swapPair(a,f,args);return __rt.formVector(o,n);},
     resetVals:(a,v)=>{lane(a);return __rt.formVector(store(a,v),v);},
+    // Lazy and chunked sequences (light-cljs-479).
+    // An explicit `(LazySeq. meta fn s hash)`: a realized one (no `fn`) holds `s`.
+    LazySeq:function(m,f,s){const x=f==null?__rt.lazySeq(()=>s):__rt.lazySeq(f);return m==null?x:__rt.cljWithMeta(x,m);},
+    realized:x=>__rt.cljRealized(x),
+    mapSeq:(f,...cs)=>cs.length===0?arity(1):cs.length===1?mapOne(mapOne,f,cs[0]):mapMany(mapMany,f,list(cs)),
+    mapIndexed:(f,c)=>mapIndexedFrom(mapIndexedFrom,f,c,0),
+    filter:(f,c)=>select(select,f,c,0), remove:(f,c)=>select(select,f,c,1), keep:(f,c)=>select(select,f,c,2),
+    mapcat:(f,...cs)=>catSeqs(catSeqs,core.mapSeq(f,...cs)),
+    take:(n,c)=>takeN(takeN,val(n),c), drop:(n,c)=>dropN(val(n),c),
+    takeWhile:(f,c)=>takeWhileFrom(takeWhileFrom,f,c), dropWhile:(f,c)=>dropWhileFrom(f,c),
+    interleave:(...cs)=>cs.length===0?__rt.formList():cs.length===1?((c)=>lazy(()=>seqOf(c)))(cs[0]):interleaveAll(interleaveAll,list(cs)),
+    iterate:(f,x)=>iterateFrom(iterateFrom,f,x),
+    repeat:(...a)=>a.length===1?repeatForever(repeatForever,a[0]):a.length===2?takeN(takeN,val(a[0]),repeatForever(repeatForever,a[1])):arity(a.length),
+    range:(...a)=>a.length===0?rangeFrom(rangeFrom,0,Infinity,1):a.length===1?rangeFrom(rangeFrom,0,val(a[0]),1)
+      :a.length<=3?rangeFrom(rangeFrom,val(a[0]),val(a[1]),a.length===3?val(a[2]):1):arity(a.length),
+    partition:(...a)=>a.length===2?partitionFrom(partitionFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionFrom(partitionFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
+    reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);const s=seqOf(a[0]);
+      return s===null?invoke(f):reduceSeq(f,__rt.cljFirst(s),__rt.cljRest(s));},
+    into:(to,...a)=>a.length===1?each((m,x)=>__rt.cljConj(m,x),to,arr(a[0])):arity(a.length+1),
+    every:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s))if(!truth(invoke(f,__rt.cljFirst(s))))return false;return true;},
+    some:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s)){const v=invoke(f,__rt.cljFirst(s));if(truth(v))return v;}return null;},
+    notEvery:(f,c)=>!core.every(f,c), notAny:(f,c)=>!truth(core.some(f,c)),
+    last:c=>{const a=arr(c);return a.length?a[a.length-1]:null;}, butlast:c=>{const a=arr(c);return a.length>1?list(a.slice(0,-1)):null;},
+    reverse:c=>list(arr(c).reverse()),
+    mapv:(f,...cs)=>vector(arr(core.mapSeq(f,...cs))), filterv:(f,c)=>vector(arr(core.filter(f,c))),
+    // `(doall n coll)` and `(dorun n coll)` realize the first `n` elements.
+    doall:(...a)=>a.length===1?(__rt.cljCount(a[0]),a[0]):a.length===2?(core.dorun(a[0],a[1]),a[1]):arity(a.length),
+    dorun:(...a)=>{if(a.length===1){__rt.cljCount(a[0]);return null;}if(a.length!==2)arity(a.length);
+      for(let n=val(a[0]),s=seqOf(a[1]);s!==null&&n>0;n--)s=__rt.cljNext(s);return null;},
+    isChunkedSeq:x=>__rt.cljChunkedSeq(x), chunkFirst:s=>__rt.cljChunkFirst(s), chunkRest:s=>__rt.cljChunkRest(s),
+    chunkNext:s=>__rt.cljChunkNext(s), chunkCons:(c,r)=>__rt.cljChunkCons(c,r),
+    chunkBuffer:n=>__rt.vectorBuilder(), chunkAppend:(b,x)=>{__rt.builderConj(b,x);return null;}, chunk:b=>__rt.freeze(b),
+    nthProtocol:(c,n,...d)=>d.length?__rt.cljNthOr(c,n,d[0]):__rt.cljNth(c,n),
+    // Small helpers the sequence functions are used with.
+    isEven:n=>{n=val(n);if(!Number.isInteger(n))throw new Error('Argument must be an integer: '+n);return (n&1)===0;},
+    isOdd:n=>{n=val(n);if(!Number.isInteger(n))throw new Error('Argument must be an integer: '+n);return (n&1)!==0;},
+    isZero:n=>val(n)===0, isPositive:n=>val(n)>0, isNegative:n=>val(n)<0,
+    comp:(...fs)=>fs.length===0?(x=>x):(...a)=>{let r=invoke(fs[fs.length-1],...a);for(let i=fs.length-2;i>=0;i--)r=invoke(fs[i],r);return r;},
+    partial:(f,...p)=>(...a)=>invoke(f,...p,...a),
+    complement:f=>(...a)=>!truth(invoke(f,...a)),
+    constantly:x=>()=>x,
     registerReaderNamespace:()=>null, addReaderDefinitions:()=>null, setReaderNamespace:()=>null,
     PersistentVector:{EMPTY:__rt.formVector()}, PersistentArrayMap:{EMPTY:__rt.formMap()}, List:{EMPTY:__rt.formList()},
     PersistentHashSet:{EMPTY:__rt.formSet()},
@@ -520,7 +668,10 @@ for(let serial=1;;serial++){
       if(held){values.set(heldId,heldValue);held=false;heldValue=null;}
       if(op===0) result=(0,eval)(input);
       else if(op===1) result=input;
-      else {const args=[];for(let i=1;i<__rt.count(input);i++)args.push(values.get(__rt.nth(input,i)));result=values.get(__rt.nth(input,0))(...args);}
+      else {const args=[];for(let i=1;i<__rt.count(input);i++)args.push(values.get(__rt.nth(input,i)));
+        // A call result is exported as finite forms: its lazy sequences are
+        // realized into lists here, in the task (light-cljs-479).
+        result=__rt.cljRealizeAll(values.get(__rt.nth(input,0))(...args));}
       held=true;heldId=id;heldValue=result;
     }
     globalThis.__lightResult=result;

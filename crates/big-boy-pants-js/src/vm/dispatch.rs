@@ -129,6 +129,13 @@ pub(crate) enum Exit {
     CleanupEnded,
     /// A module frame was selected; the task driver enters it directly.
     ModuleFrame,
+    /// The running native frame realizes a lazy sequence that another task
+    /// is realizing (light-cljs-479): the run guard subscribes the task to
+    /// the sequence's cell and parks, or continues if the realization
+    /// finished meanwhile. The native steps again when the task runs.
+    LazyWait {
+        budget: Option<u64>,
+    },
 }
 
 /// A failure before diagnostic context is attached.
@@ -206,6 +213,9 @@ pub(crate) enum Flow {
     CleanupEnded,
     /// Finish a native conversion after dropping its Rust dispatch frame.
     Resume(Instr),
+    /// A lazy sequence realization waits for another task's
+    /// ([`Exit::LazyWait`]).
+    LazyWait,
 }
 
 /// Allocate a function object for `code` with its captured values, created
@@ -3830,6 +3840,10 @@ pub(crate) fn execute_budgeted(
                     pc,
                     budget: *budget,
                 };
+            }
+            Ok(Flow::LazyWait) => {
+                native::assert_no_borrow("leaving the loop for a lazy realization (may suspend)");
+                return Exit::LazyWait { budget: *budget };
             }
             Err(Fault::Thrown(v)) => {
                 let error = Box::new(thrown_error(state, heap, &v, pc));

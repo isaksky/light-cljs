@@ -495,8 +495,8 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
             "unsupported operation: macro returned a non-form value",
         ),
         (
-            "(defmacro lazy-result [] (range 3)) (lazy-result)",
-            "unsupported operation: native macro runtime core.range",
+            "(defmacro lazy-result [] (take 3 (cycle [1 2]))) (lazy-result)",
+            "unsupported operation: native macro runtime core.cycle",
         ),
         // Sorted collections and transients remain JavaScript-only types.
         (
@@ -1771,5 +1771,168 @@ fn an_earlier_unit_demanding_a_parked_initializer_lends_it_its_lane() {
         );
         assert_eq!(build, reference, "seed {seed}");
         assert!(stats.lanes.inherited >= 1, "seed {seed}: {:?}", stats.lanes);
+    }
+}
+
+/// Macro code over lazy sequences, which the native unit runs on the
+/// engine's once-realized cells (light-cljs-479; docs/native-macros.md,
+/// "Lazy sequences"). Each expands as the legacy compiler does and runs.
+const LAZY_FIXTURES: &[(&str, &str)] = &[
+    (
+        "(defmacro m [& xs] `(+ ~@(map (fn [x] `(* 30 ~x)) xs))) (js/console.log (m 1 2))",
+        "90\n",
+    ),
+    (
+        "(defmacro m [xs] (list 'quote [(map inc xs) (filter odd? xs) (remove odd? xs) \
+         (keep (fn [x] (if (odd? x) (* 10 x) nil)) xs)])) (js/console.log (pr-str (m [1 2 3])))",
+        "[(2 3 4) (1 3) (2) (10 30)]\n",
+    ),
+    (
+        "(defmacro m [xs] (list 'quote [(take 2 xs) (drop 1 xs) (take-while odd? xs) (drop-while odd? xs) \
+         (map-indexed vector xs)])) (js/console.log (pr-str (m (1 3 4 5))))",
+        "[(1 3) (3 4 5) (1 3) (4 5) ([0 1] [1 3] [2 4] [3 5])]\n",
+    ),
+    (
+        "(defmacro m [] (list 'quote [(take 5 (iterate inc 0)) (take 3 (repeat :x)) (repeat 2 :y) (range 4) \
+         (range 2 5) (range 10 0 -3) (take 3 (range))])) (js/console.log (pr-str (m)))",
+        "[(0 1 2 3 4) (:x :x :x) (:y :y) (0 1 2 3) (2 3 4) (10 7 4 1) (0 1 2)]\n",
+    ),
+    (
+        "(defmacro m [xs] (list 'quote [(mapcat (fn [x] [x x]) xs) (interleave xs [:a :b :c]) \
+         (partition 2 (range 5)) (partition 2 1 [1 2 3])])) (js/console.log (pr-str (m [1 2])))",
+        "[(1 1 2 2) (1 :a 2 :b) ((0 1) (2 3)) ((1 2) (2 3))]\n",
+    ),
+    // A lazy sequence compares, hashes, counts and indexes as the list of
+    // its elements.
+    (
+        "(defmacro m [xs] (let [s (map inc xs)] [(count s) (first s) (second s) (nth s 2) (vec (rest s)) \
+         (= s [2 3 4]) (= s (list 2 3 4)) (= (hash s) (hash [2 3 4])) (seq? s) (realized? s) \
+         (empty? (filter neg? xs))])) (js/console.log (pr-str (m [1 2 3])))",
+        "[3 2 3 4 [3 4] true true true true true true]\n",
+    ),
+    (
+        "(defmacro m [xs] [(reduce + (map inc xs)) (reduce + 10 xs) (into [] (map inc xs)) (into #{} xs) \
+         (every? odd? xs) (some even? xs) (last xs) (vec (butlast xs)) (vec (reverse xs)) (mapv inc xs) \
+         (filterv odd? xs)]) (js/console.log (pr-str (m [1 2 3])))",
+        "[9 16 [2 3 4] #{1 2 3} false true 3 [1 2] [3 2 1] [2 3 4] [1 3]]\n",
+    ),
+    (
+        "(defmacro m [xs] (list 'quote (lazy-seq (cons 1 (lazy-seq (concat xs (lazy-seq nil))))))) \
+         (js/console.log (pr-str (m [2 3])))",
+        "(1 2 3)\n",
+    ),
+    (
+        "(defmacro m [xs] (list 'quote (map vector xs (range)))) (js/console.log (pr-str (m [:a :b])))",
+        "([:a 0] [:b 1])\n",
+    ),
+    // A thunk's exception reaches the realizing expression.
+    (
+        "(defmacro m [xs] (let [s (map (fn [x] (if (= x 2) (throw (js/Error. \"two\")) x)) xs)] \
+         (try (doall s) :done (catch :default e (.-message e))))) (js/console.log (m [1 2 3]))",
+        "two\n",
+    ),
+    (
+        "(defmacro m [xs] (cons 'list (map (fn [x] (list 'inc x)) xs))) (js/console.log (pr-str (m [1 2])))",
+        "(2 3)\n",
+    ),
+    (
+        "(defmacro m [xs] (list 'quote (with-meta (map inc xs) {:tag :t}))) (js/console.log (pr-str (m [1])))",
+        "(2)\n",
+    ),
+    // Sequences of each kind a macro returns as quoted data: their kinds'
+    // metadata, which the bridge exports, as the legacy runtime's
+    // `LazySeq`, `ChunkedCons`, `ChunkedSeq`, `IntegerRange` and `Cons` have it.
+    (
+        "(defmacro m [v l] (list 'quote [(seq v) (seq l) (seq (map inc v)) (seq (map inc l)) (rest (map inc v)) \
+         (next (map inc l)) (cons 0 (map inc v)) (concat v (map inc l)) (seq (concat v (map inc l))) \
+         (seq (concat l (map inc v))) `(a ~@(map inc v)) (range 3) (rest (range 3))])) \
+         (js/console.log (pr-str (m [1 2] (3 4))))",
+        "[(1 2) (3 4) (2 3) (4 5) (3) (5) (0 2 3) (1 2 4 5) (1 2 4 5) (3 4 2 3) (cljs.user/a 2 3) (0 1 2) (1 2)]\n",
+    ),
+    // Over more than one chunk.
+    (
+        "(defmacro m [] (let [v (vec (range 70))] (list 'quote [(count (map inc v)) (nth (filter odd? v) 30) \
+         (vec (take 3 (drop 33 (seq v))))]))) (js/console.log (pr-str (m)))",
+        "[70 61 [33 34 35]]\n",
+    ),
+    // Realization boundaries: a vector of at most 32 elements is read one
+    // element at a time, a longer one 32 at a time, `concat` one collection
+    // at a time, and `doall n` realizes only a prefix.
+    (
+        "(defmacro m [] (let [boom (fn [x] (if (= x 2) (throw (js/Error. \"two\")) x)) a (js/Array.) b (js/Array.)] \
+         [(first (map boom [1 2])) (first (concat (cons 1 (lazy-seq (throw (js/Error. \"tail\")))) [])) \
+         (do (first (map-indexed (fn [i x] (.push a i) x) (vec (range 40)))) (.-length a)) \
+         (let [s (map (fn [x] (.push b x) x) (list 1 2 3 4))] (doall 1 s) (.-length b))])) \
+         (js/console.log (pr-str (m)))",
+        "[1 1 32 2]\n",
+    ),
+    // `keep` of imported `nil` and lazy values in a symbol's metadata.
+    (
+        "(defmacro m [xs] (list 'quote [(keep identity xs) (with-meta 'x {:foo (map inc [1])})])) \
+         (let [[k x] (m [nil false 1])] (js/console.log (pr-str k) (pr-str (meta x))))",
+        "(false 1) {:foo (2)}\n",
+    ),
+    // An explicit `LazySeq` construction keeps its metadata.
+    (
+        "(defmacro m [] (let [s (cljs.core/LazySeq. {:tag 1} (fn [] (list 1)) nil nil)] [(count s) (meta s)])) \
+         (js/console.log (pr-str (m)))",
+        "[1 {:tag 1}]\n",
+    ),
+];
+
+#[test]
+fn lazy_sequence_macros_match_the_legacy_compiler_and_run() {
+    for (source, expected) in LAZY_FIXTURES {
+        assert_native_matches_legacy(source, expected);
+    }
+}
+
+/// `for` and `doseq` (expanded in Rust in a namespace build) over lazy and
+/// chunked sequences, and lazy helper values: the same JavaScript at one,
+/// two and four slots, the legacy compiler's in a build with a legacy
+/// engine, and helper sequences built from lowered operations publish once.
+#[test]
+fn for_and_doseq_over_lazy_helpers_match_the_legacy_compiler_at_one_two_and_four_slots() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/lazy");
+    let build = |host: &mut MacroHost, jobs: usize, stats: &mut light_cljs::CompileStats| {
+        let mut warnings = Vec::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "seqs.app",
+            std::slice::from_ref(&root),
+            host,
+            Default::default(),
+            &mut warnings,
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(stats),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("jobs {jobs}: {error}"));
+        assert!(warnings.is_empty(), "jobs {jobs}");
+        emit_js(&program)
+    };
+    let legacy = build(
+        &mut MacroHost::new(),
+        1,
+        &mut light_cljs::CompileStats::new(),
+    );
+    for jobs in [1, 2, 4] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut stats = light_cljs::CompileStats::new();
+        let js = build(&mut host, jobs, &mut stats);
+        assert_eq!(
+            program_output(&js),
+            "30 (0 2 [:item :p] [:item :q]) 35 [2 5 4 7] [[3 3] 14] [[3 3] 14]\n",
+            "jobs {jobs}"
+        );
+        assert_eq!(js, legacy, "jobs {jobs}");
+        // `pairs`, `incs` and `tagged` publish; `squares` and `evens` call
+        // core functions through the task's runtime object.
+        assert_eq!(stats.native_helpers.compiled, 5, "jobs {jobs}");
+        assert_eq!(stats.native_helpers.published, 3, "jobs {jobs}");
+        assert!(stats.native_helpers.per_task >= 2, "jobs {jobs}");
     }
 }

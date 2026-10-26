@@ -107,6 +107,7 @@ mod job;
 pub mod regexp;
 
 pub use atom::{AtomError, AtomErrorKind, CasOutcome, Publisher};
+pub use collections::lazy::LAZY_REALIZATION;
 pub use collections::{
     BuilderError, CollectionError, FormKind, FormName, PersistentKind, Provenance,
 };

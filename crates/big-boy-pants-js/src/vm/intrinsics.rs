@@ -156,6 +156,19 @@
 //! ([`crate::VmErrorKind::Error`]), the diagnostics of the JavaScript
 //! functions they replace.
 //!
+//! Lazy and chunked sequences (light-cljs-479,
+//! [`crate::collections::lazy`]) are `__rt.lazySeq(thunk)`, `cljRealized(s)`,
+//! `cljList(c)` (every element of the seq, realized, as a list),
+//! `cljChunkedSeq(s)`, `cljChunkFirst(s)`, `cljChunkRest(s)`,
+//! `cljChunkNext(s)`, `cljChunkCons(chunk, rest)`, `cljRangeCons(chunk,
+//! rest)` (a finite range's chunked sequence) and `cljRealizeAll(v)` (`v`
+//! with every lazy sequence inside it replaced by a list). A form
+//! instruction that needs an unrealized lazy sequence (a clj operation, or
+//! equality or hashing inside any form instruction) does not complete: it
+//! moves its operands into a `Realize` native frame, which realizes the
+//! sequence (or parks the task while another task does) and then executes the
+//! instruction again with the same operands.
+//!
 //! Updates keep the input's metadata and follow the identity rules of
 //! [`crate::collections::form`]. A `formEquals`, `formHash` or structural
 //! lookup runs to completion inside its instruction, like the collection
@@ -171,10 +184,12 @@
 use super::dispatch::Fault;
 use super::frames::VmState;
 use super::instr::{FormOp, Instr};
+use super::native::realize;
 use crate::atom::{self, AtomError};
 use crate::collections::builder::{self, BuildFault, BuilderKind};
 use crate::collections::clj;
 use crate::collections::form::{self, FormKind};
+use crate::collections::lazy;
 use crate::collections::{self as coll, CollectionError, PersistentKind};
 use crate::heap::Heap;
 use crate::value::{JsString, Value};
@@ -330,64 +345,77 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
             state.replace(3, witness)?;
             state.push(Value::Bool(ok));
         }
-        Instr::NewFormList(n) | Instr::NewFormVector(n) | Instr::NewFormSet(n) => {
-            let n = usize::from(n);
-            let ops = state.operands();
-            let start = ops
-                .len()
-                .checked_sub(n)
-                .ok_or(Fault::Internal("operand stack underflow"))?;
-            let made = match instr {
-                Instr::NewFormList(_) => form::new_list(heap, &ops[start..])?,
-                Instr::NewFormSet(_) => form::new_set(heap, &ops[start..])?,
-                _ => form::new_vector(heap, &ops[start..])?,
-            };
-            state.replace(n, made)?;
-        }
-        Instr::NewStruct(n) => {
-            let n = usize::from(n);
-            let ops = state.operands();
-            let start = ops
-                .len()
-                .checked_sub(n)
-                .ok_or(Fault::Internal("operand stack underflow"))?;
-            let (ty, fields) = match ops[start..].split_first() {
+        Instr::NewFormList(_)
+        | Instr::NewFormVector(_)
+        | Instr::NewFormSet(_)
+        | Instr::NewStruct(_)
+        | Instr::NewFormMap(_)
+        | Instr::FormOp(_) => return form_step(state, heap, instr),
+        _ => return Err(Fault::Internal("not a collection intrinsic")),
+    }
+    Ok(())
+}
+
+/// Execute one form instruction. Form equality and hashing may meet an
+/// unrealized lazy sequence, and the clj operations read sequences through:
+/// then the instruction realizes it and executes again instead of
+/// completing (light-cljs-479; [`crate::collections::lazy`]), whatever
+/// result or failure it computed past the request.
+fn form_step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(), Fault> {
+    let n = match instr {
+        Instr::NewFormList(n) | Instr::NewFormVector(n) | Instr::NewFormSet(n) => usize::from(n),
+        Instr::NewStruct(n) => usize::from(n),
+        Instr::NewFormMap(n) => 2 * usize::from(n),
+        Instr::FormOp(op) => op.arity(),
+        _ => return Err(Fault::Internal("not a form intrinsic")),
+    };
+    let ops = state.operands();
+    let start = ops
+        .len()
+        .checked_sub(n)
+        .ok_or(Fault::Internal("operand stack underflow"))?;
+    let ops = &ops[start..];
+    // A request left by an embedder's comparison is not this instruction's.
+    let _ = lazy::take_request();
+    let _ = lazy::take_cycle();
+    let made = form_value(heap, instr, ops);
+    if lazy::take_cycle() {
+        let _ = lazy::take_request();
+        return Err(Fault::RangeError(
+            "infinite lazy sequence: it contains itself".to_string(),
+        ));
+    }
+    if let Some(pending) = lazy::take_request() {
+        return realize::start(heap, state, instr, n, pending);
+    }
+    state.replace(n, made?)
+}
+
+/// The value of one form instruction on its operands `ops`.
+fn form_value(heap: &Heap, instr: Instr, ops: &[Value]) -> Result<Value, Fault> {
+    Ok(match instr {
+        Instr::NewFormList(_) => form::new_list(heap, ops)?,
+        Instr::NewFormSet(_) => form::new_set(heap, ops)?,
+        Instr::NewFormVector(_) => form::new_vector(heap, ops)?,
+        Instr::NewStruct(_) => {
+            let (ty, fields) = match ops.split_first() {
                 Some((ty, fields)) => (ty.clone(), fields),
                 None => (Value::Undefined, &[][..]),
             };
-            let made = form::new_struct(heap, &ty, fields)?;
-            state.replace(n, made)?;
+            form::new_struct(heap, &ty, fields)?
         }
-        Instr::NewFormMap(n) => {
-            let n = 2 * usize::from(n);
-            let ops = state.operands();
-            let start = ops
-                .len()
-                .checked_sub(n)
-                .ok_or(Fault::Internal("operand stack underflow"))?;
-            let entries: Vec<(Value, Value)> = ops[start..]
+        Instr::NewFormMap(_) => {
+            let entries: Vec<(Value, Value)> = ops
                 .as_chunks::<2>()
                 .0
                 .iter()
                 .map(|[k, v]| (k.clone(), v.clone()))
                 .collect();
-            let map = form::new_map(heap, &entries)?;
-            state.replace(n, map)?;
+            form::new_map(heap, &entries)?
         }
-        Instr::FormOp(op) => {
-            let n = op.arity();
-            let ops = state.operands();
-            let start = ops
-                .len()
-                .checked_sub(n)
-                .ok_or(Fault::Internal("operand stack underflow"))?;
-            let args = ops[start..].to_vec();
-            let result = form_op(heap, op, args)?;
-            state.replace(n, result)?;
-        }
-        _ => return Err(Fault::Internal("not a collection intrinsic")),
-    }
-    Ok(())
+        Instr::FormOp(op) => form_op(heap, op, ops.to_vec())?,
+        _ => return Err(Fault::Internal("not a form intrinsic")),
+    })
 }
 
 impl From<clj::CljError> for Fault {
@@ -398,14 +426,32 @@ impl From<clj::CljError> for Fault {
             clj::CljError::Unsupported { .. } => Fault::TypeError(e.message()),
             // `keywordCore`/`symbolCore` throw a plain `Error`.
             clj::CljError::Operands(_) => Fault::Error(e.message()),
+            clj::CljError::Infinite => Fault::RangeError(e.message()),
+            // Intercepted by `form_op`, which starts the realization.
+            clj::CljError::Realize(_) => Fault::Internal("unhandled lazy realization request"),
         }
     }
 }
 
 /// One `FormOp` on its operands (oldest first, exactly [`FormOp::arity`]).
+/// An operation that needs a lazy sequence realized records the request
+/// ([`crate::collections::lazy::request`]) and returns a placeholder.
 fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Fault> {
+    match clj_op(heap, op, &args) {
+        Ok(Some(result)) => Ok(result),
+        Ok(None) => Ok(strict_form_op(heap, op, args)?),
+        Err(clj::CljError::Realize(lazy)) => {
+            crate::collections::lazy::request(lazy);
+            Ok(Value::Undefined)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// A `__rt.clj*` or lazy sequence operation; `None` for a strict one.
+fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj::CljError> {
     let a = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
-    let clj = match op {
+    Ok(match op {
         FormOp::CljTruth => Some(Value::Bool(clj::truth(heap, &a(0)))),
         FormOp::CljCount => Some(clj::count(heap, &a(0))?),
         FormOp::CljSeq => Some(clj::seq(heap, &a(0))?),
@@ -432,12 +478,18 @@ fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Fault> {
         FormOp::CljSymbolNs => Some(clj::symbol_ns(heap, &a(0), &a(1))?),
         FormOp::CljDispatch => Some(clj::dispatch(heap, &a(0), &a(1))?),
         FormOp::CljIsAtom => Some(Value::Bool(atom::is_atom(heap, &a(0)))),
+        FormOp::LazySeq => Some(clj::lazy_seq(heap, &a(0))?),
+        FormOp::CljRealized => Some(clj::realized(heap, &a(0))?),
+        FormOp::CljList => Some(clj::to_list(heap, &a(0))?),
+        FormOp::CljChunkedSeq => Some(Value::Bool(clj::chunked_seq(heap, &a(0)))),
+        FormOp::CljChunkFirst => Some(clj::chunk_first(heap, &a(0))?),
+        FormOp::CljChunkRest => Some(clj::chunk_rest(heap, &a(0))?),
+        FormOp::CljChunkNext => Some(clj::chunk_next(heap, &a(0))?),
+        FormOp::CljChunkCons => Some(clj::chunk_cons(heap, &a(0), &a(1), false)?),
+        FormOp::CljRangeCons => Some(clj::chunk_cons(heap, &a(0), &a(1), true)?),
+        FormOp::CljRealizeAll => Some(clj::realize_all(heap, &a(0))?),
         _ => None,
-    };
-    if let Some(result) = clj {
-        return Ok(result);
-    }
-    Ok(strict_form_op(heap, op, args)?)
+    })
 }
 
 /// A strict `__rt.form*` operation ([`crate::collections::form`]).
@@ -546,6 +598,16 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         | FormOp::CljSymbol
         | FormOp::CljDispatch
         | FormOp::CljIsAtom
+        | FormOp::LazySeq
+        | FormOp::CljRealized
+        | FormOp::CljList
+        | FormOp::CljChunkedSeq
+        | FormOp::CljChunkFirst
+        | FormOp::CljChunkRest
+        | FormOp::CljChunkNext
+        | FormOp::CljChunkCons
+        | FormOp::CljRealizeAll
+        | FormOp::CljRangeCons
         | FormOp::CljSymbolNs => Value::Undefined,
     })
 }

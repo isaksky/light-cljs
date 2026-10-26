@@ -65,10 +65,13 @@ This is a finite-form integration, not backend parity. Lists, vectors, maps,
 sets, keywords, symbols, scalar occurrences, metadata, construction, lookup,
 basic finite sequence operations, equality, hashing, arithmetic
 addition/subtraction and native truth tests have first-party implementations
-using native form intrinsics. `seq` returns native lists for vectors, map
-entries (two-element vectors), set members and strings (UTF-16 code units),
-preserves nonempty lists, and returns nil for nil or empty supported inputs.
-Other input kinds report an unsupported-operation error.
+using native form intrinsics. `seq` returns native lists for map entries
+(two-element vectors), set members and strings (UTF-16 code units), a chunked
+sequence for a vector (chunks of 32, as a vector's `ChunkedSeq` is), the
+realized sequence of a lazy sequence, preserves nonempty lists and cons
+sequences, and returns nil for nil or empty supported inputs. Other input
+kinds report an unsupported-operation error. Lazy sequences are below ("Lazy
+sequences").
 
 ### Native core lowering
 
@@ -101,11 +104,14 @@ explicitly (`(symbol (keyword "" "x"))`, the legacy runtimes' unqualified
 `/x`, too). A keyword converts to a symbol through its spelling, as in the
 legacy runtimes; invalid operands throw a plain `Error` with the legacy
 message.
-`seq`, `rest` and `next` of a vector or list return a list that shares its
-trie (light-cljs-502), so walking one with `next` is linear; those of a map,
-set or string copy the remaining elements into a new list. Lazy `map`, `filter` and friends are not implemented
-(light-cljs-479 owns lazy sequences), which still stops the generated
-benchmark project.
+`rest` and `next` of a vector or list return a list that shares its trie
+(light-cljs-502), so walking one with `next` is linear; those of a map, set or
+string copy the remaining elements into a new list; of a lazy or chunked
+sequence they read through it (see "Lazy sequences"). `(lazy-seq …)`,
+`realized?`, `chunked-seq?`, `chunk-first`, `chunk-rest`, `chunk-next`,
+`chunk-cons`, `chunk-buffer`, `chunk-append`, `chunk`, `-nth`, `<`, `<=`, `>`
+and `>=` of two values and `inc` and `dec` are lowered too, so that the helper
+functions `for` and `doseq` expand into need no runtime object.
 
 Lowering is what lets helper values publish: a function whose body uses only
 lowered operations, literals and other compiler roots captures no task-owned
@@ -113,15 +119,16 @@ runtime object, so its initializer's value is published once and every task
 shares it (`native.helpers.published`), instead of initializing again in each
 consuming task (`native.helpers.per-task`). A function that still reads the
 runtime object (a non-lowered core function, a variadic parameter list) stays
-per-task. Sorted maps and sets, transients, lazy sequences, ranges and other
-host types remain JavaScript-only and report an unsupported-operation error
-inside a macro; protocols, types and records are below.
+per-task. Sorted maps and sets, transients and other host types remain
+JavaScript-only and report an unsupported-operation error inside a macro;
+protocols, types and records, and lazy sequences, are below.
 
 Map and set elements that a macro constructs export in the engine's trie order,
 which can differ from the order the legacy engines' array maps keep; inputs
-returned unchanged keep their exact original form. `concat` returns a list
-where the legacy engines return a lazy sequence that their bridge exports with
-an explicit `nil` metadata wrapper. A set literal with non-constant members
+returned unchanged keep their exact original form. `concat` of collections
+none of which is lazy returns a list where the legacy engines return a lazy
+sequence that their bridge exports with an explicit `nil` metadata wrapper
+(with a lazy or cons collection among them it is lazy and exports as theirs). A set literal with non-constant members
 rejects equal members with `Duplicate key`, without the member's printed form,
 after every member has been evaluated. Reader-distinct constants that lower to
 equal values (`#{\a "a"}`, `'#{1 1.0}`, `'{\a 1 "a" 2}`) stay distinct members
@@ -154,7 +161,7 @@ effects keep their `--jobs 1` order at every `--jobs` (light-cljs-480;
 docs/compiler-concurrency.md, "Effect lanes (light-cljs-480)"). A `defonce`
 keeps an earlier definition of its Var and fills a declaration, as in the
 legacy runtimes.
-Lazy sequences, compiler literals, dynamic reader services, compiler build
+Compiler literals, dynamic reader services, compiler build
 services and generated-symbol services are not implemented. Native
 symbol/keyword component spellings must
 round-trip unambiguously, as described in the engine's native form contract.
@@ -324,6 +331,68 @@ light-cljs-497. A helper analyzed on demand that itself expands
 a macro fails with `invalid value handle`, independently of protocols (also on
 master before this work; light-cljs-500), which is why the frontier test above
 evaluates its earlier expansion at top level.
+
+### Lazy sequences
+
+Macro code's lazy sequences are the engine's once-realized cells
+(light-cljs-479; big-boy-pants-js `src/collections/lazy.rs`). `(lazy-seq …)`
+is `__rt.lazySeq(thunk)`. The runtime object provides `map` (`mapSeq`, of one
+or more collections), `filter`, `remove`, `keep`, `mapcat`, `map-indexed`,
+`take`, `drop`, `take-while`, `drop-while`, `interleave`, `iterate`, `repeat`,
+`range`, `partition` (two and three arguments), `concat`, `doall`, `dorun`,
+and over sequences `reduce` (without `reduced`), `into` (without a
+transducer), `every?`, `not-every?`, `some`, `not-any?`, `last`, `butlast`,
+`reverse`, `mapv`, `filterv`, with `even?`, `odd?`, `zero?`, `pos?`, `neg?`,
+`comp`, `partial`, `complement` and `constantly`. `for` and `doseq` are the
+compiler's Rust expansions, over chunked sequences as in ClojureScript (a
+vector's seq of more than 32 elements, a finite `range` and `chunk-cons`
+sequences are chunked; lists and shorter vectors are not). The clj intrinsics read lazy sequences through: `first`, `rest`,
+`next`, `seq`, `nth`, `count`, `=`, `hash`, `concat`, structural map keys and
+the rest. `cons` and `conj` keep a lazy sequence as an unrealized tail, and
+a `concat` involving one is lazy, realizing one collection at a time.
+Equality stops at the first unequal element. Not provided:
+`cycle`, `lazy-cat`, `reduced`, transducers and `eduction`, `sequence` of a
+transducer, sorted sequences. The text-mode compile entry points (`--text`,
+`analyze_with_macros`) expand `for`, `doseq` and `when` through the JavaScript
+bootstrap, which this backend does not have; namespace builds expand them in
+Rust.
+
+A realization runs the thunk once, in the task that first needs the
+sequence; a task that needs it while another task realizes it parks (it
+holds no worker) until the realization ends, and then reads the value. A
+thunk that throws leaves the sequence unrealized, as ClojureScript's
+`LazySeq` does: the realizing expression sees the exception, every reader
+that was parked on that attempt sees the same failure (the thrown value when
+it is shareable, an `Error` with its message otherwise), and a later reader
+runs the thunk again. A thunk that needs its own sequence while running it
+fails with a catchable `RangeError` where ClojureScript recurses until the
+stack overflows, and a sequence that realized itself (an infinite cycle) is a
+`RangeError` where ClojureScript loops. A cycle through a helper (a thunk
+that demands a helper whose initializer needs the same sequence) is not
+detected: the reader waits until the build's `--macro-timeout-ms` deadline.
+The compiler wakes a parked reader by polling the sequence's status (at most
+20 ms after the realization ends); a scheduler that enqueues the wakeups
+the engine returns (`Runtime::take_lazy_wakeups`) would not wait.
+
+A lazy sequence publishes when its thunk does (before realization) or its
+value does (after): a helper's `(def xs (map inc v))` or `(def ps (for [x v]
+[x x]))` is one shared cell that every task realizes once, while a thunk
+that calls a non-lowered core function captures the task's runtime object and
+the helper stays per-task. A published sequence must realize a shareable
+value; otherwise that realization fails with a `TypeError` naming the path,
+for the realizing task and every task parked on it.
+
+A macro's result is realized before it is exported (`__rt.cljRealizeAll`),
+so an infinite sequence fails on the memory limit or the deadline rather than
+at the bridge's node limit as in the legacy engines. Realized sequences export
+the metadata the legacy runtime's sequences have (an explicit `nil` for a
+`LazySeq` or `ChunkedCons`, none for a `Cons`, a vector's seq or an
+`IntegerRange`), so expansions are the legacy compiler's. An operation over an
+unrealized sequence executes again after each cell it realizes; `count` (so
+`doall`), the runtime's array helpers and the result's realization realize the
+rest of a chain at once and stay linear, while `=` and `hash` of an unrealized
+sequence of `k` cells and `n` elements read `O(k * n)` elements. Chunked
+sources realize 32 elements a cell.
 
 ### Memory limit
 

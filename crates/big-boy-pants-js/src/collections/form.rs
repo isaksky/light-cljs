@@ -19,6 +19,8 @@
 //! | vector | elements in order | yes |
 //! | map | entries, keys unique by value equality (a hash trie) | yes |
 //! | set | members unique by value equality (a hash trie; light-cljs-477) | yes |
+//! | lazy-seq | a once-realized cell: a thunk, then what it realized (light-cljs-479, `crate::collections::lazy`) | yes |
+//! | cons | realized elements followed by an unrealized tail (light-cljs-479) | yes |
 //!
 //! Elements, keys, values and metadata may be any value: `nil`
 //! (`null`/`undefined`), booleans, numbers, strings, other forms, and
@@ -232,7 +234,7 @@
 //!
 //! # Supported boundary
 //!
-//! Supported: the six kinds above, metadata, occurrences as elements and
+//! Supported: the kinds above, metadata, occurrences as elements and
 //! keys, the operations listed, sequential list/vector equality, and the
 //! ClojureScript core operations of [`crate::collections::clj`] (whose
 //! `seq`, `rest` and `next` of a list or vector are lists sharing its trie,
@@ -240,8 +242,8 @@
 //! supported (not claimed): keyword and symbol names whose spelling does
 //! not split back (rejected, see "Names"), and a runtime keyword whose
 //! stored spelling differs from its namespace and name (the runtime's
-//! one-argument `(keyword "a/b/c")`); sorted maps and sets, lazy sequences,
-//! seq views of maps, sets and strings, user hashing or equality
+//! one-argument `(keyword "a/b/c")`); sorted maps and sets, seq views of
+//! maps, sets and strings, user hashing or equality
 //! (`IHash`/`IEquiv`) of structs,
 //! interned or cached keyword identity, characters as a separate kind (a
 //! character is a one-unit string; the reader distinction, like exact
@@ -253,6 +255,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 
+use super::lazy::{self, ConsBody, LazyCell};
 use super::map::PMap;
 use super::{CollectionError, PVector, identical, index_from_value, object_name};
 use crate::heap::gc::{Trace, TraceEdge};
@@ -273,6 +276,12 @@ pub enum FormKind {
     Struct,
     /// A struct type: the identity of a `deftype` or `defrecord`.
     Type,
+    /// A lazy sequence: a once-realized cell (light-cljs-479;
+    /// `crate::collections::lazy`).
+    Lazy,
+    /// A sequence cell: realized elements followed by a lazy tail
+    /// (`crate::collections::lazy`, "Sequences").
+    Cons,
 }
 
 impl FormKind {
@@ -289,7 +298,18 @@ impl FormKind {
             FormKind::Set => "set",
             FormKind::Struct => "struct",
             FormKind::Type => "type",
+            FormKind::Lazy => "lazy-seq",
+            FormKind::Cons => "cons",
         }
+    }
+
+    /// Whether values of this kind are sequential (`=` to a list or vector
+    /// with equal elements).
+    pub(crate) fn sequential(self) -> bool {
+        matches!(
+            self,
+            FormKind::List | FormKind::Vector | FormKind::Lazy | FormKind::Cons
+        )
     }
 
     /// The name in diagnostics, distinct from the SameValueZero kinds.
@@ -299,6 +319,7 @@ impl FormKind {
             FormKind::Map => "form map",
             FormKind::Set => "form set",
             FormKind::Type => "struct type",
+            FormKind::Lazy => "lazy sequence",
             other => other.name(),
         }
     }
@@ -367,6 +388,11 @@ pub(crate) enum FormBody {
     Type(Arc<TypeInfo>),
     /// An instance of a struct type.
     Struct(StructBody),
+    /// A lazy sequence (light-cljs-479): the cell is shared by every form
+    /// object made from it (`with-meta` keeps it).
+    Lazy(Arc<LazyCell>),
+    /// Realized elements followed by a lazy tail.
+    Cons(ConsBody),
 }
 
 /// What a struct type is: its name, its field names in order and whether
@@ -443,6 +469,16 @@ impl FormObject {
             FormBody::Set(_) => FormKind::Set,
             FormBody::Struct(_) => FormKind::Struct,
             FormBody::Type(_) => FormKind::Type,
+            FormBody::Lazy(_) => FormKind::Lazy,
+            FormBody::Cons(_) => FormKind::Cons,
+        }
+    }
+
+    /// A lazy form's cell.
+    pub(crate) fn lazy_cell(&self) -> Option<&Arc<LazyCell>> {
+        match &self.body {
+            FormBody::Lazy(cell) => Some(cell),
+            _ => None,
         }
     }
 
@@ -487,6 +523,8 @@ impl FormObject {
                     }
                 }
             }
+            // Read through [`sequence_elements`], which needs the heap.
+            FormBody::Lazy(_) | FormBody::Cons(_) => {}
         }
     }
 }
@@ -504,6 +542,8 @@ impl Trace for FormObject {
                     ext.trace(visit);
                 }
             }
+            FormBody::Lazy(cell) => cell.trace(visit),
+            FormBody::Cons(c) => c.trace(visit),
         }
         if let Some(meta) = &self.meta {
             meta.trace(visit);
@@ -1023,6 +1063,158 @@ pub(crate) fn record_from_map(
     )
 }
 
+// ---- Lazy sequences (light-cljs-479) ----
+
+/// A new lazy sequence realized by calling `thunk`. Never known shareable
+/// at allocation: the cell learns it is shared from a publication check
+/// ([`crate::collections::lazy`], "Sharing").
+pub(crate) fn new_lazy(heap: &Heap, thunk: Value) -> Result<Value, CollectionError> {
+    let object = FormObject::new(FormBody::Lazy(Arc::new(LazyCell::new(thunk))), None);
+    heap.alloc(HeapObject::Form(Arc::new(object)))
+        .map(Value::Object)
+        .ok_or(CollectionError::OutOfMemory)
+}
+
+/// A new lazy `concat` of the collections in the list `colls`, realized in
+/// Rust one collection at a time (light-cljs-479).
+pub(crate) fn new_lazy_concat(heap: &Heap, colls: Value) -> Result<Value, CollectionError> {
+    let object = FormObject::new(FormBody::Lazy(Arc::new(LazyCell::concat(colls))), None);
+    heap.alloc(HeapObject::Form(Arc::new(object)))
+        .map(Value::Object)
+        .ok_or(CollectionError::OutOfMemory)
+}
+
+/// A new sequence cell: `items[start..]` (nonempty) followed by `rest`
+/// (`nil`, a list, or a lazy or cons sequence).
+pub(crate) fn new_cons(
+    heap: &Heap,
+    items: PVector,
+    start: usize,
+    rest: Value,
+    kind: lazy::ConsKind,
+) -> Result<Value, CollectionError> {
+    let body = ConsBody {
+        items,
+        start,
+        rest,
+        kind,
+    };
+    let mut parts = body.elements();
+    parts.push(body.rest.clone());
+    alloc(heap, FormObject::new(FormBody::Cons(body), None), &parts)
+}
+
+/// [`new_cons`] of elements and a tail that all belong to `source` (a
+/// vector, or a cons sequence it continues): no element is copied, and the
+/// new sequence takes its known-shareable bit from `source`, which reaches
+/// everything it does.
+pub(crate) fn cons_sharing(
+    heap: &Heap,
+    items: PVector,
+    start: usize,
+    rest: Value,
+    kind: lazy::ConsKind,
+    source: &Value,
+) -> Result<Value, CollectionError> {
+    let body = ConsBody {
+        items,
+        start,
+        rest,
+        kind,
+    };
+    alloc(
+        heap,
+        FormObject::new(FormBody::Cons(body), None),
+        std::slice::from_ref(source),
+    )
+}
+
+/// Why a sequence could not be read through.
+#[derive(Debug)]
+pub(crate) enum SeqError {
+    /// This lazy form must be realized first.
+    Pending(Value),
+    /// The realized sequence contains itself: it is infinite.
+    Cycle,
+}
+
+/// `v` with occurrences unwrapped and realized lazy forms followed to what
+/// they realized. `visited` holds the cells this walk followed already.
+pub(crate) fn realized_head(
+    heap: &Heap,
+    v: Value,
+    visited: &mut lazy::Visited,
+) -> Result<Value, SeqError> {
+    let mut v = v;
+    loop {
+        let (u, f) = resolve(heap, v);
+        let Some(cell) = f.as_ref().and_then(|(_, f)| f.lazy_cell()) else {
+            return Ok(u);
+        };
+        if !visited.enter(cell) {
+            return Err(SeqError::Cycle);
+        }
+        match cell.realized() {
+            Some(r) => v = r.clone(),
+            None => return Err(SeqError::Pending(u)),
+        }
+    }
+}
+
+/// The elements of the sequence `v`, realized: `nil`, a list or vector, or
+/// a lazy or cons sequence whose tails are those kinds (realization
+/// canonicalizes the others to lists). `Ok(None)` when `v`, or a tail, is
+/// something else.
+pub(crate) fn sequence_elements(heap: &Heap, v: &Value) -> Result<Option<Vec<Value>>, SeqError> {
+    let mut out = Vec::new();
+    let mut visited = lazy::Visited::default();
+    let mut cur = v.clone();
+    loop {
+        let head = realized_head(heap, cur, &mut visited)?;
+        if matches!(head, Value::Null | Value::Undefined) {
+            return Ok(Some(out));
+        }
+        let Some(f) = form_object(heap, &head) else {
+            return Ok(None);
+        };
+        match &f.body {
+            FormBody::List(items) | FormBody::Vector(items) => {
+                out.extend(items.to_vec());
+                return Ok(Some(out));
+            }
+            FormBody::Cons(c) => {
+                out.extend(c.elements());
+                cur = c.rest.clone();
+            }
+            _ => return Ok(None),
+        }
+    }
+}
+
+/// The elements a lazy or cons form `v` (object `f`) hashes and compares
+/// by; records a realization request when one is pending.
+fn lazy_elements(heap: &Heap, v: &Value, f: &FormObject) -> Option<Vec<Value>> {
+    if !matches!(f.body, FormBody::Lazy(_) | FormBody::Cons(_)) {
+        return None;
+    }
+    lazy_elements_any(heap, v, f)
+}
+
+/// [`lazy_elements`] of any sequential form (a list's or vector's own).
+fn lazy_elements_any(heap: &Heap, v: &Value, f: &FormObject) -> Option<Vec<Value>> {
+    if let FormBody::List(items) | FormBody::Vector(items) = &f.body {
+        return Some(items.to_vec());
+    }
+    match sequence_elements(heap, v) {
+        Ok(items) => items,
+        Err(SeqError::Pending(p)) => {
+            lazy::request(p);
+            None
+        }
+        Err(SeqError::Cycle) => None,
+    }
+}
+
 // ---- Inspection ----
 
 pub(crate) fn kind(heap: &Heap, v: &Value) -> Option<FormKind> {
@@ -1247,6 +1439,27 @@ pub(crate) fn with_meta(heap: &Heap, v: &Value, meta: &Value) -> Result<Value, C
     alloc(heap, f.with_meta(meta), &parts)
 }
 
+/// A new copy of the collection `v` holding `meta`: a form map, or an
+/// explicit `nil`, which `with_meta` never stores. A realized lazy
+/// sequence keeps it (light-cljs-479): the light-cljs runtime's `LazySeq`
+/// has metadata, `nil` when none was given, which the compiler bridge
+/// exports, so the native bridge exports it too.
+pub(crate) fn with_exported_meta(
+    heap: &Heap,
+    v: &Value,
+    meta: Value,
+) -> Result<Value, CollectionError> {
+    let Some(f) = form_object(heap, v) else {
+        return Err(wrong(heap, "list", v));
+    };
+    match &meta {
+        Value::Null => {}
+        m if kind(heap, m) == Some(FormKind::Map) => {}
+        other => return Err(wrong(heap, "form map or nil", other)),
+    }
+    alloc(heap, f.with_meta(Some(meta.clone())), &[v.clone(), meta])
+}
+
 // ---- Equality ----
 
 /// Equality of two non-form values (occurrences already unwrapped).
@@ -1254,6 +1467,90 @@ fn scalar_equals(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Null | Value::Undefined, Value::Null | Value::Undefined) => true,
         _ => a.strict_equals(b),
+    }
+}
+
+/// A position in a sequence for [`equals`]: the elements of the segment
+/// being read (from `index`), then `tail`.
+struct SeqCursor {
+    items: Option<PVector>,
+    index: usize,
+    tail: Value,
+    /// The form whose elements `items` are.
+    source: Option<ObjectId>,
+}
+
+/// Where a [`SeqCursor`] is: its segment's form and index.
+type SeqState = (Option<ObjectId>, usize);
+
+/// What [`seq_split`] found.
+enum Split {
+    Empty,
+    Item(Value, SeqCursor),
+    /// A realization is pending (requested), or the value is not a
+    /// sequence or contains itself.
+    Stop,
+}
+
+impl SeqCursor {
+    fn new(v: Value) -> SeqCursor {
+        SeqCursor {
+            items: None,
+            index: 0,
+            tail: v,
+            source: None,
+        }
+    }
+
+    fn state(&self) -> SeqState {
+        (self.source, self.index)
+    }
+}
+
+/// The next element of a sequence and the position after it, reading one
+/// segment (a list's or vector's elements, a cons sequence's) at a time and
+/// realized lazy sequences transparently. An unrealized one is requested.
+fn seq_split(heap: &Heap, mut c: SeqCursor) -> Split {
+    loop {
+        if let Some(items) = &c.items
+            && let Some(x) = items.get(c.index)
+        {
+            c.index += 1;
+            return Split::Item(x, c);
+        }
+        let tail = std::mem::replace(&mut c.tail, Value::Null);
+        let head = match realized_head(heap, tail, &mut lazy::Visited::default()) {
+            Ok(head) => head,
+            Err(SeqError::Pending(p)) => {
+                lazy::request(p);
+                return Split::Stop;
+            }
+            Err(SeqError::Cycle) => return Split::Stop,
+        };
+        if matches!(head, Value::Null | Value::Undefined) {
+            return Split::Empty;
+        }
+        let Value::Object(id) = head else {
+            return Split::Stop;
+        };
+        let Some(f) = form_object(heap, &head) else {
+            return Split::Stop;
+        };
+        c = match &f.body {
+            FormBody::List(items) | FormBody::Vector(items) => SeqCursor {
+                items: Some(items.clone()),
+                index: 0,
+                tail: Value::Null,
+                source: Some(id),
+            },
+            FormBody::Cons(cons) => SeqCursor {
+                items: Some(cons.items.clone()),
+                index: cons.start,
+                tail: cons.rest.clone(),
+                source: Some(id),
+            },
+            _ => return Split::Stop,
+        };
     }
 }
 
@@ -1282,7 +1579,15 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
         Pair(Value, Value),
         /// Candidate (key pair, value pair) alternatives for one entry.
         OneOf(Vec<[(Value, Value); 2]>),
+        /// The rest of two sequences, compared element by element so that
+        /// an unequal element ends the comparison before a tail is
+        /// realized (light-cljs-479).
+        Seq(SeqCursor, SeqCursor, Positions),
     }
+    /// The positions one sequence comparison has passed: met again, the
+    /// sequences cycle and are equal so far. Per comparison, so a failed
+    /// alternative leaves nothing behind.
+    type Positions = std::rc::Rc<std::cell::RefCell<HashSet<(SeqState, SeqState)>>>;
     enum Frame {
         /// Every step must hold; `memo` is the form pair it decides.
         All {
@@ -1301,7 +1606,15 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
     }
     let mut equal: HashSet<(ObjectId, ObjectId)> = HashSet::new();
     let mut unequal: HashSet<(ObjectId, ObjectId)> = HashSet::new();
-    let compare = |a: Value, b: Value, equal: &HashSet<_>, unequal: &HashSet<_>| {
+    // Pairs being expanded: met again inside their own expansion (only
+    // through a lazy sequence that contains itself), they are taken as
+    // equal, so the comparison ends.
+    let mut active: HashSet<(ObjectId, ObjectId)> = HashSet::new();
+    let compare = |a: Value,
+                   b: Value,
+                   equal: &HashSet<_>,
+                   unequal: &HashSet<_>,
+                   active: &HashSet<_>| {
         // `identical?` first: also an occurrence of `NaN` equals itself.
         if a.same_object(&b) {
             return Outcome::Decided(true);
@@ -1312,7 +1625,7 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
             (None, None) => return Outcome::Decided(scalar_equals(&a, &b)),
             _ => return Outcome::Decided(false),
         };
-        if ia == ib || equal.contains(&(ia, ib)) {
+        if ia == ib || equal.contains(&(ia, ib)) || active.contains(&(ia, ib)) {
             return Outcome::Decided(true);
         }
         if unequal.contains(&(ia, ib)) {
@@ -1326,6 +1639,22 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
         match (&x.body, &y.body) {
             (FormBody::Keyword(m), FormBody::Keyword(n))
             | (FormBody::Symbol(m), FormBody::Symbol(n)) => Outcome::Decided(m.same(n)),
+            // A lazy or cons sequence: its realized elements, sequentially
+            // (light-cljs-479). An unrealized one is a realization request
+            // and, until realized, equal only to itself.
+            (FormBody::Lazy(_) | FormBody::Cons(_), _)
+            | (_, FormBody::Lazy(_) | FormBody::Cons(_))
+                if x.kind().sequential() && y.kind().sequential() =>
+            {
+                Outcome::Expand(
+                    (ia, ib),
+                    vec![Step::Seq(
+                        SeqCursor::new(a),
+                        SeqCursor::new(b),
+                        Positions::default(),
+                    )],
+                )
+            }
             (FormBody::List(p) | FormBody::Vector(p), FormBody::List(q) | FormBody::Vector(q)) => {
                 if p.len() != q.len() {
                     return Outcome::Decided(false);
@@ -1454,24 +1783,39 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                     None => {
                         let result = !failed;
                         if let Some(pair) = *memo {
+                            active.remove(&pair);
                             if result { &mut equal } else { &mut unequal }.insert(pair);
                         }
                         frames.pop();
                         returned = Some(result);
                     }
-                    Some(Step::Pair(a, b)) => match compare(a, b, &equal, &unequal) {
+                    Some(Step::Pair(a, b)) => match compare(a, b, &equal, &unequal, &active) {
                         Outcome::Decided(true) => {}
                         Outcome::Decided(false) => returned = Some(false),
                         Outcome::Refuted(pair) => {
                             unequal.insert(pair);
                             returned = Some(false);
                         }
-                        Outcome::Expand(pair, steps) => frames.push(Frame::All {
-                            memo: Some(pair),
-                            pending: steps,
-                        }),
+                        Outcome::Expand(pair, steps) => {
+                            active.insert(pair);
+                            frames.push(Frame::All {
+                                memo: Some(pair),
+                                pending: steps,
+                            });
+                        }
                     },
                     Some(Step::OneOf(alternatives)) => frames.push(Frame::Any(alternatives)),
+                    Some(Step::Seq(p, q, seen)) => match (seq_split(heap, p), seq_split(heap, q)) {
+                        (Split::Empty, Split::Empty) => {}
+                        (Split::Item(x, p), Split::Item(y, q)) => {
+                            // The same positions again: a cycle, equal so far.
+                            if seen.borrow_mut().insert((p.state(), q.state())) {
+                                pending.push(Step::Seq(p, q, seen));
+                            }
+                            pending.push(Step::Pair(x, y));
+                        }
+                        _ => returned = Some(false),
+                    },
                 }
             }
             Frame::Any(alternatives) => match returned.take() {
@@ -1597,17 +1941,34 @@ fn scalar_hash(v: &Value) -> i32 {
 /// Hash of a child whose form (if any) already has its hash cached.
 fn child_hash(heap: &Heap, v: &Value) -> i32 {
     match resolve(heap, v.clone()) {
-        (_, Some((id, f))) => match f.hash.get().copied().or_else(|| identity_hash(&f, id)) {
+        (u, Some((id, f))) => match f.hash.get().copied().or_else(|| identity_hash(&f, id)) {
             Some(h) => h,
-            None => form_hash(heap, &f),
+            // Past a pending realization or a cycle the hash is a
+            // placeholder: do not walk further.
+            None if lazy::has_request() => 0,
+            None => form_hash(heap, &u, &f),
         },
         (v, None) => scalar_hash(&v),
     }
 }
 
-/// The hash of one form from its children's (all cached by now).
-fn shallow_hash(heap: &Heap, f: &FormObject) -> i32 {
+/// The hash of one form `v` (object `f`) from its children's (all cached
+/// by now, unless a realization is pending).
+fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
     match &f.body {
+        // A lazy or cons sequence hashes as a list of its realized elements
+        // (light-cljs-479); while a realization is pending the result is a
+        // placeholder that is not cached.
+        FormBody::Lazy(_) | FormBody::Cons(_) => match lazy_elements(heap, v, f) {
+            Some(items) => {
+                let mut h = 1i32;
+                for item in &items {
+                    h = h.wrapping_mul(31).wrapping_add(child_hash(heap, item));
+                }
+                mix_collection_hash(h, items.len())
+            }
+            None => 0,
+        },
         FormBody::Keyword(n) => hash_named(n).wrapping_add(0x9e37_79b9_u32 as i32),
         FormBody::Symbol(n) => hash_named(n),
         FormBody::List(items) | FormBody::Vector(items) => {
@@ -1671,39 +2032,77 @@ fn identity_hash(f: &FormObject, id: ObjectId) -> Option<i32> {
 
 /// The cached hash of `root`, computing uncached descendants first with an
 /// explicit stack (children before parents), so depth needs no recursion.
-fn form_hash(heap: &Heap, root: &Arc<FormObject>) -> i32 {
+fn form_hash(heap: &Heap, root_value: &Value, root: &Arc<FormObject>) -> i32 {
     if let Some(h) = root.hash.get() {
         return *h;
     }
-    let mut stack = vec![(root.clone(), false)];
-    while let Some((f, children_done)) = stack.pop() {
-        if f.hash.get().is_some() {
+    let mut stack = vec![(root_value.clone(), root.clone(), false)];
+    // The root's entry is popped last.
+    let mut last = 0;
+    // Forms whose children are being hashed: one met again is inside
+    // itself, which only a realized lazy sequence can make (light-cljs-479).
+    let mut active: HashSet<usize> = HashSet::new();
+    let key = |f: &Arc<FormObject>| Arc::as_ptr(f) as usize;
+    while let Some((v, f, children_done)) = stack.pop() {
+        if let Some(h) = f.hash.get() {
+            last = *h;
             continue;
         }
         if children_done {
-            let h = shallow_hash(heap, &f);
-            let _ = f.hash.set(h);
+            active.remove(&key(&f));
+            last = shallow_hash(heap, &v, &f);
+            // A hash computed past a pending realization is a placeholder.
+            if !lazy::has_request() {
+                let _ = f.hash.set(last);
+            }
             continue;
         }
-        stack.push((f.clone(), true));
-        f.for_each_child(|c| {
-            if let (_, Some((id, child))) = resolve(heap, c.clone())
+        stack.push((v.clone(), f.clone(), true));
+        active.insert(key(&f));
+        let mut push = |c: &Value| {
+            if let (u, Some((id, child))) = resolve(heap, c.clone())
                 && child.hash.get().is_none()
                 && identity_hash(&child, id).is_none()
             {
-                stack.push((child, false));
+                if active.contains(&key(&child)) {
+                    lazy::note_cycle();
+                } else {
+                    stack.push((u, child, false));
+                }
             }
-        });
+        };
+        match lazy_elements(heap, &v, &f) {
+            Some(items) => items.iter().for_each(&mut push),
+            None => f.for_each_child(&mut push),
+        }
     }
-    *root.hash.get().expect("hash computed above")
+    root.hash.get().copied().unwrap_or(last)
 }
 
 /// The value hash: the light-cljs runtime's `hash` for supported values.
 pub(crate) fn hash(heap: &Heap, v: &Value) -> i32 {
     match resolve(heap, v.clone()) {
-        (_, Some((id, f))) => identity_hash(&f, id).unwrap_or_else(|| form_hash(heap, &f)),
+        (u, Some((id, f))) => identity_hash(&f, id).unwrap_or_else(|| form_hash(heap, &u, &f)),
         (v, None) => scalar_hash(&v),
     }
+}
+
+/// Run a structural operation of the embedder API: one that hashes or
+/// compares keys or members. An unrealized lazy sequence among them has no
+/// hash yet (realizing it runs JavaScript, which only a task does), so the
+/// operation fails instead of storing or looking up a placeholder.
+fn realized_keys<T>(op: impl FnOnce() -> Result<T, CollectionError>) -> Result<T, CollectionError> {
+    let _ = lazy::take_request();
+    let _ = lazy::take_cycle();
+    let result = op();
+    let pending = lazy::take_request().is_some();
+    if lazy::take_cycle() || pending {
+        return Err(CollectionError::WrongType {
+            expected: "realized sequence",
+            found: "unrealized or self-containing lazy sequence",
+        });
+    }
+    result
 }
 
 /// The embedder API. See the module docs.
@@ -1749,13 +2148,13 @@ impl<'s> Scope<'s> {
             .iter()
             .map(|(k, v)| (self.local_value(*k), self.local_value(*v)))
             .collect();
-        self.result(new_map(self.heap(), &entries))
+        self.result(realized_keys(|| new_map(self.heap(), &entries)))
     }
 
     /// A new form set of `items` with structural members; of equal members
     /// the first is kept.
     pub fn new_form_set(&self, items: &[Local<'s>]) -> Result<Local<'s>, CollectionError> {
-        self.result(new_set(self.heap(), &self.values(items)))
+        self.result(realized_keys(|| new_set(self.heap(), &self.values(items))))
     }
 
     /// A new set without the member equal to `member`.
@@ -1765,7 +2164,7 @@ impl<'s> Scope<'s> {
         member: Local<'s>,
     ) -> Result<Local<'s>, CollectionError> {
         let (s, m) = (self.local_value(set), self.local_value(member));
-        self.result(disj(self.heap(), &s, &m))
+        self.result(realized_keys(|| disj(self.heap(), &s, &m)))
     }
 
     /// The form kind of a value, or `None` (occurrences included).
@@ -1811,7 +2210,8 @@ impl<'s> Scope<'s> {
         coll: Local<'s>,
         key: Local<'s>,
     ) -> Result<Option<Local<'s>>, CollectionError> {
-        let found = get(self.heap(), &self.local_value(coll), &self.local_value(key))?;
+        let found =
+            realized_keys(|| get(self.heap(), &self.local_value(coll), &self.local_value(key)))?;
         Ok(found.map(|v| self.new_local(v)))
     }
 
@@ -1828,7 +2228,7 @@ impl<'s> Scope<'s> {
             self.local_value(key),
             self.local_value(value),
         );
-        self.result(assoc(self.heap(), &c, k, v))
+        self.result(realized_keys(|| assoc(self.heap(), &c, k, v)))
     }
 
     /// A new map without the entry for an equal key.
@@ -1838,7 +2238,7 @@ impl<'s> Scope<'s> {
         key: Local<'s>,
     ) -> Result<Local<'s>, CollectionError> {
         let (m, k) = (self.local_value(map), self.local_value(key));
-        self.result(dissoc(self.heap(), &m, &k))
+        self.result(realized_keys(|| dissoc(self.heap(), &m, &k)))
     }
 
     /// `conj`: append to a vector, prepend to a list.
@@ -1848,10 +2248,12 @@ impl<'s> Scope<'s> {
         value: Local<'s>,
     ) -> Result<Local<'s>, CollectionError> {
         let (c, v) = (self.local_value(coll), self.local_value(value));
-        self.result(conj(self.heap(), &c, v))
+        self.result(realized_keys(|| conj(self.heap(), &c, v)))
     }
 
-    /// Value equality (metadata, provenance and identity ignored).
+    /// Value equality (metadata, provenance and identity ignored). An
+    /// unrealized lazy sequence is equal only to itself (realizing one runs
+    /// JavaScript, which only a task does).
     pub fn form_equals(&self, a: Local<'s>, b: Local<'s>) -> bool {
         equals(self.heap(), &self.local_value(a), &self.local_value(b))
     }

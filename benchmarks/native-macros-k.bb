@@ -4,10 +4,11 @@
 ;; factor k".
 ;;
 ;;   bb benchmarks/native-macros-k.bb OUTPUT [--runs 5] [--n 0,100,400]
-;;      [--workload churn|protocol] NAME=BINARY ...
+;;      [--workload churn|protocol|lazy] NAME=BINARY ...
 ;;
 ;; `churn` is the collection-heavy macro; `protocol` (light-cljs-478)
-;; dispatches protocol methods on records, a deftype and numbers.
+;; dispatches protocol methods on records, a deftype and numbers; `lazy`
+;; (light-cljs-479) realizes `for`, `filter`, `map` and `range` sequences.
 ;;
 ;; One backend must be named v8. Every compile is a fresh `--jobs 1
 ;; --no-cache` process; one warm-up compile per backend and n is
@@ -52,6 +53,15 @@
 (js/console.log (churn N) (churn N) (churn N) (churn N))
 ")
 
+(def lazy-source
+  "(ns k.churn)
+(defmacro churn [n]
+  (let [v (vec (range n))
+        odds (filter odd? (for [x v :when (even? (inc x))] (inc x)))]
+    (+ (reduce + (map (fn [x] (* 2 x)) odds)) (count (doall (take-while (fn [x] (< x n)) (iterate inc 0)))))))
+(js/console.log (churn N) (churn N) (churn N) (churn N))
+")
+
 (defn options [args]
   (loop [[arg & more] args o {:runs 5 :n [0 100 400] :backends [] :workload "churn"}]
     (cond
@@ -87,7 +97,7 @@
           (throw (ex-info "Usage: OUTPUT (new directory) [--runs R] [--n 0,100,400] v8=BIN NAME=BIN ..." {})))
       _ (doseq [n (:n o)]
           (fs/create-dirs (fs/path (:output o) (str "src-" n) "k"))
-          (spit (str (fs/path (:output o) (str "src-" n) "k" "churn.cljs")) (str/replace ({"churn" churn-source "protocol" protocol-source} (:workload o)) "N" (str n))))
+          (spit (str (fs/path (:output o) (str "src-" n) "k" "churn.cljs")) (str/replace ({"churn" churn-source "protocol" protocol-source "lazy" lazy-source} (:workload o)) "N" (str n))))
       ;; One discarded warm-up compile per backend and n (file caches).
       _ (doseq [n (:n o) backend (:backends o)] (sample o backend n -1))
       samples (vec (for [run (range (:runs o)) n (:n o)
