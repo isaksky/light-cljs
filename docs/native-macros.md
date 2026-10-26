@@ -263,6 +263,12 @@ table in `tests/bbp_macros.rs`:
 | `divide`, `int`, `long`, `byte`, `short`, `float`, `double`, `quot`, `rem`, `mod`, `numericEqual` | The compiler macro fixtures' Number conversions, negative zero and infinities |
 | `notEqual`, `isNumber`, `isFloat`, `isDouble`, `isInfinite` | Native scalar occurrences and ordinary values |
 
+The identity helpers `byte`, `short`, `float` and `double` retain imported
+scalar occurrences, including large integer spellings and character/string
+provenance. A focused evaluator test checks exact Datum reuse. Captured
+UTF-16 name reservation sets also match QuickJS for every namespace in the
+gensym fixture, including macros compiled on fresh helper tasks.
+
 `native_compiler_macro_fixtures_keep_their_legacy_results` also reuses the
 source-order, nested-demand, captured-function, failed-initializer and
 extension-frontier fixture constants verbatim. The next nontrivial runtime
@@ -272,8 +278,9 @@ now run natively. The full compiler integration binary additionally needs
 the pinned `research/clojurescript` checkout; this work leaves `research/`
 untouched.
 
-With the same macOS arm64/Rust 1.99.1 native-only command, five absolute
-source roots, one job, no cache and budgets above, the next first errors are:
+At `4ecde149`, with the same macOS arm64/Rust 1.99.1 native-only command,
+five absolute source roots, one job, no cache and budgets above, the next
+first errors are:
 
 `--entry app.render`:
 
