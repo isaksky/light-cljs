@@ -584,7 +584,7 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
                 .collect();
             form::new_vector(heap, &keys)?
         }
-        FormOp::PrintItems => print_items(heap, &arg())?,
+        FormOp::PrintItems => form::print_items(heap, &arg())?,
         FormOp::Disj => {
             let (s, m) = (arg(), arg());
             form::disj(heap, &s, &m)?
@@ -647,61 +647,6 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         | FormOp::CljRangeCons
         | FormOp::CljSymbolNs => Value::Undefined,
     })
-}
-
-/// The native lookup trie spreads hashes for its own routing. Printing uses
-/// ClojureScript's five-bit hash paths instead, with nil before the trie.
-/// This does not change language lookup or the native seq contract.
-fn print_items(heap: &Heap, value: &Value) -> Result<Value, CollectionError> {
-    let wrong = || CollectionError::WrongType {
-        expected: "form map, set or record",
-        found: form::kind(heap, value).map_or(value.type_name(), FormKind::name),
-    };
-    let object = form::form_object(heap, value).ok_or_else(wrong)?;
-    if let form::FormBody::Struct(s) = object.body()
-        && s.info.record
-    {
-        let mut entries = Vec::with_capacity(s.fields.len());
-        for (name, value) in s.info.fields.iter().zip(s.fields.to_vec()) {
-            let key = form::new_named(heap, FormKind::Keyword, None, name.clone())?;
-            entries.push(form::new_vector(heap, &[key, value])?);
-        }
-        if let Some(ext) = &s.ext {
-            entries.extend(form::items(heap, &print_items(heap, ext)?)?);
-        }
-        return form::new_vector(heap, &entries);
-    }
-    let (map, set) = match object.body() {
-        form::FormBody::Map(map) => (map, false),
-        form::FormBody::Set(set) => (set, true),
-        _ => return Err(wrong()),
-    };
-    let mut entries = map.to_vec();
-    if !map.positional() {
-        entries.sort_by_cached_key(|(key, _)| {
-            let hash = form::hash(heap, key) as u32;
-            let nil = matches!(
-                form::unwrap(heap, key.clone()),
-                Value::Null | Value::Undefined
-            );
-            // Five-bit trie paths compare from the low bits, not numerically.
-            (
-                !nil,
-                std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31),
-            )
-        });
-    }
-    let values = entries
-        .into_iter()
-        .map(|(key, value)| {
-            if set {
-                Ok(key)
-            } else {
-                form::new_vector(heap, &[key, value])
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    form::new_vector(heap, &values)
 }
 
 /// Early VM tests (hand-assembled bytecode). Cross-task use while the owner

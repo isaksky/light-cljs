@@ -1577,6 +1577,58 @@ pub(crate) fn entries(heap: &Heap, map: &Value) -> Result<Vec<(Value, Value)>, C
     Ok(map_body(heap, map)?.to_vec())
 }
 
+/// The native lookup trie spreads hashes for its own routing. Printing uses
+/// ClojureScript's five-bit hash paths instead, with nil before the trie.
+/// This does not change language lookup or the native seq contract.
+pub(crate) fn print_items(heap: &Heap, value: &Value) -> Result<Value, CollectionError> {
+    let wrong = || CollectionError::WrongType {
+        expected: "form map, set or record",
+        found: kind(heap, value).map_or(value.type_name(), FormKind::name),
+    };
+    let object = form_object(heap, value).ok_or_else(wrong)?;
+    if let FormBody::Struct(s) = object.body()
+        && s.info.record
+    {
+        let mut entries = Vec::with_capacity(s.fields.len());
+        for (name, value) in s.info.fields.iter().zip(s.fields.to_vec()) {
+            let key = new_named(heap, FormKind::Keyword, None, name.clone())?;
+            entries.push(new_vector(heap, &[key, value])?);
+        }
+        if let Some(ext) = &s.ext {
+            entries.extend(items(heap, &print_items(heap, ext)?)?);
+        }
+        return new_vector(heap, &entries);
+    }
+    let (map, set) = match object.body() {
+        FormBody::Map(map) => (map, false),
+        FormBody::Set(set) => (set, true),
+        _ => return Err(wrong()),
+    };
+    let mut entries = map.to_vec();
+    if !map.positional() {
+        entries.sort_by_cached_key(|(key, _)| {
+            let hash = hash(heap, key) as u32;
+            let nil = matches!(unwrap(heap, key.clone()), Value::Null | Value::Undefined);
+            // Five-bit trie paths compare from the low bits, not numerically.
+            (
+                !nil,
+                std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31),
+            )
+        });
+    }
+    let values = entries
+        .into_iter()
+        .map(|(key, value)| {
+            if set {
+                Ok(key)
+            } else {
+                new_vector(heap, &[key, value])
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    new_vector(heap, &values)
+}
+
 /// Lookup: a map entry by an equal key, or a vector element by index
 /// (`None` when absent, out of bounds or not an index, as `get` does).
 pub(crate) fn get(
@@ -2526,6 +2578,14 @@ impl<'s> Scope<'s> {
         let pairs = entries(self.heap(), &self.local_value(map))?;
         let locals = self.new_locals(pairs.into_iter().flat_map(|(k, v)| [k, v]));
         Ok(locals.chunks(2).map(|kv| (kv[0], kv[1])).collect())
+    }
+
+    /// Map/record entries (two-element vectors), or set members, in the
+    /// legacy printer and compiler-form export order. Lookup and native seq
+    /// traversal keep their existing deterministic trie order.
+    pub fn form_print_items(&self, coll: Local<'s>) -> Result<Vec<Local<'s>>, CollectionError> {
+        let ordered = print_items(self.heap(), &self.local_value(coll))?;
+        Ok(self.new_locals(items(self.heap(), &ordered)?))
     }
 
     /// A map value by an equal key, or a vector element by index; `None`

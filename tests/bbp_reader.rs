@@ -87,6 +87,18 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
             r###"(let [x (compiler-reader-read-string "^:outer ^{:inner 2} [^String sym ^{:x [1]} (a)]")] [x (meta x) (meta (first x)) (meta (second x))])"###,
         ),
         (
+            "collection thresholds",
+            r###"(compiler-reader-read-string "[{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 nil 10} #{:a :b :c :d :e :f :g :h :i nil}]")"###,
+        ),
+        (
+            "reader collection traversal and updates",
+            r###"(let [m (compiler-reader-read-string "{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 nil 10}") s (compiler-reader-read-string "#{:a :b :c :d :e :f :g :h :i nil}")] [(vec m) (vec s) (assoc m :new 11) (disj s :a) (conj s :new)])"###,
+        ),
+        (
+            "tag result traversal",
+            r###"[(compiler-reader-read-string {:readers {'x set}} "#x [:a :b :c :d :e :f :g :h :i nil]") (compiler-reader-read-string {:readers {'x (fn [x] (into {} x))}} "#x [[:a 1] [:b 2] [:c 3] [:d 4] [:e 5] [:f 6] [:g 7] [:h 8] [:i 9] [nil 10]]")]"###,
+        ),
+        (
             "namespaced maps",
             r###"(compiler-reader-read-string "#:foo{:a 1 :_/b 2 c 3 other/d 4}")"###,
         ),

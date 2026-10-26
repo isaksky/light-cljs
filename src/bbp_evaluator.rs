@@ -410,11 +410,16 @@ impl Bridge {
             }
             Some(k) => {
                 let values = if k == FormKind::Map {
-                    s.form_entries(v)
+                    s.form_print_items(v)
                         .map_err(error)?
                         .into_iter()
-                        .flat_map(|(k, v)| [k, v])
+                        .map(|pair| s.form_items(pair).map_err(error))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .flatten()
                         .collect()
+                } else if k == FormKind::Set {
+                    s.form_print_items(v).map_err(error)?
                 } else {
                     s.form_items(v).map_err(error)?
                 };
