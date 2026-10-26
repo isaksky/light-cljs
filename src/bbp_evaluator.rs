@@ -147,12 +147,16 @@ impl Bridge {
         // nearest such snapshot along each ancestry path. Prefer a direct
         // caller at the same source position, then a deterministic unit ID.
         let mut pending = vec![(unit, None, 0usize)];
-        let mut visited = HashSet::new();
+        let mut visited = HashMap::new();
         let mut earliest = None;
         while let Some((unit, bound, depth)) = pending.pop() {
-            if !visited.insert((unit, bound)) {
+            if visited
+                .get(&(unit, bound))
+                .is_some_and(|&prior| prior <= depth)
+            {
                 continue;
             }
+            visited.insert((unit, bound), depth);
             let Some((&position, &scope)) = self
                 .initializer_callers
                 .get(&unit)
@@ -161,11 +165,16 @@ impl Bridge {
                 continue;
             };
             let &(id, explicit) = self.initializer_namespaces.get(&(unit, scope))?;
-            let key = (position, depth, unit);
+            let key = (
+                position,
+                depth,
+                bound.map_or(unit, |(_, owner)| owner),
+                unit,
+            );
             if earliest.is_none_or(|(prior, _)| key < prior) {
-                earliest = Some((key, bound.unwrap_or(id)));
+                earliest = Some((key, bound.map_or(id, |(id, _)| id)));
             }
-            let bound = bound.or(explicit.then_some(id));
+            let bound = bound.or(explicit.then_some((id, unit)));
             if let Some(parents) = self.initializer_parents.get(&unit) {
                 pending.extend(parents.iter().map(|parent| (*parent, bound, depth + 1)));
             }
@@ -575,7 +584,7 @@ const LANE_EFFECT: u16 = 65532;
 /// Compiler-owned generated names, independent of the worker running a step.
 const GENSYM_EFFECT: u16 = 65531;
 const GENSYM_PREFIX: ResultKind = ResultKind::new(6);
-/// Immutable namespace-name symbols captured at each initializer demand.
+/// Immutable namespace snapshots: a name symbol or an explicitly bound value.
 const NAMESPACE: ResultKind = ResultKind::new(7);
 const NAMESPACE_EFFECT: u16 = 65530;
 

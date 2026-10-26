@@ -27,6 +27,44 @@ fn numeric_global(evaluator: &BbpEvaluator, name: &str) -> f64 {
     }
 }
 
+#[test]
+fn initializer_namespace_retains_bindings_and_breaks_ancestry_ties_by_source_unit() {
+    for _ in 0..32 {
+        let mut bridge = Bridge::default();
+        for (unit, position, scope, id, bound) in [
+            (10, 30, 3, 100, false),
+            (20, 20, 2, 200, true),
+            (30, 20, 2, 300, false),
+            (40, 10, 1, 400, false),
+        ] {
+            bridge
+                .initializer_callers
+                .entry(unit)
+                .or_default()
+                .insert(position, scope);
+            bridge
+                .initializer_namespaces
+                .insert((unit, scope), (id, bound));
+        }
+        bridge
+            .initializer_parents
+            .insert(10, HashSet::from([20, 30]));
+        bridge.initializer_parents.insert(20, HashSet::from([40]));
+        bridge.initializer_parents.insert(30, HashSet::from([40]));
+        assert_eq!(bridge.initializer_caller(10), Some(1));
+        assert_eq!(bridge.initializer_namespace(10), Some(200));
+        bridge.initializer_namespaces.insert((10, 3), (100, true));
+        assert_eq!(bridge.initializer_namespace(10), Some(100));
+        bridge
+            .initializer_callers
+            .get_mut(&10)
+            .unwrap()
+            .insert(10, 1);
+        bridge.initializer_namespaces.insert((10, 1), (101, false));
+        assert_eq!(bridge.initializer_namespace(10), Some(101));
+    }
+}
+
 /// Runs while both consumers are parked on the unavailable helper, on the
 /// producer's thread, before the helper is compiled.
 type WhileParked = Arc<dyn Fn(&BbpRuntime) + Send + Sync>;

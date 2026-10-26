@@ -167,6 +167,7 @@ fn native_printing_matches_quickjs_for_every_native_value_kind() {
         ("type string", "(deftype T [a] Object (toString [_] (str \"value=\" a)))", "(pr-str (T. 1) (str (T. 2)))", "nil"),
         ("printer protocol", "(deftype T [a] IPrintWithWriter (-pr-writer [this writer opts] (-write writer \"<\") (-pr-writer a writer opts) (-write writer \">\")))", "(pr-str (T. [1 2]))", "nil"),
         ("writer protocol", "(deftype W [^:mutable s] IWriter (-write [_ text] (set! s (str s text))) (-flush [_] nil))", "(let [w (W. \"\")] (-pr-writer [1 \"x\"] w {:readably true}) (-flush w) (.-s w))", "nil"),
+        ("nil printer protocol", "(extend-protocol IPrintWithWriter nil (-pr-writer [_ w o] (-write w \"NULL\")))", "(pr-str (pr-str* nil) (pr-str nil))", "nil"),
         ("writer errors", "", "(pr-str (try (-write (js/Object.) \"x\") (catch :default e (.-message e))) (try (-flush (js/Object.)) (catch :default e (.-message e))))", "nil"),
         ("regex", "", "(pr-str #\"a\\\\b\")", "nil"),
         ("namespace", "", "(pr-str (str *ns*) (ns-name *ns*) *ns*)", "nil"),
@@ -218,6 +219,8 @@ fn native_namespace_context_matches_quickjs_across_helpers_and_jobs() {
             (def initial [(str *ns*) (str (ns-name *ns*))])
             (def nested-initial [initial (str *ns*)])
             (def bound-value [(str *ns*) (meta (ns-name *ns*))])
+            (def nil-context (str *ns*))
+            (def symbol-context [(str *ns*) (ns-name *ns*) (meta *ns*)])
             (def binding-inner [(str *ns*) (meta (ns-name *ns*))])
             (def binding-outer (binding [*ns* (create-ns (with-meta 'inside-initializer {:bound true}))] binding-inner))
             (defmacro helper-site [] (str *ns*))
@@ -230,7 +233,9 @@ fn native_namespace_context_matches_quickjs_across_helpers_and_jobs() {
             (defmacro capture []
               (let [before (str *ns*) result (h/context)
                     bound (binding [*ns* (create-ns (with-meta 'temporary {:tag true}))]
-                            [(str *ns*) (meta (ns-name *ns*)) h/bound-value])
+                            [(str *ns*) (meta (ns-name *ns*)) h/bound-value
+                             (binding [*ns* nil] h/nil-context)
+                             (binding [*ns* (with-meta 'bound-symbol {:bound :symbol})] h/symbol-context)])
                     thrown (try (binding [*ns* (create-ns 'throwing)]
                                   (throw (js/Error. (str *ns*))))
                                 (catch :default e (.-message e)))]

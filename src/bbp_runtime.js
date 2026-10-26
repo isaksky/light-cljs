@@ -360,6 +360,7 @@ const native = (() => {
   // Printing walks native seqs incrementally. In particular, a bounded print
   // must not realize the whole lazy input. All strings remain exact UTF-16.
   const namedText = x => {
+    x=val(x);
     const ns=__rt.formNamespace(x);
     return (__rt.formKind(x)==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);
   };
@@ -459,8 +460,10 @@ const native = (() => {
   };
   const prStr = (...values) => printValues(vector(values),null);
   const prWriter = (x,w,o) => {
+    const custom=decl.printer(val(x));
+    if(custom!=null)return custom.call(val(x),x,w,o);
     const kind=__rt.formKind(val(x));
-    if(!['keyword','symbol','list','vector','map','set','lazy-seq','cons','record'].includes(kind)&&decl.printer(val(x))==null)
+    if(!['keyword','symbol','list','vector','map','set','lazy-seq','cons','record'].includes(kind))
       throw new Error('No protocol method IPrintWithWriter/-pr-writer defined for this value');
     return printWriterImpl(x,w,o,true);
   };
@@ -473,7 +476,7 @@ const native = (() => {
   Namespace.prototype.getName=function(){return this.name;};
   const createNs = (...a) => {
     if(a.length!==1&&a.length!==2)return arity(a.length);
-    const name=val(a[0]);if(__rt.formKind(name)!=='symbol')throw new TypeError('create-ns requires a symbol');
+    const name=a[0];if(__rt.formKind(val(name))!=='symbol')throw new TypeError('create-ns requires a symbol');
     const key=namedText(name);if(!namespaces.has(key))namespaces.set(key,new Namespace(name));return namespaces.get(key);
   };
   const findNs = (...a) => {
@@ -952,7 +955,8 @@ const native = (() => {
       const frame=namespaceFrames[namespaceFrames.length-1];
       if(frame===undefined||frame.bound)return currentNamespace;
       const cell=__rt.effect(65532,0);if(cell!==0)__rt.need(cell,5);
-      return createNs(__rt.need(__rt.effect(65530,frame.unit),7));
+      const context=__rt.need(__rt.effect(65530,frame.unit),7),value=__rt.formNth(context,1);
+      return __rt.formNth(context,0)?createNs(value):value;
     },
     set:value=>{currentNamespace=value;const frame=namespaceFrames[namespaceFrames.length-1];if(frame!==undefined)frame.bound=true;}
   });
@@ -978,7 +982,7 @@ const native = (() => {
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f,
     compilerForms:{gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
-      namespaceName:()=>currentNamespace instanceof Namespace?currentNamespace.name:currentNamespace,
+      namespaceContext:()=>__rt.formVector(currentNamespace instanceof Namespace,currentNamespace instanceof Namespace?currentNamespace.name:currentNamespace),
       namespaceBound:()=>namespaceFrames.some(frame=>frame.bound),
       enterNamespace:unit=>{namespaceFrames.push({unit,saved:currentNamespace,bound:false});return null;},
       leaveNamespace:()=>{currentNamespace=namespaceFrames.pop().saved;return null;},
@@ -1016,7 +1020,7 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
       globalThis.__lightInitializerParent=initializerStack[initializerStack.length-1]??null;
       // Capture without reading the dynamic Var: only an initializer that
       // observes *ns* needs its lane. Inherited callers are selected in Rust.
-      globalThis.__lightInitializerNamespace=native.compilerForms.namespaceName();
+      globalThis.__lightInitializerNamespace=native.compilerForms.namespaceContext();
       globalThis.__lightInitializerNamespaceBound=native.compilerForms.namespaceBound();
       const producer=__rt.need(serial,beginKind);
       if(producer){
