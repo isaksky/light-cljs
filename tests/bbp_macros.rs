@@ -262,6 +262,21 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "invalid collections and callbacks",
+            "",
+            r#"[(mapv (fn [c] (try (reduce-kv (fn [a k v] a) [] c) (catch :default e (.-message e))))
+                     [42 true :keyword 'symbol (js/Object.)])
+                 (mapv (fn [c] (try (reduce-kv nil :seed c) (catch :default e (.-name e)))) [nil [] {} [1] {:a 1}])
+                 (reduce-kv (fn [a k v] (conj a [k v])) [] (js/Array.))]"#,
+            "nil",
+        ),
+        (
+            "seq protocol fallback",
+            "(deftype S [] ISeqable (-seq [_] (seq (array-map :b 2 :a 1))))",
+            "(reduce-kv (fn [a k v] (conj a [k v])) [] (S.))",
+            "nil",
+        ),
+        (
             "kv protocol override",
             "(deftype R [] IKVReduce (-kv-reduce [this f init] (f init :custom 42)))",
             r#"[(reduce-kv (fn [a k v] [a k v]) :init (R.))

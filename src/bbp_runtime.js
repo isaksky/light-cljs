@@ -301,7 +301,8 @@ const decl = (() => {
     flusher:x=>resolve(methodTable('IWriter/-flush',1),x),
     kvReducer:x=>resolve(methodTable('IKVReduce/-kv-reduce',3),x),
     entryKey:x=>resolve(methodTable('IMapEntry/-key',1),x),
-    entryVal:x=>resolve(methodTable('IMapEntry/-val',1),x)};
+    entryVal:x=>resolve(methodTable('IMapEntry/-val',1),x),
+    seq:x=>resolve(methodTable('ISeqable/-seq',1),x)};
 })();
 const native = (() => {
   let gensymScope = 0, gensymPrefix = '';
@@ -770,7 +771,15 @@ const native = (() => {
         if (__rt.cljIsReduced(init)) return __rt.cljUnreduced(init);
       }
       return init;
-    } else return reduceSeq((result,entry)=>prepareInvoke(f)(result,entryPart(entry,false),entryPart(entry,true)),init,c);
+    } else {
+      const method = decl.seq(c);
+      let source = c;
+      if (method !== null) source = method.call(c,c);
+      else if (Array.isArray(value)) source = vector(value);
+      else if (typeof value !== 'string' && kind !== 'list' && kind !== 'cons' && kind !== 'lazy-seq' && kind !== 'set' && kind !== 'vector')
+        throw new Error(core.str(c) + ' is not ISeqable');
+      return reduceSeq((result,entry)=>prepareInvoke(f)(result,entryPart(entry,false),entryPart(entry,true)),init,source);
+    }
     for (let i = 0, n = __rt.formCount(entries); i < n; i++) {
       const entry = __rt.formNth(entries,i);
       init = prepareInvoke(f)(init,__rt.formNth(entry,0),__rt.formNth(entry,1));
