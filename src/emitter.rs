@@ -550,6 +550,10 @@ fn emit_js_mode(
     } else if slice && emitter.own_brands() {
         (emitter, prelude_end) = body(emitter.register_namespaces, TypeBrands::Own, record_kits);
     }
+    if let Some(temporary) = emitter.native_invoke_temporary {
+        let declaration = format!("  const temporary{temporary}_0 = {NATIVE_PREPARE_INVOKE};\n");
+        emitter.insert((prelude_end, 0, 0), &declaration);
+    }
     #[cfg(debug_assertions)]
     check_runtime_reads(
         &emitter.output,
@@ -1652,6 +1656,7 @@ struct Emitter<'a> {
     /// the operand array's temporary name and slot index.
     native_arguments: std::collections::VecDeque<(ExprId, usize, usize)>,
     native_temporary: usize,
+    native_invoke_temporary: Option<usize>,
     /// [`Emitter::struct_fields`] by method, computed once each.
     struct_targets: std::cell::RefCell<HashMap<crate::analyzer::RecurTargetId, bool>>,
     /// In a native compile-time unit, the struct types its `deftype`s and
@@ -1876,6 +1881,7 @@ impl<'a> Emitter<'a> {
             native_forms: false,
             native_arguments: Default::default(),
             native_temporary: 0,
+            native_invoke_temporary: None,
             struct_targets: Default::default(),
             native_types: Vec::new(),
             registration_chunks: Vec::new(),
@@ -3853,7 +3859,7 @@ impl<'a> Emitter<'a> {
             .push_str("((prepare) => { const invoke = (f, ...a) => prepare(f)(...a); return (");
         self.output.push_str(constructor);
         self.output.push_str("); })(");
-        self.output.push_str(NATIVE_PREPARE_INVOKE);
+        self.native_prepare_invoke();
         self.output.push(')');
         true
     }
@@ -3925,7 +3931,7 @@ impl<'a> Emitter<'a> {
         self.output.push_str("((invoke) => (");
         self.output.push_str(constructor);
         self.output.push_str("))((f, ...a) => ");
-        self.output.push_str(NATIVE_PREPARE_INVOKE);
+        self.native_prepare_invoke();
         self.output.push_str("(f)(...a))");
         true
     }
@@ -7327,6 +7333,19 @@ impl<'a> Emitter<'a> {
         temporary
     }
 
+    /// Keep the callable adapter out of deeply scoped constructor leaves.
+    /// It runs before the arguments, as before, but its function body is
+    /// parsed once at the unit's top level rather than at each call site.
+    fn native_prepare_invoke(&mut self) {
+        debug_assert!(self.native_forms);
+        let temporary = *self.native_invoke_temporary.get_or_insert_with(|| {
+            let temporary = self.native_temporary;
+            self.native_temporary += 1;
+            temporary
+        });
+        write!(self.output, "temporary{temporary}_0").unwrap();
+    }
+
     fn value_expr(&mut self, id: ExprId) {
         self.used.insert(id);
         if let Some((head, operand)) = self.substitute
@@ -8402,7 +8421,7 @@ impl<'a> Emitter<'a> {
                     && specialized.is_none()
                     && !matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_))
                 {
-                    self.output.push_str(NATIVE_PREPARE_INVOKE);
+                    self.native_prepare_invoke();
                     self.output.push('(');
                     self.value(*callee);
                     self.output.push_str(")(");

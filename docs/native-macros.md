@@ -174,7 +174,9 @@ Native macro emission now writes constructor trees of three or more levels
 as shallow statements with one temporary operand array per tree. Consumed
 operand slots are reused and their references released, so the number of
 tree nodes does not consume the engine's local-binding limit. The array
-uses the ordinary accounted heap. Explicit worklists preserve
+uses the ordinary accounted heap. The callable adapter is declared once
+at the unit's top level, keeping its generated function bodies out of
+deeply scoped leaves. Explicit worklists preserve
 left-to-right evaluation of every occurrence; branches and function bodies
 keep their original evaluation sites. These units then use the existing
 shared-factory compilation boundary, on its 2 MiB helper stack. Parser
