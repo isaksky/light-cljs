@@ -617,7 +617,18 @@ const native = (() => {
       return s===null?invoke(f):reduceSeq(f,__rt.cljFirst(s),__rt.cljRest(s));},
     transduce,
     completing:(...a)=>a.length===1||a.length===2?reducing(a[0],(result,x)=>invoke(a[0],result,x),a.length===1?result=>result:result=>invoke(a[1],result)):arity(a.length),
-    into:(...a)=>a.length===0?__rt.formVector():a.length===1?a[0]:a.length===2?reduceSeq(intoReducer,a[0],a[1]):a.length===3?transduce(a[1],intoReducer,a[0],a[2]):arity(a.length),
+    into:(...a)=>{
+      if (a.length === 0) return __rt.formVector();
+      if (a.length === 1) return a[0];
+      if (a.length === 2) return reduceSeq(intoReducer, a[0], a[1]);
+      if (a.length !== 3) return arity(a.length);
+      // Legacy editable targets use a step/completion adapter. Other targets
+      // receive conj itself, whose initialization and variadic arities a
+      // custom transducer may call even though transduce has an explicit init.
+      const kind = __rt.formKind(val(a[0]));
+      const rf = kind === 'vector' || kind === 'map' || kind === 'set' ? intoReducer : core.conj;
+      return transduce(a[1], rf, a[0], a[2]);
+    },
     every:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s))if(!truth(invoke(f,__rt.cljFirst(s))))return false;return true;},
     some:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s)){const v=invoke(f,__rt.cljFirst(s));if(truth(v))return v;}return null;},
     notEvery:(f,c)=>!core.every(f,c), notAny:(f,c)=>!truth(core.some(f,c)),

@@ -2546,6 +2546,196 @@ fn native_transducer_call_shapes_match_legacy() {
         );
         assert_native_matches_legacy(&source, &format!("{expected}\n"));
     }
+
+    // Editable targets supply an adapter with step/completion arities only;
+    // noneditable targets supply conj, including its initialization and
+    // variadic arities. A transducer may inspect those arities itself.
+    for (target, empty, input, result, variadic, editable) in [
+        ("[]", "[]", "[1 2]", "[1 2]", "", true),
+        ("'(9)", "(9)", "[1 2]", "(2 1 9)", "(2 2 1 1 9)", false),
+        ("'()", "()", "[1 2]", "(2 1)", "(2 2 1 1)", false),
+        ("nil", "nil", "[1 2]", "(2 1)", "(2 2 1 1)", false),
+        ("{:a 1}", "{:a 1}", "[[:b 2]]", "{:a 1, :b 2}", "", true),
+        (
+            "(array-map :a 1)",
+            "{:a 1}",
+            "[[:b 2]]",
+            "{:a 1, :b 2}",
+            "",
+            true,
+        ),
+        ("#{1}", "#{1}", "[1 2]", "#{1 2}", "", true),
+    ] {
+        let metadata = if target == "nil" {
+            "nil".to_owned()
+        } else {
+            format!("(meta (into (with-meta {target} {{:tag :kept}}) (map identity) {input}))")
+        };
+        let source = format!(
+            r#"(defmacro m []
+                 (let [log (js/Array.)
+                       init (fn [rf]
+                              (.push log (try (empty? (rf)) (catch :default e (.-message e))))
+                              (fn ([r] (.push log (try (empty? (rf)) (catch :default e (.-message e)))) (rf r))
+                                  ([r x] (rf r x))))
+                       run (fn [i c] (i {target} init c))
+                       result [(run into {input}) (run into []) (run into nil)]
+                       initialized (try (into {target} (fn [rf] (rf) rf) {input})
+                                        (catch :default e (.-message e)))
+                       variadic (try (into {target}
+                                           (fn [rf] (fn ([r] (rf r)) ([r x] (rf r x x))))
+                                           {input})
+                                     (catch :default e (.-message e)))
+                       metadata {metadata}]
+                   (list 'quote [result (vec log) initialized variadic metadata])))
+               (js/console.log (pr-str (m)))"#
+        );
+        let init = if editable {
+            "\"Invalid arity: 0\""
+        } else {
+            "true"
+        };
+        let initialized = if editable { init } else { result };
+        let variadic = if editable {
+            "\"Invalid arity: 3\""
+        } else {
+            variadic
+        };
+        let metadata = if target == "nil" {
+            "nil"
+        } else {
+            "{:tag :kept}"
+        };
+        let expected = format!(
+            "[[{result} {empty} {empty}] [{}] {initialized} {variadic} {metadata}]\n",
+            [init; 6].join(" ")
+        );
+        // Check the table against the oracle before exercising native code.
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            program_output(&light_cljs::compile(&source).unwrap()),
+            expected
+        );
+        assert_native_matches_legacy(&source, &expected);
+    }
+
+    // Sorted native forms are outside the delivered collection boundary.
+    // Establish their noneditable reducer contract against QuickJS as well,
+    // and retain an explicit native error rather than substituting hash forms.
+    for (target, input, expected, operation) in [
+        (
+            "(sorted-map :a 1)",
+            "[[:b 2]]",
+            "[{:a 1, :b 2} {:a 1} {:a 1}]\n",
+            "sortedMap",
+        ),
+        (
+            "(sorted-set 1)",
+            "[2 1]",
+            "[#{1 2} #{1} #{1}]\n",
+            "sortedSet",
+        ),
+    ] {
+        let source = format!(
+            "(defmacro m [] (list 'quote \
+             [(into {target} (fn [rf] (rf) rf) {input}) \
+              (into {target} (fn [rf] (rf) rf) []) \
+              (into {target} (fn [rf] (rf) rf) nil)])) \
+             (js/console.log (pr-str (m)))"
+        );
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            program_output(&light_cljs::compile(&source).unwrap()),
+            expected
+        );
+        #[cfg(not(feature = "quickjs"))]
+        let _ = expected;
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let error = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!(
+                "unsupported operation: native macro runtime core.{operation}"
+            )),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn native_transducer_helpers_publish_and_resume_without_replay() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/transducers");
+    let expected = concat!(
+        "[[1 1 2 3 :done] [2 2 1 :done] [:done] [[1 2] [2 1]] ",
+        "\"input1,input1,input2,before-step,3,after-step,out1,out1,input3,out2,out3,before-flush,3,after-flush,before-done,after-done,",
+        "input2,before-step,3,after-step,input2,before-step,3,after-step,input1,out2,out2,out1,before-done,after-done,before-done,after-done\"] ",
+        "[[2 1 1 2 :done] [2 2 1 :done] [:done] [[1 2] [2 1]] ",
+        "\"input2,before-step,3,after-step,input1,out2,input1,input2,before-step,3,after-step,out1,out1,out2,before-done,after-done,",
+        "input2,before-step,3,after-step,input2,before-step,3,after-step,input1,out2,out2,out1,before-done,after-done,before-done,after-done\"]\n"
+    );
+    let mut reference = None;
+    for jobs in [1, 2, 4] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut stats = light_cljs::CompileStats::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "transducers.app",
+            std::slice::from_ref(&root),
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                #[cfg(debug_assertions)]
+                perturbation: Some(light_cljs::scheduler::Perturbation {
+                    seed: 1,
+                    fixed: true,
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        admitted_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("jobs {jobs}: {error}"));
+        let js = emit_js(&program);
+        assert_eq!(program_output(&js), expected, "jobs {jobs}");
+        assert_eq!(stats.native_helpers.compiled, 4, "jobs {jobs}");
+        assert_eq!(stats.native_helpers.published, 4, "jobs {jobs}");
+        assert_eq!(stats.native_helpers.per_task, 0, "jobs {jobs}");
+        // These are actual saved-VM dependency waits, even at one slot.
+        assert!(
+            stats.native_helpers.waits >= 4,
+            "jobs {jobs}: {:?}",
+            stats.native_helpers
+        );
+        if let Some(reference) = &reference {
+            assert_eq!(&js, reference, "jobs {jobs}");
+        } else {
+            reference = Some(js);
+        }
+    }
+    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+    {
+        let program = light_cljs::compiler::analyze_namespace_entry(
+            "transducers.app",
+            std::slice::from_ref(&root),
+            &mut MacroHost::new(),
+            Default::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let js = emit_js(&program);
+        assert_eq!(program_output(&js), expected);
+        assert_eq!(Some(js), reference);
+    }
 }
 
 #[test]
