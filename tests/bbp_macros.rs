@@ -552,6 +552,87 @@ fn demands_a_real_helper_without_replaying_the_macro() {
 }
 
 #[test]
+fn source_macros_expand_inside_on_demand_helpers() {
+    for source in [
+        "(defmacro one [] 1) (def v (one)) (defmacro read-v [] v) (js/console.log (read-v))",
+        "(defmacro one [] 1) (defn f [] (one)) (defmacro call-f [] (f)) (js/console.log (call-f))",
+    ] {
+        assert_native_matches_legacy(source, "1\n");
+    }
+}
+
+#[test]
+fn nested_helper_macros_keep_generations_and_execute_effects_once() {
+    assert_native_matches_legacy(
+        "(def effects (atom [])) \
+         (defmacro one [] (swap! effects conj :one) 1) \
+         (def a (one)) (defn f [] (one)) \
+         (defmacro old [] [(f) a]) (def b (old)) \
+         (defmacro one [] (swap! effects conj :new) 9) \
+         (def c (one)) \
+         (defmacro read-all [] (list 'quote [a b c @effects])) \
+         (js/console.log (pr-str (read-all)))",
+        "[1 [1 1] 9 [:one :one :new]]\n",
+    );
+}
+
+// FRONTIER_REPLAY from the compiler macro suite, with its result printed.
+const HELPER_FRONTIER: &str = "(defprotocol P (p [x])) (defprotocol Q (q [x])) (deftype T []) (extend-type T P (p [_] 1)) \
+     (extend-type T Q (q [_] 10)) (defmacro snapshot [] [(p (T.)) (q (T.))]) (def earlier (snapshot)) \
+     (extend-type T P (p [_] 2)) (defmacro warm [] (q (T.)) (p (T.)) nil) (warm) \
+     (defmacro read-earlier [] earlier) \
+     (js/console.log (pr-str [(read-earlier) (snapshot) (p (T.)) (q (T.))]))";
+
+#[test]
+fn on_demand_helper_macros_match_legacy_at_one_and_two_slots() {
+    let root = temp_dir::TempDir::new("native-nested-macros");
+    for (source, expected) in [
+        (
+            "(defmacro one [] 1) \
+             (def v (one)) (defn f [] (one)) \
+             (defmacro read-v [] v) (defmacro call-f [] (f)) \
+             (def a (read-v)) (def b (call-f)) \
+             (js/console.log a b)",
+            "1 1\n",
+        ),
+        (HELPER_FRONTIER, "[[1 10] [2 10] 2 10]\n"),
+    ] {
+        std::fs::write(root.join("app.cljs"), format!("(ns app) {source}")).unwrap();
+        let mut outputs = Vec::new();
+        for jobs in [1, 2] {
+            for native in [true, false] {
+                let mut host = MacroHost::new();
+                if native {
+                    host.use_native_macros();
+                }
+                let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+                    "app",
+                    &[root.path().to_path_buf()],
+                    &mut host,
+                    Default::default(),
+                    &mut Vec::new(),
+                    light_cljs::compiler::EntryRecorders {
+                        slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|error| panic!("jobs {jobs}, native {native}: {error}"));
+                let js = emit_js(&program);
+                assert_eq!(
+                    program_output(&js),
+                    expected,
+                    "jobs {jobs}, native {native}"
+                );
+                outputs.push(js);
+            }
+        }
+        for output in &outputs[1..] {
+            assert_eq!(output, &outputs[0]);
+        }
+    }
+}
+
+#[test]
 fn cached_forms_still_obey_conversion_limits() {
     use light_cljs::{
         bbp_evaluator::BbpEvaluator,
@@ -1271,15 +1352,9 @@ const PROTOCOL_FIXTURES: &[(&str, &str)] = &[
         "[([:a 1] [:b 2]) {:b 2} true {:x 1} 4 true (:a :b) (1 2) true true true]\n",
     ),
     // The protocol-extension frontier: an expansion before a later
-    // extension sees the earlier one (`FRONTIER_REPLAY` in the compiler
-    // macro suite, without its macro-expanding helper).
-    (
-        "(defprotocol P (p [x])) (defprotocol Q (q [x])) (deftype T []) (extend-type T P (p [_] 1)) \
-         (extend-type T Q (q [_] 10)) (defmacro snapshot [] [(p (T.)) (q (T.))]) (def before (snapshot)) \
-         (extend-type T P (p [_] 2)) (defmacro warm [] (q (T.)) (p (T.)) nil) (warm) \
-         (js/console.log (pr-str [before (snapshot) (p (T.)) (q (T.))]))",
-        "[[1 10] [2 10] 2 10]\n",
-    ),
+    // extension sees the earlier one even when a later macro demands a
+    // helper whose analysis expands `snapshot` (`FRONTIER_REPLAY`).
+    (HELPER_FRONTIER, "[[1 10] [2 10] 2 10]\n"),
     // A macro that generates protocol, record and method declarations
     // (`generated_destructured_methods...` in the compiler macro suite).
     (

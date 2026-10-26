@@ -1405,6 +1405,13 @@ pub trait MacroEvaluator {
     }
     fn control(&self) -> ExecutionControl;
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError>;
+    /// Evaluate a source macro's declaration in this evaluator. Native
+    /// tasks retain their own function by code identity, including tasks
+    /// analyzing a helper while the declaring task is suspended. The
+    /// returned handle stays owned by the evaluator, not the caller.
+    fn source_macro_function(&self, _identity: usize, source: &str) -> Result<ValueId, EvalError> {
+        self.evaluate_unit(source)
+    }
     fn register_compiler_root(
         &self,
         name: &str,

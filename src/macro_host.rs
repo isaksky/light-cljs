@@ -704,6 +704,8 @@ pub(crate) struct EngineBinding {
     /// source macros declared in the coordinator's engine are evaluated
     /// again, once each, into `foreign_macros`, by the identity of their
     /// code (docs/compiler-concurrency.md, "As built (light-cljs-339)").
+    /// Native tasks keep these functions in their own task context instead,
+    /// including the separate tasks analyzing helpers on demand.
     pub(crate) foreign: bool,
     pub(crate) foreign_macros:
         std::rc::Rc<std::cell::RefCell<HashMap<usize, crate::evaluator::ValueId>>>,

@@ -3143,12 +3143,11 @@ impl WorkerView {
             .native_shell()
     }
     /// Take what the view that parked the task context it now runs on knew
-    /// about that task: the registrations installed in it, the source macros
-    /// evaluated in it and the reader declarations sent to it.
+    /// about that task: the registrations installed in it and the reader
+    /// declarations sent to it. Its macro functions stay in the context.
     #[cfg(feature = "bbp-macros")]
     fn load_context(&self, state: crate::bbp_evaluator::LentState) {
         self.installed.set(state.installed);
-        *self.host.engine.foreign_macros.borrow_mut() = state.foreign_macros;
         *self.host.engine.reader_declared.borrow_mut() = state.reader_declared;
         // Another thread may have put this heap's `gensym` in a scope since.
         crate::generated_names::forget_installed_scopes();
@@ -3165,7 +3164,6 @@ impl WorkerView {
         };
         let state = crate::bbp_evaluator::LentState {
             installed: self.installed.get(),
-            foreign_macros: std::mem::take(&mut *self.host.engine.foreign_macros.borrow_mut()),
             reader_declared: std::mem::take(&mut *self.host.engine.reader_declared.borrow_mut()),
         };
         shell.park(state);

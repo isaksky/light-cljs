@@ -228,6 +228,57 @@ fn a_parked_context_is_borrowed_with_its_view_state_and_handles() {
     shared.clear_idle();
 }
 
+#[test]
+fn macro_declarations_keep_task_state_across_collection_and_lending() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let parent = shared.evaluator().unwrap();
+    const DECLARATION: &str = "rt => { globalThis.declarations = (globalThis.declarations || 0) + 1; let calls = 0; return () => ++calls; }";
+    let function = parent.source_macro_function(7, DECLARATION).unwrap();
+    assert_eq!(
+        parent.source_macro_function(7, DECLARATION).unwrap(),
+        function
+    );
+    let call = |evaluator: &BbpEvaluator, function| {
+        let value = evaluator.call(function, &[]).unwrap();
+        let result = match evaluator.cx().unwrap().values.borrow()[&value.index].view() {
+            ValueView::Number(n) => n,
+            other => panic!("macro result: {other:?}"),
+        };
+        evaluator.release(value).unwrap();
+        result
+    };
+    assert_eq!(call(&parent, function), 1.0);
+    let child = parent
+        .spawn_producer(&parent.cx().unwrap(), None, |_| {})
+        .unwrap();
+    let child_function = child.source_macro_function(7, DECLARATION).unwrap();
+    assert_ne!(child_function, function);
+    assert!(
+        child
+            .call(function, &[])
+            .unwrap_err()
+            .0
+            .contains("invalid value handle")
+    );
+    assert_eq!(call(&child, child_function), 1.0);
+    assert_eq!(call(&parent, function), 2.0);
+    drop(child);
+    shared.0.runtime.collect().unwrap();
+    assert!(parent.park(LentState::default()));
+    std::thread::spawn(move || {
+        let (borrowed, state) = shared.lent_evaluator().unwrap();
+        assert!(state.is_some());
+        assert_eq!(
+            borrowed.source_macro_function(7, DECLARATION).unwrap(),
+            function
+        );
+        assert_eq!(numeric_global(&borrowed, "declarations"), 1.0);
+        assert_eq!(call(&borrowed, function), 3.0);
+    })
+    .join()
+    .unwrap();
+}
+
 fn churn(iterations: usize) -> String {
     format!(
         "rt => {{ let kept = null; for (let i = 0; i < {iterations}; i++) {{ kept = [i, {{v: i}}]; }} return kept[0]; }}"

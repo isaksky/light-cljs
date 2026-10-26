@@ -822,6 +822,17 @@ impl CompiledMacro {
         engine: &dyn crate::evaluator::MacroEvaluator,
         binding: &crate::macro_host::EngineBinding,
     ) -> Result<ValueId, String> {
+        if engine.native_bridge_stats().is_some() {
+            // A helper's analysis runs in a fresh native task, even on the
+            // coordinator. Only its declaring task may use the ready handle;
+            // every other task materializes the declaration from its code.
+            if let MacroFunction::Ready(function, _) = &self.function
+                && function.id.session as usize == engine.heap()
+            {
+                return Ok(function.id);
+            }
+            return self.foreign_function(engine, binding);
+        }
         if binding.foreign {
             return self.foreign_function(engine, binding);
         }
@@ -865,7 +876,8 @@ impl CompiledMacro {
                 installed.lock().expect("installed macro").identity.0
             }
         };
-        if let Some(&function) = binding.foreign_macros.borrow().get(&key) {
+        let native = engine.native_bridge_stats().is_some();
+        if !native && let Some(&function) = binding.foreign_macros.borrow().get(&key) {
             return Ok(function);
         }
         let parts;
@@ -878,13 +890,13 @@ impl CompiledMacro {
             MacroFunction::Ready(_, None) => unreachable!("bootstrap macros returned above"),
         };
         crate::reader_registration::register(engine, tables).map_err(|e| e.to_string())?;
+        let source = format!("rt => rt.core.macroReaderFunction(({})(rt))", unit);
         let function = engine
-            .evaluate_unit(&format!(
-                "rt => rt.core.macroReaderFunction(({})(rt))",
-                unit
-            ))
+            .source_macro_function(key, &source)
             .map_err(|e| e.to_string())?;
-        binding.foreign_macros.borrow_mut().insert(key, function);
+        if !native {
+            binding.foreign_macros.borrow_mut().insert(key, function);
+        }
         Ok(function)
     }
     /// The `defmacro` form's place.

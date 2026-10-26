@@ -735,6 +735,10 @@ pub(crate) struct TaskContext {
     session: u64,
     next: Cell<u64>,
     values: RefCell<HashMap<u64, Rooted>>,
+    /// Source macro declarations materialized in this task, keyed by code
+    /// identity. A producer cannot use its parked parent's function handles;
+    /// this cache also travels with a context borrowed by another pool slot.
+    macro_functions: RefCell<HashMap<usize, ValueId>>,
     /// This task's handle on its `globalThis.__lightNativeRuntime`, which
     /// shared unit factories are called with; made on first use.
     native_runtime: Cell<Option<ValueId>>,
@@ -754,13 +758,12 @@ const _: () = {
     send::<TaskContext>();
 };
 /// What a worker view knows about the task it borrowed: how many catalog
-/// registrations it installed, the source macros it evaluated in it by code
-/// identity (`EngineBinding::foreign_macros`) and the reader declarations
-/// it sent (`EngineBinding::reader_declared`).
+/// registrations it installed and the reader declarations it sent
+/// (`EngineBinding::reader_declared`). Source macro functions belong to the
+/// context itself, including those a helper's producer task materializes.
 #[derive(Default)]
 pub(crate) struct LentState {
     pub(crate) installed: usize,
-    pub(crate) foreign_macros: HashMap<usize, ValueId>,
     pub(crate) reader_declared: HashMap<String, (usize, usize)>,
 }
 /// A compile-time engine on a [`BbpRuntime`]: the services of the thread
@@ -835,6 +838,7 @@ impl BbpEvaluator {
             session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             next: Cell::new(1),
             values: RefCell::new(HashMap::new()),
+            macro_functions: RefCell::new(HashMap::new()),
             native_runtime: Cell::new(None),
             catalog: Cell::new(None),
             prepared: Cell::new(false),
@@ -1790,6 +1794,15 @@ impl MacroEvaluator for BbpEvaluator {
             .units_evaluated
             .fetch_add(1, Ordering::Relaxed);
         self.evaluate(&format!("({source})(globalThis.__lightNativeRuntime)"))
+    }
+    fn source_macro_function(&self, identity: usize, source: &str) -> Result<ValueId, EvalError> {
+        let cx = self.cx()?;
+        if let Some(&function) = cx.macro_functions.borrow().get(&identity) {
+            return Ok(function);
+        }
+        let function = self.evaluate_unit(source)?;
+        cx.macro_functions.borrow_mut().insert(identity, function);
+        Ok(function)
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
         self.check(function)?;

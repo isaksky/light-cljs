@@ -327,10 +327,11 @@ are one native map kind, so extending either extends every map), variadic
 protocol methods, `map->R` of a record with mutable fields, `getBasis` and
 other properties of a struct type, and a macro returning a struct (export fails
 with an explicit error). User core-protocol implementations are
-light-cljs-497. A helper analyzed on demand that itself expands
-a macro fails with `invalid value handle`, independently of protocols (also on
-master before this work; light-cljs-500), which is why the frontier test above
-evaluates its earlier expansion at top level.
+light-cljs-497. A helper analyzed on demand can itself expand source macros:
+its analysis task materializes each macro declaration once from its emitted
+code, with its own function handles and the helper's declaration frontier.
+Macro bodies run only for their source occurrences; a parked consumer's
+effects are not replayed.
 
 ### Lazy sequences
 
