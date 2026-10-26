@@ -97,7 +97,46 @@ unsupported. The source macro table compares these collection kinds, callback
 effects, errors, identity and early termination against QuickJS. A reduced
 rumext property-filter fixture demands cold helpers at one, two and four
 slots, retaining every callback effect exactly once. Penpot's next small
-predicate gaps, `qualified-keyword?` and `true?`, are also provided natively.
+service gaps, `qualified-keyword?`, `true?` and `vary-meta`, are also provided
+natively.
+
+At `bcb71d3d`, rebased on `d469a30b`, the native-only debug compiler was rebuilt
+on macOS arm64 with Homebrew Rust/Cargo 1.99.1. Both Penpot entries were rerun
+with the five absolute read-only roots, `--jobs 1 --no-cache` and every budget
+from the reproduction below. Both pass the former `core.reduceKv` boundary
+and the three small core services above, then exit 1 with this exact first
+diagnostic, identical for `--entry app.render` and `--entry app.main`:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:893:4: macro expansion: while expanding fnc: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:893:4: macro rumext.v2/fnc: big-boy-pants-js: TypeError: undefined is not a function; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:320:1 (bytes 27920..28218)
+```
+
+A temporary stack diagnostic, removed after the probe, locates the failing
+call in the demanded `rumext.v2.compiler/compile` helper: its `binding` of
+`*handlers*` calls the absent native `globalThis.__lightSaveCompilerBinding`
+before installing the new value. This is a compiler binding-service gap,
+separate from core collection operations, tracked by light-cljs-520. Its
+four-form reduced reproduction also fails natively, while the QuickJS host
+compiles it and Node prints `{:bound true}`. Neither entry completes, and
+`research/` was left untouched.
+
+The native integration suites pass 77 macro, ten reader and two Proxy tests;
+37 native evaluator unit tests also pass. All 2,124 engine tests and seven
+doctests pass. The final `bbp-macros,quickjs` run passes all 333 compiler unit,
+79 macro, ten reader and two Proxy tests (one unrelated unit test is ignored).
+Strict engine Clippy retains the nine documented baseline diagnostics;
+allowing only those categories passes for the engine and the native compiler,
+CLI and integration-test targets. Both format checks and the Node runtime
+suite pass. A broader native-only
+compiler unit run passes 258 tests and fails 27 tests requiring legacy
+bootstrap, compiler services or QuickJS readers. Restoring the original
+`a8edeeb5` production sources temporarily reproduces all 27 failure signatures
+under the same toolchain and feature flags (ignoring only thread/source IDs).
+Those sources were restored to the implementation before further validation.
+The QuickJS compiler integration target cannot build in this worktree: eight
+`include_str!` inputs require the absent `research/clojurescript` checkout.
+No research symlink was created, and the unavailable default V8 suite remains
+the orchestrator's check.
 
 ### Printing and namespace services (light-cljs-513)
 
