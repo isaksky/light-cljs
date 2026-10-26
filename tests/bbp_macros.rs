@@ -1475,3 +1475,121 @@ fn record_helpers_publish_once_at_one_and_two_slots() {
         assert!(stats.native_helpers.published >= 2, "jobs {jobs}");
     }
 }
+
+/// What a native namespace build at some slots produced: its JavaScript or
+/// error, its source mappings at two optimization levels, its warnings and
+/// the actual helper factories it compiled.
+#[cfg(debug_assertions)]
+#[derive(Debug, PartialEq)]
+struct NativeBuild {
+    output: Result<String, String>,
+    mapped: Vec<(String, light_cljs::source_map::SourceMapping)>,
+    warnings: Vec<(String, String, usize, std::ops::Range<usize>)>,
+    compiled: usize,
+}
+
+#[cfg(debug_assertions)]
+fn native_build(
+    entry: &str,
+    slots: usize,
+    perturbation: Option<light_cljs::scheduler::Perturbation>,
+) -> (NativeBuild, light_cljs::compile_stats::NativeHelperCounts) {
+    use light_cljs::application::{ApplicationOptions, OptimizationLevel};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/pool");
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let mut stats = light_cljs::CompileStats::new();
+    let mut warnings = Vec::new();
+    let analyzed = light_cljs::compiler::analyze_namespace_entry_recorded(
+        entry,
+        std::slice::from_ref(&root),
+        &mut host,
+        Default::default(),
+        &mut warnings,
+        light_cljs::compiler::EntryRecorders {
+            slots: light_cljs::scheduler::Slots::new(slots).unwrap(),
+            stats: Some(&mut stats),
+            perturbation,
+            ..Default::default()
+        },
+    );
+    let mapped = analyzed.as_ref().map_or_else(
+        |_| Vec::new(),
+        |(program, _)| {
+            [OptimizationLevel::None, OptimizationLevel::Prepare]
+                .into_iter()
+                .map(|optimize| {
+                    light_cljs::prepare_application(
+                        program,
+                        ApplicationOptions {
+                            optimize,
+                            ..Default::default()
+                        },
+                    )
+                    .emit_js_mapped()
+                })
+                .collect()
+        },
+    );
+    let build = NativeBuild {
+        output: analyzed
+            .map(|(program, _)| emit_js(&program))
+            .map_err(|error| error.to_string()),
+        mapped,
+        warnings: warnings
+            .into_iter()
+            .map(|w| (w.kind.to_owned(), w.message, w.source_index, w.span))
+            .collect(),
+        compiled: stats.native_helpers.compiled,
+    };
+    (build, stats.native_helpers)
+}
+
+/// Native namespace builds at one, two, four and eight slots under the
+/// scheduler's seeded perturbation (randomized job-boundary delays, batches
+/// and steal victims, fixed assignments, one-job admission) match the
+/// unperturbed one-slot build: JavaScript or error, source maps, warnings
+/// and compiled helper factories. Seed 1, or 1 to `LIGHT_CLJS_STRESS_SEEDS`
+/// (12 for the acceptance stress, about 110 s in a debug build).
+#[cfg(debug_assertions)]
+#[test]
+fn native_pool_builds_match_one_slot_under_seeded_scheduling_stress() {
+    use light_cljs::scheduler::{Limits, Perturbation};
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(1u64);
+    for entry in ["stress.app", "demand.app", "demand.failure"] {
+        let (reference, serial) = native_build(entry, 1, None);
+        if entry != "demand.failure" {
+            let js = reference.output.as_ref().unwrap();
+            assert!(!program_output(js).is_empty(), "{entry}");
+        }
+        for seed in 1..=seeds {
+            for slots in [1, 2, 4, 8] {
+                for mode in 0..3 {
+                    let perturbation = Perturbation {
+                        seed,
+                        fixed: mode == 1,
+                        limits: (mode == 2).then(|| Limits {
+                            batch_jobs: 1,
+                            admitted_jobs: 1,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    };
+                    let (build, counts) = native_build(entry, slots, Some(perturbation));
+                    assert_eq!(
+                        build, reference,
+                        "{entry}: seed {seed}, {slots} slots, mode {mode}"
+                    );
+                    // Each helper factory is compiled once per build; its
+                    // per-task initializations still grow with the tasks
+                    // that consume it until helper values publish.
+                    assert_eq!(counts.compiled, serial.compiled);
+                }
+            }
+        }
+    }
+}

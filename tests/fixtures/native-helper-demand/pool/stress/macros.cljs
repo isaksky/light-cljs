@@ -1,0 +1,6 @@
+(ns stress.macros)
+(defn twice [x] (list '+ x x))
+(defn wrap [tag x] (list 'str tag x))
+(defmacro double [x] (twice x))
+(defmacro tagged [tag x] (wrap tag (twice x)))
+(defmacro pair [a b] [(twice a) (twice b)])

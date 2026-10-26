@@ -1,0 +1,8 @@
+(ns stress.b (:require [stress.macros :refer [double tagged pair]]))
+(defn f1 [] (double 10))
+(defn f2 [] (tagged "b" 20))
+(defn grow [x] (list 'vector (list 'stress.b/f1) x))
+(defmacro local [x] (grow x))
+(defn f3 [] (local (pair 30 40)))
+(defn f4 [] (+ (f1) (double 50)))
+(defn f5 [] (str (f2) (f4)))
