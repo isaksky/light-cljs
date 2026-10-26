@@ -632,12 +632,26 @@ impl BbpRuntime {
             .name("bbp-unit-compiler".into())
             .stack_size(2 * 1024 * 1024)
             .spawn(move || {
-                big_boy_pants_js::frontend::compile_script_with(
-                    "<eval>",
-                    &text,
-                    big_boy_pants_js::frontend::ScriptOptions::SLOPPY,
-                )
-                .ok()
+                use big_boy_pants_js::frontend::{self, ScriptOptions, ast};
+                // Only a function literal: evaluating it runs no code, so
+                // the factory a fresh task makes is the one any task would.
+                // Another expression may read the evaluating task's state.
+                let literal =
+                    frontend::parse_script_with(&text, ScriptOptions::SLOPPY).is_ok_and(|script| {
+                        matches!(
+                            script.body.as_slice(),
+                            [ast::Stmt {
+                                kind: ast::StmtKind::Expr(ast::Expr {
+                                    kind: ast::ExprKind::Function(_),
+                                    ..
+                                }),
+                                ..
+                            }]
+                        )
+                    });
+                literal
+                    .then(|| frontend::compile_script_with("<eval>", &text, ScriptOptions::SLOPPY))
+                    .and_then(Result::ok)
             })
             .map_err(error)?
             .join()
@@ -687,6 +701,10 @@ pub(crate) struct TaskContext {
     /// This task's handle on its `globalThis.__lightNativeRuntime`, which
     /// shared unit factories are called with; made on first use.
     native_runtime: Cell<Option<ValueId>>,
+    /// For a producer task, the catalog registrations it holds
+    /// ([`MacroEvaluator::catalog_cursor`]): its parent's replayed ones and
+    /// those a worker view installed in it since.
+    catalog: Cell<Option<usize>>,
     /// Whether a worker view prepared it (its settings and service stubs
     /// evaluated), which a view that borrows it then does not repeat.
     prepared: Cell<bool>,
@@ -780,6 +798,7 @@ impl BbpEvaluator {
             next: Cell::new(1),
             values: RefCell::new(HashMap::new()),
             native_runtime: Cell::new(None),
+            catalog: Cell::new(None),
             prepared: Cell::new(false),
             lent: RefCell::new(LentState::default()),
         }));
@@ -800,6 +819,11 @@ impl BbpEvaluator {
             .borrow()
             .clone()
             .ok_or_else(|| error("the evaluator has no task context"))
+    }
+    /// How many registrations its task holds.
+    #[cfg(test)]
+    pub(crate) fn registration_count(&self) -> usize {
+        self.cx().unwrap().registrations.borrow().len()
     }
     /// Whether it has a task context: a pool slot's evaluator has none
     /// between jobs once it parked its own ([`Self::park`]).
@@ -1202,6 +1226,7 @@ impl BbpEvaluator {
             active.release(value)?;
         }
         *producer_cx.registrations.borrow_mut() = registrations;
+        producer_cx.catalog.set(cx.catalog.get());
         drop(producer_cx);
         let source = callback(&active, id).map_err(error)?;
         // Only the factory expression runs here. Its initializer runs in each
@@ -1595,6 +1620,14 @@ impl MacroEvaluator for BbpEvaluator {
     }
     fn native_bridge_stats(&self) -> Option<BridgeStats> {
         Some(self.bridge_stats())
+    }
+    fn catalog_cursor(&self) -> Option<usize> {
+        self.context.borrow().as_ref()?.catalog.get()
+    }
+    fn set_catalog_cursor(&self, end: usize) {
+        if let Some(cx) = self.context.borrow().as_ref() {
+            cx.catalog.set(Some(end));
+        }
     }
     fn control(&self) -> ExecutionControl {
         self.control.clone()

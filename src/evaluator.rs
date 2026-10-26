@@ -1424,6 +1424,14 @@ pub trait MacroEvaluator {
         let value = self.evaluate_unit(source)?;
         self.release(value)
     }
+    /// For a native producer task, how many of its catalog's registrations
+    /// it holds, once a worker view installed some in it; `None` before.
+    fn catalog_cursor(&self) -> Option<usize> {
+        None
+    }
+    /// Record that the producer task holds the catalog's first `end`
+    /// registrations ([`Self::catalog_cursor`]).
+    fn set_catalog_cursor(&self, _end: usize) {}
     /// Register `roots` in order, as one [`Self::register_compiler_root`]
     /// each would.
     fn register_compiler_roots(&self, roots: &[CompilerRoot<'_>]) -> Result<(), EvalError> {

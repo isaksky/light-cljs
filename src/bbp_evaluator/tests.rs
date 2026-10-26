@@ -68,6 +68,100 @@ fn a_parked_consumer_is_resumed_from_the_producers_wakeup() {
 }
 
 #[test]
+fn cancelling_a_consumer_whose_woken_step_is_queued_keeps_the_producer_and_peer() {
+    // The first woken step is cancelled after the producer's completion
+    // queued it and before any worker runs it.
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let produced = Arc::new(AtomicUsize::new(0));
+    let cancelled = Arc::new(AtomicUsize::new(0));
+    let consumer = native(
+        "(declare helper) (fn [x] (try (helper x) (finally (js* \"__rt.effect(65534,0)\"))))",
+    );
+    let helper = native(include_str!(
+        "../../tests/fixtures/native-helper-demand/helper.cljs"
+    ));
+    let results = std::thread::scope(|scope| {
+        (0..2)
+            .map(|_| {
+                scope.spawn(|| {
+                    let evaluator = Rc::new(shared.evaluator().unwrap());
+                    evaluator.install_native_runner(Rc::new(|step: NativeStep| step.run()));
+                    let first = cancelled.clone();
+                    let submit: NativeSubmit = Arc::new(move |step: NativeStep, reply| {
+                        if first.fetch_add(1, Ordering::SeqCst) == 0 {
+                            let _cancel = step.task.cancel();
+                        }
+                        std::thread::spawn(move || {
+                            let _ = reply.send(step.run());
+                        });
+                    });
+                    evaluator.install_native_submitter(Rc::new(move || Some(submit.clone())));
+                    let (in_runtime, produced, helper) =
+                        (shared.clone(), produced.clone(), helper.clone());
+                    evaluator
+                        .clone()
+                        .install_compiler_service(
+                            "__lightCompileUnit",
+                            Rc::new(move |_, _| {
+                                produced.fetch_add(1, Ordering::SeqCst);
+                                let deadline =
+                                    std::time::Instant::now() + std::time::Duration::from_secs(5);
+                                while in_runtime.0.parked.lock().unwrap().is_empty() {
+                                    assert!(
+                                        std::time::Instant::now() < deadline,
+                                        "peer did not park"
+                                    );
+                                    std::thread::yield_now();
+                                }
+                                Ok(helper.clone())
+                            }),
+                        )
+                        .unwrap();
+                    evaluator
+                        .register_compiler_root(
+                            "cljs.user/helper",
+                            Some(7),
+                            false,
+                            "helper.cljs:1",
+                            None,
+                        )
+                        .unwrap();
+                    let function = evaluator.evaluate_unit(&consumer).unwrap();
+                    let value = evaluator.evaluate_unit("rt => 40").unwrap();
+                    let result = evaluator.call(function, &[value]);
+                    result.map(|_| ()).map_err(|error| error.to_string())
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(produced.load(Ordering::SeqCst), 1);
+    assert!(cancelled.load(Ordering::SeqCst) >= 1);
+    assert_eq!(
+        results.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "{results:?}"
+    );
+    assert!(
+        results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .all(|e| e.contains("cancelled")),
+        "{results:?}"
+    );
+    assert!(
+        shared.0.control.poll().is_ok(),
+        "consumer cancellation is task-local"
+    );
+    assert_eq!(shared.helper_counts().compiled, 1);
+    // Each consumer's `finally` ran once, the cancelled one's included.
+    assert_eq!(shared.0.counters.cleanups.load(Ordering::Relaxed), 2);
+    assert!(shared.0.parked.lock().unwrap().is_empty());
+}
+
+#[test]
 fn a_parked_context_is_borrowed_with_its_view_state_and_handles() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let (first, state) = shared.lent_evaluator().unwrap();
@@ -1145,6 +1239,31 @@ fn a_unit_source_compiles_once_for_every_task_and_runs_in_each() {
     assert_eq!(counts.units_compiled, 1);
     assert_eq!(counts.units_shared, 3);
     assert_eq!(counts.contexts, 2);
+}
+
+#[test]
+fn a_unit_expression_that_reads_its_task_is_evaluated_by_each_task() {
+    // Not a function literal: making the factory reads the evaluating
+    // task's globals, so no task may get another's.
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let padding = "/* padding */ ".repeat(SHARED_UNIT_BYTES / 10);
+    let source =
+        format!("(() => {{ {padding} const n = globalThis.unitSeed; return rt => n; }})()");
+    for seed in [41.0, 42.0] {
+        let evaluator = shared.evaluator().unwrap();
+        let set = evaluator
+            .evaluate_unit(&format!(
+                "rt => {{ globalThis.unitSeed = {seed}; return null; }}"
+            ))
+            .unwrap();
+        evaluator.release(set).unwrap();
+        let value = evaluator.evaluate_unit(&source).unwrap();
+        assert!(matches!(
+            evaluator.cx().unwrap().values.borrow()[&value.index].view(),
+            ValueView::Number(n) if n == seed
+        ));
+    }
+    assert_eq!(shared.helper_counts().units_compiled, 0);
 }
 
 #[test]

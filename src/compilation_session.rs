@@ -3030,19 +3030,26 @@ impl WorkerView {
         let producer = active.is_some_and(|active| {
             active.native_bridge_stats().is_some() && active.heap() != bootstrap.evaluator.heap()
         });
-        let first = self.installed.get();
+        let engine = active.unwrap_or(bootstrap.evaluator.as_ref());
+        // A producer replayed its parent's registrations, which are the
+        // engine's (`installed`), and keeps its own cursor from there: a
+        // registration is installed in it once, however often it demands.
+        let first = match producer {
+            true => engine.catalog_cursor().unwrap_or(self.installed.get()),
+            false => self.installed.get(),
+        };
         let pending = {
             let c = self.shared.lock();
             if c.registrations.len() == first {
                 return Ok(());
             }
             let pending = c.registrations[first..].to_vec();
-            if !producer {
-                self.installed.set(c.registrations.len());
+            match producer {
+                true => engine.set_catalog_cursor(c.registrations.len()),
+                false => self.installed.set(c.registrations.len()),
             }
             pending
         };
-        let engine = active.unwrap_or(bootstrap.evaluator.as_ref());
         install_registrations(engine, first, &pending, |_| Ok(()))
     }
     /// The view's native evaluator, whose task context it parks between
@@ -5011,6 +5018,54 @@ mod worker_tests {
         });
         // Evaluated again in another engine, not analyzed again.
         assert_eq!(shared.lock().units[id].analyses, analyses);
+    }
+
+    /// A native producer task replays its parent's registrations and then
+    /// takes the rest of the catalog once, however often its helper's
+    /// compilation and analysis ask the view to install
+    /// (`WorkerView::install`); the worker's own cursor stays put.
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn a_native_producer_takes_each_catalog_registration_once() {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        crate::compile_with_macros("(defn f [x] (+ x 1)) (defmacro m [] (f 41)) (m)", &mut host)
+            .unwrap();
+        let session = host.session_handle().unwrap();
+        let shared = session.shared().clone();
+        let total = shared.lock().registrations.len();
+        assert!(total > 0);
+        let environment = host.environment();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let runtime = shared
+                        .native_runtime(environment.evaluator_options())
+                        .unwrap();
+                    let worker: Rc<dyn crate::compiler_evaluator::CompilerEvaluator> =
+                        Rc::new(runtime.evaluator().unwrap());
+                    let view = WorkerView::new(
+                        shared.clone(),
+                        MacroHost::bind(environment.clone(), Some(worker)).unwrap(),
+                    )
+                    .unwrap();
+                    let producer = runtime.evaluator().unwrap();
+                    let held = || producer.registration_count();
+                    let before = held();
+                    view.install(Some(&producer)).unwrap();
+                    assert_eq!(held(), before + total);
+                    assert_eq!(producer.catalog_cursor(), Some(total));
+                    view.install(Some(&producer)).unwrap();
+                    assert_eq!(held(), before + total, "installed twice");
+                    assert_eq!(
+                        view.installed.get(),
+                        0,
+                        "the worker's engine still lacks them"
+                    );
+                })
+                .join()
+                .unwrap();
+        });
     }
 
     #[test]
