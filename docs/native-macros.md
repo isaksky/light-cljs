@@ -290,11 +290,15 @@ is inaccessible in this sandbox.
 
 Cuerdas `interpolate-ffmt` calls `cljs.reader/read-string` on a placeholder's
 numeric suffix, such as `"2"` in `%2`. The reader facade now calls the shared
-bounded parser with native constructors and native inspection. `createReader`
-in `src/js_runtime.js` is the same parser used by legacy engines and emitted
-applications; `src/bbp_reader.js` supplies its native adapters. Only that parser
-unit is embedded in the native task, without loading a legacy runtime or
-calling an evaluator fallback. The source compiler's code reader remains
+bounded parser with native constructors and native inspection. The `reader`
+unit in `src/js_runtime.js` is the parser used by legacy engines and emitted
+applications; `src/bbp_reader.js` supplies its native adapters. Native task
+assembly extracts that parser and adapts its scalar occurrence and callback
+boundaries, checking every source substitution. These adaptations live in
+`src/bbp_evaluator.rs`; the emitted runtime is byte-for-byte identical to
+`d83372e5`, avoiding application size growth. Only the parser unit is embedded
+in the native task, without loading a legacy runtime or calling an evaluator
+fallback. The source compiler's code reader remains
 separate: the facade reads data and rejects code-only syntax.
 
 The native service supports strings and escapes, numbers, characters, names,
@@ -307,8 +311,11 @@ forms keep the legacy macro call-site attribution; supplied EOF values and tag
 results keep their original occurrences and metadata. Invalid metadata targets
 produce catchable reader errors before calling a native intrinsic.
 
-Large reader-created maps and sets retain legacy hash traversal positionally,
-so native traversal and returned compiler forms agree with QuickJS. Fresh maps
+Reader-created maps and sets retain their native persistent storage with a
+reader traversal flag, so native seqs and returned compiler forms agree with
+QuickJS. Persistent updates and metadata copies preserve the flag; hashed
+collections stay hashed after shrinking below the array threshold or to zero,
+and later additions still follow hash traversal. Fresh maps
 and sets exported by the native bridge use `Scope::form_print_items`, sharing
 the existing printer traversal without changing native lookup or the general
 native seq contract. Coverage includes collection thresholds, nil-first hash
@@ -329,7 +336,9 @@ builtin literals.
 Native extension tables also recognize `js/Promise`, so promesa's
 `IPrintWithWriter` extension installs and participates in real dispatch.
 Promise-specific implementations precede object/default fallbacks and use the
-existing declaration frontier and source order. The regression compares
+existing declaration frontier and source order. Promise `Object` methods have
+no native installation path and fail explicitly before modifying any extension
+table. The regression compares
 printing, a user protocol method, `satisfies?` and `implements?` with QuickJS;
 other foreign constructors retain their explicit unsupported boundary.
 
@@ -338,10 +347,16 @@ exact emitted string units, compiler expression source positions, options,
 custom and callable tags, reader conditionals' rejection, limits and errors.
 Its source fixtures cover the actual reader facade and a callback that demands
 a helper at jobs 1/2/4, observing its before/after effects exactly once. A reduced
-Cuerdas fixture retains `concat`, `interpolate-ffmt` and `ffmt` verbatim, with
+Cuerdas fixture (BSD-2-Clause, `funcool/cuerdas` 2026.415, recorded in
+`THIRD_PARTY_NOTICES.md`) retains `concat`, `interpolate-ffmt` and `ffmt` verbatim, with
 the existing string-repeat reduction; indexed, sequential and escaped-percent
 formats match QuickJS. Separate tests preserve supplied occurrence identity
-and check the unsupported literal boundaries.
+and check the unsupported literal boundaries. The differential table also
+covers shrinking hash collections, nil `merge` arguments, record callback
+lookup/metadata/identity, occurrence-wrapped four-argument EOF flags, chunked
+CR/LF lines, close errors, timestamp fields/milliseconds, and tag/default
+registration return values and effects. The facade fixture checks nil, empty
+and EOF-only option maps for both string and stream reading.
 
 At `f5b0d139`, based on `d83372e5` including landed light-cljs-514, both Penpot
 entries were rebuilt and run natively with the five absolute read-only source roots,

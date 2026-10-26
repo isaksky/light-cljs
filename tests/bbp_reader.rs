@@ -95,6 +95,19 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
             r###"(let [m (compiler-reader-read-string "{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 nil 10}") s (compiler-reader-read-string "#{:a :b :c :d :e :f :g :h :i nil}")] [(vec m) (vec s) (assoc m :new 11) (disj s :a) (conj s :new)])"###,
         ),
         (
+            "hash collections keep traversal after shrinking",
+            r###"(let [m (assoc (dissoc (compiler-reader-read-string "{1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9}") 7 8 9) 0 0)
+                      s (conj (disj (compiler-reader-read-string "#{1 2 3 4 5 6 7 8 9}") 7 8 9) 0)]
+                  [(pr-str m) (vec m) (vec (keys m)) (pr-str s) (vec s)
+                   (assoc (with-meta m {:updated true}) 10 10)
+                   (assoc (apply dissoc m (keys m)) 0 0 1 1)] )"###,
+        ),
+        (
+            "nil map merge arguments",
+            r###"[(merge {:a 1} nil) (merge nil {:a 1} nil) (merge nil nil)
+                  (merge {:a 1} nil {:b 2})]"###,
+        ),
+        (
             "tag result traversal",
             r###"[(compiler-reader-read-string {:readers {'x set}} "#x [:a :b :c :d :e :f :g :h :i nil]") (compiler-reader-read-string {:readers {'x (fn [x] (into {} x))}} "#x [[:a 1] [:b 2] [:c 3] [:d 4] [:e 5] [:f 6] [:g 7] [:h 8] [:i 9] [nil 10]]")]"###,
         ),
@@ -109,6 +122,15 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
         (
             "custom tags",
             r###"(compiler-reader-read-string {:readers {'pair (fn [x] (with-meta [x x] {:tagged true}))}} "#pair [1 2]")"###,
+        ),
+        (
+            "record callback results",
+            r###"(let [supplied (with-meta [8] {:supplied :yes})
+                      record (with-meta (->R supplied) {:record true})
+                      result (compiler-reader-read-string {:readers {'r (fn [_] record)}} "#r 1")]
+                  [(:a (compiler-reader-read-string {:readers {'r ->R}} "#r 1"))
+                   (:a result) (meta result) (identical? record result)
+                   (identical? (:a result) supplied)])"###,
         ),
         (
             "default tag",
@@ -155,6 +177,57 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
             r###"(let [s (compiler-reader-string-reader "1\r\n2" "fixture.edn")] [(compiler-reader-read s) (compiler-reader-read s) (compiler-reader-read {:eof :done} s)])"###,
         ),
         (
+            "four argument EOF flags retain occurrences",
+            r###"(mapv (fn [flag]
+                    (mapv (fn [read]
+                      (try (let [result (read (compiler-reader-string-reader "") flag supplied {})]
+                             [(if (identical? result supplied) :same :different) (meta result)])
+                           (catch :default e [(.-message e) (.-category e)])))
+                      [compiler-reader-read compiler-edn-read]))
+                    [false-flag nil-flag true-flag])"###,
+        ),
+        (
+            "read-line close and read-after-close",
+            r###"(let [chunks (atom ["a\r" "\nb\n" "c\r" "d" nil])
+                      s (compiler-reader-input-provider "lines.edn"
+                          (fn [] (let [c (first @chunks)] (swap! chunks rest) c)))
+                      lines (mapv (fn [_] (compiler-reader-read-line s)) (range 6))
+                      closed (compiler-reader-close s)]
+                  [lines closed (try (compiler-reader-close s) (catch :default e (.-message e)))
+                   (try (compiler-reader-read s) (catch :default e (.-message e)))
+                   (try (compiler-reader-read-line s) (catch :default e (.-message e)))])"###,
+        ),
+        (
+            "timestamp services",
+            r###"(mapv (fn [text]
+                    [(vec (compiler-reader-parse-timestamp-fields text))
+                     (.getTime (compiler-reader-parse-timestamp text))])
+                    ["2020" "2020-02-29T12:34:56.123456+02:30" "1970-01-01T00:00:00Z"
+                     "1969-12-31T23:59:59.9-00:30"])"###,
+        ),
+        (
+            "tag registration results and effects",
+            r###"(let [a (fn [x] [:a x]) b (fn [x] [:b x])
+                      old (compiler-reader-register-tag-parser 'app/tag a)
+                      first-read (compiler-reader-read-string "#app/tag 1")
+                      previous (compiler-reader-register-tag-parser 'app/tag b)
+                      second-read (compiler-reader-read-string "#app/tag 2")
+                      removed (compiler-reader-deregister-tag-parser 'app/tag)
+                      missing (try (compiler-reader-read-string "#app/tag 3") (catch :default e (.-message e)))
+                      default-a (fn [tag x] [tag x]) default-b (fn [tag x] [:default x])
+                      old-default (compiler-reader-register-default-tag-parser default-a)
+                      default-read (compiler-reader-read-string "#unknown 4")
+                      previous-default (compiler-reader-register-default-tag-parser default-b)
+                      replaced-default (compiler-reader-read-string "#unknown 5")
+                      removed-default (compiler-reader-deregister-default-tag-parser)]
+                  [(nil? old) first-read (identical? previous a) second-read
+                   (identical? removed b) (compiler-reader-deregister-tag-parser 'app/tag) missing
+                   (nil? old-default) default-read (identical? previous-default default-a)
+                   replaced-default (identical? removed-default default-b)
+                   (compiler-reader-deregister-default-tag-parser)
+                   (try (compiler-reader-read-string "#unknown 6") (catch :default e (.-message e)))])"###,
+        ),
+        (
             "input restoration",
             r###"(let [before (compiler-reader-current-input) during (compiler-reader-with-input "1 2" (fn [] [(compiler-reader-read (compiler-reader-current-input)) (compiler-reader-read (compiler-reader-current-input))])) after (compiler-reader-current-input)] [(js* "(~{} === null)" before) during (js* "(~{} === null)" after)])"###,
         ),
@@ -194,8 +267,17 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
             .iter()
             .map(|(label, body)| (*label, body.as_str())),
     ) {
+        let (prelude, params, args) = match label {
+            "record callback results" => ("(defrecord R [a])", "", ""),
+            "four argument EOF flags retain occurrences" => (
+                "",
+                "supplied false-flag nil-flag true-flag",
+                "^:supplied [1] false nil true",
+            ),
+            _ => ("", "", ""),
+        };
         let source = format!(
-            "(defmacro probe [] (list 'quote {body})) (js/console.log (binding [*print-meta* true] (pr-str (probe))))"
+            "{prelude} (defmacro probe [{params}] (list 'quote {body})) (js/console.log (binding [*print-meta* true] (pr-str (probe {args}))))"
         );
         match analyzed(&source, true) {
             Ok(native_program) => {
@@ -309,11 +391,35 @@ fn reader_facade_initializes_and_runs_in_a_source_macro() {
 }
 
 #[test]
+fn native_reader_facade_accepts_missing_readers_options() {
+    let native = namespace_js("options-use", true, 1);
+    assert_eq!(output(&native), "[1 2 :done 3 4 :done]\n");
+    #[cfg(feature = "quickjs")]
+    assert_eq!(native, namespace_js("options-use", false, 1));
+}
+
+#[test]
 fn reduced_cuerdas_ffmt_reads_placeholder_indices_natively() {
     let native = namespace_js("format-use", true, 1);
     assert_eq!(output(&native), "url(A): B/A % B plain j/a\n");
     #[cfg(feature = "quickjs")]
     assert_eq!(native, namespace_js("format-use", false, 1));
+}
+
+#[test]
+fn native_promise_object_extension_remains_explicit() {
+    let source = r##"
+        (defmacro probe []
+          (extend-type js/Promise Object (value [_] 7))
+          (.value (js/Promise.resolve 0)))
+        (js/console.log (probe))"##;
+    let error = expand(source, true).unwrap_err();
+    assert!(
+        error.contains("unsupported operation: native Promise Object extension"),
+        "{error}"
+    );
+    #[cfg(feature = "quickjs")]
+    assert_eq!(output(&expand(source, false).unwrap()), "7\n");
 }
 
 #[test]

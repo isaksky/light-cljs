@@ -41,6 +41,15 @@ Some tests additionally read the upstream checkout at run time from the
 gitignored `research/clojurescript` directory. Nothing from that checkout is
 committed beyond the adapted files listed above.
 
+## Cuerdas
+
+- Upstream: <https://github.com/funcool/cuerdas>, pinned to the Clojars artifact
+  `funcool/cuerdas` version `2026.415` used by the Penpot port.
+- Copyright (c) Andrey Antukh. License: BSD-2-Clause, reproduced in
+  `tests/fixtures/native-reader/cuerdas/core.cljc`.
+- That fixture retains `concat`, `interpolate-ffmt` and `ffmt`, with a reduced
+  string-repeat helper for the native reader integration test.
+
 ## SCI (Small Clojure Interpreter)
 
 - Upstream: <https://github.com/babashka/sci>, pinned at commit

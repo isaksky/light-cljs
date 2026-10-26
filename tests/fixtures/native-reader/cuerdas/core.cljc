@@ -22,6 +22,8 @@
 ;; OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+;; Source: funcool/cuerdas 2026.415, cuerdas/core.cljc in the Clojars jar,
+;; https://github.com/funcool/cuerdas (BSD-2-Clause; notice retained above).
 ;; Reduced Penpot ffmt reproduction. concat, interpolate-ffmt and ffmt
 ;; are verbatim; the external repeat helper uses string repetition.
 

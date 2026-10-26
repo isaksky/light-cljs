@@ -610,6 +610,104 @@ fn heap_policy(options: &EvaluatorOptions) -> big_boy_pants_js::HeapPolicy {
     }
 }
 
+/// Adapt the canonical reader at native task assembly, leaving the emitted
+/// application runtime byte-for-byte unchanged. The parser/control flow stays
+/// shared; only scalar occurrence boundaries and native callable/tag adapters
+/// differ. Require every replacement to match so a parser edit cannot silently
+/// drop an adapter (the source-macro differential table covers their behavior).
+fn native_reader_source(manifest: &crate::runtime_manifest::RuntimeManifest<'_>) -> String {
+    let unit = manifest.unit(manifest.unit_named("reader").unwrap());
+    let source = &manifest.source()[unit.body_range.clone()];
+    let (body, _) = source
+        .split_once("})({keyword: freshKeyword,")
+        .expect("canonical reader adapter");
+    let mut source = format!("{body}}};");
+    for (from, to) in [
+        ("const reader = (rt => {", "const createReader = rt => {"),
+        (
+            "const inspect = rt.inspect;",
+            "const inspect = rt.inspect, valueOf = rt.unwrap;",
+        ),
+        (
+            "function stringReader(text, name = '<string-reader>') {",
+            "function stringReader(text, name = '<string-reader>') { text = valueOf(text); name = valueOf(name);",
+        ),
+        (
+            "function inputProvider(name, provider) {",
+            "function inputProvider(name, provider) { name = valueOf(name);",
+        ),
+        ("s.provider()", "valueOf(s.provider())"),
+        (
+            "Object.prototype.hasOwnProperty.call(escapes, escaped)",
+            "rt.hasOwn(escapes, escaped)",
+        ),
+        (
+            "function timestampFields(value) {",
+            "function timestampFields(value) { value = valueOf(value);",
+        ),
+        (
+            "value != null && typeof value.call !== 'function'",
+            "valueOf(value) != null && !rt.callable(value)",
+        ),
+        (
+            "result.fallback = value;",
+            "result.fallback = valueOf(value) == null ? valueOf(value) : value;",
+        ),
+        (
+            "if (value == null) continue;",
+            "if (valueOf(value) == null) continue;",
+        ),
+        (
+            "handler != null && typeof handler.call !== 'function'",
+            "valueOf(handler) != null && !rt.callable(handler)",
+        ),
+        (
+            "function visit(value, d) {",
+            "function visit(value, d) { value = valueOf(value);",
+        ),
+        (
+            "typeof metadata === 'string'",
+            "typeof valueOf(metadata) === 'string'",
+        ),
+        ("if (handler != null) {", "if (valueOf(handler) != null) {"),
+        (
+            "if (handler === builtinTags.get(tag)) {",
+            "if (handler === builtinTags.get(tag)) { return rt.readBuiltin(tag, value);",
+        ),
+        (
+            "handler.call(null, value)",
+            "rt.callReader(handler, [value])",
+        ),
+        (
+            "opts.fallback.call(null, symbol, value)",
+            "rt.callReader(opts.fallback, [symbol, value])",
+        ),
+        (
+            "args[1] !== false && args[1] != null",
+            "valueOf(args[1]) !== false && valueOf(args[1]) != null",
+        ),
+        (
+            "const text = args[args.length - 1];",
+            "const text = valueOf(args[args.length - 1]);",
+        ),
+        (
+            "defaultTag = handler;",
+            "defaultTag = valueOf(handler) == null ? valueOf(handler) : handler;",
+        ),
+        (
+            "for (const [tag, handler] of builtinTags) tags.set(tag,handler);",
+            "for (const [tag, handler] of rt.builtinTags) builtinTags.set(tag,handler); for (const [tag, handler] of builtinTags) tags.set(tag,handler);",
+        ),
+    ] {
+        assert!(
+            source.contains(from),
+            "native reader adapter missing: {from}"
+        );
+        source = source.replace(from, to);
+    }
+    source
+}
+
 impl BbpRuntime {
     /// Build a compilation's native runtime. Every runtime-wide limit comes
     /// from `options` here, once: evaluators spawned from the result share
@@ -645,11 +743,8 @@ impl BbpRuntime {
         // Run the same bounded first-party reader on native constructors. Only
         // this unit is included, not the legacy runtime or an evaluator fallback.
         let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
-        let reader = &manifest.source()[manifest
-            .unit(manifest.unit_named("createReader").unwrap())
-            .body_range
-            .clone()];
-        let reader = include_str!("bbp_reader.js").replace("/* READER */", reader);
+        let reader = native_reader_source(manifest);
+        let reader = include_str!("bbp_reader.js").replace("/* READER */", &reader);
         let source = include_str!("bbp_runtime.js")
             .replace("/* NATIVE_READER */", &reader)
             .replace("/* CORE_KEYS */", &keys);

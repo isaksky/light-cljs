@@ -9833,16 +9833,14 @@
   //@unit compilerForms compile-time effect requires: compilerFormBridge, readerJsLiterals
   const compilerForms = compilerFormBridge();
   readerJsLiterals.array = compilerForms.jsArray; readerJsLiterals.object = compilerForms.jsObject;
-  //@unit createReader requires: conj, contains, coreCells, first, gensym, hashMap, hashSet, into,
-  //@ isRecord, merge, meta, next, nsName, PersistentQueueValue, prStr, readerCoreNames, rePattern,
-  //@ seq, str, toArray, uuid, withMeta
+  //@unit reader requires: cells, conj, contains, coreCells, first, freshKeyword, gensym, hashMap,
+  //@ hashSet, inspect, into, isRecord, keywords, listFromArray, mapFromArray, maps, merge, meta,
+  //@ next, nsName, PersistentQueueValue, prStr, readerCoreNames, readerJsLiterals, rePattern, seq,
+  //@ setFromArray, sets, str, symbol, symbols, toArray, uuid, uuids, vectorFromArray, vectors,
+  //@ views, withMeta
   // First-party bounded EDN and explicit synchronous input capability runtime.
-  const createReader = rt => {
+  const reader = (rt => {
   const inspect = rt.inspect;
-  const valueOf = rt.unwrap ?? (value => value);
-  const hasOwn = rt.hasOwn ?? ((object, key) => Object.prototype.hasOwnProperty.call(object, key));
-  const callable = rt.callable ?? (value => typeof value.call === 'function');
-  const callReader = rt.callReader ?? ((handler, args) => handler.call(null, ...args));
   const streams = new WeakMap(), tags = new Map(), builtinTags = new Map(), readerMaps = new WeakMap();
   const absent = Object.freeze({}), discarded = Object.freeze({});
   const MAX_INPUT = 1048576, MAX_NODES = 100000, MAX_DEPTH = 32;
@@ -9860,7 +9858,6 @@
     const error = located(state,message); error.message = message; throw error;
   }
   function stringReader(text, name = '<string-reader>') {
-    text = valueOf(text); name = valueOf(name);
     if (typeof text !== 'string' || typeof name !== 'string') throw new TypeError('Expected input string and source name');
     const stream = Object.freeze({});
     streams.set(stream, {text, position: 0, total: text.length, offset: 0, line: 1, column: 1, cr: false,
@@ -9869,7 +9866,6 @@
     return stream;
   }
   function inputProvider(name, provider) {
-    name = valueOf(name);
     if (typeof name !== 'string' || typeof provider !== 'function') throw new TypeError('Expected source name and input provider');
     const stream = stringReader('', name), state = streams.get(stream);
     state.provider = provider; state.eof = false;
@@ -9885,7 +9881,7 @@
   function peek(s) {
     while (s.position === s.text.length && !s.eof) {
       let chunk;
-      try { chunk = valueOf(s.provider()); }
+      try { chunk = s.provider(); }
       catch (_) { fail(s, 'Input provider failed', 'host'); }
       if (chunk == null) { s.eof = true; break; }
       if (typeof chunk !== 'string' || chunk.length === 0) fail(s, 'Input provider must return a nonempty string or nil', 'host');
@@ -9955,7 +9951,7 @@
       if (ch === '"') return result;
       if (ch !== '\\') { result += ch; continue; }
       const escaped = take(s), escapes = {t:'\t', r:'\r', n:'\n', b:'\b', f:'\f', '"':'"', '\\':'\\'};
-      if (hasOwn(escapes, escaped)) result += escapes[escaped];
+      if (Object.prototype.hasOwnProperty.call(escapes, escaped)) result += escapes[escaped];
       else if (escaped === 'u') {
         let digits = ''; for (let i = 0; i < 4; ++i) digits += take(s) ?? '';
         if (!/^[\da-fA-F]{4}$/.test(digits)) fail(s, 'Invalid Unicode escape');
@@ -9984,7 +9980,6 @@
     try { return parseTimestamp(value); } catch (_) { fail(s, 'Invalid instant'); }
   }
   function timestampFields(value) {
-    value = valueOf(value);
     const m = typeof value === 'string' && /^(\d{4})(?:-(\d{2})(?:-(\d{2})(?:T(\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?)?)?)?(?:Z|([-+])(\d{2}):(\d{2}))?$/.exec(value);
     if (!m) throw new Error('Unrecognized date/time syntax: ' + str(value).slice(0,1024));
     const [year, month, day, hour, minute, second] = [Number(m[1]),Number(m[2] ?? 1),Number(m[3] ?? 1),Number(m[4] ?? 0),Number(m[5] ?? 0),Number(m[6] ?? 0)];
@@ -10028,10 +10023,10 @@
       if (k?.kind !== 'keyword' || k.namespace !== null) throw new TypeError('Invalid reader option');
       if (k.name === 'eof') result.eof = value;
       else if (profile !== 'code' && k.name === 'default') {
-        if (valueOf(value) != null && !callable(value)) throw new TypeError('Expected default reader function');
-        result.fallback = valueOf(value) == null ? valueOf(value) : value;
+        if (value != null && typeof value.call !== 'function') throw new TypeError('Expected default reader function');
+        result.fallback = value;
       } else if (profile !== 'code' && k.name === 'readers') {
-        if (valueOf(value) == null) continue;
+        if (value == null) continue;
         let entries = typeof value === 'object' && value !== null ? readerMaps.get(value) : undefined;
         if (entries === undefined) {
           const readers = inspect(value);
@@ -10039,7 +10034,7 @@
           entries = readers.entries.map(([tag, handler]) => {
             const n = inspect(tag);
             if (n?.kind !== 'symbol') throw new TypeError('Expected symbol reader key');
-            if (valueOf(handler) != null && !callable(handler)) throw new TypeError('Expected reader function');
+            if (handler != null && typeof handler.call !== 'function') throw new TypeError('Expected reader function');
             return [n.spelling, handler];
           });
           // Only immutable privately branded maps have stable validated entries.
@@ -10053,7 +10048,6 @@
   function validate(s, root, depth, allowBuiltins) {
     const active = new WeakSet(); let nodes = 0;
     function visit(value, d) {
-      value = valueOf(value);
       if (++nodes > MAX_NODES || d + activeDepth > MAX_DEPTH) fail(s, 'EDN result limit exceeded', 'limit');
       if (value === null || ['boolean', 'number', 'string'].includes(typeof value)) return;
       if (typeof value !== 'object') fail(s, 'Unsupported EDN reader result');
@@ -10131,7 +10125,7 @@
     function metadata(depth) {
       take(s); let metadata = required(depth + 1); const kind = inspect(metadata);
       if (kind?.kind === 'keyword') metadata = hashMap(metadata, true);
-      else if (typeof valueOf(metadata) === 'string' || kind?.kind === 'symbol') metadata = hashMap(rt.keyword(null, 'tag'), metadata);
+      else if (typeof metadata === 'string' || kind?.kind === 'symbol') metadata = hashMap(rt.keyword(null, 'tag'), metadata);
       else if (kind?.kind !== 'map') fail(s, 'Invalid metadata');
       const value = required(depth + 1);
       try { return withMeta(value, merge(meta(value), metadata)); }
@@ -10194,21 +10188,20 @@
       const symbol = named(s, tag), value = required(depth + 1);
       if (suppressTags) return value;
       let handler = opts.readers.get(tag), result;
-      if (valueOf(handler) != null) {
+      if (handler != null) {
         if (handler === builtinTags.get(tag)) {
-          if (rt.readBuiltin) return rt.readBuiltin(tag, value);
           if (tag === 'inst') result = instant(s, value);
           else if (tag === 'uuid') { if (typeof value !== 'string' || !/^[\da-fA-F]{8}-(?:[\da-fA-F]{4}-){3}[\da-fA-F]{12}$/.test(value)) fail(s,'Invalid UUID'); result = uuid(value); }
           else if (tag === 'js') return jsLiteral(s,value);
           else if (tag === 'queue') { if (inspect(value)?.kind !== 'vector') fail(s,'Queue literal requires a vector'); return into(PersistentQueueValue.EMPTY,value); }
-        } else result = callReader(handler, [value]);
+        } else result = handler.call(null, value);
       }
       else if (opts.profile === 'code' && tag === 'inst') {
         result = instant(s,value);
       } else if (opts.profile === 'code' && tag === 'uuid') {
         if (typeof value !== 'string' || !/^[\da-fA-F]{8}-(?:[\da-fA-F]{4}-){3}[\da-fA-F]{12}$/.test(value)) fail(s, 'Invalid UUID');
         result = uuid(value);
-      } else if (opts.fallback != null) result = callReader(opts.fallback, [symbol, value]);
+      } else if (opts.fallback != null) result = opts.fallback.call(null, symbol, value);
       else fail(s, 'No reader function for tag ' + tag);
       validate(s, result, depth + 1, opts.profile !== 'edn');
       return result;
@@ -10321,7 +10314,7 @@
   }
   function readStringWith(profile, args) {
     if (args.length !== 1 && args.length !== 2) arity(args.length);
-    const text = valueOf(args[args.length - 1]);
+    const text = args[args.length - 1];
     if (profile !== 'code' && (text == null || text === false)) return null;
     const opts = options(args.length === 2 ? args[0] : undefined, profile, true);
     const stream = stringReader(text, profile === 'edn' ? '<edn-read-string>' : '<read-string>');
@@ -10346,11 +10339,11 @@
   function tagName(tag) { const name = inspect(tag); if (name?.kind !== 'symbol') throw new TypeError('Expected data reader symbol'); return name.spelling; }
   function register(tag, handler) {
     if (arguments.length !== 2) arity(arguments.length);
-    if (valueOf(handler) != null && !callable(handler)) throw new TypeError('Expected reader function');
+    if (handler != null && typeof handler.call !== 'function') throw new TypeError('Expected reader function');
     const name = tagName(tag), previous = tags.get(name) ?? null; tags.set(name, handler); return previous;
   }
   function deregister(tag) { if (arguments.length !== 1) arity(arguments.length); const name = tagName(tag), previous = tags.get(name) ?? null; tags.delete(name); return previous; }
-  function registerDefault(handler) { if (arguments.length !== 1) arity(arguments.length); if (valueOf(handler) != null && !callable(handler)) throw new TypeError('Expected reader function'); const previous = defaultTag; defaultTag = valueOf(handler) == null ? valueOf(handler) : handler; return previous; }
+  function registerDefault(handler) { if (arguments.length !== 1) arity(arguments.length); if (handler != null && typeof handler.call !== 'function') throw new TypeError('Expected reader function'); const previous = defaultTag; defaultTag = handler; return previous; }
   function deregisterDefault() { if (arguments.length !== 0) arity(arguments.length); const previous = defaultTag; defaultTag = null; return previous; }
   function withInput(text, thunk) {
     if (arguments.length !== 2) arity(arguments.length);
@@ -10364,7 +10357,7 @@
   function compilerInputWindow(more = false) {
     const s = stateOf(coreCells.readerCurrentInputValue);
     if ((more || s.position === s.text.length) && !s.eof) {
-      const chunk = valueOf(s.provider());
+      const chunk = s.provider();
       if (chunk == null) s.eof = true;
       else {
         if (typeof chunk !== 'string' || !chunk.length) fail(s, 'Invalid input chunk', 'host');
@@ -10403,9 +10396,6 @@
   builtinTags.set('uuid', value => { if (typeof value !== 'string') throw new TypeError('UUID literal requires a string'); return uuid(value); });
   builtinTags.set('queue', value => { if (inspect(value)?.kind !== 'vector') throw new TypeError('Queue literal requires a vector'); return into(PersistentQueueValue.EMPTY,value); });
   builtinTags.set('js', value => jsLiteral(builtinLocation,value));
-  // Native tasks supply shareable entry points for a published tag table.
-  // Parsing still recognizes them here and validates at the input cursor.
-  for (const [tag, handler] of rt.builtinTags ?? []) builtinTags.set(tag,handler);
   for (const [tag, handler] of builtinTags) tags.set(tag,handler);
   return {ednReadString: (...args) => readStringWith('edn', args), ednRead: (...args) => readWith('edn', args),
     readerReadString: (...args) => readStringWith('reader', args), readerRead: (...args) => readWith('reader', args),
@@ -10419,11 +10409,7 @@
     readerRegisterTagParser: register, readerDeregisterTagParser: deregister,
     readerRegisterDefaultTagParser: registerDefault, readerDeregisterDefaultTagParser: deregisterDefault,
     readerWithInput: withInput, readerCurrentInput: () => coreCells.readerCurrentInputValue, readerClose: close};
-  };
-  //@unit reader requires: cells, createReader, freshKeyword, inspect, keywords, listFromArray,
-  //@ mapFromArray, maps, readerJsLiterals, setFromArray, sets, symbol, symbols, uuids,
-  //@ vectorFromArray, vectors, views
-  const reader = createReader({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : vectors.has(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
+  })({keyword: freshKeyword, symbol, vectorFromArray, listFromArray, mapFromArray, setFromArray, inspect, jsLiterals: readerJsLiterals, ednKind: value => symbols.has(value) ? 'symbol' : keywords.has(value) ? 'keyword' : vectors.has(value) ? 'vector' : maps.has(value) ? 'map' : sets.has(value) ? 'set' : cells.has(value) || views.has(value) ? 'seq' : uuids.has(value) ? 'uuid' : value instanceof Date ? 'instant' : null});
 
   //@unit loadFile requires: invalidArity
   const loadFile = function () { if (arguments.length !== 1) return invalidArity(arguments.length); throw new Error("load-file requires a compiler session and an explicit file provider"); };

@@ -114,6 +114,7 @@
 //! | `formConj(c, x)` | `form_op` | vector: `x` appended; list: `x` prepended | `WrongType` |
 //! | `formKeys(m)` | `form_op` | a new form vector of the map's keys (the stored key objects), in trie order | `WrongType` |
 //! | `formPrintItems(m)` | `form_op` | map/record entries or set members in legacy printer order, retaining key identity | wrong type |
+//! | `formReaderCollection(m)` | `form_op` | map/set with legacy seq traversal retained through updates, sharing storage | wrong type |
 //! | `formEquals(a, b)`, `formHash(v)` | `form_op` | value equality (boolean) and the light-cljs runtime's 32-bit hash (number) | – |
 //! | `formMeta(v)` | `form_op` | the form's metadata map, or `null` | – |
 //! | `formWithMeta(v, m)` | `form_op` | a symbol, list, vector or map with metadata `m` (a form map or `null`); `v` itself for the same `m` | `WrongType` |
@@ -585,6 +586,7 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
             form::new_vector(heap, &keys)?
         }
         FormOp::PrintItems => form::print_items(heap, &arg())?,
+        FormOp::ReaderCollection => form::reader_collection(heap, &arg())?,
         FormOp::Disj => {
             let (s, m) = (arg(), arg());
             form::disj(heap, &s, &m)?

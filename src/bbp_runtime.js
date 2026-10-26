@@ -38,7 +38,12 @@ const decl = (() => {
   // method's fixed arities.
   const objectArities = new Map();
   const extend = (target, specs) => {
-    const key = keyOf(target), overlay = order === 0 ? ++overlays : 0, info = views.get(key);
+    const key = keyOf(target);
+    // Promise has protocol dispatch, but no native instance/member view.
+    // Validate the entire specification before installing any entries.
+    if (key === 'js/Promise' && specs.some(spec => spec[0].startsWith('Object/')))
+      throw new Error('unsupported operation: native Promise Object extension');
+    const overlay = order === 0 ? ++overlays : 0, info = views.get(key);
     for (const [name, arity, fn, , variadic, member] of specs) {
       const object = name.startsWith('Object/');
       const n = object && variadic != null ? -1 : arity;
@@ -841,7 +846,7 @@ const native = (() => {
     assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
     dissoc:(m,...ks)=>each((m,k)=>__rt.cljDissoc(m,k),m,ks),
     conj:(...a)=>a.length===0?__rt.formVector():each((m,x)=>__rt.cljConj(m,x),a[0],a.slice(1)),
-    merge:(...xs)=>xs.some(truth)?xs.reduce((left,right)=>__rt.cljConj(truth(left)?left:arrayMap([]),right)):null,
+    merge:(...xs)=>xs.some(truth)?xs.reduce((left,right)=>val(right)==null?left:__rt.cljConj(truth(left)?left:arrayMap([]),right)):null,
     disj:(s,...xs)=>each((s,x)=>__rt.cljDisj(s,x),s,xs),
     contains:(c,k)=>__rt.cljContains(c,k),
     keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:list(arr(s).map(e=>__rt.formNth(e,0)));}

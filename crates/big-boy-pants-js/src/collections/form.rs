@@ -512,6 +512,9 @@ pub(crate) struct FormObject {
     /// A map's seq entry has a vector body but requires exact 0/1 call
     /// indices. Vector-producing updates and `with-meta` clear this flag.
     map_entry: bool,
+    /// Runtime reader collections use legacy hash traversal for seq as well as
+    /// printing. Keep their actual hash storage through every persistent update.
+    reader_traversal: bool,
     /// [`hash`] of this value, computed once (metadata-independent). An
     /// interior cache, not an edge or part of the value: readers of the
     /// frozen body may race to set it, and every writer stores the same
@@ -525,6 +528,7 @@ impl FormObject {
             body,
             meta,
             map_entry: false,
+            reader_traversal: false,
             hash: OnceLock::new(),
         }
     }
@@ -540,13 +544,16 @@ impl FormObject {
             body: self.body.clone(),
             meta,
             map_entry: false,
+            reader_traversal: self.reader_traversal,
             hash,
         }
     }
 
     /// This value with another body and the same metadata (an update).
     fn updated(&self, body: FormBody) -> FormObject {
-        FormObject::new(body, self.meta.clone())
+        let mut object = FormObject::new(body, self.meta.clone());
+        object.reader_traversal = self.reader_traversal;
+        object
     }
 
     pub(crate) fn kind(&self) -> FormKind {
@@ -1560,10 +1567,14 @@ pub(crate) fn nth_at(heap: &Heap, coll: &Value, index: &Value) -> Result<Value, 
 /// The elements of a list or vector, or the members of a set: source order
 /// for positional literals, deterministic trie order for hashed sets.
 pub(crate) fn items(heap: &Heap, coll: &Value) -> Result<Vec<Value>, CollectionError> {
-    if let Some(FormBody::Set(set)) = form_object(heap, coll).as_deref().map(FormObject::body) {
-        let mut members = Vec::with_capacity(set.len());
-        set.for_each(|k, _| members.push(k.clone()));
-        return Ok(members);
+    if let Some(f) = form_object(heap, coll)
+        && let FormBody::Set(set) = f.body()
+    {
+        let mut entries = set.to_vec();
+        if f.reader_traversal {
+            legacy_order(heap, set, &mut entries);
+        }
+        return Ok(entries.into_iter().map(|(k, _)| k).collect());
     }
     match sequential(heap, coll) {
         Ok(items) => Ok(items.to_vec()),
@@ -1574,7 +1585,41 @@ pub(crate) fn items(heap: &Heap, coll: &Value) -> Result<Vec<Value>, CollectionE
 /// Map entries in source order for positional literals, deterministic trie
 /// order for hashed maps.
 pub(crate) fn entries(heap: &Heap, map: &Value) -> Result<Vec<(Value, Value)>, CollectionError> {
-    Ok(map_body(heap, map)?.to_vec())
+    let body = map_body(heap, map)?;
+    let mut entries = body.to_vec();
+    if form_object(heap, map).is_some_and(|f| f.reader_traversal) {
+        legacy_order(heap, &body, &mut entries);
+    }
+    Ok(entries)
+}
+
+/// Select reader traversal without converting a hash collection to an array
+/// literal. Metadata and child identities stay intact; updates preserve the flag.
+pub(crate) fn reader_collection(heap: &Heap, value: &Value) -> Result<Value, CollectionError> {
+    let f = form_object(heap, value).ok_or_else(|| wrong(heap, "form map or set", value))?;
+    if !matches!(f.body(), FormBody::Map(_) | FormBody::Set(_)) {
+        return Err(wrong(heap, "form map or set", value));
+    }
+    if f.reader_traversal {
+        return Ok(value.clone());
+    }
+    let mut object = f.with_meta(f.meta.clone());
+    object.reader_traversal = true;
+    alloc(heap, object, std::slice::from_ref(value))
+}
+
+fn legacy_order(heap: &Heap, map: &FormMap, entries: &mut [(Value, Value)]) {
+    if !map.positional() {
+        entries.sort_by_cached_key(|(key, _)| {
+            let hash = hash(heap, key) as u32;
+            let nil = matches!(unwrap(heap, key.clone()), Value::Null | Value::Undefined);
+            // Five-bit trie paths compare from the low bits, not numerically.
+            (
+                !nil,
+                std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31),
+            )
+        });
+    }
 }
 
 /// The native lookup trie spreads hashes for its own routing. Printing uses
@@ -1605,17 +1650,7 @@ pub(crate) fn print_items(heap: &Heap, value: &Value) -> Result<Value, Collectio
         _ => return Err(wrong()),
     };
     let mut entries = map.to_vec();
-    if !map.positional() {
-        entries.sort_by_cached_key(|(key, _)| {
-            let hash = hash(heap, key) as u32;
-            let nil = matches!(unwrap(heap, key.clone()), Value::Null | Value::Undefined);
-            // Five-bit trie paths compare from the low bits, not numerically.
-            (
-                !nil,
-                std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31),
-            )
-        });
-    }
+    legacy_order(heap, map, &mut entries);
     let values = entries
         .into_iter()
         .map(|(key, value)| {
