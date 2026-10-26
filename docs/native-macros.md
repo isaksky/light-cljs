@@ -89,7 +89,7 @@ occurrences. Truth tests are `__rt.cljTruth`. A `concat` of three or more
 collections is one flat `__rt.cljConcatAll(__rt.formList(…))`, so a wide call
 nests no deeper than a narrow one. A hash-map literal (more than eight entries)
 evaluates every key before any value, as `mapFromArrays` does, through
-`__rt.cljZipMap`. Literals and calls with more than 1,024 operands use the
+`__rt.cljZipMap`. Literals and calls with more than 4,096 operands use the
 runtime's array constructors instead of one counted intrinsic. Other arities,
 core functions used as values (`(map first xs)`, `(apply keyword xs)`) and the
 remaining operations call the runtime object, whose entries use the same
@@ -97,7 +97,10 @@ intrinsics (it also provides `set`, `vec`, `keys`, `vals`, `keyword`, `symbol`,
 `array-map`, `hash-set` and variadic `assoc`/`dissoc`/`conj`/`disj`). A
 keyword or symbol whose spelling does not split back into its namespace and
 name (`(keyword nil "a/b")`, `(keyword "a/b/c")`) has no native form and fails
-explicitly.
+explicitly (`(symbol (keyword "" "x"))`, the legacy runtimes' unqualified
+`/x`, too). A keyword converts to a symbol through its spelling, as in the
+legacy runtimes; invalid operands throw a plain `Error` with the legacy
+message.
 `rest` and `next` copy the remaining elements into a new list; there are no
 shared seq views. Lazy `map`, `filter` and friends are not implemented
 (light-cljs-479 owns lazy sequences), which still stops the generated

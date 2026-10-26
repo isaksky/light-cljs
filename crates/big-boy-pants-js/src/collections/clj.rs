@@ -31,8 +31,9 @@
 //! `TypeError` whose message names the operation and the kind,
 //! `unsupported operation: native macro runtime seq on number`; `nth` past
 //! the end without a default is a catchable `RangeError`
-//! `index out of bounds`. These are the diagnostics of the JavaScript
-//! adapters they replace. Allocation is charged to the heap's byte budget
+//! `index out of bounds`; invalid `keyword` and `symbol` operands are a
+//! catchable plain `Error` with `keywordCore`'s or `symbolCore`'s message.
+//! These are the diagnostics of the JavaScript adapters they replace. Allocation is charged to the heap's byte budget
 //! like every form allocation: exhaustion is the engine's usual
 //! `HeapLimit`/`OutOfMemory` failure.
 
@@ -53,7 +54,7 @@ pub(crate) enum CljError {
     },
     /// `nth` beyond the end without a default (a `RangeError`).
     OutOfBounds,
-    /// A constructor's operands have the wrong types (a `TypeError` with
+    /// A constructor's operands have the wrong types (a plain `Error` with
     /// the message of the JavaScript function it replaces).
     Operands(&'static str),
 }
@@ -413,8 +414,18 @@ pub(crate) fn keyword_ns(heap: &Heap, ns: &Value, name: &Value) -> Result<Value>
 pub(crate) fn symbol(heap: &Heap, x: &Value) -> Result<Value> {
     let s = match name_part(heap, x) {
         NamePart::Named(FormKind::Symbol, _) => return Ok(x.clone()),
+        // A keyword converts through its spelling, as a string does: `:/x`
+        // (namespace "", name "x") is the unqualified `/x`, which has no
+        // native symbol.
         NamePart::Named(_, n) => {
-            return named(heap, FormKind::Symbol, n.namespace, n.name);
+            let mut units = Vec::new();
+            if let Some(ns) = &n.namespace {
+                units.extend_from_slice(ns.code_units());
+                units.push(u16::from(b'/'));
+            }
+            units.extend_from_slice(n.name.code_units());
+            JsString::copy_units(heap, &units)
+                .ok_or(CljError::Collection(CollectionError::HeapLimit))?
         }
         NamePart::Str(s) => s,
         NamePart::Nil | NamePart::Other => {
@@ -718,6 +729,13 @@ mod tests {
             (Some(FormKind::Symbol), "a/b".into())
         );
         assert_eq!(spelled(&symbol(&heap, &s("p/q/r")).unwrap()), "p/q/r");
+        // A keyword converts through its spelling: `:/x` spells the
+        // unqualified `/x`, which has no native symbol.
+        let slash_x = keyword_ns(&heap, &s(""), &s("x")).unwrap();
+        assert!(matches!(
+            symbol(&heap, &slash_x),
+            Err(CljError::Collection(CollectionError::AmbiguousName))
+        ));
         assert_eq!(spelled(&keyword_ns(&heap, &sym, &s("n")).unwrap()), "b/n");
         assert_eq!(
             spelled(&symbol_ns(&heap, &Value::Null, &s("n")).unwrap()),

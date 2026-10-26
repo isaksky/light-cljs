@@ -1348,10 +1348,11 @@ const LAZY_CONSTANT_NODES: u32 = 1024;
 
 /// The most operands a native compile-time unit passes to one counted
 /// engine constructor (`__rt.formVector(…)`); larger literals and calls use
-/// the runtime's array constructors, whose operand stack stays small. Both
-/// sides stay below the engine's 16,384-unit eval source limit for a
-/// literal of short dynamic members, so tests reach each.
-const NATIVE_CONSTRUCTOR_LIMIT: usize = 1024;
+/// the runtime's array constructors, whose operand stack stays small. (A
+/// literal past the limit does not fit the engine's 16,384-unit eval source
+/// limit as one macro unit; `bbp_evaluator` tests that emission selects
+/// those constructors and that they check what the inline forms check.)
+const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
 
 /// What the pool knows about an expression (indexed by `ExprId`).
 #[derive(Clone, Copy, PartialEq, Eq)]

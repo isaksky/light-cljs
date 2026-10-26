@@ -52,6 +52,11 @@ pub enum VmErrorKind {
     /// `undefined` or `null`, a write to a read-only property or to a value
     /// with no JavaScript properties). Catchable (clj-quickjs-11).
     TypeError,
+    /// A plain JavaScript `Error` (no subclass) raised by an intrinsic that
+    /// replaces a JavaScript function throwing `new Error(message)`: the
+    /// `keyword`/`symbol` operand checks of the ClojureScript core
+    /// intrinsics (light-cljs-477). Catchable.
+    Error,
     /// A `Call` would exceed the task's [`VmLimits`](crate::VmLimits) (call
     /// depth or operand/local storage). The task fails instead of growing
     /// further; no Rust stack is involved, so deep recursion can never

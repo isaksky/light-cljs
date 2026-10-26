@@ -962,12 +962,44 @@ fn native_dynamic_constructors_match_legacy() {
 }
 
 #[test]
+fn native_constructor_errors_match_legacy() {
+    // Invalid operands throw a plain Error, as keywordCore and symbolCore
+    // do, directly and through apply; a TypeError catch does not take it.
+    assert_native_matches_legacy(
+        "(defmacro errors [] [(try (symbol 1) (catch :default e (.-name e))) \
+         (try (apply symbol [1]) (catch :default e (.-message e))) \
+         (try (keyword nil 1) (catch :default e (.-name e))) \
+         (try (symbol nil :k) (catch js/TypeError e :type) (catch :default e (.-message e)))]) \
+         (js/console.log (pr-str (errors)))",
+        "[\"Error\" \"no conversion to symbol\" \"Error\" \"symbol expects strings and an optional nil namespace\"]\n",
+    );
+    // A keyword converts to a symbol through its spelling.
+    assert_native_matches_legacy(
+        "(defmacro parts [] (let [s (symbol :a/b) t (symbol (keyword \"x\"))] \
+         [(namespace s) (name s) (namespace t) (name t)])) (js/console.log (pr-str (parts)))",
+        "[\"a\" \"b\" nil \"x\"]\n",
+    );
+    // `(keyword "" "x")` spells `/x`, whose symbol is the unqualified name
+    // `/x` in the legacy runtimes; it has no native symbol, so it fails
+    // instead of becoming namespace "" and name "x".
+    let source = "(defmacro odd [] (name (symbol (keyword \"\" \"x\")))) (odd)";
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let Err(error) = analyze_with_macros(source, &parse(source).unwrap(), &mut host) else {
+        panic!("expanded");
+    };
+    let message = error.to_string();
+    assert!(message.contains("must split back"), "{message}");
+}
+
+#[test]
 fn native_dynamic_set_literals_reject_duplicates_after_operand_effects() {
-    // Both sides of the counted-constructor limit (1024 operands). Number
-    // constants keep the literal short enough for one macro unit; three
-    // members are calls of `w`, which records and returns its operand, and
-    // the last of them equals another member. Every operand runs once
-    // before the duplicate is rejected.
+    // A small and a 1,025-member literal (number constants keep it short
+    // enough for one macro unit); three members are calls of `w`, which
+    // records and returns its operand, and the last of them equals another
+    // member. Every operand runs once before the duplicate is rejected.
+    // Literals past the 4,096-operand counted-constructor limit do not fit
+    // one macro unit; `bbp_evaluator`'s tests cover their constructors.
     for size in [3, 1025] {
         let constants: String = (1..=size - 3).map(|k| format!("{k} ")).collect();
         let (big, dup) = (size + 1, if size > 3 { 1 } else { 0 });

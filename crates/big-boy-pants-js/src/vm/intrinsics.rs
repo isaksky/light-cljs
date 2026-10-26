@@ -144,8 +144,10 @@
 //! `cljSymbolNs(ns, name)` (`keyword` and `symbol` of one or two
 //! arguments). [`crate::collections::clj`] documents them.
 //! Unlike the operations above, an unsupported operand kind raises a
-//! catchable `TypeError` and `cljNth` past the end a catchable `RangeError`,
-//! the diagnostics of the JavaScript functions they replace.
+//! catchable `TypeError`, `cljNth` past the end a catchable `RangeError` and
+//! an invalid constructor operand a catchable plain `Error`
+//! ([`crate::VmErrorKind::Error`]), the diagnostics of the JavaScript
+//! functions they replace.
 //!
 //! Updates keep the input's metadata and follow the identity rules of
 //! [`crate::collections::form`]. A `formEquals`, `formHash` or structural
@@ -372,9 +374,9 @@ impl From<clj::CljError> for Fault {
         match e {
             clj::CljError::Collection(e) => e.into(),
             clj::CljError::OutOfBounds => Fault::RangeError(e.message()),
-            clj::CljError::Unsupported { .. } | clj::CljError::Operands(_) => {
-                Fault::TypeError(e.message())
-            }
+            clj::CljError::Unsupported { .. } => Fault::TypeError(e.message()),
+            // `keywordCore`/`symbolCore` throw a plain `Error`.
+            clj::CljError::Operands(_) => Fault::Error(e.message()),
         }
     }
 }

@@ -851,3 +851,57 @@ fn functions_over_lowered_core_operations_publish() {
         evaluator.release(f).unwrap();
     }
 }
+
+/// Literals past the counted-constructor limit (4,096 operands) emit the
+/// runtime's array constructors, which check what the inline forms check:
+/// dynamic set members are distinct, and reader-distinct literal members or
+/// keys that lowered to equal values fail explicitly instead of collapsing.
+#[test]
+fn large_literals_use_runtime_constructors_that_keep_the_inline_checks() {
+    let numbers = |n: usize| (0..n).map(|i| format!("{i} ")).collect::<String>();
+    for (source, constructor) in [
+        (
+            format!("(fn [x] #{{x {}}})", numbers(4097)),
+            "literalSetFromArray(",
+        ),
+        (
+            format!("(fn [] '#{{{}}})", numbers(4097)),
+            "constantSetFromArray(",
+        ),
+        (format!("(fn [x] #{{x {}}})", numbers(5)), "__rt.formSet("),
+    ] {
+        let code = native(&source);
+        assert!(code.contains(constructor), "{constructor}");
+    }
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let many = "const a = []; for (let i = 0; i < 300; i++) a.push(i);";
+    for (body, outcome) in [
+        ("rt.literalSetFromArray([...a, 7])", Err("Duplicate key")),
+        (
+            "rt.constantSetFromArray(['a', ...a, 'a'])",
+            Err("native literal set with reader-distinct equal members"),
+        ),
+        (
+            "rt.constantMapFromArray(['a', 1, 'a', 2])",
+            Err("native literal map with reader-distinct equal keys"),
+        ),
+        ("rt.literalSetFromArray(a)", Ok(300)),
+        ("rt.constantSetFromArray(['a', ...a])", Ok(301)),
+        ("rt.constantMapFromArray(['a', 1, 'b', 2])", Ok(2)),
+    ] {
+        let count = outcome.unwrap_or(-1);
+        let result = evaluator.evaluate_unit(&format!(
+            "rt => {{ {many} if (__rt.formCount({body}) !== {count}) throw new Error('count'); \
+             return null; }}"
+        ));
+        match (result, outcome) {
+            (Err(e), Err(expected)) => {
+                assert!(e.to_string().contains(expected), "{body}: {e}")
+            }
+            (Ok(v), Ok(_)) => evaluator.release(v).unwrap(),
+            (Ok(_), Err(expected)) => panic!("{body}: no {expected}"),
+            (Err(e), Ok(_)) => panic!("{body}: {e}"),
+        }
+    }
+}

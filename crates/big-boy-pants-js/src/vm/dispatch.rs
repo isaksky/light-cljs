@@ -165,6 +165,8 @@ pub(crate) enum Fault {
     /// A JavaScript TypeError with this message (property access,
     /// `crate::vm::property`).
     TypeError(String),
+    /// A plain JavaScript `Error` with this message ([`VmErrorKind::Error`]).
+    Error(String),
     /// A property instruction on an ordinary object the running task does
     /// not own.
     ForeignObject {
@@ -1968,6 +1970,7 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
             ),
         ),
         Fault::TypeError(m) => (VmErrorKind::TypeError, m),
+        Fault::Error(m) => (VmErrorKind::Error, m),
         Fault::ReferenceError(m) => (VmErrorKind::ReferenceError, m),
         Fault::ForeignObject { owner, caller } => {
             let owner_name = match owner {
@@ -2008,6 +2011,7 @@ fn catchable(kind: VmErrorKind) -> bool {
         | VmErrorKind::SyntaxError
         | VmErrorKind::RangeError
         | VmErrorKind::TypeError
+        | VmErrorKind::Error
         | VmErrorKind::StackOverflow
         | VmErrorKind::StringTooLong
         | VmErrorKind::HeapLimit
