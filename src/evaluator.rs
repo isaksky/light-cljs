@@ -1405,6 +1405,12 @@ pub trait MacroEvaluator {
     }
     fn control(&self) -> ExecutionControl;
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError>;
+    /// A source macro already materialized in the current native task, so
+    /// callers can skip its reader registration and declaration construction.
+    /// The handle stays owned by that task, as with `source_macro_function`.
+    fn cached_source_macro_function(&self, _identity: usize) -> Option<ValueId> {
+        None
+    }
     /// Evaluate a source macro's declaration in this evaluator. Native
     /// tasks retain their own function by code identity, including tasks
     /// analyzing a helper while the declaring task is suspended. The

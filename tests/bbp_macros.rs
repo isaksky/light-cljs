@@ -562,6 +562,88 @@ fn source_macros_expand_inside_on_demand_helpers() {
 }
 
 #[test]
+fn native_installed_macros_expand_in_demanded_helpers() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    use light_cljs::namespace_artifact::NamespaceCapture;
+
+    let root = temp_dir::TempDir::new("native-installed-helper-macros");
+    std::fs::create_dir(root.join("lib")).unwrap();
+    std::fs::write(
+        root.join("lib/macros.cljs"),
+        "(ns lib.macros) \
+         (def effects (atom [])) \
+         (defmacro one [tag] (swap! effects conj tag) 1) \
+         (defmacro seen [] (list 'quote @effects))",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app.cljs"),
+        "(ns app (:require [lib.macros :refer [one seen]])) \
+         (def v (+ (one :v1) (one :v2))) \
+         (defn f [] (+ (one :f1) (one :f2))) \
+         (defmacro read-v [] v) (defmacro call-f [] (f)) \
+         (js/console.log (one :direct) (read-v) (call-f) (pr-str (seen)))",
+    )
+    .unwrap();
+    for jobs in [1, 2] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut artifact = None;
+        let mut capture = |captured: NamespaceCapture| {
+            if captured.namespace == "lib.macros" {
+                artifact = Some(captured.artifact.expect("native macro-provider artifact"));
+            }
+        };
+        let (cold, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                capture: Some(&mut capture),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let artifact = artifact.expect("captured macro provider");
+        // The warm build has a new native runtime. Only the provider is
+        // installed; its consumer and both demanded helpers analyze fresh.
+        drop(host);
+        let lookup = |name: &str| (name == "lib.macros").then_some(&artifact);
+        let reservation = light_cljs::generated_names::Reservation::of([&artifact.names]);
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut stats = light_cljs::CompileStats::new();
+        let (warm, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                install: Some(&lookup),
+                reserve: Some(&reservation),
+                stats: Some(&mut stats),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("jobs {jobs}: {error}"));
+        let installed = stats.install.unwrap();
+        assert_eq!(installed.installed, ["lib.macros"], "jobs {jobs}");
+        assert!(installed.refused.is_empty(), "{installed:?}");
+        let cold = emit_js(&cold);
+        let warm = emit_js(&warm);
+        let expected = "1 2 2 [:direct :v1 :v2 :f1 :f2]\n";
+        assert_eq!(program_output(&cold), expected, "cold, jobs {jobs}");
+        assert_eq!(program_output(&warm), expected, "warm, jobs {jobs}");
+        assert_eq!(warm, cold, "jobs {jobs}");
+    }
+}
+
+#[test]
 fn nested_helper_macros_keep_generations_and_execute_effects_once() {
     assert_native_matches_legacy(
         "(def effects (atom [])) \

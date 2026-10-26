@@ -877,7 +877,12 @@ impl CompiledMacro {
             }
         };
         let native = engine.native_bridge_stats().is_some();
-        if !native && let Some(&function) = binding.foreign_macros.borrow().get(&key) {
+        let cached = if native {
+            engine.cached_source_macro_function(key)
+        } else {
+            binding.foreign_macros.borrow().get(&key).copied()
+        };
+        if let Some(function) = cached {
             return Ok(function);
         }
         let parts;
@@ -1275,6 +1280,56 @@ impl MacroHost {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_macro_cache_hits_skip_reader_registration() {
+        let mut host = crate::MacroHost::new();
+        host.use_native_macros();
+        let source = "(defmacro one [] 1)";
+        crate::analyze_with_macros(source, &crate::parse(source).unwrap(), &mut host).unwrap();
+        let declaration = &host.tables.javascript_macros["cljs.user/one"];
+        let MacroFunction::Ready(_, Some(code)) = &declaration.function else {
+            panic!("source declaration code");
+        };
+        let installed = CompiledMacro::installed(
+            crate::emitter::DeferredUnit::from_parts(
+                code.unit.clone(),
+                code.tables.namespaces.clone(),
+                code.tables.globals.clone(),
+                code.tables.reader_contexts.clone(),
+            ),
+            declaration.definition.clone(),
+            declaration.metadata.clone().unwrap(),
+            declaration.generation,
+        );
+        let runtime = crate::bbp_evaluator::BbpRuntime::new(&Default::default()).unwrap();
+        let evaluations = || {
+            let counts = runtime.helper_counts();
+            counts.units_evaluated + counts.units_shared
+        };
+        // Each fresh task must register the reader tables and materialize
+        // its own function once. Hits must do neither, including the VM work
+        // of a registration whose tables have not changed.
+        for declaration in [declaration, &installed] {
+            let mut functions = Vec::new();
+            for _ in 0..2 {
+                let engine = runtime.evaluator().unwrap();
+                let before = evaluations();
+                let function = declaration.function(&engine, &host.engine).unwrap();
+                assert_eq!(evaluations(), before + 2);
+                for _ in 0..4 {
+                    assert_eq!(
+                        declaration.function(&engine, &host.engine).unwrap(),
+                        function
+                    );
+                    assert_eq!(evaluations(), before + 2, "cache hit registered tables");
+                }
+                functions.push(function);
+            }
+            assert_ne!(functions[0].session, functions[1].session);
+        }
+    }
+
     #[cfg(feature = "bbp-macros")]
     #[test]
     fn native_source_macro_preserves_datum_identity_across_expansions() {

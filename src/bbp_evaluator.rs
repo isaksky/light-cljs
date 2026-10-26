@@ -1795,6 +1795,15 @@ impl MacroEvaluator for BbpEvaluator {
             .fetch_add(1, Ordering::Relaxed);
         self.evaluate(&format!("({source})(globalThis.__lightNativeRuntime)"))
     }
+    fn cached_source_macro_function(&self, identity: usize) -> Option<ValueId> {
+        self.context
+            .borrow()
+            .as_ref()?
+            .macro_functions
+            .borrow()
+            .get(&identity)
+            .copied()
+    }
     fn source_macro_function(&self, identity: usize, source: &str) -> Result<ValueId, EvalError> {
         let cx = self.cx()?;
         if let Some(&function) = cx.macro_functions.borrow().get(&identity) {
