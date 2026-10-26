@@ -600,6 +600,7 @@ impl ObjectTable {
     /// moved into one growing `Vec` cost a fresh multi-MiB allocation and
     /// copy per pause), so the pause copies one pointer per object and the
     /// caller frees each box with its contents after the pause.
+    #[expect(clippy::vec_box, reason = "the boxes are the slots' own; see above")]
     pub(super) fn sweep(&mut self) -> Vec<Box<HeapObject>> {
         let mut garbage = Vec::new();
         for (segment_index, segment) in self.segments.iter().enumerate() {
