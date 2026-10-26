@@ -224,6 +224,35 @@ It uses its own printer protocol so it can run before light-cljs-513's native
 core printer services land. End-to-end Penpot validation with those services
 still requires integrating light-cljs-513; this change does not duplicate them.
 
+At engine checkpoint `23306640`, rebased on `26512b2f`, both documented Penpot
+entries were rerun with five absolute read-only source roots, `--jobs 1
+--no-cache` and the documented budgets. `app.render` exits 1 after 13 seconds at
+`matrix.cljc:251:4`, expanding `app.common.data.macros/assert!`, with
+`unsupported operation: native macro runtime core.prStr`. `app.main` exits 1
+after 16 seconds at `app/config.cljs:150:9`, expanding `app.common.logging/wrn`,
+with `unsupported operation: native macro runtime core.currentNs`. These are
+the earlier light-cljs-513 service boundaries, so this tree cannot yet validate
+the real Transit printer extension end to end. The source regression's next
+boundary is the opaque package `get` trap; rerun Penpot after integrating 513.
+
+On macOS arm64 with Rust/Cargo 1.99.1 and Node 26.12.1, the rebased engine passes
+2,115 tests and seven doctests. Native macro integration passes 71 tests plus
+the source extension regression; native/QuickJS integration passes 73 plus that
+regression. All 35 native evaluator unit tests pass. The unfiltered native-only
+compiler library has 256 passes and 27 failures requiring legacy services or
+bootstrap comparisons; restoring the engine VM sources to `26512b2f` reproduces
+the same 27 failing tests and pass count. Strict engine Clippy retains the nine
+existing diagnostics in `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+`clippy::byte_char_slices`; allowing only these categories passes engine
+all-target and native/QuickJS compiler library/binary/source-regression lint.
+Format checks pass.
+QuickJS-only available targets have 822 passes and the two documented environment
+failures (playground workspace discovery and denied `ps`); the compiler integration
+target and all-target compiler lint cannot compile eight missing research includes.
+Those QuickJS results precede the rebase, whose compiler changes affect native
+emission and evaluation. The research tree remains untouched; default V8 checks
+remain with the orchestrator.
+
 ### Bootstrap macro audit (light-cljs-509, 2026-10-26)
 
 The native branch of `compiler_bootstrap::build_in` keeps an empty bootstrap
