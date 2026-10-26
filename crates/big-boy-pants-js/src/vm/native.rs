@@ -4001,6 +4001,31 @@ pub(crate) fn start_instanceof(state: &mut VmState, heap: &Heap) -> Result<(), F
     }
 }
 
+pub(crate) fn start_in(state: &mut VmState, heap: &Heap) -> Result<(), Fault> {
+    let [key, base] = operands::<2>(state)?;
+    if !matches!(base, Value::Object(_)) {
+        // Retain In's base-before-key validation and diagnostic.
+        property::in_operator(heap, state.diag.task, &key, &base)?;
+        return Err(Fault::Internal("in accepted a primitive base"));
+    }
+    let key = property::to_property_key(&key)?;
+    let presence = property::probe(heap, state.diag.task, &base, &key)?;
+    state.pop()?;
+    state.pop()?;
+    match presence {
+        property::Presence::Value(value) => state.push(Value::Bool(value)),
+        property::Presence::Proxy(target) => {
+            push_native(
+                state,
+                NativeState::Proxy(Box::new(super::proxy::State::new(
+                    super::proxy::Mode::Has { target, key },
+                ))),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Operands whose primitive completion is ToString rather than ToNumber.
 fn string_operand(target: ConvertTarget, index: usize) -> bool {
     use ConvertTarget::*;

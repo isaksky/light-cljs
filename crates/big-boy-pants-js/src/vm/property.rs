@@ -727,6 +727,20 @@ pub(crate) fn has_property(
     lookup(heap, task, base, key, true, false).map(|found| found.is_some())
 }
 
+/// HasProperty stops at the first Proxy so the VM can run its trap without
+/// retaining a Rust property-walk frame. Ordinary presence never calls getters.
+pub(crate) enum Presence {
+    Value(bool),
+    Proxy(ObjectId),
+}
+
+pub(crate) fn probe(heap: &Heap, task: TaskId, base: &Value, key: &Key) -> Result<Presence, Fault> {
+    match lookup_cursor(heap, task, base, key, LookupMode::Probe, None)? {
+        LookupResult::Read(found) => Ok(Presence::Value(found.is_some())),
+        LookupResult::Proxy(id) => Ok(Presence::Proxy(id)),
+    }
+}
+
 /// `key in base` (`In`, clj-quickjs-74; QuickJS `OP_in`,
 /// `js_operator_in`): a `base` that is not an object is a catchable
 /// `TypeError`, checked before the key is converted; then
@@ -798,6 +812,42 @@ fn lookup_cached(
     conversion: bool,
     cache: Option<(PropertyKey, &InlineCache)>,
 ) -> Result<Option<Read>, Fault> {
+    let mode = if has {
+        LookupMode::Has
+    } else if conversion {
+        LookupMode::Conversion
+    } else {
+        LookupMode::Read
+    };
+    match lookup_cursor(heap, task, base, key, mode, cache)? {
+        LookupResult::Read(found) => Ok(found),
+        LookupResult::Proxy(_) => Err(Fault::Internal("leaf lookup suspended at a Proxy")),
+    }
+}
+
+enum LookupResult {
+    Read(Option<Read>),
+    Proxy(ObjectId),
+}
+
+enum LookupMode {
+    Read,
+    Conversion,
+    Has,
+    Probe,
+}
+
+fn lookup_cursor(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    key: &Key,
+    mode: LookupMode,
+    cache: Option<(PropertyKey, &InlineCache)>,
+) -> Result<LookupResult, Fault> {
+    use LookupResult::Read as Found;
+    let has = matches!(mode, LookupMode::Has | LookupMode::Probe);
+    let conversion = matches!(mode, LookupMode::Conversion);
     // A primitive base reads its wrapper's own properties, then its
     // wrapper's prototype without allocating a wrapper. Accessors receive
     // the original base through the VM's generic call path.
@@ -805,10 +855,10 @@ fn lookup_cached(
         Value::Object(id) => *id,
         // A presence check makes no index string.
         Value::String(s) if has && string_own_flags(s, key).is_some() => {
-            return Ok(Some(Read::Value(Value::Undefined)));
+            return Ok(Found(Some(Read::Value(Value::Undefined))));
         }
         Value::String(s) if !has && let Some(own) = string_own_property(heap, s, key)? => {
-            return Ok(Some(Read::Value(own.value)));
+            return Ok(Found(Some(Read::Value(own.value))));
         }
         _ => primitive_prototype(heap, base, key)?,
     };
@@ -832,7 +882,7 @@ fn lookup_cached(
                 continue;
             };
             match k.and_then(|k| view.get_own(k)) {
-                Some(property) => return Ok(Some(Read::property(property, has))),
+                Some(property) => return Ok(Found(Some(Read::property(property, has)))),
                 None if realm.is_some_and(|r| id == r.date_prototype)
                     && matches!(key, Key::Name(name)
                         if name == &JsString::from("toJSON")) =>
@@ -840,7 +890,7 @@ fn lookup_cached(
                     // toJSON remains deferred. Presence checks neither
                     // retrieve nor run it.
                     if has {
-                        return Ok(Some(Read::Value(Value::Undefined)));
+                        return Ok(Found(Some(Read::Value(Value::Undefined))));
                     }
                     // Falling through would let JSON.stringify encode Date
                     // as an ordinary object.
@@ -859,7 +909,7 @@ fn lookup_cached(
                         id = prototype;
                         continue;
                     }
-                    None => return Ok(None),
+                    None => return Ok(Found(None)),
                 },
             }
         }
@@ -906,6 +956,9 @@ fn lookup_cached(
             .unwrap_or(Err(Fault::Internal("property base was reclaimed")))?;
         match step {
             Lookup::Exotic(Exotic::Proxy) => {
+                if matches!(mode, LookupMode::Probe) {
+                    return Ok(LookupResult::Proxy(id));
+                }
                 id = super::proxy::forward(heap, task, id, if has { "has" } else { "get" })?;
                 // Proxy forwarding has its own bound; do not charge its
                 // classification as an additional prototype hop.
@@ -921,14 +974,15 @@ fn lookup_cached(
                                 .map(|p| Read::Value(p.value))
                         }
                     })
-                    .transpose();
+                    .transpose()
+                    .map(Found);
             }
             Lookup::Exotic(Exotic::Typed(view, index)) => {
-                return view.get(heap, index).map(|v| v.map(Read::Value));
+                return view.get(heap, index).map(|v| Found(v.map(Read::Value)));
             }
-            Lookup::Found(v) => return Ok(Some(v)),
+            Lookup::Found(v) => return Ok(Found(Some(v))),
             Lookup::Next(Some(prototype)) => id = prototype,
-            Lookup::Next(None) => return Ok(None),
+            Lookup::Next(None) => return Ok(Found(None)),
             Lookup::NeedsName => interned = Some(key.lookup(heap)),
             Lookup::Function => match if conversion {
                 // Conversion asks only for valueOf/toString, never for
@@ -937,7 +991,7 @@ fn lookup_cached(
                     Some(record) => record,
                     None => match function::inheritance_prototype(heap, id)? {
                         Some(prototype) => prototype,
-                        None => return Ok(None),
+                        None => return Ok(Found(None)),
                     },
                 };
                 Ok(FunctionRead::Continue(next))
@@ -946,7 +1000,7 @@ fn lookup_cached(
             } else {
                 function::read(heap, task, id, key)
             }? {
-                FunctionRead::Found(v) => return Ok(Some(Read::Value(v))),
+                FunctionRead::Found(v) => return Ok(Found(Some(Read::Value(v)))),
                 FunctionRead::Continue(next) => {
                     id = next;
                     // The read may have built the realm (and interned its

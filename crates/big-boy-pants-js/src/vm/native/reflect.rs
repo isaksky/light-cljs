@@ -354,12 +354,13 @@ impl State {
                     None => Ok(Action::Return(Value::Undefined)),
                 }
             }
-            Builtin::ReflectHas => boolean(property::has_property(
-                heap,
-                task,
-                &self.arg(0),
-                &self.key()?,
-            )?),
+            Builtin::ReflectHas => {
+                self.stage = Stage::Return;
+                Ok(Action::Instruction {
+                    instr: Instr::In,
+                    operands: vec![self.key.clone(), self.arg(0)],
+                })
+            }
             Builtin::ReflectDeleteProperty => boolean(property::delete(
                 heap,
                 task,

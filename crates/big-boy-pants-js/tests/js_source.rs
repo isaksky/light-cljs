@@ -29307,7 +29307,6 @@ fn proxy_invariants_reflection_and_forwarding() {
     }
     for (trap, operation) in [
         ("set", "p.x=1"),
-        ("has", "'x' in p"),
         ("deleteProperty", "delete p.x"),
         ("defineProperty", "Object.defineProperty(p,'x',{value:1})"),
         ("getPrototypeOf", "Object.getPrototypeOf(p)"),

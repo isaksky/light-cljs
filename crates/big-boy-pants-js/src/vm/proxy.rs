@@ -187,6 +187,7 @@ pub(crate) fn unwrapped(heap: &Heap, mut id: ObjectId) -> Result<ObjectId, Fault
 pub(crate) enum Output {
     Keys(keys::ChargedKeys),
     Descriptor(Option<Property>),
+    Boolean(bool),
 }
 impl Trace for Output {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
@@ -229,11 +230,21 @@ enum Stage {
     TargetDescriptor,
     TargetDescriptorResult,
     CheckDescriptor,
+    TargetExtensible,
+    CheckExtensible,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Keys,
+    Descriptor,
+    Has,
+    Extensible,
 }
 #[derive(Debug)]
 struct Operation {
     object: ObjectId,
-    key: Option<Key>, // None: OwnPropertyKeys; Some: GetOwnProperty
+    key: Option<Key>,
+    kind: Kind,
     phase: Stage,
     proxy: Option<Info>,
     value: Value,
@@ -257,9 +268,24 @@ impl Operation {
     fn descriptor(object: ObjectId, key: Key) -> Self {
         Self::new(object, Some(key))
     }
+    fn has(object: ObjectId, key: Key) -> Self {
+        let mut op = Self::new(object, Some(key));
+        op.kind = Kind::Has;
+        op
+    }
+    fn extensible(object: ObjectId) -> Self {
+        let mut op = Self::new(object, None);
+        op.kind = Kind::Extensible;
+        op
+    }
     fn new(object: ObjectId, key: Option<Key>) -> Self {
         Self {
             object,
+            kind: if key.is_some() {
+                Kind::Descriptor
+            } else {
+                Kind::Keys
+            },
             key,
             phase: Stage::Start,
             proxy: None,
@@ -278,10 +304,11 @@ impl Operation {
         }
     }
     fn trap(&self) -> &'static str {
-        if self.key.is_some() {
-            "getOwnPropertyDescriptor"
-        } else {
-            "ownKeys"
+        match self.kind {
+            Kind::Keys => "ownKeys",
+            Kind::Descriptor => "getOwnPropertyDescriptor",
+            Kind::Has => "has",
+            Kind::Extensible => "isExtensible",
         }
     }
     fn key_value(&self, heap: &Heap) -> Result<Value, Fault> {
@@ -390,12 +417,30 @@ impl Operations {
         let op = self.stack.last_mut().unwrap();
         match op.phase {
             Stage::Start => {
+                if op.kind == Kind::Has {
+                    match property::probe(
+                        heap,
+                        task,
+                        &Value::Object(op.object),
+                        op.key.as_ref().unwrap(),
+                    )? {
+                        property::Presence::Value(value) => {
+                            return self.finish(Output::Boolean(value));
+                        }
+                        property::Presence::Proxy(id) => op.object = id,
+                    }
+                }
                 let Some(p) = inspect(heap, task, op.object)? else {
-                    let out = match &op.key {
-                        Some(k) => Output::Descriptor(property::get_own_property(
-                            heap, task, op.object, k,
+                    let out = match op.kind {
+                        Kind::Has => return Err(Fault::Internal("HasProperty lost its Proxy")),
+                        Kind::Extensible => Output::Boolean(extensible(heap, task, op.object)?),
+                        Kind::Descriptor => Output::Descriptor(property::get_own_property(
+                            heap,
+                            task,
+                            op.object,
+                            op.key.as_ref().unwrap(),
                         )?),
-                        None => {
+                        Kind::Keys => {
                             if self.json_keys {
                                 super::json::check_key_snapshot(heap, task, op.object)?;
                             }
@@ -439,7 +484,8 @@ impl Operations {
             Stage::Trap => {
                 let p = op.proxy.as_ref().unwrap();
                 if matches!(op.value, Value::Undefined | Value::Null) {
-                    let sub = Operation::new(p.target, op.key.clone());
+                    let mut sub = Operation::new(p.target, op.key.clone());
+                    sub.kind = op.kind;
                     op.phase = Stage::Forward;
                     self.stack.push(sub);
                 } else {
@@ -465,6 +511,17 @@ impl Operations {
             }
             Stage::TrapResult => {
                 op.value = result(input)?;
+                if op.kind == Kind::Has {
+                    if op.value.truthy() {
+                        return self.finish(Output::Boolean(true));
+                    }
+                    op.phase = Stage::TargetDescriptor;
+                    return Ok(Progress::Action(Action::Continue));
+                }
+                if op.kind == Kind::Extensible {
+                    op.phase = Stage::TargetExtensible;
+                    return Ok(Progress::Action(Action::Continue));
+                }
                 if op.key.is_some() {
                     match &op.value {
                         Value::Undefined => op.phase = Stage::TargetDescriptor,
@@ -632,6 +689,16 @@ impl Operations {
                     return Err(Fault::Internal("Proxy invariant descriptor missing"));
                 };
                 op.target_descriptor = target;
+                if op.kind == Kind::Has {
+                    let Some(target) = &op.target_descriptor else {
+                        return self.finish(Output::Boolean(false));
+                    };
+                    if !target.flags.configurable {
+                        return Err(error("has cannot hide a non-configurable target property"));
+                    }
+                    op.phase = Stage::TargetExtensible;
+                    return Ok(Progress::Action(Action::Continue));
+                }
                 if op.value == Value::Undefined && op.target_descriptor.is_none() {
                     return self.finish(Output::Descriptor(None));
                 }
@@ -661,6 +728,29 @@ impl Operations {
                 )?;
                 let out = op.reported.take();
                 return self.finish(Output::Descriptor(out));
+            }
+            Stage::TargetExtensible => {
+                op.phase = Stage::CheckExtensible;
+                let target = op.proxy.as_ref().unwrap().target;
+                self.stack.push(Operation::extensible(target));
+            }
+            Stage::CheckExtensible => {
+                let Some(Output::Boolean(extensible)) = self.output.take() else {
+                    return Err(Fault::Internal("Proxy target extensibility missing"));
+                };
+                if op.kind == Kind::Has {
+                    if !extensible {
+                        return Err(error(
+                            "has cannot hide an own property of a non-extensible target",
+                        ));
+                    }
+                    return self.finish(Output::Boolean(false));
+                }
+                let reported = op.value.truthy();
+                if reported != extensible {
+                    return Err(error("isExtensible must match the target"));
+                }
+                return self.finish(Output::Boolean(reported));
             }
         }
         Ok(Progress::Action(Action::Continue))
@@ -734,6 +824,10 @@ fn read(heap: &Heap, task: TaskId, base: &Value, key: Key) -> Result<Progress, F
 
 #[derive(Debug)]
 pub(crate) enum Mode {
+    Has {
+        target: ObjectId,
+        key: Key,
+    },
     ForIn(Value),
     Keys {
         target: ObjectId,
@@ -830,6 +924,7 @@ impl State {
             self.started = true;
             match &self.mode {
                 Mode::ForIn(_) => {}
+                Mode::Has { target, key } => self.ops.start(Operation::has(*target, key.clone())),
                 Mode::Keys { target, .. } => self.ops.start(Operation::keys(*target)),
                 Mode::Set {
                     target,
@@ -879,6 +974,10 @@ impl State {
                 Progress::Action(a) => return Ok(a),
                 Progress::Ready(_) => unreachable!(),
                 Progress::Done(out) => match &self.mode {
+                    Mode::Has { .. } => match out {
+                        Output::Boolean(value) => return Ok(Action::Return(Value::Bool(value))),
+                        _ => return Err(Fault::Internal("Proxy has result missing")),
+                    },
                     Mode::Set {
                         target,
                         key,
@@ -941,6 +1040,9 @@ impl State {
                         };
                     }
                     Mode::ForIn(iterator) => match out {
+                        Output::Boolean(_) => {
+                            return Err(Fault::Internal("Proxy for-in boolean result"));
+                        }
                         Output::Keys(keys) => keys::for_in_set_keys(heap, iterator, keys)?,
                         Output::Descriptor(p) => {
                             let (_, key) = self.pending.take().unwrap();
@@ -956,6 +1058,9 @@ impl State {
                         }
                     },
                     Mode::Keys { .. } => match out {
+                        Output::Boolean(_) => {
+                            return Err(Fault::Internal("Proxy keys boolean result"));
+                        }
                         Output::Keys((keys, charge)) => {
                             self.keys = keys;
                             self.keys_charge = charge;
@@ -971,6 +1076,9 @@ impl State {
                     | Mode::Frozen(target)
                     | Mode::Seal(target)
                     | Mode::Sealed(target) => match out {
+                        Output::Boolean(_) => {
+                            return Err(Fault::Internal("Proxy integrity boolean result"));
+                        }
                         Output::Keys((keys, charge)) => {
                             self.keys = keys;
                             self.keys_charge = charge;
@@ -1103,6 +1211,7 @@ impl Trace for State {
         match &self.mode {
             Mode::ForIn(it) => it.trace(visit),
             Mode::Keys { target, .. }
+            | Mode::Has { target, .. }
             | Mode::Set { target, .. }
             | Mode::Descriptor { target, .. }
             | Mode::Enumerable { target, .. } => visit((*target).into()),
@@ -1112,7 +1221,11 @@ impl Trace for State {
             | Mode::Sealed(target) => visit((*target).into()),
         }
         match &self.mode {
-            Mode::Set {
+            Mode::Has {
+                key: Key::Symbol(s),
+                ..
+            }
+            | Mode::Set {
                 key: Key::Symbol(s),
                 ..
             }
