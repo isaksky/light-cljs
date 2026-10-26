@@ -779,3 +779,38 @@ fn releasing_a_deferred_value_at_the_memory_limit_recovers() {
         ));
     }
 }
+
+/// At an exhausted heap a producer's or initializer's failure message is
+/// still rooted (uncharged), so its waiters can be completed with it; the
+/// runtime recovers once the data filling it is dropped. Delivery of that
+/// root to parked consumers is the path the producer-failure tests cover.
+#[test]
+fn failure_roots_survive_an_exhausted_heap() {
+    let options = EvaluatorOptions {
+        memory_limit: 4 << 20,
+        ..Default::default()
+    };
+    let shared = BbpRuntime::new(&options).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let runtime = &shared.0.runtime;
+    let mut filler = vec![];
+    for units in [4096, 16] {
+        while let Some(root) = runtime.try_root(Primitive::string(&"x".repeat(units))) {
+            filler.push(root);
+        }
+    }
+    let message = "fixture helper failed";
+    assert!(runtime.try_root(Primitive::string(message)).is_none());
+    let failure = evaluator.failure_root(message);
+    assert_eq!(
+        failure.string().map(|s| s.to_string_lossy()).as_deref(),
+        Some(message)
+    );
+    drop(filler);
+    let value = evaluator.evaluate_unit(&churn(1000)).unwrap();
+    assert!(matches!(
+        evaluator.values.borrow()[&value.index].view(),
+        ValueView::Number(999.0)
+    ));
+    assert!(runtime.heap_stats().peak_managed_bytes <= options.memory_limit);
+}
