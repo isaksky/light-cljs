@@ -18680,6 +18680,15 @@ fn objects_convert_with_to_primitive() {
         string("function f() {} `${f.bind(null)}`"),
         "[object Function]"
     );
+    for function in ["function() {}", "(function() {}).bind(null)"] {
+        for receiver in ["f", "new Proxy(f, {})", "new Proxy(new Proxy(f, {}), {})"] {
+            assert_eq!(
+                string(&format!("let f = {function}; String({receiver})")),
+                "[object Function]",
+                "{receiver} wrapping {function}"
+            );
+        }
+    }
     assert_eq!(
         num("function f(a) { return this.n + a; } let o = {valueOf: f.bind({n: 4}, 3)}; o * 2"),
         14.0

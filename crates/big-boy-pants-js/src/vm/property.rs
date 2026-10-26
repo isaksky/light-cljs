@@ -609,7 +609,11 @@ pub(crate) enum Read {
 #[derive(Clone, Debug)]
 pub(crate) enum Deferred {
     Getter(Value),
-    Proxy { target: ObjectId, key: Key },
+    Proxy {
+        target: ObjectId,
+        key: Key,
+        conversion: bool,
+    },
 }
 
 impl Deferred {
@@ -620,10 +624,15 @@ impl Deferred {
                 this: receiver,
                 args: vec![],
             },
-            Self::Proxy { target, key } => super::native::Action::GetProperty {
+            Self::Proxy {
+                target,
+                key,
+                conversion,
+            } => super::native::Action::GetProperty {
                 target,
                 key,
                 receiver,
+                conversion,
             },
         }
     }
@@ -988,6 +997,7 @@ fn lookup_cursor(
                     return Ok(Found(Some(Read::Deferred(Deferred::Proxy {
                         target: id,
                         key: key.clone(),
+                        conversion,
                     }))));
                 }
                 id = super::proxy::forward(heap, task, id, if has { "has" } else { "get" })?;
@@ -1063,8 +1073,19 @@ pub(crate) fn conversion_method(
     base: &Value,
     name: &JsString,
 ) -> Result<Read, Fault> {
-    lookup(heap, task, base, &Key::from_name(name), false, true)
+    read_conversion(heap, task, base, &Key::from_name(name))
         .map(|v| v.unwrap_or(Read::Value(Value::Undefined)))
+}
+
+/// Preserve conversion's fallback past unavailable Function.prototype methods
+/// when a transparent Proxy forwards the lookup, including through prototypes.
+pub(super) fn read_conversion(
+    heap: &Heap,
+    task: TaskId,
+    base: &Value,
+    key: &Key,
+) -> Result<Option<Read>, Fault> {
+    lookup(heap, task, base, key, false, true)
 }
 
 /// What the receiver's part of a write did.

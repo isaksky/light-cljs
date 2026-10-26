@@ -86,6 +86,17 @@ fn promise_then_catch_jobs() {
 }
 
 #[test]
+fn proxy_then_get_failure_rejects_with_original_reason() {
+    let (result, effects) = run(
+        "let p = Promise.resolve(new Proxy({}, {get(t,k) {if(k !== 'then') throw 99; throw 42;}}));
+         p.then(value => __rt.effect(0, 'fulfilled'), reason => __rt.effect(0, reason));
+         true;",
+    );
+    assert_eq!(result, ValueView::Bool(true));
+    assert_eq!(effects, [Primitive::Number(42.)]);
+}
+
+#[test]
 fn intrinsic_promise_resolve_wraps_subclass() {
     let (result, effects) = run(
         "class P extends Promise {then(resolve){resolve(9);}} let p = new P(r => r(7)); let q = Promise.resolve(p); q.then(x => __rt.effect(0,x)); q !== p && Object.getPrototypeOf(q) === Promise.prototype",

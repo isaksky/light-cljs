@@ -67,8 +67,7 @@ function typeError(f, label) {let e; try {f();} catch (x) {e=x;} assert(e instan
     assert(JSON.stringify(new Proxy({x:1},{get(t,k){return t[k];}}))==='{"x":1}','JSON reads');
     let a=[...new Proxy([1,2],{get(t,k,r){return Reflect.get(t,k,r);}})];assert(a.join(',')==='1,2','iterator reads');
     let rejected=Promise.resolve(new Proxy({},{get(){throw 42;}}));
-    rejected.catch(()=>{});
-    assert(rejected instanceof Promise,'promise read failure is rejection');
+    rejected.then(()=>{throw 'unexpected fulfillment';}, reason=>assert(reason===42,'promise rejection reason'));
 }
 true;
 {

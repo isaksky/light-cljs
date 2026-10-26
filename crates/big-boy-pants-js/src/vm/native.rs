@@ -304,6 +304,7 @@ pub(crate) enum Action {
         target: ObjectId,
         key: property::Key,
         receiver: Value,
+        conversion: bool,
     },
     /// Execute a property instruction and deliver its result to this native.
     Instruction {
@@ -3700,6 +3701,7 @@ fn apply_action(
             target,
             key,
             receiver,
+            conversion,
         } => {
             if state
                 .natives
@@ -3717,6 +3719,7 @@ fn apply_action(
                     target,
                     key,
                     receiver,
+                    conversion,
                 },
                 0,
             )?;
@@ -3958,7 +3961,7 @@ fn push_native(state: &mut VmState, native: NativeState) -> Result<(), Fault> {
     Ok(())
 }
 
-fn index_key(index: u64) -> property::Key {
+pub(super) fn index_key(index: u64) -> property::Key {
     if index < u64::from(u32::MAX) {
         property::Key::Index(index as u32)
     } else {
@@ -3980,7 +3983,7 @@ pub(super) fn has_property(base: Value, key: property::Key) -> Action {
     }
 }
 
-fn to_length(value: &Value) -> Result<u64, Fault> {
+pub(super) fn to_length(value: &Value) -> Result<u64, Fault> {
     let number = dispatch::to_number(value)?;
     Ok(if number.is_nan() || number <= 0.0 {
         0
@@ -4006,13 +4009,18 @@ pub(crate) fn read_result(
                 },
             );
         }
-        property::Read::Deferred(property::Deferred::Proxy { target, key }) => {
+        property::Read::Deferred(property::Deferred::Proxy {
+            target,
+            key,
+            conversion,
+        }) => {
             return start_proxy(
                 state,
                 super::proxy::Mode::Get {
                     target,
                     key,
                     receiver: this,
+                    conversion,
                 },
                 0,
             );

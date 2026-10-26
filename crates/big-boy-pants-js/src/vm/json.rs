@@ -682,8 +682,8 @@ pub(super) const MAX_NUMBER_CONVERSION_UNITS: usize = 4096;
 #[derive(Debug)]
 enum Members {
     Array {
-        next: u32,
-        len: u32,
+        next: u64,
+        len: u64,
     },
     Object {
         keys: std::vec::IntoIter<keys::OwnKey>,
@@ -708,6 +708,9 @@ enum AfterIndent {
 
 #[derive(Debug)]
 enum StringifyStage {
+    ArrayLength,
+    ArrayLengthValue,
+    ArrayLengthNumber,
     ProxyKeys,
     Space,
     SpaceConverted,
@@ -877,41 +880,26 @@ impl Stringifier {
                 "JSON.stringify nesting limit of 512 exceeded".into(),
             ));
         }
-        let len = heap
-            .read(super::proxy::unwrapped(heap, id)?, |o| match o {
-                HeapObject::Array(a) => {
-                    if let Some(owner) = a.object().owner()
-                        && owner != task
-                    {
-                        return Err(Fault::ForeignObject {
-                            owner: Some(owner),
-                            caller: task,
-                        });
-                    }
-                    Ok(Some(a.length()))
-                }
-                _ => Ok(None),
-            })
-            .ok_or(Fault::Internal("JSON.stringify object reclaimed"))??;
-        let members = if let Some(len) = len {
-            self.append(heap, JsString::from("["))?;
-            Members::Array { next: 0, len }
-        } else {
-            if super::proxy::inspect(heap, task, id)?.is_some() {
-                self.proxy_keys = Some(Box::new(super::proxy::State::json_keys(id)));
-                self.stage = StringifyStage::ProxyKeys;
-                return Ok(());
-            }
-            check_key_snapshot(heap, task, id)?;
-            let (mut keys, charge) =
-                keys::own_property_keys_charged(heap, task, id, keys::KeyFilter::Enumerable)?;
-            keys.retain(|key| !matches!(key.key, property::Key::Symbol(_)));
-            self.append(heap, JsString::from("{"))?;
-            Members::Object {
-                keys: keys.into_iter(),
-                _charge: charge,
-                emitted: false,
-            }
+        // IsArray follows Proxy targets without traps; SerializeJSONArray
+        // subsequently reads and converts length on the original receiver.
+        if builtin::is_array(heap, &self.value)? {
+            self.stage = StringifyStage::ArrayLength;
+            return Ok(());
+        }
+        if super::proxy::inspect(heap, task, id)?.is_some() {
+            self.proxy_keys = Some(Box::new(super::proxy::State::json_keys(id)));
+            self.stage = StringifyStage::ProxyKeys;
+            return Ok(());
+        }
+        check_key_snapshot(heap, task, id)?;
+        let (mut keys, charge) =
+            keys::own_property_keys_charged(heap, task, id, keys::KeyFilter::Enumerable)?;
+        keys.retain(|key| !matches!(key.key, property::Key::Symbol(_)));
+        self.append(heap, JsString::from("{"))?;
+        let members = Members::Object {
+            keys: keys.into_iter(),
+            _charge: charge,
+            emitted: false,
         };
         self.active.insert(id);
         self.stack.push(StringifyContainer {
@@ -934,6 +922,46 @@ impl Stringifier {
         use StringifyStage as S;
         use StringifyStep as A;
         match std::mem::replace(&mut self.stage, S::Next) {
+            S::ArrayLength => {
+                match property::read(
+                    heap,
+                    task,
+                    &self.value,
+                    &property::Key::Name(JsString::from("length")),
+                )? {
+                    Some(property::Read::Deferred(read)) => {
+                        self.stage = S::ArrayLengthValue;
+                        return Ok(A::Native(read.action(self.value.clone())));
+                    }
+                    read => {
+                        self.stage = S::ArrayLengthNumber;
+                        return Ok(A::ToNumber(match read {
+                            Some(property::Read::Value(value)) => value,
+                            _ => Value::Undefined,
+                        }));
+                    }
+                }
+            }
+            S::ArrayLengthValue => {
+                self.stage = S::ArrayLengthNumber;
+                return Ok(A::ToNumber(
+                    input.ok_or(Fault::Internal("JSON.stringify missing array length"))?,
+                ));
+            }
+            S::ArrayLengthNumber => {
+                let len = super::native::to_length(
+                    &input.ok_or(Fault::Internal("JSON.stringify missing length conversion"))?,
+                )?;
+                self.append(heap, JsString::from("["))?;
+                let Value::Object(id) = self.value else {
+                    return Err(Fault::Internal("JSON.stringify array container"));
+                };
+                self.active.insert(id);
+                self.stack.push(StringifyContainer {
+                    value: std::mem::replace(&mut self.value, Value::Undefined),
+                    members: Members::Array { next: 0, len },
+                });
+            }
             S::ProxyKeys => {
                 let input = input
                     .map(super::native::Input::CallResult)
@@ -1208,7 +1236,7 @@ impl Stringifier {
                 };
                 let (key, comma) = match &mut top.members {
                     Members::Array { next, len } if *next < *len => {
-                        let key = property::Key::Index(*next);
+                        let key = super::native::index_key(*next);
                         let comma = *next != 0;
                         *next += 1;
                         (Some(key), comma)

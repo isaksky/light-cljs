@@ -255,6 +255,7 @@ struct Operation {
     proxy: Option<Info>,
     value: Value,
     receiver: Value,
+    conversion: bool,
     keys: Vec<keys::OwnKey>,
     target_keys: Vec<keys::OwnKey>,
     /// Charges of `keys` (grown per trap-result element) and `target_keys`.
@@ -269,10 +270,11 @@ struct Operation {
     missing_nonconfig: bool,
 }
 impl Operation {
-    fn get(object: ObjectId, key: Key, receiver: Value) -> Self {
+    fn get(object: ObjectId, key: Key, receiver: Value, conversion: bool) -> Self {
         let mut op = Self::new(object, Some(key));
         op.kind = Kind::Get;
         op.receiver = receiver;
+        op.conversion = conversion;
         op
     }
     fn keys(object: ObjectId) -> Self {
@@ -304,6 +306,7 @@ impl Operation {
             proxy: None,
             value: Value::Undefined,
             receiver: Value::Undefined,
+            conversion: false,
             keys: vec![],
             target_keys: vec![],
             keys_charge: GrowthCharge::default(),
@@ -434,7 +437,12 @@ impl Operations {
         match op.phase {
             Stage::Start => {
                 if op.kind == Kind::Get {
-                    match property::read(
+                    let read = if op.conversion {
+                        property::read_conversion
+                    } else {
+                        property::read
+                    };
+                    match read(
                         heap,
                         task,
                         &Value::Object(op.object),
@@ -523,6 +531,7 @@ impl Operations {
                     let mut sub = Operation::new(p.target, op.key.clone());
                     sub.kind = op.kind;
                     sub.receiver = op.receiver.clone();
+                    sub.conversion = op.conversion;
                     op.phase = Stage::Forward;
                     self.stack.push(sub);
                 } else {
@@ -898,6 +907,7 @@ pub(crate) enum Mode {
         target: ObjectId,
         key: Key,
         receiver: Value,
+        conversion: bool,
     },
     Has {
         target: ObjectId,
@@ -1003,9 +1013,13 @@ impl State {
                     target,
                     key,
                     receiver,
-                } => self
-                    .ops
-                    .start(Operation::get(*target, key.clone(), receiver.clone())),
+                    conversion,
+                } => self.ops.start(Operation::get(
+                    *target,
+                    key.clone(),
+                    receiver.clone(),
+                    *conversion,
+                )),
                 Mode::Has { target, key } => self.ops.start(Operation::has(*target, key.clone())),
                 Mode::Keys { target, .. } => self.ops.start(Operation::keys(*target)),
                 Mode::Set {
