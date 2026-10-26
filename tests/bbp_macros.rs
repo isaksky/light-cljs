@@ -42,6 +42,13 @@ fn program_output(js: &str) -> String {
 fn native_core_services_match_quickjs() {
     for (body, expected) in [
         (
+            r#"[(vec (interpose 0 [1 2 3])) (vec (interpose 0 nil)) (vec (interpose 0 [1]))
+              (let [xf (interpose 0)] [(into [] xf [1 2]) (into [] xf [3 4])])
+              (transduce (interpose :sep) (fn ([a] a) ([a x] (if (= x :sep) (reduced (conj a x)) (conj a x)))) [] [1 2 3])
+              (let [a (js/Array.) s (interpose 0 (map (fn [x] (.push a x) x) '(1 2))) x (first s) n (.-length a) y (second s)] [x n y (.-length a)])]"#,
+            "[[1 0 2 0 3] [] [1] [[1 0 2] [3 0 4]] [1 :sep] [1 1 0 2]]",
+        ),
+        (
             r#"[(not= 1 1.0) (not= 1 1 2) (not= nil false) (number? 0) (number? "0")
               (float? 1) (double? 1) (float? nil) (double? false)
               (vec (keep-indexed (fn [i x] (if (even? i) x nil)) [false :skip 2]))
@@ -306,7 +313,12 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
             )
             .unwrap_or_else(|error| panic!("jobs {jobs}, install {installed:?}: {error}"));
             assert_eq!(stats.install.unwrap().installed, installed);
-            assert_eq!(emit_js(&warm), cold, "jobs {jobs}, install {installed:?}");
+            let warm = emit_js(&warm);
+            let difference = warm.lines().zip(cold.lines()).find(|(a, b)| a != b);
+            assert!(
+                warm == cold,
+                "jobs {jobs}, install {installed:?}, first difference: {difference:?}"
+            );
         }
     }
     #[cfg(feature = "quickjs")]
@@ -321,6 +333,54 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
         .unwrap();
         assert_eq!(Some(emit_js(&program)), reference);
     }
+    // Initializer effects run only on misses. As with QuickJS, a provider
+    // whose macros require those allocations to repeat must opt out of cache.
+    // Check this separate, explicitly uncached case across all worker counts.
+    let path = root.join("names/macros.cljs");
+    let provider = std::fs::read_to_string(&path).unwrap();
+    let provider = provider.replace("(ns names.macros)", "(ns ^:light-cljs/no-cache names.macros)")
+        .replace("(defn helper [] [(compiled) (gensym \"helper\")])",
+            "(def seed (gensym \"initializer\")) (defn helper [] [(compiled) (gensym \"helper\") seed])");
+    assert!(provider.contains("(def seed"));
+    std::fs::write(path, provider).unwrap();
+    let mut initializer_reference: Option<String> = None;
+    for (jobs, seed) in [(1, 1), (2, 1), (4, 1), (2, 2), (4, 2), (2, 3), (4, 3)] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(debug_assertions)]
+                perturbation: Some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let js = emit_js(&program);
+        assert!(program_output(&js).contains("initializer"));
+        if let Some(reference) = &initializer_reference {
+            let difference = js.lines().zip(reference.lines()).find(|(a, b)| a != b);
+            assert!(
+                js == *reference,
+                "initializer jobs {jobs}, first difference: {difference:?}"
+            );
+        } else {
+            initializer_reference = Some(js);
+        }
+    }
+    #[cfg(feature = "quickjs")]
+    assert_eq!(
+        Some(light_cljs::compile_namespace("app", &[root.path().to_path_buf()]).unwrap()),
+        initializer_reference
+    );
 }
 
 #[test]

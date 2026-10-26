@@ -683,6 +683,15 @@ const native = (() => {
     take:(n,c)=>takeN(takeN,val(n),c), drop:(n,c)=>dropN(val(n),c),
     takeWhile:(f,c)=>takeWhileFrom(takeWhileFrom,f,c), dropWhile:(f,c)=>dropWhileFrom(f,c),
     interleave:(...cs)=>cs.length===0?__rt.formList():cs.length===1?((c)=>lazy(()=>seqOf(c)))(cs[0]):interleaveAll(interleaveAll,list(cs)),
+    interpose:(...a)=>{
+      if(a.length===2)return dropN(1,interleaveAll(interleaveAll,__rt.formList(repeatForever(repeatForever,a[0]),a[1])));
+      if(a.length!==1)return arity(a.length);
+      const sep=a[0];
+      return rf=>{let started=false;return reducing(rf,(result,input)=>{
+        if(started){result=invoke(rf,result,sep);if(__rt.cljIsReduced(result))return result;}else started=true;
+        return invoke(rf,result,input);
+      });};
+    },
     iterate:(f,x)=>iterateFrom(iterateFrom,f,x),
     repeat:(...a)=>a.length===1?repeatForever(repeatForever,a[0]):a.length===2?takeN(takeN,val(a[0]),repeatForever(repeatForever,a[1])):arity(a.length),
     range:(...a)=>a.length===0?rangeFrom(rangeFrom,0,Infinity,1):a.length===1?rangeFrom(rangeFrom,0,val(a[0]),1)
@@ -826,6 +835,12 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
     if(slot.state===2){__rt.need(unit,4);return slot.value;}
     if(slot.state===1)throw new Error('root initialization cycle: '+name);
     if(slot.state===3)throw slot.value;
+    // Choosing the caller that initializes a shared root is a compiler
+    // registry effect. Its gensyms must belong to the first source-order
+    // demand, even if a later worker reaches this getter first. Wait before
+    // claiming the initializer; parked helper compilation remains parallel.
+    const cell=__rt.effect(65532,0);
+    if(cell!==0)__rt.need(cell,5);
     slot.state=1;
     try{
       const serial=++initializerSerial;
