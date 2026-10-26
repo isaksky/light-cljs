@@ -206,5 +206,5 @@ top frames are SipHash hashing of `TraceEdge` keys in the mark set's
 `HashMap::contains_key` 191, `mark_and_sweep` itself 84) and tracing the live
 `PMap`/`PVector` tries. Each collection marks everything live (the growing
 vector and map), and the copies `next` and `rest` make keep triggering
-collections, so marking work grows with `n²`. light-cljs-477 leaves this to a
-follow-up on the collector's marking cost.
+collections, so marking work grows with `n²`; light-cljs-495 owns the
+collector's marking cost.

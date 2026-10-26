@@ -129,7 +129,7 @@ a native set or map cannot hold two equal members or keys, so such a literal in
 a macro fails with `unsupported operation: native literal set with
 reader-distinct equal members` (or `... map with reader-distinct equal keys`)
 instead of silently losing one. Literals whose members stay distinct are native
-sets and maps as usual.
+sets and maps as usual. Positional native literals are light-cljs-496.
 Plain JavaScript functions and ordinary interop such as `Math.max` run in the same task.
 Direct JavaScript calls, constructors, method calls, instance checks,
 property/index access and property assignment unwrap imported scalar occurrences. For example,

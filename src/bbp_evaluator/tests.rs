@@ -875,6 +875,21 @@ fn large_literals_use_runtime_constructors_that_keep_the_inline_checks() {
     }
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let evaluator = shared.evaluator().unwrap();
+    // Within the limit a large list stays one native constructor: the
+    // function reads no runtime object and publishes.
+    for source in [
+        format!("(fn [] (list {}))", numbers(1025)),
+        format!("(fn [x] [x {}])", numbers(1025)),
+    ] {
+        let code = native(&source);
+        assert!(!code.replace("__rt.", "").contains("rt."), "{source}");
+        let f = evaluator
+            .evaluate_unit(&format!("rt => ({code})(rt)"))
+            .unwrap();
+        let value = evaluator.values.borrow()[&f.index].clone();
+        assert!(shared.0.runtime.publish(&value).is_ok(), "{source}");
+        evaluator.release(f).unwrap();
+    }
     let many = "const a = []; for (let i = 0; i < 300; i++) a.push(i);";
     for (body, outcome) in [
         ("rt.literalSetFromArray([...a, 7])", Err("Duplicate key")),
