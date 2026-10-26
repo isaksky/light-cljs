@@ -6895,15 +6895,6 @@ impl<'a> Emitter<'a> {
                     {
                         self.keep_runtime(root);
                     }
-                    // The native runtime installs an `Object` method under
-                    // the member name interop reads (`(.foo-bar x)` reads
-                    // `foo_bar`), as the legacy `installMethods` munges it.
-                    let name = match name.strip_prefix("Object/") {
-                        Some(member) if self.native_forms => {
-                            format!("Object/{}", crate::analyzer::munge_js_member(member))
-                        }
-                        _ => name.clone(),
-                    };
                     self.string_units(&name.encode_utf16().collect::<Vec<_>>());
                     name == "IFn/-invoke"
                 }
@@ -6928,6 +6919,20 @@ impl<'a> Emitter<'a> {
                 {
                     write!(self.output, ", null, {}", method.params.len()).unwrap();
                 }
+            }
+            // The native runtime installs an `Object` method under the
+            // member name interop reads (`(.foo-bar x)` reads `foo_bar`), as
+            // the legacy `installMethods` munges it: the entry's sixth item.
+            if let MethodDispatch::Builtin(name) = dispatch
+                && let Some(member) = name.strip_prefix("Object/")
+                && self.native_forms
+            {
+                if method.rest.is_none() {
+                    self.output.push_str(", null, null");
+                }
+                self.output.push_str(", ");
+                let member = crate::analyzer::munge_js_member(member);
+                self.string_units(&member.encode_utf16().collect::<Vec<_>>());
             }
             self.output.push(']');
         }

@@ -1334,6 +1334,34 @@ const PROTOCOL_FIXTURES: &[(&str, &str)] = &[
          (js/console.log (pr-str (m)))",
         "[1 [0 5] 1 [0 5] 7 8]\n",
     ),
+    // An Object method taken from one instance runs its type's method on
+    // the receiver it is called with.
+    (
+        "(deftype T [^:mutable a] Object (f [_] [:t a])) (deftype U [^:mutable a] Object (f [_] [:u a])) \
+         (deftype V [a] Object (f [_] [:v a])) (deftype W [a] Object (f [_] [:w a])) \
+         (defmacro m [] [(.call (.-f (T. 0)) (U. 1)) (.call (.-f (V. 2)) (V. 3)) (.call (.-f (V. 4)) (W. 5))]) \
+         (js/console.log (pr-str (m)))",
+        "[[:t 1] [:v 3] [:v 5]]\n",
+    ),
+    // Object methods whose names munge alike share the member the method
+    // first installed last holds.
+    (
+        "(deftype T [^:mutable a] Object (foo-bar [_] 1) (foo_bar [_ x] 2)) \
+         (deftype U [a] Object (foo-bar [_] 3) (foo_bar [_ x] 4)) \
+         (defmacro m [] [(.foo-bar (T. 0)) (.foo_bar (T. 0) 1) (.foo-bar (U. 0)) (.foo_bar (U. 0) 1)]) \
+         (js/console.log (pr-str (m)))",
+        "[2 2 4 4]\n",
+    ),
+    // Variadic Object methods, alone and beside a fixed overload, with too
+    // few, exact and extra arguments.
+    (
+        "(deftype T [a] Object (f [_] :fixed) (f [_ x & xs] [x (count xs)]) (g [_ & xs] (count xs))) \
+         (deftype U [^:mutable a] Object (f [_] :fixed) (f [_ x & xs] [x (count xs)]) (g [_ & xs] (count xs))) \
+         (defmacro m [] (let [t (T. 0) u (U. 0)] [(.f t) (.f t 1) (.f t 1 2 3) (.g t) (.g t 1 2) \
+         (.f u) (.f u 1) (.f u 1 2 3) (.g u) (.g u 1 2)])) \
+         (js/console.log (pr-str (m)))",
+        "[:fixed [1 0] [1 2] 0 2 :fixed [1 0] [1 2] 0 2]\n",
+    ),
     // `implements?` of extended core collection types.
     (
         "(defprotocol P (p [x])) (extend-type PersistentVector P (p [_] 1)) (extend-type EmptyList P (p [_] 2)) \

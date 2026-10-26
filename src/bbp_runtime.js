@@ -31,13 +31,14 @@ const decl = (() => {
   // code runs outside any bundle is an overlay after every bundle's, in the
   // order run, visible at every frontier.
   let overlays = 0;
-  // A type's `Object` methods (`Object/m`, the emitter's munged member
-  // name) are tables too: one per fixed arity, and arity -1 for a variadic
-  // overload. `objectArities` holds each member's fixed arities.
+  // A type's `Object` methods (`Object/m`, with the munged JavaScript
+  // member name as the entry's sixth item) are tables too: one per fixed
+  // arity, and arity -1 for a variadic overload. `objectArities` holds each
+  // method's fixed arities.
   const objectArities = new Map();
   const extend = (target, specs) => {
     const key = keyOf(target), overlay = order === 0 ? ++overlays : 0, info = views.get(key);
-    for (const [name, arity, fn, , variadic] of specs) {
+    for (const [name, arity, fn, , variadic, member] of specs) {
       const object = name.startsWith('Object/');
       const n = object && variadic != null ? -1 : arity;
       methodTable(name, n).entries.push({order, overlay, key, fn});
@@ -45,7 +46,7 @@ const decl = (() => {
       let arities = objectArities.get(name);
       if (arities === undefined) objectArities.set(name, arities = new Set());
       if (n >= 0) arities.add(n);
-      if (info !== undefined) objectMember(info, name.slice(7));
+      if (info !== undefined) objectMember(info, name, member);
     }
     version++;
     return null;
@@ -164,37 +165,49 @@ const decl = (() => {
     const direct = directKey(x);
     return direct !== null && __rt.getOr(t.map, direct, null) !== null;
   };
-  // A call of the `Object` method `member` on `x` (a struct or a mutable
-  // type's instance), resolved at the current frontier as the legacy
-  // runtimes' `installMethods` does: one fixed overload takes any call, else
-  // the overload of the call's arity, else the variadic one.
-  const objectCall = (member, x, args) => {
-    const name = 'Object/' + member;
-    declare(x);
+  // A call with receiver `x` of the `Object` method `name` of the type
+  // `ty` (a struct type, or a mutable type's key), resolved at the current
+  // frontier as the legacy runtimes' `installMethods` does: one fixed
+  // overload takes any call, else the overload of the call's arity, else
+  // the variadic one. The receiver need not be a `ty` (`(.call f other)`).
+  const implementation = (name, n, ty) => {
+    const t = methodTable(name, n);
+    if (t.version !== version || t.frontier !== frontier) build(t);
+    return __rt.getOr(t.map, ty, null);
+  };
+  const objectCall = (name, ty, x, args) => {
     let only = null, count = 0, exact = null;
     for (const n of objectArities.get(name) ?? []) {
-      const m = lookup(methodTable(name, n), x);
+      const m = implementation(name, n, ty);
       if (m == null) continue;
       count++; only = m;
       if (n === args.length + 1) exact = m;
     }
-    const rest = lookup(methodTable(name, -1), x);
+    const rest = implementation(name, -1, ty);
     const m = rest == null && count === 1 ? only : exact ?? rest;
     if (m == null) throw new Error('Invalid arity: ' + args.length);
     return m.call(x, x, ...args);
   };
-  // `member`, an `Object` method of the type `info` describes from now on:
-  // a mutable type's instances inherit it, and struct views get it.
-  const objectMember = (info, member) => {
-    if (info.members.has(member)) return;
-    info.members.add(member);
-    if (info.mutable) info.view.prototype[member] = function (...a) { return objectCall(member, this, a); };
+  // The `Object` method `name`, installed as the JavaScript member
+  // `member` of the type `info` describes from now on: a mutable type's
+  // instances inherit it, and struct views get it. Methods whose names
+  // munge alike share the member, which the one first extended last holds,
+  // as the legacy runtimes install them.
+  const objectMember = (info, name, member) => {
+    if (info.names.has(name)) return;
+    info.names.add(name);
+    const fresh = !info.members.has(member);
+    info.members.set(member, name);
+    if (info.mutable && fresh) {
+      const ty = info.ty;
+      info.view.prototype[member] = function (...a) { return objectCall(info.members.get(member), ty, this, a); };
+    }
   };
   // A type: a native struct type, or with a mutable field the constructor
   // of task-owned JavaScript instances. `view` constructs the JavaScript
   // object a struct's interop reads.
   const type = (fields, specs, view, mutable, ty) => {
-    views.set(ty, {view, fields, members: new Set(), mutable, record: __rt.formKind(__rt.structNew(ty)) === 'record'});
+    views.set(ty, {ty, view, fields, names: new Set(), members: new Map(), mutable, record: __rt.formKind(__rt.structNew(ty)) === 'record'});
     if (mutable) {
       view.__lightNativeType = ty;
       view.prototype.__lightNativeType = ty;
@@ -209,9 +222,12 @@ const decl = (() => {
     const args = info.fields.map(f => __rt.structField(s, f));
     if (info.record) args.push(__rt.cljMeta(s), null, null);
     const v = new info.view(...args);
-    for (const member of info.members) v[member] = (...a) => objectCall(member, s, a);
+    viewStructs.set(v, s);
+    // The receiver is the call's `this`: a view stands for its struct.
+    for (const [member, name] of info.members) v[member] = function (...a) { return objectCall(name, info.ty, viewStructs.get(this) ?? this, a); };
     return v;
   };
+  const viewStructs = new WeakMap();
   const register = (names, indices, location, once, unit) => {
     const b = {order: bundles.length + 1, names, unit, location, state: 0, error: null, products: null};
     bundles.push(b);
