@@ -36,6 +36,8 @@ pub(crate) fn native(name: &str) -> bool {
             | "condp"
             | "->"
             | "->>"
+            | "as->"
+            | "doto"
             | "cond->"
             | "cond->>"
             | "some->"
@@ -314,6 +316,49 @@ pub(crate) fn expand(
                 thread_step(value, form, name == "->>")
             })
         }),
+        "as->" => match args {
+            [value, name, forms @ ..] => {
+                let mut bindings = vec![name.clone(), value.clone()];
+                for form in forms.iter().take(forms.len().saturating_sub(1)) {
+                    bindings.extend([name.clone(), form.clone()]);
+                }
+                Some(list(vec![
+                    core("let"),
+                    vector(bindings),
+                    forms.last().unwrap_or(name).clone(),
+                ]))
+            }
+            _ => None,
+        },
+        "doto" => match args.split_first() {
+            Some((value, forms)) => {
+                let target = gensym(&["target"])?.remove(0);
+                let mut result = vec![core("let"), vector(vec![target.clone(), value.clone()])];
+                for form in forms {
+                    // Unlike ->, doto does not copy the step's metadata.
+                    let mut step = if is_seq(form) {
+                        let forms = children(form);
+                        vec![
+                            forms.first().cloned().unwrap_or_else(|| C.nil()),
+                            target.clone(),
+                        ]
+                    } else {
+                        vec![form.clone(), target.clone()]
+                    };
+                    step.extend(
+                        children(form)
+                            .iter()
+                            .skip(1)
+                            .filter(|_| is_seq(form))
+                            .cloned(),
+                    );
+                    result.push(list(step));
+                }
+                result.push(target);
+                Some(list(result))
+            }
+            None => None,
+        },
         "cond->" | "cond->>" | "some->" | "some->>" => match args.split_first() {
             Some((value, clauses)) => conditional_thread(
                 value,
@@ -1684,6 +1729,15 @@ mod tests {
             "(-> (-> x f) (->> g))",
             "(->)",
             "(-> x #(f %))",
+            "(as-> x n)",
+            "(as-> x n (f n) (g n n) n)",
+            "(as-> x ^:kept n (as-> n n (f n)))",
+            "(as-> x [a b] (+ a b))",
+            "(as-> x)",
+            "(doto x)",
+            "(doto x f (g a b) ())",
+            "(doto x ^:discarded (f 1) ^:discarded g)",
+            "(doto)",
             "(cond-> x)",
             "(cond-> x a f)",
             "(cond-> x a (f 1) b g (h) ^:m (k))",

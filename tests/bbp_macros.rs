@@ -39,6 +39,101 @@ fn program_output(js: &str) -> String {
 }
 
 #[test]
+fn bootstrap_namespace_macros_match_quickjs() {
+    let root = temp_dir::TempDir::new("native-bootstrap");
+    std::fs::create_dir(root.join("bootstrap")).unwrap();
+    for (label, source, expected) in [
+        (
+            "as-> bindings and effects",
+            include_str!("fixtures/native-helper-demand/bootstrap/bootstrap/app.cljs"),
+            "[[24 24] 99 7 12 5 [\"start\" \"double\" \"shadow\" \"nested\" \"zero\"]]\n",
+        ),
+        (
+            "conditional threading",
+            r#"(ns bootstrap.app)
+               (let [seen (js/Array.)
+                     step (fn [x] (.push seen x) (inc x))
+                     stop (fn [_] nil)]
+                 (js/console.log (pr-str
+                   [(cond-> 1 true step false step true (+ 3))
+                    (cond->> [1] true (concat [0]) false (concat [9]) true vec)
+                    (some-> nil step) (some-> false nil?)
+                    (some-> 1 step stop step)
+                    (some->> [1] (concat [0]) vec)
+                    (cond-> 7) (some-> 8) (vec seen)])))"#,
+            "[5 [0 1] nil false nil [0 1] 7 8 [1 1]]\n",
+        ),
+        (
+            "doto target and step order",
+            r#"(ns bootstrap.app)
+               (let [seen (js/Array.)
+                     target (doto (do (.push seen "target") (js/Array.))
+                              (.push (do (.push seen "first") 1))
+                              (.push 2))
+                     identity-step (fn [x] (.push seen "symbol") x)]
+                 (js/console.log (pr-str
+                   [(vec (doto target identity-step))
+                    (identical? target (doto target)) (vec seen)])))"#,
+            "[[1 2] true [\"target\" \"first\" \"symbol\"]]\n",
+        ),
+    ] {
+        std::fs::write(root.join("bootstrap/app.cljs"), source).unwrap();
+        let build = |native| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            let program = light_cljs::compiler::analyze_namespace_entry(
+                "bootstrap.app",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+            )
+            .unwrap_or_else(|error| panic!("{label}: {error}"));
+            emit_js(&program)
+        };
+        let native = build(true);
+        assert_eq!(program_output(&native), expected, "{label}");
+        #[cfg(feature = "quickjs")]
+        {
+            let legacy = build(false);
+            assert_eq!(native, legacy, "{label}");
+            assert_eq!(program_output(&legacy), expected, "{label}");
+        }
+    }
+}
+
+#[test]
+fn as_thread_namespace_errors_keep_the_original_step_location() {
+    let root = temp_dir::TempDir::new("native-bootstrap-error");
+    let source = "(ns app)\n(as-> 1 value\n  (let [x] value))\n";
+    std::fs::write(root.join("app.cljs"), source).unwrap();
+    let build = |native| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        light_cljs::compiler::analyze_namespace_entry(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+        )
+        .unwrap_err()
+    };
+    let native = build(true);
+    assert_eq!(native.path, Some(root.join("app.cljs").canonicalize().unwrap()));
+    let span = native.span.clone().unwrap();
+    assert_eq!(&source[span], "(let [x] value)");
+    assert_eq!(native.line_column, Some((3, 3)));
+    assert!(native.message.contains("binding"), "{native}");
+    #[cfg(feature = "quickjs")]
+    assert_eq!(native, build(false));
+}
+
+#[test]
 fn seq_converts_supported_finite_inputs_to_lists() {
     for (source, expected) in SEQ_FIXTURES {
         let mut host = MacroHost::new();
