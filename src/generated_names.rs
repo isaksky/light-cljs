@@ -289,6 +289,13 @@ pub(crate) struct NativeGensyms {
 
 #[cfg(feature = "bbp-macros")]
 impl NativeGensyms {
+    pub(crate) fn capture_scope(serial: u64) -> Option<Self> {
+        let scope = installed_scope(serial)?;
+        Some(Self {
+            scopes: [(serial, scope.gensym.clone())].into(),
+            log: LOG.with(|log| log.borrow().clone()),
+        })
+    }
     pub(crate) fn capture() -> Self {
         let mut scopes = BTreeMap::new();
         for scope in ENDED

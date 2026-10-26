@@ -209,8 +209,8 @@ light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/com
 light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/logging.cljc:306:24: macro expansion: while expanding str/ffmt: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/logging.cljc:306:24: macro cuerdas.core/ffmt: big-boy-pants-js: Error: unsupported operation: native macro runtime core.reSeq; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:1056:1 (bytes 11076..11141)
 ```
 
-Neither entry completes natively yet. These are runtime core-service gaps;
-light-cljs-512 covers compiler-owned `gensym`.
+Neither entry completes natively yet. The light-cljs-512 audit below fixes
+these two runtime core-service gaps and records the next boundaries.
 `tests/fixtures/native-helper-demand/frontend` retains the two original
 macro declarations with their MPL notices and unrelated definitions removed.
 `penpot_macro_declarations_fit_the_native_frontend` builds them natively and
@@ -221,6 +221,75 @@ raw-JavaScript hygiene and input occurrence identity against QuickJS.
 `wide_and_deep_native_constructor_trees_reuse_operand_slots` expands a
 69,633-node tree (beyond the engine's 65,535-local bound) and a 120-level
 tree, checking leaf effects and occurrence identity against QuickJS.
+
+### Compiler-owned names and core-service audit (light-cljs-512)
+
+Native `gensym` takes scoped numbers from `generated_names`, sharing the
+counter used by Rust core-macro expansion. A VM step carries only shared
+counter handles and the analyzer's capture log across worker migration;
+it never consults the executing worker's thread-local scopes. JavaScript
+constructs the spelling and native symbol in the accounted heap. Unscoped
+allocation skips imported and previously generated names, honors cache
+counter reservations, and retains its spelling table as accounted engine
+strings. Prefix tests cover the default, explicit strings, nil, booleans,
+numbers, keywords, qualified symbols and exact UTF-16, including a lone
+surrogate. Collection printing remains a separate boundary.
+
+A root initializer can allocate names in its caller's scope. Its gensym
+effect waits on the existing source-order effect lane. When an earlier
+caller demands an initializer a later worker already started, the initializer
+uses the earlier caller's scope, prefix and capture log. Prefixes are rooted
+native dependency results; counters and logs remain compiler-owned. Initializer
+claims and helper compilation retain their existing priority inheritance,
+with no effect replay. The source-macro test compares cold output and
+partial cache installs at one, two and four jobs, both seeded parallel
+scheduling and fixed one-job admission, exercising idle context reuse.
+Fresh, nested initializer allocations also match QuickJS under three
+scheduling seeds and a held-earlier-demand fixture. As with QuickJS, macros
+that require skipped initializer effects to
+repeat must use `^:light-cljs/no-cache` or a cache blocker.
+
+The repeated Penpot builds and the source/numeric fixtures in
+`tests/compiler/macros.rs` exposed these small runtime gaps. All are now
+implemented and checked in the single `native_core_services_match_quickjs`
+table in `tests/bbp_macros.rs`:
+
+| Discovered service | Coverage |
+| --- | --- |
+| `str` of symbols and keywords | Qualified names and gensym prefixes |
+| `reSeq`, `rePattern`, `reFind`, `reMatches`, `isRegex` | Captures, missing groups, lazy/repeated tails, empty matches, UTF-16 offsets, global regex state and errors |
+| `replace`, `seqToMap` | Nil/false replacements, vector metadata, transducer calls and trailing destructuring maps |
+| `interpose`, `keepIndexed` | Sequence and transducer arities, repeated reductions, callback effects and reduced termination at a separator |
+| `divide`, `int`, `long`, `byte`, `short`, `float`, `double`, `quot`, `rem`, `mod`, `numericEqual` | The compiler macro fixtures' Number conversions, negative zero and infinities |
+| `notEqual`, `isNumber`, `isFloat`, `isDouble`, `isInfinite` | Native scalar occurrences and ordinary values |
+
+`native_compiler_macro_fixtures_keep_their_legacy_results` also reuses the
+source-order, nested-demand, captured-function, failed-initializer and
+extension-frontier fixture constants verbatim. The next nontrivial runtime
+gap in the numeric macro fixture is `core.prStr` at
+`(pr-str (float 16777217))`; the earlier numeric and `keep-indexed` calls
+now run natively. The full compiler integration binary additionally needs
+the pinned `research/clojurescript` checkout; this work leaves `research/`
+untouched.
+
+With the same macOS arm64/Rust 1.99.1 native-only command, five absolute
+source roots, one job, no cache and budgets above, the next first errors are:
+
+`--entry app.render`:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/geom/matrix.cljc:251:4: macro expansion: while expanding app.common.data.macros/assert!: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/geom/matrix.cljc:251:4: macro app.common.data.macros/assert!: big-boy-pants-js: Error: unsupported operation: native macro runtime core.prStr; definition /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/data/macros.cljc:105:1 (bytes 6545..6573)
+```
+
+`--entry app.main`:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/config.cljs:150:9: macro expansion: while expanding log/wrn: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/config.cljs:150:9: macro app.common.logging/wrn: big-boy-pants-js: Error: unsupported operation: native macro runtime core.currentNs; definition /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/logging.cljc:416:1 (bytes 5204..5289)
+```
+
+These require native printing and dynamic namespace services, rather than
+another direct scalar or finite-sequence core function. Neither entry
+completes natively yet.
 
 ### Native forms
 

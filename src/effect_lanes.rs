@@ -1,4 +1,4 @@
-//! Source-order effect lanes for compile-time atoms on the native backend
+//! Source-order effect lanes for compile-time atoms and initializer gensyms
 //! (light-cljs-480; docs/compiler-concurrency.md, "Effect lanes
 //! (light-cljs-480)").
 //!
@@ -20,8 +20,8 @@
 //! otherwise the task needs a fresh lane cell, which parks it before the
 //! access (`__rt.need`), and [`Lanes::poll`] completes the cell once the
 //! lane opens. So atom effects happen in the `--jobs 1` order at every
-//! `--jobs`, and nothing is replayed. Units that never touch a shared atom
-//! never wait.
+//! `--jobs`, and nothing is replayed. An initializer's `gensym` uses the same
+//! lane and the earliest caller's generated-name scope (light-cljs-512).
 //!
 //! The thread-local stack records the activities a thread runs, innermost
 //! last; a *root* entry starts an activity unrelated to those below it (a
@@ -479,6 +479,10 @@ impl Lanes {
                 s.tops.remove(&task);
             }
         }
+    }
+    /// The caller's source position, before an initializer inherits a waiter.
+    pub(crate) fn caller_position(&self, task: u64) -> Option<Position> {
+        self.lock().tops.get(&task).and_then(|top| top.position)
     }
     /// The token of `task`'s current activity, which owns the atoms it
     /// makes; 0 outside any.

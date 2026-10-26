@@ -320,10 +320,17 @@ const native = (() => {
   const gensym = (...args) => {
     if (args.length > 1) return arity(args.length);
     const base = core.str(args.length === 0 ? 'G__' : args[0]);
+    let scope=gensymScope;
+    const initializer=initializerStack[initializerStack.length-1];
+    if(initializer!==undefined){
+      const cell=__rt.effect(65532,0);
+      if(cell!==0)__rt.need(cell,5);
+      scope=__rt.effect(65531,'s'+initializer+':'+scope);
+    }
     let name;
-    if (gensymScope !== 0) name = base + gensymPrefix + __rt.effect(65531, 'g' + gensymScope);
+    if (scope !== 0) name = base + (scope===gensymScope?gensymPrefix:__rt.need(scope,6)) + __rt.effect(65531, 'g' + scope);
     else do { name = base + __rt.effect(65531, 'n'); } while (!__rt.effect(65531, 'a' + name));
-    if (gensymLogging) __rt.effect(65531, 'L' + name);
+    if (gensymLogging) __rt.effect(65531, initializer===undefined?'L'+name:'C'+scope+':'+name);
     return __rt.cljSymbol(name);
   };
   const seq = x => __rt.cljSeq(x);
@@ -818,7 +825,9 @@ const native = (() => {
 globalThis.__lightNativeRuntime=native;
 const roots=new Map();
 let initializerSerial=0;
+const initializerStack=[];
 globalThis.__lightInitializerUnit=null;
+globalThis.__lightInitializerParent=null;
 globalThis.__lightInitializerResult=null;
 globalThis.__lightInitializerFailure=null;
 globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
@@ -835,20 +844,16 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
     if(slot.state===2){__rt.need(unit,4);return slot.value;}
     if(slot.state===1)throw new Error('root initialization cycle: '+name);
     if(slot.state===3)throw slot.value;
-    // Choosing the caller that initializes a shared root is a compiler
-    // registry effect. Its gensyms must belong to the first source-order
-    // demand, even if a later worker reaches this getter first. Wait before
-    // claiming the initializer; parked helper compilation remains parallel.
-    const cell=__rt.effect(65532,0);
-    if(cell!==0)__rt.need(cell,5);
     slot.state=1;
     try{
       const serial=++initializerSerial;
       globalThis.__lightInitializerUnit=unit;
+      globalThis.__lightInitializerParent=initializerStack[initializerStack.length-1]??null;
       const producer=__rt.need(serial,beginKind);
       if(producer){
         let failed=false,failure;
-        try{slot.value=factory(native);}catch(e){failed=true;failure=e;}
+        initializerStack.push(unit);
+        try{slot.value=factory(native);}catch(e){failed=true;failure=e;}finally{initializerStack.pop();}
         globalThis.__lightInitializerUnit=unit;
         globalThis.__lightInitializerResult=slot.value;
         globalThis.__lightInitializerFailure=failed?String(failure):null;

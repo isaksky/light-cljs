@@ -340,11 +340,29 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
     let provider = std::fs::read_to_string(&path).unwrap();
     let provider = provider.replace("(ns names.macros)", "(ns ^:light-cljs/no-cache names.macros)")
         .replace("(defn helper [] [(compiled) (gensym \"helper\")])",
-            "(def seed (gensym \"initializer\")) (defn helper [] [(compiled) (gensym \"helper\") seed])");
+            "(def seed (gensym \"initializer\")) (def nested-seed [seed]) (defn helper [] [(compiled) (gensym \"helper\") nested-seed])")
+        .replace("(def retained (fresh))", "(def retained nil)");
     assert!(provider.contains("(def seed"));
     std::fs::write(path, provider).unwrap();
+    let app = root.join("app.cljs");
+    std::fs::write(
+        &app,
+        std::fs::read_to_string(&app)
+            .unwrap()
+            .replace("m/retained ", ""),
+    )
+    .unwrap();
     let mut initializer_reference: Option<String> = None;
-    for (jobs, seed) in [(1, 1), (2, 1), (4, 1), (2, 2), (4, 2), (2, 3), (4, 3)] {
+    for (jobs, seed, held) in [
+        (1, 1, false),
+        (2, 1, false),
+        (4, 1, false),
+        (2, 2, false),
+        (4, 2, false),
+        (2, 3, false),
+        (4, 3, false),
+        (4, 4, true),
+    ] {
         let mut host = MacroHost::new();
         host.use_native_macros();
         let (program, _) = analyze_namespace_entry_recorded(
@@ -358,6 +376,15 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
                 #[cfg(debug_assertions)]
                 perturbation: Some(light_cljs::scheduler::Perturbation {
                     seed,
+                    lane_hold: if held {
+                        vec!["names.a/first-names".into()]
+                    } else {
+                        Vec::new()
+                    },
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }),
                 ..Default::default()

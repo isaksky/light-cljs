@@ -19,7 +19,7 @@ use big_boy_pants_js::{
 };
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     rc::Rc,
     sync::{
         Arc, Condvar, Mutex,
@@ -65,6 +65,11 @@ struct Bridge {
     // Keys include the native service's 'a' request tag. Retain accounted
     // engine strings: generated spellings cannot grow uncharged host buffers.
     generated_names: HashSet<JsString>,
+    // A parked initializer may inherit an earlier caller. Gensym uses that
+    // caller's counter and capture log, even on the later caller's VM task.
+    initializer_callers: HashMap<u64, BTreeMap<u64, u64>>,
+    initializer_parents: HashMap<u64, HashSet<u64>>,
+    caller_gensyms: HashMap<u64, crate::generated_names::NativeGensyms>,
 }
 impl Bridge {
     /// Observable native objects keep their full compiler-side Datum tree.
@@ -107,6 +112,28 @@ impl Bridge {
         }
         let native = imported.native.as_ref().and_then(|v| s.upgrade(v).ok());
         native.map(|value| self.retain(s, data, value)).transpose()
+    }
+    fn initializer_caller(&self, unit: u64) -> Option<u64> {
+        let mut pending = vec![unit];
+        let mut visited = HashSet::new();
+        let mut earliest = None;
+        while let Some(unit) = pending.pop() {
+            if !visited.insert(unit) {
+                continue;
+            }
+            if let Some((&position, &scope)) = self
+                .initializer_callers
+                .get(&unit)
+                .and_then(|callers| callers.first_key_value())
+                && earliest.is_none_or(|(prior, _)| position < prior)
+            {
+                earliest = Some((position, scope));
+            }
+            if let Some(parents) = self.initializer_parents.get(&unit) {
+                pending.extend(parents);
+            }
+        }
+        earliest.map(|(_, scope)| scope)
     }
     fn poll(&self) -> Result<(), EvalError> {
         self.control.as_ref().map_or(Ok(()), ExecutionControl::poll)
@@ -510,6 +537,7 @@ const LANE: ResultKind = ResultKind::new(5);
 const LANE_EFFECT: u16 = 65532;
 /// Compiler-owned generated names, independent of the worker running a step.
 const GENSYM_EFFECT: u16 = 65531;
+const GENSYM_PREFIX: ResultKind = ResultKind::new(6);
 
 /// The runtime-wide collection and admission policy for `options`.
 ///
@@ -808,6 +836,7 @@ pub(crate) struct TaskContext {
     /// This task's handle on its `globalThis.__lightNativeRuntime`, which
     /// shared unit factories are called with; made on first use.
     native_runtime: Cell<Option<ValueId>>,
+    gensym_scope: Cell<u64>,
     /// For a producer task, the catalog registrations it holds
     /// ([`MacroEvaluator::catalog_cursor`]): its parent's replayed ones and
     /// those a worker view installed in it since.
@@ -906,6 +935,7 @@ impl BbpEvaluator {
             values: RefCell::new(HashMap::new()),
             macro_functions: RefCell::new(HashMap::new()),
             native_runtime: Cell::new(None),
+            gensym_scope: Cell::new(0),
             catalog: Cell::new(None),
             prepared: Cell::new(false),
             lent: RefCell::new(LentState::default()),
@@ -1458,6 +1488,39 @@ impl BbpEvaluator {
             INITIALIZER,
         );
         if begin {
+            let parent = cx
+                .task
+                .global_value("__lightInitializerParent")
+                .map_err(error)?
+                .and_then(|value| match value.view() {
+                    ValueView::Number(n) => Some(n as u64),
+                    _ => None,
+                });
+            let serial = cx.gensym_scope.get();
+            if let Some(scope) = crate::generated_names::NativeGensyms::capture_scope(serial) {
+                let position = self
+                    .shared
+                    .lanes()
+                    .and_then(|lanes| {
+                        lanes.caller_position(crate::effect_lanes::identity(cx.task.id()))
+                    })
+                    .unwrap_or(0);
+                let mut bridge = self.bridge.lock().unwrap();
+                bridge.caller_gensyms.insert(serial, scope);
+                bridge
+                    .initializer_callers
+                    .entry(unit as u64)
+                    .or_default()
+                    .entry(position)
+                    .or_insert(serial);
+                if let Some(parent) = parent {
+                    bridge
+                        .initializer_parents
+                        .entry(unit as u64)
+                        .or_default()
+                        .insert(parent);
+                }
+            }
             let claimed = match self.runtime.claim(key) {
                 Ok(request) => {
                     self.shared.0.graph.lock().unwrap().bind_producer(
@@ -1789,13 +1852,45 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                         .parse()
                         .map_err(|_| "invalid gensym scope")?;
                     let number = self
-                        .3
-                        .next(serial)
+                        .4
+                        .lock()
+                        .unwrap()
+                        .caller_gensyms
+                        .get(&serial)
+                        .and_then(|scope| scope.next(serial))
+                        .or_else(|| self.3.next(serial))
                         .ok_or("native gensym scope unavailable")?;
                     Ok(Primitive::Number(number as f64))
                 }
                 b'L' => {
                     self.3.log(argument);
+                    Ok(Primitive::Null)
+                }
+                b's' => {
+                    let request = String::from_utf16_lossy(argument);
+                    let (unit, serial) = request.split_once(':').ok_or("invalid gensym caller")?;
+                    let unit = unit.parse::<u64>().map_err(|_| "invalid initializer")?;
+                    let serial = serial
+                        .parse::<u64>()
+                        .map_err(|_| "invalid gensym caller scope")?;
+                    let bridge = self.4.lock().unwrap();
+                    let selected = bridge.initializer_caller(unit).unwrap_or(serial);
+                    Ok(Primitive::Number(selected as f64))
+                }
+                b'C' => {
+                    let split = argument
+                        .iter()
+                        .position(|unit| *unit == b':' as u16)
+                        .ok_or("invalid gensym capture")?;
+                    let serial = String::from_utf16_lossy(&argument[..split])
+                        .parse::<u64>()
+                        .map_err(|_| "invalid gensym capture scope")?;
+                    let bridge = self.4.lock().unwrap();
+                    if let Some(scope) = bridge.caller_gensyms.get(&serial) {
+                        scope.log(&argument[split + 1..]);
+                    } else {
+                        self.3.log(&argument[split + 1..]);
+                    }
                     Ok(Primitive::Null)
                 }
                 b't' => Ok(Primitive::Number(
@@ -1854,6 +1949,40 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
     }
 }
 impl MacroEvaluator for BbpEvaluator {
+    fn gensym_scope(
+        &self,
+        serial: u64,
+        prefix: &str,
+        _retired: &str,
+        _native: bool,
+    ) -> Result<(), EvalError> {
+        self.cx()?.gensym_scope.set(serial);
+        if serial != 0 {
+            let key = DependencyKey::new(
+                self.runtime.world(),
+                DependencyId::new(serial),
+                GENSYM_PREFIX,
+            );
+            if let Ok(request) = self.runtime.claim(key) {
+                let prefix = self.host_scope(|s| {
+                    let local = s
+                        .try_string_units(&prefix.encode_utf16().collect::<Vec<_>>())
+                        .ok_or_else(|| error("heap byte limit exceeded"))?;
+                    Ok::<_, EvalError>(s.persist(local))
+                })?;
+                let wakeups = self
+                    .runtime
+                    .complete(key, request.producer(), Completion::Ready(&prefix))
+                    .map_err(error)?;
+                self.shared.wake(wakeups);
+            }
+        }
+        debug_assert!(prefix.bytes().all(|b| b.is_ascii_digit() || b == b'_'));
+        let value = self.evaluate_unit(&format!(
+            "rt => rt.compilerForms.gensymScope({serial}, \"{prefix}\")"
+        ))?;
+        self.release(value)
+    }
     fn register_compiler_root(
         &self,
         name: &str,
