@@ -2772,18 +2772,13 @@ fn analyze_entry(
     // adds them where it charges the unit, in unit order
     // (docs/compiler-concurrency.md, "As built (light-cljs-374)").
     let memory_limit = macros.evaluator_options.memory_limit;
-    if macros.native_macro_backend() && analysis.unit_slots.get() > 1 {
-        return Err(NamespaceCompileError::new(
-            "big-boy-pants-js: unsupported operation: native macro compilation requires --jobs 1",
-        ));
-    }
     if analysis.unit_slots.get() > 1
         && let Some(session) = macros.session_handle()
     {
         use crate::compilation_session::PoolEngines;
         // V8 isolates, or in QuickJS-only builds QuickJS runtimes
         // (light-cljs-436).
-        let engines = if cfg!(any(light_v8, light_quickjs))
+        let engines = if (macros.native_macro_backend() || cfg!(any(light_v8, light_quickjs)))
             && macros.engine.script_host.is_none()
             && !macros.tables.interactive
         {
@@ -2798,14 +2793,18 @@ fn analyze_entry(
         // The main isolate's reservation and as many workers' as the rest
         // of the limit gives `WORKER_SHARE` each; with none, no worker has an
         // engine.
-        let isolates = crate::compilation_session::isolate_count(memory_limit, analysis.unit_slots);
+        let isolates = if macros.native_macro_backend() {
+            analysis.unit_slots.get()
+        } else {
+            crate::compilation_session::isolate_count(memory_limit, analysis.unit_slots)
+        };
         let engines = if isolates < 2 {
             PoolEngines::None
         } else {
             engines
         };
         let mut resources = None;
-        if engines != PoolEngines::None {
+        if engines != PoolEngines::None && !macros.native_macro_backend() {
             // Every isolate installs the bootstrap units: they are compiled
             // before the build's deadline starts (light-cljs-378).
             crate::compiler_bootstrap::prepare(macros).map_err(NamespaceCompileError::new)?;
@@ -3264,6 +3263,10 @@ fn analyze_entry(
         stats.peak_macro_nodes = macros.engine.generated_nodes.get();
         stats.trace = recording.and_then(crate::compile_trace::Recording::finish);
         if let Some(session) = macros.session_handle() {
+            #[cfg(feature = "bbp-macros")]
+            {
+                stats.native_helpers = session.shared().native_counts();
+            }
             stats.deferred_units = session.unit_counts();
             stats.memory.queued_ir = session.queued_ir();
         }

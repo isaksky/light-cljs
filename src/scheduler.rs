@@ -32,7 +32,7 @@ use std::{
     num::NonZeroUsize,
     panic::{self, AssertUnwindSafe},
     sync::{
-        Condvar, Mutex, MutexGuard, TryLockError,
+        Arc, Condvar, Mutex, MutexGuard, TryLockError, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
@@ -71,10 +71,17 @@ impl Default for Slots {
 
 /// What the pool needs to know about a unit of work. Running it is the
 /// caller's function, so a job is plain owned data that may cross threads;
-/// engine handles never enter a queue.
+/// a VM job must own its task and carry no borrowed analyzer state.
 pub trait Job: Send {
     /// The phase queue the job waits in, below [`Config::phases`].
     fn phase(&self) -> usize;
+
+    /// Whether this job can safely run inside a waiting job's Rust stack.
+    /// An analyzer that might depend on that suspended frame must opt out;
+    /// ordinary worker claims can still run it.
+    fn help_ready(&self) -> bool {
+        true
+    }
 
     /// Its estimated cost, in whatever unit the caller uses consistently;
     /// batch limits count it ([`Limits::batch_cost`]).
@@ -239,6 +246,10 @@ pub struct PoolCounts {
     /// Jobs started, by any path.
     pub started: u64,
     pub urgent: u64,
+    /// Jobs run by a waiting worker with independent nested slot state.
+    pub helped: u64,
+    /// The deepest help-while-waiting frame entered in this run.
+    pub help_depth_max: usize,
     /// Jobs started from a worker's own deque.
     pub local: u64,
     /// Claims from a shared phase queue, and the jobs they took.
@@ -272,6 +283,8 @@ impl PoolCounts {
     pub fn absorb(&mut self, other: &PoolCounts) {
         self.started += other.started;
         self.urgent += other.urgent;
+        self.helped += other.helped;
+        self.help_depth_max = self.help_depth_max.max(other.help_depth_max);
         self.local += other.local;
         self.claims += other.claims;
         self.claimed += other.claimed;
@@ -665,6 +678,87 @@ impl<J: Job, O> State<J, O> {
         })
     }
 
+    /// Helping cannot retain an analyzer frame whose dependency may be the
+    /// caller suspended below it. Leave those jobs runnable for ordinary claims.
+    fn claim_help(&mut self, w: usize, limits: &Limits) -> Option<Claim<J>> {
+        if self.shutdown || self.cancelled {
+            return None;
+        }
+        let blocked = self
+            .urgent
+            .iter()
+            .chain(self.ready.iter().flatten())
+            .chain(self.local.iter().flatten().flatten())
+            .any(|entry| !entry.job.help_ready());
+        if !blocked {
+            return self.claim(w, limits);
+        }
+        let eligible = |entry: &Entry<J>| entry.job.help_ready() && self.serves(w, entry.phase);
+        let entry = if let Some(at) = self.urgent.iter().position(eligible) {
+            self.runnable_total -= 1;
+            self.counts.urgent += 1;
+            self.urgent.remove(at).unwrap()
+        } else {
+            let eligible = |entry: &Entry<J>| {
+                if !eligible(entry) {
+                    return false;
+                }
+                #[cfg(debug_assertions)]
+                if let Some(p) = &self.perturbed
+                    && p.config.fixed
+                    && p.config.owner(entry.key, self.servers[entry.phase]) != w
+                {
+                    return false;
+                }
+                true
+            };
+            let mut selected = None;
+            for phase in 0..self.phases() {
+                if let Some(at) = self.local[w][phase].iter().rposition(&eligible) {
+                    selected = Some((Some(w), phase, at));
+                } else if let Some(at) = self.ready[phase].iter().position(&eligible) {
+                    selected = Some((None, phase, at));
+                } else {
+                    for peer in 0..self.local.len() {
+                        if let Some(at) = self.local[peer][phase].iter().position(&eligible) {
+                            selected = Some((Some(peer), phase, at));
+                            break;
+                        }
+                    }
+                }
+                if selected.is_some() {
+                    break;
+                }
+            }
+            let (owner, phase, at) = selected?;
+            self.take_runnable(phase);
+            match owner {
+                Some(owner) => {
+                    if owner == w {
+                        self.counts.local += 1;
+                    } else {
+                        self.counts.steals += 1;
+                        self.counts.stolen += 1;
+                    }
+                    self.local[owner][phase].remove(at).unwrap()
+                }
+                None => {
+                    self.counts.claims += 1;
+                    self.counts.claimed += 1;
+                    self.ready[phase].remove(at).unwrap()
+                }
+            }
+        };
+        #[cfg(debug_assertions)]
+        if self.perturbed.is_some() {
+            return Some(self.start_logged(w, entry, 0));
+        }
+        Some(Claim {
+            entry: self.start(entry),
+            left: 0,
+        })
+    }
+
     /// Move a bounded batch from the front of `phase`'s shared queue into
     /// worker `w`'s empty deque, the first job at the back where the owner
     /// pops it, so thieves take from the far end. Return the batch size.
@@ -756,6 +850,7 @@ impl<J: Job, O> State<J, O> {
 
 /// The state every slot shares.
 struct Shared<J, O> {
+    owner: Weak<Shared<J, O>>,
     state: Mutex<State<J, O>>,
     /// Workers waiting for runnable work.
     work: Condvar,
@@ -774,6 +869,22 @@ struct Shared<J, O> {
 }
 
 impl<J: Job, O> Shared<J, O> {
+    fn submit_urgent(&self, job: J) {
+        let entry = Entry::new(job, self.phases);
+        let mut state = self.lock();
+        if state.cancelled || state.shutdown {
+            state.counts.cancelled += 1;
+            return;
+        }
+        state.count_admission(entry.bytes);
+        state.urgent.push_back(entry);
+        state.runnable_total += 1;
+        let room = state.admitted_jobs.saturating_sub(state.completed.len());
+        state.completed.reserve(room);
+        drop(state);
+        self.wake(1);
+    }
+
     fn lock(&self) -> MutexGuard<'_, State<J, O>> {
         // A panic under the lock is a scheduler bug; shutdown still needs
         // the state, so poisoning is not a second failure.
@@ -830,9 +941,123 @@ pub struct Worker<'a, J: Job, O> {
     /// This slot's deque index.
     index: usize,
     slot: usize,
+    depth: usize,
+}
+
+/// Whether a waiting worker ran another job. Reaching the nesting bound is
+/// distinct from an empty queue: the caller must unwind or diagnose its demand,
+/// rather than wait for work that only this slot can run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Help {
+    Ran,
+    Idle,
+    DepthLimit,
+}
+
+/// A thread-local handle for a suspended analyzer's callback. It owns only
+/// scheduler bookkeeping, never the active slot state or an execution closure.
+/// A retained handle becomes idle when the pool shuts down.
+pub struct HelpHandle<J: Job, O> {
+    shared: Arc<Shared<J, O>>,
+    index: usize,
+    slot: usize,
+    depth: usize,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+impl<J: Job, O> HelpHandle<J, O> {
+    pub fn cancelled(&self) -> bool {
+        self.shared.cancelled.load(Ordering::Relaxed)
+    }
+    pub fn push_urgent(&self, job: J) {
+        self.shared.submit_urgent(job);
+    }
+    pub fn help<W>(
+        &self,
+        make: impl Fn(usize) -> W + Sync,
+        execute: impl Fn(&mut W, J, &Worker<'_, J, O>) -> O + Sync,
+    ) -> Result<Help, WorkerPanic> {
+        Worker {
+            shared: &self.shared,
+            index: self.index,
+            slot: self.slot,
+            depth: self.depth,
+        }
+        .help(make, execute)
+    }
 }
 
 impl<J: Job, O> Worker<'_, J, O> {
+    pub fn help_handle(&self) -> HelpHandle<J, O> {
+        HelpHandle {
+            shared: self.shared.owner.upgrade().expect("a running pool"),
+            index: self.index,
+            slot: self.slot,
+            depth: self.depth,
+            _thread: std::marker::PhantomData,
+        }
+    }
+    /// A hard bound on retained Rust analyzer frames during nested helping.
+    pub const MAX_HELP_DEPTH: usize = 16;
+
+    pub fn help_depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Admit a demanded producer immediately, even when its consumers hold
+    /// all normal admission capacity. Publication remains a queued outcome.
+    pub fn push_urgent(&self, job: J) {
+        self.shared.submit_urgent(job);
+    }
+
+    /// Run one ready job while the current job waits. The caller supplies
+    /// fresh nested state, never its actively borrowed analyzer/evaluator.
+    /// No pool lock is held while making, executing or dropping that state.
+    /// Outcomes and panics use the ordinary publication path.
+    pub fn help<W>(
+        &self,
+        make: impl Fn(usize) -> W + Sync,
+        execute: impl Fn(&mut W, J, &Worker<'_, J, O>) -> O + Sync,
+    ) -> Result<Help, WorkerPanic> {
+        if self.depth >= Self::MAX_HELP_DEPTH {
+            return Ok(Help::DepthLimit);
+        }
+        let mut state = self.shared.lock();
+        if let Some(panic) = &state.panic {
+            return Err(panic.clone());
+        }
+        let Some(Claim { entry, left }) = state.claim_help(self.index, &self.shared.limits) else {
+            return Ok(Help::Idle);
+        };
+        let worker = Worker {
+            shared: self.shared,
+            index: self.index,
+            slot: self.slot,
+            depth: self.depth + 1,
+        };
+        state.counts.helped += 1;
+        state.counts.help_depth_max = state.counts.help_depth_max.max(worker.depth);
+        let wake = left.min(state.parked);
+        drop(state);
+        self.shared.wake(wake);
+        #[cfg(debug_assertions)]
+        if let Some(p) = &self.shared.perturbation {
+            p.pause(entry.key, self.index, perturb::Boundary::Start);
+        }
+        let mut nested = None;
+        let result = execute_caught(&worker, &mut nested, &make, &execute, entry.job);
+        drop(nested);
+        #[cfg(debug_assertions)]
+        if let Some(p) = &self.shared.perturbation {
+            p.pause(entry.key, self.index, perturb::Boundary::Finish);
+        }
+        let failure = result.as_ref().err().cloned();
+        let mut state = self.shared.lock();
+        publish(self.shared, &mut state, self.index, entry.bytes, result);
+        match failure {
+            Some(panic) => Err(panic),
+            None => Ok(Help::Ran),
+        }
+    }
     /// The slot running the job: 0 is the coordinator's, on the inline
     /// path; workers are 1 to N-1.
     pub fn slot(&self) -> usize {
@@ -957,6 +1182,7 @@ fn work<J: Job, O, W>(
         shared,
         index,
         slot: index + 1,
+        depth: 0,
     };
     let mut slot_state = None;
     let mut state = shared.lock();
@@ -1078,20 +1304,7 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
     /// coordinator or a waiting demand needs now. It is admitted at once,
     /// whatever the bounds, since what waits for it may hold the room.
     pub fn submit_urgent(&mut self, job: J) {
-        let entry = Entry::new(job, self.shared.phases);
-        let mut state = self.shared.lock();
-        if state.cancelled {
-            state.counts.cancelled += 1;
-            return;
-        }
-        state.count_admission(entry.bytes);
-        state.urgent.push_back(entry);
-        state.runnable_total += 1;
-        // Room for its outcome too, beyond the bounds.
-        let room = state.admitted_jobs.saturating_sub(state.completed.len());
-        state.completed.reserve(room);
-        drop(state);
-        self.shared.wake(1);
+        self.shared.submit_urgent(job);
     }
 
     /// Register work that may create more jobs although none is admitted.
@@ -1205,6 +1418,7 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
                 shared,
                 index: 0,
                 slot: 0,
+                depth: 0,
             };
             let bytes = entry.bytes;
             let result = execute_caught(
@@ -1244,7 +1458,8 @@ where
 {
     let workers = config.slots.workers();
     let state = State::new(config, workers.max(1));
-    let shared = Shared {
+    let shared = Arc::new_cyclic(|owner| Shared {
+        owner: owner.clone(),
         restricted: state.restricted,
         state: Mutex::new(state),
         work: Condvar::new(),
@@ -1255,10 +1470,11 @@ where
         phases: config.phases,
         #[cfg(debug_assertions)]
         perturbation: config.perturbation.clone(),
-    };
+    });
     let make: MakeSlot<'_, W> = &make;
     let execute: Execute<'_, J, O, W> = &execute;
     let result = if workers == 0 {
+        let _guard = ShutdownGuard(&shared);
         let mut coordinator = Coordinator {
             shared: &shared,
             slots: config.slots,
@@ -1293,11 +1509,8 @@ where
             Ok(coordinate(&mut coordinator))
         })?
     };
-    let state = shared
-        .state
-        .into_inner()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match state.panic {
+    let failure = shared.lock().panic.clone();
+    match failure {
         Some(panic) => Err(PoolError::Panic(panic)),
         None => Ok(result),
     }

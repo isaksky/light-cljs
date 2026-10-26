@@ -33,6 +33,21 @@ pub struct NativeBridgeCall {
     /// Runtime high-water pause through this call, not a per-call delta.
     pub gc_pause_max_nanos: u128,
     pub gc_live_objects: usize,
+    pub helper_compiled: usize,
+    pub helper_published: usize,
+    pub helper_per_task: usize,
+    pub helper_waits: usize,
+}
+
+/// Actual native-runtime work across all tasks, counted once per event.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeHelperCounts {
+    pub compiled: usize,
+    pub published: usize,
+    pub per_task: usize,
+    pub waits: usize,
+    pub steps: usize,
+    pub migrations: usize,
 }
 
 /// Wall time per phase of a compilation. The phases do not overlap; work a
@@ -127,6 +142,7 @@ pub struct DeferredUnitCounts {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompileStats {
     pub native_macro_calls: Vec<NativeBridgeCall>,
+    pub native_helpers: NativeHelperCounts,
     pub phases: PhaseTimes,
     /// From the start of the compilation to the end of its last recorded
     /// phase.
@@ -546,6 +562,28 @@ impl CompileStats {
                 &call.gc_pause_max_nanos,
             );
             line(&format!("macro.gc.{i}.live-objects"), &call.gc_live_objects);
+            line(
+                &format!("macro.helpers.{i}.compiled"),
+                &call.helper_compiled,
+            );
+            line(
+                &format!("macro.helpers.{i}.published"),
+                &call.helper_published,
+            );
+            line(
+                &format!("macro.helpers.{i}.per-task"),
+                &call.helper_per_task,
+            );
+            line(&format!("macro.helpers.{i}.waits"), &call.helper_waits);
+        }
+        if self.native_helpers.steps > 0 {
+            let helpers = &self.native_helpers;
+            line("native.helpers.compiled", &helpers.compiled);
+            line("native.helpers.published", &helpers.published);
+            line("native.helpers.per-task", &helpers.per_task);
+            line("native.helpers.waits", &helpers.waits);
+            line("native.tasks.steps", &helpers.steps);
+            line("native.tasks.migrations", &helpers.migrations);
         }
         line("macro-nodes.peak", &self.peak_macro_nodes);
         line("deferred-units.registered", &self.deferred_units.registered);
@@ -578,6 +616,8 @@ impl CompileStats {
             let utilization = if capacity > 0.0 { busy / capacity } else { 0.0 };
             line("pool.utilization", &format!("{utilization:.3}"));
             line("pool.jobs", &pool.started);
+            line("pool.jobs.helped", &pool.helped);
+            line("pool.help-depth.max", &pool.help_depth_max);
             line("pool.jobs.local", &pool.local);
             line("pool.claims", &pool.claims);
             line("pool.claimed", &pool.claimed);

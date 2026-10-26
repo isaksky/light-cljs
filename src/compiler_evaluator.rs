@@ -6,7 +6,16 @@ pub(crate) type UnitService = Rc<dyn Fn(&dyn MacroEvaluator, u64) -> Result<Stri
 /// A string-to-string service: its answers, errors included, are ordinary
 /// strings, so only a panic poisons the session.
 pub(crate) type StringService = Rc<dyn Fn(&str) -> String>;
+pub(crate) type WaitService = Rc<dyn Fn() -> Result<bool, String>>;
+#[cfg(feature = "bbp-macros")]
+pub(crate) type NativeRunner =
+    Rc<dyn Fn(crate::bbp_evaluator::NativeStep) -> Result<big_boy_pants_js::RunOutcome, String>>;
 pub(crate) trait CompilerEvaluator: MacroEvaluator {
+    /// Useful compiler work while a native task waits. The callback must
+    /// construct independent nested analyzer state, never reuse the caller.
+    fn install_wait_service(&self, _callback: WaitService) {}
+    #[cfg(feature = "bbp-macros")]
+    fn install_native_runner(&self, _callback: NativeRunner) {}
     fn native_forms(&self) -> bool {
         false
     }

@@ -491,11 +491,7 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
     for (source, expected) in [
         (
             "(defprotocol Sample (value [this])) (defmacro demand [] Sample) (demand)",
-            "helper not preloaded: cljs.user/Sample",
-        ),
-        (
-            "(defn absent [x] x) (defmacro use-helper [x] (absent x)) (use-helper 1)",
-            "helper not preloaded: cljs.user/absent",
+            "unavailable definition: cljs.user/Sample",
         ),
         (
             "(defmacro lazy-result [] (range 3)) (lazy-result)",
@@ -538,6 +534,15 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
             .to_string();
         assert!(message.contains(expected), "{source}: {message}");
     }
+}
+
+#[test]
+fn demands_a_real_helper_without_replaying_the_macro() {
+    let source = include_str!("fixtures/native-helper-demand/macro.cljs");
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    assert_eq!(program_output(&emit_js(&program)), "42\n");
 }
 
 #[test]
@@ -794,5 +799,80 @@ fn native_expansions_match_the_legacy_compiler_output() {
             light_cljs::compile(source).unwrap(),
             "{source}"
         );
+    }
+}
+
+#[test]
+fn helper_namespace_output_is_deterministic_with_one_two_and_four_slots() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/pool");
+    let mut reference = None;
+    for jobs in [1, 2, 4] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut stats = light_cljs::CompileStats::new();
+        let mut warnings = Vec::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "demand.app",
+            std::slice::from_ref(&root),
+            &mut host,
+            Default::default(),
+            &mut warnings,
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("jobs {jobs}: {error}"));
+        let js = emit_js(&program);
+        assert_eq!(program_output(&js), "42 42 3\n");
+        assert_eq!(stats.native_helpers.compiled, 1);
+        assert_eq!(stats.native_helpers.published, 0);
+        assert!(stats.native_helpers.per_task >= 1);
+        assert!(warnings.is_empty());
+        if let Some(reference) = &reference {
+            assert_eq!(&js, reference);
+        } else {
+            reference = Some(js);
+        }
+        if jobs > 1 {
+            assert!(stats.deferred_units.pool_engine_workers > 0);
+            assert!(stats.deferred_units.pool.helped > 0);
+        }
+    }
+}
+
+#[test]
+fn helper_failures_have_the_same_source_diagnostic_at_one_two_and_four_slots() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/pool");
+    let mut reference = None;
+    for jobs in [1, 2, 4] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let error = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "demand.failure",
+            std::slice::from_ref(&root),
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("fixture helper failed"), "{error}");
+        assert!(
+            error.contains("failure.cljs:2:15") && error.contains("demand.macros/demand-failure"),
+            "{error}"
+        );
+        if let Some(reference) = &reference {
+            assert_eq!(&error, reference, "jobs {jobs}");
+        } else {
+            reference = Some(error);
+        }
     }
 }

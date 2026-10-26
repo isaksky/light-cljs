@@ -598,6 +598,11 @@ pub(crate) struct MacroEnvironment {
     tables: MacroTables,
 }
 impl MacroEnvironment {
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn native_macro_backend(&self) -> bool {
+        (self.tables.native_macros || !cfg!(any(light_quickjs, light_v8)))
+            && !self.tables.interactive
+    }
     /// The options a worker's own engine is made with.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn evaluator_options(&self) -> &crate::evaluator::EvaluatorOptions {
@@ -908,8 +913,13 @@ impl MacroHost {
     > {
         #[cfg(feature = "bbp-macros")]
         if self.native_macro_backend() {
-            let evaluator =
-                crate::bbp_evaluator::BbpEvaluator::new(self.evaluator_options.clone())?;
+            let evaluator = match self.session_handle() {
+                Some(session) => session
+                    .shared()
+                    .native_runtime(&self.evaluator_options)?
+                    .evaluator()?,
+                None => crate::bbp_evaluator::BbpEvaluator::new(self.evaluator_options.clone())?,
+            };
             for (name, source) in self.tables.native_helpers.iter() {
                 let mut seed = MacroHost::new();
                 seed.tables.bootstrap_seed = true;
@@ -1090,6 +1100,10 @@ impl MacroHost {
                     gc_pause_nanos: after.gc_pause_nanos - before.gc_pause_nanos,
                     gc_pause_max_nanos: after.gc_pause_max_nanos,
                     gc_live_objects: after.gc_live_objects,
+                    helper_compiled: after.helper_compiled - before.helper_compiled,
+                    helper_published: after.helper_published - before.helper_published,
+                    helper_per_task: after.helper_per_task - before.helper_per_task,
+                    helper_waits: after.helper_waits - before.helper_waits,
                 },
             );
         }
@@ -1961,6 +1975,15 @@ impl MacroHost {
             self.engine.elidable_sizes = Default::default();
             self.tables.source_bindings.clear();
             self.engine.session = Some(crate::compilation_session::CompilationSession::new());
+            #[cfg(feature = "bbp-macros")]
+            if self.native_macro_backend() {
+                self.engine
+                    .session
+                    .as_ref()
+                    .unwrap()
+                    .shared()
+                    .select_native();
+            }
             self.engine.session_ref = std::rc::Weak::new();
         }
         self.engine.expansions = Default::default();

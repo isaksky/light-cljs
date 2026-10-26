@@ -1,0 +1,5 @@
+(ns demand.macros)
+(defn helper [x] (list 'let ['value x] (list '+ 'value 2)))
+(defmacro demand [x] (helper x))
+(defn broken [x] (throw (js/Error. "fixture helper failed")))
+(defmacro demand-failure [x] (broken x))

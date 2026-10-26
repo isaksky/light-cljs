@@ -3083,3 +3083,41 @@ Recorded SHA-256 identities of the artifacts at the time of writing:
 | `dag.bb` | `0468372d10e42761fc37eedd7ee7ea910e9572663380ef167cfe8f827dbfcf52` |
 | `instrumentation.patch` | `6b9bbf3debed7b810510acf8f64dcda95ae74bca47a6bf9d8d569f47915b90b8` |
 | `arc-experiment.patch` | `1494961534a815b2db1547704166773a2703812e590448a7eb4c41c0c2c00399` |
+
+### Native helper task boundaries
+
+The native backend has a compilation-owned `BbpRuntime`: one heap, immutable
+boot executable and aggregate execution control. Its tasks share imported native
+forms by Datum identity. An unavailable helper parks the VM before the compiler
+runs its producer using independent task state; completing a dependency only
+makes saved frames runnable. Helper factories retain shared executable code.
+Binding availability, factories and initializer outcomes are separate cells, and
+ready reads remain recorded dependencies. A successful initializer publishes its
+immutable value, or retains its mutable value locally and advertises per-task
+initialization to later consumers. Publication never speculatively reruns an
+initializer. The helper statistics count actual publication and initialization.
+
+The scheduler now exposes bounded helping with fresh nested slot state, urgent
+producer admission and depth counters. It cannot recursively borrow the active
+analyzer or evaluator. Its tests saturate all slots before demanding producers,
+including the one-slot inline path. Native evaluator tests separately run two
+real ClojureScript consumers on two OS threads, force collection while both wait
+for one compiler producer, and verify retained input identity and one execution
+of the code before the wait and in `finally`.
+
+The compiler's deferred-unit pool connects these mechanisms: native waits help
+analysis jobs proven safe by the existing snapshot-based macro-free classifier
+with fresh worker views, and owned bounded VM steps go to
+the urgent queue after the first helper wait. No thread-local analyzer callback
+crosses a worker boundary. Jobs that may demand another analysis remain for
+ordinary worker claims: nesting C below suspended A when C needs A would create
+an artificial Rust-stack wait. The classifier excludes nested definitions and
+deferred drains, lazy references, readers and engine services; ordinary Var reads
+resolve snapshot data without demanding initializers. Its existing runtime guard
+rejects engine entry. A deterministic pool test holds two consumers on one
+unprepared helper, requires unrelated analysis during their wait, and forces a
+saved continuation onto the other OS worker. A queued C that actually demands A
+runs only after an ordinary worker becomes available; the independent analysis
+still runs during the wait. Real namespace output agrees at
+one, two and four slots. Aggregate helper and task counters include all workers.
+The old per-isolate implementation above continues to describe legacy backends.
