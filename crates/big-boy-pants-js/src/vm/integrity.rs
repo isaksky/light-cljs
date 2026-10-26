@@ -108,7 +108,7 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
             return Ok(true);
         }
         for key in keys {
-            let property = crate::vm::property::get_own_property(heap, task, id, &key.key)?
+            let property = crate::vm::property::get_own_attributes(heap, task, id, &key.key)?
                 .ok_or(Fault::Internal("namespace key missing"))?;
             if property.flags.writable {
                 return Ok(false);

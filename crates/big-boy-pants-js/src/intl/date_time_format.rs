@@ -556,12 +556,17 @@ impl DateTimeFormat {
         };
         pool_string(table[index as usize]?, item)
     }
-    pub fn format(&self, time: f64) -> Result<Value, Fault> {
+    /// `format(time)`, a fresh body the caller may retain, so it is charged
+    /// to `heap` before it is made. The Rust text is leaf scratch, bounded
+    /// by this charged record's pattern.
+    pub(crate) fn format_accounted(&self, heap: &Heap, time: f64) -> Result<Value, Fault> {
+        let text = self.format_text(time)?;
+        JsString::from_str_accounted(heap, &text).map(Value::String)
+    }
+    fn format_text(&self, time: f64) -> Result<String, Fault> {
         let fields = fields_from_time_value(time, self.zone)?;
         if self.date_style.is_some() || self.time_style.is_some() {
-            return Ok(Value::String(JsString::from(
-                self.format_styles(&fields, time).as_str(),
-            )));
+            return Ok(self.format_styles(&fields, time));
         }
         let mut result = String::new();
         for item in &self.pattern {
@@ -649,7 +654,7 @@ impl DateTimeFormat {
                 }
             }
         }
-        Ok(Value::String(JsString::from(result.as_str())))
+        Ok(result)
     }
     pub fn resolved(&self, heap: &Heap, task: TaskId) -> Result<Value, Fault> {
         let string = |s: &str| Value::String(JsString::from(s));
@@ -854,9 +859,7 @@ mod tests {
                 format.date_style = Some(style);
                 format.time_style = Some(style);
                 assert!(format.finish().is_ok());
-                let Value::String(text) = format.format(1673740800000.0).ok().unwrap() else {
-                    panic!("string expected")
-                };
+                let text = format.format_text(1673740800000.0).ok().unwrap();
                 assert!(!text.is_empty(), "{locale} {style}");
             }
         }

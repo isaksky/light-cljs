@@ -81,7 +81,7 @@ pub(crate) fn get_own_property_descriptor(
     let key = property::to_property_key(&arg(1))?;
     let own = match &target {
         Value::Object(id) => property::get_own_property(heap, task, *id, &key)?,
-        Value::String(s) => property::string_own_property(s, &key),
+        Value::String(s) => property::string_own_property(heap, s, &key)?,
         _ => None,
     };
     match own {

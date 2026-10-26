@@ -369,14 +369,23 @@ const STRING_INDEX: PropertyFlags = PropertyFlags {
 /// there, read-only, enumerable, not configurable. Any other key (`"-1"`,
 /// `"1.5"`, `"01"`, an index at or past the length) is not an own
 /// property. Constant time: an index key is already an integer and the
-/// unit is read directly.
-pub(crate) fn string_own_property(s: &JsString, key: &Key) -> Option<Property> {
-    match key {
-        Key::Index(index) => s.code_unit_at(*index as usize).map(|unit| Property {
-            accessor: None,
-            value: Value::String(unit),
-            flags: STRING_INDEX,
-        }),
+/// unit is read directly. An index's value is a fresh one-unit string the
+/// caller may retain, so it is charged to `heap`'s byte budget first
+/// (`HeapLimit` at the limit); a caller that needs only the property's
+/// existence or attributes uses the allocation-free [`string_own_flags`].
+pub(crate) fn string_own_property(
+    heap: &Heap,
+    s: &JsString,
+    key: &Key,
+) -> Result<Option<Property>, Fault> {
+    Ok(match key {
+        Key::Index(index) => s
+            .code_unit_at_accounted(heap, *index as usize)?
+            .map(|unit| Property {
+                accessor: None,
+                value: Value::String(unit),
+                flags: STRING_INDEX,
+            }),
         _ if key.is_length() => Some(Property {
             accessor: None,
             // At most `MAX_STRING_LEN` units, exact as an f64.
@@ -384,7 +393,33 @@ pub(crate) fn string_own_property(s: &JsString, key: &Key) -> Option<Property> {
             flags: PropertyFlags::FIXED,
         }),
         Key::Name(_) | Key::Symbol(_) => None,
+    })
+}
+
+/// The attributes of [`string_own_property`]'s property, without making
+/// its value: `None` exactly when that is `None`.
+pub(crate) fn string_own_flags(s: &JsString, key: &Key) -> Option<PropertyFlags> {
+    match key {
+        Key::Index(index) => ((*index as usize) < s.len()).then_some(STRING_INDEX),
+        _ if key.is_length() => Some(PropertyFlags::FIXED),
+        Key::Name(_) | Key::Symbol(_) => None,
     }
+}
+
+/// [`string_own_property`] with an uncharged value, for a caller that only
+/// compares it and drops it within the same leaf step (transient storage,
+/// `docs/architecture.md`, "Byte accounting").
+fn string_own_transient(s: &JsString, key: &Key) -> Option<Property> {
+    let flags = string_own_flags(s, key)?;
+    let value = match key {
+        Key::Index(index) => Value::String(s.code_unit_at(*index as usize)?),
+        _ => Value::Number(s.len() as f64),
+    };
+    Some(Property {
+        accessor: None,
+        value,
+        flags,
+    })
 }
 
 /// Where a read of `key` on the primitive `base` continues once its
@@ -593,13 +628,19 @@ impl Read {
 /// (`Function.prototype`, the one store whose misses can fail, is an
 /// intrinsic and always read through its view.)
 fn read_store(
+    heap: &Heap,
     o: &OrdinaryObject,
     key: &Key,
     interned: Interned,
     has: bool,
     cache: Option<&InlineCache>,
 ) -> Result<Lookup, Fault> {
-    if let Some(property) = string_wrapper_property(o, key) {
+    if has {
+        // A presence check makes no index string.
+        if string_wrapper_flags(o, key).is_some() {
+            return Ok(Lookup::Found(Read::Value(Value::Undefined)));
+        }
+    } else if let Some(property) = string_wrapper_property(heap, o, key)? {
         return Ok(Lookup::Found(Read::Value(property.value)));
     }
     let Some(k) = interned else {
@@ -616,11 +657,29 @@ fn read_store(
 
 /// Virtual own properties of an allocated String wrapper. The intrinsic
 /// String.prototype wraps the empty string and already stores its length.
-fn string_wrapper_property(o: &OrdinaryObject, key: &Key) -> Option<Property> {
+/// An index value is charged ([`string_own_property`]).
+fn string_wrapper_property(
+    heap: &Heap,
+    o: &OrdinaryObject,
+    key: &Key,
+) -> Result<Option<Property>, Fault> {
+    match wrapped_string(o) {
+        Some(s) => string_own_property(heap, s, key),
+        None => Ok(None),
+    }
+}
+
+/// The attributes of [`string_wrapper_property`]'s property, without making
+/// its value.
+fn string_wrapper_flags(o: &OrdinaryObject, key: &Key) -> Option<PropertyFlags> {
+    wrapped_string(o).and_then(|s| string_own_flags(s, key))
+}
+
+fn wrapped_string(o: &OrdinaryObject) -> Option<&JsString> {
     if !o.is_intrinsic()
         && let Some(crate::object::PrimitiveData::String(s)) = o.primitive_data()
     {
-        return string_own_property(s, key);
+        return Some(s);
     }
     None
 }
@@ -744,7 +803,11 @@ fn lookup_cached(
     // the original base through the VM's generic call path.
     let mut id = match base {
         Value::Object(id) => *id,
-        Value::String(s) if let Some(own) = string_own_property(s, key) => {
+        // A presence check makes no index string.
+        Value::String(s) if has && string_own_flags(s, key).is_some() => {
+            return Ok(Some(Read::Value(Value::Undefined)));
+        }
+        Value::String(s) if !has && let Some(own) = string_own_property(heap, s, key)? => {
             return Ok(Some(Read::Value(own.value)));
         }
         _ => primitive_prototype(heap, base, key)?,
@@ -807,7 +870,7 @@ fn lookup_cached(
                 }
                 match visit(object, task)? {
                     Visit::Store(o) => {
-                        read_store(o, key, interned, has, cache.map(|(_, cache)| cache))
+                        read_store(heap, o, key, interned, has, cache.map(|(_, cache)| cache))
                     }
                     Visit::Array(a) => match key {
                         Key::Index(index) => Ok(match a.element(*index) {
@@ -818,6 +881,7 @@ fn lookup_cached(
                             f64::from(a.length()),
                         )))),
                         Key::Name(_) | Key::Symbol(_) => read_store(
+                            heap,
                             a.object(),
                             key,
                             interned,
@@ -964,7 +1028,7 @@ fn store(
         return Ok(Stored::Exotic(route));
     }
     let named = |o: &mut OrdinaryObject| {
-        if string_wrapper_property(o, key).is_some() {
+        if string_wrapper_flags(o, key).is_some() {
             return Ok(Stored::Rejected(read_only(key)));
         }
         let Some(k) = interned else {
@@ -1157,7 +1221,7 @@ fn prepare_write_cached(
                 | Value::Bool(_)
                 | Value::BigInt(_)
                 | Value::Symbol(_)
-        ) && !(matches!(base, Value::String(s) if string_own_property(s, key).is_some()))
+        ) && !(matches!(base, Value::String(s) if string_own_flags(s, key).is_some()))
         {
             let prototype = primitive_prototype(heap, base, key)?;
             if let Ok(Chain::Setter(setter)) =
@@ -1396,7 +1460,7 @@ pub(crate) fn super_receiver_descriptor(
         return rejected();
     };
     check_super_receiver_mutability(heap, *id, key)?;
-    let own = get_own_property(heap, task, *id, key)?;
+    let own = get_own_attributes(heap, task, *id, key)?;
     if let Some(own) = &own
         && (own.accessor.is_some() || !own.flags.writable)
     {
@@ -1478,7 +1542,7 @@ fn put_primitive(base: &Value, key: &Key, strict: bool) -> Result<(), Fault> {
         return Ok(());
     }
     let own = match base {
-        Value::String(s) => string_own_property(s, key).is_some(),
+        Value::String(s) => string_own_flags(s, key).is_some(),
         _ => false,
     };
     Err(Fault::TypeError(if own {
@@ -1548,7 +1612,7 @@ fn check_inherited(
             }
         }
         let in_store = |o: &OrdinaryObject| {
-            if string_wrapper_property(o, key).is_some() {
+            if string_wrapper_flags(o, key).is_some() {
                 return Err(read_only(key));
             }
             match k.and_then(|k| o.get_own(k)) {
@@ -1783,7 +1847,8 @@ pub(crate) fn define_own_property(
         false => Some(key.intern(heap)?),
     };
     let named = |o: &mut OrdinaryObject| {
-        if let Some(property) = string_wrapper_property(o, key) {
+        // Validated and discarded within this step, so not charged.
+        if let Some(property) = wrapped_string(o).and_then(|s| string_own_transient(s, key)) {
             return match crate::object::validate_and_apply(Some(&property), desc) {
                 Ok(_) => Ok(()),
                 Err(outcome) => defined(outcome, key),
@@ -1934,6 +1999,29 @@ pub(crate) fn get_own_property(
     target: ObjectId,
     key: &Key,
 ) -> Result<Option<Property>, Fault> {
+    own_property(heap, task, target, key, true)
+}
+
+/// [`get_own_property`] for a caller that needs only the property's
+/// presence, attributes or accessors: a String wrapper's index property
+/// has an `undefined` placeholder value, so no index string is made or
+/// charged.
+pub(crate) fn get_own_attributes(
+    heap: &Heap,
+    task: TaskId,
+    target: ObjectId,
+    key: &Key,
+) -> Result<Option<Property>, Fault> {
+    own_property(heap, task, target, key, false)
+}
+
+fn own_property(
+    heap: &Heap,
+    task: TaskId,
+    target: ObjectId,
+    key: &Key,
+    with_value: bool,
+) -> Result<Option<Property>, Fault> {
     enum Own {
         Property(Option<Property>),
         Exotic(Exotic),
@@ -1950,7 +2038,16 @@ pub(crate) fn get_own_property(
                 return Ok(Own::Exotic(route));
             }
             let property = match visit(object, task)? {
-                Visit::Store(o) => string_wrapper_property(o, key).or_else(|| named(o)),
+                Visit::Store(o) if with_value => {
+                    string_wrapper_property(heap, o, key)?.or_else(|| named(o))
+                }
+                Visit::Store(o) => string_wrapper_flags(o, key)
+                    .map(|flags| Property {
+                        accessor: None,
+                        value: Value::Undefined,
+                        flags,
+                    })
+                    .or_else(|| named(o)),
                 Visit::Array(a) => match key {
                     Key::Index(index) => a.element(*index),
                     _ if key.is_length() => Some(a.length_property()),
@@ -1971,7 +2068,7 @@ pub(crate) fn get_own_property(
         Own::Property(property) => Ok(property),
         Own::Exotic(Exotic::Proxy) => {
             let target = super::proxy::forward(heap, task, target, "getOwnPropertyDescriptor")?;
-            get_own_property(heap, task, target, key)
+            own_property(heap, task, target, key, with_value)
         }
         Own::Exotic(Exotic::Namespace(entry)) => entry
             .map(|e| crate::module::namespace::property(heap, task, e))
@@ -1988,7 +2085,7 @@ pub(crate) fn get_own_property(
                 return Ok(Some(property));
             }
             match function::own_store(heap, task, target, key)? {
-                Some(record) => get_own_property(heap, task, record, key),
+                Some(record) => own_property(heap, task, record, key, with_value),
                 None => Ok(None),
             }
         }
@@ -2007,8 +2104,8 @@ pub(crate) fn own_enumerable(
         Value::Object(id) if is_function(heap, *id) => {
             return function::own_enumerable(heap, task, *id, key);
         }
-        Value::Object(id) => get_own_property(heap, task, *id, key)?,
-        Value::String(s) => string_own_property(s, key),
+        Value::Object(id) => get_own_attributes(heap, task, *id, key)?,
+        Value::String(s) => return Ok(string_own_flags(s, key).is_some_and(|f| f.enumerable)),
         _ => None,
     };
     Ok(own.is_some_and(|p| p.flags.enumerable))
@@ -2044,7 +2141,7 @@ pub(crate) fn delete(
         // The String wrapper ToObject would make: its indices below the
         // length and its `length` are its only own properties, and none of
         // them is configurable.
-        Value::String(s) => match string_own_property(s, &key) {
+        Value::String(s) => match string_own_flags(s, &key) {
             Some(_) => DeleteOutcome::NonConfigurable,
             None => DeleteOutcome::Absent,
         },
@@ -2118,7 +2215,7 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
         HeapObject::Builtin(f) => shared(&f.properties),
         HeapObject::Plain(o) => {
             check_write(o, task)?;
-            if string_wrapper_property(o, key).is_some() {
+            if string_wrapper_flags(o, key).is_some() {
                 return Ok(DeleteOutcome::NonConfigurable);
             }
             Ok(named(o))
@@ -2128,7 +2225,7 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
             ..
         }) => {
             check_write(o, task)?;
-            if string_wrapper_property(o, key).is_some() {
+            if string_wrapper_flags(o, key).is_some() {
                 return Ok(DeleteOutcome::NonConfigurable);
             }
             Ok(named(o))
@@ -2242,6 +2339,79 @@ mod tests {
     use crate::heap::NativePayload;
     use crate::heap::gc::Trace;
     use crate::value::share::Shareability;
+
+    /// A string index read makes a charged string; checks that only need
+    /// the property's presence or attributes make none, so they still
+    /// succeed with no byte headroom (light-cljs-492).
+    #[test]
+    fn string_wrapper_attribute_checks_need_no_byte_headroom() {
+        #[track_caller]
+        fn ok<T>(result: Result<T, Fault>) -> T {
+            match result {
+                Ok(value) => value,
+                Err(Fault::HeapLimit) => panic!("unexpected HeapLimit"),
+                Err(Fault::TypeError(message) | Fault::Unsupported(message)) => {
+                    panic!("unexpected fault: {message}")
+                }
+                Err(_) => panic!("unexpected fault"),
+            }
+        }
+        let heap = Heap::with_byte_limit(64 * 1024);
+        let task = TaskId::from_raw(1);
+        let s = JsString::from("xyz");
+        let prototype = crate::realm::intrinsics(&heap).unwrap().string_prototype;
+        let wrapper = heap
+            .alloc(HeapObject::Plain(
+                OrdinaryObject::with_prototype(&heap, task, prototype)
+                    .with_primitive_data(crate::object::PrimitiveData::String(s.clone())),
+            ))
+            .unwrap();
+        let key = Key::Index(0);
+        // A definition interns its key first; that charge is not at issue.
+        ok(key.intern(&heap));
+        let budget = heap.byte_budget();
+        let used = budget.used();
+        budget.set_limit(used);
+        for base in [Value::String(s.clone()), Value::Object(wrapper)] {
+            assert!(matches!(
+                read(&heap, task, &base, &key),
+                Err(Fault::HeapLimit)
+            ));
+            assert!(ok(has_property(&heap, task, &base, &key)));
+            assert!(ok(own_enumerable(&heap, task, &base, &key)));
+            assert!(!ok(delete(&heap, task, &base, &Value::Number(0.0), false)));
+        }
+        assert!(matches!(
+            string_own_property(&heap, &s, &key),
+            Err(Fault::HeapLimit)
+        ));
+        let own = ok(get_own_attributes(&heap, task, wrapper, &key)).unwrap();
+        assert!(own.flags.enumerable && !own.flags.writable && !own.flags.configurable);
+        // Redefining the unchanged property validates without a charge.
+        for desc in [
+            PropertyDescriptor::default(),
+            PropertyDescriptor {
+                value: Some(Value::String("x".into())),
+                ..PropertyDescriptor::default()
+            },
+        ] {
+            ok(define_own_property(&heap, task, wrapper, &key, &desc));
+        }
+        assert!(
+            define_own_property(
+                &heap,
+                task,
+                wrapper,
+                &key,
+                &PropertyDescriptor {
+                    value: Some(Value::String("q".into())),
+                    ..PropertyDescriptor::default()
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(budget.used(), used);
+    }
 
     #[test]
     fn fused_exotic_dispatch_rejects_foreign_owners() {

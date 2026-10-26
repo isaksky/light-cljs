@@ -272,7 +272,10 @@ data-sized payload is not):
   possible flattened copy; a formatter's accumulated output charges each
   node once and the whole output's flattened copy, its shared first piece
   included, at the extension that makes it a rope, and the returned body keeps
-  that credit for its cached copy), BigInt limbs, ArrayBuffer stores, native persistent
+  that credit for its cached copy; a string index read's one-unit result and
+  the Date and `Intl.DateTimeFormat` formatters' outputs, each charged before
+  its body is made, while presence and attribute checks of a string's index
+  make no string), BigInt limbs, ArrayBuffer stores, native persistent
   vectors/maps/forms and builders, RegExp programs and captures;
 - saved continuations: detached activations, closure captures, bound arguments,
   promise reactions, queued jobs, disposable resources, async-generator queues;
@@ -289,9 +292,11 @@ allocator overhead and fragmentation, Rust and VM stacks of running frames,
 transient values that exist only within one leaf step (bounded by the step's
 inputs), and the embedder's own data. Accounted bytes therefore approximate and
 do not bound RSS; `docs/measurement.md` records the realm's accounted footprint.
-Known retained-storage gaps, not yet charged: strings produced by string index
-reads and the Date formatters (light-cljs-492). The
-two heap-limit exception messages share one uncharged body each.
+Known retained-storage gaps, not yet charged: the fresh fixed-text strings of
+`typeof`, `Boolean.prototype.toString`, the TypedArray `Symbol.toStringTag`
+getter, `Intl.PluralRules.prototype.select` and Intl `resolvedOptions()` fields
+(light-cljs-493). The two heap-limit exception messages share one uncharged
+body each.
 
 A denial fails the requesting operation with `VmErrorKind::HeapLimit`,
 catchable as the primitive string `heap byte limit exceeded` (no Error object

@@ -4265,7 +4265,7 @@ impl NativeState {
                     _ => return Err(Fault::Internal("bind expected descriptor")),
                 }
             } else {
-                property::get_own_property(heap, task, *id, &key)?.is_some()
+                property::get_own_attributes(heap, task, *id, &key)?.is_some()
             };
             *stage = 1;
             if has_length {
@@ -5204,20 +5204,12 @@ impl NativeState {
                     ConvertTarget::DateFunction => {
                         let time = super::date::now(host)?;
                         let zone = super::date::zone(heap, host);
-                        Ok(Action::Return(super::date::format_string(
-                            time,
-                            Some(zone),
-                            3,
-                        )))
+                        super::date::format_string(heap, time, Some(zone), 3).map(Action::Return)
                     }
                     ConvertTarget::DateLocalString { part } => {
                         let time = super::date::this_time_value(heap, task, &operands[0])?;
                         let zone = super::date::zone(heap, host);
-                        Ok(Action::Return(super::date::format_string(
-                            time,
-                            Some(zone),
-                            part,
-                        )))
+                        super::date::format_string(heap, time, Some(zone), part).map(Action::Return)
                     }
                     ConvertTarget::DateNow { construct } => {
                         let time = super::date::now(host)?;

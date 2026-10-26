@@ -863,7 +863,7 @@ pub(crate) fn for_in_next(
             Step::Done => return Ok(None),
             Step::Key(object, key) => {
                 let present = match object {
-                    Some(object) => property::get_own_property(heap, task, object, &key)?
+                    Some(object) => property::get_own_attributes(heap, task, object, &key)?
                         .is_some_and(|p| p.flags.enumerable),
                     None => true,
                 };
@@ -949,7 +949,7 @@ pub(crate) fn for_in_request(
                 if super::proxy::inspect(heap, task, object)?.is_some() {
                     return Ok(ForInRequest::Descriptor(object, key));
                 }
-                if property::get_own_property(heap, task, object, &key)?
+                if property::get_own_attributes(heap, task, object, &key)?
                     .is_some_and(|p| p.flags.enumerable)
                 {
                     return Ok(ForInRequest::Key(key));

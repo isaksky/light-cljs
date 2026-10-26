@@ -1,4 +1,5 @@
 use big_boy_pants_js::frontend::compile_function;
+use big_boy_pants_js::host::{TimeZone, sim::SimTimeHost};
 use big_boy_pants_js::{
     Budget, HeapPolicy, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView, VmErrorKind,
 };
@@ -270,13 +271,15 @@ fn with_headroom(headroom: usize) -> (Runtime, usize) {
 /// Run `source` (a zero-argument function) to completion in a slice loop,
 /// so yields between instructions are exercised, and return its result.
 fn run_sliced(rt: &Runtime, source: &str) -> RunOutcome {
+    run_sliced_on(rt, source, &mut Effectless)
+}
+
+/// [`run_sliced`] with `host` answering leaf effects (a clock, a zone).
+fn run_sliced_on(rt: &Runtime, source: &str, host: &mut dyn Host) -> RunOutcome {
     let code = compile_function(source).unwrap();
     let task = rt.spawn(&code, &[]).unwrap();
     loop {
-        match task
-            .run_with(Budget::instructions(97), &mut Effectless)
-            .unwrap()
-        {
+        match task.run_with(Budget::instructions(97), host).unwrap() {
             RunOutcome::Yielded => {}
             outcome => return outcome,
         }
@@ -284,10 +287,14 @@ fn run_sliced(rt: &Runtime, source: &str) -> RunOutcome {
 }
 
 fn caught(rt: &Runtime, body: &str) {
+    caught_on(rt, body, &mut Effectless)
+}
+
+fn caught_on(rt: &Runtime, body: &str, host: &mut dyn Host) {
     let source = format!(
         "function f() {{ let kept = []; try {{ {body} }} catch (e) {{ kept = null; return e === 'heap byte limit exceeded' || String(e); }} return 'not denied'; }}"
     );
-    let outcome = run_sliced(rt, &source);
+    let outcome = run_sliced_on(rt, &source, host);
     let RunOutcome::Complete(result) = outcome else {
         panic!("{body}: {outcome:?}");
     };
@@ -653,5 +660,73 @@ fn join_and_raw_keep_part_charges_across_string_build_yields() {
             "{source}: parts charge released while building: {} bytes above start",
             late - before
         );
+    }
+}
+
+/// Leaf reads and formatters return fresh string bodies that a caller can
+/// keep. Writing them over a preallocated array's existing slots grows no
+/// other charged storage, so only the outputs' own charges can reach the
+/// limit (light-cljs-492).
+#[test]
+fn retained_leaf_string_outputs_obey_byte_limit() {
+    const SLOTS: usize = 40_000;
+    let outputs = [
+        "s[1]",
+        "w[1]",
+        "d.toISOString()",
+        "d.toString()",
+        "d.toUTCString()",
+        "d.toDateString()",
+        "invalid.toString()",
+        "f.format(0)",
+        // A number-like argument completes ToNumber in a later native step.
+        "f.format(numberLike)",
+        // Clock reads.
+        "f.format()",
+        "Date()",
+        "styled.format(0)",
+    ];
+    let setup = "const s = 'xyz'; const w = new String('xyz'); const d = new Date(0); \
+                 const invalid = new Date(NaN); const f = new Intl.DateTimeFormat('en'); \
+                 const numberLike = {valueOf() { return 0; }}; \
+                 const styled = new Intl.DateTimeFormat('en', {dateStyle: 'full', timeStyle: 'full'});";
+    let host = || {
+        SimTimeHost::new(
+            1506098258091.0,
+            TimeZone::fixed_offset_seconds(3600).unwrap(),
+        )
+    };
+    let (rt, limit) = with_headroom(4 * 1024 * 1024);
+    for output in outputs {
+        caught_on(
+            &rt,
+            &format!(
+                "{setup} const a = new Array({SLOTS}).fill(0); kept.push(a); \
+                 for (let i = 0; i < a.length; i++) a[i] = {output};"
+            ),
+            &mut host(),
+        );
+        let stats = rt.heap_stats();
+        assert!(stats.peak_managed_bytes <= limit, "{output}: {stats:?}");
+    }
+    // With room for all of them, each kept output holds at least its body.
+    for output in outputs {
+        let (rt, _) = with_headroom(64 * 1024 * 1024);
+        let before = rt.heap_stats().managed_bytes;
+        let outcome = run_sliced_on(
+            &rt,
+            &format!(
+                "function f() {{ {setup} const a = new Array({SLOTS}).fill(0); \
+                 for (let i = 0; i < a.length; i++) a[i] = {output}; \
+                 return a[{SLOTS} - 1] === a[0] && typeof a[0] === 'string' ? a : 'wrong'; }}"
+            ),
+            &mut host(),
+        );
+        let RunOutcome::Complete(result) = outcome else {
+            panic!("{output}: {outcome:?}");
+        };
+        assert!(result.string().is_none(), "{output}: {:?}", result.view());
+        let held = rt.heap_stats().managed_bytes - before;
+        assert!(held >= SLOTS * 256, "{output}: {held} bytes held");
     }
 }

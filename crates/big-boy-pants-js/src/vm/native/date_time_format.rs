@@ -402,13 +402,13 @@ impl State {
                     dispatch::to_number(&self.argument)?
                 };
                 date_time_format::record(heap, task, &self.this)?
-                    .format(time)
+                    .format_accounted(heap, time)
                     .map(Action::Return)
             }
             Stage::Number => {
                 let value = Self::result(input)?;
                 date_time_format::record(heap, task, &self.this)?
-                    .format(dispatch::to_number(&value)?)
+                    .format_accounted(heap, dispatch::to_number(&value)?)
                     .map(Action::Return)
             }
         }

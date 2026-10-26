@@ -279,6 +279,31 @@ impl JsString {
         copy.extend_from_slice(units);
         Self::from_owned_code_units(copy).map(|text| text.with_reservation(ticket))
     }
+
+    /// A fresh body holding `text`, a leaf's transient Rust output (a Date
+    /// or Intl formatter's), charged to `heap` before the body is made.
+    pub(crate) fn from_str_accounted(
+        heap: &crate::heap::Heap,
+        text: &str,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        let ticket = Self::reserve(heap, text.encode_utf16().count(), 1)?;
+        Ok(Self::from(text).with_reservation(ticket))
+    }
+
+    /// [`JsString::code_unit_at`] for a result that may be retained
+    /// (`s[i]`): the fresh one-unit body is charged to `heap` first.
+    pub(crate) fn code_unit_at_accounted(
+        &self,
+        heap: &crate::heap::Heap,
+        index: usize,
+    ) -> Result<Option<Self>, crate::vm::dispatch::Fault> {
+        if index >= self.len() {
+            return Ok(None);
+        }
+        let unit = self.code_units()[index];
+        let ticket = Self::reserve(heap, 1, 1)?;
+        Ok(Self::from_owned_code_units(vec![unit]).map(|text| text.with_reservation(ticket)))
+    }
     pub(crate) fn with_reservation(
         mut self,
         reservation: Option<Arc<crate::heap::budget::ByteReservation>>,

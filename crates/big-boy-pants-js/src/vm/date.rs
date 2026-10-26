@@ -11,7 +11,7 @@
 use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
 use crate::object::OrdinaryObject;
-use crate::value::Value;
+use crate::value::{JsString, Value};
 use crate::vm::dispatch::{Fault, to_number};
 
 pub(crate) const MS_PER_DAY: f64 = 86_400_000.0;
@@ -950,13 +950,19 @@ pub(crate) fn calendar_fields(time: f64) -> Option<UtcFields> {
 /// part bits 1/2; without a zone the complete UTC format is used. Like QuickJS's
 /// get_date_fields, truncate the offset to minutes before decomposing the time.
 /// This intentionally differs from the second-precision local field getters.
-pub(crate) fn format_string(time: f64, zone: Option<crate::host::TimeZone>, part: u8) -> Value {
+/// The result is a fresh body the caller may retain, charged to `heap`.
+pub(crate) fn format_string(
+    heap: &Heap,
+    time: f64,
+    zone: Option<crate::host::TimeZone>,
+    part: u8,
+) -> Result<Value, Fault> {
     // QuickJS's host offset lookup first divides the integer epoch time by
     // 1000, truncating toward zero (observable just before pre-epoch changes).
     let offset_time = (time as i64 / 1000 * 1000) as f64;
     let offset = zone.map_or(0, |z| z.offset_seconds(offset_time) / 60);
     let Some(fields) = calendar_fields(time + f64::from(offset) * 60_000.0) else {
-        return Value::String("Invalid Date".into());
+        return JsString::from_str_accounted(heap, "Invalid Date").map(Value::String);
     };
     let day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][fields.weekday as usize];
     let month = MONTH_NAMES[fields.month as usize];
@@ -989,11 +995,11 @@ pub(crate) fn format_string(time: f64, zone: Option<crate::host::TimeZone>, part
     } else {
         format!("{day}, {:02} {month} {year} {clock} GMT", fields.date)
     };
-    Value::String(text.as_str().into())
+    JsString::from_str_accounted(heap, &text).map(Value::String)
 }
 
 pub(crate) fn to_utc_string(heap: &Heap, task: TaskId, this: &Value) -> Result<Value, Fault> {
-    Ok(format_string(this_time_value(heap, task, this)?, None, 3))
+    format_string(heap, this_time_value(heap, task, this)?, None, 3)
 }
 
 pub(crate) fn to_iso_string(heap: &Heap, task: TaskId, this: &Value) -> Result<Value, Fault> {
@@ -1005,19 +1011,16 @@ pub(crate) fn to_iso_string(heap: &Heap, task: TaskId, this: &Value) -> Result<V
         // Sign plus six digits (width includes the sign), including year -1.
         format!("{:+07}", fields.year)
     };
-    Ok(Value::String(
-        format!(
-            "{year}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-            fields.month + 1,
-            fields.date,
-            fields.hours,
-            fields.minutes,
-            fields.seconds,
-            fields.milliseconds,
-        )
-        .as_str()
-        .into(),
-    ))
+    let text = format!(
+        "{year}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        fields.month + 1,
+        fields.date,
+        fields.hours,
+        fields.minutes,
+        fields.seconds,
+        fields.milliseconds,
+    );
+    JsString::from_str_accounted(heap, &text).map(Value::String)
 }
 
 /// Bound the shared leaf StringToNumber scan (including rope flattening).
