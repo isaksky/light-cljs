@@ -325,6 +325,73 @@ samples have `clj::tail` in 3 and 4 (inclusive; before: 203 of 735, with
 (`execute_budgeted` 55 and 48 self), `memmove`, `Fault` drop glue, HAMT
 `Entry` copies and drops, and `mark_and_sweep` (26 and 37 inclusive).
 
+#### Boxed sweep (light-cljs-504)
+
+The rest of the n = 100 to 400 step was not map path copies. Variants of
+`churn` (interquartile mean of 31 interleaved samples per cell, master
+`032d00af`, load averages 3.5) grow about 4x without a collection and more
+than 4x only with one. Ratios of macro time from n = 100 to 400:
+
+| variant | master | this change | no collection |
+| --- | ---: | ---: | ---: |
+| `full` (the k workload) | 4.74x | 4.41x | 3.95x |
+| `index`: walk `v` with `nth` | 4.43x | 4.27x | 4.09x |
+| `maponly`: `assoc` only, no `conj` | 4.44x | 4.26x | 3.99x |
+| `nomap`: no `assoc` | 4.06x | 4.19x | 3.94x |
+
+"No collection" is master built with an allocation threshold of 2^22 (a
+probe, not a proposal). With equal total work the cost per element does not
+grow with n: 64 calls at n = 100, 16 at 400 and 4 at 1,600 analyse in 60.9,
+58.8 and 59.7 ms on master. The step is a threshold: the four n = 400 calls
+cross the 16,384-allocation trigger once, in the fourth call, and n = 100
+never does (`nomap` allocates one object less per element and stays under).
+
+That one collection cost more than its share because the sweep moved each
+garbage `HeapObject` (304 bytes) out of its box into one growing `Vec`: about
+5 MiB copied and reallocated per pause, a fresh huge-page allocation that
+mimalloc then purged. A run at n = 400 peaked at 36 MiB RSS and 50.5 MiB
+committed against 26.6 and 29.5 MiB without the collection, with 2,640 page
+reclaims against 2,014. `ObjectTable::sweep` now returns the boxes; the bodies
+are freed with them after the pause, as their contents already were. The
+first pause falls from 1,168 to 285 µs, and the run peaks at 27.0 MiB RSS and
+33.7 MiB committed (2,026 reclaims).
+
+October 26, 2026, `bb benchmarks/native-macros-k.bb OUT --runs 15 --n
+0,100,400 v8=… before=… after=…`, `before` = master `032d00af` (native-only,
+sha256 `a37ee1ea…`), `after` = this change on it (native-only, sha256
+`2431e3e2…`), V8 from the shared cache (`LIGHT_CLJS_V8_CACHE=require`,
+sha256 `ef33476f…`); macOS aarch64, 24 CPUs, Rust 1.99.1, Node 24.22.1; peer
+workers mostly between builds and tests (load averages 3.6–3.9). Analysis ms,
+median [min–max] of fifteen, two runs:
+
+| `n` | V8 | before | after | k before | k after |
+| ---: | --- | --- | --- | ---: | ---: |
+| 0 | 23.2 [22.3–24.9] | 8.5 [8.2–9.0] | 8.6 [8.3–9.9] | – | – |
+| 100 | 28.8 [27.2–31.2] | 11.4 [10.9–15.3] | 11.6 [11.1–13.5] | 0.5 | 0.5 |
+| 400 | 34.8 [33.9–37.6] | 22.2 [21.1–24.1] | 21.2 [20.6–22.9] | 1.2 | 1.1 |
+| 0 | 24.0 [23.7–26.3] | 8.9 [8.6–9.5] | 9.0 [8.7–9.6] | – | – |
+| 100 | 29.1 [28.6–30.6] | 11.9 [11.5–12.5] | 12.0 [11.4–12.4] | 0.6 | 0.6 |
+| 400 | 36.1 [35.3–37.5] | 23.0 [22.1–23.8] | 22.0 [21.1–22.9] | 1.2 | 1.1 |
+
+k at n = 400 is 1.1. The engine's macro time grows 4.2x and 4.3x from n = 100
+to 400 (3.0 to 12.6 and 13.0 ms; before 4.7x and 4.7x; V8 2.1x and 2.4x).
+The n = 100 delta is about 3 ms at 0.1 ms resolution, so five-round medians
+move the ratio by several tenths: two five-round runs of the same binaries
+gave 4.6x and 4.7x (before 4.6x and 5.3x). What is left above 4x is the one
+collection's work after the pause, freeing its garbage.
+
+Profiles of 400 `(churn 400)` calls (1.6 s on master, 1.39 s here) and 50
+`(churn 3200)` calls (1.57 s, 1.50 s): automatic collection falls from 17%
+to 10% and from 13% to 11% of the samples, and its `memmove` from 28 samples
+to none. In the n = 400 profile a collection is now mostly freeing garbage
+(50 of 91 samples: form bodies 35, map trie nodes 22, vector nodes 10) and
+marking (20). Map `assoc` with its path copy is 35 of 938 samples and
+dropping map nodes 19 (n = 3200: 42 and 31 of 1,002); the top frames are the
+interpreter (`execute_budgeted` 163 and 190 self), `Fault` drop glue,
+`Value` drop glue, the slot directory and `memmove`. A cheaper map node
+layout would not change the root's 32 child references a path copy takes and
+a dropped version releases.
+
 ## Protocols and types (light-cljs-478), October 26, 2026
 
 `bb benchmarks/native-macros-k.bb OUTPUT --workload protocol v8=BIN NAME=BIN`
