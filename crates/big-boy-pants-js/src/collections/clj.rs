@@ -53,6 +53,9 @@ pub(crate) enum CljError {
     },
     /// `nth` beyond the end without a default (a `RangeError`).
     OutOfBounds,
+    /// A constructor's operands have the wrong types (a `TypeError` with
+    /// the message of the JavaScript function it replaces).
+    Operands(&'static str),
 }
 
 impl From<CollectionError> for CljError {
@@ -70,6 +73,7 @@ impl CljError {
                 format!("unsupported operation: native macro runtime {op} on {found}")
             }
             CljError::OutOfBounds => "index out of bounds".to_string(),
+            CljError::Operands(message) => (*message).to_string(),
         }
     }
 }
@@ -281,13 +285,174 @@ pub(crate) fn concat(heap: &Heap, a: &Value, b: &Value) -> Result<Value> {
     Ok(form::new_list(heap, &items)?)
 }
 
-/// `nth`: the element at index `i` of a list, vector or string; `nil` for
-/// `nil`. Past the end: `default`, or `RangeError` without one.
+/// `concat` of any number of collections, given as the elements of the
+/// list `colls`: one new list of all their elements, in order (`nil`
+/// contributes none). The lowering of `(concat a b c …)`, flat however many
+/// operands there are.
+pub(crate) fn concat_all(heap: &Heap, colls: &Value) -> Result<Value> {
+    let mut items = Vec::new();
+    for coll in sequential_items(heap, "concat", colls)? {
+        items.extend(seq_items(heap, "concat", &coll)?.unwrap_or_default());
+    }
+    Ok(form::new_list(heap, &items)?)
+}
+
+/// The elements of a list or vector (the operand lists of the flat
+/// lowerings).
+fn sequential_items(heap: &Heap, op: &'static str, v: &Value) -> Result<Vec<Value>> {
+    let shape = shape(heap, v);
+    match &shape {
+        Shape::Form(_, f) => match f.body() {
+            FormBody::List(items) | FormBody::Vector(items) => Ok(items.to_vec()),
+            _ => Err(unsupported(op, &shape)),
+        },
+        _ => Err(unsupported(op, &shape)),
+    }
+}
+
+/// A map of `keys[i]` to `values[i]` (two lists of equal length), as
+/// `formMap` of the alternating pairs: a later equal key replaces the
+/// value. A hash-map literal evaluates all its keys before its values and
+/// is lowered to this.
+pub(crate) fn zip_map(heap: &Heap, keys: &Value, values: &Value) -> Result<Value> {
+    let keys = sequential_items(heap, "hash-map", keys)?;
+    let values = sequential_items(heap, "hash-map", values)?;
+    if keys.len() != values.len() {
+        return Err(CljError::Operands(
+            "hash-map keys and values differ in count",
+        ));
+    }
+    let entries: Vec<(Value, Value)> = keys.into_iter().zip(values).collect();
+    Ok(form::new_map(heap, &entries)?)
+}
+
+/// What a constructor operand is: `None` for `nil`, a string, or the name
+/// of a keyword or symbol.
+enum NamePart {
+    Nil,
+    Str(JsString),
+    Named(FormKind, form::FormName),
+    Other,
+}
+
+fn name_part(heap: &Heap, v: &Value) -> NamePart {
+    match shape(heap, v) {
+        Shape::Nil => NamePart::Nil,
+        Shape::Str(s) => NamePart::Str(s),
+        Shape::Form(kind @ (FormKind::Keyword | FormKind::Symbol), f) => match f.body() {
+            FormBody::Keyword(n) | FormBody::Symbol(n) => NamePart::Named(kind, n.clone()),
+            _ => NamePart::Other,
+        },
+        _ => NamePart::Other,
+    }
+}
+
+/// The position of the first `/` in `s`.
+fn slash(s: &JsString) -> Option<usize> {
+    s.code_units().iter().position(|&u| u == u16::from(b'/'))
+}
+
+fn substring(heap: &Heap, s: &JsString, range: std::ops::Range<usize>) -> Result<JsString> {
+    JsString::copy_units(heap, &s.code_units()[range])
+        .ok_or(CljError::Collection(CollectionError::HeapLimit))
+}
+
+fn named(
+    heap: &Heap,
+    kind: FormKind,
+    namespace: Option<JsString>,
+    name: JsString,
+) -> Result<Value> {
+    Ok(form::new_named(heap, kind, namespace, name)?)
+}
+
+/// `(keyword x)`: a keyword itself (as given); a symbol's namespace and
+/// name as a keyword; a string's keyword (`"ns/name"` splits at its one
+/// `/`, `"/"` is the name `/`); `nil` for anything else. A spelling with
+/// more than one `/` has no native keyword (`AmbiguousName`).
+pub(crate) fn keyword(heap: &Heap, x: &Value) -> Result<Value> {
+    match name_part(heap, x) {
+        NamePart::Named(FormKind::Keyword, _) => Ok(x.clone()),
+        NamePart::Named(_, n) => named(heap, FormKind::Keyword, n.namespace, n.name),
+        NamePart::Str(s) => {
+            let units = s.code_units();
+            let slashes = units.iter().filter(|&&u| u == u16::from(b'/')).count();
+            match slash(&s) {
+                Some(at) if slashes == 1 && units.len() > 1 => {
+                    let ns = substring(heap, &s, 0..at)?;
+                    let name = substring(heap, &s, at + 1..units.len())?;
+                    named(heap, FormKind::Keyword, Some(ns), name)
+                }
+                _ => named(heap, FormKind::Keyword, None, s),
+            }
+        }
+        NamePart::Nil | NamePart::Other => Ok(Value::Null),
+    }
+}
+
+/// `(keyword ns name)`: keyword or symbol operands give their names; then
+/// `ns` must be `nil` or a string and `name` a string.
+pub(crate) fn keyword_ns(heap: &Heap, ns: &Value, name: &Value) -> Result<Value> {
+    const MESSAGE: &str = "keyword expects strings or keywords and an optional nil namespace";
+    let text = |part: NamePart| match part {
+        NamePart::Named(_, n) => Some(Some(n.name)),
+        NamePart::Str(s) => Some(Some(s)),
+        NamePart::Nil => Some(None),
+        NamePart::Other => None,
+    };
+    let (Some(ns), Some(Some(name))) = (text(name_part(heap, ns)), text(name_part(heap, name)))
+    else {
+        return Err(CljError::Operands(MESSAGE));
+    };
+    named(heap, FormKind::Keyword, ns, name)
+}
+
+/// `(symbol x)`: a symbol itself (as given); a keyword's or string's
+/// spelling split at its first `/` (none, or a leading one: no
+/// namespace). Anything else fails as "no conversion to symbol".
+pub(crate) fn symbol(heap: &Heap, x: &Value) -> Result<Value> {
+    let s = match name_part(heap, x) {
+        NamePart::Named(FormKind::Symbol, _) => return Ok(x.clone()),
+        NamePart::Named(_, n) => {
+            return named(heap, FormKind::Symbol, n.namespace, n.name);
+        }
+        NamePart::Str(s) => s,
+        NamePart::Nil | NamePart::Other => {
+            return Err(CljError::Operands("no conversion to symbol"));
+        }
+    };
+    match slash(&s) {
+        Some(at) if at >= 1 => {
+            let ns = substring(heap, &s, 0..at)?;
+            let name = substring(heap, &s, at + 1..s.len())?;
+            named(heap, FormKind::Symbol, Some(ns), name)
+        }
+        _ => named(heap, FormKind::Symbol, None, s),
+    }
+}
+
+/// `(symbol ns name)`: `ns` `nil` or a string, `name` a string.
+pub(crate) fn symbol_ns(heap: &Heap, ns: &Value, name: &Value) -> Result<Value> {
+    const MESSAGE: &str = "symbol expects strings and an optional nil namespace";
+    let ns = match name_part(heap, ns) {
+        NamePart::Nil => None,
+        NamePart::Str(s) => Some(s),
+        _ => return Err(CljError::Operands(MESSAGE)),
+    };
+    let NamePart::Str(name) = name_part(heap, name) else {
+        return Err(CljError::Operands(MESSAGE));
+    };
+    named(heap, FormKind::Symbol, ns, name)
+}
+
+/// `nth`: the element at index `i` of a list, vector or string; for `nil`,
+/// `default` (`nil` without one). Past the end: `default`, or `RangeError`
+/// without one.
 pub(crate) fn nth(heap: &Heap, coll: &Value, i: &Value, default: Option<&Value>) -> Result<Value> {
     let shape = shape(heap, coll);
     let index = index_from_value(&form::unwrap(heap, i.clone())).ok();
     let found = match &shape {
-        Shape::Nil => return Ok(Value::Null),
+        Shape::Nil => return Ok(default.cloned().unwrap_or(Value::Null)),
         Shape::Str(s) => match index {
             Some(index) => code_unit(heap, s, index)?,
             None => None,
@@ -511,6 +676,74 @@ mod tests {
         let list = form::new_list(&heap, &[n(1.0)]).unwrap();
         let occ = new_occurrence(&heap, list, Provenance::default()).unwrap();
         assert!(seq(&heap, &occ).unwrap().same_object(&occ));
+    }
+
+    #[test]
+    fn nth_nil_honors_default() {
+        let heap = Arc::new(Heap::default());
+        let _scope = Scope::new(&heap);
+        let missing =
+            form::new_named(&heap, FormKind::Keyword, None, JsString::from("missing")).unwrap();
+        let got = nth(&heap, &Value::Null, &n(0.0), Some(&missing)).unwrap();
+        assert!(got.same_object(&missing));
+        assert_eq!(
+            nth(&heap, &Value::Undefined, &n(3.0), Some(&n(7.0))).unwrap(),
+            n(7.0)
+        );
+        // Without a default, `(nth nil i)` is nil.
+        assert_eq!(
+            nth(&heap, &Value::Null, &n(0.0), None).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn named_constructors_concat_all_and_zip_map() {
+        let heap = Arc::new(Heap::default());
+        let _scope = Scope::new(&heap);
+        let s = |t: &str| Value::String(JsString::from(t));
+        let spelled = |v: &Value| form::name(&heap, v).unwrap().spelling();
+        let occ = new_occurrence(&heap, s("a/b"), Provenance::default()).unwrap();
+        let k = keyword(&heap, &occ).unwrap();
+        assert_eq!(
+            (form::kind(&heap, &k), spelled(&k)),
+            (Some(FormKind::Keyword), "a/b".into())
+        );
+        assert!(keyword(&heap, &k).unwrap().same_object(&k));
+        assert_eq!(keyword(&heap, &n(1.0)).unwrap(), Value::Null);
+        assert_eq!(spelled(&keyword(&heap, &s("/")).unwrap()), "/");
+        let sym = symbol(&heap, &k).unwrap();
+        assert_eq!(
+            (form::kind(&heap, &sym), spelled(&sym)),
+            (Some(FormKind::Symbol), "a/b".into())
+        );
+        assert_eq!(spelled(&symbol(&heap, &s("p/q/r")).unwrap()), "p/q/r");
+        assert_eq!(spelled(&keyword_ns(&heap, &sym, &s("n")).unwrap()), "b/n");
+        assert_eq!(
+            spelled(&symbol_ns(&heap, &Value::Null, &s("n")).unwrap()),
+            "n"
+        );
+        assert_eq!(
+            symbol(&heap, &n(1.0)).unwrap_err().message(),
+            "no conversion to symbol"
+        );
+        assert_eq!(
+            symbol_ns(&heap, &k, &s("n")).unwrap_err().message(),
+            "symbol expects strings and an optional nil namespace"
+        );
+        assert!(keyword_ns(&heap, &Value::Null, &n(1.0)).is_err());
+        let a = form::new_vector(&heap, &[n(1.0)]).unwrap();
+        let b = form::new_list(&heap, &[n(2.0), n(3.0)]).unwrap();
+        let colls = form::new_list(&heap, &[a, Value::Null, b, s("x")]).unwrap();
+        assert_eq!(
+            elements(&heap, &concat_all(&heap, &colls).unwrap()),
+            vec![n(1.0), n(2.0), n(3.0), s("x")]
+        );
+        let keys = form::new_list(&heap, &[n(1.0), n(1.0)]).unwrap();
+        let values = form::new_list(&heap, &[n(2.0), n(3.0)]).unwrap();
+        let m = zip_map(&heap, &keys, &values).unwrap();
+        assert_eq!(count(&heap, &m).unwrap(), n(1.0));
+        assert_eq!(get(&heap, &m, &n(1.0), &Value::Null).unwrap(), n(3.0));
     }
 
     #[test]

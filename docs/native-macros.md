@@ -81,13 +81,23 @@ collections are the engine's `__rt.formVector(…)`, `formList`, `formMap`,
 `get` (and keyword invocation), `contains?`, `assoc`, `dissoc`, `conj` and
 `disj` with one key or value, `=` of two values, `hash`, `meta`, `with-meta`,
 `keyword?`, `symbol?`, `vector?`, `map?`, `set?`, `seq?`, `nil?`, `not`,
-`boolean`, `empty?`, and `vector`, `list` and `hash-set` with any arguments
-are the engine's `__rt.clj*` intrinsics (big-boy-pants-js
+`boolean`, `empty?`, `keyword` and `symbol` with one or two arguments, and
+`vector`, `list`, `hash-set`, `hash-map`, `array-map` and `concat` with any
+arguments are the engine's `__rt.clj*` intrinsics (big-boy-pants-js
 `src/collections/clj.rs`): Rust, nil-punning, transparent to input
-occurrences. Truth tests are `__rt.cljTruth`. Other arities, core functions
-used as values (`(map first xs)`) and the remaining operations call the
-runtime object, whose entries use the same intrinsics (it also provides `set`,
-`vec`, `keys`, `vals`, `hash-set` and variadic `assoc`/`dissoc`/`conj`/`disj`).
+occurrences. Truth tests are `__rt.cljTruth`. A `concat` of three or more
+collections is one flat `__rt.cljConcatAll(__rt.formList(…))`, so a wide call
+nests no deeper than a narrow one. A hash-map literal (more than eight entries)
+evaluates every key before any value, as `mapFromArrays` does, through
+`__rt.cljZipMap`. Literals and calls with more than 1,024 operands use the
+runtime's array constructors instead of one counted intrinsic. Other arities,
+core functions used as values (`(map first xs)`, `(apply keyword xs)`) and the
+remaining operations call the runtime object, whose entries use the same
+intrinsics (it also provides `set`, `vec`, `keys`, `vals`, `keyword`, `symbol`,
+`array-map`, `hash-set` and variadic `assoc`/`dissoc`/`conj`/`disj`). A
+keyword or symbol whose spelling does not split back into its namespace and
+name (`(keyword nil "a/b")`, `(keyword "a/b/c")`) has no native form and fails
+explicitly.
 `rest` and `next` copy the remaining elements into a new list; there are no
 shared seq views. Lazy `map`, `filter` and friends are not implemented
 (light-cljs-479 owns lazy sequences), which still stops the generated
@@ -108,7 +118,15 @@ which can differ from the order the legacy engines' array maps keep; inputs
 returned unchanged keep their exact original form. `concat` returns a list
 where the legacy engines return a lazy sequence that their bridge exports with
 an explicit `nil` metadata wrapper. A set literal with non-constant members
-rejects equal members with `Duplicate key`, without the member's printed form.
+rejects equal members with `Duplicate key`, without the member's printed form,
+after every member has been evaluated. Reader-distinct constants that lower to
+equal values (`#{\a "a"}`, `'#{1 1.0}`, `'{\a 1 "a" 2}`) stay distinct members
+or keys in the legacy runtimes (`constantSetFromArray` keeps them positionally);
+a native set or map cannot hold two equal members or keys, so such a literal in
+a macro fails with `unsupported operation: native literal set with
+reader-distinct equal members` (or `... map with reader-distinct equal keys`)
+instead of silently losing one. Literals whose members stay distinct are native
+sets and maps as usual.
 Plain JavaScript functions and ordinary interop such as `Math.max` run in the same task.
 Direct JavaScript calls, constructors, method calls, instance checks,
 property/index access and property assignment unwrap imported scalar occurrences. For example,

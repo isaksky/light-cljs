@@ -207,6 +207,12 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::CljMeta),
     form_op(FormOp::CljWithMeta),
     form_op(FormOp::CljConcat),
+    form_op(FormOp::CljConcatAll),
+    form_op(FormOp::CljZipMap),
+    form_op(FormOp::CljKeyword),
+    form_op(FormOp::CljKeywordNs),
+    form_op(FormOp::CljSymbol),
+    form_op(FormOp::CljSymbolNs),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {

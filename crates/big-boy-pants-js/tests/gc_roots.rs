@@ -315,10 +315,34 @@ fn form_edges(rt: &Runtime) -> Held {
         let m = s.new_keyword(None, name("m")).unwrap();
         let meta_value = s.new_object();
         let meta = s.new_form_map(&[(m, meta_value)]).unwrap();
-        let list = s.new_list(&[vec, map]).unwrap();
+        // A set reaches its members (direct and nested) and its metadata.
+        let member = s.new_object();
+        let member_leaf = s.new_object();
+        let member_vec = s.new_form_vector(&[member_leaf]).unwrap();
+        let set = s.new_form_set(&[member, member_vec]).unwrap();
+        let set_meta_value = s.new_object();
+        let set_meta = s.new_form_map(&[(m, set_meta_value)]).unwrap();
+        let set = s.form_with_meta(set, Some(set_meta)).unwrap();
+        let list = s.new_list(&[vec, map, set]).unwrap();
         let list = s.form_with_meta(list, Some(meta)).unwrap();
         let weak = [
-            list, vec, leaf, map, key, k, occ, inner, meta, m, meta_value,
+            list,
+            vec,
+            leaf,
+            map,
+            key,
+            k,
+            occ,
+            inner,
+            meta,
+            m,
+            meta_value,
+            set,
+            member,
+            member_vec,
+            member_leaf,
+            set_meta,
+            set_meta_value,
         ]
         .map(|l| s.downgrade(l))
         .to_vec();

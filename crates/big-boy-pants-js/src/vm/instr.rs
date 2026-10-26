@@ -1436,11 +1436,24 @@ pub enum FormOp {
     CljWithMeta = 34,
     /// a b → list (`cljConcat`).
     CljConcat = 35,
+    /// list of colls → list of their elements (`cljConcatAll`).
+    CljConcatAll = 36,
+    /// keys values (lists of equal length) → map; a later equal key wins
+    /// (`cljZipMap`).
+    CljZipMap = 37,
+    /// x → keyword or null (`cljKeyword`).
+    CljKeyword = 38,
+    /// ns name → keyword (`cljKeywordNs`).
+    CljKeywordNs = 39,
+    /// x → symbol (`cljSymbol`).
+    CljSymbol = 40,
+    /// ns name → symbol (`cljSymbolNs`).
+    CljSymbolNs = 41,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 36] = [
+    pub const ALL: [FormOp; 42] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1477,6 +1490,12 @@ impl FormOp {
         FormOp::CljMeta,
         FormOp::CljWithMeta,
         FormOp::CljConcat,
+        FormOp::CljConcatAll,
+        FormOp::CljZipMap,
+        FormOp::CljKeyword,
+        FormOp::CljKeywordNs,
+        FormOp::CljSymbol,
+        FormOp::CljSymbolNs,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1501,7 +1520,10 @@ impl FormOp {
             | FormOp::CljFirst
             | FormOp::CljRest
             | FormOp::CljNext
-            | FormOp::CljMeta => 1,
+            | FormOp::CljMeta
+            | FormOp::CljConcatAll
+            | FormOp::CljKeyword
+            | FormOp::CljSymbol => 1,
             FormOp::Keyword
             | FormOp::Symbol
             | FormOp::Nth
@@ -1517,7 +1539,10 @@ impl FormOp {
             | FormOp::CljConj
             | FormOp::CljDisj
             | FormOp::CljWithMeta
-            | FormOp::CljConcat => 2,
+            | FormOp::CljConcat
+            | FormOp::CljZipMap
+            | FormOp::CljKeywordNs
+            | FormOp::CljSymbolNs => 2,
             FormOp::Get | FormOp::Assoc | FormOp::CljNthOr | FormOp::CljGet | FormOp::CljAssoc => 3,
         }
     }
@@ -1561,6 +1586,12 @@ impl FormOp {
             FormOp::CljMeta => "cljMeta",
             FormOp::CljWithMeta => "cljWithMeta",
             FormOp::CljConcat => "cljConcat",
+            FormOp::CljConcatAll => "cljConcatAll",
+            FormOp::CljZipMap => "cljZipMap",
+            FormOp::CljKeyword => "cljKeyword",
+            FormOp::CljKeywordNs => "cljKeywordNs",
+            FormOp::CljSymbol => "cljSymbol",
+            FormOp::CljSymbolNs => "cljSymbolNs",
         }
     }
 }

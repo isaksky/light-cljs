@@ -400,6 +400,19 @@ fn a_mutable_descendant_is_rejected_on_publication_with_a_path() {
             "value{<form vector>}.key[0]",
             "object",
         ),
+        // A set's members, direct and nested, and its metadata
+        // (light-cljs-477).
+        ("__rt.formSet(1, {})", "value{<object>}.key", "object"),
+        (
+            "__rt.formList(__rt.formSet(__rt.formVector(2, [3])))",
+            "value[0]{<form vector>}.key[1]",
+            "array",
+        ),
+        (
+            "__rt.formWithMeta(__rt.formSet(1), __rt.formMap(__rt.formKeyword(null, 'm'), {}))",
+            "value.meta{:m}",
+            "object",
+        ),
     ];
     for (expr, path, found) in cases {
         let result = call(&rt, &format!("function make() {{ return {expr}; }}"), &[]);

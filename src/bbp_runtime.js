@@ -30,7 +30,13 @@ const native = (() => {
   const map = a => { let v=__rt.formMap();for(let i=0;i<a.length;i+=2)v=__rt.formAssoc(v,a[i],a[i+1]);return v; };
   const set = a => { let v=__rt.formSet();for(const x of a)v=__rt.formConj(v,x);return v; };
   // A set literal with members that are not constants rejects duplicates.
-  const literalSet = a => { const v=set(a); if(__rt.formCount(v)!==a.length)throw new Error('Duplicate key'); return v; };
+  // Equal members or keys of a reader-distinct literal (`#{\a "a"}`) are not
+  // representable natively and fail explicitly instead of collapsing.
+  const counted = (v, n, message) => { if (__rt.formCount(v) !== n) throw new Error(message); return v; };
+  const literalSet = a => counted(set(a), a.length, 'Duplicate key');
+  const constantSet = a => counted(set(a), a.length, 'unsupported operation: native literal set with reader-distinct equal members');
+  const constantMap = a => counted(map(a), a.length / 2, 'unsupported operation: native literal map with reader-distinct equal keys');
+  const arity = n => { throw new Error('Invalid arity: ' + n); };
   const seq = x => __rt.cljSeq(x);
   const get = (m,k,n=null) => __rt.cljGet(m,k,n);
   const invoke = (f,...args) => typeof f === 'function' ? f(...args) : __rt.formKind(val(f))==='keyword' ? get(args[0],f,args.length>1?args[1]:null) : get(f,args[0],args.length>1?args[1]:null);
@@ -41,6 +47,9 @@ const native = (() => {
     invoke, truth, get, identity:x=>x, macroReaderFunction:f=>f,
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
     list:(...a)=>list(a), vector:(...a)=>vector(a), hashMap:(...a)=>map(a), hashSet:(...a)=>set(a), set:x=>set(arr(x)), vec:x=>vector(arr(x)),
+    arrayMap:(...a)=>{ if (a.length % 2) throw new Error('No value supplied for key'); return map(a); },
+    keyword:(...a)=>a.length===1?__rt.cljKeyword(a[0]):a.length===2?__rt.cljKeywordNs(a[0],a[1]):arity(a.length),
+    symbol:(...a)=>a.length===1?__rt.cljSymbol(a[0]):a.length===2?__rt.cljSymbolNs(a[0],a[1]):arity(a.length),
     first:x=>__rt.cljFirst(x), second:x=>__rt.cljFirst(__rt.cljNext(x)),
     nth:(x,n,...d)=>d.length?__rt.cljNthOr(x,n,d[0]):__rt.cljNth(x,n),
     count:x=>__rt.cljCount(x),
@@ -73,10 +82,10 @@ const native = (() => {
   const rt={core,
     nativeInterop:interop,declarationReceiver:x=>x,
     keyword:(ns,n)=>__rt.formKeyword(ns,n),symbol:(ns,n)=>__rt.formSymbol(ns,n),get,
-    vector:(...xs)=>vector(xs),vectorFromArray:vector,listFromArray:list,mapFromArray:map,arrayMapFromArray:map,constantMapFromArray:map,
+    vector:(...xs)=>vector(xs),vectorFromArray:vector,listFromArray:list,mapFromArray:map,arrayMapFromArray:map,constantMapFromArray:constantMap,
     mapFromArrays:(ks,vs)=>map(ks.flatMap((k,i)=>[k,vs[i]])),
     mapShape:keys=>keys,mapFromShape:(ks,vs)=>map(ks.flatMap((k,i)=>[k,vs[i]])),
-    setFromArray:set,arraySetFromArray:set,constantSetFromArray:set,literalSetFromArray:literalSet,
+    setFromArray:set,arraySetFromArray:set,constantSetFromArray:constantSet,literalSetFromArray:literalSet,
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f,
     compilerForms:{gensymScope:()=>null,takeEncodePeak:()=>0,

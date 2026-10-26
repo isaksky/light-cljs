@@ -1348,8 +1348,10 @@ const LAZY_CONSTANT_NODES: u32 = 1024;
 
 /// The most operands a native compile-time unit passes to one counted
 /// engine constructor (`__rt.formVector(…)`); larger literals and calls use
-/// the runtime's array constructors, whose operand stack stays small.
-const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
+/// the runtime's array constructors, whose operand stack stays small. Both
+/// sides stay below the engine's 16,384-unit eval source limit for a
+/// literal of short dynamic members, so tests reach each.
+const NATIVE_CONSTRUCTOR_LIMIT: usize = 1024;
 
 /// What the pool knows about an expression (indexed by `ExprId`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2954,20 +2956,50 @@ impl<'a> Emitter<'a> {
             }
         {
             // A native unit's literal is the engine's form constructor
-            // (light-cljs-477). Map items alternate keys and values. A set
-            // whose members are not constants rejects equal members.
-            let checked = constructor == Composite::CheckedSet;
-            if checked {
-                self.output.push_str(
-                    "((set, count) => { if (__rt.formCount(set) !== count) \
-                     throw new Error(\"Duplicate key\"); return set; })(",
-                );
+            // (light-cljs-477). Map items alternate keys and values.
+            if constructor == Composite::HashMap {
+                // A hash-map literal evaluates every key before any value
+                // (`mapFromArrays`): two flat operand lists, then the map.
+                self.output.push_str("__rt.cljZipMap(__rt.formList(");
+                items(self, &mut (0..count).step_by(2));
+                self.output.push_str("), __rt.formList(");
+                items(self, &mut (1..count).step_by(2));
+                self.output.push_str("))");
+                return;
+            }
+            // The member or key count the value must keep, and the error
+            // when it does not, checked after every operand has run. A set
+            // whose members are not constants rejects equal members. A
+            // literal of reader-distinct constants (`#{\a "a"}`, quoted
+            // sets and maps) keeps such members apart in the JavaScript
+            // runtime (`constantSetFromArray`); native forms cannot
+            // represent two equal members or keys, so one that lowering
+            // made equal fails explicitly instead of collapsing.
+            let check = match constructor {
+                Composite::CheckedSet => Some((count, "Duplicate key")),
+                Composite::LiteralSet => Some((
+                    count,
+                    "unsupported operation: native literal set with reader-distinct equal members",
+                )),
+                Composite::LiteralMap => Some((
+                    count / 2,
+                    "unsupported operation: native literal map with reader-distinct equal keys",
+                )),
+                _ => None,
+            };
+            if let Some((_, message)) = check {
+                write!(
+                    self.output,
+                    "((value, count) => {{ if (__rt.formCount(value) !== count) \
+                     throw new Error({message:?}); return value; }})("
+                )
+                .unwrap();
             }
             write!(self.output, "__rt.{intrinsic}(").unwrap();
             items(self, &mut (0..count));
             self.output.push(')');
-            if checked {
-                write!(self.output, ", {count})").unwrap();
+            if let Some((expected, _)) = check {
+                write!(self.output, ", {expected})").unwrap();
             }
             return;
         }
@@ -3587,22 +3619,19 @@ impl<'a> Emitter<'a> {
             (C::Vector, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formVector", false, ""),
             (C::List, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formList", false, ""),
             (C::HashSet, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formSet", false, ""),
-            (C::HashMap, n) if n <= NATIVE_CONSTRUCTOR_LIMIT && n % 2 == 0 => {
+            (C::HashMap | C::ArrayMap, n) if n <= NATIVE_CONSTRUCTOR_LIMIT && n % 2 == 0 => {
                 ("", "formMap", false, "")
             }
-            // `(concat a b c)` is `(concat (concat a b) c)`: each copies.
+            (C::Concat, 2) => ("", "cljConcat", false, ""),
+            // `(concat a b c …)`: one flat operand list, so a wide call
+            // nests no deeper than a narrow one.
             (C::Concat, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => {
-                for _ in 1..n {
-                    self.output.push_str("__rt.cljConcat(");
-                }
-                self.value(args[0]);
-                for &arg in &args[1..] {
-                    self.output.push_str(", ");
-                    self.value(arg);
-                    self.output.push(')');
-                }
-                return true;
+                ("__rt.cljConcatAll(", "formList", false, ")")
             }
+            (C::Keyword, 1) => ("", "cljKeyword", false, ""),
+            (C::Keyword, 2) => ("", "cljKeywordNs", false, ""),
+            (C::Symbol, 1) => ("", "cljSymbol", false, ""),
+            (C::Symbol, 2) => ("", "cljSymbolNs", false, ""),
             _ => return false,
         };
         self.output.push_str(before);

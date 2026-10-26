@@ -136,7 +136,13 @@
 //! `form_op` selectors with the semantics of the ClojureScript functions of
 //! those names on forms, strings and `nil`, which light-cljs lowers macro
 //! code to (light-cljs-477): occurrences are transparent, `nil` puns, and
-//! sequences are form lists. [`crate::collections::clj`] documents them.
+//! sequences are form lists. So are the flat lowerings
+//! `cljConcatAll(colls)` (`concat` of the collections in the list `colls`)
+//! and `cljZipMap(keys, values)` (a map of two equal-length lists, for a
+//! hash-map literal that evaluates its keys first), and the constructors
+//! `cljKeyword(x)`, `cljKeywordNs(ns, name)`, `cljSymbol(x)` and
+//! `cljSymbolNs(ns, name)` (`keyword` and `symbol` of one or two
+//! arguments). [`crate::collections::clj`] documents them.
 //! Unlike the operations above, an unsupported operand kind raises a
 //! catchable `TypeError` and `cljNth` past the end a catchable `RangeError`,
 //! the diagnostics of the JavaScript functions they replace.
@@ -366,7 +372,9 @@ impl From<clj::CljError> for Fault {
         match e {
             clj::CljError::Collection(e) => e.into(),
             clj::CljError::OutOfBounds => Fault::RangeError(e.message()),
-            clj::CljError::Unsupported { .. } => Fault::TypeError(e.message()),
+            clj::CljError::Unsupported { .. } | clj::CljError::Operands(_) => {
+                Fault::TypeError(e.message())
+            }
         }
     }
 }
@@ -393,6 +401,12 @@ fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Fault> {
         FormOp::CljMeta => Some(clj::meta(heap, &a(0))),
         FormOp::CljWithMeta => Some(clj::with_meta(heap, &a(0), &a(1))?),
         FormOp::CljConcat => Some(clj::concat(heap, &a(0), &a(1))?),
+        FormOp::CljConcatAll => Some(clj::concat_all(heap, &a(0))?),
+        FormOp::CljZipMap => Some(clj::zip_map(heap, &a(0), &a(1))?),
+        FormOp::CljKeyword => Some(clj::keyword(heap, &a(0))?),
+        FormOp::CljKeywordNs => Some(clj::keyword_ns(heap, &a(0), &a(1))?),
+        FormOp::CljSymbol => Some(clj::symbol(heap, &a(0))?),
+        FormOp::CljSymbolNs => Some(clj::symbol_ns(heap, &a(0), &a(1))?),
         _ => None,
     };
     if let Some(result) = clj {
@@ -484,7 +498,13 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         | FormOp::CljDisj
         | FormOp::CljMeta
         | FormOp::CljWithMeta
-        | FormOp::CljConcat => Value::Undefined,
+        | FormOp::CljConcat
+        | FormOp::CljConcatAll
+        | FormOp::CljZipMap
+        | FormOp::CljKeyword
+        | FormOp::CljKeywordNs
+        | FormOp::CljSymbol
+        | FormOp::CljSymbolNs => Value::Undefined,
     })
 }
 

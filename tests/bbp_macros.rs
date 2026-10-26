@@ -891,6 +891,144 @@ fn collection_core_lowering_matches_the_legacy_compiler_and_runs() {
     }
 }
 
+/// Expand `source` natively, check that the program prints `expected`, and
+/// that the expansion is the legacy compiler's (cross-backend in a build
+/// with a legacy engine).
+fn assert_native_matches_legacy(source: &str, expected: &str) {
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+        .unwrap_or_else(|e| panic!("{source}: {e}"));
+    let native = emit_js(&program);
+    assert_eq!(program_output(&native), expected, "{source}");
+    assert_eq!(native, light_cljs::compile(source).unwrap(), "{source}");
+}
+
+/// A macro-local JavaScript array `a` and `t`, which records its operand
+/// in `a` and returns it: operand effects in evaluation order.
+const TRACE: &str = "a (js/Array.) t (fn [x] (.push a x) x)";
+
+#[test]
+fn native_hash_map_literals_evaluate_keys_before_values() {
+    // Nine entries: a hash-map literal, whose keys all run before its
+    // values (`mapFromArrays`).
+    let entries: String = (0..9).map(|i| format!("(t {i}) (t {}) ", i + 10)).collect();
+    let source = format!(
+        "(defmacro order [] (let [{TRACE} m {{{entries}}}] [(.join a \" \") (get m 1) (count m)])) \
+         (js/console.log (pr-str (order)))"
+    );
+    assert_native_matches_legacy(
+        &source,
+        "[\"2 6 0 5 1 4 8 7 3 12 16 10 15 11 14 18 17 13\" 11 9]\n",
+    );
+}
+
+#[test]
+fn nth_of_nil_honors_the_default_directly_and_through_apply() {
+    assert_native_matches_legacy(
+        "(defmacro fallback [] [(nth nil 0 :missing) (apply nth [nil 0 :missing]) (nth nil 0)]) \
+         (js/console.log (pr-str (fallback)))",
+        "[:missing :missing nil]\n",
+    );
+}
+
+#[test]
+fn native_wide_concat_compiles_and_preserves_operand_effects() {
+    // 128 operands: a nested lowering would exceed the engine's parser
+    // nesting budget.
+    // `w` records its (number) operand and returns it in a vector.
+    let operands: String = (0..128).map(|i| format!("(w {i}) ")).collect();
+    let source = format!(
+        "(defmacro wide [] (let [a (js/Array.) w (fn [x] (.push a x) [x]) c (concat {operands})] \
+         [(count c) (first c) (nth c 127) (.-length a) (aget a 0) (aget a 127)])) \
+         (js/console.log (pr-str (wide)))"
+    );
+    assert_native_matches_legacy(&source, "[128 0 127 128 0 127]\n");
+}
+
+#[test]
+fn native_dynamic_constructors_match_legacy() {
+    // Runtime string operands (macro inputs), direct calls and the
+    // constructors as values through `apply`.
+    assert_native_matches_legacy(
+        "(defmacro names [s n] (list 'quote [(keyword s) (keyword nil n) (keyword s n) (keyword 'a/b) \
+         (keyword \"x/y\") (keyword :k) (keyword 1) (symbol n) (symbol s n) (symbol :c/d) (symbol \"p/q\") \
+         (symbol 'r) (apply keyword [s n]) (apply symbol [n]) (apply keyword [:kw]) \
+         (get (array-map :k 1 :j 2) :j) (count (array-map :k 1 :k 2)) (get (apply array-map [:z 3]) :z) \
+         (map? (array-map))])) \
+         (js/console.log (pr-str (names \"ns\" \"nm\")))",
+        "[:ns :nm :ns/nm :a/b :x/y :k nil nm ns/nm c/d p/q r :ns/nm nm :kw 2 1 3 true]\n",
+    );
+}
+
+#[test]
+fn native_dynamic_set_literals_reject_duplicates_after_operand_effects() {
+    // Both sides of the counted-constructor limit (1024 operands). Number
+    // constants keep the literal short enough for one macro unit; three
+    // members are calls of `w`, which records and returns its operand, and
+    // the last of them equals another member. Every operand runs once
+    // before the duplicate is rejected.
+    for size in [3, 1025] {
+        let constants: String = (1..=size - 3).map(|k| format!("{k} ")).collect();
+        let (big, dup) = (size + 1, if size > 3 { 1 } else { 0 });
+        let set = |last: usize| format!("#{{{constants}(w 0) (w {big}) (w (+ 0 {last}))}}");
+        let source = format!(
+            "(defmacro dup [] (let [a (js/Array.) w (fn [x] (.push a x) x)] (try {} \
+             (catch :default e [(.startsWith (.-message e) \"Duplicate key\") \
+             (.join (.sort a (fn [x y] (- x y))) \",\")])))) \
+             (js/console.log (pr-str (dup)))",
+            set(dup),
+        );
+        assert_native_matches_legacy(&source, &format!("[true \"{},{dup},{big}\"]\n", 0));
+        // Distinct members of the same sizes are accepted.
+        let source = format!(
+            "(defmacro ok [] (let [a (js/Array.) w (fn [x] (.push a x) x)] [(count {}) (.-length a)])) \
+             (js/console.log (pr-str (ok)))",
+            set(big + 1),
+        );
+        assert_native_matches_legacy(&source, &format!("[{size} 3]\n"));
+    }
+}
+
+#[test]
+fn native_literal_collections_keep_reader_distinct_members_or_fail_explicitly() {
+    // Distinct after lowering: the same values as the legacy backends.
+    assert_native_matches_legacy(
+        "(defmacro fine [] [(count '#{:a :b \"c\"}) (contains? '#{\\a :b} \"a\") (count #{\\a \"b\"}) \
+         (get '{\\a 1 \"b\" 2} \"a\")]) (js/console.log (pr-str (fine)))",
+        "[3 true 2 1]\n",
+    );
+    // Reader-distinct members or keys that lower to equal values cannot
+    // be native set members or map keys: an explicit error, never a
+    // collection that silently lost one.
+    for (source, expected) in [
+        (
+            "(defmacro literal-count [] (count '#{\\a \"a\"})) (literal-count)",
+            "native literal set with reader-distinct equal members",
+        ),
+        (
+            "(defmacro literal-count [] (count #{\\a \"a\"})) (literal-count)",
+            "native literal set with reader-distinct equal members",
+        ),
+        (
+            "(defmacro literal-count [] (count '#{1 1.0})) (literal-count)",
+            "native literal set with reader-distinct equal members",
+        ),
+        (
+            "(defmacro literal-count [] (count '{\\a 1 \"a\" 2})) (literal-count)",
+            "native literal map with reader-distinct equal keys",
+        ),
+    ] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let message = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+            .err()
+            .unwrap_or_else(|| panic!("{source}: expanded"))
+            .to_string();
+        assert!(message.contains(expected), "{source}: {message}");
+    }
+}
+
 #[test]
 fn collection_helpers_publish_once_at_one_and_two_slots() {
     // A set constant and two functions built only from lowered core
