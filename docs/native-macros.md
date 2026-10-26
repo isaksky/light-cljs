@@ -163,8 +163,11 @@ retains eight library/nine all-target diagnostics. Allowing only `deprecated`,
 `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` passes engine
 all-target and native/native-plus-QuickJS library/binary/macro-test checks.
 Full compiler all-target lint remains subject to the missing includes (and
-QuickJS-specific tests in the native-only configuration). V8 validation is
-reserved for the orchestrator because its machine cache is inaccessible here.
+QuickJS-specific tests in the native-only configuration). Engine-free
+all-target lint also reaches unchanged benchmark calls to legacy evaluator
+methods absent in that configuration; its library/binary lint passes strictly.
+V8 validation is reserved for the orchestrator because its machine cache is
+inaccessible here.
 
 At `3c08827e` (repeating `848be441`), on macOS arm64, Homebrew Rust/Cargo
 1.99.1, using the Penpot
