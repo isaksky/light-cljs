@@ -68,9 +68,9 @@ application JavaScript as QuickJS (`--no-default-features --features
 bbp-macros,quickjs --test bbp_macros`). The table covers grouping, completion
 flushing, nil and empty inputs, repeated and interleaved reductions, callback
 and callable-getter effect order, reduced termination and constructor/reducer
-arities. The `into` target table checks vector, map entry, list, nil, map and set targets,
-including reducer initialization and variadic calls for noneditable targets;
-sorted map/set rows establish the legacy contract and check the native
+arities. The `into` target table checks vector, map entry, list, nil, map and
+set targets, including reducer initialization and variadic calls for noneditable
+targets; sorted map/set rows establish the legacy contract and check the native
 unsupported error. A published composed factory is consumed at one, two and
 four slots under seeded scheduling and fixed one-job admission. Cold helper
 demands suspend with buffered input, during final-group flushing and during
@@ -96,6 +96,9 @@ target/debug/light-cljs --compile --esm --entry app.render \
   --macro-timeout-ms 3600000 --macro-memory-limit 4000000000 \
   --macro-poll-budget 1000000000000
 ```
+
+In an isolated worktree with `research/` left untouched, use the same five
+source roots under `/Users/admin/src/light-cljs/research/penpot-light`.
 
 Both this command and the same command with `--entry app.main` exit 1, with
 this exact first error (the read-only port's canonical source path):
@@ -177,17 +180,16 @@ One-argument `map`, `filter`, `mapcat` and `partition-by` construct native
 transducers (light-cljs-507), and their collection overloads remain lazy.
 `comp` combines them, `into` supports zero through three arguments, and
 `transduce` and `completing` supply initialization and completion. Three-argument
-`into` supplies `conj` to noneditable targets (including map entry, list and nil), retaining
-its zero-argument initialization and variadic arities; native vector, map and
-set targets use the legacy step/completion-only adapter. Sorted forms remain
-unsupported. A
-`partition-by` factory captures immutable inputs; each application to a
-reducer allocates its own task-owned buffer and prior-key cell. The buffer
-holds a persistent native vector and clears before downstream calls, including
-the final completion flush. A transformed reducer with mutable cells cannot
-publish; the factory can publish when its inputs can. Callbacks execute on the
-task VM and can park without replaying effects. `mapcat` stops on downstream
-termination before reading another flattened element or source input.
+`into` supplies `conj` to noneditable targets (including map entry, list and
+nil), retaining its zero-argument initialization and variadic arities; native
+vector, map and set targets use the legacy step/completion-only adapter. Sorted
+forms remain unsupported. A `partition-by` factory captures immutable inputs;
+each application to a reducer allocates its own task-owned buffer and prior-key
+cell. The buffer holds a persistent native vector and clears before downstream
+calls, including the final completion flush. A transformed reducer with mutable
+cells cannot publish; the factory can publish when its inputs can. Callbacks
+execute on the task VM and can park without replaying effects. `mapcat` stops on
+downstream termination before reading another flattened element or source input.
 
 `reduced`, `reduced?`, `ensure-reduced`, `unreduced` and dereferencing a reduced
 value use an opaque native form with identity equality/hash. Its payload is
