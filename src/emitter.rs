@@ -1648,8 +1648,9 @@ enum TypeBrands {
 struct Emitter<'a> {
     native_forms: bool,
     /// Direct operands already evaluated by `native_form_statements`, in
-    /// occurrence order (the same ExprId can occur more than once).
-    native_arguments: std::collections::VecDeque<(ExprId, usize)>,
+    /// occurrence order (the same ExprId can occur more than once), with
+    /// the operand array's temporary name and slot index.
+    native_arguments: std::collections::VecDeque<(ExprId, usize, usize)>,
     native_temporary: usize,
     /// [`Emitter::struct_fields`] by method, computed once each.
     struct_targets: std::cell::RefCell<HashMap<crate::analyzer::RecurTargetId, bool>>,
@@ -7203,10 +7204,10 @@ impl<'a> Emitter<'a> {
         if self
             .native_arguments
             .front()
-            .is_some_and(|&(arg, _)| arg == id)
+            .is_some_and(|&(arg, _, _)| arg == id)
         {
-            let (_, temporary) = self.native_arguments.pop_front().unwrap();
-            write!(self.output, "temporary{temporary}_0").unwrap();
+            let (_, temporary, slot) = self.native_arguments.pop_front().unwrap();
+            write!(self.output, "temporary{temporary}_0[{slot}]").unwrap();
         } else if self.native_forms && self.deep_native_form(id) {
             let wrapper = self.iife_open(id, true);
             self.output.push('\n');
@@ -7214,7 +7215,7 @@ impl<'a> Emitter<'a> {
             let temporary = self.native_form_statements(id);
             self.indentation();
             self.return_open();
-            write!(self.output, "temporary{temporary}_0").unwrap();
+            write!(self.output, "temporary{temporary}_0[0]").unwrap();
             self.return_close();
             self.output.push_str(";\n");
             self.indent -= 1;
@@ -7268,13 +7269,19 @@ impl<'a> Emitter<'a> {
     }
 
     /// Evaluate a constructor tree as shallow statements in left-to-right
-    /// postorder. Each occurrence gets its own local; neither effectful
-    /// operands nor constructors are deduplicated. Use an explicit worklist
-    /// so flattening itself adds no recursion to the emitter's Rust stack.
+    /// postorder. One local holds an operand stack, reusing consumed slots
+    /// and dropping their references after each constructor. Thus wide or
+    /// deep trees do not spend a frontend local on every node. Neither
+    /// effectful operands nor constructors are deduplicated. An explicit
+    /// worklist adds no recursion to the emitter's Rust stack.
     fn native_form_statements(&mut self, id: ExprId) -> usize {
         let outer = std::mem::take(&mut self.native_arguments);
+        let temporary = self.native_temporary;
+        self.native_temporary += 1;
+        self.indentation();
+        writeln!(self.output, "const temporary{temporary}_0 = [];").unwrap();
         let mut pending = vec![(id, false)];
-        let mut values = Vec::new();
+        let mut values = 0;
         while let Some((id, ready)) = pending.pop() {
             let args = self.native_form_arguments(id);
             if !ready && let Some(args) = args {
@@ -7282,15 +7289,17 @@ impl<'a> Emitter<'a> {
                 pending.extend(args.iter().rev().map(|&arg| (arg, false)));
                 continue;
             }
+            let first = values - args.map_or(0, |args| args.len());
             if let Some(args) = args {
-                let first = values.len() - args.len();
-                self.native_arguments = args.iter().copied().zip(values.drain(first..)).collect();
+                self.native_arguments = args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &arg)| (arg, temporary, first + index))
+                    .collect();
             }
-            let temporary = self.native_temporary;
-            self.native_temporary += 1;
             self.indentation();
-            write!(self.output, "const temporary{temporary}_0 = ").unwrap();
-            // The constructor's arguments read the locals above. A leaf
+            write!(self.output, "temporary{temporary}_0[{first}] = ").unwrap();
+            // The constructor's arguments read the operand slots above. A leaf
             // emits normally, including any independent quote in its body.
             if args.is_some() {
                 let site = self.site.replace(id);
@@ -7302,11 +7311,20 @@ impl<'a> Emitter<'a> {
             }
             debug_assert!(self.native_arguments.is_empty());
             self.output.push_str(";\n");
-            values.push(temporary);
+            if args.is_some_and(|args| args.len() > 1) {
+                self.indentation();
+                writeln!(
+                    self.output,
+                    "temporary{temporary}_0.length = {};",
+                    first + 1
+                )
+                .unwrap();
+            }
+            values = first + 1;
         }
         self.native_arguments = outer;
-        debug_assert_eq!(values.len(), 1);
-        values[0]
+        debug_assert_eq!(values, 1);
+        temporary
     }
 
     fn value_expr(&mut self, id: ExprId) {

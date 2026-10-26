@@ -171,7 +171,10 @@ nesting error with eval's size error. The declarations' source text was not
 the JavaScript input. Reader registrations were unrelated.
 
 Native macro emission now writes constructor trees of three or more levels
-as shallow statements with temporary locals. Explicit worklists preserve
+as shallow statements with one temporary operand array per tree. Consumed
+operand slots are reused and their references released, so the number of
+tree nodes does not consume the engine's local-binding limit. The array
+uses the ordinary accounted heap. Explicit worklists preserve
 left-to-right evaluation of every occurrence; branches and function bodies
 keep their original evaluation sites. These units then use the existing
 shared-factory compilation boundary, on its 2 MiB helper stack. Parser
@@ -204,6 +207,9 @@ compares the application output with QuickJS when enabled.
 `deep_native_constructor_trees_preserve_effects_and_provenance` compares
 70-level trees, sibling effects, branches, exception/finally order, closures,
 raw-JavaScript hygiene and input occurrence identity against QuickJS.
+`wide_and_deep_native_constructor_trees_reuse_operand_slots` expands a
+69,633-node tree (beyond the engine's 65,535-local bound) and a 120-level
+tree, checking leaf effects and occurrence identity against QuickJS.
 
 ### Native forms
 

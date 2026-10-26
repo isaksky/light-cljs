@@ -125,6 +125,56 @@ fn deep_native_constructor_trees_preserve_effects_and_provenance() {
 }
 
 #[test]
+fn wide_and_deep_native_constructor_trees_reuse_operand_slots() {
+    for (width, depth) in [(4096, 16), (1, 120)] {
+        // The wide tree has 69,633 constructor/leaf occurrences, more than
+        // the engine's 65,535-local boundary. The deep tree approaches the
+        // source reader's 128-level bound. Both must expand, retaining every
+        // leaf's left-to-right effect and its input occurrence identity.
+        let branches = (0..width)
+            .map(|index| {
+                format!(
+                    "{}(do (.push seen {index}) x){}",
+                    "(list ".repeat(depth),
+                    ")".repeat(depth),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let source = format!(
+            "(defmacro m [x]\n\
+               (let [seen (js/Array.) result (list {branches})]\n\
+                 [(count result)\n\
+                  (loop [i 0]\n\
+                    (if (= i {width}) (= (.-length seen) {width})\n\
+                      (if (= (aget seen i) i) (recur (inc i)) false)))\n\
+                  (identical? x (loop [value (first result) n {depth}]\n\
+                    (if (= n 0) value (recur (first value) (dec n)))))]))\n\
+             (js/console.log (pr-str (m 42)))"
+        );
+        let build = |native| {
+            let mut host = MacroHost::new();
+            // A finite large unit needs room for its frontend/bytecode and
+            // execution. Keep these test-only budgets explicit and bounded.
+            host.limits.generated_nodes = 2_000_000;
+            host.evaluator_options.memory_limit = 512 * 1024 * 1024;
+            host.evaluator_options.poll_budget = 100_000_000;
+            host.evaluator_options.timeout = std::time::Duration::from_secs(60);
+            if native {
+                host.use_native_macros();
+            }
+            let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+                .unwrap_or_else(|error| panic!("{width} branches, depth {depth}: {error}"));
+            emit_js(&program)
+        };
+        let native = build(true);
+        assert_eq!(program_output(&native), format!("[{width} true true]\n"));
+        #[cfg(feature = "quickjs")]
+        assert_eq!(native, build(false), "{width} branches, depth {depth}");
+    }
+}
+
+#[test]
 fn bootstrap_namespace_macros_match_quickjs() {
     let root = temp_dir::TempDir::new("native-bootstrap");
     std::fs::create_dir(root.join("bootstrap")).unwrap();
