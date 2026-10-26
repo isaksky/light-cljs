@@ -865,8 +865,19 @@ string copy the remaining elements into a new list; of a lazy or chunked
 sequence they read through it (see "Lazy sequences"). `(lazy-seq …)`,
 `realized?`, `chunked-seq?`, `chunk-first`, `chunk-rest`, `chunk-next`,
 `chunk-cons`, `chunk-buffer`, `chunk-append`, `chunk`, `-nth`, `<`, `<=`, `>`
-and `>=` of two values and `inc` and `dec` are lowered too, so that the helper
+and `>=` and `inc` and `dec` are lowered too, so that the helper
 functions `for` and `doseq` expand into need no runtime object.
+
+Fixed calls of `+`, `-`, `*`, `/`, `<`, `<=`, `>` and `>=` use direct JavaScript
+operators on `__rt.formValue` operands (light-cljs-501). Unary `+` and `*`
+retain their operand, including nil, occurrences and signed zero. Wider calls
+evaluate all operands once before coercion or comparison short-circuiting,
+using function-local temporaries where available. JavaScript string, nil and
+number coercion is preserved. Remaining core functions a unit uses are bound
+once per factory call, so their calls avoid repeated `rt.core` property reads.
+An unsupported core getter is retained separately and still throws at its
+original read, before call operands run. Operations assigned with `set!` in
+the unit retain their dynamic reads.
 
 `comp`, `partial`, `juxt`, `complement`, `constantly`, `identity` and `fnil`
 also have native compile-time lowering (light-cljs-506). Their returned
@@ -1166,6 +1177,14 @@ primitive `"null"`, `"boolean"`, `"number"` or `"string"`; then `"function"`,
 `"array"`, and `"_"` for `default`. A JavaScript object (a mutable type's
 instance, an interop object) is resolved by its type, then `object`, then
 `default`. `satisfies?` asks the protocol's marker table the same way.
+
+Fixed native protocol implementations take their hidden receiver explicitly;
+the dispatcher calls their entry directly (light-cljs-501). The receiver stays
+fixed across method `recur`, and mutable field reads and captured receivers keep
+their behavior. `Object`, `IFn` and methods whose body reads its function scope
+(including raw JavaScript and `this-as`) retain the JavaScript receiver ABI;
+protocol installation adapts those entries once. Multi-arity and metadata
+dispatch still select the same implementation at the same frontier.
 
 The protocol-extension frontier is preserved: an extension's order is its
 bundle's registration order, and a table holds the extensions up to the

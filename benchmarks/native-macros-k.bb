@@ -5,12 +5,15 @@
 ;;
 ;;   bb benchmarks/native-macros-k.bb OUTPUT [--runs 5] [--n 0,100,400]
 ;;      [--workload churn|protocol|lazy] NAME=BINARY ...
+;;      [--v8-analysis-ms 0=24.2,100=28.5,400=32.2]
 ;;
 ;; `churn` is the collection-heavy macro; `protocol` (light-cljs-478)
 ;; dispatches protocol methods on records, a deftype and numbers; `lazy`
 ;; (light-cljs-479) realizes `for`, `filter`, `map` and `range` sequences.
 ;;
-;; One backend must be named v8. Every compile is a fresh `--jobs 1
+;; One backend must be named v8, or --v8-analysis-ms supplies recorded medians
+;; for this workload at every n (then k is explicitly a cross-run estimate).
+;; Every compile is a fresh `--jobs 1
 ;; --no-cache` process; one warm-up compile per backend and n is
 ;; discarded, then rounds alternate the backend order. A sample's
 ;; macro time is `time.analysis-ms` from `--stats` (analysis with macro
@@ -69,6 +72,13 @@
       (= arg "--workload") (recur (rest more) (assoc o :workload (first more)))
       (= arg "--runs") (recur (rest more) (assoc o :runs (parse-long (first more))))
       (= arg "--n") (recur (rest more) (assoc o :n (mapv parse-long (str/split (first more) #","))))
+      (= arg "--v8-analysis-ms")
+      (recur (rest more)
+             (assoc o :v8-analysis-ms
+                    (into {} (map (fn [entry]
+                                    (let [[n ms] (str/split entry #"=" 2)]
+                                      [(parse-long n) (parse-double ms)]))
+                                  (str/split (first more) #",")))))
       (str/includes? arg "=") (let [[name bin] (str/split arg #"=" 2)]
                                 (recur more (update o :backends conj [name (str (fs/absolutize bin))])))
       (:output o) (throw (ex-info (str "Unexpected argument: " arg) {}))
@@ -82,19 +92,23 @@
   (let [root (fs/path (:output o) (str "src-" n))
         out (str (fs/path (:output o) (format "%s-n%d-r%d.js" name n run)))
         begun (System/nanoTime)
-        r (p/shell {:out out :err :string :continue true}
+        r (p/shell {:out out :err :string :continue true :shutdown nil}
                    bin "--compile" "--entry" "k.churn" "--source-root" (str root)
                    "--jobs" "1" "--no-cache" "--optimize" "none" "--stats"
                    "--macro-timeout-ms" "60000" "--macro-poll-budget" "100000000")
         wall (/ (- (System/nanoTime) begun) 1e6)
         _ (when-not (zero? (:exit r)) (throw (ex-info (str name " n " n ": " (:err r)) {})))
         analysis (some->> (re-find #"(?m)^time\.analysis-ms (\S+)$" (:err r)) second parse-double)
-        node (p/shell {:out :string :err :string} (or (System/getenv "NODE") "node") out)]
+        node (p/shell {:out :string :err :string :shutdown nil} (or (System/getenv "NODE") "node") out)]
     {:backend name :n n :run run :wall-ms wall :analysis-ms analysis :stdout (:out node)}))
 
 (let [o (options *command-line-args*)
-      _ (when (or (nil? (:output o)) (fs/exists? (:output o)) (not (some #{"v8"} (map first (:backends o)))))
-          (throw (ex-info "Usage: OUTPUT (new directory) [--runs R] [--n 0,100,400] v8=BIN NAME=BIN ..." {})))
+      recorded (:v8-analysis-ms o)
+      live-v8 (some #{"v8"} (map first (:backends o)))
+      _ (when (or (nil? (:output o)) (fs/exists? (:output o)) (empty? (:backends o))
+                  (= (boolean recorded) (boolean live-v8))
+                  (and recorded (not-every? #(and (number? (recorded %)) (pos? (recorded %))) (:n o))))
+          (throw (ex-info "Usage: OUTPUT (new directory) [--runs R] [--n 0,100,400] (v8=BIN | --v8-analysis-ms 0=MS,100=MS,400=MS) NAME=BIN ..." {})))
       _ (doseq [n (:n o)]
           (fs/create-dirs (fs/path (:output o) (str "src-" n) "k"))
           (spit (str (fs/path (:output o) (str "src-" n) "k" "churn.cljs")) (str/replace ({"churn" churn-source "protocol" protocol-source "lazy" lazy-source} (:workload o)) "N" (str n))))
@@ -111,6 +125,8 @@
   (spit (str (fs/path (:output o) "samples.tsv"))
         (str/join "\n" (cons "backend\tn\trun\twall-ms\tanalysis-ms"
                              (map #(str/join "\t" ((juxt :backend :n :run :wall-ms :analysis-ms) %)) samples))))
+  (when recorded
+    (println "V8: recorded analysis medians (ms); k is a cross-run estimate:" (into (sorted-map) recorded)))
   (println "backend\tn\twall-ms median [min-max]\tanalysis-ms median [min-max]\tk")
   (doseq [[b _] (:backends o) n (:n o)]
     (let [range* (fn [k] (let [xs (map k (by [b n]))]
@@ -118,5 +134,7 @@
           base (:n o)
           k (when (pos? n)
               (/ (- (med :analysis-ms b n) (med :analysis-ms b (first base)))
-                 (- (med :analysis-ms "v8" n) (med :analysis-ms "v8" (first base)))))]
+                 (if recorded
+                   (- (recorded n) (recorded (first base)))
+                   (- (med :analysis-ms "v8" n) (med :analysis-ms "v8" (first base))))))]
       (println (str/join "\t" [b n (range* :wall-ms) (range* :analysis-ms) (if k (format "%.1f" (double k)) "-")])))))

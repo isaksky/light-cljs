@@ -463,6 +463,97 @@ drop glue 71, SipHash 56, `lookup_cached` 40, the heap slot directory 37,
 light-cljs-501: lower arithmetic and core calls in native units and call
 protocol implementations without `Function.prototype.call`.
 
+## Native protocol call lowering (light-cljs-501), October 26, 2026
+
+The unchanged protocol workload above now lowers fixed arithmetic and comparison
+calls to operators over unwrapped occurrences, binds a unit's core functions
+once, and calls eligible protocol implementations through an explicit-receiver
+entry. Wider arithmetic evaluates all operands before coercion, without rest
+arrays or reducer callbacks. Scope-sensitive methods retain their receiver
+adapter. `PROTOCOL_FIXTURES` is unchanged; all 76 `bbp_macros` tests pass with
+native plus QuickJS, including new coercion/order and receiver/recur checks.
+All five helpers in the existing lazy publication test now publish, versus
+three before (lowered arithmetic and cached pure predicates remove their
+remaining runtime-object captures).
+
+Native-only release binaries: before = current master `26512b2f` (sha256
+`5a7dcc6cd42d60ea2dae3bfb0a28bc596ad51605a846288cde8311c93ee13ed1`),
+after = `c0eed2b4` (sha256
+`f3e555dcab65b56f5099e1d5411918465e342885eba26e0723b8d662848df7fd`).
+Both use `cargo build --locked --release --no-default-features --features
+bbp-macros`. macOS aarch64, 24 CPUs, Homebrew Rust/Cargo 1.99.1, Node
+26.12.1. One peer worker; own builds and suites finished before timing,
+load average 5.18 at the start and 2.84 shortly after. One warm-up per binary
+and n, then five rounds alternating binary order, fresh `--jobs 1 --no-cache
+--optimize none --stats` processes, the original timeout/poll budgets, and
+identical Node output at every n.
+
+The sandbox cannot read the V8 machine cache. **No V8 binary was built or
+timed here.** The V8 column is the most recent recorded protocol medians above
+(light-cljs-478 at `e0dcf363`, reference binary `f294deff`); every k below is
+therefore a **historical-reference estimate**, not a same-run V8 comparison.
+The harness accepts this explicitly:
+
+```sh
+bb benchmarks/native-macros-k.bb target/protocol-interleaved \
+  --workload protocol --runs 5 --n 0,100,400,1600,6400 \
+  --v8-analysis-ms 0=24.2,100=28.5,400=32.2,1600=40.6,6400=66.1 \
+  before=BEFORE_BINARY native=AFTER_BINARY
+```
+
+Analysis time, median [min–max] of five, ms:
+
+| `n` | recorded V8 | before | after | estimated k before | estimated k after |
+| ---: | ---: | --- | --- | ---: | ---: |
+| 0 | 24.2 | 15.1 [14.7–15.3] | 15.7 [15.6–16.0] | – | – |
+| 100 | 28.5 | 54.2 [53.7–54.7] | 39.6 [39.2–40.2] | 9.1 | 5.6 |
+| 400 | 32.2 | 128.9 [127.8–129.6] | 70.6 [70.6–73.0] | 14.2 | 6.9 |
+| 1,600 | 40.6 | 428.3 [425.4–428.9] | 192.1 [190.6–192.3] | 25.2 | 10.8 |
+| 6,400 | 66.1 | 1,623.1 [1,607.9–1,628.6] | 677.6 [674.3–687.8] | 38.4 | 15.8 |
+
+Baseline-subtracted native analysis falls by 39%, 52%, 57% and 59%. An initial
+pre-edit run of the same master binary gave estimated k 9.3/14.5/25.6/39.7;
+the table uses the later interleaved pair. The estimate remains above the
+k <= ~4 target at every measured n; light-cljs-515 continues the residual
+protocol call/resolve optimization.
+
+Fresh `/usr/bin/sample PID 3 1 -file ...` attempts at n = 1,600 (48 calls)
+and 6,400 (12 calls) both exited 255: process inspection is sandbox-denied
+(`sample cannot examine process ...; try running with sudo`). No fresh CPU
+frame ranking can be claimed. The last available CPU profile is the historical
+478 profile above: `execute_budgeted` 271 top-of-stack samples, `Fault` drop
+glue 71, SipHash 56, `lookup_cached` 40, heap slot-directory access 37,
+`Value` drop glue 34, `start_conversion` and `property_read_step` 32 each,
+`enter_constructor` 30 and `cached_callee` 27. Those counts describe that
+earlier code and load, not this change's remaining cost.
+
+Static inspection identifies a remaining interpreter path to profile:
+calls of dynamically read helper/protocol dispatcher values still pass through
+`NATIVE_PREPARE_INVOKE` (`value.call`, a per-call closure and `Reflect.apply`
+with an argument array). Dispatch still runs `declare`/`resolve` and JavaScript
+table-version/frontier checks before `cljDispatch`. This is a candidate,
+not a measured attribution; a fresh profile at both sizes remains required.
+
+Validation on the implementation above: native-only `bbp_macros` 74/74;
+native plus QuickJS differential 76/76; engine `--all-targets` 2,112/2,112
+and doctests 5/5. Compiler and engine formatting pass. The full QuickJS
+nextest build stops at eight missing `research/clojurescript` include files;
+`research/` was left untouched as instructed. Selecting the other binaries
+with `--no-fail-fast -j 8` runs 824 tests: 822 pass, while the playground wasm
+check fails nested-worktree Cargo workspace discovery and the watch CPU-idle
+test's `ps` spawn is sandbox-denied. Those test/build paths are unchanged
+from `26512b2f`.
+
+Strict native Clippy stops at eight engine diagnostics in the existing
+`deprecated`, `chunks_exact_to_as_chunks` and `byte_char_slices` categories
+(engine source unchanged). Native plus QuickJS `--lib --bins` passes with
+only those categories allowed; engine-free `--lib --bins` passes strictly.
+Engine-free `--all-targets` stops at the unchanged evaluator example's missing
+`print`/`evaluate` methods. Default-feature Clippy with
+`LIGHT_CLJS_V8_CACHE=require` stops at the sandbox-denied V8 cache path.
+These source checks do not replace the unavailable full compiler suite,
+strict all-target lint or fresh CPU profile.
+
 ## Lazy sequences (light-cljs-479), October 26, 2026
 
 `bb benchmarks/native-macros-k.bb OUTPUT --workload lazy v8=BIN NAME=BIN`
