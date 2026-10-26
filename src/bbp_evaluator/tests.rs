@@ -1048,6 +1048,41 @@ fn native_gensym_reservations_count_against_the_shared_heap_limit() {
     );
 }
 
+#[test]
+fn identity_numeric_conversions_keep_imported_scalar_occurrences() {
+    let evaluator = BbpEvaluator::new(Default::default()).unwrap();
+    for operation in ["byte", "short", "float", "double"] {
+        let function = evaluator
+            .evaluate_unit(&format!("rt => x => rt.core.{operation}(x)"))
+            .unwrap();
+        for kind in [
+            D::Integer(9_007_199_254_740_993),
+            D::Character(b'a' as u16),
+            D::String(vec![0xd800].into()),
+        ] {
+            let input = Datum::new(kind);
+            let argument = evaluator.import_data(&input, Default::default()).unwrap();
+            let result = evaluator.call(function, &[argument]).unwrap();
+            let root = evaluator.cx().unwrap().values.borrow()[&result.index].clone();
+            let output = evaluator
+                .host_scope(|s| {
+                    evaluator.with_bridge(|bridge| {
+                        bridge.export(s, s.local(&root).map_err(error)?, 16, &mut 100)
+                    })
+                })
+                .unwrap();
+            assert_eq!(
+                output.identity(),
+                input.identity(),
+                "{operation}: {input:?}"
+            );
+            evaluator.release(result).unwrap();
+            evaluator.release(argument).unwrap();
+        }
+        evaluator.release(function).unwrap();
+    }
+}
+
 /// A large live result that leaves only a little room must still be
 /// releasable: the release allocates no value-table entry for it.
 #[test]
