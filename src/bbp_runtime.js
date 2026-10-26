@@ -311,6 +311,8 @@ const native = (() => {
   const list = a => { let v = __rt.formList(); for(let i=a.length-1;i>=0;i--) v=__rt.formConj(v,a[i]); return v; };
   const vector = a => { let v=__rt.formVector();for(const x of a)v=__rt.formConj(v,x);return v; };
   const map = a => { let v=__rt.formMap();for(let i=0;i<a.length;i+=2)v=__rt.formAssoc(v,a[i],a[i+1]);return v; };
+  const arrayMap = a => __rt.formArrayMap(vector(a));
+  const literalMap = a => a.length<=16?arrayMap(a):map(a);
   const set = a => { let v=__rt.formSet();for(const x of a)v=__rt.formConj(v,x);return v; };
   // A set literal with members that are not constants rejects duplicates.
   // Reader-distinct constants retain every position after lowering.
@@ -441,7 +443,7 @@ const native = (() => {
         printWriter(k,w,o);write(w,' ');return printWriter(__rt.cljNth(e,1),w,o);
       },(ns?'#:'+ns:'')+'{',', ','}',options,__rt.formPrintItems(x));
     }
-    if(kind==='record')return printSequential(writer,(e,w,o)=>printSequential(w,printWriter,'',' ','',o,e),'#'+__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.')+'{',', ','}',options,x);
+    if(kind==='record')return printSequential(writer,(e,w,o)=>printSequential(w,printWriter,'',' ','',o,e),'#'+__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.')+'{',', ','}',options,__rt.formPrintItems(x));
     if(kind==='struct')return write(writer,'#object['+__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.')+' '+String(interop(x))+']');
     if(kind===null&&(typeof x==='object'||typeof x==='function')){
       const ty=x.__lightNativeType;
@@ -773,11 +775,11 @@ const native = (() => {
     nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
     list:(...a)=>list(a), vector:(...a)=>vector(a), hashMap:(...a)=>map(a), hashSet:(...a)=>set(a), set:x=>set(arr(x)), vec:x=>vector(arr(x)),
-    arrayMap:(...a)=>{ if (a.length % 2) throw new Error('No value supplied for key'); return map(a); },
+    arrayMap:(...a)=>{ if (a.length % 2) throw new Error('No value supplied for key'); return arrayMap(a); },
     seqToMap:value=>{
-      if (__rt.cljNext(value) === null) return seq(value) === null ? __rt.formMap() : __rt.cljFirst(value);
+      if (__rt.cljNext(value) === null) return seq(value) === null ? arrayMap([]) : __rt.cljFirst(value);
       const values = arr(value).slice(), trailing = values.length % 2 ? values.pop() : null;
-      const base = map(values);
+      const base = arrayMap(values);
       return trailing == null ? base : core.into(base, trailing);
     },
     keyword:(...a)=>a.length===1?__rt.cljKeyword(a[0]):a.length===2?__rt.cljKeywordNs(a[0],a[1]):arity(a.length),
@@ -950,7 +952,7 @@ const native = (() => {
       };
     },
     registerReaderNamespace:name=>createNs(__rt.cljSymbol(val(name))), addReaderDefinitions:()=>null,
-    PersistentVector:{EMPTY:__rt.formVector()}, PersistentArrayMap:{EMPTY:__rt.formMap()}, List:{EMPTY:__rt.formList()},
+    PersistentVector:{EMPTY:__rt.formVector()}, PersistentArrayMap:{EMPTY:arrayMap([])}, List:{EMPTY:__rt.formList()},
     PersistentHashSet:{EMPTY:__rt.formSet()},
     Keyword:{}, Symbol:{}, PersistentHashMap:{EMPTY:__rt.formMap()}, EmptyList:{},
   };
@@ -980,9 +982,9 @@ const native = (() => {
     extendInstance:unsupported('extendInstance'),
     nativeType:(fields,specs,record,name,view,mutable,ty)=>decl.type(fields,specs,view,mutable,ty),
     keyword:(ns,n)=>__rt.formKeyword(ns,n),symbol:(ns,n)=>__rt.formSymbol(ns,n),get,
-    vector:(...xs)=>vector(xs),vectorFromArray:vector,listFromArray:list,mapFromArray:map,arrayMapFromArray:map,constantMapFromArray:constantMap,
+    vector:(...xs)=>vector(xs),vectorFromArray:vector,listFromArray:list,mapFromArray:literalMap,arrayMapFromArray:arrayMap,constantMapFromArray:constantMap,
     mapFromArrays:(ks,vs)=>map(ks.flatMap((k,i)=>[k,vs[i]])),
-    mapShape:keys=>keys,mapFromShape:(ks,vs)=>map(ks.flatMap((k,i)=>[k,vs[i]])),
+    mapShape:keys=>keys,mapFromShape:(ks,vs)=>literalMap(ks.flatMap((k,i)=>[k,vs[i]])),
     setFromArray:set,arraySetFromArray:set,constantSetFromArray:constantSet,literalSetFromArray:literalSet,
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f,

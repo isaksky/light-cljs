@@ -982,7 +982,7 @@ pub(crate) fn assoc(heap: &Heap, coll: &Value, key: &Value, value: &Value) -> Re
     let shape = shape(heap, coll);
     let target = form::unwrap(heap, coll.clone());
     let updated = match &shape {
-        Shape::Nil => return Ok(form::new_map(heap, &[(key.clone(), value.clone())])?),
+        Shape::Nil => return Ok(form::new_literal_map(heap, &[key.clone(), value.clone()])?),
         Shape::Form(FormKind::Map, _) => form::assoc(heap, &target, key.clone(), value.clone())?,
         Shape::Form(FormKind::Struct, f) if f.record().is_some() => {
             form::record_assoc(heap, &target, key.clone(), value.clone())?

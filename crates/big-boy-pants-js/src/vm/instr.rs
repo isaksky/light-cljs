@@ -1506,13 +1506,15 @@ pub enum FormOp {
     LiteralMap = 65,
     /// list/vector of operands → positional literal set.
     LiteralSet = 66,
-    /// map/set → entries/members in legacy printer traversal order.
+    /// map/set/record → entries/members in legacy printer traversal order.
     PrintItems = 67,
+    /// list/vector of alternating operands → deduplicated insertion-ordered map.
+    ArrayMap = 68,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 68] = [
+    pub const ALL: [FormOp; 69] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1581,6 +1583,7 @@ impl FormOp {
         FormOp::LiteralMap,
         FormOp::LiteralSet,
         FormOp::PrintItems,
+        FormOp::ArrayMap,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1594,6 +1597,7 @@ impl FormOp {
             FormOp::Kind
             | FormOp::LiteralMap
             | FormOp::LiteralSet
+            | FormOp::ArrayMap
             | FormOp::Namespace
             | FormOp::Name
             | FormOp::Count
@@ -1732,6 +1736,7 @@ impl FormOp {
             FormOp::CljIsEditable => "cljIsEditable",
             FormOp::LiteralMap => "formLiteralMap",
             FormOp::LiteralSet => "formLiteralSet",
+            FormOp::ArrayMap => "formArrayMap",
             FormOp::CljInvoke => "cljInvoke",
         }
     }

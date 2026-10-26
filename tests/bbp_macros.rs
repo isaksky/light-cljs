@@ -143,6 +143,16 @@ fn native_printing_matches_quickjs_for_every_native_value_kind() {
         ("small constructors", "", "(let [f hash-map] (pr-str (array-map :a 1 :b 2) (f :a 1 :b 2) (hash-set :a :b) (set [:a :b]) (into {} [[:a 1] [:b 2]]) (assoc nil :a 1 :b 2)))", "nil"),
         ("retained promotion", "", "(let [m (into {} (map (fn [i] [i i]) (range 40))) s (into #{} (range 40))] (pr-str (apply dissoc m (range 35)) (apply disj s (range 35))))", "nil"),
         ("hash collisions", "", "(let [f hash-map] (pr-str (f \"Aa\" 1 \"BB\" 2 0 3 2147483647 4 nil 5) (hash-set \"Aa\" \"BB\" 0 2147483647 nil)))", "nil"),
+        ("positional literals", "", r#"(pr-str '{\a 1 "a" 2 1 :int 1.0 :float} '#{\a "a" 1 1.0} {\a 1 "a" 2} #{\a "a"})"#, "nil"),
+        // The legacy input bridge collapses lowered duplicates (496's
+        // documented boundary). Construct those inside the macro above;
+        // compare imported occurrences whose stored values are the same here.
+        ("positional reader inputs", "", "(pr-str x)", r#"[{\a 1 "b" 2} #{\a "b"} {1 :int 2.0 :float} #{1 2.0} {{\a 1} :first {"b" 1} :last} #{[\a] ["b"]}]"#),
+        ("positional updates", "", r#"(let [m '{\a 1 "a" 2 :z 3} s '#{1 1.0 2}] (pr-str (assoc m "a" 9) (dissoc m "a") (conj s 3) (disj s 1)))"#, "nil"),
+        ("positional promotion", "", r#"(let [m '{\a 1 "a" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8} s '#{1 1.0 2 3 4 5 6 7}] (pr-str m (assoc m :h 9) s (conj s 8)))"#, "nil"),
+        ("array maps above threshold", "", "(let [a (array-map 9 :a 8 :b 7 :c 6 :d 5 :e 4 :f 3 :g 2 :h 1 :i 9 :last) f array-map] (pr-str a (apply f [9 :a 8 :b 7 :c 6 :d 5 :e 4 :f 3 :g 2 :h 1 :i 9 :last]) (assoc a 0 :new)))", "nil"),
+        ("sequence maps", "", "(pr-str (seq-to-map-for-destructuring [:z 1 :c 2 :a 3]) (assoc (seq-to-map-for-destructuring []) :z 1 :a 2))", "nil"),
+        ("positional metadata", "", r#"(binding [*print-meta* true] (pr-str (with-meta '#{1 1.0} '{\a 1 "a" 2}) (with-meta '{\a 1 "a" 2} {:z 0 :a 1})))"#, "nil"),
         ("lazy", "", "(pr-str (map inc '(1 2 3)) (cons 0 (map inc [1 2])) (range 3) (take 3 (repeat :x)))", "nil"),
         ("lazy bound", "", "(binding [*print-length* 3] (pr-str (range) (repeat :x)))", "nil"),
         ("lazy effects", "", "(let [a (js/Array.) s (map (fn [x] (.push a x) x) '(1 2 3 4)) p (binding [*print-length* 2] (pr-str s)) n (.-length a)] (pr-str p n (pr-str s) (vec a)))", "nil"),
@@ -162,6 +172,8 @@ fn native_printing_matches_quickjs_for_every_native_value_kind() {
         ("restoration", "", "(let [a (binding [*print-length* 1 *print-level* 1] (pr-str [[1] 2]))] (pr-str a [[1] 2]))", "nil"),
         ("record", "(defrecord R [a b])", "(pr-str (->R 1 [2]) (assoc (->R 1 2) :c 3) R)", "nil"),
         ("record extensions", "(defrecord R [a b])", "(pr-str (assoc (->R 1 2) :z 3 :c 4 :d 5))", "nil"),
+        ("record hashed extensions", "(defrecord R [a])", "(pr-str (reduce (fn [r i] (assoc r i (- i))) (->R 1) (range 12)))", "nil"),
+        ("record positional extensions", "(defrecord R [a])", r#"(pr-str (R. 0 nil '{\a 1 "a" 2 :z 3}) (map->R '{\a 1 :a 0 "a" 2 :z 3}))"#, "nil"),
         ("record options", "(defrecord R [a b])", "(binding [*print-meta* true *print-length* 1 *print-level* 2] (pr-str (with-meta (->R 1 [2]) {:m 1})))", "nil"),
         ("type", "(deftype T [a])", "(pr-str (T. 1) T)", "nil"),
         ("mutable type", "(deftype T [^:mutable a])", "(pr-str (T. 1) T)", "nil"),

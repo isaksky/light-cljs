@@ -51,10 +51,20 @@ fn printer_traversal_uses_legacy_hash_paths_and_preserves_key_identity() {
       const entries=__rt.formPrintItems(map), keys=[];
       for(let i=0;i<__rt.formCount(entries);i++)keys.push(__rt.formNth(__rt.formNth(entries,i),0));
       if(keys[0]!==null||keys[1]!==0||keys[2]!==32||keys[3]!==1||keys[4]!==33)throw new Error('map traversal');
-      const members=__rt.formPrintItems(__rt.formSet(33,1,32,0,null));
+      let set=__rt.formSet(33,1,32,0,null,100,101,102,103);
+      for(let i=100;i<104;i++)set=__rt.formDisj(set,i);
+      const members=__rt.formPrintItems(set);
       for(let i=0;i<5;i++)if(__rt.formNth(members,i)!==keys[i])throw new Error('set traversal');
       const collision=__rt.formPrintItems(__rt.formMap(k,1,sameHash,2));
       if(__rt.formCount(collision)!==1||__rt.formNth(__rt.formNth(collision,0),0)!==k)throw new Error('retained collision key');
+      const positional=__rt.formLiteralMap(__rt.formVector(33,'a',1,'b',k,1,sameHash,2));
+      const items=__rt.formPrintItems(positional);
+      if(__rt.formCount(items)!==4||__rt.formNth(__rt.formNth(items,0),0)!==33||__rt.formNth(__rt.formNth(items,2),0)!==k)throw new Error('positional key identity');
+      const small=__rt.formPrintItems(__rt.formSet(33,1,32,0,null));
+      if(__rt.formNth(small,0)!==33||__rt.formNth(small,4)!==null)throw new Error('small set order');
+      const array=__rt.formArrayMap(__rt.formVector(k,1,sameHash,2,33,3));
+      const pairs=__rt.formPrintItems(array);
+      if(__rt.formCount(pairs)!==2||__rt.formNth(__rt.formNth(pairs,0),0)!==k||__rt.formNth(__rt.formNth(pairs,0),1)!==2)throw new Error('array map duplicate');
       return true;
     }"#,
         &[],

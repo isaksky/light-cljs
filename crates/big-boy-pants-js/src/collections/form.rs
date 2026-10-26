@@ -942,9 +942,10 @@ fn set_add(heap: &Heap, set: &FormMap, member: Value) -> Result<Option<FormMap>,
     map_assoc(heap, set, member.clone(), member)
 }
 
-/// A new set of `items`; of equal members the first is kept.
+/// A new set of `items`; of equal members the first is kept. Up to eight
+/// distinct members retain insertion order; the ninth promotes to a hash trie.
 pub(crate) fn new_set(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
-    let mut set = FormMap::default();
+    let mut set = FormMap::Positional(PVector::default());
     for item in items {
         if let Some(updated) = set_add(heap, &set, item.clone())? {
             set = updated;
@@ -967,6 +968,36 @@ pub(crate) fn new_literal_set(heap: &Heap, items: &[Value]) -> Result<Value, Col
     let pairs: Vec<Value> = items.iter().flat_map(|v| [v.clone(), v.clone()]).collect();
     let body = FormBody::Set(FormMap::Positional(PVector::try_from_values(heap, &pairs)?));
     alloc(heap, FormObject::new(body, None), items)
+}
+
+/// An array map of any size: equal keys retain the first key and last value,
+/// without promoting. Subsequent `assoc` follows the ordinary size threshold.
+pub(crate) fn array_map_from_sequence(
+    heap: &Heap,
+    items: &Value,
+) -> Result<Value, CollectionError> {
+    let values = sequential(heap, items)?.to_vec();
+    if !values.len().is_multiple_of(2) {
+        return Err(CollectionError::MissingKey);
+    }
+    let mut pairs = PVector::default();
+    for [key, value] in values.as_chunks::<2>().0 {
+        let index = (0..pairs.len())
+            .step_by(2)
+            .find(|&i| equals(heap, key, &pairs.get(i).unwrap()));
+        pairs = if let Some(i) = index {
+            pairs.try_set(heap, i + 1, value.clone())?
+        } else {
+            pairs
+                .try_push(heap, key.clone())?
+                .try_push(heap, value.clone())?
+        };
+    }
+    alloc(
+        heap,
+        FormObject::new(FormBody::Map(FormMap::Positional(pairs)), None),
+        &values,
+    )
 }
 
 /// Literal constructors accepting a list/vector of operands. The runtime's
@@ -1225,7 +1256,7 @@ pub(crate) fn record_assoc(
         None => {
             let mut ext = match &s.ext {
                 Some(ext) => assoc(heap, ext, key, value)?,
-                None => new_map(heap, &[(key, value)])?,
+                None => new_literal_map(heap, &[key, value])?,
             };
             if s.ext.as_ref().is_some_and(|old| old.same_object(&ext)) {
                 ext = copy_map(heap, &ext)?;

@@ -69,9 +69,9 @@ engine source, and includes preloaded helper source.
 
 ## Supported boundary
 
-### Printing and namespace services (light-cljs-513 checkpoint)
+### Printing and namespace services (light-cljs-513)
 
-At `ddd609b9`, native printers cover nil, booleans, Numbers (including negative
+Native printers cover nil, booleans, Numbers (including negative
 zero and nonfinite values), exact UTF-16 strings and characters, named values,
 lists, vectors, maps, sets, lazy/cons sequences, immutable and mutable types,
 records, Reduced markers, shared atoms, regexes and Namespace values. The
@@ -81,16 +81,18 @@ readability, namespace maps, explicit options, custom printer/writer protocols,
 errors and restoration after a thrown lazy printer. Plain host objects, arrays
 and ordinary functions still fail explicitly. There is no legacy fallback.
 
-**Collection order is not complete on this base.** `formPrintItems` restores
-legacy five-bit hash traversal, including nil-first traversal, independently of
-the native lookup trie's hash spreading. The current hashed-only representation
-does not retain small array-map/set insertion order or record extension-map
-insertion order. The differential table deliberately continues to fail those
-rows. Positional storage from light-cljs-496 must be integrated before routing
-the corresponding constructors, updates and printer traversal through it;
-reader-distinct literal printing also needs to join that same table. These
-remain acceptance work in light-cljs-513. The worker did not edit the concurrent
-worker's `emitter.rs`, `collections/form.rs` or `collections/clj.rs`.
+`formPrintItems` preserves positional traversal and restores legacy five-bit
+hash traversal, including nil-first traversal, independently of the native
+lookup trie's hash spreading. Array-map constructors, small sets, empty map
+literals, `assoc` on nil, and record extension maps retain insertion order.
+Array maps constructed above eight entries also retain that order; adding a
+new key promotes them, as does a ninth distinct member in a small set. Record
+printing keeps declared fields first and traverses its extension map with the
+same positional/hash rules. The differential table includes reader-distinct
+positional literals, removal's trailing nil positions, promotion, duplicate
+constructor keys and record extensions. Imported duplicate reader values retain
+light-cljs-496's documented difference from the legacy input bridge below;
+the duplicate-literal comparisons construct equal stored values inside macros.
 
 The macro wrapper binds `*ns*` from the existing `&env` namespace name and
 restores it on success or failure. Namespace name slots retain their original
@@ -512,9 +514,10 @@ per-task. Sorted maps and sets, transients and other host types remain
 JavaScript-only and report an unsupported-operation error inside a macro;
 protocols, types and records, and lazy sequences, are below.
 
-Map and set elements that a macro constructs export in the engine's trie order,
-which can differ from the order the legacy engines' array maps keep; inputs
-returned unchanged keep their exact original form. `concat` of collections
+Map and set elements that a macro constructs export in positional order or the
+engine's trie order for hashed storage. Hashed export/seq order can differ from
+the legacy engines' hash trie; printers restore the legacy hash traversal.
+Inputs returned unchanged keep their exact original form. `concat` of collections
 none of which is lazy returns a list where the legacy engines return a lazy
 sequence that their bridge exports with an explicit `nil` metadata wrapper
 (with a lazy or cons collection among them it is lazy and exports as theirs). A set literal with non-constant members

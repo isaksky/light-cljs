@@ -113,7 +113,7 @@
 //! | `formDissoc(m, k)` | `form_op` | new map without the entry for an equal key (absent: `m`) | `WrongType` |
 //! | `formConj(c, x)` | `form_op` | vector: `x` appended; list: `x` prepended | `WrongType` |
 //! | `formKeys(m)` | `form_op` | a new form vector of the map's keys (the stored key objects), in trie order | `WrongType` |
-//! | `formPrintItems(m)` | `form_op` | map entries or set members in legacy printer order, retaining key identity | wrong type |
+//! | `formPrintItems(m)` | `form_op` | map/record entries or set members in legacy printer order, retaining key identity | wrong type |
 //! | `formEquals(a, b)`, `formHash(v)` | `form_op` | value equality (boolean) and the light-cljs runtime's 32-bit hash (number) | – |
 //! | `formMeta(v)` | `form_op` | the form's metadata map, or `null` | – |
 //! | `formWithMeta(v, m)` | `form_op` | a symbol, list, vector or map with metadata `m` (a form map or `null`); `v` itself for the same `m` | `WrongType` |
@@ -122,6 +122,7 @@
 //! | `formSet(x1, …, xn)` | `new_form_set n` | new set of the values; of equal members the first is kept (light-cljs-477) | – |
 //! | `formLiteralMap(pairs)` | `form_op LiteralMap` | positional map from alternating operands in a form list/vector; retains equal keys, first-match lookup | wrong type; odd operand count |
 //! | `formLiteralSet(items)` | `form_op LiteralSet` | positional set from a form list/vector; retains equal members and source order | wrong type |
+//! | `formArrayMap(pairs)` | `form_op ArrayMap` | insertion-ordered map from alternating operands; equal keys keep the first key and last value | wrong type; odd operand count |
 //! | `formDisj(s, x)` | `form_op` | new set without the member equal to `x` (absent: `s`) | `WrongType` |
 //!
 //! | `structType(name, fields, record)` | `form_op` | a new struct type (light-cljs-478; [`crate::collections::form`], "Structs") | `WrongType` |
@@ -527,6 +528,7 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         FormOp::Symbol => form::new_named_from_values(heap, FormKind::Symbol, arg(), arg())?,
         FormOp::LiteralMap => form::literal_from_sequence(heap, &arg(), false)?,
         FormOp::LiteralSet => form::literal_from_sequence(heap, &arg(), true)?,
+        FormOp::ArrayMap => form::array_map_from_sequence(heap, &arg())?,
         FormOp::Kind => {
             let v = arg();
             match form::kind(heap, &v) {
@@ -652,41 +654,46 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
 /// This does not change language lookup or the native seq contract.
 fn print_items(heap: &Heap, value: &Value) -> Result<Value, CollectionError> {
     let wrong = || CollectionError::WrongType {
-        expected: "form map or set",
+        expected: "form map, set or record",
         found: form::kind(heap, value).map_or(value.type_name(), FormKind::name),
     };
     let object = form::form_object(heap, value).ok_or_else(wrong)?;
+    if let form::FormBody::Struct(s) = object.body()
+        && s.info.record
+    {
+        let mut entries = Vec::with_capacity(s.fields.len());
+        for (name, value) in s.info.fields.iter().zip(s.fields.to_vec()) {
+            let key = form::new_named(heap, FormKind::Keyword, None, name.clone())?;
+            entries.push(form::new_vector(heap, &[key, value])?);
+        }
+        if let Some(ext) = &s.ext {
+            entries.extend(form::items(heap, &print_items(heap, ext)?)?);
+        }
+        return form::new_vector(heap, &entries);
+    }
     let (map, set) = match object.body() {
         form::FormBody::Map(map) => (map, false),
         form::FormBody::Set(set) => (set, true),
         _ => return Err(wrong()),
     };
-    let mut entries: Vec<_> = map
-        .to_vec()
-        .into_iter()
-        .map(|(key, value)| {
-            let hash = form::hash(heap, &key) as u32;
+    let mut entries = map.to_vec();
+    if !map.positional() {
+        entries.sort_by_cached_key(|(key, _)| {
+            let hash = form::hash(heap, key) as u32;
             let nil = matches!(
                 form::unwrap(heap, key.clone()),
                 Value::Null | Value::Undefined
             );
-            ((nil, hash), key, value)
-        })
-        .collect();
-    entries.sort_by(|a, b| {
-        let ((an, ah), _, _) = a;
-        let ((bn, bh), _, _) = b;
-        bn.cmp(an).then_with(|| {
-            (0..32)
-                .step_by(5)
-                .map(|shift| ((ah >> shift) & 31).cmp(&((bh >> shift) & 31)))
-                .find(|order| !order.is_eq())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    });
+            // Five-bit trie paths compare from the low bits, not numerically.
+            (
+                !nil,
+                std::array::from_fn::<_, 7, _>(|i| (hash >> (i * 5)) & 31),
+            )
+        });
+    }
     let values = entries
         .into_iter()
-        .map(|(_, key, value)| {
+        .map(|(key, value)| {
             if set {
                 Ok(key)
             } else {

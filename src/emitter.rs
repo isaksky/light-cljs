@@ -2941,7 +2941,7 @@ impl<'a> Emitter<'a> {
             // task's runtime object for it.
             self.output.push_str(match empty {
                 EmptyCollection::Vector => "__rt.formVector()",
-                EmptyCollection::Map => "__rt.formMap()",
+                EmptyCollection::Map => "__rt.formLiteralMap(__rt.formVector())",
                 EmptyCollection::Set => "__rt.formSet()",
                 EmptyCollection::List => "__rt.formList()",
             });
@@ -2996,7 +2996,8 @@ impl<'a> Emitter<'a> {
             && let Some(intrinsic) = match constructor {
                 Composite::Vector => Some("formVector"),
                 Composite::List => Some("formList"),
-                Composite::ArrayMap | Composite::HashMap => Some("formMap"),
+                Composite::ArrayMap => Some("formArrayMap"),
+                Composite::HashMap => Some("formMap"),
                 Composite::Set | Composite::CheckedSet => Some("formSet"),
                 Composite::LiteralMap => Some("formLiteralMap"),
                 Composite::LiteralSet => Some("formLiteralSet"),
@@ -3031,7 +3032,10 @@ impl<'a> Emitter<'a> {
                 .unwrap();
             }
             write!(self.output, "__rt.{intrinsic}(").unwrap();
-            let positional = matches!(constructor, Composite::LiteralMap | Composite::LiteralSet);
+            let positional = matches!(
+                constructor,
+                Composite::ArrayMap | Composite::LiteralMap | Composite::LiteralSet
+            );
             if positional {
                 self.output.push_str("__rt.formVector(");
             }
@@ -3766,8 +3770,11 @@ impl<'a> Emitter<'a> {
             (C::Vector, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formVector", false, ""),
             (C::List, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formList", false, ""),
             (C::HashSet, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formSet", false, ""),
-            (C::HashMap | C::ArrayMap, n) if n <= NATIVE_CONSTRUCTOR_LIMIT && n % 2 == 0 => {
+            (C::HashMap, n) if n <= NATIVE_CONSTRUCTOR_LIMIT && n % 2 == 0 => {
                 ("", "formMap", false, "")
+            }
+            (C::ArrayMap, n) if n <= NATIVE_CONSTRUCTOR_LIMIT && n % 2 == 0 => {
+                ("__rt.formArrayMap(", "formVector", false, ")")
             }
             (C::Concat, 2) => ("", "cljConcat", false, ""),
             // `(concat a b c …)`: one flat operand list, so a wide call
