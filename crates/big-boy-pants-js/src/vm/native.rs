@@ -300,6 +300,11 @@ enum Failure {
 /// What a step asks the trampoline to do next.
 #[derive(Debug)]
 pub(crate) enum Action {
+    GetProperty {
+        target: ObjectId,
+        key: property::Key,
+        receiver: Value,
+    },
     /// Execute a property instruction and deliver its result to this native.
     Instruction {
         instr: Instr,
@@ -539,6 +544,7 @@ enum NativeState {
     },
     AsyncGenerator(Box<super::async_generator::Boundary>),
     Proxy(Box<super::proxy::State>),
+    ProxyCall(Box<super::proxy::Call>),
     Dispose(dispose::State),
     Disposal(Box<dispose::Stack>),
     MathSumPrecise(Box<sum_precise::State>),
@@ -760,11 +766,7 @@ impl ArrayJoin {
                     &self.this,
                     &property::Key::Name(JsString::from("length")),
                 )? {
-                    Some(property::Read::Getter(callee)) => Ok(Action::Call {
-                        callee,
-                        this: self.this.clone(),
-                        args: vec![],
-                    }),
+                    Some(property::Read::Deferred(callee)) => Ok(callee.action(self.this.clone())),
                     value => self.length(match value {
                         Some(property::Read::Value(v)) => v,
                         _ => Value::Undefined,
@@ -807,11 +809,7 @@ impl ArrayJoin {
                 }
                 self.stage = JoinStage::ElementValue;
                 match property::read(heap, task, &self.this, &index_key(self.next))? {
-                    Some(property::Read::Getter(callee)) => Ok(Action::Call {
-                        callee,
-                        this: self.this.clone(),
-                        args: vec![],
-                    }),
+                    Some(property::Read::Deferred(callee)) => Ok(callee.action(self.this.clone())),
                     Some(property::Read::Value(value)) => self.element(heap, value),
                     None => self.element(heap, Value::Undefined),
                 }
@@ -1077,6 +1075,7 @@ impl Trace for NativeFrame {
             }
             NativeState::DefineProperty(desc) => desc.trace(visit),
             NativeState::Proxy(proxy) => proxy.trace(visit),
+            NativeState::ProxyCall(proxy) => proxy.trace(visit),
             NativeState::Instanceof { value, target } => {
                 value.trace(visit);
                 target.trace(visit);
@@ -3439,6 +3438,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::DynamicFunction(..)
             | Action::SimTimer { .. }
             | Action::SetProperty { .. }
+            | Action::GetProperty { .. }
             | Action::CreateDataProperty { .. }
             | Action::DefineProperty(_)
             | Action::Instruction { .. }
@@ -3696,6 +3696,32 @@ fn apply_action(
             state.push(Value::String(JsString::from(locale.as_str())));
             Ok(Flow::Next)
         }
+        Action::GetProperty {
+            target,
+            key,
+            receiver,
+        } => {
+            if state
+                .natives
+                .last()
+                .is_some_and(|frame| frame.state.catches())
+            {
+                state.push_handler(super::exception::HandlerKind::NativeCatch {
+                    native: state.natives.len() - 1,
+                })?;
+            }
+            set_awaiting(state, Awaiting::CallResult)?;
+            start_proxy(
+                state,
+                super::proxy::Mode::Get {
+                    target,
+                    key,
+                    receiver,
+                },
+                0,
+            )?;
+            Ok(Flow::Next)
+        }
         Action::SetProperty {
             this,
             key,
@@ -3794,11 +3820,11 @@ fn apply_action(
             let task = state.diag.task;
             let (id, code, call) =
                 match dispatch::resolve(heap, task, call, max_args, max_hops, &state.code_cache)? {
-                    (Callee::Bound(_), _) => {
+                    dispatch::Resolved::Direct(Callee::Bound(_), _) => {
                         return Err(Fault::Internal("unresolved bound function"));
                     }
-                    (Callee::Code(id, code), call) => (id, code, call),
-                    (Callee::Builtin(which), call) => {
+                    dispatch::Resolved::Direct(Callee::Code(id, code), call) => (id, code, call),
+                    dispatch::Resolved::Direct(Callee::Builtin(which), call) => {
                         set_awaiting(state, Awaiting::CallResult)?;
                         if start_builtin(heap, state, which, &call.this, &call.args, false, 0)? {
                             return Ok(Flow::FrameChanged);
@@ -3810,6 +3836,11 @@ fn apply_action(
                             builtin::call_in_state(heap, state, which, &call.this, &call.args)?;
                         state.push(result);
                         return Ok(Flow::Next);
+                    }
+                    dispatch::Resolved::Proxy(call) => {
+                        set_awaiting(state, Awaiting::CallResult)?;
+                        start_proxy_call(heap, state, call, 0)?;
+                        return Ok(Flow::FrameChanged);
                     }
                 };
             set_awaiting(state, Awaiting::CallResult)?;
@@ -3965,7 +3996,7 @@ pub(crate) fn read_result(
 ) -> Result<(), Fault> {
     match read.unwrap_or(property::Read::Value(Value::Undefined)) {
         property::Read::Value(value) => state.push(value),
-        property::Read::Getter(callee) => {
+        property::Read::Deferred(property::Deferred::Getter(callee)) => {
             return push_native(
                 state,
                 NativeState::PropertyCall {
@@ -3973,6 +4004,17 @@ pub(crate) fn read_result(
                     this,
                     assigned: None,
                 },
+            );
+        }
+        property::Read::Deferred(property::Deferred::Proxy { target, key }) => {
+            return start_proxy(
+                state,
+                super::proxy::Mode::Get {
+                    target,
+                    key,
+                    receiver: this,
+                },
+                0,
             );
         }
     }
@@ -4129,12 +4171,8 @@ fn step_instanceof(
             target,
             &property::Key::Name(JsString::from("prototype")),
         )? {
-            Some(property::Read::Getter(callee)) => {
-                return Ok(Action::Call {
-                    callee,
-                    this: target.clone(),
-                    args: vec![],
-                });
+            Some(property::Read::Deferred(callee)) => {
+                return Ok(callee.action(target.clone()));
             }
             Some(property::Read::Value(v)) => v,
             None => Value::Undefined,
@@ -4178,6 +4216,7 @@ impl NativeState {
             NativeState::Bind { .. } => self.step_bind(heap, task, input),
             NativeState::DefineProperty(_) => self.step_define_property(heap, task, input),
             NativeState::Proxy(proxy) => proxy.step(heap, task, input),
+            NativeState::ProxyCall(proxy) => proxy.step(heap, task, input),
             NativeState::RegExp(regexp) => regexp.step(heap, task, input),
             NativeState::Realize(realize) => realize.step(heap, task, input),
             // Locale parsing descends into Intl helpers. Avoid reserving the
@@ -4334,12 +4373,8 @@ impl NativeState {
             *stage = 1;
             if has_length {
                 match property::read(heap, task, target, &key)? {
-                    Some(property::Read::Getter(callee)) => {
-                        return Ok(Action::Call {
-                            callee,
-                            this: target.clone(),
-                            args: vec![],
-                        });
+                    Some(property::Read::Deferred(callee)) => {
+                        return Ok(callee.action(target.clone()));
                     }
                     Some(property::Read::Value(v)) => *length = v,
                     None => {}
@@ -4364,12 +4399,8 @@ impl NativeState {
             target,
             &property::Key::Name(JsString::from("name")),
         )? {
-            Some(property::Read::Getter(callee)) => {
-                return Ok(Action::Call {
-                    callee,
-                    this: target.clone(),
-                    args: vec![],
-                });
+            Some(property::Read::Deferred(callee)) => {
+                return Ok(callee.action(target.clone()));
             }
             Some(property::Read::Value(v)) => v,
             None => Value::Undefined,
@@ -4398,11 +4429,7 @@ impl NativeState {
         };
         match desc.step(heap, task, result)? {
             descriptor::DefineStep::Has { this, key } => Ok(has_property(this, key)),
-            descriptor::DefineStep::Getter { callee, this } => Ok(Action::Call {
-                callee,
-                this,
-                args: vec![],
-            }),
+            descriptor::DefineStep::Getter { callee, this } => Ok(callee.action(this)),
             descriptor::DefineStep::Done(v) => Ok(Action::Return(v)),
             descriptor::DefineStep::TypedArrayValue {
                 target,
@@ -4600,12 +4627,8 @@ impl NativeState {
                         this,
                         &property::Key::Name(JsString::from("join")),
                     )? {
-                        Some(property::Read::Getter(callee)) => {
-                            return Ok(Action::Call {
-                                callee,
-                                this: this.clone(),
-                                args: vec![],
-                            });
+                        Some(property::Read::Deferred(callee)) => {
+                            return Ok(callee.action(this.clone()));
                         }
                         Some(property::Read::Value(value)) => value,
                         None => Value::Undefined,
@@ -4673,12 +4696,8 @@ impl NativeState {
                             list,
                             &property::Key::Name(JsString::from("length")),
                         )? {
-                            Some(property::Read::Getter(callee)) => {
-                                return Ok(Action::Call {
-                                    callee,
-                                    this: list.clone(),
-                                    args: vec![],
-                                });
+                            Some(property::Read::Deferred(callee)) => {
+                                return Ok(callee.action(list.clone()));
                             }
                             Some(property::Read::Value(v)) => v,
                             None => Value::Undefined,
@@ -4703,12 +4722,8 @@ impl NativeState {
                 }
                 while args.len() < len.unwrap() {
                     match property::read(heap, task, list, &index_key(args.len() as u64))? {
-                        Some(property::Read::Getter(callee)) => {
-                            return Ok(Action::Call {
-                                callee,
-                                this: list.clone(),
-                                args: vec![],
-                            });
+                        Some(property::Read::Deferred(callee)) => {
+                            return Ok(callee.action(list.clone()));
                         }
                         Some(property::Read::Value(v)) => args.push(v),
                         None => args.push(Value::Undefined),
@@ -4747,12 +4762,8 @@ impl NativeState {
                             this,
                             &property::Key::Name(JsString::from("length")),
                         )? {
-                            Some(property::Read::Getter(callee)) => {
-                                return Ok(Action::Call {
-                                    callee,
-                                    this: this.clone(),
-                                    args: vec![],
-                                });
+                            Some(property::Read::Deferred(callee)) => {
+                                return Ok(callee.action(this.clone()));
                             }
                             Some(property::Read::Value(v)) => v,
                             None => Value::Undefined,
@@ -4797,6 +4808,7 @@ impl NativeState {
                 step_instanceof(heap, task, value, target, input)
             }
             NativeState::Proxy(_) => unreachable!("Proxy dispatched separately"),
+            NativeState::ProxyCall(_) => unreachable!("Proxy call dispatched separately"),
             NativeState::DefineProperty(_) => unreachable!("descriptor dispatched separately"),
             NativeState::PropertyCall {
                 callee,
@@ -5208,13 +5220,9 @@ impl NativeState {
                         let key =
                             property::Key::Symbol(crate::value::symbol::well_known("toPrimitive"));
                         match property::read(heap, task, receiver, &key)? {
-                            Some(property::Read::Getter(callee)) => {
+                            Some(property::Read::Deferred(callee)) => {
                                 *symbol_method = SymbolMethod::Getter;
-                                return Ok(Action::Call {
-                                    callee,
-                                    this: receiver.clone(),
-                                    args: vec![],
-                                });
+                                return Ok(callee.action(receiver.clone()));
                             }
                             Some(property::Read::Value(callee)) => {
                                 return call_symbol_method(
@@ -5241,13 +5249,9 @@ impl NativeState {
                         let callee = match property::conversion_method(heap, task, receiver, &name)?
                         {
                             property::Read::Value(v) => v,
-                            property::Read::Getter(callee) => {
+                            property::Read::Deferred(callee) => {
                                 *method_get = true;
-                                return Ok(Action::Call {
-                                    callee,
-                                    this: receiver.clone(),
-                                    args: vec![],
-                                });
+                                return Ok(callee.action(receiver.clone()));
                             }
                         };
                         match dispatch::callee(heap, &callee) {
@@ -5676,6 +5680,7 @@ impl NativeState {
                 | NativeState::PropertyCall { .. }
                 | NativeState::DefineProperty(_)
                 | NativeState::Proxy(_)
+                | NativeState::ProxyCall(_)
                 | NativeState::Instanceof { .. }
                 | NativeState::Apply { .. }
                 | NativeState::Push { .. }
@@ -5798,6 +5803,17 @@ pub(crate) fn start_proxy(
         state,
         NativeState::Proxy(Box::new(super::proxy::State::new(mode))),
     )
+}
+
+pub(crate) fn start_proxy_call(
+    heap: &Heap,
+    state: &mut VmState,
+    call: builtin::Forward,
+    popped: usize,
+) -> Result<(), Fault> {
+    let call = super::proxy::Call::new(heap, state.diag.task, call)?;
+    state.truncate_operands(state.stack_len() - popped)?;
+    push_native(state, NativeState::ProxyCall(Box::new(call)))
 }
 
 /// Complete an ordinary write or resume the exotic operation identified by

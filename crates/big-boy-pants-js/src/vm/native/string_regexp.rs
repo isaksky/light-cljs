@@ -343,11 +343,7 @@ impl State {
     ) -> Result<Action, Fault> {
         self.phase = next;
         match property::read(heap, task, &base, &key)? {
-            Some(property::Read::Getter(callee)) => Ok(Action::Call {
-                callee,
-                this: base,
-                args: vec![],
-            }),
+            Some(property::Read::Deferred(callee)) => Ok(callee.action(base)),
             read => {
                 self.value = match read {
                     Some(property::Read::Value(v)) => v,

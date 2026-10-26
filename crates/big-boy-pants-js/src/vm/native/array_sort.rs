@@ -96,11 +96,7 @@ impl State {
 
     fn read(&mut self, heap: &Heap, task: TaskId, key: property::Key) -> Result<Action, Fault> {
         match property::read(heap, task, &self.this, &key)? {
-            Some(property::Read::Getter(callee)) => Ok(Action::Call {
-                callee,
-                this: self.this.clone(),
-                args: vec![],
-            }),
+            Some(property::Read::Deferred(callee)) => Ok(callee.action(self.this.clone())),
             Some(property::Read::Value(v)) => self.step(heap, task, Input::CallResult(v)),
             None => self.step(heap, task, Input::CallResult(Value::Undefined)),
         }

@@ -133,16 +133,12 @@ impl State {
     ) -> Result<Action, Fault> {
         self.stage = next;
         match property::read(heap, task, &base, &key)? {
-            Some(property::Read::Getter(callee)) => Ok(Action::Call {
-                callee,
-                this: base,
-                args: vec![],
-            }),
+            Some(property::Read::Deferred(callee)) => Ok(callee.action(base)),
             read => {
                 self.read_value = Some(match read {
                     Some(property::Read::Value(value)) => value,
                     None => Value::Undefined,
-                    Some(property::Read::Getter(_)) => unreachable!(),
+                    Some(property::Read::Deferred(_)) => unreachable!(),
                 });
                 Ok(Action::Continue)
             }

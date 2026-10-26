@@ -287,12 +287,8 @@ impl TypedArray {
         };
         if let Some((this, key)) = read {
             input = match property::read(heap, task, &this, &key)? {
-                Some(property::Read::Getter(callee)) => {
-                    return Ok(Action::Call {
-                        callee,
-                        this,
-                        args: vec![],
-                    });
+                Some(property::Read::Deferred(callee)) => {
+                    return Ok(callee.action(this));
                 }
                 Some(property::Read::Value(value)) => Input::CallResult(value),
                 None => Input::CallResult(Value::Undefined),

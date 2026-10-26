@@ -92,7 +92,7 @@ fn proxy_internal_paths() {
         "let o={x:1}, p=new Proxy(o,{}); Reflect.get(p,'x')===1 && Reflect.set(p,'x',2) && o.x===2 && Reflect.has(p,'x') && Reflect.defineProperty(p,'y',{value:3,configurable:true}) && Reflect.deleteProperty(p,'y') && Reflect.getPrototypeOf(p)===Object.prototype && Reflect.isExtensible(p) && Reflect.preventExtensions(p) && !Reflect.isExtensible(p)",
     );
     check(
-        "let n=0; for(let name of ['get','set','defineProperty','deleteProperty','getPrototypeOf','setPrototypeOf','isExtensible','preventExtensions']){let h={};h[name]=()=>true;let p=new Proxy({},h); try{Reflect[name](p,'x',{});}catch(e){if(e instanceof TypeError)n++;}} n===8",
+        "let n=0; for(let name of ['set','defineProperty','deleteProperty','getPrototypeOf','setPrototypeOf','isExtensible','preventExtensions']){let h={};h[name]=()=>true;let p=new Proxy({},h); try{Reflect[name](p,'x',{});}catch(e){if(e instanceof TypeError)n++;}} n===7",
     );
 }
 
@@ -201,7 +201,7 @@ fn validation_precedes_callbacks_and_proxy_invariants_throw() {
         "let n=0;for(let keys of [['x','x'],[]]){let o={};Object.defineProperty(o,'x',{value:1});let p=new Proxy(o,{ownKeys(){return keys;}});try{Reflect.ownKeys(p);}catch(e){if(e instanceof TypeError)n++;}}let p=new Proxy({},{getOwnPropertyDescriptor(){return 1;}});try{Reflect.getOwnPropertyDescriptor(p,'x');}catch(e){if(e instanceof TypeError)n++;}n===3",
     );
     check(
-        "let n=0;for(let name of ['get','set','defineProperty','deleteProperty','getPrototypeOf','isExtensible','preventExtensions']){let h={};h[name]=()=>true;let p=new Proxy({},h);try{Reflect[name](p,'x',{});}catch(e){if(e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: '+name)>=0)n++;}}let p=new Proxy({},{setPrototypeOf(){return true;}});try{Reflect.setPrototypeOf(p,{});}catch(e){if(e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: setPrototypeOf')>=0)n++;}n===8",
+        "let n=0;for(let name of ['set','defineProperty','deleteProperty','getPrototypeOf','isExtensible','preventExtensions']){let h={};h[name]=()=>true;let p=new Proxy({},h);try{Reflect[name](p,'x',{});}catch(e){if(e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: '+name)>=0)n++;}}let p=new Proxy({},{setPrototypeOf(){return true;}});try{Reflect.setPrototypeOf(p,{});}catch(e){if(e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: setPrototypeOf')>=0)n++;}n===7",
     );
 }
 

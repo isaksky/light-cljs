@@ -150,3 +150,47 @@ function typeError(f, label) {
     assert(Object.getOwnPropertyDescriptor(Object.defineProperty({}, 'x', desc), 'x').value === undefined, 'virtual descriptor presence');
 }
 true;
+// Every supported ToPropertyDescriptor reader uses HasProperty before Get.
+{
+    let readers=[
+        d=>Object.defineProperty({},'x',d).x===42,
+        d=>Object.defineProperties({},{x:d}).x===42,
+        d=>{let o={};return Reflect.defineProperty(o,'x',d)&&o.x===42;},
+        d=>Object.getOwnPropertyDescriptor(new Proxy({},{getOwnPropertyDescriptor(){return d;}}),'x').value===42,
+        d=>Reflect.getOwnPropertyDescriptor(new Proxy({},{getOwnPropertyDescriptor(){return d;}}),'x').value===42
+    ];
+    for (let read of readers) {
+        let log='', desc=new Proxy({value:42,configurable:true},{
+            has(t,k){log+='h'+k+';';return k in t;},
+            get(t,k,r){log+='g'+k+';';return Reflect.get(t,k,r);}
+        });
+        assert(read(desc),'descriptor reader value');
+        assert(log==='henumerable;hconfigurable;gconfigurable;hvalue;gvalue;hwritable;hget;hset;','descriptor reader order');
+        let caught;
+        try {read(new Proxy({},{has(t,k){if(k==='value')throw 42;return false;}}));}catch(e){caught=e;}
+        assert(caught===42,'descriptor reader has exception');
+        typeError(()=>read(new Proxy({},{has(t,k){return k==='value'||k==='get';}})),'virtual undefined descriptor fields still conflict');
+    }
+}
+{
+    for (let sealed of [false,true]) {
+        let target={x:1};if(sealed)Object.preventExtensions(target);
+        let log='',inner=new Proxy(target,{
+            get isExtensible(){log+='e';return function(t){log+='E';return !sealed;};},
+            ownKeys(t){log+='k';return ['x'];},
+            getOwnPropertyDescriptor(t,k){log+='d';return Object.getOwnPropertyDescriptor(t,k);}
+        });
+        let p=new Proxy(inner,{ownKeys(){log+='K';return ['x'];},getOwnPropertyDescriptor(t,k){log+='D';return Object.getOwnPropertyDescriptor(target,k);}});
+        assert(Reflect.ownKeys(p).join(',')==='x' && log==='KeEkd','ownKeys target extensibility order');
+        log=''; assert(Reflect.getOwnPropertyDescriptor(p,'x').value===1 && log==='DdeE','descriptor target extensibility order');
+        log=''; assert(Object.keys(p).join(',')==='x' && log==='KeEkdDdeE','enumeration callbacks');
+    }
+    for(let h of [{isExtensible(){return false;}},{get isExtensible(){throw 42;}},{isExtensible(){throw 42;}}]) {
+        let inner=new Proxy({x:1},h),p=new Proxy(inner,{ownKeys(){return ['x'];},getOwnPropertyDescriptor(){return {value:1,configurable:true};}});
+        for(let read of [()=>Reflect.ownKeys(p),()=>Reflect.getOwnPropertyDescriptor(p,'x'),()=>Object.keys(p)]) {
+            let e;try{read();}catch(x){e=x;}
+            assert(e===42||e instanceof TypeError,'extensibility errors through enumeration/reflection');
+        }
+    }
+}
+true;

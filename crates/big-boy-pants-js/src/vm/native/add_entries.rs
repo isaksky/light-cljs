@@ -141,11 +141,7 @@ impl State {
     ) -> Result<Action, Fault> {
         self.stage = stage;
         match property::read(heap, task, &base, &key)? {
-            Some(property::Read::Getter(callee)) => Ok(Action::Call {
-                callee,
-                this: base,
-                args: vec![],
-            }),
+            Some(property::Read::Deferred(callee)) => Ok(callee.action(base)),
             Some(property::Read::Value(value)) => self.step(heap, task, Input::CallResult(value)),
             None => self.step(heap, task, Input::CallResult(Value::Undefined)),
         }

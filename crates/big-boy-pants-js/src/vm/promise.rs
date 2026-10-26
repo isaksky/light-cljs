@@ -734,12 +734,8 @@ impl PromiseState {
                 let then = if *stage == 0 && matches!(value, Value::Object(_)) {
                     *stage = 1;
                     match property::read(heap, task, value, &Key::Name(JsString::from("then")))? {
-                        Some(Read::Getter(callee)) => {
-                            return Ok(Action::Call {
-                                callee,
-                                this: value.clone(),
-                                args: vec![],
-                            });
+                        Some(Read::Deferred(callee)) => {
+                            return Ok(callee.action(value.clone()));
                         }
                         Some(Read::Value(then)) => then,
                         None => Value::Undefined,
@@ -877,13 +873,9 @@ impl PromiseState {
                 } else {
                     match property::read(heap, task, this, &Key::Name(JsString::from("then")))? {
                         Some(Read::Value(value)) => value,
-                        Some(Read::Getter(callee)) => {
+                        Some(Read::Deferred(callee)) => {
                             *stage = 1;
-                            return Ok(Action::Call {
-                                callee,
-                                this: this.clone(),
-                                args: vec![],
-                            });
+                            return Ok(callee.action(this.clone()));
                         }
                         None => Value::Undefined,
                     }

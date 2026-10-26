@@ -133,11 +133,7 @@ impl State {
         self.stage = stage;
         let read = property::read(heap, task, &base, &key)?;
         match read {
-            Some(property::Read::Getter(callee)) => Ok(Action::Call {
-                callee,
-                this: base,
-                args: vec![],
-            }),
+            Some(property::Read::Deferred(callee)) => Ok(callee.action(base)),
             Some(property::Read::Value(v)) => self.step(heap, task, Input::CallResult(v)),
             None => self.step(heap, task, Input::CallResult(Value::Undefined)),
         }

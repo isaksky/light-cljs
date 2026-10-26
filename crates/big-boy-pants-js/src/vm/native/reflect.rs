@@ -195,11 +195,7 @@ impl State {
                         return Ok(super::has_property(this, key));
                     }
                     descriptor::DefineStep::Getter { callee, this } => {
-                        return Ok(Action::Call {
-                            callee,
-                            this,
-                            args: vec![],
-                        });
+                        return Ok(callee.action(this));
                     }
                     descriptor::DefineStep::Done(_) => {
                         self.desc = reader.descriptor().clone();
@@ -348,11 +344,9 @@ impl State {
             Builtin::ReflectGet => {
                 self.stage = Stage::Return;
                 match property::read(heap, task, &self.arg(0), &self.key()?)? {
-                    Some(property::Read::Getter(callee)) => Ok(Action::Call {
-                        callee,
-                        this: self.args.get(2).cloned().unwrap_or_else(|| self.arg(0)),
-                        args: vec![],
-                    }),
+                    Some(property::Read::Deferred(callee)) => {
+                        Ok(callee.action(self.args.get(2).cloned().unwrap_or_else(|| self.arg(0))))
+                    }
                     Some(property::Read::Value(v)) => Ok(Action::Return(v)),
                     None => Ok(Action::Return(Value::Undefined)),
                 }

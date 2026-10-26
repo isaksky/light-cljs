@@ -2166,7 +2166,7 @@ fn proxy_eval_is_indirect() {
         }
 
         let source = format!(
-            "function f(eval) {{ let local=42; return {call}; }} let caught; try {{ f(new Proxy(globalThis.eval, {{apply() {{ throw 99; }}}})); }} catch(e) {{ caught=e; }} caught instanceof TypeError && caught.message.indexOf('unsupported Proxy trap: apply')>=0"
+            "function f(eval) {{ let local=42; return {call}; }} let caught; try {{ f(new Proxy(globalThis.eval, {{apply() {{ throw 99; }}}})); }} catch(e) {{ caught=e; }} caught === 99"
         );
         assert_eq!(sloppy_eval(&source), ValueView::Bool(true), "{source}");
 
@@ -29237,7 +29237,7 @@ test_for_in_proxy(); true;
         "let s=''; for(let k in new Proxy({a:1,b:2}, {})) s+=k; s === 'ab'",
         "let p=new Proxy({x:1}, {}); p.x=2; let ok=p.x===2 && 'x' in p; delete p.x; ok && !('x' in p)",
         "let n=0; for(let f of [() => Proxy({}, {}), () => new Proxy(1, {}), () => new Proxy({}, null), () => {for(let k in new Proxy({}, {ownKeys(){return ['a','a'];}})) {}}, () => {for(let k in new Proxy({}, {ownKeys(){return [1];}})) {}}, () => {let t={}; Object.defineProperty(t,'x',{value:1}); for(let k in new Proxy(t,{ownKeys(){return [];}})) {}}, () => {let t={}; Object.defineProperty(t,'x',{value:1,enumerable:true}); for(let k in new Proxy(t,{getOwnPropertyDescriptor(){return undefined;}})) {}}]) {try {f();} catch(e) {if(e instanceof TypeError) n++;}} n===7",
-        "let e; try {new Proxy({}, {get(){return 1;}}).x;} catch(x) {e=x;} e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: get') >= 0",
+        "new Proxy({}, {get(){return 1;}}).x === 1",
     ] {
         assert_eq!(eval(source), ValueView::Bool(true), "{source}");
     }
@@ -29316,8 +29316,15 @@ fn proxy_invariants_reflection_and_forwarding() {
         ("apply", "p()"),
         ("construct", "new p()"),
     ] {
+        let expected = if trap == "apply" {
+            "e===42".to_string()
+        } else {
+            format!(
+                "e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: {trap}')>=0"
+            )
+        };
         let source = format!(
-            "let h={{}},e; h['{trap}']=function(){{throw 42;}}; let p=new Proxy(function(){{}},h); try {{{operation};}} catch(x) {{e=x;}} e instanceof TypeError && e.message.indexOf('unsupported Proxy trap: {trap}')>=0"
+            "let h={{}},e; h['{trap}']=function(){{throw 42;}}; let p=new Proxy(function(){{}},h); try {{{operation};}} catch(x) {{e=x;}} {expected}"
         );
         assert_eq!(eval(&source), ValueView::Bool(true), "{source}");
     }
@@ -30820,7 +30827,7 @@ fn regexp_symbol_protocol_edges() {
         "let n = 0, calls = 0; let r = {flags:'g',exec(){return n++ < 2 ? {0:'xx',length:1,index:n-1} : null;}}; RegExp.prototype[Symbol.replace].call(r,'a',()=>{calls++;return 'X';}) === 'X' && calls === 2",
         "let p = Object.getPrototypeOf(''.matchAll(/x/g)); let count = 0; for (let receiver of [p, Object.prototype]) {try {p.next.call(receiver);} catch(e) {count += e instanceof TypeError;}} count === 2",
         "let r = /a/; r.exec = new Proxy(RegExp.prototype.exec, {}); 'a'.match(r)[0] === 'a'",
-        "let r = /a/; r.exec = new Proxy(RegExp.prototype.exec, {apply(){return null;}}); let caught = false; try {'a'.match(r);} catch(e) {caught = e instanceof TypeError;} caught",
+        "let r = /a/; r.exec = new Proxy(RegExp.prototype.exec, {apply(){return null;}}); 'a'.match(r) === null",
         "let receiver = {toString(){throw 1;}}; let x = {[Symbol.replace](s,r){return s === receiver && r === 7;}}; String.prototype.replace.call(receiver,x,7)",
         "let n = 0; let x = {[Symbol.search]:1}; let caught = false; try {String.prototype.search.call({toString(){n++;return 'a';}}, x);} catch(e) {caught = e instanceof TypeError;} caught && n === 0",
         "let r = /a/; r[Symbol.replace] = null; 'x/a/y'.replace(r,'X') === 'xXy'",

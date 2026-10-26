@@ -252,11 +252,7 @@ impl Define {
                 };
                 match reader.step(heap, task, value)? {
                     descriptor::DefineStep::Has { this, key } => Ok(has_property(this, key)),
-                    descriptor::DefineStep::Getter { callee, this } => Ok(Action::Call {
-                        callee,
-                        this,
-                        args: vec![],
-                    }),
+                    descriptor::DefineStep::Getter { callee, this } => Ok(callee.action(this)),
                     descriptor::DefineStep::Done(_) => {
                         self.descriptors
                             .push((self.key.clone(), reader.descriptor().clone()));

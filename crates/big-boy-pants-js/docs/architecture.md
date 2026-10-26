@@ -409,9 +409,26 @@ its extensibility only for an existing configurable property, following
 [ECMA-262 10.5.7](https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html#sec-proxy-object-internal-methods-and-internal-slots-hasproperty-p).
 Those invariant probes can themselves call target Proxy traps. Their saved
 target, handler, key, descriptor and callback values remain traced across
-collection and worker migration. Other present traps, including `get`, retain
-their explicit unsupported errors; direct `Object.isExtensible`/`Reflect.isExtensible`
-traps are still outside the supported surface.
+collection and worker migration. Descriptor presence callbacks are exercised
+through `Object.defineProperty`, `Object.defineProperties`,
+`Reflect.defineProperty` and Proxy descriptor results; extensibility callbacks
+are exercised through enumeration and reflection as well as `has` invariants.
+
+Property reads likewise stop at a Proxy and retain the original receiver,
+including inherited reads and `Reflect.get` with an explicit receiver. Deferred
+reads share the accessor continuation protocol throughout native built-ins,
+conversion and bytecode. A `get` trap checks the target's own descriptor after
+the call, enforcing SameValue for fixed data properties and undefined for a
+fixed accessor without a getter. Its result, target and receiver stay traced
+while target descriptor callbacks run. Callable Proxy dispatch stops before
+unwrapping its target, including after bound/Reflect forwarding and in native
+callbacks. The `apply` continuation reads the trap once, builds a fresh ordinary
+argument array in budgeted steps and calls the trap with its handler as `this`.
+Absent traps forward the original receiver and arguments. These operations
+follow [ECMA-262 10.5.8 and 10.5.12](https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html#sec-proxy-object-internal-methods-and-internal-slots-get-p-receiver).
+Other present traps retain their explicit unsupported errors; direct
+`Object.isExtensible`/`Reflect.isExtensible` traps remain outside the supported
+surface.
 
 ## Publication and native values
 

@@ -111,11 +111,7 @@ impl Intl {
         key: property::Key,
     ) -> Result<Result<Value, Action>, Fault> {
         Ok(match property::read(heap, task, base, &key)? {
-            Some(property::Read::Getter(callee)) => Err(Action::Call {
-                callee,
-                this: base.clone(),
-                args: vec![],
-            }),
+            Some(property::Read::Deferred(callee)) => Err(callee.action(base.clone())),
             Some(property::Read::Value(value)) => Ok(value),
             None => Ok(Value::Undefined),
         })

@@ -24,11 +24,7 @@ pub(super) fn read(
             options,
             &property::Key::Name(JsString::from(name)),
         )? {
-            Some(property::Read::Getter(callee)) => Err(Action::Call {
-                callee,
-                this: options.clone(),
-                args: vec![],
-            }),
+            Some(property::Read::Deferred(callee)) => Err(callee.action(options.clone())),
             Some(property::Read::Value(value)) => Ok(value),
             None => Ok(Value::Undefined),
         },

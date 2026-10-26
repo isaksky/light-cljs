@@ -230,7 +230,9 @@ impl ErrorState {
                         if delivered.truthy() {
                             *stage = 2;
                             match read(heap, task, options, "cause")? {
-                                property::Read::Getter(callee) => return Ok(call(callee, options)),
+                                property::Read::Deferred(callee) => {
+                                    return Ok(callee.action(options.clone()));
+                                }
                                 property::Read::Value(v) => define(heap, object, "cause", v)?,
                             }
                         }
@@ -264,7 +266,9 @@ impl ErrorState {
                             let field = if *stage == 0 { "name" } else { "message" };
                             *stage += 1;
                             match read(heap, task, this, field)? {
-                                property::Read::Getter(callee) => return Ok(call(callee, this)),
+                                property::Read::Deferred(callee) => {
+                                    return Ok(callee.action(this.clone()));
+                                }
                                 property::Read::Value(v) => value = v,
                             }
                         }
@@ -360,14 +364,6 @@ fn key(name: &str) -> property::Key {
 fn read(heap: &Heap, task: TaskId, this: &Value, name: &str) -> Result<property::Read, Fault> {
     Ok(property::read(heap, task, this, &key(name))?
         .unwrap_or(property::Read::Value(Value::Undefined)))
-}
-
-fn call(callee: Value, this: &Value) -> Action {
-    Action::Call {
-        callee,
-        this: this.clone(),
-        args: vec![],
-    }
 }
 
 fn define(heap: &Heap, object: &Value, name: &str, value: Value) -> Result<(), Fault> {
@@ -475,7 +471,7 @@ mod tests {
         let get = |object: &Value, field: &str| match read(heap, owner, object, field).ok().unwrap()
         {
             property::Read::Value(value) => value,
-            property::Read::Getter(_) => panic!("unexpected getter: {field}"),
+            property::Read::Deferred(_) => panic!("unexpected getter: {field}"),
         };
         assert_eq!(get(&raw, "rejected"), Value::Bool(true));
         let a = get(&raw, "a");

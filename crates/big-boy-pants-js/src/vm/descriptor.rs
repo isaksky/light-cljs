@@ -193,7 +193,7 @@ pub(crate) enum DefineStep {
         key: Key,
     },
     Getter {
-        callee: Value,
+        callee: property::Deferred,
         this: Value,
     },
     TypedArrayValue {
@@ -351,7 +351,7 @@ impl DefineProperty {
             match property::read(heap, task, &self.attributes, &key)? {
                 None => self.field(heap, Value::Undefined)?,
                 Some(property::Read::Value(value)) => self.field(heap, value)?,
-                Some(property::Read::Getter(callee)) => {
+                Some(property::Read::Deferred(callee)) => {
                     return Ok(DefineStep::Getter {
                         callee,
                         this: self.attributes.clone(),

@@ -703,7 +703,7 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
         args: args.to_vec(),
     };
     match resolve(heap, task, forward, max_args, max_hops, &state.code_cache)? {
-        (Callee::Code(id, code), forward) => {
+        Resolved::Direct(Callee::Code(id, code), forward) => {
             let keep = state.stack_len() - popped;
             state.truncate_operands(keep)?;
             let argc = forward.args.len();
@@ -712,7 +712,7 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
             state.enter(code, id, forward.this, argc)?;
             Ok(Flow::FrameChanged)
         }
-        (Callee::Builtin(which), forward) => {
+        Resolved::Direct(Callee::Builtin(which), forward) => {
             if super::native::start_builtin(
                 heap,
                 state,
@@ -728,7 +728,11 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
             state.replace(popped, result)?;
             Ok(Flow::Next)
         }
-        (Callee::Bound(_), _) => Err(Fault::Internal("unresolved bound function")),
+        Resolved::Direct(Callee::Bound(_), _) => Err(Fault::Internal("unresolved bound function")),
+        Resolved::Proxy(forward) => {
+            super::native::start_proxy_call(heap, state, forward, popped)?;
+            Ok(Flow::FrameChanged)
+        }
     }
 }
 
@@ -834,6 +838,11 @@ fn call_spread(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<Flow, F
 /// Each hop is bounded by `max_hops` (a cycle through an array that holds
 /// itself would otherwise never end) and fails with `StackOverflow`, as
 /// the nested native frames it stands for would.
+pub(crate) enum Resolved {
+    Direct(Callee<super::frames::TaskCode>, builtin::Forward),
+    Proxy(builtin::Forward),
+}
+
 pub(crate) fn resolve(
     heap: &Heap,
     task: TaskId,
@@ -841,10 +850,13 @@ pub(crate) fn resolve(
     max_args: usize,
     max_hops: usize,
     cache: &super::frames::CodeCache,
-) -> Result<(Callee<super::frames::TaskCode>, builtin::Forward), Fault> {
+) -> Result<Resolved, Fault> {
     for hops in 0..=max_hops {
-        if let Value::Object(id) = forward.callee {
-            forward.callee = Value::Object(super::proxy::forward(heap, task, id, "apply")?);
+        if let Value::Object(id) = forward.callee
+            && super::proxy::inspect(heap, task, id)?.is_some()
+        {
+            callee(heap, &forward.callee)?;
+            return Ok(Resolved::Proxy(forward));
         }
         match cached_callee(heap, &forward.callee, cache)? {
             Callee::Bound(mut bound) => {
@@ -862,10 +874,10 @@ pub(crate) fn resolve(
                         }
                         forward = next;
                     }
-                    None => return Ok((Callee::Builtin(which), forward)),
+                    None => return Ok(Resolved::Direct(Callee::Builtin(which), forward)),
                 }
             }
-            code => return Ok((code, forward)),
+            code => return Ok(Resolved::Direct(code, forward)),
         }
     }
     Err(Fault::StackOverflow(format!(

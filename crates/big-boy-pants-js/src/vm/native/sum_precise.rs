@@ -219,11 +219,7 @@ impl State {
             &base,
             &property::Key::Name(JsString::from(name)),
         )? {
-            Some(property::Read::Getter(callee)) => Ok(Action::Call {
-                callee,
-                this: base,
-                args: vec![],
-            }),
+            Some(property::Read::Deferred(callee)) => Ok(callee.action(base)),
             Some(property::Read::Value(v)) => self.step(heap, task, Input::CallResult(v)),
             None => self.step(heap, task, Input::CallResult(Value::Undefined)),
         }

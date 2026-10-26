@@ -601,7 +601,32 @@ enum Lookup {
 #[derive(Clone, Debug)]
 pub(crate) enum Read {
     Value(Value),
+    Deferred(Deferred),
+}
+
+/// A read that executes user code. Proxy reads retain the lookup object and
+/// key here; the caller supplies the original receiver just as for a getter.
+#[derive(Clone, Debug)]
+pub(crate) enum Deferred {
     Getter(Value),
+    Proxy { target: ObjectId, key: Key },
+}
+
+impl Deferred {
+    pub(crate) fn action(self, receiver: Value) -> super::native::Action {
+        match self {
+            Self::Getter(callee) => super::native::Action::Call {
+                callee,
+                this: receiver,
+                args: vec![],
+            },
+            Self::Proxy { target, key } => super::native::Action::GetProperty {
+                target,
+                key,
+                receiver,
+            },
+        }
+    }
 }
 
 impl Read {
@@ -609,7 +634,7 @@ impl Read {
         match &property.accessor {
             Some(_) if has => Read::Value(Value::Undefined),
             Some((Value::Undefined, _)) => Read::Value(Value::Undefined),
-            Some((get, _)) => Read::Getter(get.clone()),
+            Some((get, _)) => Read::Deferred(Deferred::Getter(get.clone())),
             None => Read::Value(property.value.clone()),
         }
     }
@@ -617,7 +642,7 @@ impl Read {
     pub(crate) fn leaf(self) -> Result<Value, Fault> {
         match self {
             Read::Value(v) => Ok(v),
-            Read::Getter(_) => Err(Fault::Unsupported(
+            Read::Deferred(_) => Err(Fault::Unsupported(
                 "this operation requires a resumable property read".into(),
             )),
         }
@@ -958,6 +983,12 @@ fn lookup_cursor(
             Lookup::Exotic(Exotic::Proxy) => {
                 if matches!(mode, LookupMode::Probe) {
                     return Ok(LookupResult::Proxy(id));
+                }
+                if !has {
+                    return Ok(Found(Some(Read::Deferred(Deferred::Proxy {
+                        target: id,
+                        key: key.clone(),
+                    }))));
                 }
                 id = super::proxy::forward(heap, task, id, if has { "has" } else { "get" })?;
                 // Proxy forwarding has its own bound; do not charge its

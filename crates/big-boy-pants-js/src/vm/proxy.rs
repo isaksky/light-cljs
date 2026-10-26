@@ -1,4 +1,4 @@
-//! Proxy presence and enumeration. Calls and intermediate values live in traced native
+//! Proxy reads, calls, presence and enumeration. Intermediate values live in traced native
 //! state; no Rust frame survives a trap, getter, budget yield or dependency wait.
 //! Semantics follow QuickJS quickjs.c js_proxy_get_own_property_names and
 //! js_proxy_get_own_property, revision 7d1c13c5d8f8 (fresh Rust implementation).
@@ -187,6 +187,7 @@ pub(crate) fn unwrapped(heap: &Heap, mut id: ObjectId) -> Result<ObjectId, Fault
 
 #[derive(Debug)]
 pub(crate) enum Output {
+    Value(Value),
     Keys(keys::ChargedKeys),
     Descriptor(Option<Property>),
     Boolean(bool),
@@ -194,6 +195,7 @@ pub(crate) enum Output {
 impl Trace for Output {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
         match self {
+            Self::Value(v) => v.trace(visit),
             Self::Keys((keys, _)) => trace_keys(keys, visit),
             Self::Descriptor(Some(p)) => {
                 p.value.trace(visit);
@@ -220,6 +222,7 @@ enum Stage {
     Trap,
     Forward,
     TrapResult,
+    GetResult,
     Length,
     LengthValue,
     Element,
@@ -237,6 +240,7 @@ enum Stage {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
+    Get,
     Keys,
     Descriptor,
     Has,
@@ -250,6 +254,7 @@ struct Operation {
     phase: Stage,
     proxy: Option<Info>,
     value: Value,
+    receiver: Value,
     keys: Vec<keys::OwnKey>,
     target_keys: Vec<keys::OwnKey>,
     /// Charges of `keys` (grown per trap-result element) and `target_keys`.
@@ -264,6 +269,12 @@ struct Operation {
     missing_nonconfig: bool,
 }
 impl Operation {
+    fn get(object: ObjectId, key: Key, receiver: Value) -> Self {
+        let mut op = Self::new(object, Some(key));
+        op.kind = Kind::Get;
+        op.receiver = receiver;
+        op
+    }
     fn keys(object: ObjectId) -> Self {
         Self::new(object, None)
     }
@@ -292,6 +303,7 @@ impl Operation {
             phase: Stage::Start,
             proxy: None,
             value: Value::Undefined,
+            receiver: Value::Undefined,
             keys: vec![],
             target_keys: vec![],
             keys_charge: GrowthCharge::default(),
@@ -307,6 +319,7 @@ impl Operation {
     }
     fn trap(&self) -> &'static str {
         match self.kind {
+            Kind::Get => "get",
             Kind::Keys => "ownKeys",
             Kind::Descriptor => "getOwnPropertyDescriptor",
             Kind::Has => "has",
@@ -338,6 +351,7 @@ impl Trace for Operation {
             visit(TraceEdge::Symbol(s.identity()));
         }
         self.value.trace(visit);
+        self.receiver.trace(visit);
         trace_keys(&self.keys, visit);
         trace_keys(&self.target_keys, visit);
         if let Some(r) = &self.reader {
@@ -419,6 +433,27 @@ impl Operations {
         let op = self.stack.last_mut().unwrap();
         match op.phase {
             Stage::Start => {
+                if op.kind == Kind::Get {
+                    match property::read(
+                        heap,
+                        task,
+                        &Value::Object(op.object),
+                        op.key.as_ref().unwrap(),
+                    )? {
+                        Some(property::Read::Deferred(property::Deferred::Proxy {
+                            target,
+                            ..
+                        })) => op.object = target,
+                        Some(property::Read::Deferred(read)) => {
+                            op.phase = Stage::GetResult;
+                            return Ok(Progress::Action(read.action(op.receiver.clone())));
+                        }
+                        Some(property::Read::Value(value)) => {
+                            return self.finish(Output::Value(value));
+                        }
+                        None => return self.finish(Output::Value(Value::Undefined)),
+                    }
+                }
                 if op.kind == Kind::Has {
                     match property::probe(
                         heap,
@@ -434,6 +469,7 @@ impl Operations {
                 }
                 let Some(p) = inspect(heap, task, op.object)? else {
                     let out = match op.kind {
+                        Kind::Get => return Err(Fault::Internal("Get lost its Proxy")),
                         Kind::Has => return Err(Fault::Internal("HasProperty lost its Proxy")),
                         Kind::Extensible => Output::Boolean(extensible(heap, task, op.object)?),
                         Kind::Descriptor => Output::Descriptor(property::get_own_property(
@@ -464,11 +500,9 @@ impl Operations {
                     &Value::Object(p.handler),
                     &Key::Name(JsString::from(op.trap())),
                 )? {
-                    Some(property::Read::Getter(callee)) => Ok(Progress::Action(Action::Call {
-                        callee,
-                        this: Value::Object(p.handler),
-                        args: vec![],
-                    })),
+                    Some(property::Read::Deferred(callee)) => {
+                        Ok(Progress::Action(callee.action(Value::Object(p.handler))))
+                    }
                     value => {
                         op.value = match value {
                             Some(property::Read::Value(v)) => v,
@@ -488,6 +522,7 @@ impl Operations {
                 if matches!(op.value, Value::Undefined | Value::Null) {
                     let mut sub = Operation::new(p.target, op.key.clone());
                     sub.kind = op.kind;
+                    sub.receiver = op.receiver.clone();
                     op.phase = Stage::Forward;
                     self.stack.push(sub);
                 } else {
@@ -495,6 +530,9 @@ impl Operations {
                     let mut args = vec![Value::Object(p.target)];
                     if op.key.is_some() {
                         args.push(op.key_value(heap)?);
+                    }
+                    if op.kind == Kind::Get {
+                        args.push(op.receiver.clone());
                     }
                     op.phase = Stage::TrapResult;
                     return Ok(Progress::Action(Action::Call {
@@ -513,6 +551,10 @@ impl Operations {
             }
             Stage::TrapResult => {
                 op.value = result(input)?;
+                if op.kind == Kind::Get {
+                    op.phase = Stage::TargetDescriptor;
+                    return Ok(Progress::Action(Action::Continue));
+                }
                 if op.kind == Kind::Has {
                     if op.value.truthy() {
                         return self.finish(Output::Boolean(true));
@@ -664,11 +706,7 @@ impl Operations {
                         return Ok(Progress::Action(super::native::has_property(this, key)));
                     }
                     descriptor::DefineStep::Getter { callee, this } => {
-                        return Ok(Progress::Action(Action::Call {
-                            callee,
-                            this,
-                            args: vec![],
-                        }));
+                        return Ok(Progress::Action(callee.action(this)));
                     }
                     descriptor::DefineStep::Done(_) => {
                         op.reported = Some(
@@ -691,6 +729,29 @@ impl Operations {
                     return Err(Fault::Internal("Proxy invariant descriptor missing"));
                 };
                 op.target_descriptor = target;
+                if op.kind == Kind::Get {
+                    if let Some(target) = &op.target_descriptor
+                        && !target.flags.configurable
+                    {
+                        match &target.accessor {
+                            None if !target.flags.writable
+                                && !crate::atom::same_value(&op.value, &target.value) =>
+                            {
+                                return Err(error(
+                                    "get must return the value of a non-writable, non-configurable target property",
+                                ));
+                            }
+                            Some((Value::Undefined, _)) if op.value != Value::Undefined => {
+                                return Err(error(
+                                    "get must return undefined for a non-configurable target accessor without a getter",
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                    let value = op.value.clone();
+                    return self.finish(Output::Value(value));
+                }
                 if op.kind == Kind::Has {
                     let Some(target) = &op.target_descriptor else {
                         return self.finish(Output::Boolean(false));
@@ -725,6 +786,7 @@ impl Operations {
                 let out = op.reported.take();
                 return self.finish(Output::Descriptor(out));
             }
+            Stage::GetResult => return self.finish(Output::Value(result(input)?)),
             Stage::TargetExtensible => {
                 op.phase = Stage::CheckExtensible;
                 let target = op.proxy.as_ref().unwrap().target;
@@ -822,11 +884,7 @@ fn result(input: Input) -> Result<Value, Fault> {
 /// the same input slot as an accessor callback.
 fn read(heap: &Heap, task: TaskId, base: &Value, key: Key) -> Result<Progress, Fault> {
     match property::read(heap, task, base, &key)? {
-        Some(property::Read::Getter(callee)) => Ok(Progress::Action(Action::Call {
-            callee,
-            this: base.clone(),
-            args: vec![],
-        })),
+        Some(property::Read::Deferred(callee)) => Ok(Progress::Action(callee.action(base.clone()))),
         v => Ok(Progress::Ready(match v {
             Some(property::Read::Value(v)) => v,
             _ => Value::Undefined,
@@ -836,6 +894,11 @@ fn read(heap: &Heap, task: TaskId, base: &Value, key: Key) -> Result<Progress, F
 
 #[derive(Debug)]
 pub(crate) enum Mode {
+    Get {
+        target: ObjectId,
+        key: Key,
+        receiver: Value,
+    },
     Has {
         target: ObjectId,
         key: Key,
@@ -936,6 +999,13 @@ impl State {
             self.started = true;
             match &self.mode {
                 Mode::ForIn(_) => {}
+                Mode::Get {
+                    target,
+                    key,
+                    receiver,
+                } => self
+                    .ops
+                    .start(Operation::get(*target, key.clone(), receiver.clone())),
                 Mode::Has { target, key } => self.ops.start(Operation::has(*target, key.clone())),
                 Mode::Keys { target, .. } => self.ops.start(Operation::keys(*target)),
                 Mode::Set {
@@ -986,6 +1056,10 @@ impl State {
                 Progress::Action(a) => return Ok(a),
                 Progress::Ready(_) => unreachable!(),
                 Progress::Done(out) => match &self.mode {
+                    Mode::Get { .. } => match out {
+                        Output::Value(value) => return Ok(Action::Return(value)),
+                        _ => return Err(Fault::Internal("Proxy get result missing")),
+                    },
                     Mode::Has { .. } => match out {
                         Output::Boolean(value) => return Ok(Action::Return(Value::Bool(value))),
                         _ => return Err(Fault::Internal("Proxy has result missing")),
@@ -1052,7 +1126,7 @@ impl State {
                         };
                     }
                     Mode::ForIn(iterator) => match out {
-                        Output::Boolean(_) => {
+                        Output::Boolean(_) | Output::Value(_) => {
                             return Err(Fault::Internal("Proxy for-in boolean result"));
                         }
                         Output::Keys(keys) => keys::for_in_set_keys(heap, iterator, keys)?,
@@ -1070,7 +1144,7 @@ impl State {
                         }
                     },
                     Mode::Keys { .. } => match out {
-                        Output::Boolean(_) => {
+                        Output::Boolean(_) | Output::Value(_) => {
                             return Err(Fault::Internal("Proxy keys boolean result"));
                         }
                         Output::Keys((keys, charge)) => {
@@ -1088,7 +1162,7 @@ impl State {
                     | Mode::Frozen(target)
                     | Mode::Seal(target)
                     | Mode::Sealed(target) => match out {
-                        Output::Boolean(_) => {
+                        Output::Boolean(_) | Output::Value(_) => {
                             return Err(Fault::Internal("Proxy integrity boolean result"));
                         }
                         Output::Keys((keys, charge)) => {
@@ -1223,6 +1297,7 @@ impl Trace for State {
         match &self.mode {
             Mode::ForIn(it) => it.trace(visit),
             Mode::Keys { target, .. }
+            | Mode::Get { target, .. }
             | Mode::Has { target, .. }
             | Mode::Set { target, .. }
             | Mode::Descriptor { target, .. }
@@ -1233,6 +1308,10 @@ impl Trace for State {
             | Mode::Sealed(target) => visit((*target).into()),
         }
         match &self.mode {
+            Mode::Get {
+                key: Key::Symbol(s),
+                ..
+            } => visit(TraceEdge::Symbol(s.identity())),
             Mode::Has {
                 key: Key::Symbol(s),
                 ..
@@ -1252,6 +1331,9 @@ impl Trace for State {
             _ => {}
         }
         self.ops.trace(visit);
+        if let Mode::Get { receiver, .. } = &self.mode {
+            receiver.trace(visit);
+        }
         if let Mode::Set { value, .. } = &self.mode {
             value.trace(visit);
         }
@@ -1264,6 +1346,114 @@ impl Trace for State {
             if let Key::Symbol(s) = key {
                 visit(TraceEdge::Symbol(s.identity()));
             }
+        }
+    }
+}
+
+/// Proxy [[Call]] (ECMA-262 10.5.12). IsCallable is checked before entry;
+/// GetMethod and the trap run in ordinary VM frames, never on a Rust stack.
+#[derive(Debug)]
+pub(crate) struct Call {
+    proxy: Info,
+    this: Value,
+    args: Vec<Value>,
+    trap: Value,
+    array: Value,
+    index: usize,
+    stage: CallStage,
+}
+#[derive(Debug)]
+enum CallStage {
+    Start,
+    Method,
+    Arguments,
+    Result,
+}
+impl Call {
+    pub(crate) fn new(
+        heap: &Heap,
+        task: TaskId,
+        call: super::builtin::Forward,
+    ) -> Result<Self, Fault> {
+        dispatch::callee(heap, &call.callee)?;
+        let Value::Object(id) = call.callee else {
+            return Err(error("call target must be an object"));
+        };
+        let proxy = inspect(heap, task, id)?.ok_or(Fault::Internal("Proxy call lost its Proxy"))?;
+        Ok(Self {
+            proxy,
+            this: call.this,
+            args: call.args,
+            trap: Value::Undefined,
+            array: Value::Undefined,
+            index: 0,
+            stage: CallStage::Start,
+        })
+    }
+    pub(crate) fn step(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        input: Input,
+    ) -> Result<Action, Fault> {
+        match self.stage {
+            CallStage::Start => {
+                self.stage = CallStage::Method;
+                match property::read(
+                    heap,
+                    task,
+                    &Value::Object(self.proxy.handler),
+                    &Key::Name("apply".into()),
+                )? {
+                    Some(property::Read::Deferred(read)) => {
+                        return Ok(read.action(Value::Object(self.proxy.handler)));
+                    }
+                    Some(property::Read::Value(value)) => self.trap = value,
+                    None => {}
+                }
+            }
+            CallStage::Method => self.trap = result(input)?,
+            CallStage::Arguments => {
+                if let Some(value) = self.args.get(self.index) {
+                    property::append(heap, task, &self.array, Some(value.clone()))?;
+                    self.index += 1;
+                    return Ok(Action::Continue);
+                }
+                self.stage = CallStage::Result;
+                return Ok(Action::Call {
+                    callee: self.trap.clone(),
+                    this: Value::Object(self.proxy.handler),
+                    args: vec![
+                        Value::Object(self.proxy.target),
+                        self.this.clone(),
+                        self.array.clone(),
+                    ],
+                });
+            }
+            CallStage::Result => return Ok(Action::Return(result(input)?)),
+        }
+        if matches!(self.trap, Value::Undefined | Value::Null) {
+            self.stage = CallStage::Result;
+            return Ok(Action::Call {
+                callee: Value::Object(self.proxy.target),
+                this: self.this.clone(),
+                args: self.args.clone(),
+            });
+        }
+        dispatch::callee(heap, &self.trap).map_err(|_| error("apply trap is not callable"))?;
+        self.array = property::new_array(heap, task)?;
+        self.stage = CallStage::Arguments;
+        Ok(Action::Continue)
+    }
+}
+impl Trace for Call {
+    fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
+        self.proxy.trace(visit);
+        self.this.trace(visit);
+        self.trap.trace(visit);
+        self.array.trace(visit);
+        for arg in &self.args {
+            arg.trace(visit);
         }
     }
 }

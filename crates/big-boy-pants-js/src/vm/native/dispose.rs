@@ -133,11 +133,7 @@ impl State {
         ));
         self.reading = true;
         match property::read(heap, task, &self.source, &key)? {
-            Some(property::Read::Getter(callee)) => Ok(Action::Call {
-                callee,
-                this: self.source.clone(),
-                args: vec![],
-            }),
+            Some(property::Read::Deferred(callee)) => Ok(callee.action(self.source.clone())),
             Some(property::Read::Value(method)) => self.checked(heap, method),
             None => self.checked(heap, Value::Undefined),
         }
@@ -454,12 +450,8 @@ impl Stack {
                         target,
                         &property::Key::Name(JsString::from("prototype")),
                     )? {
-                        Some(property::Read::Getter(callee)) => {
-                            return Ok(Action::Call {
-                                callee,
-                                this: target.clone(),
-                                args: vec![],
-                            });
+                        Some(property::Read::Deferred(callee)) => {
+                            return Ok(callee.action(target.clone()));
                         }
                         Some(property::Read::Value(value)) => value,
                         None => Value::Undefined,

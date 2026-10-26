@@ -131,12 +131,8 @@ impl StringRaw {
         };
         if let Some(key) = key {
             input = match property::read(heap, task, &self.raw, &key)? {
-                Some(property::Read::Getter(callee)) => {
-                    return Ok(Action::Call {
-                        callee,
-                        this: self.raw.clone(),
-                        args: vec![],
-                    });
+                Some(property::Read::Deferred(callee)) => {
+                    return Ok(callee.action(self.raw.clone()));
                 }
                 Some(property::Read::Value(value)) => Input::CallResult(value),
                 None => Input::CallResult(Value::Undefined),

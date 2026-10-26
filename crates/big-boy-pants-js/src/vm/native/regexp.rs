@@ -192,11 +192,7 @@ fn read(
         .unwrap_or(property::Read::Value(Value::Undefined))
     {
         property::Read::Value(v) => Ok(Ok(v)),
-        property::Read::Getter(callee) => Ok(Err(Action::Call {
-            callee,
-            this: this.clone(),
-            args: vec![],
-        })),
+        property::Read::Deferred(callee) => Ok(Err(callee.action(this.clone()))),
     }
 }
 fn string(v: Value) -> Result<JsString, Fault> {
@@ -243,12 +239,8 @@ impl State {
                             let key =
                                 property::Key::Symbol(crate::value::symbol::well_known("match"));
                             match property::read(heap, task, original, &key)? {
-                                Some(property::Read::Getter(callee)) => {
-                                    return Ok(Action::Call {
-                                        callee,
-                                        this: original.clone(),
-                                        args: vec![],
-                                    });
+                                Some(property::Read::Deferred(callee)) => {
+                                    return Ok(callee.action(original.clone()));
                                 }
                                 Some(property::Read::Value(value)) => v = value,
                                 None => v = Value::Undefined,

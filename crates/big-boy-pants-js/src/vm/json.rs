@@ -1050,13 +1050,9 @@ impl Stringifier {
                         &self.value,
                         &property::Key::Name(JsString::from("toJSON")),
                     )? {
-                        Some(property::Read::Getter(callee)) => {
+                        Some(property::Read::Deferred(callee)) => {
                             self.stage = S::Method;
-                            return Ok(A::Call {
-                                callee,
-                                this: self.value.clone(),
-                                args: vec![],
-                            });
+                            return Ok(StringifyStep::Native(callee.action(self.value.clone())));
                         }
                         Some(property::Read::Value(method)) => return Ok(self.method(heap, method)),
                         None => {}
@@ -1254,13 +1250,9 @@ impl Stringifier {
                     self.append(heap, JsString::from(","))?;
                 }
                 match property::read(heap, task, &holder, &key)? {
-                    Some(property::Read::Getter(callee)) => {
+                    Some(property::Read::Deferred(callee)) => {
                         self.stage = S::PropertyResult;
-                        return Ok(A::Call {
-                            callee,
-                            this: holder,
-                            args: vec![],
-                        });
+                        return Ok(StringifyStep::Native(callee.action(holder)));
                     }
                     Some(property::Read::Value(value)) => self.value = value,
                     None => {}
