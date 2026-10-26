@@ -284,9 +284,9 @@ now run natively. The full compiler integration binary additionally needs
 the pinned `research/clojurescript` checkout; this work leaves `research/`
 untouched.
 
-At `4ecde149`, with the same macOS arm64/Rust 1.99.1 native-only command,
-five absolute source roots, one job, no cache and budgets above, the next
-first errors are:
+At `266cdeae`, rebased onto `32a999a1`, with the same macOS arm64/Rust 1.99.1
+native-only command, five absolute source roots, one job, no cache and budgets
+above, the next first errors are:
 
 `--entry app.render`:
 
@@ -303,6 +303,19 @@ light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/c
 These require native printing and dynamic namespace services, rather than
 another direct scalar or finite-sequence core function. Neither entry
 completes natively yet.
+
+After the rebase and binding/chunk regressions, all 71 native-only macro
+integration tests and all 35 native evaluator tests pass. With
+`bbp-macros,quickjs`, all 73 macro integration tests and 331 library tests
+pass (one ignored). The available QuickJS-only targets run 824 tests:
+822 pass, with the two established environment failures in the playground
+wasm workspace check and the watch test's sandbox-denied `ps` invocation.
+The `compiler` target still cannot compile its eight missing pinned research
+includes. Direct JavaScript runtime tests and format checks pass. QuickJS and
+engine-free library/binary Clippy pass strictly. Native and native/QuickJS
+library/binary/macro Clippy pass when only the three established engine
+diagnostic categories are allowed; strict lint retains eight engine-library
+diagnostics. The default V8 suite is reserved for the orchestrator.
 
 ### Native forms
 
