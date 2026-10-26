@@ -127,9 +127,11 @@ ms [min–max]:
 
 Jobs 2 and 4 are within the same 18.4–18.9 ms band on both. Every cell is
 dominated by process start; the differences are within the run-to-run spread,
-so these fixtures show neither a gain nor a loss from lowering. The per-thread
-factor k is unavailable: no V8 figures were recorded for these fixtures (the
-6405a52c baseline had no qualified V8 binary) and they emit no `unit` rows.
+so these fixtures show neither a gain nor a loss from lowering. They cannot
+give the per-thread factor k: no V8 figures were recorded for them (the
+6405a52c baseline had no qualified V8 binary), they emit no `unit` rows, and
+their macro work is far below process start. k is measured on the
+collection-heavy macro below instead ("Per-thread factor k").
 
 Helper publication from `--stats` on the helper fixture, at every job count:
 before `native.helpers.published 0`, `per-task 1`; after `published 1`,
@@ -161,3 +163,48 @@ with `n` 400 (`--jobs 1 --no-cache`, five alternating fresh processes of the
 same two release binaries) took a median 1,947.5 ms [1,938.2–1,949.7] before
 and 167.3 ms [165.5–167.6] after, 11.6x less, with identical output. `next`
 still copies the remaining elements, so the loop stays quadratic.
+
+### Per-thread factor k
+
+k is the engine's per-thread macro time as a multiple of V8's on the same
+macro work. `bb benchmarks/native-macros-k.bb OUTPUT v8=BIN NAME=BIN ...`
+compiles the `churn` source above (namespace `k.churn`, four calls of
+`(churn n)`) as fresh `--jobs 1 --no-cache --optimize none` processes, one
+discarded warm-up per backend and `n`, then five rounds alternating the backend
+order, checks that Node prints the same line for every backend, and takes the
+macro time from `time.analysis-ms` (analysis with macro expansion). k at `n` is
+a backend's median analysis time at `n` minus at `n = 0`, over V8's: process
+and engine start and compiling the macro definition cancel out, and only the
+`churn` calls remain.
+
+Run on October 26, 2026 at `d2f9b7cb` (this pellet's review fixes; "after")
+with release binaries from the same tree: native-only (`--no-default-features
+--features bbp-macros`, sha256 `120940b1…`) and the default V8 build
+(`LIGHT_CLJS_V8_CACHE=require`, the shared cache's V8, sha256 `6cada940…`);
+"before" is the native-only build of master `86d0616b` (sha256 `24a96423…`).
+macOS aarch64, 24 CPUs, Rust 1.99.1 (Homebrew), Node 24.22.1; one peer worker's
+test binary used two cores (load averages 5.2/3.9/3.3). Analysis time, median
+[min–max] of five, ms:
+
+| `n` | V8 | before | after | k before | k after |
+| ---: | --- | --- | --- | ---: | ---: |
+| 0 | 24.3 [23.9–25.0] | 7.9 [7.1–8.6] | 8.0 [7.9–8.3] | – | – |
+| 100 | 29.4 [29.1–29.5] | 112.4 [111.4–113.2] | 25.1 [24.6–25.2] | 20.5 | 3.4 |
+| 400 | 36.2 [34.6–37.0] | 1,929.7 [1,924.6–1,943.0] | 160.9 [160.1–161.1] | 161.5 | 12.8 |
+
+At `n = 0` the engine finishes analysis in a third of V8's time (no isolate or
+snapshot to start). After lowering, k is 3.4 at `n = 100`, inside the strategy's
+win condition (k <= ~4), and 12.8 at `n = 400`, outside it: the engine's macro
+time grows 8.9x from `n = 100` to `n = 400`, V8's 2.4x. The V8 deltas are 5.1 and
+11.9 ms, so the k figures carry a few percent of timing resolution.
+
+The growth is the automatic collector, not the lowered operations. A
+`/usr/bin/sample` of the native compiler on `n = 3200` (1,464 samples) has
+1,216 (83%) under `RunGuard::collect_at_point` → `Heap::mark_and_sweep`, whose
+top frames are SipHash hashing of `TraceEdge` keys in the mark set's
+`HashMap` (`core::hash::sip::Hasher::write` 454, `BuildHasher::hash_one` 267,
+`HashMap::contains_key` 191, `mark_and_sweep` itself 84) and tracing the live
+`PMap`/`PVector` tries. Each collection marks everything live (the growing
+vector and map), and the copies `next` and `rest` make keep triggering
+collections, so marking work grows with `n²`. light-cljs-477 leaves this to a
+follow-up on the collector's marking cost.
