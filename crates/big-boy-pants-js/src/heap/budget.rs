@@ -23,6 +23,8 @@ pub(crate) struct ByteBudget {
     used: AtomicUsize,
     peak: AtomicUsize,
     last_live: AtomicUsize,
+    pressure: std::sync::atomic::AtomicBool,
+    starved: std::sync::atomic::AtomicBool,
     volume: AtomicUsize,
     collected_volume: AtomicUsize,
     next_collection: AtomicUsize,
@@ -71,6 +73,8 @@ impl ByteBudget {
             used: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             last_live: AtomicUsize::new(0),
+            pressure: std::sync::atomic::AtomicBool::new(false),
+            starved: std::sync::atomic::AtomicBool::new(false),
             volume: AtomicUsize::new(0),
             collected_volume: AtomicUsize::new(0),
             next_collection: AtomicUsize::new(limit.map_or(usize::MAX, |bytes| (bytes / 4).max(1))),
@@ -93,10 +97,26 @@ impl ByteBudget {
 
     pub(crate) fn collection_due(&self) -> bool {
         self.is_limited()
-            && self
-                .volume()
-                .saturating_sub(self.collected_volume.load(Ordering::Relaxed))
-                >= self.next_collection.load(Ordering::Relaxed)
+            && (self.pressure.load(Ordering::Relaxed)
+                || self
+                    .volume()
+                    .saturating_sub(self.collected_volume.load(Ordering::Relaxed))
+                    >= self.next_collection.load(Ordering::Relaxed))
+    }
+
+    /// A denial happened and no collection since has freed an eighth of the
+    /// limit: garbage released after the last pause may be all that stands
+    /// between the next run slice and its allocations.
+    pub(crate) fn starved(&self) -> bool {
+        self.starved.load(Ordering::Relaxed)
+    }
+
+    /// The pause's volume snapshot, taken with every mutator stopped. A
+    /// denial before it is answered by this collection; one after it
+    /// requests the next.
+    pub(crate) fn collection_started(&self) -> usize {
+        self.pressure.store(false, Ordering::Relaxed);
+        self.volume()
     }
 
     pub(crate) fn collection_finished(&self, volume: usize) {
@@ -109,6 +129,11 @@ impl ByteBudget {
         self.collected_volume.fetch_max(volume, Ordering::Relaxed);
         let live = self.used();
         self.last_live.store(live, Ordering::Relaxed);
+        // A denial starves the heap until a collection leaves an eighth of
+        // the limit free; until then each run slice starts with one.
+        if limit.load(Ordering::Relaxed).saturating_sub(live) >= limit.load(Ordering::Relaxed) / 8 {
+            self.starved.store(false, Ordering::Relaxed);
+        }
         let growth = (live / 2)
             .max(64 * 1024)
             .min(limit.load(Ordering::Relaxed).saturating_sub(live) / 2)
@@ -125,7 +150,15 @@ impl ByteBudget {
         let limit = limit.load(Ordering::Relaxed);
         let mut used = self.used.load(Ordering::Relaxed);
         loop {
-            let next = used.checked_add(bytes).filter(|&next| next <= limit)?;
+            let Some(next) = used.checked_add(bytes).filter(|&next| next <= limit) else {
+                // A denial may be caused by garbage: request a collection at
+                // the next safe boundary, so a handler or the next task can
+                // proceed after it. There is no last-resort collection at the
+                // allocation itself, which cannot park.
+                self.pressure.store(true, Ordering::Relaxed);
+                self.starved.store(true, Ordering::Relaxed);
+                return None;
+            };
             match self
                 .used
                 .compare_exchange_weak(used, next, Ordering::Relaxed, Ordering::Relaxed)
@@ -190,6 +223,56 @@ impl ByteReservation {
             }
             (Some(_), None) => {}
         }
+    }
+}
+
+/// Reserve `count * element_bytes` with checked arithmetic, as a resource
+/// fault. For snapshots whose size is known before they are built.
+pub(crate) fn reserve_elements(
+    heap: &super::Heap,
+    count: usize,
+    element_bytes: usize,
+) -> Result<ByteReservation, crate::vm::dispatch::Fault> {
+    count
+        .checked_mul(element_bytes)
+        .and_then(|bytes| heap.reserve_bytes(bytes))
+        .ok_or(crate::vm::dispatch::Fault::HeapLimit)
+}
+
+/// The charge of a buffer that grows one element at a time while retained
+/// by a resumable operation. [`GrowthCharge::admit`] runs before each push
+/// and reserves geometrically, like `Vec` growth, so the charge covers the
+/// buffer's real capacity and costs one atomic per doubling.
+#[derive(Debug, Default)]
+pub(crate) struct GrowthCharge {
+    reservation: ByteReservation,
+    capacity: usize,
+}
+
+impl GrowthCharge {
+    /// Admit room for element `len` (zero-based) of `element_bytes` each.
+    pub(crate) fn admit(
+        &mut self,
+        heap: &super::Heap,
+        len: usize,
+        element_bytes: usize,
+    ) -> Result<(), crate::vm::dispatch::Fault> {
+        if len < self.capacity {
+            return Ok(());
+        }
+        let capacity = len
+            .saturating_add(1)
+            .max(self.capacity.saturating_mul(2))
+            .max(8);
+        let more = reserve_elements(heap, capacity - self.capacity, element_bytes)?;
+        self.reservation.merge(more);
+        self.capacity = capacity;
+        Ok(())
+    }
+
+    /// The charge, for a holder that takes over the finished buffer.
+    pub(crate) fn into_reservation(self) -> ByteReservation {
+        self.reservation
     }
 }
 
@@ -277,8 +360,11 @@ mod tests {
     fn javascript_array_growth_denial_survives_yield_and_cancellation() {
         use crate::frontend::compile_function;
         use crate::{Budget, RunOutcome, Runtime, ValueView};
-        let runtime =
-            Runtime::with_byte_limit(1024 + std::mem::size_of::<crate::heap::HeapObject>());
+        let runtime = Runtime::with_byte_limit(
+            1024 + crate::heap::HeapObject::charged_with_box::<
+                crate::object::array_buffer::ArrayBuffer,
+            >(),
+        );
         let code = compile_function("function f() { let a = []; try { for (;;) a.push(1); } catch(e) { return e === 'heap byte limit exceeded' && a.length > 0 && a[0] === 1; } }").unwrap();
         let task = runtime.spawn(&code, &[]).unwrap();
         loop {
@@ -391,7 +477,9 @@ mod tests {
             }
             ready.wait();
             let occupied = heap.byte_budget().used();
-            let allowance = 4 * (65536 + std::mem::size_of::<HeapObject>());
+            let allowance = 4
+                * (65536
+                    + HeapObject::charged_with_box::<crate::object::array_buffer::ArrayBuffer>());
             heap.byte_budget().set_limit(occupied + allowance);
             ready.wait();
             ready.wait();

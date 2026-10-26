@@ -1340,7 +1340,7 @@ impl Heap {
         self.allocated_objects.store(live, Ordering::Relaxed);
         self.next_collection
             .store(self.policy.threshold(live), Ordering::Relaxed);
-        let byte_volume = self.byte_budget.volume();
+        let byte_volume = self.byte_budget.collection_started();
         world.gc.last_live_objects = live;
         let pause = started.elapsed();
         world.gc.pause_total += pause;

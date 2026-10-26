@@ -195,6 +195,37 @@ impl JsString {
         Ok(reservation.is_charged().then(|| Arc::new(reservation)))
     }
 
+    /// Append `piece` to an accumulator that is extended many times (a
+    /// formatter's output). [`JsString::concat_accounted`] charges the whole
+    /// result on every call, which a retained rope chain would accumulate
+    /// quadratically; this charges only the piece, at the same per-unit rate
+    /// (its rope node and its share of a later flattened copy). Each
+    /// accumulated node keeps its own charge, so the total stays linear.
+    pub(crate) fn append_accounted(
+        &self,
+        heap: &crate::heap::Heap,
+        piece: &Self,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        if self.is_empty() {
+            return Ok(piece.clone());
+        }
+        if piece.is_empty() {
+            return Ok(self.clone());
+        }
+        let reservation = Self::reserve(
+            heap,
+            piece
+                .len()
+                .checked_mul(16)
+                .ok_or(crate::vm::dispatch::Fault::HeapLimit)?,
+            2,
+        )?;
+        Ok(self
+            .concat(piece)
+            .ok_or(crate::vm::dispatch::Fault::StringTooLong)?
+            .with_reservation(reservation))
+    }
+
     pub(crate) fn concat_accounted(
         &self,
         heap: &crate::heap::Heap,

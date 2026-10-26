@@ -241,3 +241,171 @@ fn unchecked_startup_under_a_tiny_byte_limit_fails_the_first_task_without_abort(
     assert_eq!(error.kind(), VmErrorKind::HeapLimit);
     assert!(rt.heap_stats().peak_managed_bytes <= 4096);
 }
+
+struct Effectless;
+impl Host for Effectless {
+    fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+        Err("no host effects".into())
+    }
+}
+
+/// A runtime whose byte limit leaves `headroom` above the realm.
+fn with_headroom(headroom: usize) -> (Runtime, usize) {
+    let limit = realm_bytes() + headroom;
+    (byte_limited(limit).unwrap(), limit)
+}
+
+/// Run `source` (a zero-argument function) to completion in a slice loop,
+/// so yields between instructions are exercised, and return its result.
+fn run_sliced(rt: &Runtime, source: &str) -> RunOutcome {
+    let code = compile_function(source).unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    loop {
+        match task
+            .run_with(Budget::instructions(97), &mut Effectless)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {}
+            outcome => return outcome,
+        }
+    }
+}
+
+fn caught(rt: &Runtime, body: &str) {
+    let source = format!(
+        "function f() {{ let kept = []; try {{ {body} }} catch (e) {{ kept = null; return e === 'heap byte limit exceeded' || String(e); }} return 'not denied'; }}"
+    );
+    let outcome = run_sliced(rt, &source);
+    let RunOutcome::Complete(result) = outcome else {
+        panic!("{body}: {outcome:?}");
+    };
+    assert_eq!(
+        result.view(),
+        ValueView::Bool(true),
+        "{body}: {:?}",
+        result.string().map(|s| s.to_string_lossy())
+    );
+}
+
+#[test]
+fn public_byte_limit_denial_is_catchable_and_the_runtime_recovers() {
+    let (rt, limit) = with_headroom(2 * 1024 * 1024);
+    for body in [
+        "for (;;) kept.push({a: 1, b: 2});",
+        "for (;;) kept.push('x'.repeat(1000) + kept.length);",
+        "for (;;) kept.push(new ArrayBuffer(4096));",
+        "for (;;) kept.push(__rt.vector(1, 2, 3));",
+        "for (;;) kept.push([1, 2, 3, 4]);",
+    ] {
+        caught(&rt, body);
+        let stats = rt.heap_stats();
+        assert!(stats.peak_managed_bytes <= limit, "{body}: {stats:?}");
+        // No explicit collection: the next task's allocation pressure
+        // collects the previous task's released data.
+        let outcome = run_sliced(
+            &rt,
+            "function f() { let a = []; for (let i = 0; i < 2000; i++) a.push({i}); return a.length; }",
+        );
+        let RunOutcome::Complete(result) = outcome else {
+            panic!("{body}: runtime did not recover: {outcome:?}");
+        };
+        assert_eq!(result.view(), ValueView::Number(2000.0), "{body}");
+    }
+}
+
+#[test]
+fn retained_key_snapshots_and_intl_buffers_are_charged() {
+    let (rt, limit) = with_headroom(4 * 1024 * 1024);
+    for body in [
+        // A string's index keys are many times larger than its code units.
+        "const s = 'x'.repeat(200000); kept.push(s); kept.push(Object.keys(s));",
+        "const s = 'x'.repeat(200000); kept.push(s); for (const k in s) { kept.push(k); }",
+        "const t = new Uint8Array(500000); kept.push(t); kept.push(Object.getOwnPropertyNames(t));",
+        "const a = []; a[300000] = 1; a.fill(0, 0); kept.push(a); kept.push(Reflect.ownKeys(a));",
+        // A trap result of one repeated key: the duplicate check runs only
+        // after every element was listed, each as a key record several
+        // times the size of the array slot it came from.
+        "const like = new Array(100000).fill('k'); kept.push(like); \
+         Reflect.ownKeys(new Proxy({}, {ownKeys: () => like}));",
+        "function* names() { for (;;) yield 'n'; } new Intl.ListFormat('en').format(names());",
+    ] {
+        caught(&rt, body);
+        let stats = rt.heap_stats();
+        assert!(stats.peak_managed_bytes <= limit, "{body}: {stats:?}");
+    }
+}
+
+#[test]
+fn eight_workers_share_one_byte_limit_and_all_recover() {
+    use std::sync::Barrier;
+    let (rt, limit) = with_headroom(4 * 1024 * 1024);
+    let code = compile_function(
+        "function f() { let kept = []; try { for (;;) kept.push({v: 'y'.repeat(64) + kept.length}); } \
+         catch (e) { const n = kept.length; kept = null; return e === 'heap byte limit exceeded' ? n : -1; } }",
+    )
+    .unwrap();
+    let after = compile_function("function f() { return [1, 2, 3].length; }").unwrap();
+    let start = Barrier::new(8);
+    let denied = Barrier::new(8);
+    let retained = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|threads| {
+        for _ in 0..8 {
+            threads.spawn(|| {
+                let _registered = rt.register_thread();
+                let task = rt.spawn(&code, &[]).unwrap();
+                start.wait();
+                let RunOutcome::Complete(n) = task.run().unwrap() else {
+                    panic!("each worker catches its own denial");
+                };
+                let ValueView::Number(n) = n.view() else {
+                    panic!("count");
+                };
+                assert!(n >= 0.0, "denial was not the byte limit");
+                retained.lock().unwrap().push(n);
+                drop(task);
+                // Every worker has been denied by the one shared limit, then
+                // each runs again without an explicit collection.
+                denied.wait();
+                let task = rt.spawn(&after, &[]).unwrap();
+                assert!(matches!(task.run().unwrap(), RunOutcome::Complete(_)));
+            });
+        }
+    });
+    let stats = rt.heap_stats();
+    assert!(stats.peak_managed_bytes <= limit, "{stats:?}");
+    assert!(stats.collections > 0, "{stats:?}");
+    let total: f64 = retained.lock().unwrap().iter().sum();
+    assert!(total > 0.0);
+}
+
+#[test]
+fn eight_worker_garbage_churn_many_times_the_limit_completes_without_explicit_collection() {
+    let (rt, limit) = with_headroom(2 * 1024 * 1024);
+    let code = compile_function(
+        "function f() { let last; for (let i = 0; i < 4000; i++) { last = {i, s: 'z'.repeat(100) + i, a: [i, i, i]}; } return last.i; }",
+    )
+    .unwrap();
+    let start = std::sync::Barrier::new(8);
+    std::thread::scope(|threads| {
+        for _ in 0..8 {
+            threads.spawn(|| {
+                let _registered = rt.register_thread();
+                let task = rt.spawn(&code, &[]).unwrap();
+                start.wait();
+                let outcome = task.run().unwrap();
+                let RunOutcome::Complete(result) = outcome else {
+                    panic!("{outcome:?}");
+                };
+                assert_eq!(result.view(), ValueView::Number(3999.0));
+            });
+        }
+    });
+    let stats = rt.heap_stats();
+    assert!(stats.peak_managed_bytes <= limit, "{stats:?}");
+    assert!(
+        stats.admitted_bytes_total > 4 * limit,
+        "the churn must exceed the limit several times: {stats:?}"
+    );
+    assert!(stats.collections > 1, "{stats:?}");
+    assert!(stats.last_live_bytes > 0 && stats.last_live_bytes <= limit);
+}

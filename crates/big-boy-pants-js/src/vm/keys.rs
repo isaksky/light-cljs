@@ -126,6 +126,7 @@
 
 use std::collections::HashSet;
 
+use crate::heap::budget::{ByteReservation, reserve_elements};
 use crate::heap::gc::Trace;
 use crate::heap::{Heap, HeapObject, NativePayload, ObjectId};
 use crate::ids::TaskId;
@@ -167,6 +168,41 @@ impl OwnKey {
             Key::Symbol(_) => unreachable!("symbol is not a property name"),
         }
     }
+
+    /// [`OwnKey::name`] for a name that may be retained (a result array
+    /// element, a for-in variable): a fresh index spelling is a new string
+    /// body, charged like any other. Stored names are the key table's.
+    pub(crate) fn name_accounted(&self, heap: &Heap) -> Result<JsString, Fault> {
+        match &self.key {
+            Key::Index(index) => index_name(heap, *index),
+            _ => Ok(self.name()),
+        }
+    }
+}
+
+/// The decimal spelling of array index `index` as a charged string body.
+pub(crate) fn index_name(heap: &Heap, index: u32) -> Result<JsString, Fault> {
+    // At most ten digits.
+    let ticket = JsString::reserve(heap, 10, 1)?;
+    Ok(JsString::from(index.to_string().as_str()).with_reservation(ticket))
+}
+
+/// Charged bytes per own key while a snapshot is built and held: the key,
+/// its raw (index or interned key, attribute) record, and for a for-in walk
+/// the later visited-set slot of the name (`docs/architecture.md`, "Byte
+/// accounting").
+pub(crate) const SNAPSHOT_KEY_BYTES: usize = std::mem::size_of::<OwnKey>() + 64;
+
+/// A key snapshot with the bytes charged for it. The charge is released when
+/// the holder drops it, which retaining holders (for-in, Proxy operations)
+/// do only together with the keys.
+pub(crate) type ChargedKeys = (Vec<OwnKey>, ByteReservation);
+
+/// Charge an already built, code-sized key list (namespace exports,
+/// function metadata) at the same per-key rate.
+fn charged(heap: &Heap, keys: Vec<OwnKey>) -> Result<ChargedKeys, Fault> {
+    let charge = reserve_elements(heap, keys.len(), SNAPSHOT_KEY_BYTES)?;
+    Ok((keys, charge))
 }
 
 /// What the object-table read collected: element indices and interned
@@ -177,6 +213,9 @@ struct Raw {
     /// An array's or allocated String wrapper's virtual `length`.
     length: bool,
     named: Vec<(PropertyKey, bool)>,
+    /// Virtual keys already charged before they were listed.
+    charge: ByteReservation,
+    precharged: usize,
 }
 
 /// The own keys of `target` as `task` sees them, in
@@ -190,9 +229,20 @@ pub(crate) fn own_property_keys(
     target: ObjectId,
     filter: KeyFilter,
 ) -> Result<Vec<OwnKey>, Fault> {
+    own_property_keys_charged(heap, task, target, filter).map(|(keys, _)| keys)
+}
+
+/// [`own_property_keys`] with the snapshot's charge, for a holder that
+/// keeps the keys beyond the current step.
+pub(crate) fn own_property_keys_charged(
+    heap: &Heap,
+    task: TaskId,
+    target: ObjectId,
+    filter: KeyFilter,
+) -> Result<ChargedKeys, Fault> {
     let target = super::proxy::forward(heap, task, target, "ownKeys")?;
     if let Some(keys) = crate::module::namespace::keys(heap, task, target, filter)? {
-        return Ok(keys);
+        return charged(heap, keys);
     }
     let function = heap
         .read(target, |o| {
@@ -202,34 +252,41 @@ pub(crate) fn own_property_keys(
     if function {
         let initial = function::initial_keys(heap, target)?;
         if !initial.is_empty() {
-            return Ok(if filter == KeyFilter::All {
-                initial
-                    .into_iter()
-                    .map(|name| OwnKey {
-                        key: Key::Name(JsString::from(name)),
-                        enumerable: false,
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            });
+            return charged(
+                heap,
+                if filter == KeyFilter::All {
+                    initial
+                        .into_iter()
+                        .map(|name| OwnKey {
+                            key: Key::Name(JsString::from(name)),
+                            enumerable: false,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+            );
         }
     }
     let Some(store) = key_store(heap, target)? else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), ByteReservation::default()));
     };
-    Ok(order(heap, collect_object(heap, task, store)?, filter))
+    order(heap, collect_object(heap, task, store)?, filter)
 }
 
 /// Shared detached-aware snapshot for own-key reflection and for-in walks.
 fn collect_object(heap: &Heap, task: TaskId, store: ObjectId) -> Result<Raw, Fault> {
     let mut raw = heap
-        .read(store, |object| collect(object, task))
+        .read(store, |object| collect(heap, object, task))
         .unwrap_or(Err(Fault::Internal("key enumeration target was reclaimed")))?;
     if let Some(view) = crate::object::typed_array::view(heap, task, store)? {
-        raw.elements = (0..view.live_length(heap)? as u32)
-            .map(|i| (i, true))
-            .collect();
+        // A typed array's keys are virtual: charge them before listing them
+        // (one byte of buffer can stand for a key record many times larger).
+        let len = view.live_length(heap)?;
+        raw.charge
+            .merge(reserve_elements(heap, len, SNAPSHOT_KEY_BYTES)?);
+        raw.precharged += len;
+        raw.elements = (0..len as u32).map(|i| (i, true)).collect();
     }
     Ok(raw)
 }
@@ -252,7 +309,7 @@ fn key_store(heap: &Heap, target: ObjectId) -> Result<Option<ObjectId>, Fault> {
 
 /// Collect the keys of one object under its access word (no key-table
 /// lookups here).
-fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
+fn collect(heap: &Heap, object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
     let readable = |owner: Option<TaskId>| match owner {
         Some(owner) if owner != task => Err(Fault::ForeignObject {
             owner: Some(owner),
@@ -284,7 +341,10 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
             {
                 // Merge virtual and stored indices in `order`, so an added
                 // index follows the string indices and precedes `length`.
-                for own in string_own_keys(s, KeyFilter::All)? {
+                let (keys, charge) = string_own_keys(heap, s, KeyFilter::All)?;
+                raw.charge.merge(charge);
+                raw.precharged += keys.len();
+                for own in keys {
                     match own.key {
                         Key::Index(index) => raw.elements.push((index, own.enumerable)),
                         Key::Name(_) => raw.length = true,
@@ -353,6 +413,7 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
                 elements: a.element_keys().collect(),
                 length: true,
                 named: named(a.object()),
+                ..Raw::default()
             })
         }
         HeapObject::Native(_) => Ok(Raw::default()),
@@ -387,8 +448,16 @@ fn collect(object: &HeapObject, task: TaskId) -> Result<Raw, Fault> {
 
 /// Name the interned keys (outside the object lock) and put everything in
 /// OrdinaryOwnPropertyKeys order.
-fn order(heap: &Heap, raw: Raw, filter: KeyFilter) -> Vec<OwnKey> {
+fn order(heap: &Heap, raw: Raw, filter: KeyFilter) -> Result<ChargedKeys, Fault> {
     let wanted = |enumerable: bool| filter == KeyFilter::All || enumerable;
+    // Every key not charged while it was collected, plus `length`.
+    let mut charge = raw.charge;
+    let listed = raw.elements.len() + raw.named.len() + 1;
+    charge.merge(reserve_elements(
+        heap,
+        listed.saturating_sub(raw.precharged),
+        SNAPSHOT_KEY_BYTES,
+    )?);
     let mut indices: Vec<(u32, bool)> = raw.elements;
     let mut names: Vec<OwnKey> = Vec::new();
     let mut symbols: Vec<OwnKey> = Vec::new();
@@ -423,7 +492,7 @@ fn order(heap: &Heap, raw: Raw, filter: KeyFilter) -> Vec<OwnKey> {
     // names are in creation order. Indices are unique, so an unstable sort
     // is exact.
     indices.sort_unstable_by_key(|&(index, _)| index);
-    indices
+    let keys = indices
         .into_iter()
         .filter(|&(_, enumerable)| wanted(enumerable))
         .map(|(index, enumerable)| OwnKey {
@@ -432,7 +501,8 @@ fn order(heap: &Heap, raw: Raw, filter: KeyFilter) -> Vec<OwnKey> {
         })
         .chain(names)
         .chain(symbols)
-        .collect()
+        .collect();
+    Ok((keys, charge))
 }
 
 /// `Object.keys(o)` (`filter` [`KeyFilter::Enumerable`]) and
@@ -445,8 +515,9 @@ pub(crate) fn object_keys(
     filter: KeyFilter,
 ) -> Result<Value, Fault> {
     let target = args.first().cloned().unwrap_or(Value::Undefined);
-    let keys = match target {
-        Value::Object(id) => own_property_keys(heap, task, id, filter)?,
+    // Held until the result array, which charges its own storage, is built.
+    let (keys, _charge) = match target {
+        Value::Object(id) => own_property_keys_charged(heap, task, id, filter)?,
         Value::Undefined | Value::Null => {
             return Err(Fault::TypeError(format!(
                 "cannot convert {} to object",
@@ -455,9 +526,11 @@ pub(crate) fn object_keys(
         }
         // The wrapper ToObject would make, not allocated: a String
         // wrapper's indices, then its `length` (clj-quickjs-142).
-        Value::String(s) => string_own_keys(&s, filter)?,
+        Value::String(s) => string_own_keys(heap, &s, filter)?,
         // Number and Boolean wrappers have no own properties.
-        Value::Number(_) | Value::Bool(_) | Value::Symbol(_) | Value::BigInt(_) => Vec::new(),
+        Value::Number(_) | Value::Bool(_) | Value::Symbol(_) | Value::BigInt(_) => {
+            (Vec::new(), ByteReservation::default())
+        }
     };
     let exhausted = || Fault::OutOfMemory("heap object table exhausted");
     let prototype = realm::intrinsics(heap)
@@ -468,7 +541,7 @@ pub(crate) fn object_keys(
         if matches!(key.key, Key::Symbol(_)) {
             continue;
         }
-        array.push(Some(Value::String(key.name())))?;
+        array.push(Some(Value::String(key.name_accounted(heap)?)))?;
     }
     heap.alloc(HeapObject::Array(Box::new(array)))
         .map(Value::Object)
@@ -482,9 +555,11 @@ pub(crate) fn object_keys(
 /// indices ascending (enumerable), then `length` (not enumerable, so only
 /// with [`KeyFilter::All`]). The list is as long as the string, bounded by
 /// `MAX_STRING_LEN` like any other object's key count.
-fn string_own_keys(s: &JsString, filter: KeyFilter) -> Result<Vec<OwnKey>, Fault> {
+fn string_own_keys(heap: &Heap, s: &JsString, filter: KeyFilter) -> Result<ChargedKeys, Fault> {
     let len = u32::try_from(s.len())
         .map_err(|_| Fault::Internal("a string longer than 2^32 - 1 code units"))?;
+    // Charged before it is built: each code unit becomes a key record.
+    let charge = reserve_elements(heap, len as usize + 1, SNAPSHOT_KEY_BYTES)?;
     let indices = (0..len).map(|index| OwnKey {
         key: Key::Index(index),
         enumerable: true,
@@ -493,22 +568,22 @@ fn string_own_keys(s: &JsString, filter: KeyFilter) -> Result<Vec<OwnKey>, Fault
         key: Key::Name(JsString::from("length")),
         enumerable: false,
     });
-    Ok(indices.chain(length).collect())
+    Ok((indices.chain(length).collect(), charge))
 }
 
 /// Snapshot all own keys for CopyDataProperties. Enumerability is checked
 /// later, immediately before each resumable Get, since earlier getters may
 /// delete properties or change their descriptors.
 pub(crate) fn rest_keys(heap: &Heap, task: TaskId, source: &Value) -> Result<Value, Fault> {
-    let keys = match source {
-        Value::Object(id) => own_property_keys(heap, task, *id, KeyFilter::All)?,
-        Value::String(s) => string_own_keys(s, KeyFilter::All)?,
+    let (keys, _charge) = match source {
+        Value::Object(id) => own_property_keys_charged(heap, task, *id, KeyFilter::All)?,
+        Value::String(s) => string_own_keys(heap, s, KeyFilter::All)?,
         Value::Null | Value::Undefined => {
             return Err(Fault::TypeError(
                 "cannot destructure null or undefined".into(),
             ));
         }
-        _ => Vec::new(),
+        _ => (Vec::new(), ByteReservation::default()),
     };
     let array = super::property::new_array(heap, task)?;
     for own in keys {
@@ -542,10 +617,15 @@ pub(crate) struct ForInIterator {
     /// non-enumerable key is never visited, but it hides the name further
     /// up the chain.
     keys: Vec<OwnKey>,
+    /// The charge of `keys` ([`SNAPSHOT_KEY_BYTES`] each).
+    keys_charge: ByteReservation,
     next: usize,
     pending_keys: bool,
     /// The keys of the objects the walk has left (module docs, "Prototype chain").
     visited: Visited,
+    /// The charges of the snapshots moved into `visited`: each covers its
+    /// keys' visited-set slots until the walk ends.
+    visited_charge: ByteReservation,
 }
 
 /// A set of property keys (`Key` is a name or an index).
@@ -584,13 +664,15 @@ enum Step {
 }
 
 impl ForInIterator {
-    fn new(object: Option<ObjectId>, keys: Vec<OwnKey>) -> Self {
+    fn new(object: Option<ObjectId>, (keys, keys_charge): ChargedKeys) -> Self {
         ForInIterator {
             object,
             keys,
+            keys_charge,
             next: 0,
             pending_keys: false,
             visited: Visited::default(),
+            visited_charge: ByteReservation::default(),
         }
     }
 
@@ -615,13 +697,19 @@ impl ForInIterator {
 
     /// Leave the current object for `next` (`None`: the walk has ended),
     /// whose own keys are `keys`.
-    fn enter(&mut self, next: Option<ObjectId>, keys: Vec<OwnKey>) {
+    fn enter(&mut self, next: Option<ObjectId>, (keys, charge): ChargedKeys) {
         let left = std::mem::replace(&mut self.keys, keys);
+        let left_charge = std::mem::replace(&mut self.keys_charge, charge);
         if next.is_some() {
             left.into_iter().for_each(|k| self.visited.insert(k.key));
+            self.visited_charge.merge(left_charge);
         }
         self.object = next;
         self.next = 0;
+    }
+
+    fn none() -> ChargedKeys {
+        (Vec::new(), ByteReservation::default())
     }
 }
 
@@ -649,9 +737,9 @@ impl NativePayload for ForInIterator {
 /// visited (module docs, "Prototype chain"): `id` is a realm intrinsic and
 /// no intrinsic on its chain has an enumerable property, decided from the
 /// realm's immutable views without any lock.
-fn walk_keys(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Vec<OwnKey>>, Fault> {
+fn walk_keys(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<ChargedKeys>, Fault> {
     if let Some(keys) = crate::module::namespace::keys(heap, task, id, KeyFilter::All)? {
-        return Ok(Some(keys));
+        return charged(heap, keys).map(Some);
     }
     if let Some(realm) = heap.realm().get()
         && let Some(view) = realm.view(id)
@@ -675,13 +763,13 @@ fn walk_keys(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<Vec<OwnKe
             named: view.own_keys().collect(),
             ..Raw::default()
         };
-        return Ok(Some(order(heap, raw, KeyFilter::All)));
+        return order(heap, raw, KeyFilter::All).map(Some);
     }
     let Some(store) = key_store(heap, id)? else {
-        return Ok(Some(Vec::new()));
+        return Ok(Some(ForInIterator::none()));
     };
     let raw = collect_object(heap, task, store)?;
-    Ok(Some(order(heap, raw, KeyFilter::All)))
+    order(heap, raw, KeyFilter::All).map(Some)
 }
 
 /// The next object of the walk after `id` (module docs, "Prototype
@@ -707,24 +795,18 @@ fn chain_next(heap: &Heap, task: TaskId, id: ObjectId) -> Result<Option<ObjectId
 pub(crate) fn for_in_start(heap: &Heap, task: TaskId, value: &Value) -> Result<Value, Fault> {
     let iterator = match value {
         Value::Object(id) if super::proxy::inspect(heap, task, *id)?.is_some() => {
-            let mut it = ForInIterator::new(Some(*id), vec![]);
+            let mut it = ForInIterator::new(Some(*id), ForInIterator::none());
             it.pending_keys = true;
             it
         }
         Value::Object(id) => match walk_keys(heap, task, *id)? {
             Some(keys) => ForInIterator::new(Some(*id), keys),
-            None => ForInIterator::new(None, Vec::new()),
+            None => ForInIterator::new(None, ForInIterator::none()),
         },
         // A String wrapper's own enumerable keys are its indices; its
         // prototype has no enumerable properties.
         Value::String(s) => {
-            let len = u32::try_from(s.len())
-                .map_err(|_| Fault::Internal("a string longer than 2^32 - 1 code units"))?;
-            let index = |i| OwnKey {
-                key: Key::Index(i),
-                enumerable: true,
-            };
-            ForInIterator::new(None, (0..len).map(index).collect())
+            ForInIterator::new(None, string_own_keys(heap, s, KeyFilter::Enumerable)?)
         }
         // `null` and `undefined` run no iteration; a Number or Boolean
         // wrapper has no own enumerable keys.
@@ -733,7 +815,7 @@ pub(crate) fn for_in_start(heap: &Heap, task: TaskId, value: &Value) -> Result<V
         | Value::Bool(_)
         | Value::Number(_)
         | Value::Symbol(_)
-        | Value::BigInt(_) => ForInIterator::new(None, Vec::new()),
+        | Value::BigInt(_) => ForInIterator::new(None, ForInIterator::none()),
     };
     heap.alloc(HeapObject::Native(Box::new(iterator)))
         .map(Value::Object)
@@ -796,9 +878,9 @@ pub(crate) fn for_in_next(
                 let (next, keys) = match chain_next(heap, task, object)? {
                     Some(proto) => match walk_keys(heap, task, proto)? {
                         Some(keys) => (Some(proto), keys),
-                        None => (None, Vec::new()),
+                        None => (None, ForInIterator::none()),
                     },
-                    None => (None, Vec::new()),
+                    None => (None, ForInIterator::none()),
                 };
                 with_iterator(heap, id, |it| it.enter(next, keys))?;
             }
@@ -816,7 +898,7 @@ pub(crate) enum ForInRequest {
 pub(crate) fn for_in_set_keys(
     heap: &Heap,
     iterator: &Value,
-    mut keys: Vec<OwnKey>,
+    (mut keys, charge): ChargedKeys,
 ) -> Result<(), Fault> {
     // OwnPropertyKeys carries names only. Even a forwarded non-enumerable
     // target key must reach the proxy's current descriptor trap.
@@ -828,6 +910,7 @@ pub(crate) fn for_in_set_keys(
     };
     with_iterator(heap, *id, |it| {
         it.keys = keys;
+        it.keys_charge = charge;
         it.next = 0;
         it.pending_keys = false;
     })
@@ -877,18 +960,18 @@ pub(crate) fn for_in_request(
                 if let Some(proto) = next {
                     if super::proxy::inspect(heap, task, proto)?.is_some() {
                         with_iterator(heap, *id, |it| {
-                            it.enter(Some(proto), vec![]);
+                            it.enter(Some(proto), ForInIterator::none());
                             it.pending_keys = true;
                         })?;
                     } else {
                         let keys = walk_keys(heap, task, proto)?;
                         with_iterator(heap, *id, |it| match keys {
                             Some(keys) => it.enter(Some(proto), keys),
-                            None => it.enter(None, vec![]),
+                            None => it.enter(None, ForInIterator::none()),
                         })?;
                     }
                 } else {
-                    with_iterator(heap, *id, |it| it.enter(None, vec![]))?;
+                    with_iterator(heap, *id, |it| it.enter(None, ForInIterator::none()))?;
                 }
             }
         }

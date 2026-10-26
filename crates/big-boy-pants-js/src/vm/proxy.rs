@@ -5,6 +5,7 @@
 use super::dispatch::{self, Fault};
 use super::native::{Action, Input};
 use super::{descriptor, integrity, keys, property, prototype};
+use crate::heap::budget::{ByteReservation, GrowthCharge};
 use crate::heap::gc::{Trace, TraceEdge};
 use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
@@ -184,13 +185,13 @@ pub(crate) fn unwrapped(heap: &Heap, mut id: ObjectId) -> Result<ObjectId, Fault
 
 #[derive(Debug)]
 pub(crate) enum Output {
-    Keys(Vec<keys::OwnKey>),
+    Keys(keys::ChargedKeys),
     Descriptor(Option<Property>),
 }
 impl Trace for Output {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
         match self {
-            Self::Keys(keys) => trace_keys(keys, visit),
+            Self::Keys((keys, _)) => trace_keys(keys, visit),
             Self::Descriptor(Some(p)) => {
                 p.value.trace(visit);
                 if let Some((get, set)) = &p.accessor {
@@ -238,6 +239,9 @@ struct Operation {
     value: Value,
     keys: Vec<keys::OwnKey>,
     target_keys: Vec<keys::OwnKey>,
+    /// Charges of `keys` (grown per trap-result element) and `target_keys`.
+    keys_charge: GrowthCharge,
+    target_charge: ByteReservation,
     index: usize,
     length: usize,
     reader: Option<descriptor::DefineProperty>,
@@ -262,6 +266,8 @@ impl Operation {
             value: Value::Undefined,
             keys: vec![],
             target_keys: vec![],
+            keys_charge: GrowthCharge::default(),
+            target_charge: ByteReservation::default(),
             index: 0,
             length: 0,
             reader: None,
@@ -278,16 +284,17 @@ impl Operation {
             "ownKeys"
         }
     }
-    fn key_value(&self) -> Value {
-        key_value(self.key.as_ref().unwrap())
+    fn key_value(&self, heap: &Heap) -> Result<Value, Fault> {
+        key_value(heap, self.key.as_ref().unwrap())
     }
 }
-fn key_value(key: &Key) -> Value {
-    match key {
-        Key::Index(i) => Value::String(JsString::from(i.to_string().as_str())),
+/// A key as the value JavaScript sees; a fresh index spelling is charged.
+fn key_value(heap: &Heap, key: &Key) -> Result<Value, Fault> {
+    Ok(match key {
+        Key::Index(i) => Value::String(keys::index_name(heap, *i)?),
         Key::Name(n) => Value::String(n.clone()),
         Key::Symbol(s) => Value::Symbol(s.clone()),
-    }
+    })
 }
 impl Trace for Operation {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
@@ -389,7 +396,7 @@ impl Operations {
                             if self.json_keys {
                                 super::json::check_key_snapshot(heap, task, op.object)?;
                             }
-                            Output::Keys(keys::own_property_keys(
+                            Output::Keys(keys::own_property_keys_charged(
                                 heap,
                                 task,
                                 op.object,
@@ -436,7 +443,7 @@ impl Operations {
                     dispatch::callee(heap, &op.value).map_err(|_| error("trap is not callable"))?;
                     let mut args = vec![Value::Object(p.target)];
                     if op.key.is_some() {
-                        args.push(op.key_value());
+                        args.push(op.key_value(heap)?);
                     }
                     op.phase = Stage::TrapResult;
                     return Ok(Progress::Action(Action::Call {
@@ -529,6 +536,10 @@ impl Operations {
                     Value::Symbol(s) => Key::Symbol(s),
                     _ => return Err(error("ownKeys entries must be strings or symbols")),
                 };
+                // A trap result can be an array-like with a huge `length`
+                // whose getter repeats one string: charge every listed key.
+                op.keys_charge
+                    .admit(heap, op.keys.len(), keys::SNAPSHOT_KEY_BYTES)?;
                 op.keys.push(keys::OwnKey {
                     key,
                     enumerable: true,
@@ -537,10 +548,11 @@ impl Operations {
                 op.phase = Stage::Element;
             }
             Stage::TargetKeys => {
-                let Some(Output::Keys(keys)) = self.output.take() else {
+                let Some(Output::Keys((keys, charge))) = self.output.take() else {
                     return Err(Fault::Internal("Proxy target keys missing"));
                 };
                 op.target_keys = keys;
+                op.target_charge = charge;
                 op.phase = Stage::CheckKeys;
             }
             Stage::CheckKeys => {
@@ -559,7 +571,8 @@ impl Operations {
                         return Err(error("ownKeys must exactly match a non-extensible target"));
                     }
                     let keys = std::mem::take(&mut op.keys);
-                    return self.finish(Output::Keys(keys));
+                    let charge = std::mem::take(&mut op.keys_charge).into_reservation();
+                    return self.finish(Output::Keys((keys, charge)));
                 }
                 let key = op.target_keys[op.index].key.clone();
                 op.phase = Stage::TargetKeyDescriptor;
@@ -748,7 +761,9 @@ pub(crate) struct State {
     mode: Mode,
     ops: Operations,
     keys: Vec<keys::OwnKey>,
+    keys_charge: ByteReservation,
     selected: Vec<Value>,
+    selected_charge: GrowthCharge,
     result: Value,
     emitted: usize,
     index: usize,
@@ -758,6 +773,13 @@ pub(crate) struct State {
     coercing: Option<(ObjectId, PropertyDescriptor)>,
 }
 impl State {
+    fn select(&mut self, heap: &Heap, value: Value) -> Result<(), Fault> {
+        self.selected_charge
+            .admit(heap, self.selected.len(), std::mem::size_of::<Value>())?;
+        self.selected.push(value);
+        Ok(())
+    }
+
     /// JSON's snapshot bound applies before filtering keys and to every
     /// target snapshot, including targets mutated by an ownKeys callback.
     pub(crate) fn json_keys(target: ObjectId) -> Self {
@@ -775,7 +797,9 @@ impl State {
             mode,
             ops: Operations::default(),
             keys: vec![],
+            keys_charge: ByteReservation::default(),
             selected: vec![],
+            selected_charge: GrowthCharge::default(),
             result: Value::Undefined,
             emitted: 0,
             index: 0,
@@ -921,16 +945,22 @@ impl State {
                                 keys::for_in_missing_key(heap, iterator)?;
                             }
                             if p.is_some_and(|p| p.flags.enumerable) {
-                                return Ok(Action::ReturnPair(key_value(&key), Value::Bool(true)));
+                                return Ok(Action::ReturnPair(
+                                    key_value(heap, &key)?,
+                                    Value::Bool(true),
+                                ));
                             }
                         }
                     },
                     Mode::Keys { .. } => match out {
-                        Output::Keys(keys) => self.keys = keys,
+                        Output::Keys((keys, charge)) => {
+                            self.keys = keys;
+                            self.keys_charge = charge;
+                        }
                         Output::Descriptor(p) => {
                             if p.is_some_and(|p| p.flags.enumerable) {
-                                self.selected
-                                    .push(key_value(&self.keys[self.index - 1].key));
+                                let value = key_value(heap, &self.keys[self.index - 1].key)?;
+                                self.select(heap, value)?;
                             }
                         }
                     },
@@ -938,7 +968,10 @@ impl State {
                     | Mode::Frozen(target)
                     | Mode::Seal(target)
                     | Mode::Sealed(target) => match out {
-                        Output::Keys(keys) => self.keys = keys,
+                        Output::Keys((keys, charge)) => {
+                            self.keys = keys;
+                            self.keys_charge = charge;
+                        }
                         Output::Descriptor(Some(p)) => {
                             if matches!(self.mode, Mode::Frozen(_) | Mode::Sealed(_)) {
                                 if p.flags.configurable
@@ -977,7 +1010,10 @@ impl State {
                     self.ops.start(Operation::descriptor(object, key));
                 }
                 keys::ForInRequest::Key(key) => {
-                    return Ok(Action::ReturnPair(key_value(&key), Value::Bool(true)));
+                    return Ok(Action::ReturnPair(
+                        key_value(heap, &key)?,
+                        Value::Bool(true),
+                    ));
                 }
                 keys::ForInRequest::Done => {
                     return Ok(Action::ReturnPair(Value::Undefined, Value::Bool(false)));
@@ -998,7 +1034,8 @@ impl State {
                             .start(Operation::descriptor(*target, key.key.clone()));
                         return Ok(Action::Continue);
                     }
-                    self.selected.push(key_value(&key.key));
+                    let value = key_value(heap, &key.key)?;
+                    self.select(heap, value)?;
                     return Ok(Action::Continue);
                 }
                 if self.result == Value::Undefined {

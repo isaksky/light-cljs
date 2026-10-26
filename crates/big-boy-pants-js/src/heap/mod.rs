@@ -295,6 +295,58 @@ impl HeapObject {
         HeapObject::Plain(OrdinaryObject::new(heap, None))
     }
 
+    /// What allocating an object boxed as `T` (with no boxed internal
+    /// slots) charges: the slot and the box. For tests sizing exact headroom.
+    #[cfg(test)]
+    pub(crate) const fn charged_with_box<T>() -> usize {
+        std::mem::size_of::<HeapObject>() + std::mem::size_of::<T>()
+    }
+
+    /// Fixed metadata this object owns through boxes, beyond the slot's own
+    /// `size_of::<HeapObject>()`: a boxed body and an ordinary object's boxed
+    /// internal slots (`OrdinaryObject::boxed_bytes`). Charged with the slot
+    /// at allocation. Data-sized storage inside (properties, elements,
+    /// entries, buffers, payload strings) is charged where it grows instead.
+    pub(crate) fn boxed_bytes(&self) -> usize {
+        use std::mem::size_of_val;
+        match self {
+            HeapObject::Plain(o) => o.boxed_bytes(),
+            HeapObject::Native(p) => size_of_val(&**p),
+            HeapObject::Array(a) => size_of_val(&**a) + a.object().boxed_bytes(),
+            HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
+                size_of_val(&**m) + m.object().boxed_bytes()
+            }
+            HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => {
+                size_of_val(&**m) + m.object().boxed_bytes()
+            }
+            HeapObject::WeakRef(m) => size_of_val(&**m) + m.object().boxed_bytes(),
+            HeapObject::FinalizationRegistry(m) => size_of_val(&**m) + m.object().boxed_bytes(),
+            HeapObject::DisposableStack(m) => size_of_val(&**m) + m.object().boxed_bytes(),
+            HeapObject::ArrayBuffer(b) => size_of_val(&**b) + b.object.boxed_bytes(),
+            HeapObject::TypedArray(a) => size_of_val(&**a) + a.object.boxed_bytes(),
+            HeapObject::Generator(g) => size_of_val(&**g) + g.object.boxed_bytes(),
+            HeapObject::AsyncState(s) => size_of_val(&**s),
+            HeapObject::ModuleNamespace(n) => size_of_val(&**n),
+            HeapObject::Promise(p) => p
+                .properties
+                .as_deref()
+                .map_or(0, |o| size_of_val(o) + o.boxed_bytes()),
+            HeapObject::Builtin(f) => f.properties.boxed_bytes(),
+            HeapObject::Vector(_)
+            | HeapObject::Map(_)
+            | HeapObject::Occurrence(_)
+            | HeapObject::Builder(_)
+            | HeapObject::Function(_)
+            | HeapObject::Cell(_)
+            | HeapObject::Atom(_)
+            | HeapObject::BoundFunction(_)
+            | HeapObject::PromiseReaction(_)
+            | HeapObject::PromiseResolving(_)
+            | HeapObject::Proxy(_)
+            | HeapObject::Form(_) => 0,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn kind(&self) -> ObjectKind {
         match self {
@@ -551,6 +603,9 @@ impl Heap {
     pub(crate) fn has_byte_limit(&self) -> bool {
         self.byte_budget.is_limited()
     }
+    pub(crate) fn byte_starved(&self) -> bool {
+        self.byte_budget.starved()
+    }
     pub(crate) fn take_byte_denial(&self) -> bool {
         self.byte_budget.take_denial()
     }
@@ -643,7 +698,14 @@ impl Heap {
         if self.byte_budget.denied() {
             return None;
         }
-        let Some(reservation) = self.reserve_bytes(std::mem::size_of::<HeapObject>()) else {
+        // The slot's boxed body and fixed internal slots are charged with it;
+        // without a byte limit nothing is measured.
+        let bytes = if self.byte_budget.is_limited() {
+            std::mem::size_of::<HeapObject>() + object.boxed_bytes()
+        } else {
+            0
+        };
+        let Some(reservation) = self.reserve_bytes(bytes) else {
             self.byte_budget.note_denial();
             return None;
         };
