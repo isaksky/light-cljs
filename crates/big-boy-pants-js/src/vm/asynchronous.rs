@@ -134,11 +134,14 @@ pub(crate) fn suspend(heap: &Heap, vm: &mut VmState, source: ObjectId) -> Result
     {
         return super::async_generator::suspend(heap, vm, source, id);
     }
+    // Admit the saved activation first: a denial after registration would
+    // leave a reaction resuming an activation that never suspended.
+    let reservation = vm.reserve_activation(heap)?;
     // Register while still attached. There is no safepoint until the saved
     // activation is installed below. Even an already fulfilled source queues.
     super::promise::await_then(heap, &vm.jobs, source, id)?;
     let name = vm.top().code.function_name.to_string_lossy();
-    let saved = vm.detach_activation(heap)?;
+    let saved = vm.detach_reserved_activation(reservation);
     heap.with_object_mut(id, |o| {
         if let HeapObject::AsyncState(a) = o {
             a.activation = Some(saved);

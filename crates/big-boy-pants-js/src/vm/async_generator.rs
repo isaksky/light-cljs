@@ -318,22 +318,29 @@ pub(crate) fn suspend(
     source: ObjectId,
     id: ObjectId,
 ) -> Result<Flow, Fault> {
-    super::promise::await_then(heap, &vm.jobs, source, id)?;
     let awaiting_return = heap
         .read(
             id,
             |o| matches!(o, HeapObject::Generator(g) if matches!(g.state, State::AwaitingReturn)),
         )
         .unwrap_or(false);
-    if awaiting_return {
-        super::native::suspend_generator_return(vm)?;
+    // Admit the saved activation before registering the reaction that
+    // resumes it (see `asynchronous::suspend`).
+    let reservation = if awaiting_return {
+        None
     } else {
-        let activation = vm.detach_activation(heap)?;
+        Some(vm.reserve_activation(heap)?)
+    };
+    super::promise::await_then(heap, &vm.jobs, source, id)?;
+    if let Some(reservation) = reservation {
+        let activation = vm.detach_reserved_activation(reservation);
         heap.with_object_mut(id, |o| {
             if let HeapObject::Generator(g) = o {
                 g.state = State::Awaiting(activation);
             }
         });
+    } else {
+        super::native::suspend_generator_return(vm)?;
     }
     vm.push(Value::Undefined);
     Ok(Flow::FrameChanged)

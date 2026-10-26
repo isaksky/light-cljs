@@ -438,3 +438,67 @@ fn eight_worker_garbage_churn_many_times_the_limit_completes_without_explicit_co
     assert!(stats.collections > 1, "{stats:?}");
     assert!(stats.last_live_bytes > 0 && stats.last_live_bytes <= limit);
 }
+
+/// An `await` whose saved activation is denied must not leave a reaction
+/// behind: the handler continues, awaits another promise, and only that
+/// promise's settlement resumes it.
+#[test]
+fn await_snapshot_denial_does_not_leave_a_reaction() {
+    for (kind, header) in [
+        ("async function", "async function g()"),
+        ("async generator", "async function* g()"),
+    ] {
+        let (rt, limit) = with_headroom(2 * 1024 * 1024);
+        // The activation holds 20,000 locals (about 320 KiB); after the fill
+        // and one release at most about 128 KiB are free, enough for the
+        // reaction but not for the saved activation.
+        let locals = (0..20_000)
+            .map(|i| format!("a{i} = 0"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source = format!(
+            "function f() {{
+               let res1, res2;
+               const p1 = new Promise(r => res1 = r), p2 = new Promise(r => res2 = r);
+               let kept = [];
+               {header} {{
+                 let r, v, {locals};
+                 try {{ for (;;) kept.push(new ArrayBuffer(65536)); }} catch (e) {{}}
+                 kept.pop();
+                 for (let i = 0; i < 500; i++) {{}}
+                 try {{ r = await p1; }} catch (e) {{ r = e === 'heap byte limit exceeded' ? 'denied' : 'other ' + e; }}
+                 kept = null;
+                 for (let i = 0; i < 500; i++) {{}}
+                 try {{ v = await p2; }} catch (e) {{ v = 'second ' + e; }}
+                 globalThis.out = r + ' ' + v;
+               }}
+               const it = g();
+               (it.next ? it.next() : it).catch(e => globalThis.out = 'rejected ' + e);
+               Promise.resolve().then(() => res1('one')).then(() => res2('two')).then(() => 0).then(() => 0).then(() => __rt.need(311, 1));
+               return 0;
+             }}"
+        );
+        let code = compile_function(&source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let outcome = loop {
+            match task
+                .run_with(Budget::instructions(97), &mut Effectless)
+                .unwrap()
+            {
+                RunOutcome::Yielded => {}
+                outcome => break outcome,
+            }
+        };
+        assert!(
+            matches!(outcome, RunOutcome::Waiting(_)),
+            "{kind}: {outcome:?}"
+        );
+        let out = task.global_value("out").unwrap().expect("g finished");
+        assert_eq!(
+            out.string().map(|s| s.to_string_lossy()).as_deref(),
+            Some("denied two"),
+            "{kind}"
+        );
+        assert!(rt.heap_stats().peak_managed_bytes <= limit, "{kind}");
+    }
+}

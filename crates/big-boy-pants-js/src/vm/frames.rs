@@ -398,6 +398,17 @@ impl VmState {
         &mut self,
         heap: &crate::heap::Heap,
     ) -> Result<DetachedActivation, Fault> {
+        let reservation = self.reserve_activation(heap)?;
+        Ok(self.detach_reserved_activation(reservation))
+    }
+
+    /// Admit the top activation's saved form without detaching it, so a
+    /// suspension can fail before it registers a reaction to resume it.
+    /// Valid until the activation's stack, handlers or natives change.
+    pub(crate) fn reserve_activation(
+        &self,
+        heap: &crate::heap::Heap,
+    ) -> Result<crate::heap::budget::ByteReservation, Fault> {
         let index = self.frame_index();
         let top = self.top();
         let values = self
@@ -417,7 +428,16 @@ impl VmState {
             })
             .and_then(|n| n.checked_add(std::mem::size_of::<Frame>()))
             .ok_or(Fault::HeapLimit)?;
-        let reservation = heap.reserve_bytes(bytes).ok_or(Fault::HeapLimit)?;
+        heap.reserve_bytes(bytes).ok_or(Fault::HeapLimit)
+    }
+
+    /// Detach the top activation under a [`Self::reserve_activation`]
+    /// charge taken for it. Infallible.
+    pub(crate) fn detach_reserved_activation(
+        &mut self,
+        reservation: crate::heap::budget::ByteReservation,
+    ) -> DetachedActivation {
+        let index = self.frame_index();
         let mut frame = if let Some(frame) = self.calls.pop() {
             frame
         } else {
@@ -466,13 +486,13 @@ impl VmState {
         if index == 0 {
             self.stack.push(Value::Undefined);
         }
-        Ok(DetachedActivation {
+        DetachedActivation {
             frame,
             stack,
             handlers,
             natives,
             _reservation: reservation,
-        })
+        }
     }
 
     /// Check before removing a saved activation from its heap owner.
