@@ -39,6 +39,92 @@ fn program_output(js: &str) -> String {
 }
 
 #[test]
+fn penpot_macro_declarations_fit_the_native_frontend() {
+    // Verbatim defrecord and with-open declarations, with unrelated source
+    // removed. The former emitted >16 KiB; both exceeded weighted nesting256.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/frontend");
+    let build = |native| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_with_stats(
+            "admission.app",
+            std::slice::from_ref(&root),
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            &mut stats,
+        )
+        .unwrap();
+        if native {
+            assert!(stats.native_helpers.units_compiled >= 2);
+        }
+        emit_js(&program)
+    };
+    let native = build(true);
+    assert_eq!(program_output(&native), "42\n");
+    #[cfg(feature = "quickjs")]
+    assert_eq!(native, build(false));
+}
+
+#[test]
+fn deep_native_constructor_trees_preserve_effects_and_provenance() {
+    // Siblings run left to right. Branches, exceptions and closures stay at
+    // their original evaluation site, and input occurrence identity survives.
+    let tree = |leaf: &str| format!("{}{}{}", "(list ".repeat(70), leaf, ")".repeat(70));
+    for (leaf, expected) in [
+        (
+            "(do (.push seen \"value\") x)",
+            "[[\"before\" \"value\" \"after\"] true]\n",
+        ),
+        (
+            "(if false (throw (js/Error. \"unselected\")) (do (.push seen \"branch\") x))",
+            "[[\"before\" \"branch\" \"after\"] true]\n",
+        ),
+        (
+            "(try (throw (js/Error. \"caught\")) (catch :default e (.push seen \"caught\") x) (finally (.push seen \"finally\")))",
+            "[[\"before\" \"caught\" \"finally\" \"after\"] true]\n",
+        ),
+        (
+            "((fn [n] (.push seen \"closure\") n) x)",
+            "[[\"before\" \"closure\" \"after\"] true]\n",
+        ),
+        // Raw JS must not capture the emitter's new temporary locals.
+        (
+            "(do (.push seen (js* \"typeof temporary0_0\")) x)",
+            "[[\"before\" \"undefined\" \"after\"] true]\n",
+        ),
+    ] {
+        let source = format!(
+            "(defmacro m [x] (let [seen (js/Array.)\n\
+               result (list (do (.push seen \"before\") 0)\n\
+                            {} (do (.push seen \"after\") 1))]\n\
+               [(list 'quote (vec seen))\n\
+                (identical? x (loop [value (second result) n 70]\n\
+                  (if (= n 0) value (recur (first value) (dec n)))))]))\n\
+             (js/console.log (pr-str (m 42)))",
+            tree(leaf),
+        );
+        let build = |native| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+                .unwrap_or_else(|e| panic!("{leaf}: {e}"));
+            emit_js(&program)
+        };
+        let native = build(true);
+        assert_eq!(program_output(&native), expected, "{leaf}");
+        #[cfg(feature = "quickjs")]
+        assert_eq!(native, build(false), "{leaf}");
+    }
+}
+
+#[test]
 fn bootstrap_namespace_macros_match_quickjs() {
     let root = temp_dir::TempDir::new("native-bootstrap");
     std::fs::create_dir(root.join("bootstrap")).unwrap();

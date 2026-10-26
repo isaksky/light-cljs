@@ -157,11 +157,52 @@ light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/promesa/uti
 
 The former `core.partitionBy` error is gone: cuerdas' `(partition-by string?)`,
 one-argument `filter` and `mapcat`, their `comp`, and three-argument `into` now
-run natively, as do the cuerdas `as->` occurrences. The next failures are native
-JavaScript frontend limits, tracked together by light-cljs-510. Neither Penpot
-entry completes natively yet. This is separate from light-cljs-505's removed
-reader-registration source growth; the failing declarations here are
-`app.common.record/defrecord` and `promesa.util/with-open`, respectively.
+run natively, as do the cuerdas `as->` occurrences.
+
+Light-cljs-510 fixes both frontend admission failures. The actual evaluated
+inputs were the generated factory expressions
+`rt => rt.core.macroReaderFunction((UNIT)(rt))`, 37,597 bytes for
+`app.common.record/defrecord` and 8,478 bytes for `promesa.util/with-open` in
+the captured failing builds. Both exceeded weighted parser nesting256:
+syntax quote emits multiple `sequence`, `seq`, `concat` and `list` calls per
+source level, including around generated `for` bodies. The larger factory's
+initial compilation failed, and its fallback to dynamic eval masked the
+nesting error with eval's size error. The declarations' source text was not
+the JavaScript input. Reader registrations were unrelated.
+
+Native macro emission now writes constructor trees of three or more levels
+as shallow statements with temporary locals. Explicit worklists preserve
+left-to-right evaluation of every occurrence; branches and function bodies
+keep their original evaluation sites. These units then use the existing
+shared-factory compilation boundary, on its 2 MiB helper stack. Parser
+nesting256, the 64 KiB VM stack boundary, dynamic eval's 16,384 UTF-16-unit
+cap, cancellation and aggregate heap accounting are unchanged. Application
+and legacy macro emission keep their existing output.
+
+Fresh native-only builds with the same five absolute source roots and
+`--jobs 1 --no-cache` budgets above pass both former failure sites. Their
+next first errors are:
+
+`--entry app.render`:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/geom/point.cljc:29:1: macro expansion: while expanding cr/defrecord: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/geom/point.cljc:29:1: macro app.common.record/defrecord: big-boy-pants-js: Error: unsupported operation: native macro runtime core.gensym; definition /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/record.cljc:343:1 (bytes 830..856)
+```
+
+`--entry app.main`:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/logging.cljc:306:24: macro expansion: while expanding str/ffmt: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/logging.cljc:306:24: macro cuerdas.core/ffmt: big-boy-pants-js: Error: unsupported operation: native macro runtime core.reSeq; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:1056:1 (bytes 11076..11141)
+```
+
+Neither entry completes natively yet. These are runtime core-service gaps.
+`tests/fixtures/native-helper-demand/frontend` retains the two original
+macro declarations with their MPL notices and unrelated definitions removed.
+`penpot_macro_declarations_fit_the_native_frontend` builds them natively and
+compares the application output with QuickJS when enabled.
+`deep_native_constructor_trees_preserve_effects_and_provenance` compares
+70-level trees, sibling effects, branches, exception/finally order, closures,
+raw-JavaScript hygiene and input occurrence identity against QuickJS.
 
 ### Native forms
 
@@ -334,9 +375,11 @@ Compiler literals, dynamic reader services, compiler build
 services and generated-symbol services are not implemented. Native
 symbol/keyword component spellings must
 round-trip unambiguously, as described in the engine's native form contract.
-JavaScript dynamic compilation currently limits each emitted unit to 16,384 UTF-16
-code units. Engine syntax/operation errors are reported with the macro's call and
-definition locations.
+JavaScript dynamic eval limits its input to 16,384 UTF-16 code units. Larger
+compiler-generated function factories use shared compilation; native
+syntax-quote constructor trees are flattened as described above. Arbitrary
+JavaScript nesting still obeys the parser's bound. Engine syntax/operation
+errors are reported with the macro's call and definition locations.
 
 Native tasks skip JavaScript reader-namespace registrations before generating
 their source. These tables serve the legacy runtime's reader; native macros

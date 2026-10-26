@@ -1359,10 +1359,9 @@ const LAZY_CONSTANT_NODES: u32 = 1024;
 
 /// The most operands a native compile-time unit passes to one counted
 /// engine constructor (`__rt.formVector(…)`); larger literals and calls use
-/// the runtime's array constructors, whose operand stack stays small. (A
-/// literal past the limit does not fit the engine's 16,384-unit eval source
-/// limit as one macro unit; `bbp_evaluator` tests that emission selects
-/// those constructors and that they check what the inline forms check.)
+/// the runtime's array constructors, whose operand stack stays small.
+/// `bbp_evaluator` tests that emission selects those constructors and that
+/// they check what the inline forms check.
 const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
 
 /// Prepare native collection dispatch or read the legacy `.call` method before
@@ -1648,6 +1647,10 @@ enum TypeBrands {
 
 struct Emitter<'a> {
     native_forms: bool,
+    /// Direct operands already evaluated by `native_form_statements`, in
+    /// occurrence order (the same ExprId can occur more than once).
+    native_arguments: std::collections::VecDeque<(ExprId, usize)>,
+    native_temporary: usize,
     /// [`Emitter::struct_fields`] by method, computed once each.
     struct_targets: std::cell::RefCell<HashMap<crate::analyzer::RecurTargetId, bool>>,
     /// In a native compile-time unit, the struct types its `deftype`s and
@@ -1870,6 +1873,8 @@ impl<'a> Emitter<'a> {
             .filter(|_| direct.is_some());
         Emitter {
             native_forms: false,
+            native_arguments: Default::default(),
+            native_temporary: 0,
             struct_targets: Default::default(),
             native_types: Vec::new(),
             registration_chunks: Vec::new(),
@@ -7195,9 +7200,113 @@ impl<'a> Emitter<'a> {
     fn value(&mut self, id: ExprId) {
         let site = self.site.replace(id);
         self.mark(Some(id));
-        self.value_expr(id);
+        if self
+            .native_arguments
+            .front()
+            .is_some_and(|&(arg, _)| arg == id)
+        {
+            let (_, temporary) = self.native_arguments.pop_front().unwrap();
+            write!(self.output, "temporary{temporary}_0").unwrap();
+        } else if self.native_forms && self.deep_native_form(id) {
+            let wrapper = self.iife_open(id, true);
+            self.output.push('\n');
+            self.indent += 1;
+            let temporary = self.native_form_statements(id);
+            self.indentation();
+            self.return_open();
+            write!(self.output, "temporary{temporary}_0").unwrap();
+            self.return_close();
+            self.output.push_str(";\n");
+            self.indent -= 1;
+            self.indentation();
+            self.iife_close(wrapper);
+        } else {
+            self.value_expr(id);
+        }
         self.site = site;
         self.mark(site);
+    }
+
+    /// The eagerly evaluated operands of native syntax-quote constructors.
+    /// These calls bypass JavaScript property lookup already; extracting
+    /// their operands preserves evaluation order, throws and lazy realization.
+    /// Stop at other calls, branches and closures so they keep their scope
+    /// and conditional evaluation. Legacy/application emission never uses this.
+    fn native_form_arguments(&self, id: ExprId) -> Option<&'a [ExprId]> {
+        use crate::CoreFnId as C;
+        let ExprKind::Call { callee, args } = &self.program.exprs[id.0].kind else {
+            return None;
+        };
+        let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind else {
+            return None;
+        };
+        if self.replaced(core.runtime_name()) {
+            return None;
+        }
+        match (core, args.len()) {
+            (C::Seq | C::Sequence, 1) | (C::WithMeta | C::Cons, 2) => Some(args),
+            (C::List | C::Vector | C::Concat, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => Some(args),
+            _ => None,
+        }
+    }
+
+    /// A syntax quote expands each source level into several nested seq,
+    /// concat and list calls. Keep the engine's weighted nesting limit of
+    /// 256, rather than spending it on compiler-generated constructor trees.
+    /// Three constructor levels leave room for the surrounding macro body.
+    fn deep_native_form(&self, id: ExprId) -> bool {
+        let mut pending = vec![(id, 0)];
+        while let Some((id, depth)) = pending.pop() {
+            if let Some(args) = self.native_form_arguments(id) {
+                if depth == 2 {
+                    return true;
+                }
+                pending.extend(args.iter().map(|&arg| (arg, depth + 1)));
+            }
+        }
+        false
+    }
+
+    /// Evaluate a constructor tree as shallow statements in left-to-right
+    /// postorder. Each occurrence gets its own local; neither effectful
+    /// operands nor constructors are deduplicated. Use an explicit worklist
+    /// so flattening itself adds no recursion to the emitter's Rust stack.
+    fn native_form_statements(&mut self, id: ExprId) -> usize {
+        let outer = std::mem::take(&mut self.native_arguments);
+        let mut pending = vec![(id, false)];
+        let mut values = Vec::new();
+        while let Some((id, ready)) = pending.pop() {
+            let args = self.native_form_arguments(id);
+            if !ready && let Some(args) = args {
+                pending.push((id, true));
+                pending.extend(args.iter().rev().map(|&arg| (arg, false)));
+                continue;
+            }
+            if let Some(args) = args {
+                let first = values.len() - args.len();
+                self.native_arguments = args.iter().copied().zip(values.drain(first..)).collect();
+            }
+            let temporary = self.native_temporary;
+            self.native_temporary += 1;
+            self.indentation();
+            write!(self.output, "const temporary{temporary}_0 = ").unwrap();
+            // The constructor's arguments read the locals above. A leaf
+            // emits normally, including any independent quote in its body.
+            if args.is_some() {
+                let site = self.site.replace(id);
+                self.mark(Some(id));
+                self.value_expr(id);
+                self.site = site;
+            } else {
+                self.value(id);
+            }
+            debug_assert!(self.native_arguments.is_empty());
+            self.output.push_str(";\n");
+            values.push(temporary);
+        }
+        self.native_arguments = outer;
+        debug_assert_eq!(values.len(), 1);
+        values[0]
     }
 
     fn value_expr(&mut self, id: ExprId) {
