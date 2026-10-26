@@ -431,6 +431,7 @@ fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Fault> {
         FormOp::CljSymbol => Some(clj::symbol(heap, &a(0))?),
         FormOp::CljSymbolNs => Some(clj::symbol_ns(heap, &a(0), &a(1))?),
         FormOp::CljDispatch => Some(clj::dispatch(heap, &a(0), &a(1))?),
+        FormOp::CljIsAtom => Some(Value::Bool(atom::is_atom(heap, &a(0)))),
         _ => None,
     };
     if let Some(result) = clj {
@@ -544,6 +545,7 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         | FormOp::CljKeywordNs
         | FormOp::CljSymbol
         | FormOp::CljDispatch
+        | FormOp::CljIsAtom
         | FormOp::CljSymbolNs => Value::Undefined,
     })
 }

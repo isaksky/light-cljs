@@ -1464,11 +1464,13 @@ pub enum FormOp {
     RecordFromMap = 45,
     /// table v → implementation, null or undefined (`cljDispatch`).
     CljDispatch = 46,
+    /// v → whether it is an atom (`cljIsAtom`, light-cljs-480).
+    CljIsAtom = 47,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 47] = [
+    pub const ALL: [FormOp; 48] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1516,6 +1518,7 @@ impl FormOp {
         FormOp::StructTypeOf,
         FormOp::RecordFromMap,
         FormOp::CljDispatch,
+        FormOp::CljIsAtom,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1544,6 +1547,7 @@ impl FormOp {
             | FormOp::CljConcatAll
             | FormOp::CljKeyword
             | FormOp::StructTypeOf
+            | FormOp::CljIsAtom
             | FormOp::CljSymbol => 1,
             FormOp::Keyword
             | FormOp::Symbol
@@ -1626,6 +1630,7 @@ impl FormOp {
             FormOp::StructTypeOf => "structTypeOf",
             FormOp::RecordFromMap => "recordFromMap",
             FormOp::CljDispatch => "cljDispatch",
+            FormOp::CljIsAtom => "cljIsAtom",
         }
     }
 }

@@ -6886,6 +6886,13 @@ impl<'s> Lowerer<'s> {
                 }
                 self.out().op(op, at);
             }
+            Lowering::OpThenPop(op) => {
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.out().op(op, at);
+                self.out().op(Opcode::Pop, at);
+            }
             Lowering::Counted(op) => {
                 for arg in args {
                     self.expr(arg)?;

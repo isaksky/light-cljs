@@ -749,3 +749,53 @@ fn a_vm_created_atom_survives_yield_and_collection_and_updates() {
     assert_eq!(items(&rt, &loaded), [ValueView::Number(2.0)]);
     swapped(rt.atom_compare_and_set(&atom, &loaded, &initial));
 }
+
+/// JavaScript source reaches atoms through the reserved intrinsics
+/// (light-cljs-480): `__rt.atomNew`, `__rt.atomLoad`, `__rt.atomCas`, which
+/// evaluates to its witness (the expected value itself when it swapped),
+/// and the type test `__rt.cljIsAtom`. Two tasks share one atom by
+/// identity. Creating an atom holding task-owned mutation fails the task
+/// with `NotShareable`, which no handler catches, like the bytecode op.
+#[test]
+fn javascript_source_uses_atoms_through_the_reserved_intrinsics() {
+    use big_boy_pants_js::frontend::compile_function;
+    let rt = Runtime::new();
+    let run = |src: &str, args: &[&Rooted]| {
+        let code = compile_function(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        complete(rt.spawn(&code, args).unwrap().run().unwrap())
+    };
+    let atom = run("function f() { return __rt.atomNew(1); }", &[]);
+    let checked = run(
+        "function f(a) {
+            const seen = __rt.atomLoad(a);
+            const swapped = __rt.atomCas(a, seen, seen + 1);
+            const stale = __rt.atomCas(a, seen, 99);
+            return __rt.vector(seen, swapped, stale, __rt.atomLoad(a),
+              __rt.cljIsAtom(a), __rt.cljIsAtom(__rt.vector()), __rt.cljIsAtom(null));
+        }",
+        &[&atom],
+    );
+    assert_eq!(
+        items(&rt, &checked),
+        [
+            ValueView::Number(1.0),
+            ValueView::Number(1.0),
+            ValueView::Number(2.0),
+            ValueView::Number(2.0),
+            ValueView::Bool(true),
+            ValueView::Bool(false),
+            ValueView::Bool(false),
+        ]
+    );
+    // Another task sees the same atom and its value.
+    let again = run("function f(a) { return __rt.atomLoad(a); }", &[&atom]);
+    assert_eq!(again.view(), ValueView::Number(2.0));
+    let code = compile_function(
+        "function f() { try { __rt.atomNew({}); } catch (e) { return 'caught'; } }",
+    )
+    .unwrap();
+    assert_eq!(
+        failed_kind(rt.spawn(&code, &[]).unwrap().run().unwrap()),
+        VmErrorKind::Atom(AtomErrorKind::NotShareable)
+    );
+}

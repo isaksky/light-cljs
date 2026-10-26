@@ -299,9 +299,11 @@ instruction (operands, results and run-time errors: `crate::vm::intrinsics`,
 | `__rt.needAll(defs, kind)` | `need_all` | resumable native (clj-quickjs-12): a new vector of the shared results `kind` of each definition id in the vector `defs`, suspending at the call for each pending one |
 | `__rt.formList(x…)`, `__rt.formVector(x…)`, `__rt.formMap(k, v, …)` | `new_form_list n`, `new_form_vector n`, `new_form_map n` | new native Clojure form list, vector or map (light-cljs-466); map keys are structural, a later equal key wins |
 | `__rt.formKeyword(ns, name)`, `__rt.formSymbol(ns, name)` and the other `__rt.form*` operations | `form_op k` | one form-value operation (`crate::vm::intrinsics`, "Form intrinsics"; contract in `crate::collections::form`) |
+| `__rt.atomNew(v)`, `__rt.atomLoad(a)` | `atom_new`, `atom_load` | a new shared (multi-writer) atom holding `v`, which must be shareable; an atom's current value (light-cljs-480) |
+| `__rt.atomCas(a, e, n)` | `atom_cas`, `pop` | identity compare-and-set, evaluating to its witness: `e` itself when it installed `n`, else the current value |
+| `__rt.cljIsAtom(v)` | `form_op` | whether `v` is an atom |
 
-Atoms additionally have VM opcodes `atom_new`, `atom_load`, `atom_cas`; they are
-exposed to Rust by `Runtime`/`Scope`, not source `__rt` names. Native maps use
+Atoms are also exposed to Rust by `Runtime`/`Scope`. Native maps use
 SameValueZero keys with objects by identity; form maps (`__rt.formMap`) are a
 separate kind whose keys compare by ClojureScript value equality. Structural `value_equals`, identity
 and provenance are different operations. Persistent updates share unchanged

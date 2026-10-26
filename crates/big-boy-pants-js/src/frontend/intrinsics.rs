@@ -96,6 +96,10 @@ pub(crate) enum Lowering {
     /// (`__rt.formKeyword(ns, name)` and the other fixed-arity form
     /// intrinsics).
     FormOp(FormOp),
+    /// The arguments, then this instruction, then `pop`: an instruction
+    /// that pushes two results evaluates to the lower one
+    /// (`__rt.atomCas(a, e, n)` is `atom_cas`'s witness, light-cljs-480).
+    OpThenPop(Opcode),
 }
 
 /// One entry of the intrinsic table.
@@ -148,6 +152,16 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
         name: "need",
         arity: Arity::Exactly(2),
         lowering: Lowering::Need,
+    },
+    // Shared atoms (`crate::atom`; light-cljs-480): a new multi-writer
+    // atom, its current value, and an identity compare-and-set evaluating
+    // to its witness (`expected` itself when it swapped).
+    op("atomNew", 1, Opcode::AtomNew),
+    op("atomLoad", 1, Opcode::AtomLoad),
+    Intrinsic {
+        name: "atomCas",
+        arity: Arity::Exactly(3),
+        lowering: Lowering::OpThenPop(Opcode::AtomCas),
     },
     op("reduce", 3, Opcode::Reduce),
     op("needAll", 2, Opcode::NeedAll),
@@ -224,6 +238,7 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::StructTypeOf),
     form_op(FormOp::RecordFromMap),
     form_op(FormOp::CljDispatch),
+    form_op(FormOp::CljIsAtom),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {

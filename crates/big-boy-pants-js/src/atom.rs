@@ -502,6 +502,16 @@ fn access(heap: &Heap, atom: Value) -> Result<Access<'_>, AtomError> {
     })
 }
 
+/// Whether `v` is an atom (`__rt.cljIsAtom`): a type test that reads no
+/// value and takes no mutator registration beyond the heap read.
+pub(crate) fn is_atom(heap: &Heap, v: &Value) -> bool {
+    let Value::Object(id) = v else {
+        return false;
+    };
+    heap.read(*id, |o| matches!(o, HeapObject::Atom(_)))
+        .unwrap_or(false)
+}
+
 /// Create an atom holding `initial` (checked shareable) and pass it to
 /// `keep` inside the creating mutator registration: `keep` roots it, or the
 /// caller is itself a registered mutator (a VM run) that will.

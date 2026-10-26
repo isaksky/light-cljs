@@ -67,6 +67,11 @@ impl DependencyId {
     pub const fn new(raw: u64) -> Self {
         DependencyId(raw)
     }
+
+    /// The host-assigned number.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
 }
 
 impl fmt::Display for DependencyId {
