@@ -240,8 +240,17 @@ runtime's semantics: keyword lookup of fields, then the extension map; `assoc`,
 `vals`, `meta`/`with-meta`, `map?` and `record?`; `=` of the same type with
 equal fields and extension entries; and the runtime's record hash. A deftype
 instance compares and hashes by identity. Interop on a struct (`(.-x s)`) reads
-a JavaScript view of its fields. A type with a mutable field keeps task-owned
-JavaScript instances, dispatched by their type, and does not publish.
+a JavaScript view of its fields. A type with a mutable field, and a `deftype` without methods (whose
+fields the compiler cannot tell apart), keeps task-owned JavaScript instances,
+dispatched by their type, which do not publish. `Object` methods are methods of
+those instances and of a struct's interop view; `instance?` of a struct type
+compares the value's type identity; `implements?` sees only the type's own
+implementations, `satisfies?` host and `default` extensions too; a protocol
+with `:extend-via-metadata` reads the receiver's metadata first. A struct of a
+type the task has not declared yet (a value another task published) demands the
+type's declaration at its first dispatch or interop. `(R. a b meta ext)` keeps
+the record's metadata and extension map. Extensions that macro code runs
+outside a bundle come after every bundle's, in the order run.
 
 Not supported: user implementations of core protocols (`IEquiv`, `IHash`,
 `ILookup`, `ISeqable`, `ICounted` …) are installed in their tables but the
@@ -250,10 +259,10 @@ native core operations (`=`, `hash`, `get`, `seq`, `count`) do not call them;
 form kinds (`Keyword`, `Symbol`, `PersistentVector`, `List`, `EmptyList`,
 `PersistentHashSet`, and `PersistentArrayMap` and `PersistentHashMap`, which
 are one native map kind, so extending either extends every map), variadic
-protocol methods, `(R. a b meta ext)` with explicit metadata or extension map
-(extra constructor arguments are ignored), `getBasis` and other properties of a
-struct type, and a macro returning a struct (export fails with an explicit
-error). A helper analyzed on demand that itself expands
+protocol methods, `map->R` of a record with mutable fields, `getBasis` and
+other properties of a struct type, and a macro returning a struct (export fails
+with an explicit error). User core-protocol implementations are
+light-cljs-497. A helper analyzed on demand that itself expands
 a macro fails with `invalid value handle`, independently of protocols, which is
 why the frontier test above evaluates its earlier expansion at top level.
 

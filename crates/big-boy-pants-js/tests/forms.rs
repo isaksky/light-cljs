@@ -937,17 +937,23 @@ fn structs_follow_record_semantics_dispatch_by_type_identity_and_publish() {
            check(__rt.cljDispatch(table, r) === 'R impl' && __rt.cljDispatch(table, 'x') === 'string impl', 'dispatch');
            check(__rt.cljDispatch(table, __rt.structNew(T, 1)) === 'default impl', 'default');
            check(__rt.cljDispatch(table, {}) === undefined, 'object');
-           return __rt.formVector(r, __rt.structNew(T, {}));
+           return __rt.formVector(r, __rt.structNew(T, {}),
+             __rt.cljAssoc(r, c, {}), __rt.structNew(R, 1, 2, __rt.formMap(c, {}), null),
+             __rt.cljAssoc(r, c, __rt.formVector('kept')));
          }",
         &[],
     );
-    let (record, holder) = rt.scope(|s| {
+    let [record, holder, extended, annotated, kept] = rt.scope(|s| {
         let v = s.local(&made).unwrap();
-        (
-            s.persist(s.form_nth(v, 0).unwrap()),
-            s.persist(s.form_nth(v, 1).unwrap()),
-        )
+        std::array::from_fn(|i| s.persist(s.form_nth(v, i).unwrap()))
     });
+    // Extension entries and metadata are walked too.
+    for (value, expected) in [(&extended, "value{:c}"), (&annotated, "value.meta{:c}")] {
+        let PublishError::NotShareable { path, .. } = rt.publish(value).unwrap_err() else {
+            panic!("published a record holding an object");
+        };
+        assert_eq!(path.to_string(), expected);
+    }
     rt.publish(&record).unwrap();
     let PublishError::NotShareable { path, .. } = rt.publish(&holder).unwrap_err() else {
         panic!("published a struct holding an object");
@@ -958,9 +964,17 @@ fn structs_follow_record_semantics_dispatch_by_type_identity_and_publish() {
     // The record's fields survive collection while it is rooted.
     let field = call(
         &rt,
-        "function read(r) { return __rt.formNth(__rt.cljGet(r, __rt.formKeyword(null, 'b'), null), 0); }",
-        &[&record],
+        "function read(r, k) { return __rt.formNth(__rt.cljGet(r, __rt.formKeyword(null, 'b'), null), 0) + __rt.formNth(__rt.cljGet(k, __rt.formKeyword(null, 'c'), null), 0); }",
+        &[&record, &kept],
     );
     let read = rt.scope(|s| s.view(s.local(&field).unwrap()));
-    assert!(matches!(read, ValueView::Number(n) if n == 2.0), "{read:?}");
+    assert!(matches!(read, ValueView::String), "{read:?}");
+    rt.scope(|s| {
+        assert_eq!(
+            s.string(s.local(&field).unwrap())
+                .unwrap()
+                .to_string_lossy(),
+            "2kept"
+        )
+    });
 }

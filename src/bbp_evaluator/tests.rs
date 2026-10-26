@@ -965,6 +965,7 @@ fn a_record_built_by_a_helper_initializer_is_published_and_read_by_two_tasks_by_
         let check = evaluator
             .evaluate_unit(
                 "rt => { const roots = globalThis.__lightCompilerRoots, r = roots['cljs.user/helper'];
+                 if (rt.nativeInterop(r).a !== 1) throw new Error('interop before the type is read');
                  if (__rt.cljGet(r, __rt.formKeyword(null, 'a'), null) !== 1) throw new Error('field');
                  if (__rt.structTypeOf(r) !== roots['cljs.user/R']) throw new Error('type identity');
                  if (!__rt.formEquals(r, roots['cljs.user/->R'](1, __rt.formVector(2)))) throw new Error('equality');

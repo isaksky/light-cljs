@@ -705,6 +705,10 @@ pub(crate) fn dispatch_key(heap: &Heap, v: &Value) -> Option<Value> {
                     FormBody::Type(_) => Value::String(JsString::from("type")),
                     FormBody::Keyword(_) => key_string(6),
                     FormBody::Symbol(_) => key_string(7),
+                    // `()` is `EmptyList`, apart from `List`.
+                    FormBody::List(items) if items.len() == 0 => {
+                        Value::String(JsString::from("empty-list"))
+                    }
                     FormBody::List(_) => key_string(8),
                     FormBody::Vector(_) => key_string(9),
                     FormBody::Map(_) => key_string(10),

@@ -6227,7 +6227,12 @@ impl<'a> Emitter<'a> {
 
     /// Whether a method of these is one of a type with a `^:mutable` or
     /// `^:volatile-mutable` field (light-cljs-478).
-    fn mutable_type(&self, methods: &[(MethodDispatch, FnMethod)]) -> bool {
+    /// A `deftype` without methods has no field bindings to tell, so it
+    /// keeps task-owned instances; a `defrecord` has no mutable fields.
+    fn mutable_type(&self, record: bool, methods: &[(MethodDispatch, FnMethod)]) -> bool {
+        if methods.is_empty() {
+            return !record;
+        }
         methods.iter().any(|(_, m)| !self.struct_fields(m.target))
     }
 
@@ -6245,9 +6250,21 @@ impl<'a> Emitter<'a> {
                     .field_bindings
                     .iter()
                     .any(|(local, &(t, mutable))| {
-                        mutable && t == target && self.program.locals[local.0].name != "__hash"
+                        mutable
+                            && t == target
+                            && !(self.program.locals[local.0].name == "__hash"
+                                && self.record_target(target))
                     })
             })
+    }
+
+    /// Whether the method `target` is a record's: its type has the
+    /// record's `__extmap` field.
+    fn record_target(&self, target: crate::analyzer::RecurTargetId) -> bool {
+        self.program
+            .field_bindings
+            .iter()
+            .any(|(local, &(t, _))| t == target && self.program.locals[local.0].name == "__extmap")
     }
 
     /// Whether field reads of the method `target` read a native struct: in a
@@ -6277,7 +6294,7 @@ impl<'a> Emitter<'a> {
             fields,
             ..
         } = layout;
-        let mutable = self.mutable_type(methods);
+        let mutable = self.mutable_type(record, methods);
         let wrapper = self.iife_open(id, true);
         self.output.push(' ');
         self.product(global);
@@ -6327,7 +6344,14 @@ impl<'a> Emitter<'a> {
                 self.output.push_str("); ");
             }
         }
-        if let Some(map_constructor) = map_constructor {
+        if let Some(map_constructor) = map_constructor
+            && mutable
+        {
+            self.product(*map_constructor);
+            self.output.push_str(
+                " = () => { throw new Error(\"unsupported operation: map-> of a native macro record with mutable fields\"); }; ",
+            );
+        } else if let Some(map_constructor) = map_constructor {
             self.product(*map_constructor);
             self.output.push_str(" = value => __rt.recordFromMap(");
             self.global(global);
@@ -7704,6 +7728,21 @@ impl<'a> Emitter<'a> {
                 if *once {
                     self.output.push_str(" : null");
                 }
+                self.output.push(')');
+            }
+            // A native struct type is not a constructor: `instance?` of one
+            // compares the value's type (light-cljs-478); the value and then
+            // the class are evaluated once, as `x instanceof c` does.
+            ExprKind::InstanceOf { class, value }
+                if self.native_forms
+                    && !matches!(self.program.exprs[class.0].kind, ExprKind::JsGlobal(_)) =>
+            {
+                self.output.push_str(
+                    "((x, c) => __rt.formKind(c) === \"type\" ? __rt.structTypeOf(x) === c : x instanceof c)(",
+                );
+                self.value(*value);
+                self.output.push_str(", ");
+                self.value(*class);
                 self.output.push(')');
             }
             ExprKind::InstanceOf { class, value } => {

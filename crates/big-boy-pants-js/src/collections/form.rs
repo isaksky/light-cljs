@@ -751,14 +751,35 @@ pub(crate) fn new_struct(
     let n = info.fields.len();
     let mut fields = values[..values.len().min(n)].to_vec();
     fields.resize(n, Value::Undefined);
+    // A record constructor's further arguments are its metadata and
+    // extension map (`(R. a b meta ext)`), each a form map or nil.
+    let mut meta = None;
+    let mut ext = None;
+    if info.record {
+        let map = |i: usize| -> Result<Option<(Value, PMap)>, CollectionError> {
+            let Some(v) = values.get(i) else {
+                return Ok(None);
+            };
+            let v = unwrap(heap, v.clone());
+            match form_object(heap, &v).as_deref().map(FormObject::body) {
+                Some(FormBody::Map(m)) => Ok(Some((v, m.clone()))),
+                None if matches!(v, Value::Null | Value::Undefined) => Ok(None),
+                _ => Err(wrong(heap, "form map or nil", &v)),
+            }
+        };
+        meta = map(n)?.map(|(v, _)| v);
+        ext = map(n + 1)?.map(|(_, m)| m).filter(|m| m.len() > 0);
+    }
+    let parts: Vec<Value> = std::iter::once(ty.clone())
+        .chain(values.iter().take(n + 2).cloned())
+        .collect();
     let body = StructBody {
         ty: ty.clone(),
         info,
         fields: PVector::try_from_values(heap, &fields)?,
-        ext: None,
+        ext,
     };
-    let parts: Vec<Value> = std::iter::once(ty.clone()).chain(fields).collect();
-    alloc(heap, FormObject::new(FormBody::Struct(body), None), &parts)
+    alloc(heap, FormObject::new(FormBody::Struct(body), meta), &parts)
 }
 
 /// The struct body of `v` (occurrences are not transparent here).
@@ -992,6 +1013,11 @@ pub(crate) fn kind(heap: &Heap, v: &Value) -> Option<FormKind> {
 pub(crate) fn name(heap: &Heap, v: &Value) -> Result<FormName, CollectionError> {
     match form_object(heap, v).as_deref().map(FormObject::body) {
         Some(FormBody::Keyword(n) | FormBody::Symbol(n)) => Ok(n.clone()),
+        // A struct type's qualified name, as one unqualified name.
+        Some(FormBody::Type(info)) => Ok(FormName {
+            namespace: None,
+            name: info.name.clone(),
+        }),
         _ => Err(wrong(heap, "keyword or symbol", v)),
     }
 }

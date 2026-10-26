@@ -1287,6 +1287,68 @@ const PROTOCOL_FIXTURES: &[(&str, &str)] = &[
          (defmacro m [] (inc (p r))) (js/console.log (m))",
         "42\n",
     ),
+    // A methodless deftype with a mutable field keeps a JavaScript
+    // instance that interop assigns.
+    (
+        "(deftype T [^:mutable a]) (defmacro m [] (let [t (T. 1)] (set! (.-a t) 2) (.-a t))) \
+         (js/console.log (m))",
+        "2\n",
+    ),
+    // A record constructor's metadata and extension map.
+    (
+        "(defrecord R [a]) (defmacro m [] (let [r (R. 1 {:tag true} {:extra 2})] [(meta r) (:extra r) (count r)])) \
+         (js/console.log (pr-str (m)))",
+        "[{:tag true} 2 2]\n",
+    ),
+    // Object methods on struct and mutable instances.
+    (
+        "(deftype T [x] Object (value [_] x)) (deftype U [^:mutable y] Object (value [_] (set! y (inc y)) y)) \
+         (defmacro m [] [(.value (T. 7)) (.value (U. 1))]) (js/console.log (pr-str (m)))",
+        "[7 2]\n",
+    ),
+    // `instance?` of struct types.
+    (
+        "(deftype T []) (deftype U []) (defmacro m [] [(instance? T (T.)) (instance? U (T.))]) \
+         (js/console.log (pr-str (m)))",
+        "[true false]\n",
+    ),
+    // An extension that macro code runs overrides the type's own.
+    (
+        "(defprotocol P (p [x])) (deftype T [] P (p [_] 1)) (defn install [] (extend-type T P (p [_] 2))) \
+         (defmacro m [] (let [a (p (T.))] (install) [a (p (T.))])) (js/console.log (pr-str (m)))",
+        "[1 2]\n",
+    ),
+    // `:extend-via-metadata`.
+    (
+        "(defprotocol P :extend-via-metadata true (p [x])) (extend-protocol P default (p [_] :default)) \
+         (defmacro m [] [(p (with-meta [1] {`p (fn [_] :meta)})) (p [1])]) (js/console.log (pr-str (m)))",
+        "[:meta :default]\n",
+    ),
+    // `implements?` sees the type's own implementations only.
+    (
+        "(defprotocol P (p [x])) (extend-protocol P string (p [x] 1)) (deftype T [] P (p [_] 2)) \
+         (defmacro m [] [(implements? P \"x\") (satisfies? P \"x\") (implements? P (T.))]) \
+         (js/console.log (pr-str (m)))",
+        "[false true true]\n",
+    ),
+    // Variadic comparisons and identity through input occurrences.
+    (
+        "(defmacro m [x] [(< 1 3 2) (< 1) (<= 1 1 2) (> 3 2 1) (>= 1 2) (identical? x 1)]) \
+         (js/console.log (pr-str (m 1)))",
+        "[false true true true false true]\n",
+    ),
+    // `EmptyList` and `List` are distinct core types.
+    (
+        "(defprotocol P (p [x])) (extend-protocol P EmptyList (p [_] :empty) List (p [_] :list)) \
+         (defmacro m [] [(p '()) (p '(1))]) (js/console.log (pr-str (m)))",
+        "[:empty :list]\n",
+    ),
+    // One signature above arity three pads its arguments.
+    (
+        "(defprotocol P (p [x a b c])) (deftype T [] P (p [_ a b c] [a (nil? c)])) \
+         (defmacro m [] (p (T.) 9)) (js/console.log (pr-str (m)))",
+        "[9 true]\n",
+    ),
 ];
 
 #[test]

@@ -27,9 +27,13 @@ const decl = (() => {
     if (core !== undefined) return core;
     throw new Error('unsupported operation: native protocol extension of ' + String(target));
   };
+  // An extension a bundle installs has the bundle's order; one that macro
+  // code runs outside any bundle is an overlay after every bundle's, in the
+  // order run, visible at every frontier.
+  let overlays = 0;
   const extend = (target, specs) => {
-    const key = keyOf(target);
-    for (const [name, arity, fn] of specs) methodTable(name, arity).entries.push({order, key, fn});
+    const key = keyOf(target), overlay = order === 0 ? ++overlays : 0;
+    for (const [name, arity, fn] of specs) methodTable(name, arity).entries.push({order, overlay, key, fn});
     version++;
     return null;
   };
@@ -60,11 +64,23 @@ const decl = (() => {
     const pending = extensions.get(t.protocol);
     if (pending !== undefined) for (const b of pending) { if (b.order > frontier) break; force(b); }
     let map = __rt.map();
-    const visible = t.entries.filter(e => e.order <= frontier).sort((a, b) => a.order - b.order);
+    const visible = t.entries.filter(e => e.overlay > 0 || e.order <= frontier)
+      .sort((a, b) => a.overlay - b.overlay || a.order - b.order);
     for (const e of visible) map = __rt.assoc(map, e.key, e.fn);
     t.map = map; t.version = version; t.frontier = frontier;
   };
-  const resolve = (t, x) => {
+  // A struct of a type this task has not declared yet (a published value
+  // another task made): demand the type's declaration, its product of the
+  // same name, so that its implementations and view exist here too.
+  const declare = x => {
+    const ty = __rt.structTypeOf(x);
+    if (ty === null || views.has(ty)) return false;
+    const name = __rt.formName(ty);
+    if (!(name in globalThis.__lightCompilerRoots)) return false;
+    globalThis.__lightCompilerRoots[name];
+    return true;
+  };
+  const lookup = (t, x) => {
     if (t.version !== version || t.frontier !== frontier) build(t);
     let m = __rt.cljDispatch(t.map, x);
     if (m === undefined) {
@@ -76,43 +92,78 @@ const decl = (() => {
     }
     return m;
   };
+  const resolve = (t, x) => {
+    const m = lookup(t, x);
+    return m == null && declare(x) ? lookup(t, x) : m;
+  };
   const missing = (name, x) => new Error('No protocol method ' + name + ' defined for type ' + (x === null || x === undefined ? 'null' : __rt.formKind(x) ?? typeof x));
-  const method = (key, name, arities) => {
+  // `:extend-via-metadata`: the receiver's metadata entry for the method's
+  // qualified symbol comes first.
+  const viaMeta = (name, x) => {
+    const meta = __rt.cljMeta(x);
+    return meta === null ? null : __rt.cljGet(meta, __rt.cljSymbol(name), null);
+  };
+  const method = (key, name, arities, viaMetadata) => {
     const ts = arities.map(n => methodTable(key, n));
-    if (arities.length === 1) {
-      const t = ts[0];
-      switch (arities[0]) {
+    const find = (t, x) => {
+      if (viaMetadata) { const f = viaMeta(name, x); if (f !== null) return [f, false]; }
+      const m = resolve(t, x);
+      if (m == null) throw missing(name, x);
+      return [m, true];
+    };
+    if (arities.length === 1 && !viaMetadata) {
+      const t = ts[0], n = arities[0];
+      switch (n) {
         case 1: return x => { const m = resolve(t, x); if (m == null) throw missing(name, x); return m.call(x, x); };
         case 2: return (x, a) => { const m = resolve(t, x); if (m == null) throw missing(name, x); return m.call(x, x, a); };
         case 3: return (x, a, b) => { const m = resolve(t, x); if (m == null) throw missing(name, x); return m.call(x, x, a, b); };
       }
     }
     return function (x, ...args) {
-      const i = arities.indexOf(args.length + 1);
+      let i = arities.indexOf(args.length + 1);
+      // One signature: its arity, padded or truncated as a JavaScript
+      // call would be.
+      if (arities.length === 1) { i = 0; args.length = arities[0] - 1; }
       if (i < 0) throw new Error('Invalid arity: ' + (args.length + 1));
-      const m = resolve(ts[i], x);
-      if (m == null) throw missing(name, x);
-      return m.call(x, x, ...args);
+      const [m, own] = find(ts[i], x);
+      return own ? m.call(x, x, ...args) : m(x, ...args);
     };
   };
   const satisfies = (key, x) => resolve(methodTable(key, 0), x) != null;
+  // `implements?`: the value's own type implements the protocol, not a
+  // host-type or default extension.
+  const implementsDirectly = (key, x) => {
+    const t = methodTable(key, 0);
+    resolve(t, x);
+    let ty = __rt.structTypeOf(x);
+    if (ty === null && __rt.formKind(__rt.formValue(x)) === null && x !== null && typeof x === 'object') ty = x.__lightNativeType ?? null;
+    return ty !== null && __rt.getOr(t.map, ty, null) !== null;
+  };
+  // A type's `Object` methods, as JavaScript methods taking the receiver.
+  const objectMethods = specs => specs.filter(([name]) => name.startsWith('Object/'))
+    .map(([name, , fn]) => [name.slice(7), fn]);
   // A type: a native struct type, or with a mutable field the constructor
   // of task-owned JavaScript instances. `view` constructs the JavaScript
   // object a struct's interop reads.
   const type = (fields, specs, view, mutable, ty) => {
-    views.set(ty, {view, fields, record: __rt.formKind(__rt.structNew(ty)) === 'record'});
+    const objects = objectMethods(specs);
+    views.set(ty, {view, fields, objects, record: __rt.formKind(__rt.structNew(ty)) === 'record'});
     extend(ty, specs);
     if (!mutable) return ty;
     view.__lightNativeType = ty;
     view.prototype.__lightNativeType = ty;
+    for (const [member, fn] of objects) view.prototype[member] = function (...a) { return fn.call(this, this, ...a); };
     return view;
   };
   const viewOf = s => {
+    declare(s);
     const info = views.get(__rt.structTypeOf(s));
-    if (info === undefined) throw new Error('unsupported operation: JavaScript interop with a native struct of another task');
+    if (info === undefined) throw new Error('unsupported operation: JavaScript interop with a native struct of an undeclared type');
     const args = info.fields.map(f => __rt.structField(s, f));
     if (info.record) args.push(__rt.cljMeta(s), null, null);
-    return new info.view(...args);
+    const v = new info.view(...args);
+    for (const [member, fn] of info.objects) v[member] = (...a) => fn.call(s, s, ...a);
+    return v;
   };
   const register = (names, indices, location, once, unit) => {
     const b = {order: bundles.length + 1, names, unit, location, state: 0, error: null, products: null};
@@ -135,7 +186,7 @@ const decl = (() => {
   const enter = next => { frontiers.push(frontier); frontier = next; return null; };
   const leave = () => { frontier = frontiers.pop() ?? Infinity; return null; };
   const isRecord = x => { const ty = __rt.structTypeOf(x); return ty !== null && views.get(ty)?.record === true; };
-  return {extend, method, satisfies, type, viewOf, register, enter, leave, coreKeys, isRecord};
+  return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, isRecord};
 })();
 const native = (() => {
   let gensymFloor=0;
@@ -180,6 +231,8 @@ const native = (() => {
   const get = (m,k,n=null) => __rt.cljGet(m,k,n);
   const invoke = (f,...args) => typeof f === 'function' ? f(...args) : __rt.formKind(val(f))==='keyword' ? get(args[0],f,args.length>1?args[1]:null) : get(f,args[0],args.length>1?args[1]:null);
   const unsupported = name => function(){throw new Error('unsupported operation: native macro runtime '+name);};
+  // A comparison of adjacent operands, true for one; as the legacy runtimes.
+  const chain = (xs, test) => { if (xs.length === 0) arity(0); for (let i = 1; i < xs.length; i++) if (!test(val(xs[i - 1]), val(xs[i]))) return false; return true; };
   const each = (op, x, xs) => { for (const y of xs) x = op(x, y); return x; };
   const core = {
     assertions:true,
@@ -213,9 +266,9 @@ const native = (() => {
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
     name:x=>__rt.formName(val(x)), namespace:x=>__rt.formNamespace(val(x)),
     inc:x=>val(x)+1, dec:x=>val(x)-1, multiply:(...xs)=>xs.reduce((a,b)=>a*val(b),1),
-    less:(a,b)=>val(a)<val(b), greater:(a,b)=>val(a)>val(b), lessEqual:(a,b)=>val(a)<=val(b), greaterEqual:(a,b)=>val(a)>=val(b),
+    less:(...xs)=>chain(xs,(a,b)=>a<b), greater:(...xs)=>chain(xs,(a,b)=>a>b), lessEqual:(...xs)=>chain(xs,(a,b)=>a<=b), greaterEqual:(...xs)=>chain(xs,(a,b)=>a>=b),
     str:(...xs)=>xs.map(x=>{x=val(x);if(x==null)return '';if(__rt.formKind(x)!==null)throw new Error('unsupported operation: native macro runtime str of a native form');return String(x);}).join(''),
-    identical:(a,b)=>a===b, isRecord:x=>__rt.formKind(val(x))==='record',
+    identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     exInfo:(m,d)=>new Error(val(m)),
     registerReaderNamespace:()=>null, addReaderDefinitions:()=>null, setReaderNamespace:()=>null,
@@ -226,14 +279,14 @@ const native = (() => {
   // `extend-type` of a core type extends the native form kind it is; array
   // and hash maps are one native kind (light-cljs-478).
   for (const [name, key] of [['Keyword','keyword'],['Symbol','symbol'],['PersistentVector','vector'],
-    ['PersistentArrayMap','map'],['PersistentHashMap','map'],['PersistentHashSet','set'],['List','list'],['EmptyList','list']])
+    ['PersistentArrayMap','map'],['PersistentHashMap','map'],['PersistentHashSet','set'],['List','list'],['EmptyList','empty-list']])
     decl.coreKeys.set(core[name], key);
   for (const name of [/* CORE_KEYS */]) if (!(name in core)) Object.defineProperty(core,name,{get:unsupported('core.'+name)});
   const rt={core,
     nativeInterop:interop,declarationReceiver:x=>x,
     protocol:name=>Object.freeze({name}),
-    protocolMethod:(key,name,arities)=>decl.method(key,name,arities),
-    protocolPredicate:(protocol,key,x)=>decl.satisfies(key,x),
+    protocolMethod:(key,name,arities,viaMetadata)=>decl.method(key,name,arities,viaMetadata===true),
+    protocolPredicate:(protocol,key,x,direct)=>direct?decl.implementsDirectly(key,x):decl.satisfies(key,x),
     extendType:(target,specs)=>decl.extend(target,specs),
     extendInstance:unsupported('extendInstance'),
     nativeType:(fields,specs,record,name,view,mutable,ty)=>decl.type(fields,specs,view,mutable,ty),
