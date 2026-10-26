@@ -1060,9 +1060,9 @@ pub(crate) fn conj(heap: &Heap, coll: &Value, x: &Value) -> Result<Value> {
                     pair.get(0).expect("pair"),
                     pair.get(1).expect("pair"),
                 )?,
-                Some(FormBody::Map(entries)) => {
+                Some(FormBody::Map(_)) => {
                     let mut map = target.clone();
-                    for (k, v) in entries.to_vec() {
+                    for (k, v) in form::entries(heap, &item)? {
                         map = put(&map, k, v)?;
                     }
                     map

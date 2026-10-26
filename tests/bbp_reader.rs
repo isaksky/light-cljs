@@ -99,6 +99,7 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
             r###"(let [m (assoc (dissoc (compiler-reader-read-string "{1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9}") 7 8 9) 0 0)
                       s (conj (disj (compiler-reader-read-string "#{1 2 3 4 5 6 7 8 9}") 7 8 9) 0)]
                   [(pr-str m) (vec m) (vec (keys m)) (pr-str s) (vec s)
+                   (into {} m) (merge {} m) (conj {} m)
                    (assoc (with-meta m {:updated true}) 10 10)
                    (assoc (apply dissoc m (keys m)) 0 0 1 1)] )"###,
         ),
