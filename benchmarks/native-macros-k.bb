@@ -3,7 +3,11 @@
 ;; collection-heavy macro; see benchmarks/native-macros.md, "Per-thread
 ;; factor k".
 ;;
-;;   bb benchmarks/native-macros-k.bb OUTPUT [--runs 5] [--n 0,100,400] NAME=BINARY ...
+;;   bb benchmarks/native-macros-k.bb OUTPUT [--runs 5] [--n 0,100,400]
+;;      [--workload churn|protocol] NAME=BINARY ...
+;;
+;; `churn` is the collection-heavy macro; `protocol` (light-cljs-478)
+;; dispatches protocol methods on records, a deftype and numbers.
 ;;
 ;; One backend must be named v8. Every compile is a fresh `--jobs 1
 ;; --no-cache` process; one warm-up compile per backend and n is
@@ -30,10 +34,29 @@
 (js/console.log (churn N) (churn N) (churn N) (churn N))
 ")
 
+(def protocol-source
+  "(ns k.churn)
+(defprotocol Shape (area [s]) (scale [s k]))
+(defrecord Rect [w h] Shape (area [_] (* w h)) (scale [r k] (assoc r :w (* w k))))
+(defrecord Circle [r] Shape (area [_] (* 3 r r)) (scale [_ k] (->Circle (* r k))))
+(deftype Pt [x] Shape (area [_] 0) (scale [_ k] (Pt. (* x k))))
+(extend-protocol Shape number (area [x] x) (scale [x k] (* x k)))
+(defmacro churn [n]
+  (loop [i 0 j 0 total 0]
+    (if (= i n)
+      total
+      (let [s (if (= j 0) (->Rect i 2) (if (= j 1) (->Circle i) (if (= j 2) (Pt. i) i)))
+            s2 (scale s 2)]
+        (recur (+ i 1) (if (= j 3) 0 (+ j 1))
+               (+ total (area s2) (if (satisfies? Shape s2) 1 0) (if (record? s2) (count s2) 0)))))))
+(js/console.log (churn N) (churn N) (churn N) (churn N))
+")
+
 (defn options [args]
-  (loop [[arg & more] args o {:runs 5 :n [0 100 400] :backends []}]
+  (loop [[arg & more] args o {:runs 5 :n [0 100 400] :backends [] :workload "churn"}]
     (cond
       (nil? arg) o
+      (= arg "--workload") (recur (rest more) (assoc o :workload (first more)))
       (= arg "--runs") (recur (rest more) (assoc o :runs (parse-long (first more))))
       (= arg "--n") (recur (rest more) (assoc o :n (mapv parse-long (str/split (first more) #","))))
       (str/includes? arg "=") (let [[name bin] (str/split arg #"=" 2)]
@@ -64,7 +87,7 @@
           (throw (ex-info "Usage: OUTPUT (new directory) [--runs R] [--n 0,100,400] v8=BIN NAME=BIN ..." {})))
       _ (doseq [n (:n o)]
           (fs/create-dirs (fs/path (:output o) (str "src-" n) "k"))
-          (spit (str (fs/path (:output o) (str "src-" n) "k" "churn.cljs")) (str/replace churn-source "N" (str n))))
+          (spit (str (fs/path (:output o) (str "src-" n) "k" "churn.cljs")) (str/replace ({"churn" churn-source "protocol" protocol-source} (:workload o)) "N" (str n))))
       ;; One discarded warm-up compile per backend and n (file caches).
       _ (doseq [n (:n o) backend (:backends o)] (sample o backend n -1))
       samples (vec (for [run (range (:runs o)) n (:n o)

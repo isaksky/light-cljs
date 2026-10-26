@@ -121,6 +121,13 @@
 //! | `formSet(x1, …, xn)` | `new_form_set n` | new set of the values; of equal members the first is kept (light-cljs-477) | – |
 //! | `formDisj(s, x)` | `form_op` | new set without the member equal to `x` (absent: `s`) | `WrongType` |
 //!
+//! | `structType(name, fields, record)` | `form_op` | a new struct type (light-cljs-478; [`crate::collections::form`], "Structs") | `WrongType` |
+//! | `structNew(type, v1, …)` | `new_struct n` | a struct of `type` with these field values (missing: `undefined`) | `WrongType` |
+//! | `structField(s, name)` | `form_op` | the field named `name` | `WrongType`, `MissingKey` |
+//! | `structTypeOf(v)` | `form_op` | a struct's type, or `null` | – |
+//! | `recordFromMap(type, m)` | `form_op` | `map->R`: fields from `m`'s field keywords, the rest as extension entries | `WrongType` |
+//! | `cljDispatch(table, v)` | `form_op` | protocol dispatch: `v`'s implementation in `table`, its default, `null`, or `undefined` for a JavaScript object | `WrongType` |
+//!
 //! Sets are the fifth collection kind: `formCount`, `formGet` (the stored
 //! member), `formConj` (absent members only), `formWithMeta`,
 //! `formEquals` and `formHash` (`hashUnorderedColl` of the members) accept
@@ -337,6 +344,20 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
             };
             state.replace(n, made)?;
         }
+        Instr::NewStruct(n) => {
+            let n = usize::from(n);
+            let ops = state.operands();
+            let start = ops
+                .len()
+                .checked_sub(n)
+                .ok_or(Fault::Internal("operand stack underflow"))?;
+            let (ty, fields) = match ops[start..].split_first() {
+                Some((ty, fields)) => (ty.clone(), fields),
+                None => (Value::Undefined, &[][..]),
+            };
+            let made = form::new_struct(heap, &ty, fields)?;
+            state.replace(n, made)?;
+        }
         Instr::NewFormMap(n) => {
             let n = 2 * usize::from(n);
             let ops = state.operands();
@@ -409,6 +430,7 @@ fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Fault> {
         FormOp::CljKeywordNs => Some(clj::keyword_ns(heap, &a(0), &a(1))?),
         FormOp::CljSymbol => Some(clj::symbol(heap, &a(0))?),
         FormOp::CljSymbolNs => Some(clj::symbol_ns(heap, &a(0), &a(1))?),
+        FormOp::CljDispatch => Some(clj::dispatch(heap, &a(0), &a(1))?),
         _ => None,
     };
     if let Some(result) = clj {
@@ -428,6 +450,8 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         FormOp::Kind => {
             let v = arg();
             match form::kind(heap, &v) {
+                // A record is `"record"`, a deftype instance `"struct"`.
+                Some(FormKind::Struct) if form::is_record(heap, &v) => string("record"),
                 Some(kind) => string(kind.name()),
                 None if coll::kind_of(heap, &v) == Some(PersistentKind::Occurrence) => {
                     string("occurrence")
@@ -482,6 +506,19 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
             let (s, m) = (arg(), arg());
             form::disj(heap, &s, &m)?
         }
+        FormOp::StructType => {
+            let (name, fields, record) = (arg(), arg(), arg());
+            form::new_type(heap, &name, &fields, &record)?
+        }
+        FormOp::StructField => {
+            let (s, name) = (arg(), arg());
+            form::struct_field(heap, &s, &name)?
+        }
+        FormOp::StructTypeOf => form::type_of(heap, &arg()),
+        FormOp::RecordFromMap => {
+            let (ty, map) = (arg(), arg());
+            form::record_from_map(heap, &ty, &map)?
+        }
         // Dispatched by `form_op` before reaching here.
         FormOp::CljTruth
         | FormOp::CljCount
@@ -506,6 +543,7 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         | FormOp::CljKeyword
         | FormOp::CljKeywordNs
         | FormOp::CljSymbol
+        | FormOp::CljDispatch
         | FormOp::CljSymbolNs => Value::Undefined,
     })
 }

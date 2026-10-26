@@ -180,6 +180,7 @@
 //! | `NewFormMap` | 0xC1 | u16 entry count n | k1 v1 … kn vn → map | new Clojure form map with structural keys; a later equal key wins |
 //! | `FormOp` | 0xC2 | u16 [`FormOp`] | arguments ([`FormOp::arity`]) → result | one form-value operation |
 //! | `NewFormSet` | 0xC3 | u16 count n | v1 … vn → set | new Clojure form set with structural members; the first of equal members is kept (light-cljs-477) |
+//! | `NewStruct` | 0xC4 | u16 count n | type v1 … v(n-1) → struct | new struct of a struct type with its field values (light-cljs-478) |
 //!
 //! Opcodes `0xBF`–`0xC3` are the private form intrinsics behind
 //! `__rt.form*` and `__rt.clj*`, documented in [`crate::vm::intrinsics`] and
@@ -774,6 +775,7 @@ pub enum Opcode {
     NewFormMap = 0xC1,
     FormOp = 0xC2,
     NewFormSet = 0xC3,
+    NewStruct = 0xC4,
 }
 
 /// Operand encoding of an opcode.
@@ -1004,6 +1006,7 @@ impl Opcode {
             0xC1 => NewFormMap,
             0xC2 => FormOp,
             0xC3 => NewFormSet,
+            0xC4 => NewStruct,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1209,6 +1212,7 @@ impl Opcode {
             NewFormList => "new_form_list",
             NewFormVector => "new_form_vector",
             NewFormSet => "new_form_set",
+            NewStruct => "new_struct",
             NewFormMap => "new_form_map",
             FormOp => "form_op",
             PutGlobalStrict => "put_global_strict",
@@ -1315,7 +1319,7 @@ impl Opcode {
             NewPrivateName => OperandKind::Name,
             GetPrivate | PutPrivate | DefinePrivateField | DefinePrivateMethod
             | DefinePrivateGetter | DefinePrivateSetter | PrivateIn => OperandKind::None,
-            NewFormList | NewFormVector | NewFormSet | NewFormMap => OperandKind::Count,
+            NewFormList | NewFormVector | NewFormSet | NewStruct | NewFormMap => OperandKind::Count,
             FormOp => OperandKind::FormOp,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
@@ -1449,11 +1453,22 @@ pub enum FormOp {
     CljSymbol = 40,
     /// ns name → symbol (`cljSymbolNs`).
     CljSymbolNs = 41,
+    // Structs and protocol dispatch (light-cljs-478).
+    /// name fields record → struct type (`structType`).
+    StructType = 42,
+    /// struct name → field value (`structField`).
+    StructField = 43,
+    /// v → its struct type or null (`structTypeOf`).
+    StructTypeOf = 44,
+    /// type map → record (`recordFromMap`).
+    RecordFromMap = 45,
+    /// table v → implementation, null or undefined (`cljDispatch`).
+    CljDispatch = 46,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 42] = [
+    pub const ALL: [FormOp; 47] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1496,6 +1511,11 @@ impl FormOp {
         FormOp::CljKeywordNs,
         FormOp::CljSymbol,
         FormOp::CljSymbolNs,
+        FormOp::StructType,
+        FormOp::StructField,
+        FormOp::StructTypeOf,
+        FormOp::RecordFromMap,
+        FormOp::CljDispatch,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1523,6 +1543,7 @@ impl FormOp {
             | FormOp::CljMeta
             | FormOp::CljConcatAll
             | FormOp::CljKeyword
+            | FormOp::StructTypeOf
             | FormOp::CljSymbol => 1,
             FormOp::Keyword
             | FormOp::Symbol
@@ -1542,8 +1563,16 @@ impl FormOp {
             | FormOp::CljConcat
             | FormOp::CljZipMap
             | FormOp::CljKeywordNs
+            | FormOp::StructField
+            | FormOp::RecordFromMap
+            | FormOp::CljDispatch
             | FormOp::CljSymbolNs => 2,
-            FormOp::Get | FormOp::Assoc | FormOp::CljNthOr | FormOp::CljGet | FormOp::CljAssoc => 3,
+            FormOp::Get
+            | FormOp::Assoc
+            | FormOp::CljNthOr
+            | FormOp::CljGet
+            | FormOp::CljAssoc
+            | FormOp::StructType => 3,
         }
     }
 
@@ -1592,6 +1621,11 @@ impl FormOp {
             FormOp::CljKeywordNs => "cljKeywordNs",
             FormOp::CljSymbol => "cljSymbol",
             FormOp::CljSymbolNs => "cljSymbolNs",
+            FormOp::StructType => "structType",
+            FormOp::StructField => "structField",
+            FormOp::StructTypeOf => "structTypeOf",
+            FormOp::RecordFromMap => "recordFromMap",
+            FormOp::CljDispatch => "cljDispatch",
         }
     }
 }
@@ -1819,6 +1853,7 @@ pub(crate) enum Instr {
     FormOp(FormOp),
     /// Member count.
     NewFormSet(u16),
+    NewStruct(u16),
 }
 
 impl Instr {
@@ -2014,6 +2049,7 @@ impl Instr {
             Instr::NewFormList(_) => Opcode::NewFormList,
             Instr::NewFormVector(_) => Opcode::NewFormVector,
             Instr::NewFormSet(_) => Opcode::NewFormSet,
+            Instr::NewStruct(_) => Opcode::NewStruct,
             Instr::NewFormMap(_) => Opcode::NewFormMap,
             Instr::FormOp(_) => Opcode::FormOp,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
@@ -2083,7 +2119,9 @@ impl Instr {
             ToPropertyKey => (2, 2),
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
             | CallFinally | DropCompletion => (0, 0),
-            NewVector(n) | NewFormList(n) | NewFormVector(n) | NewFormSet(n) => (usize::from(n), 1),
+            NewVector(n) | NewFormList(n) | NewFormVector(n) | NewFormSet(n) | NewStruct(n) => {
+                (usize::from(n), 1)
+            }
             NewFormMap(n) => (2 * usize::from(n), 1),
             FormOp(op) => (op.arity(), 1),
             NewMap(n) | TemplateObject(n) => (2 * usize::from(n), 1),
@@ -2130,6 +2168,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 195);
+        assert_eq!(assigned, 196);
     }
 }

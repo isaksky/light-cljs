@@ -462,8 +462,13 @@ structural members, the runtime's `hashUnorderedColl` hash and `__rt.formSet`/
 (`crate::collections::clj`) are ClojureScript core operations for compiled
 macro code: occurrence-transparent, `nil`-punning, sequences as new lists, and
 catchable `TypeError`/`RangeError` diagnostics for unsupported operands.
-Sorted maps, lazy and shared seq views, records, user `IEquiv`/`IHash`, and the
-compiler `Datum` bridge (light-cljs-462) are not part of this surface. The module
+Structs (light-cljs-478) are records and immutable deftype instances: a
+struct type form is the type's identity, records follow the runtime's record
+methods, equality and hash (cached in the form's atomic slot), and
+`__rt.cljDispatch` reads a protocol table, a SameValueZero persistent map from
+a type identity or kind string to the method. Sorted maps, lazy and shared seq
+views, user `IEquiv`/`IHash` on structs, and the compiler `Datum` bridge
+(light-cljs-462) are not part of this surface. The module
 docs carry a runnable example. Tests: `tests/forms.rs`, `collections::form::tests`,
 `collections::clj::tests`, `form_edges_retain`/`form_edges_reclaim`.
 

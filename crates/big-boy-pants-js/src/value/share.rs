@@ -506,6 +506,24 @@ impl Children {
                     }),
                     // A member's value slot holds the member itself.
                     FormBody::Set(set) => set.for_each(|k, _| f(Step::MapKey(k.clone()), k)),
+                    // A struct's type has no heap edges; its fields are
+                    // `[i]` (light-cljs-478), a record's extension entries
+                    // `{key}`.
+                    FormBody::Type(_) => {}
+                    FormBody::Struct(s) => {
+                        f(Step::NativeEdge(0), &s.ty);
+                        let mut index = 0;
+                        s.fields.for_each(|v| {
+                            f(Step::Index(index), v);
+                            index += 1;
+                        });
+                        if let Some(ext) = &s.ext {
+                            ext.for_each(|k, v| {
+                                f(Step::MapKey(k.clone()), k);
+                                f(Step::MapValue(k.clone()), v);
+                            });
+                        }
+                    }
                 }
                 if let Some(meta) = form.meta() {
                     f(Step::Metadata, meta);

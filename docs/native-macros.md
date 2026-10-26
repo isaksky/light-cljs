@@ -112,9 +112,9 @@ runtime object, so its initializer's value is published once and every task
 shares it (`native.helpers.published`), instead of initializing again in each
 consuming task (`native.helpers.per-task`). A function that still reads the
 runtime object (a non-lowered core function, a variadic parameter list) stays
-per-task. Sorted maps and sets, transients, records, lazy sequences, ranges and
-other user types remain JavaScript-only and report an unsupported-operation
-error inside a macro.
+per-task. Sorted maps and sets, transients, lazy sequences, ranges and other
+host types remain JavaScript-only and report an unsupported-operation error
+inside a macro; protocols, types and records are below.
 
 Map and set elements that a macro constructs export in the engine's trie order,
 which can differ from the order the legacy engines' array maps keep; inputs
@@ -144,9 +144,9 @@ runtime report their operation name and never fall back to another engine.
 The compiler's existing Rust core macro implementations supply the bootstrap.
 Core macros that need the larger JavaScript bootstrap are unsupported. Variadic
 and multi-arity source macros work, including syntax quote/unquote and splicing.
-Macros can emit protocol/type declarations for the application; declaration
-registration retains preloaded helpers and reports unsupported demand for any
-other product. Executing user protocols/types inside a macro remains unsupported.
+Macros can emit protocol/type declarations for the application, and macro code
+can use the compilation's protocols, types and records (see "Protocols and
+types"); declaration registration keeps preloaded helpers.
 Lazy sequences, compiler literals, dynamic reader services, compiler build
 services and generated-symbol services are not implemented. Native
 symbol/keyword component spellings must
@@ -199,6 +199,63 @@ Bridge depth/node limits and the evaluator's cancellation, poll budget and
 wall-clock deadline bound work. The session keeps imported nodes until teardown,
 so repeated imports trade memory retention for stable identity. The runtime
 automatically collects from allocation pressure.
+
+### Protocols and types
+
+Macro code can call the compilation's protocol methods and construct its
+`deftype`s and `defrecord`s (light-cljs-478). A declaration bundle (a
+`defprotocol`, `deftype`, `defrecord`, `extend-type` or `extend-protocol`) is a
+helper result like a root: registration names its products, and the first read
+of a product, or a dispatch on one of its protocols, demands its unit with
+`__rt.need` and runs it in the reading task. Its factory is compiled once and
+shared.
+
+Each protocol method's implementations are an engine dispatch table: a
+SameValueZero persistent map from a dispatch key to the method, read by
+`__rt.cljDispatch` in Rust, so a call reads no JavaScript property and runs no
+user equality. The key of a struct is its type's identity; of a native form its
+kind (`"keyword"`, `"symbol"`, `"list"`, `"vector"`, `"map"`, `"set"`); of a
+primitive `"null"`, `"boolean"`, `"number"` or `"string"`; then `"function"`,
+`"array"`, and `"_"` for `default`. A JavaScript object (a mutable type's
+instance, an interop object) is resolved by its type, then `object`, then
+`default`. `satisfies?` asks the protocol's marker table the same way.
+
+The protocol-extension frontier is preserved: an extension's order is its
+bundle's registration order, and a table holds the extensions up to the
+frontier the compiler selects for the expansion (`__lightEnterCompilerFrontier`),
+installing those bundles first. An expansion before a later `extend-type` sees
+the earlier implementation, as in the legacy runtimes. Extensions that macro
+code installs outside a bundle are visible at every frontier.
+
+A type without `^:mutable` or `^:volatile-mutable` fields is a native struct
+type, made once with its unit's factory (so every task has the same type
+identity), and its instances are native structs: immutable, publishable when
+their fields are, read in methods with `__rt.structField` and constructed with
+`__rt.structNew` (`(T. …)`, `->T`; a constructor call checks for a struct type
+and uses `new` otherwise). A record's `__hash` is not a mutable field here: the
+engine caches the hash in an atomic, idempotent slot. Records keep the
+runtime's semantics: keyword lookup of fields, then the extension map; `assoc`,
+`dissoc` (of a field: a plain map with the record's metadata), `conj`,
+`count`, `seq` (fields in order, then extension entries), `contains?`, `keys`,
+`vals`, `meta`/`with-meta`, `map?` and `record?`; `=` of the same type with
+equal fields and extension entries; and the runtime's record hash. A deftype
+instance compares and hashes by identity. Interop on a struct (`(.-x s)`) reads
+a JavaScript view of its fields. A type with a mutable field keeps task-owned
+JavaScript instances, dispatched by their type, and does not publish.
+
+Not supported: user implementations of core protocols (`IEquiv`, `IHash`,
+`ILookup`, `ISeqable`, `ICounted` …) are installed in their tables but the
+native core operations (`=`, `hash`, `get`, `seq`, `count`) do not call them;
+`specify!`/`extend-instance`, `extend-type` of core types other than the native
+form kinds (`Keyword`, `Symbol`, `PersistentVector`, `List`, `EmptyList`,
+`PersistentHashSet`, and `PersistentArrayMap` and `PersistentHashMap`, which
+are one native map kind, so extending either extends every map), variadic
+protocol methods, `(R. a b meta ext)` with explicit metadata or extension map
+(extra constructor arguments are ignored), `getBasis` and other properties of a
+struct type, and a macro returning a struct (export fails with an explicit
+error). A helper analyzed on demand that itself expands
+a macro fails with `invalid value handle`, independently of protocols, which is
+why the frontier test above evaluates its earlier expansion at top level.
 
 ### Memory limit
 

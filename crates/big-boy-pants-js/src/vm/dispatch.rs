@@ -2916,6 +2916,7 @@ fn step_instruction(
         | Instr::NewFormList(_)
         | Instr::NewFormVector(_)
         | Instr::NewFormSet(_)
+        | Instr::NewStruct(_)
         | Instr::NewFormMap(_)
         | Instr::FormOp(_) => intrinsics::step(state, heap, instr)?,
         Instr::DefineClassMethod | Instr::DefineClassGetter | Instr::DefineClassSetter => {
@@ -3359,6 +3360,7 @@ fn polls(instr: Instr, pc: usize) -> bool {
         | Instr::NewFormList(_)
         | Instr::NewFormVector(_)
         | Instr::NewFormSet(_)
+        | Instr::NewStruct(_)
         | Instr::NewFormMap(_)
         | Instr::FormOp(_) => true,
         Instr::Const(_)

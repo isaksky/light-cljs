@@ -219,7 +219,7 @@ fn metadata_does_not_change_equality_or_hash() {
         assert_eq!(
             s.form_with_meta(keyword, Some(meta)).err(),
             Some(CollectionError::WrongType {
-                expected: "symbol, list, form vector, form map or form set",
+                expected: "symbol, list, form vector, form map, form set or record",
                 found: "keyword"
             })
         );
@@ -900,4 +900,67 @@ fn opaque_object_identity_is_heap_and_generation_scoped_without_rooting() {
         let value = s.new_form_vector(&[]).unwrap();
         assert_ne!(old, s.object_identity(value).unwrap());
     });
+}
+
+/// Records, deftype instances and protocol dispatch tables
+/// (light-cljs-478): struct operations from JavaScript, publication of a
+/// struct with immutable fields (and rejection of one holding a JavaScript
+/// object, with a path), and the GC edges of its fields.
+#[test]
+fn structs_follow_record_semantics_dispatch_by_type_identity_and_publish() {
+    let rt = Runtime::new();
+    let made = call(
+        &rt,
+        "function make() {
+           const R = __rt.structType('my.ns/R', __rt.formVector('a', 'b'), true);
+           const T = __rt.structType('my.ns/T', __rt.formVector('x'), false);
+           const r = __rt.structNew(R, 1, __rt.formVector(2));
+           const a = __rt.formKeyword(null, 'a'), c = __rt.formKeyword(null, 'c');
+           const check = (ok, what) => { if (!ok) throw new Error(what); };
+           check(__rt.formKind(r) === 'record' && __rt.formKind(__rt.structNew(T, 1)) === 'struct', 'kind');
+           check(__rt.formKind(R) === 'type' && __rt.structTypeOf(r) === R, 'type');
+           check(__rt.cljGet(r, a, null) === 1 && __rt.structField(r, 'a') === 1, 'field');
+           const r2 = __rt.cljAssoc(r, c, 3);
+           check(__rt.cljCount(r2) === 3 && __rt.cljGet(r2, c, null) === 3, 'extension');
+           check(__rt.formKind(__rt.cljDissoc(r2, c)) === 'record', 'dissoc extension');
+           check(__rt.formKind(__rt.cljDissoc(r, a)) === 'map', 'dissoc field');
+           check(__rt.formEquals(r, __rt.cljDissoc(r2, c)), 'equal');
+           check(__rt.formHash(r) === __rt.formHash(__rt.structNew(R, 1, __rt.formVector(2))), 'hash');
+           check(!__rt.formEquals(__rt.structNew(T, 1), __rt.structNew(T, 1)), 'deftype identity');
+           check(__rt.cljAssoc(r, a, 1) === r, 'unchanged assoc');
+           const m = __rt.recordFromMap(R, __rt.formMap(a, 5, c, 6));
+           check(__rt.cljGet(m, a, null) === 5 && __rt.cljGet(m, c, null) === 6, 'map->R');
+           let table = __rt.map();
+           table = __rt.assoc(table, R, 'R impl');
+           table = __rt.assoc(table, 'string', 'string impl');
+           table = __rt.assoc(table, '_', 'default impl');
+           check(__rt.cljDispatch(table, r) === 'R impl' && __rt.cljDispatch(table, 'x') === 'string impl', 'dispatch');
+           check(__rt.cljDispatch(table, __rt.structNew(T, 1)) === 'default impl', 'default');
+           check(__rt.cljDispatch(table, {}) === undefined, 'object');
+           return __rt.formVector(r, __rt.structNew(T, {}));
+         }",
+        &[],
+    );
+    let (record, holder) = rt.scope(|s| {
+        let v = s.local(&made).unwrap();
+        (
+            s.persist(s.form_nth(v, 0).unwrap()),
+            s.persist(s.form_nth(v, 1).unwrap()),
+        )
+    });
+    rt.publish(&record).unwrap();
+    let PublishError::NotShareable { path, .. } = rt.publish(&holder).unwrap_err() else {
+        panic!("published a struct holding an object");
+    };
+    assert_eq!(path.to_string(), "value[0]");
+    drop(made);
+    rt.collect().unwrap();
+    // The record's fields survive collection while it is rooted.
+    let field = call(
+        &rt,
+        "function read(r) { return __rt.formNth(__rt.cljGet(r, __rt.formKeyword(null, 'b'), null), 0); }",
+        &[&record],
+    );
+    let read = rt.scope(|s| s.view(s.local(&field).unwrap()));
+    assert!(matches!(read, ValueView::Number(n) if n == 2.0), "{read:?}");
 }

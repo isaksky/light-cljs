@@ -753,7 +753,18 @@ fn emit_js_mode(
     // Unit emission never requests source maps or application minification.
     if shared == Some(UNIT_RUNTIME) {
         debug_assert!(!mapped && !terse);
-        let open = format!("({UNIT_RUNTIME}) => ");
+        // A native unit's struct types exist once for every task that runs
+        // its factory, which captures them (light-cljs-478).
+        let mut open = String::new();
+        if !emitter.native_types.is_empty() {
+            open.push_str("(() => { ");
+            for (index, ty) in emitter.native_types.iter().enumerate() {
+                write!(open, "const __lightUnitType{index} = {ty}; ").unwrap();
+            }
+            open.push_str("return ");
+            emitter.output.push_str("; })()");
+        }
+        write!(open, "({UNIT_RUNTIME}) => ").unwrap();
         for range in &mut emitter.raw_segments {
             range.start += open.len();
             range.end += open.len();
@@ -1622,6 +1633,12 @@ enum TypeBrands {
 
 struct Emitter<'a> {
     native_forms: bool,
+    /// [`Emitter::struct_fields`] by method, computed once each.
+    struct_targets: std::cell::RefCell<HashMap<crate::analyzer::RecurTargetId, bool>>,
+    /// In a native compile-time unit, the struct types its `deftype`s and
+    /// `defrecord`s define, created once where the unit's factory is made
+    /// (light-cljs-478): each the expression of `__lightUnitType<i>`.
+    native_types: Vec<String>,
     registration_chunks: Vec<(String, std::ops::Range<usize>)>,
     program: &'a Program,
     demand_roots: bool,
@@ -1838,6 +1855,8 @@ impl<'a> Emitter<'a> {
             .filter(|_| direct.is_some());
         Emitter {
             native_forms: false,
+            struct_targets: Default::default(),
+            native_types: Vec::new(),
             registration_chunks: Vec::new(),
             program,
             demand_roots,
@@ -3098,6 +3117,17 @@ impl<'a> Emitter<'a> {
                     .map(|&(target, _)| target)
             })
         {
+            // A native struct's field is read by its source name
+            // (light-cljs-478).
+            if self.struct_target(target) && self.program.field_bindings.contains_key(&id) {
+                self.output.push_str("__rt.structField(");
+                self.receiver(target);
+                self.output.push_str(", ");
+                let name = self.program.locals[id.0].name.clone();
+                self.string_units(&name.encode_utf16().collect::<Vec<_>>());
+                self.output.push(')');
+                return;
+            }
             // A `reify` defines each captured local as a member munged the
             // same way (`mungeMember` in the runtime's `reify`), as a type
             // its fields.
@@ -3614,7 +3644,13 @@ impl<'a> Emitter<'a> {
             (C::IsKeyword, 1) => kind_test(") === \"keyword\")"),
             (C::IsSymbol, 1) => kind_test(") === \"symbol\")"),
             (C::IsVector, 1) => kind_test(") === \"vector\")"),
-            (C::IsMap, 1) => kind_test(") === \"map\")"),
+            // A record is a map too (light-cljs-478).
+            (C::IsMap, 1) => (
+                "((k) => k === \"map\" || k === \"record\")(__rt.formKind(",
+                "formValue",
+                false,
+                "))",
+            ),
             (C::IsSet, 1) => kind_test(") === \"set\")"),
             (C::IsSeq, 1) => kind_test(") === \"list\")"),
             (C::Vector, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formVector", false, ""),
@@ -6189,6 +6225,125 @@ impl<'a> Emitter<'a> {
         self.output.push(']');
     }
 
+    /// Whether a method of these is one of a type with a `^:mutable` or
+    /// `^:volatile-mutable` field (light-cljs-478).
+    fn mutable_type(&self, methods: &[(MethodDispatch, FnMethod)]) -> bool {
+        methods.iter().any(|(_, m)| !self.struct_fields(m.target))
+    }
+
+    /// Whether no field of the method `target`'s type is mutable. A record's
+    /// `^:mutable __hash` does not count: a native record caches its hash
+    /// in an atomic, idempotent slot instead.
+    fn struct_fields(&self, target: crate::analyzer::RecurTargetId) -> bool {
+        *self
+            .struct_targets
+            .borrow_mut()
+            .entry(target)
+            .or_insert_with(|| {
+                !self
+                    .program
+                    .field_bindings
+                    .iter()
+                    .any(|(local, &(t, mutable))| {
+                        mutable && t == target && self.program.locals[local.0].name != "__hash"
+                    })
+            })
+    }
+
+    /// Whether field reads of the method `target` read a native struct: in a
+    /// native compile-time unit, a type without mutable fields.
+    fn struct_target(&self, target: crate::analyzer::RecurTargetId) -> bool {
+        self.native_forms && self.struct_fields(target)
+    }
+
+    /// A `deftype` or `defrecord` in a native compile-time unit
+    /// (light-cljs-478; docs/native-macros.md, "Protocols and types"): the
+    /// runtime's `nativeType` makes the type, a native struct type unless a
+    /// field is mutable, and installs its methods in the protocol tables.
+    /// The factories of a struct type construct with `__rt.structNew` and
+    /// `__rt.recordFromMap`.
+    fn native_def_type(
+        &mut self,
+        id: ExprId,
+        record: bool,
+        global: GlobalId,
+        layout: &crate::analyzer::TypeLayout,
+        methods: &[(MethodDispatch, FnMethod)],
+    ) {
+        let crate::analyzer::TypeLayout {
+            constructor,
+            body,
+            map_constructor,
+            fields,
+            ..
+        } = layout;
+        let mutable = self.mutable_type(methods);
+        let wrapper = self.iife_open(id, true);
+        self.output.push(' ');
+        self.product(global);
+        self.output.push_str(" = ");
+        self.rt(RuntimeName::export("nativeType"));
+        self.output.push('(');
+        self.type_field_names(fields);
+        self.output.push_str(", ");
+        self.object_methods(methods, None);
+        write!(self.output, ", {record}, ").unwrap();
+        self.type_name(global);
+        // The constructor of a mutable type's instances, and of the
+        // JavaScript view a struct's interop reads (`(.-x s)`).
+        let members = Self::type_members(fields, record);
+        self.output.push_str(", function(");
+        self.positional_params(members.len());
+        self.output.push_str(") {");
+        self.field_assignments(&members);
+        // The type itself, made once with the unit's factory.
+        let binding = &self.program.globals[global.0];
+        let name = format!("{}/{}", binding.namespace, binding.name);
+        let names = fields
+            .iter()
+            .map(|f| quoted(f))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let index = self.native_types.len();
+        self.native_types.push(format!(
+            "__rt.structType({}, __rt.formVector({names}), {record})",
+            quoted(&name)
+        ));
+        write!(self.output, " }}, {mutable}, __lightUnitType{index}); ").unwrap();
+        if let Some(constructor) = constructor {
+            self.product(*constructor);
+            if mutable {
+                self.output.push_str(" = (...args) => new ");
+                self.global(global);
+                self.output.push_str("(...args); ");
+            } else {
+                self.output.push_str(" = (");
+                self.positional_params(fields.len());
+                self.output.push_str(") => __rt.structNew(");
+                self.global(global);
+                for index in 0..fields.len() {
+                    write!(self.output, ", a{index}").unwrap();
+                }
+                self.output.push_str("); ");
+            }
+        }
+        if let Some(map_constructor) = map_constructor {
+            self.product(*map_constructor);
+            self.output.push_str(" = value => __rt.recordFromMap(");
+            self.global(global);
+            self.output.push_str(", value); ");
+        }
+        self.return_open();
+        if let Some(body) = body {
+            self.value(*body);
+        } else {
+            self.product(global);
+        }
+        self.return_close();
+        self.output.push_str("; ");
+        self.iife_close(wrapper);
+    }
+
     /// `"ns/T"`, the name of the type that `global` holds.
     fn type_name(&mut self, global: GlobalId) {
         let binding = &self.program.globals[global.0];
@@ -6788,6 +6943,35 @@ impl<'a> Emitter<'a> {
                 self.output.push(')');
             }
             ExprKind::LoadableType => self.rt(RuntimeName::export("Loadable")),
+            // In a native compile-time unit, a constructor that is a struct
+            // type (an immutable `deftype` or `defrecord`, light-cljs-478)
+            // makes the engine's native struct; any other is `new`. The
+            // callee and then the arguments are evaluated once, in order.
+            ExprKind::Construct { callee, args }
+                if self.native_forms
+                    && !matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_)) =>
+            {
+                self.output.push_str("((c");
+                for index in 0..args.len() {
+                    write!(self.output, ", a{index}").unwrap();
+                }
+                self.output
+                    .push_str(") => __rt.formKind(c) === \"type\" ? __rt.structNew(c");
+                for index in 0..args.len() {
+                    write!(self.output, ", a{index}").unwrap();
+                }
+                self.output.push_str(") : new c(");
+                self.positional_params(args.len());
+                self.output.push_str("))(");
+                let enclosing = self.construct_callee.replace(*callee);
+                self.value(*callee);
+                self.construct_callee = enclosing;
+                for arg in args {
+                    self.output.push_str(", ");
+                    self.value(*arg);
+                }
+                self.output.push(')');
+            }
             ExprKind::Construct { callee, args } => {
                 self.output.push_str("new ");
                 // Host resolution is an implementation call, not a source call.
@@ -6910,6 +7094,12 @@ impl<'a> Emitter<'a> {
                 self.output.push_str("; ");
                 self.iife_close(wrapper);
             }
+            ExprKind::DefType {
+                record,
+                global,
+                layout,
+                methods,
+            } if self.native_forms => self.native_def_type(id, *record, *global, layout, methods),
             ExprKind::DefType {
                 record,
                 global,

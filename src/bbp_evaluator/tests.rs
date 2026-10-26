@@ -920,3 +920,72 @@ fn large_literals_use_runtime_constructors_that_keep_the_inline_checks() {
         }
     }
 }
+
+#[test]
+fn a_record_built_by_a_helper_initializer_is_published_and_read_by_two_tasks_by_identity() {
+    // Unit 3 is the defrecord's declaration bundle, unit 7 a helper whose
+    // initializer builds a record (light-cljs-478).
+    let bundle = native("(defrecord R [a b])");
+    let helper = native("(defrecord R [a b]) (->R 1 [2])");
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let mut records = Vec::new();
+    let mut counts = BridgeStats::default();
+    for _task in 0..2 {
+        let evaluator = Rc::new(shared.evaluator().unwrap());
+        let (bundle, helper) = (bundle.clone(), helper.clone());
+        evaluator
+            .clone()
+            .install_compiler_service(
+                "__lightCompileUnit",
+                Rc::new(move |_, id| {
+                    Ok(if id == 3 {
+                        bundle.clone()
+                    } else {
+                        helper.clone()
+                    })
+                }),
+            )
+            .unwrap();
+        evaluator
+            .register_compiler_bundle(
+                "rt => globalThis.__lightRegisterBundle([\"cljs.user/R\", \"cljs.user/->R\", \"cljs.user/map->R\"], null, [], \"fixture.cljs:1\", false, false, 3)",
+                3,
+            )
+            .unwrap();
+        evaluator
+            .register_compiler_root("cljs.user/helper", Some(7), false, "fixture.cljs:2", None)
+            .unwrap();
+        let result = evaluator
+            .evaluate_unit("rt => globalThis.__lightCompilerRoots['cljs.user/helper']")
+            .unwrap();
+        records.push(evaluator.values.borrow()[&result.index].clone());
+        evaluator.release(result).unwrap();
+        // Each task reads a field, and the record's type is the task's `R`:
+        // one struct type, made with the bundle's shared factory.
+        let check = evaluator
+            .evaluate_unit(
+                "rt => { const roots = globalThis.__lightCompilerRoots, r = roots['cljs.user/helper'];
+                 if (__rt.cljGet(r, __rt.formKeyword(null, 'a'), null) !== 1) throw new Error('field');
+                 if (__rt.structTypeOf(r) !== roots['cljs.user/R']) throw new Error('type identity');
+                 if (!__rt.formEquals(r, roots['cljs.user/->R'](1, __rt.formVector(2)))) throw new Error('equality');
+                 return null; }",
+            )
+            .unwrap();
+        evaluator.release(check).unwrap();
+        let stats = evaluator.bridge_stats();
+        counts.helper_compiled += stats.helper_compiled;
+        counts.helper_published += stats.helper_published;
+        counts.helper_per_task += stats.helper_per_task;
+    }
+    // The bundle's and the helper's factories, each compiled once.
+    assert_eq!(counts.helper_compiled, 2);
+    assert_eq!(counts.helper_published, 1);
+    assert_eq!(counts.helper_per_task, 0);
+    shared.0.runtime.scope(|s| {
+        assert!(s.same_object(s.local(&records[0]).unwrap(), s.local(&records[1]).unwrap()));
+        assert_eq!(
+            s.form_kind(s.local(&records[0]).unwrap()),
+            Some(big_boy_pants_js::FormKind::Struct)
+        );
+    });
+}

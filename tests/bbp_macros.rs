@@ -461,7 +461,7 @@ fn native_environment_updates_changed_slots_without_importing_the_namespace_agai
 }
 
 #[test]
-fn declaration_bundle_registration_preserves_preloaded_roots_and_rejects_demand() {
+fn declaration_bundle_registration_preserves_preloaded_roots_and_defers_its_code() {
     use light_cljs::{
         bbp_evaluator::BbpEvaluator,
         evaluator::{EvaluatorOptions, MacroEvaluator},
@@ -476,11 +476,12 @@ fn declaration_bundle_registration_preserves_preloaded_roots_and_rejects_demand(
         __lightRegisterBundle(['fixture/P'], code, [], 'fixture:2:1', true, false, 8);
         __lightRegisterBundle([], code, [['fixture/P', null, 'fixture/Type']], 'fixture:3:1', false, false, 9);
         if (ran || roots['fixture/ready'] !== 42) throw new Error('registration changed preloaded state');
-        for (const name of ['fixture/P', 'fixture/method']) {
-            let message = '';
-            try { roots[name]; } catch (error) { message = String(error); }
-            if (!message.includes('unsupported operation: helper not preloaded: ' + name)) throw new Error('missing demand diagnostic: ' + name);
-        }
+        // A bundle without a unit keeps the explicit unsupported demand.
+        __lightRegisterBundle(['fixture/orphan'], code, [], 'fixture:4:1', false, false, -1);
+        let message = '';
+        try { roots['fixture/orphan']; } catch (error) { message = String(error); }
+        if (!message.includes('unsupported operation: helper not preloaded: fixture/orphan')) throw new Error('missing demand diagnostic');
+        if (ran) throw new Error('registration ran bundle code');
         return null;
     }"#).unwrap();
     evaluator.release(result).unwrap();
@@ -491,7 +492,7 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
     for (source, expected) in [
         (
             "(defprotocol Sample (value [this])) (defmacro demand [] Sample) (demand)",
-            "unavailable definition: cljs.user/Sample",
+            "unsupported operation: macro returned a non-form value",
         ),
         (
             "(defmacro lazy-result [] (range 3)) (lazy-result)",
@@ -1218,4 +1219,113 @@ fn a_macro_memory_limit_below_the_native_realm_fails_at_startup_with_a_diagnosti
         ),
         "{message}"
     );
+}
+
+/// Macro code over compile-time protocols, types and records, which the
+/// native unit runs on engine dispatch tables and native structs
+/// (light-cljs-478; docs/native-macros.md, "Protocols and types"). Each
+/// expands as the legacy compiler does and runs.
+const PROTOCOL_FIXTURES: &[(&str, &str)] = &[
+    // Records: protocol methods, field and extension lookup, map->R,
+    // assoc, equality and the record hash.
+    (
+        "(defprotocol P (p [x]) (q [x y])) (defrecord R [a b] P (p [_] a) (q [this y] (+ b y))) \
+         (defmacro m [] [(p (->R 1 2)) (q (R. 3 4) 10) (:a (->R 5 6)) (get (map->R {:a 7 :b 8 :c 9}) :c) \
+         (count (assoc (->R 1 2) :z 3)) (= (->R 1 2) (->R 1 2)) (= (->R 1 2) (->R 1 3)) \
+         (hash (->R 1 2)) (hash (assoc (->R 1 2) :c 3))]) (js/console.log (pr-str (m)))",
+        "[1 14 5 9 3 true false -658793607 1908665455]\n",
+    ),
+    // Host-type extension, `nil`, `default` and `satisfies?`.
+    (
+        "(defprotocol P (p [x])) (extend-protocol P string (p [x] (str \"s\" x)) number (p [x] (inc x)) \
+         nil (p [_] :nil) default (p [_] :default)) \
+         (defmacro m [] [(p \"a\") (p 1) (p nil) (p :k) (satisfies? P 1) (satisfies? P :k)]) \
+         (js/console.log (pr-str (m)))",
+        "[\"sa\" 2 :nil :default true true]\n",
+    ),
+    // A deftype's fields, read in its methods and through interop.
+    (
+        "(defprotocol P (p [x])) (deftype T [a] P (p [this] (.-a this))) \
+         (defmacro m [] [(p (T. 5)) (.-a (T. 6)) (= (T. 1) (T. 1))]) (js/console.log (pr-str (m)))",
+        "[5 6 false]\n",
+    ),
+    // A mutable field keeps a task-owned JavaScript instance.
+    (
+        "(defprotocol P (p [x])) (deftype T [^:mutable a] P (p [_] (set! a (inc a)) a)) \
+         (defmacro m [] (let [t (T. 1)] (p t) (p t))) (js/console.log (pr-str (m)))",
+        "3\n",
+    ),
+    // Record map operations.
+    (
+        "(defrecord R [a b]) (defmacro m [] (let [r (->R 1 2)] (list 'quote [(seq r) (dissoc r :a) \
+         (= r (dissoc (assoc r :c 3) :c)) (meta (with-meta r {:x 1})) (:d (conj r [:d 4])) \
+         (contains? r :a) (keys r) (vals r) (record? r) (map? r) (map? (->R 1 2))]))) \
+         (js/console.log (pr-str (m)))",
+        "[([:a 1] [:b 2]) {:b 2} true {:x 1} 4 true (:a :b) (1 2) true true true]\n",
+    ),
+    // The protocol-extension frontier: an expansion before a later
+    // extension sees the earlier one (`FRONTIER_REPLAY` in the compiler
+    // macro suite, without its macro-expanding helper).
+    (
+        "(defprotocol P (p [x])) (defprotocol Q (q [x])) (deftype T []) (extend-type T P (p [_] 1)) \
+         (extend-type T Q (q [_] 10)) (defmacro snapshot [] [(p (T.)) (q (T.))]) (def before (snapshot)) \
+         (extend-type T P (p [_] 2)) (defmacro warm [] (q (T.)) (p (T.)) nil) (warm) \
+         (js/console.log (pr-str [before (snapshot) (p (T.)) (q (T.))]))",
+        "[[1 10] [2 10] 2 10]\n",
+    ),
+    // A macro that generates protocol, record and method declarations
+    // (`generated_destructured_methods...` in the compiler macro suite).
+    (
+        "(defmacro bundle [] '(do (defprotocol P (run [this input])) \
+         (defrecord R [a] P (run [_ {:keys [b]}] (+ a b))) (run (->R 2) {:b 3}))) \
+         (js/console.log (bundle))",
+        "5\n",
+    ),
+    // A record helper value read by a macro.
+    (
+        "(defprotocol P (p [x])) (defrecord R [a] P (p [_] a)) (def r (->R 41)) \
+         (defmacro m [] (inc (p r))) (js/console.log (m))",
+        "42\n",
+    ),
+];
+
+#[test]
+fn protocol_type_and_record_macros_match_the_legacy_compiler_and_run() {
+    for (source, expected) in PROTOCOL_FIXTURES {
+        assert_native_matches_legacy(source, expected);
+    }
+}
+
+#[test]
+fn record_helpers_publish_once_at_one_and_two_slots() {
+    // A record built by a helper initializer and a function over records:
+    // each value is initialized once and shared by the consuming tasks.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/records");
+    for jobs in [1, 2] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut stats = light_cljs::CompileStats::new();
+        let mut warnings = Vec::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "rec.app",
+            std::slice::from_ref(&root),
+            &mut host,
+            Default::default(),
+            &mut warnings,
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("jobs {jobs}: {error}"));
+        assert_eq!(
+            program_output(&emit_js(&program)),
+            "[8080 \"localhost\"] [9090 :tls]\n",
+            "jobs {jobs}"
+        );
+        assert_eq!(stats.native_helpers.per_task, 0, "jobs {jobs}");
+        assert!(stats.native_helpers.published >= 2, "jobs {jobs}");
+    }
 }

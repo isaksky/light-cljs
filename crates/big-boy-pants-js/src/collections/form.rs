@@ -197,6 +197,39 @@
 //! });
 //! ```
 //!
+//! # Structs (light-cljs-478)
+//!
+//! A *struct type* (`FormKind::Type`, `formKind` `"type"`) is the identity of
+//! a ClojureScript `deftype` or `defrecord` without mutable fields: its
+//! qualified name, its field names and whether it is a record, made by
+//! `__rt.structType(name, fieldNames, record)`; each call is a new identity.
+//! A *struct* (`FormKind::Struct`; `formKind` `"record"` or `"struct"`) is
+//! an instance: its type, its field values in order and, for a record, an
+//! extension map with structural keys. Structs are immutable and
+//! persistent: publishable when their fields and extension entries are,
+//! traced through their type, fields and entries (publication path steps
+//! `[i]` for fields, `{key}` for entries).
+//!
+//! A record follows the light-cljs runtime's record methods: an
+//! unqualified keyword naming a field looks the field up, other keys the
+//! extension map (`cljGet`, `cljContains`, `cljAssoc`, `cljDissoc` — of a
+//! field: a form map of the other entries with the record's metadata —,
+//! `cljConj`, `cljCount`, `cljSeq`); two records are equal when they have
+//! the same type identity, equal fields and equal extension entries; the
+//! hash is the sum of each entry's key hash xor value hash, xor the
+//! `stringHash` of the type name, cached like every form hash in an
+//! atomic, idempotent slot. A deftype instance is equal only to itself and
+//! hashes by identity; the clj operations reject it. A record is never
+//! equal to a map.
+//!
+//! `__rt.cljDispatch(table, v)` is protocol dispatch: `table` is a
+//! SameValueZero persistent map ([`crate::collections`]) from dispatch keys
+//! to implementations; a struct's key is its type (identity), other
+//! values' a kind string (`crate::collections::clj::dispatch_key`), and
+//! `"_"` is the default. A JavaScript object without a kind gives
+//! `undefined` for the caller to resolve. No user equality, hashing or
+//! property access runs.
+//!
 //! # Supported boundary
 //!
 //! Supported: the six kinds above, metadata, occurrences as elements and
@@ -207,8 +240,8 @@
 //! not split back (rejected, see "Names"), and a runtime keyword whose
 //! stored spelling differs from its namespace and name (the runtime's
 //! one-argument `(keyword "a/b/c")`); sorted maps and sets, lazy sequences,
-//! shared seq views (a list is read by index), records and other
-//! user-defined types, user hashing or equality (`IHash`/`IEquiv`),
+//! shared seq views (a list is read by index), user hashing or equality
+//! (`IHash`/`IEquiv`) of structs,
 //! interned or cached keyword identity, characters as a separate kind (a
 //! character is a one-unit string; the reader distinction, like exact
 //! numeric spellings, travels with provenance), property access or
@@ -234,11 +267,17 @@ pub enum FormKind {
     Vector,
     Map,
     Set,
+    /// An instance of a `deftype` or `defrecord` without mutable fields
+    /// (light-cljs-478; "Structs" in the module docs).
+    Struct,
+    /// A struct type: the identity of a `deftype` or `defrecord`.
+    Type,
 }
 
 impl FormKind {
     /// The kind's ClojureScript name: `keyword`, `symbol`, `list`, `vector`,
-    /// `map` or `set` (the result of the `formKind` intrinsic).
+    /// `map`, `set`, `struct` or `type` (the result of the `formKind`
+    /// intrinsic).
     pub fn name(self) -> &'static str {
         match self {
             FormKind::Keyword => "keyword",
@@ -247,6 +286,8 @@ impl FormKind {
             FormKind::Vector => "vector",
             FormKind::Map => "map",
             FormKind::Set => "set",
+            FormKind::Struct => "struct",
+            FormKind::Type => "type",
         }
     }
 
@@ -256,6 +297,7 @@ impl FormKind {
             FormKind::Vector => "form vector",
             FormKind::Map => "form map",
             FormKind::Set => "form set",
+            FormKind::Type => "struct type",
             other => other.name(),
         }
     }
@@ -320,6 +362,34 @@ pub(crate) enum FormBody {
     /// Members stored as keys that map to themselves (the stored member),
     /// hashed and compared like map keys.
     Set(PMap),
+    /// A struct type ("Structs" in the module docs).
+    Type(Arc<TypeInfo>),
+    /// An instance of a struct type.
+    Struct(StructBody),
+}
+
+/// What a struct type is: its name, its field names in order and whether
+/// it is a record. The type's identity is that of its form object.
+#[derive(Debug)]
+pub(crate) struct TypeInfo {
+    /// The qualified name, `ns/Name`, as the record hash reads it.
+    pub(crate) name: JsString,
+    /// The field names as the source spells them (`my-field`): a record's
+    /// keyword keys.
+    pub(crate) fields: Box<[JsString]>,
+    pub(crate) record: bool,
+}
+
+/// A struct instance: its type, its field values in the type's order, and a
+/// record's extension map (absent when it has no entries).
+#[derive(Clone, Debug)]
+pub(crate) struct StructBody {
+    /// The type form object: the instance's dispatch identity.
+    pub(crate) ty: Value,
+    pub(crate) info: Arc<TypeInfo>,
+    pub(crate) fields: PVector,
+    /// A record's further entries, structural keys as in a form map.
+    pub(crate) ext: Option<PMap>,
 }
 
 /// One form heap object: immutable once allocated, shared by `Arc` so a
@@ -370,6 +440,16 @@ impl FormObject {
             FormBody::Vector(_) => FormKind::Vector,
             FormBody::Map(_) => FormKind::Map,
             FormBody::Set(_) => FormKind::Set,
+            FormBody::Struct(_) => FormKind::Struct,
+            FormBody::Type(_) => FormKind::Type,
+        }
+    }
+
+    /// A record's body (`None` for every other value, deftypes included).
+    pub(crate) fn record(&self) -> Option<&StructBody> {
+        match &self.body {
+            FormBody::Struct(s) if s.info.record => Some(s),
+            _ => None,
         }
     }
 
@@ -392,6 +472,20 @@ impl FormObject {
                 f(v);
             }),
             FormBody::Set(set) => set.for_each(|k, _| f(k)),
+            // A deftype's hash is its identity's; a record's reads its
+            // field values and extension entries.
+            FormBody::Type(_) => {}
+            FormBody::Struct(s) => {
+                if s.info.record {
+                    s.fields.for_each(&mut f);
+                    if let Some(ext) = &s.ext {
+                        ext.for_each(|k, v| {
+                            f(k);
+                            f(v);
+                        });
+                    }
+                }
+            }
         }
     }
 }
@@ -399,9 +493,16 @@ impl FormObject {
 impl Trace for FormObject {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
         match &self.body {
-            FormBody::Keyword(_) | FormBody::Symbol(_) => {}
+            FormBody::Keyword(_) | FormBody::Symbol(_) | FormBody::Type(_) => {}
             FormBody::List(items) | FormBody::Vector(items) => items.trace(visit),
             FormBody::Map(map) | FormBody::Set(map) => map.trace(visit),
+            FormBody::Struct(s) => {
+                s.ty.trace(visit);
+                s.fields.trace(visit);
+                if let Some(ext) = &s.ext {
+                    ext.trace(visit);
+                }
+            }
         }
         if let Some(meta) = &self.meta {
             meta.trace(visit);
@@ -591,6 +692,295 @@ pub(crate) fn new_set(heap: &Heap, items: &[Value]) -> Result<Value, CollectionE
         }
     }
     alloc(heap, FormObject::new(FormBody::Set(set), None), items)
+}
+
+// ---- Structs (light-cljs-478) ----
+
+/// A new struct type named `name` (a string) with the field names of the
+/// form vector or list `fields` (strings), a record when `record` is true.
+/// Each call makes a new identity.
+pub(crate) fn new_type(
+    heap: &Heap,
+    name: &Value,
+    fields: &Value,
+    record: &Value,
+) -> Result<Value, CollectionError> {
+    let Value::String(name) = name else {
+        return Err(wrong(heap, "string type name", name));
+    };
+    let name = name
+        .clone()
+        .import(heap)
+        .ok_or(CollectionError::HeapLimit)?;
+    let mut names = Vec::new();
+    for field in sequential(heap, fields)?.to_vec() {
+        let Value::String(field) = field else {
+            return Err(wrong(heap, "string field name", &field));
+        };
+        names.push(field.import(heap).ok_or(CollectionError::HeapLimit)?);
+    }
+    let info = TypeInfo {
+        name,
+        fields: names.into_boxed_slice(),
+        record: matches!(record, Value::Bool(true)),
+    };
+    alloc(
+        heap,
+        FormObject::new(FormBody::Type(Arc::new(info)), None),
+        &[],
+    )
+}
+
+/// The type of a struct type form.
+fn type_info(heap: &Heap, ty: &Value) -> Result<Arc<TypeInfo>, CollectionError> {
+    match form_object(heap, ty).as_deref().map(FormObject::body) {
+        Some(FormBody::Type(info)) => Ok(info.clone()),
+        _ => Err(wrong(heap, "struct type", ty)),
+    }
+}
+
+/// A struct of type `ty` with these field values, in the type's order; a
+/// missing value is `undefined`, as a JavaScript constructor's parameter
+/// is, and extra values are ignored.
+pub(crate) fn new_struct(
+    heap: &Heap,
+    ty: &Value,
+    values: &[Value],
+) -> Result<Value, CollectionError> {
+    let info = type_info(heap, ty)?;
+    let n = info.fields.len();
+    let mut fields = values[..values.len().min(n)].to_vec();
+    fields.resize(n, Value::Undefined);
+    let body = StructBody {
+        ty: ty.clone(),
+        info,
+        fields: PVector::try_from_values(heap, &fields)?,
+        ext: None,
+    };
+    let parts: Vec<Value> = std::iter::once(ty.clone()).chain(fields).collect();
+    alloc(heap, FormObject::new(FormBody::Struct(body), None), &parts)
+}
+
+/// The struct body of `v` (occurrences are not transparent here).
+fn struct_body(heap: &Heap, v: &Value) -> Option<(Arc<FormObject>, StructBody)> {
+    let f = form_object(heap, v)?;
+    match f.body() {
+        FormBody::Struct(s) => {
+            let s = s.clone();
+            Some((f, s))
+        }
+        _ => None,
+    }
+}
+
+/// The field named `name` (a string) of struct `s`: a method's field read.
+pub(crate) fn struct_field(heap: &Heap, s: &Value, name: &Value) -> Result<Value, CollectionError> {
+    let Some((_, body)) = struct_body(heap, s) else {
+        return Err(wrong(heap, "struct", s));
+    };
+    let Value::String(name) = name else {
+        return Err(wrong(heap, "string field name", name));
+    };
+    body.info
+        .fields
+        .iter()
+        .position(|field| field.code_units() == name.code_units())
+        .and_then(|i| body.fields.get(i))
+        .ok_or(CollectionError::MissingKey)
+}
+
+/// Whether `v` is a record (occurrences are not transparent here).
+pub(crate) fn is_record(heap: &Heap, v: &Value) -> bool {
+    form_object(heap, v).is_some_and(|f| f.record().is_some())
+}
+
+/// The type of a struct (through occurrences), or `nil`.
+pub(crate) fn type_of(heap: &Heap, v: &Value) -> Value {
+    match resolve(heap, v.clone()) {
+        (_, Some((_, f))) => match f.body() {
+            FormBody::Struct(s) => s.ty.clone(),
+            _ => Value::Null,
+        },
+        _ => Value::Null,
+    }
+}
+
+/// The index of the record field a key names: an unqualified keyword whose
+/// name is the field's (the runtime's `recordKeywordFieldIndex`).
+fn field_index(heap: &Heap, info: &TypeInfo, key: &Value) -> Option<usize> {
+    let key = unwrap(heap, key.clone());
+    let f = form_object(heap, &key)?;
+    let FormBody::Keyword(n) = f.body() else {
+        return None;
+    };
+    if n.namespace.is_some() {
+        return None;
+    }
+    info.fields
+        .iter()
+        .position(|field| field.code_units() == n.name.code_units())
+}
+
+/// The field keyword `:name` of a record entry.
+fn field_keyword(heap: &Heap, name: &JsString) -> Result<Value, CollectionError> {
+    new_named(heap, FormKind::Keyword, None, name.clone())
+}
+
+/// A record's entries: its fields under their keywords, then its
+/// extension entries (in trie order).
+pub(crate) fn record_entries(
+    heap: &Heap,
+    s: &StructBody,
+) -> Result<Vec<(Value, Value)>, CollectionError> {
+    let mut entries = Vec::with_capacity(s.info.fields.len());
+    for (name, value) in s.info.fields.iter().zip(s.fields.to_vec()) {
+        entries.push((field_keyword(heap, name)?, value));
+    }
+    if let Some(ext) = &s.ext {
+        entries.extend(ext.to_vec());
+    }
+    Ok(entries)
+}
+
+/// A record's value for `key`: a field by its keyword, else an extension
+/// entry by an equal key.
+pub(crate) fn record_get(heap: &Heap, s: &StructBody, key: &Value) -> Option<Value> {
+    match field_index(heap, &s.info, key) {
+        Some(i) => s.fields.get(i),
+        None => s.ext.as_ref().and_then(|ext| map_get(heap, ext, key)),
+    }
+}
+
+/// A record like `f` (same type and metadata) with this body; its hash is
+/// computed again.
+fn record_like(
+    heap: &Heap,
+    f: &FormObject,
+    s: &StructBody,
+    fields: PVector,
+    ext: Option<PMap>,
+    parts: &[Value],
+) -> Result<Value, CollectionError> {
+    let ext = ext.filter(|e| e.len() > 0);
+    let body = StructBody {
+        ty: s.ty.clone(),
+        info: s.info.clone(),
+        fields,
+        ext,
+    };
+    alloc(heap, f.updated(FormBody::Struct(body)), parts)
+}
+
+/// `assoc` on a record: a field by its keyword (a new record with that
+/// field), else an extension entry. An identical field value returns
+/// `record` itself.
+pub(crate) fn record_assoc(
+    heap: &Heap,
+    record: &Value,
+    key: Value,
+    value: Value,
+) -> Result<Value, CollectionError> {
+    let Some((f, s)) = struct_body(heap, record).filter(|(_, s)| s.info.record) else {
+        return Err(wrong(heap, "record", record));
+    };
+    let parts = [record.clone(), key.clone(), value.clone()];
+    match field_index(heap, &s.info, &key) {
+        Some(i) => {
+            if s.fields.get(i).is_some_and(|old| identical(&old, &value)) {
+                return Ok(record.clone());
+            }
+            let fields = s.fields.try_set(heap, i, value)?;
+            record_like(heap, &f, &s, fields, s.ext.clone(), &parts)
+        }
+        None => {
+            let ext = s.ext.clone().unwrap_or_default();
+            match map_assoc(heap, &ext, key, value)? {
+                Some(ext) => record_like(heap, &f, &s, s.fields.clone(), Some(ext), &parts),
+                None => Ok(record.clone()),
+            }
+        }
+    }
+}
+
+/// `dissoc` on a record: a field key gives a form map of the other entries
+/// with the record's metadata (no longer a record); an extension key a
+/// record without it; any other key `record` itself.
+pub(crate) fn record_dissoc(
+    heap: &Heap,
+    record: &Value,
+    key: &Value,
+) -> Result<Value, CollectionError> {
+    let Some((f, s)) = struct_body(heap, record).filter(|(_, s)| s.info.record) else {
+        return Err(wrong(heap, "record", record));
+    };
+    if field_index(heap, &s.info, key).is_some() {
+        let entries = record_entries(heap, &s)?;
+        let map = new_map(heap, &entries)?;
+        let map = dissoc(heap, &map, key)?;
+        return match f.meta() {
+            Some(meta) => with_meta(heap, &map, meta),
+            None => Ok(map),
+        };
+    }
+    let Some(ext) = &s.ext else {
+        return Ok(record.clone());
+    };
+    let h = trie_hash(hash(heap, key));
+    match ext.try_dissoc_with(heap, h, key, &|a, b| equals(heap, a, b))? {
+        Some(ext) => record_like(
+            heap,
+            &f,
+            &s,
+            s.fields.clone(),
+            Some(ext),
+            std::slice::from_ref(record),
+        ),
+        None => Ok(record.clone()),
+    }
+}
+
+/// `map->R`: a record of type `ty` whose fields are `map`'s values for the
+/// field keywords and whose extension entries are `map`'s other entries.
+pub(crate) fn record_from_map(
+    heap: &Heap,
+    ty: &Value,
+    map: &Value,
+) -> Result<Value, CollectionError> {
+    let info = type_info(heap, ty)?;
+    let entries = match resolve(heap, map.clone()) {
+        (_, None) if matches!(unwrap(heap, map.clone()), Value::Null | Value::Undefined) => {
+            Vec::new()
+        }
+        (_, Some((_, f))) => match f.body() {
+            FormBody::Map(m) => m.to_vec(),
+            FormBody::Struct(s) if s.info.record => record_entries(heap, s)?,
+            _ => return Err(wrong(heap, "form map or record", map)),
+        },
+        _ => return Err(wrong(heap, "form map or record", map)),
+    };
+    let mut fields = vec![Value::Null; info.fields.len()];
+    let mut ext = PMap::default();
+    for (k, v) in entries {
+        match field_index(heap, &info, &k) {
+            Some(i) => fields[i] = v,
+            None => {
+                if let Some(updated) = map_assoc(heap, &ext, k, v)? {
+                    ext = updated;
+                }
+            }
+        }
+    }
+    let body = StructBody {
+        ty: ty.clone(),
+        info,
+        fields: PVector::try_from_values(heap, &fields)?,
+        ext: (ext.len() > 0).then_some(ext),
+    };
+    alloc(
+        heap,
+        FormObject::new(FormBody::Struct(body), None),
+        &[ty.clone(), map.clone()],
+    )
 }
 
 // ---- Inspection ----
@@ -785,9 +1175,14 @@ pub(crate) fn disj(heap: &Heap, set: &Value, member: &Value) -> Result<Value, Co
 /// `with-meta`: `v` (a symbol, list, vector or map) with metadata `meta`
 /// (`nil` or a form map). The same metadata object returns `v` itself.
 pub(crate) fn with_meta(heap: &Heap, v: &Value, meta: &Value) -> Result<Value, CollectionError> {
-    let expected = "symbol, list, form vector, form map or form set";
+    let expected = "symbol, list, form vector, form map, form set or record";
     let f = match form_object(heap, v) {
-        Some(f) if f.kind() != FormKind::Keyword => f,
+        Some(f)
+            if !matches!(f.kind(), FormKind::Keyword | FormKind::Type)
+                && (f.kind() != FormKind::Struct || f.record().is_some()) =>
+        {
+            f
+        }
         _ => return Err(wrong(heap, expected, v)),
     };
     let meta = match meta {
@@ -937,6 +1332,50 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                         1 => {
                             let (qk, qv) = candidates.pop().unwrap();
                             // Popped last-first: the (cheaper) value first.
+                            steps.push(Step::Pair(k, qk));
+                            steps.push(Step::Pair(v, qv));
+                        }
+                        _ => steps.push(Step::OneOf(
+                            candidates
+                                .into_iter()
+                                .rev()
+                                .map(|(qk, qv)| [(k.clone(), qk), (v.clone(), qv)])
+                                .collect(),
+                        )),
+                    }
+                }
+                Outcome::Expand((ia, ib), steps)
+            }
+            // Records of the same type with equal fields and extension
+            // entries; a deftype only to itself (decided above).
+            (FormBody::Struct(p), FormBody::Struct(q)) => {
+                if !(p.info.record && q.info.record && p.ty.same_object(&q.ty)) {
+                    return Outcome::Decided(false);
+                }
+                let empty = PMap::default();
+                let (pe, qe) = (
+                    p.ext.as_ref().unwrap_or(&empty),
+                    q.ext.as_ref().unwrap_or(&empty),
+                );
+                if pe.len() != qe.len() {
+                    return Outcome::Decided(false);
+                }
+                let mut steps: Vec<Step> = p
+                    .fields
+                    .to_vec()
+                    .into_iter()
+                    .zip(q.fields.to_vec())
+                    .rev()
+                    .map(|(a, b)| Step::Pair(a, b))
+                    .collect();
+                let mut entries = Vec::with_capacity(pe.len());
+                pe.for_each_hashed(|h, k, v| entries.push((h, k.clone(), v.clone())));
+                for (h, k, v) in entries {
+                    let mut candidates = qe.entries_with_hash(h);
+                    match candidates.len() {
+                        0 => return Outcome::Refuted((ia, ib)),
+                        1 => {
+                            let (qk, qv) = candidates.pop().unwrap();
                             steps.push(Step::Pair(k, qk));
                             steps.push(Step::Pair(v, qv));
                         }
@@ -1113,8 +1552,8 @@ fn scalar_hash(v: &Value) -> i32 {
 /// Hash of a child whose form (if any) already has its hash cached.
 fn child_hash(heap: &Heap, v: &Value) -> i32 {
     match resolve(heap, v.clone()) {
-        (_, Some((_, f))) => match f.hash.get() {
-            Some(h) => *h,
+        (_, Some((id, f))) => match f.hash.get().copied().or_else(|| identity_hash(&f, id)) {
+            Some(h) => h,
             None => form_hash(heap, &f),
         },
         (v, None) => scalar_hash(&v),
@@ -1147,6 +1586,41 @@ fn shallow_hash(heap: &Heap, f: &FormObject) -> i32 {
             set.for_each(|k, _| sum = sum.wrapping_add(child_hash(heap, k)));
             mix_collection_hash(sum, set.len())
         }
+        // A record: each entry's key hash xor its value hash, summed, xor
+        // the `stringHash` of the type's name (the runtime's record
+        // `IHash`). Field keys are unqualified keywords of the field names.
+        FormBody::Struct(s) if s.info.record => {
+            let mut sum = 0i32;
+            for (name, value) in s.info.fields.iter().zip(s.fields.to_vec()) {
+                let key = hash_named(&FormName {
+                    namespace: None,
+                    name: name.clone(),
+                })
+                .wrapping_add(0x9e37_79b9_u32 as i32);
+                sum = sum.wrapping_add(key ^ child_hash(heap, &value));
+            }
+            if let Some(ext) = &s.ext {
+                ext.for_each(|k, v| {
+                    sum = sum.wrapping_add(child_hash(heap, k) ^ child_hash(heap, v))
+                });
+            }
+            sum ^ string_hash(s.info.name.code_units())
+        }
+        // Identity-hashed: set where the object identity is known
+        // ([`identity_hash`]); never reached through it.
+        FormBody::Struct(_) | FormBody::Type(_) => 0,
+    }
+}
+
+/// The hash of a deftype instance or a struct type, whose `=` is identity:
+/// a private hash of the object's identity, as for other heap objects.
+fn identity_hash(f: &FormObject, id: ObjectId) -> Option<i32> {
+    match &f.body {
+        FormBody::Struct(s) if s.info.record => None,
+        FormBody::Struct(_) | FormBody::Type(_) => {
+            Some(*f.hash.get_or_init(|| scalar_hash(&Value::Object(id))))
+        }
+        _ => None,
     }
 }
 
@@ -1168,8 +1642,9 @@ fn form_hash(heap: &Heap, root: &Arc<FormObject>) -> i32 {
         }
         stack.push((f.clone(), true));
         f.for_each_child(|c| {
-            if let (_, Some((_, child))) = resolve(heap, c.clone())
+            if let (_, Some((id, child))) = resolve(heap, c.clone())
                 && child.hash.get().is_none()
+                && identity_hash(&child, id).is_none()
             {
                 stack.push((child, false));
             }
@@ -1181,7 +1656,7 @@ fn form_hash(heap: &Heap, root: &Arc<FormObject>) -> i32 {
 /// The value hash: the light-cljs runtime's `hash` for supported values.
 pub(crate) fn hash(heap: &Heap, v: &Value) -> i32 {
     match resolve(heap, v.clone()) {
-        (_, Some((_, f))) => form_hash(heap, &f),
+        (_, Some((id, f))) => identity_hash(&f, id).unwrap_or_else(|| form_hash(heap, &f)),
         (v, None) => scalar_hash(&v),
     }
 }

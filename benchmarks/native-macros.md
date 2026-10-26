@@ -208,3 +208,47 @@ top frames are SipHash hashing of `TraceEdge` keys in the mark set's
 vector and map), and the copies `next` and `rest` make keep triggering
 collections, so marking work grows with `n²`; light-cljs-495 owns the
 collector's marking cost.
+
+## Protocols and types (light-cljs-478), October 26, 2026
+
+`bb benchmarks/native-macros-k.bb OUTPUT --workload protocol v8=BIN NAME=BIN`
+measures k the same way on a protocol-heavy macro: `churn` builds `n` values
+cycling through a two-field record, a one-field record, an immutable deftype and
+a number, calls the protocol methods `scale` (record `assoc`, `->Circle`,
+`(Pt. …)`, number multiplication) and `area` on each, and adds `satisfies?` and
+the record's `count`. Before this pellet the native backend could not run it
+(`unavailable definition` for the protocol); master's native build has no
+"before" figure.
+
+Release binaries of this branch (`b8d1db4f`): native-only (`--no-default-features
+--features bbp-macros`, sha256 `6478d3d3…`) and the default V8 build
+(`LIGHT_CLJS_V8_CACHE=require`, sha256 `e7bc880d…`, V8 path unchanged by this
+pellet). macOS aarch64, 24 CPUs, Rust 1.99.1 (Homebrew), Node 24.22.1; two peer
+workers building and testing (load averages 3.9–4.2). Analysis time, median
+[min–max] of five, ms:
+
+| `n` | V8 | native | k |
+| ---: | --- | --- | ---: |
+| 0 | 24.8 [24.3–26.6] | 11.3 [10.8–12.2] | – |
+| 100 | 28.7 [27.9–29.7] | 43.4 [42.6–44.5] | 8.2 |
+| 400 | 32.3 [32.2–32.6] | 73.4 [72.8–74.0] | 8.3 |
+| 1,600 | 40.9 [40.1–41.0] | 188.6 [186.2–191.1] | 10.8 |
+| 6,400 | 65.9 [65.4–67.6] | 653.4 [648.8–659.4] | 15.5 |
+
+(The 1,600 and 6,400 rows are a second run, whose `n = 0` medians were 24.4
+and 11.1 ms.) The V8 deltas at `n = 100` and 400 are 3.9 and 7.5 ms, so those k
+figures carry about a tenth of timing resolution. k is 8 to 15, outside the
+strategy's win condition (k <= ~4). The collection-heavy `churn` workload is
+unchanged by this pellet on the same binaries: k 3.4 at `n = 100` and 13.2 at
+`n = 400` (12.8 recorded above; light-cljs-495's GC marking work is not in this
+tree).
+
+A `/usr/bin/sample` of twelve `(churn 6400)` calls (735 samples) puts about 9%
+in automatic collection and the rest in the interpreter: the top frames are
+`execute_budgeted` (171), `Fault` drop glue (40), the heap slot directory (32),
+SipHash (26), `property_read_step` (22), `start_conversion` (18) and the
+`call_slow`/`resolve` path of `Function.prototype.call`. Protocol dispatch
+itself is one `__rt.cljDispatch` per call; around it the macro still reads
+`rt.core.*` properties and calls `core.add`/`core.multiply` through
+`Array.prototype.reduce` (arithmetic is not lowered in native units), and each
+method call goes through `m.call(x, x, …)`.

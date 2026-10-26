@@ -213,6 +213,17 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::CljKeywordNs),
     form_op(FormOp::CljSymbol),
     form_op(FormOp::CljSymbolNs),
+    // Structs and protocol dispatch (light-cljs-478).
+    Intrinsic {
+        name: "structNew",
+        arity: Arity::Any,
+        lowering: Lowering::Counted(Opcode::NewStruct),
+    },
+    form_op(FormOp::StructType),
+    form_op(FormOp::StructField),
+    form_op(FormOp::StructTypeOf),
+    form_op(FormOp::RecordFromMap),
+    form_op(FormOp::CljDispatch),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {

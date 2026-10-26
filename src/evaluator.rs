@@ -1408,6 +1408,14 @@ pub trait MacroEvaluator {
         let value = self.evaluate_unit(&compiler_root_source(name, unit, once, location, test))?;
         self.release(value)
     }
+    /// Register the declaration bundle of `unit` with its registration
+    /// `source` (`BundleRecord::source`). An engine that demands units as
+    /// dependency results also registers `unit` as one (light-cljs-478).
+    fn register_compiler_bundle(&self, source: &str, unit: usize) -> Result<(), EvalError> {
+        let _ = unit;
+        let value = self.evaluate_unit(source)?;
+        self.release(value)
+    }
     /// Execute all namespace registrations in order. Engines may cache the
     /// compiled chunks, but must execute every registration on every call.
     fn evaluate_registration(

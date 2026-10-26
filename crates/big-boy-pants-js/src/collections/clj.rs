@@ -170,7 +170,17 @@ fn seq_items(heap: &Heap, op: &'static str, v: &Value) -> Result<Option<Vec<Valu
                 }
                 entries
             }
-            FormBody::Keyword(_) | FormBody::Symbol(_) => return Err(unsupported(op, &shape)),
+            FormBody::Struct(s) if s.info.record => {
+                let mut entries = Vec::new();
+                for (k, v) in form::record_entries(heap, s)? {
+                    entries.push(entry(heap, &k, &v)?);
+                }
+                entries
+            }
+            FormBody::Keyword(_)
+            | FormBody::Symbol(_)
+            | FormBody::Struct(_)
+            | FormBody::Type(_) => return Err(unsupported(op, &shape)),
         },
         Shape::Other(_) => return Err(unsupported(op, &shape)),
     }))
@@ -202,7 +212,13 @@ pub(crate) fn count(heap: &Heap, v: &Value) -> Result<Value> {
         Shape::Form(_, f) => match f.body() {
             FormBody::List(items) | FormBody::Vector(items) => items.len(),
             FormBody::Map(map) | FormBody::Set(map) => map.len(),
-            FormBody::Keyword(_) | FormBody::Symbol(_) => return Err(unsupported("count", &shape)),
+            FormBody::Struct(s) if s.info.record => {
+                s.info.fields.len() + s.ext.as_ref().map_or(0, |e| e.len())
+            }
+            FormBody::Keyword(_)
+            | FormBody::Symbol(_)
+            | FormBody::Struct(_)
+            | FormBody::Type(_) => return Err(unsupported("count", &shape)),
         },
         Shape::Other(_) => return Err(unsupported("count", &shape)),
     };
@@ -234,8 +250,10 @@ pub(crate) fn first(heap: &Heap, v: &Value) -> Result<Value> {
             FormBody::List(items) | FormBody::Vector(items) => {
                 return Ok(items.get(0).unwrap_or(Value::Null));
             }
-            FormBody::Set(_) | FormBody::Map(_) => {}
-            FormBody::Keyword(_) | FormBody::Symbol(_) => return Err(unsupported("first", &shape)),
+            FormBody::Set(_) | FormBody::Map(_) | FormBody::Struct(_) => {}
+            FormBody::Keyword(_) | FormBody::Symbol(_) | FormBody::Type(_) => {
+                return Err(unsupported("first", &shape));
+            }
         },
         Shape::Str(s) => return Ok(code_unit(heap, s, 0)?.unwrap_or(Value::Null)),
         Shape::Nil => return Ok(Value::Null),
@@ -487,6 +505,7 @@ pub(crate) fn nth(heap: &Heap, coll: &Value, i: &Value, default: Option<&Value>)
 pub(crate) fn get(heap: &Heap, coll: &Value, key: &Value, default: &Value) -> Result<Value> {
     Ok(match shape(heap, coll) {
         Shape::Form(_, f) => match f.body() {
+            FormBody::Struct(s) if s.info.record => form::record_get(heap, s, key),
             FormBody::Map(_) | FormBody::Set(_) => {
                 let coll = form::unwrap(heap, coll.clone());
                 form::get(heap, &coll, key)?
@@ -509,6 +528,7 @@ pub(crate) fn get(heap: &Heap, coll: &Value, key: &Value, default: &Value) -> Re
 pub(crate) fn contains(heap: &Heap, coll: &Value, key: &Value) -> Result<bool> {
     Ok(match shape(heap, coll) {
         Shape::Form(_, f) => match f.body() {
+            FormBody::Struct(s) if s.info.record => form::record_get(heap, s, key).is_some(),
             FormBody::Map(_) | FormBody::Set(_) => {
                 let coll = form::unwrap(heap, coll.clone());
                 form::get(heap, &coll, key)?.is_some()
@@ -542,6 +562,9 @@ pub(crate) fn assoc(heap: &Heap, coll: &Value, key: &Value, value: &Value) -> Re
     let updated = match &shape {
         Shape::Nil => return Ok(form::new_map(heap, &[(key.clone(), value.clone())])?),
         Shape::Form(FormKind::Map, _) => form::assoc(heap, &target, key.clone(), value.clone())?,
+        Shape::Form(FormKind::Struct, f) if f.record().is_some() => {
+            form::record_assoc(heap, &target, key.clone(), value.clone())?
+        }
         Shape::Form(FormKind::Vector, _) => {
             let index = form::unwrap(heap, key.clone());
             form::assoc(heap, &target, index, value.clone())?
@@ -559,6 +582,11 @@ pub(crate) fn dissoc(heap: &Heap, coll: &Value, key: &Value) -> Result<Value> {
         Shape::Form(FormKind::Map, _) => {
             let target = form::unwrap(heap, coll.clone());
             let updated = form::dissoc(heap, &target, key)?;
+            Ok(same_or(heap, coll, updated))
+        }
+        Shape::Form(FormKind::Struct, f) if f.record().is_some() => {
+            let target = form::unwrap(heap, coll.clone());
+            let updated = form::record_dissoc(heap, &target, key)?;
             Ok(same_or(heap, coll, updated))
         }
         _ => Err(unsupported("dissoc", &shape)),
@@ -590,14 +618,22 @@ pub(crate) fn conj(heap: &Heap, coll: &Value, x: &Value) -> Result<Value> {
         Shape::Form(FormKind::List | FormKind::Vector | FormKind::Set, _) => {
             form::conj(heap, &target, x.clone())?
         }
-        Shape::Form(FormKind::Map, _) => {
+        Shape::Form(FormKind::Map | FormKind::Struct, f)
+            if f.kind() == FormKind::Map || f.record().is_some() =>
+        {
+            let put = |coll: &Value, k: Value, v: Value| {
+                if f.kind() == FormKind::Map {
+                    form::assoc(heap, coll, k, v)
+                } else {
+                    form::record_assoc(heap, coll, k, v)
+                }
+            };
             let item = form::unwrap(heap, x.clone());
             match form::form_object(heap, &item)
                 .as_deref()
                 .map(form::FormObject::body)
             {
-                Some(FormBody::Vector(pair)) if pair.len() == 2 => form::assoc(
-                    heap,
+                Some(FormBody::Vector(pair)) if pair.len() == 2 => put(
                     &target,
                     pair.get(0).expect("pair"),
                     pair.get(1).expect("pair"),
@@ -605,7 +641,14 @@ pub(crate) fn conj(heap: &Heap, coll: &Value, x: &Value) -> Result<Value> {
                 Some(FormBody::Map(entries)) => {
                     let mut map = target.clone();
                     for (k, v) in entries.to_vec() {
-                        map = form::assoc(heap, &map, k, v)?;
+                        map = put(&map, k, v)?;
+                    }
+                    map
+                }
+                Some(FormBody::Struct(s)) if s.info.record => {
+                    let mut map = target.clone();
+                    for (k, v) in form::record_entries(heap, s)? {
+                        map = put(&map, k, v)?;
                     }
                     map
                 }
@@ -615,6 +658,87 @@ pub(crate) fn conj(heap: &Heap, coll: &Value, x: &Value) -> Result<Value> {
         _ => return Err(unsupported("conj", &shape)),
     };
     Ok(same_or(heap, coll, updated))
+}
+
+/// The dispatch keys of the values that are not structs or JavaScript
+/// objects, in [`dispatch_key`] order.
+const KEY_NAMES: [&str; 12] = [
+    "null",
+    "boolean",
+    "number",
+    "string",
+    "bigint",
+    "js-symbol",
+    "keyword",
+    "symbol",
+    "list",
+    "vector",
+    "map",
+    "set",
+];
+
+fn key_string(index: usize) -> Value {
+    static KEYS: std::sync::OnceLock<Vec<JsString>> = std::sync::OnceLock::new();
+    let keys = KEYS.get_or_init(|| KEY_NAMES.iter().map(|k| JsString::from(*k)).collect());
+    Value::String(keys[index].clone())
+}
+
+/// What a protocol table keys `v`'s implementation by (light-cljs-478,
+/// "Structs" in [`crate::collections::form`]): a struct's type (its
+/// identity), a struct type's `"type"`, a native form's kind name, a
+/// primitive's (`"null"` for `nil`, `"boolean"`, `"number"`, `"string"`),
+/// `"function"`, `"array"`; `None` for any other JavaScript object, whose
+/// type the caller knows. Occurrences are transparent.
+pub(crate) fn dispatch_key(heap: &Heap, v: &Value) -> Option<Value> {
+    let v = form::unwrap(heap, v.clone());
+    Some(match &v {
+        Value::Null | Value::Undefined => key_string(0),
+        Value::Bool(_) => key_string(1),
+        Value::Number(_) => key_string(2),
+        Value::String(_) => key_string(3),
+        Value::BigInt(_) => key_string(4),
+        Value::Symbol(_) => key_string(5),
+        Value::Object(id) => {
+            if let Some(f) = form::form_object(heap, &v) {
+                return Some(match f.body() {
+                    FormBody::Struct(s) => s.ty.clone(),
+                    FormBody::Type(_) => Value::String(JsString::from("type")),
+                    FormBody::Keyword(_) => key_string(6),
+                    FormBody::Symbol(_) => key_string(7),
+                    FormBody::List(_) => key_string(8),
+                    FormBody::Vector(_) => key_string(9),
+                    FormBody::Map(_) => key_string(10),
+                    FormBody::Set(_) => key_string(11),
+                });
+            }
+            return heap
+                .read(*id, |o| match o {
+                    HeapObject::Function(_)
+                    | HeapObject::BoundFunction(_)
+                    | HeapObject::Builtin(_) => Some(Value::String(JsString::from("function"))),
+                    HeapObject::Array(_) => Some(Value::String(JsString::from("array"))),
+                    _ => None,
+                })
+                .flatten();
+        }
+    })
+}
+
+/// A protocol method's implementation for `v` in `table`, a SameValueZero
+/// persistent map ([`crate::collections`]) from dispatch keys
+/// ([`dispatch_key`]) to implementations, whose `"_"` entry is the
+/// `default` one: the entry for `v`'s key, else the default, else `nil`.
+/// `undefined` for a JavaScript object [`dispatch_key`] has no key for,
+/// which the caller resolves. A lookup by identity and string: no user
+/// equality, hashing or property access.
+pub(crate) fn dispatch(heap: &Heap, table: &Value, v: &Value) -> Result<Value> {
+    let Some(key) = dispatch_key(heap, v) else {
+        return Ok(Value::Undefined);
+    };
+    if let Some(found) = super::get(heap, table.clone(), key)? {
+        return Ok(found);
+    }
+    Ok(super::get(heap, table.clone(), Value::String(JsString::from("_")))?.unwrap_or(Value::Null))
 }
 
 /// `meta`: a form's metadata map, or `nil`.

@@ -1167,6 +1167,32 @@ impl MacroEvaluator for BbpEvaluator {
         self.registrations.borrow_mut().push(source);
         Ok(())
     }
+    /// A declaration bundle's unit is a helper result like a root's: the
+    /// runtime forces it with `__rt.need` when a product or an extension
+    /// of a dispatched protocol is read (light-cljs-478). Nested producers
+    /// replay the registration with the roots'.
+    fn register_compiler_bundle(&self, source: &str, unit: usize) -> Result<(), EvalError> {
+        let id = DependencyId::new(unit as u64);
+        let key = DependencyKey::new(self.runtime.world(), id, HELPER);
+        self.shared
+            .0
+            .definitions
+            .lock()
+            .unwrap()
+            .insert(key, unit as u64);
+        let binding = DependencyKey::new(self.runtime.world(), id, BINDING);
+        if let Ok(request) = self.runtime.claim(binding) {
+            let value = self.runtime.root(Primitive::Null);
+            let _wakeups = self
+                .runtime
+                .complete(binding, request.producer(), Completion::Ready(&value))
+                .map_err(error)?;
+        }
+        let value = self.evaluate_unit(source)?;
+        self.release(value)?;
+        self.registrations.borrow_mut().push(source.to_owned());
+        Ok(())
+    }
     fn native_bridge_stats(&self) -> Option<BridgeStats> {
         Some(self.bridge_stats())
     }

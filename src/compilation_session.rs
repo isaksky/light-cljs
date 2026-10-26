@@ -2758,12 +2758,9 @@ fn install_registrations(
             Registration::Root(name, unit, test, once, location) => engine
                 .register_compiler_root(name, *unit, *once, location, *test)
                 .map_err(|e| e.to_string())?,
-            Registration::Bundle(bundle) => {
-                let value = engine
-                    .evaluate_unit(&bundle.source())
-                    .map_err(|e| e.to_string())?;
-                engine.release(value).map_err(|e| e.to_string())?;
-            }
+            Registration::Bundle(bundle) => engine
+                .register_compiler_bundle(&bundle.source(), bundle.unit)
+                .map_err(|e| e.to_string())?,
         }
     }
     Ok(())
