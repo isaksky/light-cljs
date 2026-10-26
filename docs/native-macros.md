@@ -126,6 +126,10 @@ replaying effects. Namespace output is compared at one, two and four slots.
 Evaluator tests also collect while both consumers are parked and check shared
 input identity and `finally` execution.
 
+Consumer cancellation withdraws that task's waits without cancelling a shared
+producer or another consumer. Build cancellation stops the shared execution
+control. Both unwind saved frames, and a failed task's worker view is retired.
+
 Bridge depth/node limits and the evaluator's cancellation, poll budget and
 wall-clock deadline bound work. The session keeps imported nodes until teardown,
 so repeated imports trade memory retention for stable identity. Aggregate native

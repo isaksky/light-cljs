@@ -411,6 +411,10 @@ impl BbpRuntime {
     pub fn evaluator(&self) -> Result<BbpEvaluator, EvalError> {
         BbpEvaluator::in_runtime(self.clone(), 0)
     }
+    pub(crate) fn cancel(&self) {
+        self.0.control.cancel();
+        self.0.changed.notify_all();
+    }
     pub fn helper_counts(&self) -> crate::compile_stats::NativeHelperCounts {
         let c = &self.0.counters;
         crate::compile_stats::NativeHelperCounts {
@@ -557,6 +561,7 @@ impl BbpEvaluator {
     fn run(&self) -> Result<(), EvalError> {
         let result = self.run_inner();
         if let Err(failure) = &result {
+            self.shared.0.graph.lock().unwrap().withdraw(self.task.id());
             self.fail_initializers(&failure.0);
             let _cancel = self.task.cancel();
             // The VM bounds cancellation cleanup independently of the spent

@@ -2147,6 +2147,10 @@ impl CompilationSession {
         if let Some(resources) = self.shared.resources() {
             resources.workers.cancel();
         }
+        #[cfg(feature = "bbp-macros")]
+        if let Some(Ok(runtime)) = self.shared.native_runtime.get() {
+            runtime.cancel();
+        }
     }
     /// Stop the build's unit pool and join its workers ([`UnitPool::finish`]).
     pub(crate) fn finish_pool(&self) {
@@ -3640,7 +3644,11 @@ fn execute_pool_job(
         }));
     }
     let started = std::time::Instant::now();
-    if let Err(error) = view.analyze(id, None) {
+    let analysis = view.analyze(id, None);
+    // A task-local native failure can finish this VM without terminating
+    // the shared control. Keep other consumers alive, but retire this view.
+    let reusable = !view.host.native_macro_backend() || analysis.is_ok();
+    if let Err(error) = analysis {
         shared.fail_unstarted(id, error);
     }
     shared.note_job(id);
@@ -3651,7 +3659,11 @@ fn execute_pool_job(
             .engine_less_units
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    if slot.engines != PoolEngines::Fresh && !view.terminal() && !view.holds_excess_headroom() {
+    if reusable
+        && slot.engines != PoolEngines::Fresh
+        && !view.terminal()
+        && !view.holds_excess_headroom()
+    {
         slot.view = Some(view);
     }
 }
@@ -4361,6 +4373,73 @@ mod worker_tests {
             units.insert(name, unit);
         }
         (session, units, host.environment())
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_build_cancellation_reaches_every_shared_runtime_task() {
+        let session = CompilationSession::default();
+        let runtime = session.shared.native_runtime(&Default::default()).unwrap();
+        let first = runtime.evaluator().unwrap();
+        let second = runtime.evaluator().unwrap();
+        session.cancel_pool();
+        for evaluator in [first, second] {
+            let error = evaluator.evaluate_unit("rt => 42").unwrap_err();
+            assert!(error.0.contains("cancelled"), "{error}");
+        }
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn a_task_local_native_failure_retires_its_worker_view_without_cancelling_the_runtime() {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let (session, units, environment) = registered_with_host(
+            include_str!("../tests/fixtures/native-helper-demand/pool.cljs"),
+            host,
+        );
+        let shared = session.shared();
+        shared.select_native();
+        let runtime = shared
+            .native_runtime(environment.evaluator_options())
+            .unwrap();
+        runtime.on_wait(Arc::new(|task, key| {
+            if key.kind() == big_boy_pants_js::ResultKind::new(3) {
+                let _cancel = task.cancel();
+            }
+        }));
+        let id = units["cljs.user/left"];
+        crate::scheduler::run(
+            &crate::scheduler::Config::new(crate::scheduler::Slots::ONE, 1),
+            |_| WorkerSlot {
+                view: None,
+                engines: PoolEngines::Persistent,
+                _trace: None,
+            },
+            |slot, job, worker| {
+                execute_pool_job(slot, job, worker, &shared, &environment);
+                assert!(
+                    slot.view.is_none(),
+                    "a cancelled VM cannot serve the next analysis"
+                );
+            },
+            |pool| {
+                pool.submit_batch(shared.unit_jobs(vec![id], false));
+                while matches!(
+                    pool.next_outcome().unwrap(),
+                    crate::scheduler::Next::Outcome(())
+                ) {}
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            shared.lock().units[id].state,
+            AnalysisState::Failed(..)
+        ));
+        assert!(
+            runtime.evaluator().is_ok(),
+            "only the consumer was cancelled"
+        );
     }
 
     /// Hold each claimed unit's analysis until `waiters` threads wait for
