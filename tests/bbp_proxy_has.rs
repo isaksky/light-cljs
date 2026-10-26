@@ -60,9 +60,9 @@ fn unsupported_native_foreign_printer_extension_remains_explicit() {
         root.join("fixture.cljs"),
         r#"
 (ns fixture)
-(extend-type js/Promise
+(extend-type js/Date
   IPrintWithWriter
-  (-pr-writer [p writer opts] (-write writer "promise")))
+  (-pr-writer [date writer opts] (-write writer "date")))
 (defmacro demand-printer [] (pr-str [nil]))
 (demand-printer)
 "#,
