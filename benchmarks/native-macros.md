@@ -141,3 +141,23 @@ seed 42) now passes native sets and `vec` but stops at lazy `map`
 `pool` goes from 0 published / at least 1 per-task to 1 / 0, and the new
 `collections` namespace (a set constant and two collection helpers) publishes
 3 of 3 at one and two slots.
+
+A supplementary, synthetic collection-heavy macro (not one of the fixed
+fixtures, and not a k figure) shows the lowering where macro work is not
+hidden by process start. Four calls of
+
+```clojure
+(defmacro churn [n]
+  (loop [i 0 v [] m {}]
+    (if (= i n)
+      (loop [s (seq v) total 0]
+        (if s
+          (recur (next s) (+ total (first s) (get m 1 0) (count (rest [1 2 3]))))
+          total))
+      (recur (+ i 1) (conj v i) (assoc m (count v) (count m))))))
+```
+
+with `n` 400 (`--jobs 1 --no-cache`, five alternating fresh processes of the
+same two release binaries) took a median 1,947.5 ms [1,938.2–1,949.7] before
+and 167.3 ms [165.5–167.6] after, 11.6x less, with identical output. `next`
+still copies the remaining elements, so the loop stays quadratic.
