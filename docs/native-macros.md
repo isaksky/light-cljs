@@ -210,48 +210,71 @@ printer extension demand. Presence checks now execute the trap through traced
 native continuations, including inherited Proxies, trap getters, key conversion,
 dependency waits and target descriptor/extensibility invariants. Array methods,
 descriptor readers, locale lists and Error cause options use the same path.
-The semantic fixture `crates/big-boy-pants-js/tests/fixtures/js/proxy_has.js`
-runs unchanged in Node/V8 and the native engine; `tests/proxy_has.rs` exercises
-collection and worker migration during waits.
 
-`tests/bbp_proxy_has.rs` compiles a real source macro that invokes a source-defined
-printer protocol with a Transit package extension. It demands the extension,
-passes the package's `has` trap and reaches `extension: unsupported Proxy trap:
-get`. That is the next distinct engine boundary: the opaque package registry's
-getter remains unsupported. The regression preserves that error instead of
-discarding the extension or treating an unavailable foreign type as a native one.
-It uses its own printer protocol so it can run before light-cljs-513's native
-core printer services land. End-to-end Penpot validation with those services
-still requires integrating light-cljs-513; this change does not duplicate them.
+With the native printers integrated, both Penpot entries next exposed `get`
+and then `apply` on the same opaque registry/function path. These traps now
+use resumable native continuations too: reads preserve the original receiver
+and enforce fixed-property invariants after the trap; calls create a fresh
+argument array and preserve `this` through bound/Reflect forwarding and native
+callbacks. The first-party semantic fixtures
+`crates/big-boy-pants-js/tests/fixtures/js/proxy_has.js` and `proxy_get.js` run
+unchanged in Node/V8 and the native engine. `tests/proxy_has.rs` checks exact
+callback order across dependency waits, collection and migration on 64 KiB
+worker stacks, including every supported descriptor reader and extensibility
+callbacks during enumeration and reflection.
 
-At engine checkpoint `23306640`, rebased on `26512b2f`, both documented Penpot
-entries were rerun with five absolute read-only source roots, `--jobs 1
---no-cache` and the documented budgets. `app.render` exits 1 after 13 seconds at
-`matrix.cljc:251:4`, expanding `app.common.data.macros/assert!`, with
-`unsupported operation: native macro runtime core.prStr`. `app.main` exits 1
-after 16 seconds at `app/config.cljs:150:9`, expanding `app.common.logging/wrn`,
-with `unsupported operation: native macro runtime core.currentNs`. These are
-the earlier light-cljs-513 service boundaries, so this tree cannot yet validate
-the real Transit printer extension end to end. The source regression's next
-boundary is the opaque package `get` trap; rerun Penpot after integrating 513.
+`tests/bbp_proxy_has.rs` compiles a source macro printing `[nil]`, which demands
+the TransitUUID `IUUID`/`IPrintWithWriter` extension through the opaque package
+registry. It produces `"[nil]"`; the same source without a supplied package
+fails explicitly. A separate source fixture preserves the unsupported native
+printer extension on `js/Promise`. Printer dispatch is not weakened and no
+legacy runtime is used for native expansion.
 
-On macOS arm64 with Rust/Cargo 1.99.1 and Node 26.12.1, the rebased engine passes
-2,115 tests and seven doctests. Native macro integration passes 71 tests plus
-the source extension regression; native/QuickJS integration passes 73 plus that
-regression. All 35 native evaluator unit tests pass. The unfiltered native-only
-compiler library has 256 passes and 27 failures requiring legacy services or
-bootstrap comparisons; restoring the engine VM sources to `26512b2f` reproduces
-the same 27 failing tests and pass count. Strict engine Clippy retains the nine
-existing diagnostics in `deprecated`, `clippy::chunks_exact_to_as_chunks` and
-`clippy::byte_char_slices`; allowing only these categories passes engine
-all-target and native/QuickJS compiler library/binary/source-regression lint.
-Format checks pass.
-QuickJS-only available targets have 822 passes and the two documented environment
-failures (playground workspace discovery and denied `ps`); the compiler integration
-target and all-target compiler lint cannot compile eight missing research includes.
-Those QuickJS results precede the rebase, whose compiler changes affect native
-emission and evaluation. The research tree remains untouched; default V8 checks
-remain with the orchestrator.
+On the implementation rebased on `964782f7`, both documented Penpot entries
+were rebuilt and rerun natively with the five absolute read-only source roots,
+`--jobs 1 --no-cache` and every budget in the reproduction below. Both pass the
+Transit extension's `has`, `get` and `apply` errors. Their next errors are:
+
+`--entry app.render`:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/types/modifiers.cljc:275:4: macro expansion: while expanding cuerdas.core/ffmt: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/types/modifiers.cljc:275:4: macro cuerdas.core/ffmt: big-boy-pants-js: Error: unsupported operation: native macro runtime core.readerReadString; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:1056:1 (bytes 8736..8834)
+```
+
+`--entry app.main`:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/config.cljs:236:3: macro expansion: while expanding app.common.data.macros/assert!: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/config.cljs:236:3: macro app.common.data.macros/assert!: big-boy-pants-js: Error: /Users/admin/src/light-cljs/research/penpot-light/vendor/promesa/impl.cljc:380:4: extension: unsupported operation: native protocol extension of [object Function]; definition /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/data/macros.cljc:105:1 (bytes 8211..8260)
+```
+
+The reader service is tracked by light-cljs-516. Neither Penpot entry completes;
+the Promise extension remains an explicit unsupported foreign-constructor
+boundary. The read-only research tree and default backend are unchanged.
+
+Validation at `3011586b`, macOS arm64, Homebrew Rust/Cargo 1.99.1 and Node
+26.12.1: all engine targets pass 2,120 tests and seven doctests. The all-target
+run was completed in target groups after updating formerly unsupported-trap
+expectations. `cargo test --locked --no-default-features --features bbp-macros
+--test bbp_macros --test bbp_proxy_has` passes 75 macro tests and two source
+regressions; the native evaluator's 37 unit tests pass. With
+`--features bbp-macros,quickjs`, the full library passes 333 tests (one ignored),
+the CLI unit test passes, and the macro/source targets pass 77 and two tests.
+
+The QuickJS-only library/binaries and available integration targets pass
+822 tests, with 52 normally skipped and the same two environment failures:
+the playground wasm crate discovers the main checkout's workspace, and
+`dev_watch::a_failed_restart_waits_for_work` cannot spawn `ps` (`PermissionDenied`,
+`Operation not permitted`). The compiler integration target and full compiler
+all-target lint remain unavailable because eight pinned research includes are
+absent; this run leaves `research/` untouched. Both format checks pass. Strict
+engine Clippy retains the nine baseline diagnostics in `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`; allowing only
+those categories passes all engine targets and native/native-plus-QuickJS
+library, binary and macro/source-test lint. QuickJS-only library/binary Clippy
+passes strictly.
+
+V8 compiler validation remains with the orchestrator because its machine cache
+is inaccessible in this sandbox.
 
 ### Bootstrap macro audit (light-cljs-509, 2026-10-26)
 
