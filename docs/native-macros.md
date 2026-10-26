@@ -140,7 +140,7 @@ In an isolated worktree with `research/` left untouched, use the same five
 source roots under `/Users/admin/src/light-cljs/research/penpot-light`.
 
 After light-cljs-509, both entries pass the former cuerdas `as->` error. At
-`3f62549f`, both commands exit 1, with these exact first errors (the read-only
+`54bdea18`, both commands exit 1, with these exact first errors (the read-only
 port's canonical source paths):
 
 `--entry app.render`:
