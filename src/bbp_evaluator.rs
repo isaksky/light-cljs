@@ -349,6 +349,8 @@ struct SharedRuntime {
     graph: Mutex<big_boy_pants_js::DependencyGraph>,
     #[cfg(test)]
     on_wait: Mutex<Option<WaitHook>>,
+    #[cfg(test)]
+    on_initializer: Mutex<Option<WaitHook>>,
 }
 #[derive(Default)]
 struct NativeCounters {
@@ -358,6 +360,8 @@ struct NativeCounters {
     waits: AtomicUsize,
     steps: AtomicUsize,
     migrations: AtomicUsize,
+    #[cfg(test)]
+    cleanups: AtomicUsize,
 }
 #[cfg(test)]
 type WaitHook = Arc<dyn Fn(&Task, DependencyKey) + Send + Sync>;
@@ -399,6 +403,8 @@ impl BbpRuntime {
             graph: Mutex::new(big_boy_pants_js::DependencyGraph::new()),
             #[cfg(test)]
             on_wait: Mutex::new(None),
+            #[cfg(test)]
+            on_initializer: Mutex::new(None),
         })))
     }
 
@@ -573,6 +579,7 @@ impl BbpEvaluator {
                 per_task: self.per_task.clone(),
                 counters: self.shared.0.counters.clone(),
                 last_thread: self.last_thread.clone(),
+                admitted: Arc::new(Mutex::new(true)),
             };
             // Before the first helper wait, the worker already owns this
             // runnable task. Only suspended continuations need pool handoff.
@@ -621,7 +628,9 @@ impl BbpEvaluator {
             self.resumable.set(true);
         }
         #[cfg(test)]
-        if let Some(hook) = self.shared.0.on_wait.lock().unwrap().clone() {
+        let hook = self.shared.0.on_wait.lock().unwrap().clone();
+        #[cfg(test)]
+        if let Some(hook) = hook {
             hook(&self.task, key);
         }
         if key.kind() == HELPER || key.kind() == INITIALIZER {
@@ -775,6 +784,13 @@ impl BbpEvaluator {
                         self.task.id(),
                     );
                     self.initializers.borrow_mut().insert(key, request);
+                    #[cfg(test)]
+                    {
+                        let hook = self.shared.0.on_initializer.lock().unwrap().clone();
+                        if let Some(hook) = hook {
+                            hook(&self.task, key);
+                        }
+                    }
                     true
                 }
                 Err(_) => false,
@@ -798,6 +814,7 @@ impl BbpEvaluator {
             .map_err(error)?
             .ok_or_else(|| error("missing initializer result"))?;
         let failure = failed.string().is_some();
+        let mut shared_value = false;
         let outcome = if failure {
             failed
         } else {
@@ -806,11 +823,7 @@ impl BbpEvaluator {
                 Err(big_boy_pants_js::PublishError::NotShareable { .. }) => false,
                 Err(e) => return Err(error(e)),
             };
-            if published {
-                self.note(|s| s.helper_published += 1);
-            } else {
-                self.note(|s| s.helper_per_task += 1);
-            }
+            shared_value = published;
             self.runtime.scope(|s| {
                 let status = s.primitive(Primitive::Bool(published));
                 let value = if published {
@@ -833,6 +846,15 @@ impl BbpEvaluator {
             .map_err(error)?
             .into_runnable();
         self.initializers.borrow_mut().remove(&key);
+        if !failure {
+            self.note(|s| {
+                if shared_value {
+                    s.helper_published += 1;
+                } else {
+                    s.helper_per_task += 1;
+                }
+            });
+        }
         *self.shared.0.generation.lock().unwrap() += 1;
         self.shared.0.changed.notify_all();
         Ok(self.runtime.root(Primitive::Null))
@@ -940,13 +962,27 @@ pub(crate) struct NativeStep {
     per_task: Arc<AtomicUsize>,
     counters: Arc<NativeCounters>,
     last_thread: Arc<Mutex<std::thread::ThreadId>>,
+    admitted: Arc<Mutex<bool>>,
 }
 impl NativeStep {
+    pub(crate) fn handoff(&self) -> NativeHandoff {
+        NativeHandoff {
+            task: self.task.clone(),
+            admitted: self.admitted.clone(),
+            finished: false,
+        }
+    }
     #[cfg(test)]
     pub(crate) fn task_id(&self) -> big_boy_pants_js::TaskId {
         self.task.id()
     }
     pub(crate) fn run(self) -> Result<RunOutcome, String> {
+        // The per-step permit also lets an abandoned wait reclaim ownership.
+        // It never excludes another task, and spans only this bounded VM step.
+        let admitted = self.admitted.lock().unwrap();
+        if !*admitted {
+            return Err("native task handoff cancelled".into());
+        }
         let current = std::thread::current().id();
         let previous = std::mem::replace(&mut *self.last_thread.lock().unwrap(), current);
         self.counters.steps.fetch_add(1, Ordering::Relaxed);
@@ -961,9 +997,34 @@ impl NativeStep {
             .map_err(|e| e.to_string())
     }
 }
+/// A waiting analyzer must regain exclusive ownership before unwinding its
+/// saved task. A queued step is invalidated; an executing step finishes first.
+pub(crate) struct NativeHandoff {
+    task: Task,
+    admitted: Arc<Mutex<bool>>,
+    finished: bool,
+}
+impl NativeHandoff {
+    pub(crate) fn finish(&mut self) {
+        self.finished = true;
+    }
+}
+impl Drop for NativeHandoff {
+    fn drop(&mut self) {
+        if !self.finished {
+            *self.admitted.lock().unwrap() = false;
+            let _cancel = self.task.cancel();
+        }
+    }
+}
 struct NativeHost<'a>(&'a AtomicUsize, &'a NativeCounters);
 impl big_boy_pants_js::Host for NativeHost<'_> {
     fn effect(&mut self, call: big_boy_pants_js::HostCall) -> Result<Primitive, String> {
+        #[cfg(test)]
+        if call.op == 65534 {
+            self.1.cleanups.fetch_add(1, Ordering::Relaxed);
+            return Ok(Primitive::Null);
+        }
         if call.op == 65535 {
             self.0.fetch_add(1, Ordering::Relaxed);
             self.1.per_task.fetch_add(1, Ordering::Relaxed);
@@ -1113,27 +1174,19 @@ impl CompilerEvaluator for BbpEvaluator {
         name: &str,
         callback: UnitService,
     ) -> Result<(), EvalError> {
-        if name != "__lightCompileUnit" {
-            return Err(error("unknown compiler unit service"));
+        if name == "__lightCompileUnit" {
+            *self.service.borrow_mut() = Some(callback);
         }
-        *self.service.borrow_mut() = Some(callback);
-        Ok(())
+        // Helper demand calls the Rust service from a parked continuation.
+        // Preserve explicit rejection of direct legacy JS service calls.
+        self.unsupported_service(name)
     }
     fn install_string_service(
         &self,
         name: &str,
         _callback: StringService,
     ) -> Result<(), EvalError> {
-        if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-            return Err(error("invalid service name"));
-        }
-        let source = format!(
-            "rt => {{ globalThis.{name} = () => {{ throw new Error('unsupported operation: native compiler service {name}'); }}; return null; }}"
-        );
-        let value = self.evaluate_unit(&source)?;
-        self.release(value)?;
-        self.registrations.borrow_mut().push(source);
-        Ok(())
+        self.unsupported_service(name)
     }
     fn value_roots(&self) -> Result<usize, EvalError> {
         Ok(self.values.borrow().len() + self.bridge.lock().unwrap().imports.len())
@@ -1148,5 +1201,19 @@ impl CompilerEvaluator for BbpEvaluator {
             ValueView::Number(n) => Ok(n),
             _ => Err(error("not a number")),
         }
+    }
+}
+impl BbpEvaluator {
+    fn unsupported_service(&self, name: &str) -> Result<(), EvalError> {
+        if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err(error("invalid service name"));
+        }
+        let source = format!(
+            "rt => {{ globalThis.{name} = () => {{ throw new Error('unsupported operation: native compiler service {name}'); }}; return null; }}"
+        );
+        let value = self.evaluate_unit(&source)?;
+        self.release(value)?;
+        self.registrations.borrow_mut().push(source);
+        Ok(())
     }
 }

@@ -214,9 +214,13 @@ impl ExecutionControl {
         result
     }
     /// What is left of the current operation's poll budget.
-    #[cfg(all(test, light_quickjs))]
+    #[cfg(all(test, any(light_quickjs, feature = "bbp-macros")))]
     pub(crate) fn remaining_polls(&self) -> u64 {
         self.0.remaining.load(Ordering::Relaxed)
+    }
+    #[cfg(all(test, feature = "bbp-macros"))]
+    pub(crate) fn expire_for_test(&self) {
+        self.0.deadline_nanos.store(0, Ordering::Relaxed);
     }
     pub fn cancel(&self) {
         self.0.cancelled.store(true, Ordering::Relaxed);

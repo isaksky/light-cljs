@@ -842,3 +842,37 @@ fn helper_namespace_output_is_deterministic_with_one_two_and_four_slots() {
         }
     }
 }
+
+#[test]
+fn helper_failures_have_the_same_source_diagnostic_at_one_two_and_four_slots() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/pool");
+    let mut reference = None;
+    for jobs in [1, 2, 4] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let error = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "demand.failure",
+            std::slice::from_ref(&root),
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("fixture helper failed"), "{error}");
+        assert!(
+            error.contains("failure.cljs:2:15") && error.contains("demand.macros/demand-failure"),
+            "{error}"
+        );
+        if let Some(reference) = &reference {
+            assert_eq!(&error, reference, "jobs {jobs}");
+        } else {
+            reference = Some(error);
+        }
+    }
+}

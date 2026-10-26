@@ -282,3 +282,260 @@ fn initializer_failure_wakes_later_consumers_without_repeating_effects() {
         }
     }
 }
+
+#[test]
+fn cancelling_one_parked_consumer_keeps_the_shared_producer_and_peer_alive() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let waiting = Arc::new((Mutex::new(Vec::<Task>::new()), Condvar::new()));
+    let observed = waiting.clone();
+    shared.on_wait(Arc::new(move |task, key| {
+        if key.kind() == HELPER {
+            assert_eq!(
+                task.global_value("beforeDemand").unwrap().unwrap().view(),
+                ValueView::Number(1.0)
+            );
+            observed.0.lock().unwrap().push(task.clone());
+            observed.1.notify_all();
+        }
+    }));
+    let produced = Arc::new(AtomicUsize::new(0));
+    let consumer = native(
+        "(declare helper) (fn [x] (js* \"globalThis.beforeDemand = (globalThis.beforeDemand || 0) + 1\") (try (helper x) (finally (js* \"__rt.effect(65534,0)\"))))",
+    );
+    let results = std::thread::scope(|scope| {
+        (0..2)
+            .map(|_| {
+                scope.spawn(|| {
+                    let evaluator = Rc::new(shared.evaluator().unwrap());
+                    let waiting = waiting.clone();
+                    let produced = produced.clone();
+                    evaluator
+                        .clone()
+                        .install_compiler_service(
+                            "__lightCompileUnit",
+                            Rc::new(move |_, _| {
+                                produced.fetch_add(1, Ordering::SeqCst);
+                                let mut tasks = waiting.0.lock().unwrap();
+                                while tasks.len() != 2 {
+                                    let (next, timeout) = waiting
+                                        .1
+                                        .wait_timeout(tasks, std::time::Duration::from_secs(5))
+                                        .unwrap();
+                                    tasks = next;
+                                    assert!(!timeout.timed_out(), "peer did not park");
+                                }
+                                let _cancel = tasks[0].cancel();
+                                Ok(native(include_str!(
+                                    "../../tests/fixtures/native-helper-demand/helper.cljs"
+                                )))
+                            }),
+                        )
+                        .unwrap();
+                    evaluator
+                        .register_compiler_root(
+                            "cljs.user/helper",
+                            Some(7),
+                            false,
+                            "helper.cljs:1",
+                            None,
+                        )
+                        .unwrap();
+                    let function = evaluator.evaluate_unit(&consumer).unwrap();
+                    let value = evaluator.evaluate_unit("rt => 40").unwrap();
+                    let result = evaluator.call(function, &[value]);
+                    result.map(|_| ()).map_err(|error| error.to_string())
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(produced.load(Ordering::SeqCst), 1);
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert!(
+        results
+            .iter()
+            .filter_map(|r| r.as_ref().err())
+            .all(|e| e.contains("cancelled")),
+        "{results:?}"
+    );
+    assert!(
+        shared.0.control.poll().is_ok(),
+        "consumer cancellation is task-local"
+    );
+    assert_eq!(shared.helper_counts().compiled, 1);
+    assert_eq!(shared.0.counters.cleanups.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn helper_waits_do_not_reset_aggregate_fuel_or_deadline() {
+    for deadline in [false, true] {
+        let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+        let evaluator = Rc::new(shared.evaluator().unwrap());
+        let control = shared.0.control.clone();
+        evaluator
+            .clone()
+            .install_compiler_service(
+                "__lightCompileUnit",
+                Rc::new(move |active, _| {
+                    let remaining = control.remaining_polls();
+                    active.control().poll().unwrap();
+                    assert_eq!(control.remaining_polls(), remaining - 1);
+                    // Spend this compilation's remaining polls inside real helper work.
+                    // The next factory/resume must observe exhaustion, never a fresh budget.
+                    if deadline {
+                        control.expire_for_test();
+                    } else {
+                        for _ in 0..control.remaining_polls() {
+                            control.poll().unwrap();
+                        }
+                    }
+                    Ok(native(include_str!(
+                        "../../tests/fixtures/native-helper-demand/helper.cljs"
+                    )))
+                }),
+            )
+            .unwrap();
+        evaluator
+            .register_compiler_root("cljs.user/helper", Some(7), false, "helper.cljs:1", None)
+            .unwrap();
+        let consumer = native(
+            "(declare helper) (fn [x] (try (helper x) (finally (js* \"__rt.effect(65534,0)\"))))",
+        );
+        let function = evaluator.evaluate_unit(&consumer).unwrap();
+        let value = evaluator.evaluate_unit("rt => 40").unwrap();
+        let failure = evaluator.call(function, &[value]).unwrap_err();
+        assert!(
+            failure.0.contains(if deadline {
+                "deadline exceeded"
+            } else {
+                "poll budget exhausted"
+            }),
+            "{failure}"
+        );
+        assert_eq!(shared.0.counters.cleanups.load(Ordering::Relaxed), 1);
+        if !deadline {
+            assert_eq!(shared.0.control.remaining_polls(), 0);
+        }
+        assert!(
+            shared.evaluator().is_err(),
+            "a sibling must share the exhausted budget"
+        );
+    }
+}
+
+#[test]
+fn concurrent_initializer_cycle_is_diagnosed_and_wakes_both_consumers() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let initialized = Arc::new((Mutex::new(0usize), Condvar::new()));
+    *shared.0.on_initializer.lock().unwrap() = Some(Arc::new(move |_, _| {
+        let mut count = initialized.0.lock().unwrap();
+        *count += 1;
+        initialized.1.notify_all();
+        while *count != 2 {
+            let (next, timeout) = initialized
+                .1
+                .wait_timeout(count, std::time::Duration::from_secs(5))
+                .unwrap();
+            count = next;
+            assert!(
+                !timeout.timed_out(),
+                "both initializer producers did not start"
+            );
+        }
+    }));
+    let outcomes = std::thread::scope(|scope| {
+        ["a", "b"]
+            .map(|name| {
+                let shared = &shared;
+                scope.spawn(move || {
+                    let evaluator = Rc::new(shared.evaluator().unwrap());
+                    evaluator
+                        .clone()
+                        .install_compiler_service(
+                            "__lightCompileUnit",
+                            Rc::new(|_, id| {
+                                Ok(native(if id == 7 {
+                                    "(declare b) b"
+                                } else {
+                                    "(declare a) a"
+                                }))
+                            }),
+                        )
+                        .unwrap();
+                    for (name, id) in [("a", 7), ("b", 8)] {
+                        evaluator
+                            .register_compiler_root(
+                                &format!("cljs.user/{name}"),
+                                Some(id),
+                                false,
+                                "cycle.cljs:1",
+                                None,
+                            )
+                            .unwrap();
+                    }
+                    evaluator
+                        .evaluate_unit(&format!(
+                            "rt => globalThis.__lightCompilerRoots['cljs.user/{name}']"
+                        ))
+                        .unwrap_err()
+                        .to_string()
+                })
+            })
+            .map(|t| t.join().unwrap())
+    });
+    for failure in outcomes {
+        assert!(failure.contains("cycle"), "{failure}");
+    }
+    for id in [7, 8] {
+        assert!(matches!(
+            shared.0.runtime.cell_status(DependencyKey::new(
+                shared.0.runtime.world(),
+                DependencyId::new(id),
+                INITIALIZER
+            )),
+            big_boy_pants_js::CellStatus::Failed(_)
+        ));
+    }
+}
+
+#[test]
+fn recursive_helper_functions_do_not_form_initializer_wait_cycles() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = Rc::new(shared.evaluator().unwrap());
+    evaluator.clone().install_compiler_service("__lightCompileUnit", Rc::new(|_, _| {
+        Ok(native("(declare helper) (fn [x] (if (js* \"~{} === 0\" x) 42 (helper (js* \"~{} - 1\" x))))"))
+    })).unwrap();
+    evaluator
+        .register_compiler_root("cljs.user/helper", Some(7), false, "recursive.cljs:1", None)
+        .unwrap();
+    let value = evaluator
+        .evaluate_unit("rt => globalThis.__lightCompilerRoots['cljs.user/helper'](10)")
+        .unwrap();
+    assert_eq!(
+        evaluator.values.borrow()[&value.index].view(),
+        ValueView::Number(42.0)
+    );
+    assert_eq!(shared.helper_counts().compiled, 1);
+}
+
+#[test]
+fn abandoned_handoff_invalidates_its_queued_step_before_task_cleanup() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let step = NativeStep {
+        task: evaluator.task.clone(),
+        per_task: evaluator.per_task.clone(),
+        counters: shared.0.counters.clone(),
+        last_thread: evaluator.last_thread.clone(),
+        admitted: Arc::new(Mutex::new(true)),
+    };
+    let before = shared.helper_counts().steps;
+    drop(step.handoff());
+    assert!(evaluator.task.cancel_requested());
+    assert!(step.run().unwrap_err().contains("handoff cancelled"));
+    assert_eq!(shared.helper_counts().steps, before);
+    assert!(evaluator.run().unwrap_err().0.contains("cancelled"));
+    assert!(shared.0.control.poll().is_ok());
+}

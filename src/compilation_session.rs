@@ -2599,7 +2599,7 @@ fn analyze_unit(
                 source: shared.unit_source(id).unwrap_or_default(),
                 name: shared.unit_name(id),
                 span: form.span(),
-                depth,
+                depth: depth + HELP_DEPTH.get(),
             },
             &host,
         );
@@ -3476,6 +3476,15 @@ struct WorkerSlot {
     engines: PoolEngines,
     _trace: Option<crate::compile_trace::Recording>,
 }
+thread_local! {
+    static HELP_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+struct HelpDepth(usize);
+impl Drop for HelpDepth {
+    fn drop(&mut self) {
+        HELP_DEPTH.set(self.0);
+    }
+}
 /// The pool's thread: run the scheduler, submitting each batch the inbox
 /// gets and consuming outcomes, until the inbox closes and every job has
 /// run. A worker's panic stops the pool and ends every wait in the catalog.
@@ -3509,6 +3518,7 @@ fn execute_pool_job(
     shared: &Arc<SharedCatalog>,
     environment: &MacroEnvironment,
 ) {
+    let _depth = HelpDepth(HELP_DEPTH.replace(worker.help_depth()));
     let id = match job {
         UnitJob::Analyze(id, _) => id,
         #[cfg(feature = "bbp-macros")]
@@ -3563,6 +3573,7 @@ fn execute_pool_job(
         #[cfg(test)]
         let owner = worker.slot();
         *view.runner.borrow_mut() = Some(Rc::new(move |step| {
+            let mut handoff = step.handoff();
             let (send, receive) = std::sync::mpsc::sync_channel(1);
             #[cfg(test)]
             let task = step.task_id();
@@ -3583,7 +3594,10 @@ fn execute_pool_job(
             }
             loop {
                 match receive.try_recv() {
-                    Ok(outcome) => return outcome,
+                    Ok(outcome) => {
+                        handoff.finish();
+                        return outcome;
+                    }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         return Err("native task worker stopped".into());
                     }
@@ -3599,7 +3613,10 @@ fn execute_pool_job(
                     continue;
                 }
                 match receive.recv_timeout(std::time::Duration::from_millis(20)) {
-                    Ok(outcome) => return outcome,
+                    Ok(outcome) => {
+                        handoff.finish();
+                        return outcome;
+                    }
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                         return Err("native task worker stopped".into());
                     }
@@ -4340,6 +4357,7 @@ mod worker_tests {
         use big_boy_pants_js::{DependencyId, ResultKind, Task, TaskId, ValueView};
         #[derive(Default)]
         struct Progress {
+            started: usize,
             tasks: HashMap<TaskId, Task>,
             useful: bool,
             held: Option<(TaskId, usize)>,
@@ -4376,10 +4394,19 @@ mod worker_tests {
             }
         }));
         let state = progress.clone();
-        let started = std::sync::Barrier::new(2);
         *shared.on_claim.lock().unwrap() = Some(Arc::new(move |unit| {
             if unit == left || unit == right {
-                started.wait();
+                let mut p = state.0.lock().unwrap();
+                p.started += 1;
+                state.1.notify_all();
+                while p.started != 2 {
+                    let (next, timeout) = state
+                        .1
+                        .wait_timeout(p, std::time::Duration::from_secs(5))
+                        .unwrap();
+                    p = next;
+                    assert!(!timeout.timed_out(), "two compiler workers did not start");
+                }
             }
             if unit == other {
                 let mut p = state.0.lock().unwrap();
@@ -4443,10 +4470,10 @@ mod worker_tests {
         config.limits.batch_jobs = 1;
         let counts = crate::scheduler::run(
             &config,
-            |_| WorkerSlot {
+            |slot| WorkerSlot {
                 view: None,
                 engines: PoolEngines::Persistent,
-                _trace: None,
+                _trace: Some(crate::compile_trace::record_worker(slot)),
             },
             |slot, job, worker| execute_pool_job(slot, job, worker, &shared, &environment),
             |pool| {
@@ -4477,12 +4504,27 @@ mod worker_tests {
         let counters = runtime.helper_counts();
         assert_eq!(counters.compiled, 1);
         assert!(counters.migrations > 0);
+        let trace = crate::compile_trace::record();
         for id in [left, right, other] {
             assert!(matches!(
                 shared.lock().units[id].state,
                 AnalysisState::Analyzed(..)
             ));
+            if let Some(rows) = shared.lock().units[id]
+                .charges
+                .as_mut()
+                .and_then(|charges| charges.trace.take())
+            {
+                crate::compile_trace::replay(*rows, 0);
+            }
         }
+        let trace = trace.finish().unwrap();
+        assert!(
+            trace
+                .units
+                .iter()
+                .any(|row| row.id == other as u32 && row.depth > 0)
+        );
     }
 
     fn hold_claims(shared: &Arc<SharedCatalog>, waiters: usize) {
