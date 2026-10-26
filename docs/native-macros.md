@@ -85,9 +85,14 @@ The review regressions compare `str`, `pr-str` and `print-str` on immutable
 and mutable records/types, both with and without `Object/toString`. Record
 `str` honors that method (or the default `[object Object]`), while readable
 printing uses record fields and extension maps. Mutable records also retain
-print limits, metadata and `print-meta?`. Custom printers receive a real
-`StringBufferWriter`; `-write` returns its appendable buffer, including when
-collection `str` invokes the printer.
+print limits, metadata and `print-meta?`. The compiler supplies one JavaScript
+member for every declared field, preserving collisions after munging, reserved
+names and internal record slots without depending on property enumeration.
+Custom printers receive a real `StringBufferWriter`; `-write` returns its
+appendable buffer, including when collection `str` invokes the printer.
+String helpers keep the original output
+buffer even if a custom printer replaces, clears or makes the writer's `sb`
+slot unreadable; subsequent writes still use the current slot, as in QuickJS.
 
 `formPrintItems` preserves positional traversal and restores legacy five-bit
 hash traversal, including nil-first traversal, independently of the native
@@ -112,8 +117,11 @@ also distinguish Namespace objects from explicitly bound nil or symbols. Task
 migration does not consult worker thread-local namespace state. The namespace
 snapshot distinguishes registry entries from explicitly constructed Namespace
 values, retaining the latter's name occurrence and task-local identity without
-interning it. Differential coverage includes an existing registry name with
-different metadata and a non-symbol name slot, alongside `create-ns`/`find-ns`.
+interning it. The cache uses weak snapshot keys: observable snapshots retain
+their Namespace identity, and discarded snapshots and their Namespace objects
+are collectable. A GC regression checks both lifetimes. Differential coverage
+includes distinct explicit objects with the same registry name and different
+metadata, and a non-symbol name slot, alongside `create-ns`/`find-ns`.
 The namespace fixture matches QuickJS's emitted program and diagnostic
 message/provenance at
 jobs 1/2/4, including seeded scheduling, a held earlier caller, nested helper
@@ -132,12 +140,13 @@ helper, then suspends and resumes buffered reductions at jobs 1/2/4.
 
 Verification on macOS arm64, Homebrew Rust/Cargo 1.99.1 and Node 26.12.1:
 `cargo test --locked --no-default-features --features bbp-macros --test
-bbp_macros` passes all 75 tests, and the native `bbp_evaluator::` library
-module passes all 36. With `bbp-macros,quickjs`, the complete macro integration
-binary passes 77 tests and the library passes 332 (one ignored). These suites
-were repeated for the runtime review fixes at `3c08827e`. The later explicit
-namespace identity regression also passes the printing table in both feature
-configurations; production code is unchanged after that commit.
+bbp_macros` passes all 75 tests, including the expanded printing table and
+namespace scheduling fixture; all 37 native evaluator tests also pass.
+With `bbp-macros,quickjs`, the complete macro
+integration binary passes 77 tests and the library passes 333 (one ignored).
+Both feature configurations' CLI unit test passes. These results cover the
+second review fixes at `15efcf0e`: declared record member mappings, independent
+output buffer capture, weak namespace snapshot keys and their regressions.
 The engine's `--all-targets` run passes 2,113 tests and `--doc` passes seven;
 its code is unchanged after `1d6c19c8`, so those results cover the final tree.
 The small-set change preserves the embedding API's existing rejection of
@@ -153,7 +162,7 @@ under this sandbox. The compiler integration target cannot build because eight
 pinned `research/clojurescript` includes are absent; `research/` was left
 untouched. The wider native-only library run has the same 27 unsupported
 legacy bootstrap/host-service failures reproduced on untouched `26512b2f`
-(257 passing here, 256 there). The review-fix run compares all 27 failure
+(258 passing here, 256 there). The second review-fix run compares all 27 failure
 signatures with that baseline, removing only thread and source allocation IDs;
 they match exactly. Its native-only CLI unit test also passes.
 
@@ -169,10 +178,10 @@ methods absent in that configuration; its library/binary lint passes strictly.
 V8 validation is reserved for the orchestrator because its machine cache is
 inaccessible here.
 
-At `3c08827e` (repeating `848be441`), on macOS arm64, Homebrew Rust/Cargo
-1.99.1, using the Penpot
-reproduction below with five absolute source roots, jobs 1, no cache and the
-documented budgets, both entries pass the original printing/namespace errors
+At `15efcf0e` (repeating `3c08827e` and `848be441`), on macOS arm64,
+Homebrew Rust/Cargo 1.99.1, using the Penpot reproduction below with five
+absolute source roots, jobs 1, no cache and the documented budgets, both
+entries pass the original printing/namespace errors
 and the additional logging transducer gap. Both exit 1 at the engine Proxy
 boundary already filed as light-cljs-514. The exact next errors are:
 
