@@ -227,8 +227,9 @@ installing those bundles first. An expansion before a later `extend-type` sees
 the earlier implementation, as in the legacy runtimes. Extensions that macro
 code installs outside a bundle are visible at every frontier.
 
-A type without `^:mutable` or `^:volatile-mutable` fields is a native struct
-type, made once with its unit's factory (so every task has the same type
+A `deftype` or `defrecord` without `^:mutable`, `^:unsynchronized-mutable`
+or `^:volatile-mutable` fields (the type's layout records whether it has one;
+methods or none) is a native struct type, made once with its unit's factory (so every task has the same type
 identity), and its instances are native structs: immutable, publishable when
 their fields are, read in methods with `__rt.structField` and constructed with
 `__rt.structNew` (`(T. …)`, `->T`; a constructor call checks for a struct type
@@ -240,12 +241,17 @@ runtime's semantics: keyword lookup of fields, then the extension map; `assoc`,
 `vals`, `meta`/`with-meta`, `map?` and `record?`; `=` of the same type with
 equal fields and extension entries; and the runtime's record hash. A deftype
 instance compares and hashes by identity. Interop on a struct (`(.-x s)`) reads
-a JavaScript view of its fields. A type with a mutable field, and a `deftype` without methods (whose
-fields the compiler cannot tell apart), keeps task-owned JavaScript instances,
-dispatched by their type, which do not publish. `Object` methods are methods of
-those instances and of a struct's interop view; `instance?` of a struct type
-compares the value's type identity; `implements?` sees only the type's own
-implementations, `satisfies?` host and `default` extensions too; a protocol
+a JavaScript view of its fields. A type with a mutable field, and a raw
+`deftype*`, keeps task-owned JavaScript instances, dispatched by their type,
+which do not publish. `Object` methods are methods of those instances and of a
+struct's interop view, installed under the munged member name interop reads
+(`foo-bar` as `foo_bar`); they are tables like protocol methods, so later
+extensions (inside a macro too) replace or add them, and a call selects its
+overload as the legacy `installMethods` does (one fixed overload takes any
+call, else the call's arity, else the variadic one). `instance?` of a struct
+type compares the value's type identity; `implements?` sees only the type's
+own implementations, including `extend-type` of the native form kinds below,
+never host-type or `default` extensions, which `satisfies?` also sees; a protocol
 with `:extend-via-metadata` reads the receiver's metadata first. A struct of a
 type the task has not declared yet (a value another task published) demands the
 type's declaration at its first dispatch or interop. `(R. a b meta ext)` keeps
@@ -263,8 +269,9 @@ protocol methods, `map->R` of a record with mutable fields, `getBasis` and
 other properties of a struct type, and a macro returning a struct (export fails
 with an explicit error). User core-protocol implementations are
 light-cljs-497. A helper analyzed on demand that itself expands
-a macro fails with `invalid value handle`, independently of protocols, which is
-why the frontier test above evaluates its earlier expansion at top level.
+a macro fails with `invalid value handle`, independently of protocols (also on
+master before this work; light-cljs-500), which is why the frontier test above
+evaluates its earlier expansion at top level.
 
 ### Memory limit
 
