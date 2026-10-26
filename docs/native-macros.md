@@ -134,8 +134,10 @@ Verification on macOS arm64, Homebrew Rust/Cargo 1.99.1 and Node 26.12.1:
 `cargo test --locked --no-default-features --features bbp-macros --test
 bbp_macros` passes all 75 tests, and the native `bbp_evaluator::` library
 module passes all 36. With `bbp-macros,quickjs`, the complete macro integration
-binary passes 77 tests and the library passes 332 (one ignored). The final
-source is `848be441`; subsequent changes only document these results.
+binary passes 77 tests and the library passes 332 (one ignored). These suites
+were repeated for the runtime review fixes at `3c08827e`. The later explicit
+namespace identity regression also passes the printing table in both feature
+configurations; production code is unchanged after that commit.
 The engine's `--all-targets` run passes 2,113 tests and `--doc` passes seven;
 its code is unchanged after `1d6c19c8`, so those results cover the final tree.
 The small-set change preserves the embedding API's existing rejection of
@@ -151,7 +153,9 @@ under this sandbox. The compiler integration target cannot build because eight
 pinned `research/clojurescript` includes are absent; `research/` was left
 untouched. The wider native-only library run has the same 27 unsupported
 legacy bootstrap/host-service failures reproduced on untouched `26512b2f`
-(257 passing here, 256 there).
+(257 passing here, 256 there). The review-fix run compares all 27 failure
+signatures with that baseline, removing only thread and source allocation IDs;
+they match exactly. Its native-only CLI unit test also passes.
 
 Direct JavaScript runtime checks and both formatter checks pass. QuickJS-only
 and engine-free library/binary Clippy pass strictly. Strict engine Clippy
@@ -162,7 +166,8 @@ Full compiler all-target lint remains subject to the missing includes (and
 QuickJS-specific tests in the native-only configuration). V8 validation is
 reserved for the orchestrator because its machine cache is inaccessible here.
 
-At `848be441`, on macOS arm64, Homebrew Rust/Cargo 1.99.1, using the Penpot
+At `3c08827e` (repeating `848be441`), on macOS arm64, Homebrew Rust/Cargo
+1.99.1, using the Penpot
 reproduction below with five absolute source roots, jobs 1, no cache and the
 documented budgets, both entries pass the original printing/namespace errors
 and the additional logging transducer gap. Both exit 1 at the engine Proxy

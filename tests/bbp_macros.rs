@@ -275,6 +275,7 @@ fn native_printing_matches_quickjs_for_every_native_value_kind() {
         ("namespace constructor", "", "(let [s (with-meta 'printing.namespace {:doc \"fresh\"}) n (Namespace. nil s)] (pr-str (str n) (meta (ns-name n)) (identical? s (ns-name n)) (ns-name 'a/b) (Namespace. nil \"text\")))", "nil"),
         ("namespace registry", "", "(let [s (with-meta 'printing.namespace {:doc \"first\"}) n (create-ns s) again (create-ns (with-meta 'printing.namespace {:doc \"second\"}))] (pr-str n (str n) (meta (ns-name n)) (identical? n again) (identical? n (find-ns s)) (identical? n (find-ns n)) (find-ns 'absent)))", "nil"),
         ("namespace explicit initializer", "(def captured [(str *ns*) (meta (ns-name *ns*)) (identical? *ns* *ns*)])", "(binding [*ns* (Namespace. nil (with-meta 'cljs.user {:tag true}))] (pr-str captured))", "nil"),
+        ("namespace explicit identity", "(def captured-ns *ns*)", "(let [n (Namespace. nil (with-meta 'cljs.user {:tag true}))] (binding [*ns* n] (pr-str (identical? n captured-ns) (identical? captured-ns captured-ns) (meta (ns-name captured-ns)))))", "nil"),
         ("namespace text initializer", "(def captured [(str *ns*) (ns-name *ns*) (identical? *ns* *ns*)])", "(binding [*ns* (Namespace. nil \"text\")] (pr-str captured))", "nil"),
     ].into_iter().chain(include_str!("fixtures/compiler-native-printing.tsv").lines().filter(|line|!line.starts_with('#')).map(|line| {
         let mut columns=line.split('\t');
