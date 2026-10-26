@@ -836,6 +836,7 @@ const native = (() => {
     assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
     dissoc:(m,...ks)=>each((m,k)=>__rt.cljDissoc(m,k),m,ks),
     conj:(...a)=>a.length===0?__rt.formVector():each((m,x)=>__rt.cljConj(m,x),a[0],a.slice(1)),
+    merge:(...xs)=>xs.some(truth)?xs.reduce((left,right)=>__rt.cljConj(truth(left)?left:arrayMap([]),right)):null,
     disj:(s,...xs)=>each((s,x)=>__rt.cljDisj(s,x),s,xs),
     contains:(c,k)=>__rt.cljContains(c,k),
     keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:list(arr(s).map(e=>__rt.formNth(e,0)));}
@@ -1019,6 +1020,7 @@ const native = (() => {
   for (const [name, key] of [['Keyword','keyword'],['Symbol','symbol'],['PersistentVector','vector'],
     ['PersistentArrayMap','map'],['PersistentHashMap','map'],['PersistentHashSet','set'],['List','list'],['EmptyList','empty-list']])
     decl.coreKeys.set(core[name], key);
+  /* NATIVE_READER */
   for (const name of [/* CORE_KEYS */]) if (!(name in core)) Object.defineProperty(core,name,{get:unsupported('core.'+name)});
   const rt={core,
     nativeInterop:interop,declarationReceiver:x=>x,

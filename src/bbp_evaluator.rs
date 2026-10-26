@@ -637,7 +637,17 @@ impl BbpRuntime {
             .map(|k| format!("{:?}", k.runtime_key()))
             .collect::<Vec<_>>()
             .join(",");
-        let source = include_str!("bbp_runtime.js").replace("/* CORE_KEYS */", &keys);
+        // Run the same bounded first-party reader on native constructors. Only
+        // this unit is included, not the legacy runtime or an evaluator fallback.
+        let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
+        let reader = &manifest.source()[manifest
+            .unit(manifest.unit_named("createReader").unwrap())
+            .body_range
+            .clone()];
+        let reader = include_str!("bbp_reader.js").replace("/* READER */", reader);
+        let source = include_str!("bbp_runtime.js")
+            .replace("/* NATIVE_READER */", &reader)
+            .replace("/* CORE_KEYS */", &keys);
         let executable = big_boy_pants_js::frontend::compile_function(&format!(
             "function nativeMacroTask(commandKind, beginKind, finishKind) {{ {source} }}"
         ))
