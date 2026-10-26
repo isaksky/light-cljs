@@ -3813,6 +3813,14 @@ impl<'a> Emitter<'a> {
                 throw new Error('Invalid arity: ' + a.length);
             }"#
             }
+            C::Remove => {
+                r#"f => rf => (...a) => {
+                if (a.length === 0) return invoke(rf);
+                if (a.length === 1) return invoke(rf, a[0]);
+                if (a.length === 2) return __rt.cljTruth(invoke(f, a[1])) ? a[0] : invoke(rf, ...a);
+                throw new Error('Invalid arity: ' + a.length);
+            }"#
+            }
             C::MapSeq => {
                 r#"f => rf => (...a) => {
                 if (a.length < 2) return invoke(rf, ...a);
@@ -3828,6 +3836,28 @@ impl<'a> Emitter<'a> {
                     if (__rt.cljIsReduced(result)) return result;
                 }
                 return result;
+            }"#
+            }
+            C::PartitionAll => {
+                r#"n => {
+                const count = __rt.formValue(n);
+                return rf => {
+                    let buffer = __rt.formVector();
+                    const flush = result => {
+                        const group = buffer; buffer = __rt.formVector();
+                        return invoke(rf, result, group);
+                    };
+                    return (...a) => {
+                        if (a.length === 0) return invoke(rf);
+                        if (a.length === 1) {
+                            const result = __rt.formCount(buffer) === 0 ? a[0] : __rt.cljUnreduced(flush(a[0]));
+                            return invoke(rf, result);
+                        }
+                        if (a.length !== 2) throw new Error('Invalid arity: ' + a.length);
+                        buffer = __rt.formConj(buffer, a[1]);
+                        return __rt.formCount(buffer) === count ? flush(a[0]) : a[0];
+                    };
+                };
             }"#
             }
             C::PartitionBy => {

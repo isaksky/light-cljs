@@ -42,6 +42,31 @@ fn program_output(js: &str) -> String {
 fn native_core_services_match_quickjs() {
     for (body, expected) in [
         (
+            r#"[(mapv vec (partition-all 2 [0 1 2 3 4]))
+                (mapv vec (partition-all 3 1 '(0 1 2 3)))
+                (mapv vec (partition-all 2 3 [0 1 2 3 4]))
+                (vec (partition-all 2 nil))
+                (mapv vec (take 2 (partition-all 0 [1])))
+                (let [p partition-all xf (p 2)] [(into [] xf [1 2 3]) (into [] xf [4 5 6])])
+                (into [] (partition-all "2") [1 2 3])
+                (into [] (partition-all 0) [1 2 3])]"#,
+            "[[[0 1] [2 3] [4]] [[0 1 2] [1 2 3] [2 3] [3]] [[0 1] [3 4]] [] [[] []] [[[1 2] [3]] [[4 5] [6]]] [[1 2 3]] [[1 2 3]]]",
+        ),
+        (
+            r#"[(into [] (remove identity) [nil false 0 1])
+                (let [r remove] (into [] (r odd?) [0 1 2 3]))
+                (let [seen (js/Array.) s (partition-all 2 (map (fn [x] (.push seen x) x) '(1 2 3)))
+                      before (.-length seen) group (first s) after-group (.-length seen)
+                      value (first group) after-value (.-length seen) all (mapv vec s)]
+                  [before after-group value after-value all (vec seen)])
+                (let [seen (js/Array.) result (transduce (partition-all 2)
+                    (fn ([] []) ([a] (.push seen "complete") a) ([a x] (.push seen (count x)) (reduced (conj a x))))
+                    [] [1 2 3 4 5])] [result (vec seen)])
+                (let [xf (partition-all 3) f (xf conj) a (f [] 1) b (f a 2)] [(f b) (f [])])
+                (let [p partition-all] (try (p) (catch :default e (.-message e))))]"#,
+            "[[nil false] [0 2] [0 1 1 1 [[1 2] [3]] [1 2 3]] [[[1 2]] [2 \"complete\"]] [[[1 2]] []] \"Invalid arity: 0\"]",
+        ),
+        (
             r#"[(vec (interpose 0 [1 2 3])) (vec (interpose 0 nil)) (vec (interpose 0 [1]))
               (let [xf (interpose 0)] [(into [] xf [1 2]) (into [] xf [3 4])])
               (transduce (interpose :sep) (fn ([a] a) ([a x] (if (= x :sep) (reduced (conj a x)) (conj a x)))) [] [1 2 3])
@@ -121,6 +146,58 @@ fn native_core_services_match_quickjs() {
     ] {
         let source = format!("(defmacro m [] (list 'quote {body})) (js/console.log (pr-str (m)))");
         assert_native_matches_legacy(&source, &format!("{expected}\n"));
+    }
+}
+
+#[test]
+fn partition_all_helpers_publish_and_resume_with_buffered_values() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-partition-all");
+    std::fs::write(
+        root.join("parts.cljs"),
+        r#"(ns parts)
+        (def xf (comp (partition-all 2) (remove (fn [group] (= (first group) :skip)))))
+        (defn step [a x] (conj a x))
+        (defmacro probe [] (list 'quote (transduce xf (completing step) [] [1 2 :skip 4 5])))"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app.cljs"),
+        r#"(ns app (:require [parts :refer [probe]]))
+        (js/console.log (pr-str [(probe) (probe)]))"#,
+    )
+    .unwrap();
+    for jobs in [1, 2, 4] {
+        let build = |native| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            let mut stats = light_cljs::CompileStats::default();
+            let (program, _) = analyze_namespace_entry_recorded(
+                "app",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                EntryRecorders {
+                    stats: Some(&mut stats),
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            if native {
+                assert_eq!(stats.native_helpers.published, 2);
+                assert_eq!(stats.native_helpers.per_task, 0);
+                assert!(stats.native_helpers.waits >= 2);
+            }
+            emit_js(&program)
+        };
+        let native = build(true);
+        assert_eq!(program_output(&native), "[[[1 2] [5]] [[1 2] [5]]]\n");
+        #[cfg(feature = "quickjs")]
+        assert_eq!(native, build(false));
     }
 }
 

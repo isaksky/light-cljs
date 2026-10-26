@@ -694,6 +694,10 @@ const native = (() => {
     const p = takeN(takeN, n, s);
     return __rt.cljCount(p) === n ? __rt.cljCons(p, self(self, n, step, dropN(step, s))) : null;
   });
+  const partitionAllFrom = (self, n, step, c) => lazy(() => {
+    const s = seqOf(c);
+    return s === null ? null : __rt.cljCons(takeN(takeN, n, s), self(self, n, step, dropN(step, s)));
+  });
   // Reducer callbacks run on the task VM and can suspend without replay.
   // Stop before reading the next source element and unwrap one marker only;
   // nested markers let a flattening reducer propagate termination outward.
@@ -732,6 +736,17 @@ const native = (() => {
       const ret = flush(result);
       if (!__rt.cljIsReduced(ret)) buffer = __rt.formConj(buffer, x);
       return ret;
+    }, result => {
+      if (__rt.formCount(buffer)) result = __rt.cljUnreduced(flush(result));
+      return invoke(rf, result);
+    });
+  };
+  const partitionAllTransform = n => rf => {
+    let buffer = __rt.formVector();
+    const flush = result => { const group = buffer; buffer = __rt.formVector(); return invoke(rf, result, group); };
+    return reducing(rf, (result, x) => {
+      buffer = __rt.formConj(buffer, x);
+      return __rt.formCount(buffer) === n ? flush(result) : result;
     }, result => {
       if (__rt.formCount(buffer)) result = __rt.cljUnreduced(flush(result));
       return invoke(rf, result);
@@ -845,9 +860,11 @@ const native = (() => {
       const f=a[0];
       return rf=>{let i=-1;return reducing(rf,(result,input)=>{const v=invoke(f,++i,input);return val(v)==null?result:invoke(rf,result,v);});};
     },
-    filter:(...a)=>a.length===1?filterTransform(a[0]):a.length===2?select(select,a[0],a[1],0):arity(a.length), remove:(f,c)=>select(select,f,c,1), keep:(f,c)=>select(select,f,c,2),
+    filter:(...a)=>a.length===1?filterTransform(a[0]):a.length===2?select(select,a[0],a[1],0):arity(a.length),
+    remove:(...a)=>a.length===1?filterTransform(x=>!truth(invoke(a[0],x))):a.length===2?select(select,a[0],a[1],1):arity(a.length), keep:(f,c)=>select(select,f,c,2),
     mapcat:(...a)=>a.length===0?arity(0):a.length===1?mapcatTransform(a[0]):catSeqs(catSeqs,core.mapSeq(...a)),
     partitionBy:(...a)=>a.length===1?partitionByTransform(a[0]):a.length===2?partitionByFrom(partitionByFrom,a[0],a[1]):arity(a.length),
+    partitionAll:(...a)=>a.length===1?partitionAllTransform(val(a[0])):a.length===2?partitionAllFrom(partitionAllFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionAllFrom(partitionAllFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
     take:(n,c)=>takeN(takeN,val(n),c), drop:(n,c)=>dropN(val(n),c),
     takeWhile:(f,c)=>takeWhileFrom(takeWhileFrom,f,c), dropWhile:(f,c)=>dropWhileFrom(f,c),
     interleave:(...cs)=>cs.length===0?__rt.formList():cs.length===1?((c)=>lazy(()=>seqOf(c)))(cs[0]):interleaveAll(interleaveAll,list(cs)),
