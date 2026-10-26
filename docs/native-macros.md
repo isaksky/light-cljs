@@ -192,6 +192,32 @@ replaying effects. Namespace output is compared at one, two and four slots.
 Evaluator tests also collect while both consumers are parked and check shared
 input identity and `finally` execution.
 
+A unit source of at least 512 bytes, such as a source macro's or a
+helper's code, is compiled once per runtime into a published factory; every
+task that evaluates it calls that factory with its own native runtime, so its
+per-task state still lands in that task's globals. A source that fails to
+compile, or whose factory does not publish, is evaluated by the task as
+before, with the same diagnostic. A helper's producer task replays its
+parent's registrations in fixed blocks of 64, so full blocks also compile
+once. A producer task is not its worker's engine: registrations it takes
+while compiling a helper stay pending for the worker's engine, which installs
+them at its next analysis. On this backend a pool slot analyzes a unit proven
+macro-free on a view without an engine task, including the fresh slot a
+waiting worker's nested help makes. `--stats` reports `native.tasks.contexts`
+(booted tasks) and `native.units.compiled`, `shared` and `evaluated`.
+`tests/bbp_macros.rs` builds four pool fixtures at one, two, four and eight
+slots under seeded scheduler perturbation and compares JavaScript or error,
+source maps, warnings and compiled helpers with the one-slot build:
+`LIGHT_CLJS_STRESS_SEEDS=12 cargo test --locked --no-default-features --features
+bbp-macros --test bbp_macros native_pool_builds` (debug builds only).
+
+Worker engines are still per slot: each slot that analyzes a macro unit boots
+its own task, installs the catalog's registrations and evaluates the source
+macros it calls, and helper values that do not publish initialize once in
+each task that consumes them. No helper value in the pool fixtures publishes
+yet (`native.helpers.published` is 0), so a helper several tasks consume
+initializes more often than at `--jobs 1`.
+
 Consumer cancellation withdraws that task's waits without cancelling a shared
 producer or another consumer. Build cancellation stops the shared execution
 control. Both unwind saved frames, and a failed task's worker view is retired.
