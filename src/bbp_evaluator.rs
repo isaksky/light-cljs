@@ -1020,14 +1020,13 @@ impl BbpEvaluator {
         Ok(())
     }
     fn evaluate(&self, source: &str) -> Result<ValueId, EvalError> {
+        let source = self.host_scope(|s| {
+            s.try_primitive(Primitive::string(source))
+                .map(|local| s.persist(local))
+                .ok_or_else(|| error("heap byte limit exceeded"))
+        })?;
         let id = self.id();
-        self.request(
-            0,
-            id,
-            self.runtime
-                .try_root(Primitive::string(source))
-                .ok_or_else(|| error("heap byte limit exceeded"))?,
-        )?;
+        self.request(0, id, source)?;
         Ok(id)
     }
     fn import(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {

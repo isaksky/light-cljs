@@ -720,7 +720,11 @@ fn memory_limit_denial_is_catchable_and_the_runtime_recovers() {
     };
     let shared = BbpRuntime::new(&options).unwrap();
     let evaluator = shared.evaluator().unwrap();
-    let hog = "rt => { let kept = [], n = 0; try { for (;;) kept.push({v: kept.length}); } catch (e) { n = kept.length; kept = null; return e === 'heap byte limit exceeded' ? n : -1; } }";
+    // A list of small objects: the denial leaves less than one object free.
+    let hog = "rt => { let head = null, n = 0; try { for (;;) { head = {next: head}; n++; } } catch (e) { head = null; return e === 'heap byte limit exceeded' ? n : -1; } }";
+    // A source larger than what the denial left free, which fits only once
+    // the released data is collected: its import collects first.
+    let padded = format!("rt => {{ /*{}*/ return 7; }}", "x".repeat(16_000));
     for _ in 0..2 {
         let value = evaluator.evaluate_unit(hog).unwrap();
         let retained = evaluator.values.borrow()[&value.index].view();
@@ -728,6 +732,11 @@ fn memory_limit_denial_is_catchable_and_the_runtime_recovers() {
             matches!(retained, ValueView::Number(n) if n > 1000.0),
             "{retained:?}"
         );
+        let value = evaluator.evaluate_unit(&padded).unwrap();
+        assert!(matches!(
+            evaluator.values.borrow()[&value.index].view(),
+            ValueView::Number(7.0)
+        ));
     }
     let peer = shared.evaluator().unwrap();
     let value = peer.evaluate_unit(&churn(1000)).unwrap();
@@ -740,4 +749,33 @@ fn memory_limit_denial_is_catchable_and_the_runtime_recovers() {
         stats.peak_managed_bytes <= options.memory_limit,
         "{stats:?}"
     );
+}
+
+/// A large live result that leaves only a little room must still be
+/// releasable: the release allocates no value-table entry for it.
+#[test]
+fn releasing_a_deferred_value_at_the_memory_limit_recovers() {
+    let options = EvaluatorOptions {
+        memory_limit: 4 << 20,
+        ..Default::default()
+    };
+    // Each step leaves `freed` small objects' worth of room after the
+    // denial, from too little for a value-table entry to plenty.
+    for freed in [1, 2, 4, 8, 16, 32] {
+        let shared = BbpRuntime::new(&options).unwrap();
+        let evaluator = shared.evaluator().unwrap();
+        let value = evaluator
+            .evaluate_unit(&format!(
+                "rt => {{ const kept = []; try {{ for (;;) kept.push({{}}); }} catch (e) {{}} kept.length -= {freed}; return kept; }}"
+            ))
+            .unwrap_or_else(|e| panic!("freed {freed}: {e}"));
+        evaluator
+            .release(value)
+            .unwrap_or_else(|e| panic!("freed {freed}: {e}"));
+        let value = evaluator.evaluate_unit(&churn(1000)).unwrap();
+        assert!(matches!(
+            evaluator.values.borrow()[&value.index].view(),
+            ValueView::Number(999.0)
+        ));
+    }
 }
