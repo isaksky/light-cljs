@@ -69,6 +69,36 @@ engine source, and includes preloaded helper source.
 
 ## Supported boundary
 
+### Key-value reduction (light-cljs-518)
+
+Native `reduce-kv` invokes `(rf accumulator key value)` on the resumable task
+VM, including cold callback helper demands. Nil and empty inputs return the
+original accumulator; each callback result is tested for `reduced?`, and one
+marker is unwrapped before returning without reading the next sequence item.
+No transient is created and the input collection and accumulator metadata stay
+intact. `IKVReduce` implementations take precedence; other seqable inputs use
+the public `IMapEntry` key/value methods, with their missing-method errors and
+callback getter/receiver evaluation order preserved.
+
+Vectors supply zero-based indices. Hash maps use legacy five-bit hash-path
+order, including the nil key; array maps and positional literal maps retain
+their storage order and duplicate lowered keys. Records visit declared fields
+first and their extension map next, including positional extensions and
+mutable record views. The existing native imported-reader bridge still keeps
+source positions where the legacy bridge promotes a large input to a hash
+map; the differential table pins both results explicitly.
+
+Default-comparator `sorted-map` now constructs a persistent native map that
+keeps sorted traversal through `assoc`, `dissoc`, metadata, publication and GC,
+and remains noneditable. Supported comparable native keys are nil, numbers,
+booleans, exact UTF-16 strings, keywords, symbols and vectors of comparable
+keys. Custom sorted comparators, host-object keys and sorted sets remain
+unsupported. The source macro table compares these collection kinds, callback
+effects, errors, identity and early termination against QuickJS. A reduced
+rumext property-filter fixture demands cold helpers at one, two and four
+slots, retaining every callback effect exactly once. Penpot's next small
+predicate gaps, `qualified-keyword?` and `true?`, are also provided natively.
+
 ### Printing and namespace services (light-cljs-513)
 
 Native printers cover nil, booleans, Numbers (including negative

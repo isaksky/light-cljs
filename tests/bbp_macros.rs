@@ -139,6 +139,11 @@ fn native_core_services_match_quickjs() {
             "[\"a\" 1 \"a\" [\"a a\" \" a\"] \"a\" 2]",
         ),
         (
+            r#"[(mapv true? [true false nil 0 1 "true" :true])
+                (let [p true?] (p true))]"#,
+            "[[true false false false false false false] true]",
+        ),
+        (
             r#"[(try (re-seq #"a" 42) (catch :default e (.-message e)))
              (try (let [g gensym] (g "a" "b")) (catch :default e (.-message e)))]"#,
             "[\"regex matching requires a string\" \"Invalid arity: 2\"]",
