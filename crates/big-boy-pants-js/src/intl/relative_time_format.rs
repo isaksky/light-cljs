@@ -5,7 +5,7 @@ use super::{
 use crate::{
     heap::{Heap, HeapObject},
     ids::TaskId,
-    value::{JsString, Value},
+    value::Value,
     vm::{dispatch::Fault, property},
 };
 
@@ -100,16 +100,27 @@ impl RelativeTimeFormat {
     ) -> Result<Value, Fault> {
         let unit = unit.strip_suffix('s').unwrap_or(unit);
         let parts = self.parts(value, unit)?;
+        // The formatted text is data-dependent and charged; part types and
+        // the validated unit are fixed spellings with one shared body each.
         if !to_parts {
-            return Ok(string(
+            return service::text_option(
+                heap,
                 &parts.into_iter().map(|(_, s)| s).collect::<String>(),
-            ));
+            );
         }
+        let unit = UNITS
+            .iter()
+            .copied()
+            .find(|&u| u == unit)
+            .expect("parts validated the unit");
         let result = property::new_array(heap, task)?;
         for (kind, value) in parts {
-            let mut fields = vec![("type", string(kind)), ("value", string(&value))];
+            let mut fields = vec![
+                ("type", service::fixed_option(kind)),
+                ("value", service::text_option(heap, &value)?),
+            ];
             if kind != "literal" {
-                fields.push(("unit", string(unit)));
+                fields.push(("unit", service::fixed_option(unit)));
             }
             let part = service::resolved_options(heap, task, fields)?;
             property::append(heap, task, &result, Some(part))?;
@@ -119,9 +130,6 @@ impl RelativeTimeFormat {
 }
 fn text(bytes: Option<&'static [u8]>) -> Option<&'static str> {
     super::pool_string(bytes?, 0)
-}
-fn string(text: &str) -> Value {
-    Value::String(JsString::from(text))
 }
 pub(crate) fn record(
     heap: &Heap,

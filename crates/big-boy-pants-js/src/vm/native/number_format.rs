@@ -413,7 +413,7 @@ impl State {
                     heap,
                     task,
                     [
-                        ("type", Value::String(JsString::from(kind))),
+                        ("type", service::fixed_option(kind)),
                         (
                             "value",
                             Value::String(

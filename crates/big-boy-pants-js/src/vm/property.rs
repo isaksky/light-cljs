@@ -284,9 +284,9 @@ pub(crate) fn to_property_key(key: &Value) -> Result<Key, Fault> {
             Some(index) => Key::Index(index),
             None => Key::Name(JsString::from(number_to_string(*n).as_str())),
         },
-        Value::Bool(b) => Key::Name(JsString::from(if *b { "true" } else { "false" })),
-        Value::Null => Key::Name(JsString::from("null")),
-        Value::Undefined => Key::Name(JsString::from("undefined")),
+        Value::Bool(b) => Key::Name(JsString::fixed(if *b { "true" } else { "false" })),
+        Value::Null => Key::Name(JsString::fixed("null")),
+        Value::Undefined => Key::Name(JsString::fixed("undefined")),
         Value::Object(_) => {
             return Err(Fault::Unsupported(
                 "a property key that is an object needs ToPrimitive, which is not supported"

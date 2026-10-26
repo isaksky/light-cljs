@@ -160,7 +160,7 @@ pub(crate) fn getter(
     let prototype = matches!(this, Value::Object(id) if *id == intrinsic.regexp_prototype);
     match (which, c) {
         (Builtin::RegExpSource, Some(c)) => Ok(Value::String(object::source(heap, &c.source)?)),
-        (Builtin::RegExpSource, None) if prototype => Ok(Value::String(JsString::from("(?:)"))),
+        (Builtin::RegExpSource, None) if prototype => Ok(Value::String(JsString::fixed("(?:)"))),
         (Builtin::RegExpFlag(f), Some(c)) => Ok(Value::Bool(object::flag(c.flags, f))),
         (Builtin::RegExpFlag(_), None) if prototype => Ok(Value::Undefined),
         _ => Err(Fault::TypeError(
@@ -467,9 +467,9 @@ impl State {
                     }
                     5 => {
                         let flags = string(v)?;
-                        let s = JsString::from("/")
+                        let s = JsString::fixed("/")
                             .concat_accounted(heap, source)?
-                            .concat_accounted(heap, &JsString::from("/"))?
+                            .concat_accounted(heap, &JsString::fixed("/"))?
                             .concat_accounted(heap, &flags)?;
                         return Ok(Action::Return(Value::String(s)));
                     }
@@ -481,7 +481,8 @@ impl State {
                     out.push(object::FLAG_NAMES[*next - 1].1);
                 }
                 if *next == object::FLAG_NAMES.len() {
-                    return Ok(Action::Return(Value::String(JsString::from(out.as_str()))));
+                    return JsString::from_str_accounted(heap, out)
+                        .map(|s| Action::Return(Value::String(s)));
                 }
                 let name = object::FLAG_NAMES[*next].0;
                 *next += 1;

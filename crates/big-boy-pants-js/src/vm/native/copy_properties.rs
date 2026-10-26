@@ -188,7 +188,7 @@ impl State {
                         // OwnKeys uses numeric indices internally; entries exposes strings.
                         let key = match &self.key {
                             Value::Number(n) => {
-                                Value::String(JsString::from(n.to_string().as_str()))
+                                Value::String(JsString::from_str_accounted(heap, &n.to_string())?)
                             }
                             key => key.clone(),
                         };

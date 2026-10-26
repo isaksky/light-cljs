@@ -288,11 +288,14 @@ impl Operation {
         key_value(heap, self.key.as_ref().unwrap())
     }
 }
-/// A key as the value JavaScript sees; a fresh index spelling is charged.
+/// A key as the value JavaScript sees, which a trap may keep: a fresh index
+/// spelling is charged, and a name is imported, so a name this heap has not
+/// charged (a converted primitive key's fresh spelling, a key-table or
+/// constant body) reaches the trap as a charged copy.
 fn key_value(heap: &Heap, key: &Key) -> Result<Value, Fault> {
     Ok(match key {
         Key::Index(i) => Value::String(keys::index_name(heap, *i)?),
-        Key::Name(n) => Value::String(n.clone()),
+        Key::Name(n) => Value::String(n.import(heap).ok_or(Fault::HeapLimit)?),
         Key::Symbol(s) => Value::Symbol(s.clone()),
     })
 }

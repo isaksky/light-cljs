@@ -289,7 +289,7 @@ impl State {
                     self.stage = Stage::Calendar;
                     return Ok(Action::Continue);
                 }
-                slots.of(&code.to_string_lossy()).map(Action::Return)
+                slots.of(heap, &code.to_string_lossy()).map(Action::Return)
             }
             Stage::Calendar => {
                 let mut chunk = String::with_capacity(128);

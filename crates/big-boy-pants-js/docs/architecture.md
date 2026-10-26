@@ -273,10 +273,14 @@ data-sized payload is not):
   node once and the whole output's flattened copy, its shared first piece
   included, at the extension that makes it a rope, and the returned body keeps
   that credit for its cached copy; a string index read's one-unit result,
-  the Date and `Intl.DateTimeFormat` formatters' outputs and the
-  data-dependent `resolvedOptions()` fields (locale, time zone, unit,
-  currency), each charged before its body is made, while presence and
-  attribute checks of a string's index make no string), BigInt limbs, ArrayBuffer stores, native persistent
+  the Date and Intl formatters' outputs (`DateTimeFormat`, `NumberFormat`,
+  `RelativeTimeFormat` and `DurationFormat` text and part values,
+  `DisplayNames.prototype.of`), the data-dependent `resolvedOptions()`
+  fields (locale, time zone, unit, currency), `Intl.Locale` tags, RegExp
+  `flags`, the index keys of `Object.entries` and of `toJSON` calls, a
+  converted computed key's fresh spelling and computed function names, each
+  charged before its body is made, while presence and attribute checks of a
+  string's index make no string), BigInt limbs, ArrayBuffer stores, native persistent
   vectors/maps/forms and builders, RegExp programs and captures;
 - saved continuations: detached activations, closure captures, bound arguments,
   promise reactions, queued jobs, disposable resources, async-generator queues;
@@ -295,14 +299,26 @@ inputs), and the embedder's own data. Accounted bytes therefore approximate and
 do not bound RSS; `docs/measurement.md` records the realm's accounted footprint.
 Fixed-text leaf results are process-wide constants like executable constants:
 `typeof`'s type names, `Boolean.prototype.toString`, the TypedArray
-`Symbol.toStringTag` getter, `Intl.PluralRules.prototype.select` and the fixed
-spellings of Intl `resolvedOptions()` fields each return one shared body per
-spelling (`JsString::fixed`, `FixedText`), made on first use and never
-released, so retaining one allocates nothing. The two heap-limit exception
-messages share one uncharged body each. Known retained-storage gaps, not yet
-charged: `Intl.RelativeTimeFormat` and `Intl.DurationFormat` `format` and
-`formatToParts` outputs, `Intl.DisplayNames.prototype.of`, and the `type` of
-NumberFormat and ListFormat parts (light-cljs-494).
+`Symbol.toStringTag` getter, `Intl.PluralRules.prototype.select`, the fixed
+spellings of Intl `resolvedOptions()` fields, Intl part `type`s and `unit`s,
+ListFormat separators, the `Symbol.toPrimitive` hint, default `Error` names,
+the empty RegExp source and promise resolving functions' names each return
+one shared body per spelling (`JsString::fixed`, `FixedText`), made on first
+use and never released, so retaining one allocates nothing. Every empty
+string shares one body, and the two heap-limit exception messages share one
+uncharged body each.
+
+A Proxy trap's key argument is imported, so a converted primitive key's
+fresh spelling reaches the trap as a charged copy. An audit of the
+fresh-body constructors (light-cljs-494) found the other remaining fresh,
+uncharged string bodies not retained per call: transient scratch within one
+leaf step (property-lookup names,
+option and code spellings parsed and dropped, pieces a charged builder or
+JSON's `import` copies, `Function` constructor source handed to the
+compiler); bodies made once per realm, executable or module (intrinsic
+names, function names and source constants, JSON module text, export names,
+well-known symbol descriptions); and embedder-supplied text. Property-key
+spellings are charged by the key table when interned.
 
 A denial fails the requesting operation with `VmErrorKind::HeapLimit`,
 catchable as the primitive string `heap byte limit exceeded` (no Error object

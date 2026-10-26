@@ -1148,12 +1148,9 @@ fn property_step(
             }
         }
         Instr::ToSuperKey => {
-            let key = property::to_property_key(&state.pop()?)?;
-            state.push(match key {
-                property::Key::Index(index) => Value::Number(f64::from(index)),
-                property::Key::Name(name) => Value::String(name),
-                property::Key::Symbol(symbol) => Value::Symbol(symbol),
-            });
+            let original = state.pop()?;
+            let key = property::to_property_key(&original)?;
+            state.push(key_operand(heap, &original, key)?);
         }
         Instr::Dup3 => {
             let values = top_operands(state, 3)?.to_vec();
@@ -1253,16 +1250,26 @@ fn property_step(
             let key = state.pop()?;
             let base = state.operands().last().cloned();
             let base = base.ok_or(Fault::Internal("operand stack underflow"))?;
-            let key = match property::element_key(&base, &key, false)? {
-                property::Key::Index(index) => Value::Number(f64::from(index)),
-                property::Key::Name(name) => Value::String(name),
-                property::Key::Symbol(s) => Value::Symbol(s),
-            };
-            state.push(key);
+            let converted = property::element_key(&base, &key, false)?;
+            state.push(key_operand(heap, &key, converted)?);
         }
         _ => return Err(Fault::Internal("expected property instruction")),
     }
     Ok(Flow::Next)
+}
+
+/// A converted key as the operand later instructions see: an index as a
+/// number, any other name as a string, a symbol as itself. A fresh spelling
+/// (a non-index number's digits, `"true"`, `"null"`) may be kept, as a
+/// computed function's name for one, so it is charged like any retained
+/// string; a string key is passed on as it is.
+fn key_operand(heap: &Heap, original: &Value, key: property::Key) -> Result<Value, Fault> {
+    Ok(match key {
+        property::Key::Index(index) => Value::Number(f64::from(index)),
+        property::Key::Name(name) if matches!(original, Value::String(_)) => Value::String(name),
+        property::Key::Name(_) => Value::String(to_js_string_accounted(heap, original)?),
+        property::Key::Symbol(symbol) => Value::Symbol(symbol),
+    })
 }
 
 // A module's first allocation may also build the realm. Select small leaf
@@ -1778,17 +1785,19 @@ fn computed_name_step(
     let Value::Object(id) = value else {
         return Err(Fault::Internal("computed function name needs a function"));
     };
+    // The function keeps its name: a key's fresh spelling (a number's
+    // digits, a symbol's bracketed description) and the prefixed name are
+    // charged like any retained string; a string key is shared.
     let name = match property::to_property_key(key)? {
-        property::Key::Name(name) => name,
-        property::Key::Index(index) => JsString::from(index.to_string().as_str()),
         property::Key::Symbol(symbol) => match symbol.description() {
-            None => JsString::from(""),
-            Some(description) => JsString::concat(&JsString::from("["), description)
-                .and_then(|s| JsString::concat(&s, &JsString::from("]")))
-                .ok_or(Fault::StringTooLong)?,
+            None => JsString::fixed(""),
+            Some(description) => JsString::fixed("[")
+                .concat_accounted(heap, description)?
+                .concat_accounted(heap, &JsString::fixed("]"))?,
         },
+        _ => to_js_string_accounted(heap, key)?,
     };
-    let name = JsString::concat(name_constant(code, index)?, &name).ok_or(Fault::StringTooLong)?;
+    let name = name_constant(code, index)?.concat_accounted(heap, &name)?;
     let record = heap
         .with_unshared_object_mut(*id, |object| match object {
             HeapObject::Function(f) if f.owner == state.diag.task && f.computed_name.is_none() => {

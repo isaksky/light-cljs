@@ -90,7 +90,10 @@ pub(crate) fn probe(
 
 pub(crate) fn property(heap: &Heap, task: TaskId, entry: Entry) -> Result<Property, Fault> {
     let (value, flags) = match entry {
-        Entry::Tag => (Value::String("Module".into()), PropertyFlags::FIXED),
+        Entry::Tag => (
+            Value::String(JsString::fixed("Module")),
+            PropertyFlags::FIXED,
+        ),
         Entry::Cell(id) => {
             let value = heap
                 .read(id, |o| match o {
@@ -207,6 +210,21 @@ mod tests {
     use super::*;
     use crate::heap::Rooted;
     use crate::vm::function::BindingCell;
+
+    /// Each read of `Symbol.toStringTag` returns the one shared body, so a
+    /// retained tag allocates nothing the byte budget would have to count.
+    #[test]
+    fn namespace_tag_reads_share_one_body() {
+        let heap = Heap::default();
+        let task = TaskId::from_raw(1);
+        let read = || match property(&heap, task, Entry::Tag).ok().unwrap().value {
+            Value::String(text) => text,
+            other => panic!("tag is {other:?}"),
+        };
+        let (first, second) = (read(), read());
+        assert_eq!(first.to_string(), "Module");
+        assert!(first.same_body(&second));
+    }
 
     #[test]
     fn namespace_get_in_tdz_throws_reference_error() {

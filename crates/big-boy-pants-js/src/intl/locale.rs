@@ -3,7 +3,7 @@
 use super::tag::LanguageTag;
 use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
-use crate::value::{JsString, Value};
+use crate::value::Value;
 use crate::vm::dispatch::Fault;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,9 +123,11 @@ pub(crate) fn inspect(
             tag.keywords.get(key).cloned()
         }
     };
-    Ok(text
-        .map(|s| Value::String(JsString::from(s.as_str())))
-        .unwrap_or(Value::Undefined))
+    // A tag or subtag the caller may keep: charged like resolvedOptions() text.
+    match text {
+        Some(text) => super::service::text_option(heap, &text),
+        None => Ok(Value::Undefined),
+    }
 }
 
 /// Create a new Locale from immutable slots, without user property access or

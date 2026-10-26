@@ -188,7 +188,7 @@ pub(crate) fn flags(f: parse::Flags) -> JsString {
 /// raw NUL and lone surrogates. Only slash and line terminators need quoting.
 pub(crate) fn source(heap: &Heap, source: &JsString) -> Result<JsString, Fault> {
     if source.is_empty() {
-        return Ok(JsString::from("(?:)"));
+        return Ok(JsString::fixed("(?:)"));
     }
     let ticket = JsString::reserve(
         heap,

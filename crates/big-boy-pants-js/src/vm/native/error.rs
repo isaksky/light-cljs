@@ -267,7 +267,7 @@ impl ErrorState {
                             let default = if *stage == 1 { "Error" } else { "" };
                             *stage += 1;
                             if matches!(value, Value::Undefined) {
-                                value = Value::String(JsString::from(default));
+                                value = Value::String(JsString::fixed(default));
                             } else {
                                 return Ok(Action::ToString(value));
                             }
@@ -392,7 +392,7 @@ fn join(heap: &Heap, name: &Value, message: &Value) -> Result<JsString, Fault> {
     if message.is_empty() {
         return Ok(name.clone());
     }
-    name.concat_accounted(heap, &JsString::from(": "))?
+    name.concat_accounted(heap, &JsString::fixed(": "))?
         .concat_accounted(heap, message)
 }
 

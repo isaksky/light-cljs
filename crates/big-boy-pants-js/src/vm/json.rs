@@ -1239,7 +1239,7 @@ impl Stringifier {
                 };
                 let holder = top.value.clone();
                 self.key = match &key {
-                    property::Key::Index(n) => JsString::from(n.to_string().as_str()),
+                    property::Key::Index(n) => crate::vm::keys::index_name(heap, *n)?,
                     property::Key::Name(name) => name.clone(),
                     property::Key::Symbol(_) => {
                         return Err(Fault::Internal("JSON.stringify enumerated a symbol key"));

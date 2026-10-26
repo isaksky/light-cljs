@@ -680,7 +680,17 @@ const SETUP: &str = "const s = 'xyz'; const w = new String('xyz'); const d = new
                      const dn = new Intl.DisplayNames('en', {type: 'region'}); \
                      const rtf = new Intl.RelativeTimeFormat('en'); \
                      const meters = new Intl.NumberFormat('en', {style: 'unit', unit: 'meter'}); \
-                     const du = new Intl.DurationFormat('en');";
+                     const du = new Intl.DurationFormat('en'); \
+                     const dnl = new Intl.DisplayNames('en', {type: 'language'}); \
+                     const auto = new Intl.RelativeTimeFormat('en', {numeric: 'auto'}); \
+                     const span = {hours: 1, minutes: 2}; const ab = ['a', 'b']; \
+                     const re = /a/g; const loc = new Intl.Locale('en-Latn-US'); \
+                     const sym = Symbol('d'); let last; let hint; let res; \
+                     const tj = {toJSON(k) { last = k; return 0; }}; const half = 1.5; \
+                     const dnstd = new Intl.DisplayNames('en', {type: 'language', languageDisplay: 'standard'}); \
+                     const k = 'x'; \
+                     const px = new Proxy({}, {getOwnPropertyDescriptor(t, key) { last = key; return undefined; }}); \
+                     const prim = {[Symbol.toPrimitive](h) { hint = h; return 0; }};";
 
 #[test]
 fn retained_leaf_string_outputs_obey_byte_limit() {
@@ -714,6 +724,38 @@ fn retained_leaf_string_outputs_obey_byte_limit() {
         "dn.resolvedOptions().locale",
         "rtf.resolvedOptions().locale",
         "du.resolvedOptions().locale",
+        // Formatter text and part values (light-cljs-494).
+        "rtf.format(1, 'day')",
+        "auto.format(1, 'day')",
+        "rtf.formatToParts(1, 'day')[0].value",
+        "rtf.formatToParts(1, 'day')[1].value",
+        "du.format(span)",
+        "du.formatToParts(span)[0].value",
+        "du.formatToParts(span)[2].value",
+        // A looked-up, composed or echoed DisplayNames name.
+        "dn.of('US')",
+        "dn.of('ZZ')",
+        "dnl.of('en-Latn-DE')",
+        "dnl.of('xx')",
+        "dnl.of('en-US')",
+        "dnstd.of('en')",
+        // Other leaf outputs found by the same audit: RegExp flags, Locale
+        // tags, entries' index keys, the index key toJSON receives and
+        // computed function names spelled from an index, a number or a
+        // symbol.
+        "re.flags",
+        "loc.baseName",
+        "loc.region",
+        "loc.toString()",
+        "Object.entries(ab)[1][0]",
+        "(JSON.stringify([tj, tj]), last)",
+        "({[7]: function() {}})[7].name",
+        "({[half]: function() {}})[half].name",
+        "({[sym]: function() {}})[sym].name",
+        "Object.getOwnPropertyDescriptor({get [k]() { return 0; }}, k).get.name",
+        "Object.getOwnPropertyDescriptor({set [k](v) {}}, k).set.name",
+        // A converted key a Proxy trap receives.
+        "(Object.getOwnPropertyDescriptor(px, half), last)",
     ];
     let setup = SETUP;
     let host = || {
@@ -856,6 +898,23 @@ fn retained_fixed_text_outputs_share_one_body() {
         "du.resolvedOptions().hours",
         "du.resolvedOptions().hoursDisplay",
         "du.resolvedOptions().numberingSystem",
+        // Formatter part types, units and list separators (light-cljs-494).
+        "rtf.formatToParts(1, 'day')[0].type",
+        "rtf.formatToParts(1, 'days')[1].unit",
+        "du.formatToParts(span)[0].type",
+        "du.formatToParts(span)[0].unit",
+        "nf.formatToParts(1)[0].type",
+        "lf.formatToParts(ab)[0].type",
+        "lf.formatToParts(ab)[1].value",
+        // The shared empty string and other fixed spellings the audit found.
+        "s.charAt(5)",
+        "s.slice(3)",
+        "String()",
+        "Error.prototype.toString.call({})",
+        "new RegExp('').source",
+        "RegExp.prototype.source",
+        "(+prim, hint)",
+        "(new Promise(r => { res = r; }), res.name)",
     ];
     let host = || {
         SimTimeHost::new(

@@ -398,7 +398,9 @@ impl State {
         }
         let item = self.items[self.index].clone();
         if self.index > 0 {
-            let separator = JsString::from(
+            // A locale's fixed separator spelling: one shared body, which a
+            // retained `literal` part shares.
+            let separator = JsString::fixed(
                 self.slots
                     .as_ref()
                     .unwrap()
@@ -414,7 +416,7 @@ impl State {
         &mut self,
         heap: &Heap,
         task: TaskId,
-        kind: &str,
+        kind: &'static str,
         text: JsString,
     ) -> Result<(), Fault> {
         if self.parts {
@@ -422,7 +424,7 @@ impl State {
                 heap,
                 task,
                 [
-                    ("type", Value::String(JsString::from(kind))),
+                    ("type", service::fixed_option(kind)),
                     ("value", Value::String(text)),
                 ],
             )?;

@@ -191,7 +191,8 @@ impl DurationFormat {
                 decimal.insert(0, '-');
             }
             let mut parts: Vec<Part> = digits
-                .decimal_parts(&string(&decimal))?
+                // A transient operand: only the Rust part texts survive.
+                .decimal_parts(&Value::String(JsString::from(decimal.as_str())))?
                 .into_iter()
                 .map(|(kind, text)| Part {
                     kind,
@@ -255,16 +256,22 @@ impl DurationFormat {
             }
             parts.append(group);
         }
+        // The formatted text is data-dependent and charged; part types and
+        // units are fixed spellings with one shared body each.
         if !to_parts {
-            return Ok(string(
+            return service::text_option(
+                heap,
                 &parts.into_iter().map(|p| p.text).collect::<String>(),
-            ));
+            );
         }
         let result = property::new_array(heap, task)?;
         for part in parts {
-            let mut fields = vec![("type", string(part.kind)), ("value", string(&part.text))];
+            let mut fields = vec![
+                ("type", service::fixed_option(part.kind)),
+                ("value", service::text_option(heap, &part.text)?),
+            ];
             if let Some(unit) = part.unit {
-                fields.push(("unit", string(unit)));
+                fields.push(("unit", service::fixed_option(unit)));
             }
             let item = service::resolved_options(heap, task, fields)?;
             property::append(heap, task, &result, Some(item))?;
@@ -380,9 +387,6 @@ fn validate(values: &[f64; 10]) -> Result<(), Fault> {
         return Err(Fault::RangeError("duration out of range".into()));
     }
     Ok(())
-}
-fn string(text: &str) -> Value {
-    Value::String(JsString::from(text))
 }
 pub(crate) fn record(heap: &Heap, task: TaskId, value: &Value) -> Result<DurationFormat, Fault> {
     let invalid = || Fault::TypeError("DurationFormat receiver required".into());

@@ -3,7 +3,7 @@ use super::{data::display_names as data, service};
 use crate::{
     heap::{Heap, HeapObject},
     ids::TaskId,
-    value::{JsString, Value},
+    value::Value,
     vm::dispatch::Fault,
 };
 
@@ -62,7 +62,7 @@ impl DisplayNames {
         }
         service::resolved_options(heap, task, fields)
     }
-    pub fn of(&self, code: &str) -> Result<Value, Fault> {
+    pub fn of(&self, heap: &Heap, code: &str) -> Result<Value, Fault> {
         let invalid = || Fault::RangeError(format!("invalid {} code", self.kind));
         let code = match self.kind {
             "region" => {
@@ -106,7 +106,7 @@ impl DisplayNames {
                 }
                 code.to_owned()
             }
-            "language" => return self.language_name(code),
+            "language" => return self.language_name(heap, code),
             _ => unreachable!(),
         };
         let data = locale_data(&self.locale);
@@ -131,13 +131,13 @@ impl DisplayNames {
             _ => unreachable!(),
         };
         Ok(match name {
-            Some(name) => string(name),
+            Some(name) => service::text_option(heap, name)?,
             None if self.fallback == "none" => Value::Undefined,
-            None => string(&code),
+            None => service::text_option(heap, &code)?,
         })
     }
 
-    fn language_name(&self, code: &str) -> Result<Value, Fault> {
+    fn language_name(&self, heap: &Heap, code: &str) -> Result<Value, Fault> {
         // A unicode_language_id contains no singleton extensions, including
         // private use. Use Locale's parser/aliases without maximizing or
         // minimizing: explicitly supplied scripts and regions remain visible.
@@ -155,7 +155,7 @@ impl DisplayNames {
             return Ok(if self.fallback == "none" {
                 Value::Undefined
             } else {
-                string(&code)
+                service::text_option(heap, &code)?
             });
         };
         let mut script = tag.script.as_deref();
@@ -168,7 +168,7 @@ impl DisplayNames {
             let dialect_name =
                 |key: &str| compound_language_name(key).or_else(|| language_name(key));
             if let Some(exact) = dialect_name(&code) {
-                return Ok(string(exact));
+                return service::text_option(heap, exact);
             }
             // Prefer the longest dialect key. Script+region precedes script,
             // which precedes region; unmatched components are composed below.
@@ -214,9 +214,9 @@ impl DisplayNames {
         // pools. Both translated locales use this shared pattern; unknown
         // components retain canonical codes rather than invented translations.
         Ok(if details.is_empty() {
-            string(name)
+            service::text_option(heap, name)?
         } else {
-            string(&format!("{name} ({})", details.join(", ")))
+            service::text_option(heap, &format!("{name} ({})", details.join(", ")))?
         })
     }
 }
@@ -229,9 +229,6 @@ fn compound_language_name(code: &str) -> Option<&'static str> {
                 .then(|| super::pool_string(pair[1]?, 0))
                 .flatten()
         })
-}
-fn string(text: &str) -> Value {
-    Value::String(JsString::from(text))
 }
 /// Exact language matching avoids treating e.g. `enochian` as `en`.
 /// The agreed locale set is shared by services; English is the terminal data root.

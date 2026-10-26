@@ -240,7 +240,7 @@ fn function(heap: &Heap, which: Builtin) -> Result<Value, Fault> {
         .function_prototype;
     let mut properties = OrdinaryObject::intrinsic(heap, Some(prototype));
     for (name, value) in [
-        ("name", Value::String(JsString::from(which.name()))),
+        ("name", Value::String(JsString::fixed(which.name()))),
         ("length", Value::Number(f64::from(which.length()))),
     ] {
         let key = heap
@@ -631,7 +631,7 @@ impl PromiseState {
                     return Ok(Action::Call {
                         callee,
                         this: Value::Undefined,
-                        args: vec![Value::String(JsString::from(*message))],
+                        args: vec![Value::String(JsString::fixed(message))],
                     });
                 }
                 let Input::CallResult(value) = input else {

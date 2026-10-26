@@ -604,7 +604,7 @@ impl State {
                     args: vec![
                         self.arg.clone(),
                         if self.which == StringMatchAll {
-                            Value::String("g".into())
+                            Value::String(JsString::fixed("g"))
                         } else {
                             Value::Undefined
                         },

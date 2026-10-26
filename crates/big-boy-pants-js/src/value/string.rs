@@ -399,7 +399,18 @@ impl JsString {
     }
     /// Transfer a preallocated, incrementally filled UTF-16 buffer without
     /// shrinking or copying its contents at a native step boundary.
+    /// Every empty string shares one body (an empty `slice`, `charAt` past
+    /// the end, `String()`), like a fixed spelling: retaining one allocates
+    /// nothing the byte budget would have to count.
     pub(crate) fn from_owned_code_units(units: Vec<u16>) -> Option<JsString> {
+        static EMPTY: OnceLock<JsString> = OnceLock::new();
+        if units.is_empty() {
+            return Some(
+                EMPTY
+                    .get_or_init(|| JsString(Arc::new(Body::flat(Vec::new()))))
+                    .clone(),
+            );
+        }
         (units.len() <= MAX_STRING_LEN).then(|| JsString(Arc::new(Body::flat(units))))
     }
 

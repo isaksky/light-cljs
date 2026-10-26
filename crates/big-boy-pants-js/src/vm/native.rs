@@ -432,7 +432,7 @@ fn call_symbol_method(
     Ok(Action::Call {
         callee,
         this: receiver,
-        args: vec![Value::String(JsString::from(match hint {
+        args: vec![Value::String(JsString::fixed(match hint {
             Hint::Default => "default",
             Hint::Number => "number",
             Hint::String => "string",
@@ -774,7 +774,7 @@ impl ArrayJoin {
             JoinStage::Separator => {
                 self.stage = JoinStage::SeparatorValue;
                 if matches!(self.separator, Value::Undefined) {
-                    self.separator = Value::String(JsString::from(","));
+                    self.separator = Value::String(JsString::fixed(","));
                 }
                 if matches!(self.separator, Value::Object(_) | Value::BigInt(_)) {
                     return Ok(Action::ToString(self.separator.clone()));
