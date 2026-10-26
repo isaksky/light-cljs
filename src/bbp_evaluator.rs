@@ -62,7 +62,9 @@ struct Bridge {
     // occurrence wrapper. Map that exact object back without traversing it.
     native_objects: HashMap<ObjectIdentity, (usize, WeakHandle)>,
     gensym_counter: u64,
-    generated_names: HashSet<Vec<u16>>,
+    // Keys include the native service's 'a' request tag. Retain accounted
+    // engine strings: generated spellings cannot grow uncharged host buffers.
+    generated_names: HashSet<JsString>,
 }
 impl Bridge {
     /// Observable native objects keep their full compiler-side Datum tree.
@@ -149,7 +151,9 @@ impl Bridge {
                 let name = string(s, n.name())?;
                 if matches!(d.kind(), D::Symbol(_)) {
                     if n.namespace().is_none() {
-                        self.generated_names.insert(n.name().to_vec());
+                        let mut key = vec![b'a' as u16];
+                        key.extend_from_slice(n.name());
+                        self.generated_names.insert(string(s, &key)?);
                     }
                     s.new_symbol(ns, name)
                 } else {
@@ -1784,11 +1788,11 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                     let serial = String::from_utf16_lossy(argument)
                         .parse()
                         .map_err(|_| "invalid gensym scope")?;
-                    let suffix = self
+                    let number = self
                         .3
-                        .suffix(serial)
+                        .next(serial)
                         .ok_or("native gensym scope unavailable")?;
-                    Ok(Primitive::string(&suffix))
+                    Ok(Primitive::Number(number as f64))
                 }
                 b'L' => {
                     self.3.log(argument);
@@ -1805,23 +1809,17 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                     bridge.gensym_counter = bridge.gensym_counter.max(floor);
                     Ok(Primitive::Null)
                 }
-                b'a' => {
+                b'n' => {
                     let mut bridge = self.4.lock().unwrap();
-                    let name = loop {
-                        bridge.gensym_counter = bridge
-                            .gensym_counter
-                            .checked_add(1)
-                            .ok_or("gensym identities exhausted")?;
-                        let mut name = argument.to_vec();
-                        name.extend(bridge.gensym_counter.to_string().encode_utf16());
-                        if bridge.generated_names.insert(name.clone()) {
-                            break name;
-                        }
-                    };
-                    Ok(Primitive::String(
-                        JsString::from_code_units(name).ok_or("gensym string limit exceeded")?,
-                    ))
+                    bridge.gensym_counter = bridge
+                        .gensym_counter
+                        .checked_add(1)
+                        .ok_or("gensym identities exhausted")?;
+                    Ok(Primitive::Number(bridge.gensym_counter as f64))
                 }
+                b'a' => Ok(Primitive::Bool(
+                    self.4.lock().unwrap().generated_names.insert(request),
+                )),
                 _ => Err("unknown native gensym request".into()),
             };
         }

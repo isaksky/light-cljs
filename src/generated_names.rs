@@ -269,10 +269,13 @@ thread_local! {
 type NameLog = Arc<Mutex<Vec<Vec<u16>>>>;
 
 fn gensym_suffix(prefix: &str, counter: &AtomicU64) -> String {
-    let number = counter
+    format!("{prefix}{}", next_gensym(counter))
+}
+
+fn next_gensym(counter: &AtomicU64) -> u64 {
+    counter
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-        .expect("scoped gensym identities exhausted");
-    format!("{prefix}{number}")
+        .expect("scoped gensym identities exhausted")
 }
 
 /// Only the generated-name state a native VM step needs. The analyzer keeps
@@ -280,7 +283,7 @@ fn gensym_suffix(prefix: &str, counter: &AtomicU64) -> String {
 /// never consulting the unrelated analyzer thread that happens to run it.
 #[cfg(feature = "bbp-macros")]
 pub(crate) struct NativeGensyms {
-    scopes: BTreeMap<u64, (String, Arc<AtomicU64>)>,
+    scopes: BTreeMap<u64, Arc<AtomicU64>>,
     log: Option<NameLog>,
 }
 
@@ -293,7 +296,7 @@ impl NativeGensyms {
             .into_iter()
             .chain(SCOPES.with(|s| s.borrow().clone()))
         {
-            scopes.insert(scope.serial, (scope.gensym_prefix(), scope.gensym.clone()));
+            scopes.insert(scope.serial, scope.gensym.clone());
         }
         Self {
             scopes,
@@ -301,10 +304,8 @@ impl NativeGensyms {
         }
     }
 
-    pub(crate) fn suffix(&self, serial: u64) -> Option<String> {
-        self.scopes
-            .get(&serial)
-            .map(|(prefix, count)| gensym_suffix(prefix, count))
+    pub(crate) fn next(&self, serial: u64) -> Option<u64> {
+        self.scopes.get(&serial).map(|count| next_gensym(count))
     }
 
     pub(crate) fn log(&self, name: &[u16]) {

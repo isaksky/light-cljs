@@ -41,6 +41,43 @@ fn program_output(js: &str) -> String {
 #[test]
 fn native_core_services_match_quickjs() {
     for (body, expected) in [
+        (
+            r#"[(not= 1 1.0) (not= 1 1 2) (not= nil false) (number? 0) (number? "0")
+              (float? 1) (double? 1) (float? nil) (double? false)
+              (vec (keep-indexed (fn [i x] (if (even? i) x nil)) [false :skip 2]))
+              (into [] (keep-indexed (fn [i x] (if (even? i) [i x] nil))) [false :skip 2])
+              (vec (keep-indexed (fn [i x] (if (> i 0) i nil)) '(:a :b :c)))]"#,
+            "[false true true true false true true false false [false 2] [[0 false] [2 2]] [1 2]]",
+        ),
+        (
+            r#"[(replace {:a nil :b false} [:a :b :c]) (vec (replace {1 2} '(1 3)))
+              (into [] (replace {1 2}) [1 3]) (meta (replace {1 2} (with-meta [1] {:tag true})))]"#,
+            "[[nil false :c] [2 3] [2 3] {:tag true}]",
+        ),
+        (
+            r#"[(seq-to-map-for-destructuring nil) (seq-to-map-for-destructuring [nil])
+              (seq-to-map-for-destructuring [{:a 1}]) (seq-to-map-for-destructuring [:a 1 :b 2])
+              (seq-to-map-for-destructuring [:a 1 {:b 2}]) (seq-to-map-for-destructuring [:a 1 nil])]"#,
+            "[{} nil {:a 1} {:a 1, :b 2} {:a 1, :b 2} {:a 1}]",
+        ),
+        (
+            r#"[(re-find #"a" "cat") (re-find #"z" "cat") (re-matches #"a" "cat")
+              (re-matches #"(a)(b)" "ab") (regexp? (re-pattern "(?i)a"))
+              (re-find (re-pattern "(?i)a") "A")
+              (try (re-pattern 42) (catch :default e (.-message e)))
+              (try (re-find #"a" nil) (catch :default e (.-message e)))]"#,
+            "[\"a\" nil nil [\"ab\" \"a\" \"b\"] true \"A\" \"regex pattern requires a string\" \"regex matching requires a string\"]",
+        ),
+        (
+            r#"[(/ 1 2) (infinite? (/ 1 0)) (int 4294967297.9) (long 4294967297.9)
+             (byte 300) (short 65537) (float 16777217) (double 16777217)
+             (quot 2 -5) (rem -0.0 2) (mod 4 -2) (== 1 1.0) (/ 1 (long -0.4))]"#,
+            "[0.5 true 1 4294967297 300 65537 16777217 16777217 -0.0 -0.0 -0.0 true ##-Inf]",
+        ),
+        (
+            r#"[(str 'hello 'a/b :x :a/b nil false 42 "😀") (name (gensym :prefix))]"#,
+            "[\"helloa/b:x:a/bfalse42😀\" \":prefix1\"]",
+        ),
         (r#"(vec (re-seq #"a" "banana"))"#, "[\"a\" \"a\" \"a\"]"),
         (
             r#"(mapv (fn [m] (mapv (fn [x] (if (nil? x) :missing x)) m)) (re-seq #"(a)(b)?" "a ab"))"#,
@@ -64,6 +101,64 @@ fn native_core_services_match_quickjs() {
     ] {
         let source = format!("(defmacro m [] (list 'quote {body})) (js/console.log (pr-str (m)))");
         assert_native_matches_legacy(&source, &format!("{expected}\n"));
+    }
+}
+
+#[test]
+fn native_compiler_macro_fixtures_keep_their_legacy_results() {
+    let fixtures = include_str!("compiler/macros.rs");
+    let root = temp_dir::TempDir::new("native-compiler-macro-fixtures");
+    for (name, expected) in [
+        ("SOURCE_ORDER_GENERATIONS", "true\n"),
+        ("GENERATED_DECLARATIONS", "true\n"),
+        ("NESTED_DEMANDS", "true\n"),
+        ("SNAPSHOT_GENERATIONS", "true\n"),
+        ("MUTUAL_RECURSION", "true\n"),
+        ("FAILED_GENERATION", "Error: sticky"),
+        ("SAVED_FUNCTION_CODE", "true\n"),
+        ("FRONTIER_REPLAY", "[[1 10] [2 10] 2 10]\n"),
+    ] {
+        let start = format!("pub(crate) const {name}: &str = r#\"");
+        let source = fixtures
+            .split_once(&start)
+            .unwrap()
+            .1
+            .split_once("\"#;")
+            .unwrap()
+            .0;
+        let source = format!("(ns fixture) {source}");
+        std::fs::write(root.join("fixture.cljs"), source).unwrap();
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let native = light_cljs::compile_namespace_with_macros(
+            "fixture",
+            &[root.path().to_path_buf()],
+            &mut host,
+        )
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+        if name == "FAILED_GENERATION" {
+            // The macro catches this initializer and repairs it later; the
+            // emitted application's first initializer deliberately throws.
+            let output = std::process::Command::new("node")
+                .arg("-e")
+                .arg(&native)
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
+        } else {
+            assert_eq!(
+                program_output(&format!("console.log({native});")),
+                expected,
+                "{name}"
+            );
+        }
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            native,
+            light_cljs::compile_namespace("fixture", &[root.path().to_path_buf()]).unwrap(),
+            "{name}"
+        );
     }
 }
 
@@ -94,7 +189,8 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
       (declare helper)
       (defmacro fresh []
         (let [before (gensym) middle (helper) after (gensym "explicit")]
-          (list 'quote [before middle after (gensym nil) (gensym false) (gensym 7)])))
+          (list 'quote [before middle after (gensym nil) (gensym false) (gensym 7)
+                       (gensym :keyword) (gensym 'prefix/qualified) (gensym "escaped\ud800😀")])))
       (defmacro compiled [] (list 'quote (gensym "compiled")))
       (defn helper [] [(compiled) (gensym "helper")])
       (def retained (fresh))"#,
@@ -116,8 +212,11 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
         root.join("app.cljs"),
         r#"
       (ns app (:require [names.macros :as m] [names.a :as a] [names.b :as b] [names.c :as c]))
-      (js/console.log (pr-str [m/retained a/first-names (a/second-names)
-                             b/first-names (b/second-names) c/first-names (c/second-names)]))"#,
+      (def values [m/retained a/first-names (a/second-names)
+                  b/first-names (b/second-names) c/first-names (c/second-names)])
+      (let [symbols (mapcat (fn [xs] (concat [(first xs) (second (second xs))] (drop 2 xs))) values)]
+        (assert (= (count symbols) (count (set symbols)))))
+      (js/console.log (pr-str values))"#,
     )
     .unwrap();
     let mut reference = None;

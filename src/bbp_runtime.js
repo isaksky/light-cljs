@@ -281,7 +281,7 @@ const decl = (() => {
   return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, isRecord};
 })();
 const native = (() => {
-  let gensymScope = 0, gensymLogging = false;
+  let gensymScope = 0, gensymPrefix = '', gensymLogging = false;
   const val = x => __rt.formValue(x);
   const interop = x => {
     const value = val(x), kind = __rt.formKind(value);
@@ -320,8 +320,9 @@ const native = (() => {
   const gensym = (...args) => {
     if (args.length > 1) return arity(args.length);
     const base = core.str(args.length === 0 ? 'G__' : args[0]);
-    const name = gensymScope === 0 ? __rt.effect(65531, 'a' + base)
-      : base + __rt.effect(65531, 'g' + gensymScope);
+    let name;
+    if (gensymScope !== 0) name = base + gensymPrefix + __rt.effect(65531, 'g' + gensymScope);
+    else do { name = base + __rt.effect(65531, 'n'); } while (!__rt.effect(65531, 'a' + name));
     if (gensymLogging) __rt.effect(65531, 'L' + name);
     return __rt.cljSymbol(name);
   };
@@ -347,6 +348,8 @@ const native = (() => {
   const unsupported = name => function(){throw new Error('unsupported operation: native macro runtime '+name);};
   // A comparison of adjacent operands, true for one; as the legacy runtimes.
   const chain = (xs, test) => { if (xs.length === 0) arity(0); for (let i = 1; i < xs.length; i++) if (!test(val(xs[i - 1]), val(xs[i]))) return false; return true; };
+  const fix = x => x >= 0 ? Math.floor(x) : Math.ceil(x);
+  const quot = (n,d) => fix((n-n%d)/d);
   const each = (op, x, xs) => { for (const y of xs) x = op(x, y); return x; };
   // Compile-time atoms are engine atoms (light-cljs-480): one shared atom
   // per Var, since an initializer's atom publishes. Before a task touches an
@@ -421,6 +424,13 @@ const native = (() => {
     const prefix = /^\(\?([dgimsuxy]*)\)/.exec(pattern);
     return new RegExp(prefix ? pattern.slice(prefix[0].length) : pattern, prefix ? prefix[1] : '');
   };
+  const reMatch = (re, text, full) => {
+    text = val(text);
+    if (typeof text !== 'string') throw new TypeError('regex matching requires a string');
+    const result = re.exec(text);
+    if (result === null || (full && result[0] !== text)) return null;
+    return result.length === 1 ? result[0] : vector(Array.from(result));
+  };
   const seqOf = x => __rt.cljSeq(x);
   const chunked = (s, step) => {
     const ch = __rt.cljChunkFirst(s), b = __rt.vectorBuilder();
@@ -449,6 +459,18 @@ const native = (() => {
       return __rt.cljChunkCons(ch, self(self, f, __rt.cljChunkRest(s), k));
     }
     return __rt.cljCons(invoke(f, i, __rt.cljFirst(s)), self(self, f, __rt.cljRest(s), i + 1));
+  });
+  const keepIndexedFrom = (self, f, c, i) => lazy(() => {
+    for (let s=seqOf(c);s!==null;s=seqOf(__rt.cljRest(s)),i++) {
+      if (__rt.cljChunkedSeq(s)) {
+        const ch=__rt.cljChunkFirst(s), b=__rt.vectorBuilder(), n=__rt.cljCount(ch);
+        for(let k=0;k<n;k++){const v=invoke(f,i+k,__rt.cljNth(ch,k));if(val(v)!=null)__rt.builderConj(b,v);}
+        return __rt.cljChunkCons(__rt.freeze(b),self(self,f,__rt.cljChunkRest(s),i+n));
+      }
+      const v=invoke(f,i,__rt.cljFirst(s));
+      if(val(v)!=null)return __rt.cljCons(v,self(self,f,__rt.cljRest(s),i+1));
+    }
+    return null;
   });
   // `filter` (keep when `keep`), `remove` (keep when not), `keep` (keep
   // non-nil values of `f`).
@@ -583,10 +605,18 @@ const native = (() => {
   const core = {
     assertions:true,
     gensym, rePattern, reSeq:(re,text)=>reSeq(reSeq,re,text),
+    reFind:(re,text)=>reMatch(re,text,false), reMatches:(re,text)=>reMatch(re,text,true),
+    isRegex:x=>val(x) instanceof RegExp,
     invoke, truth, get, identity:x=>x, macroReaderFunction:f=>f,
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
     list:(...a)=>list(a), vector:(...a)=>vector(a), hashMap:(...a)=>map(a), hashSet:(...a)=>set(a), set:x=>set(arr(x)), vec:x=>vector(arr(x)),
     arrayMap:(...a)=>{ if (a.length % 2) throw new Error('No value supplied for key'); return map(a); },
+    seqToMap:value=>{
+      if (__rt.cljNext(value) === null) return seq(value) === null ? __rt.formMap() : __rt.cljFirst(value);
+      const values = arr(value).slice(), trailing = values.length % 2 ? values.pop() : null;
+      const base = map(values);
+      return trailing == null ? base : core.into(base, trailing);
+    },
     keyword:(...a)=>a.length===1?__rt.cljKeyword(a[0]):a.length===2?__rt.cljKeywordNs(a[0],a[1]):arity(a.length),
     symbol:(...a)=>a.length===1?__rt.cljSymbol(a[0]):a.length===2?__rt.cljSymbolNs(a[0],a[1]):arity(a.length),
     first:x=>__rt.cljFirst(x), second:x=>__rt.cljFirst(__rt.cljNext(x)),
@@ -613,13 +643,23 @@ const native = (() => {
     reduced:x=>__rt.cljReduced(x), isReduced:x=>__rt.cljIsReduced(x), unreduced:x=>__rt.cljUnreduced(x),
     ensureReduced:x=>__rt.cljIsReduced(x)?x:__rt.cljReduced(x),
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
+    notEqual:(...xs)=>!core.equal(...xs),
     name:x=>{if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
     namespace:x=>{if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support namespace: '+__rt.formName(val(x)));return __rt.formNamespace(val(x));},
     inc:x=>val(x)+1, dec:x=>val(x)-1, multiply:(...xs)=>xs.reduce((a,b)=>a*val(b),1),
     less:(...xs)=>chain(xs,(a,b)=>a<b), greater:(...xs)=>chain(xs,(a,b)=>a>b), lessEqual:(...xs)=>chain(xs,(a,b)=>a<=b), greaterEqual:(...xs)=>chain(xs,(a,b)=>a>=b),
-    str:(...xs)=>xs.map(x=>{x=val(x);if(x==null)return '';if(__rt.formKind(x)!==null)throw new Error('unsupported operation: native macro runtime str of a native form');return String(x);}).join(''),
+    str:(...xs)=>xs.map(x=>{x=val(x);if(x==null)return '';const kind=__rt.formKind(x);
+      if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}
+      if(kind!==null)throw new Error('unsupported operation: native macro runtime str of a native '+kind+' form');return String(x);}).join(''),
     identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
+    divide:(...xs)=>xs.length===0?NaN:xs.length===1?1/val(xs[0]):xs.slice(1).reduce((a,b)=>a/val(b),val(xs[0])),
+    int:x=>val(x)|0, long:x=>fix(val(x)), byte:val, short:val, float:val, double:val,
+    quot:(n,d)=>quot(val(n),val(d)), rem:(n,d)=>{n=val(n);d=val(d);return n-d*quot(n,d);},
+    mod:(n,d)=>{n=val(n);d=val(d);return ((n%d)+d)%d;},
+    numericEqual:(...xs)=>xs.length!==0&&core.equal(...xs),
+    isNumber:x=>typeof val(x)==='number', isFloat:x=>typeof val(x)==='number', isDouble:x=>typeof val(x)==='number',
+    isInfinite:x=>val(x)===Infinity||val(x)===-Infinity,
     exInfo:(m,d)=>new Error(val(m)),
     atom, deref, reset, compareAndSet,
     swap:(a,f,...args)=>swapPair(a,f,args)[1],
@@ -631,6 +671,12 @@ const native = (() => {
     realized:x=>__rt.cljRealized(x),
     mapSeq:(...a)=>a.length===0?lazy(()=>null):a.length===1?mapTransform(a[0]):a.length===2?mapOne(mapOne,a[0],a[1]):mapMany(mapMany,a[0],list(a.slice(1))),
     mapIndexed:(f,c)=>mapIndexedFrom(mapIndexedFrom,f,c,0),
+    keepIndexed:(...a)=>{
+      if(a.length===2)return keepIndexedFrom(keepIndexedFrom,a[0],a[1],0);
+      if(a.length!==1)return arity(a.length);
+      const f=a[0];
+      return rf=>{let i=-1;return reducing(rf,(result,input)=>{const v=invoke(f,++i,input);return val(v)==null?result:invoke(rf,result,v);});};
+    },
     filter:(...a)=>a.length===1?filterTransform(a[0]):a.length===2?select(select,a[0],a[1],0):arity(a.length), remove:(f,c)=>select(select,f,c,1), keep:(f,c)=>select(select,f,c,2),
     mapcat:(...a)=>a.length===0?arity(0):a.length===1?mapcatTransform(a[0]):catSeqs(catSeqs,core.mapSeq(...a)),
     partitionBy:(...a)=>a.length===1?partitionByTransform(a[0]):a.length===2?partitionByFrom(partitionByFrom,a[0],a[1]):arity(a.length),
@@ -663,6 +709,19 @@ const native = (() => {
     last:c=>{const a=arr(c);return a.length?a[a.length-1]:null;}, butlast:c=>{const a=arr(c);return a.length>1?list(a.slice(0,-1)):null;},
     reverse:c=>list(arr(c).reverse()),
     mapv:(f,...cs)=>vector(arr(core.mapSeq(f,...cs))), filterv:(f,c)=>vector(arr(core.filter(f,c))),
+    replace:(...a)=>{
+      if (a.length !== 1 && a.length !== 2) return arity(a.length);
+      const substitutions=a[0], replaceOne=x=>__rt.cljContains(substitutions,x)?get(substitutions,x):x;
+      if (a.length===1) return mapTransform(replaceOne);
+      const coll=a[1];
+      if (__rt.formKind(val(coll))!=='vector') return mapOne(mapOne,replaceOne,coll);
+      let result=coll;
+      for(let i=0,n=__rt.cljCount(coll);i<n;i++){
+        const x=__rt.cljNth(result,i);
+        if(__rt.cljContains(substitutions,x)) result=__rt.cljAssoc(result,i,get(substitutions,x));
+      }
+      return result;
+    },
     // `(doall n coll)` and `(dorun n coll)` realize the first `n` elements.
     doall:(...a)=>a.length===1?(__rt.cljCount(a[0]),a[0]):a.length===2?(core.dorun(a[0],a[1]),a[1]):arity(a.length),
     dorun:(...a)=>{if(a.length===1){__rt.cljCount(a[0]);return null;}if(a.length!==2)arity(a.length);
@@ -741,7 +800,7 @@ const native = (() => {
     setFromArray:set,arraySetFromArray:set,constantSetFromArray:constantSet,literalSetFromArray:literalSet,
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f,
-    compilerForms:{gensymScope:serial=>{gensymScope=serial;return null;},takeEncodePeak:()=>0,
+    compilerForms:{gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
       takeGensyms:()=>{gensymLogging=true;return __rt.formVector(__rt.effect(65531,'t'));},
       raiseGensyms:n=>{__rt.effect(65531,'r'+n);return null;}},
   };

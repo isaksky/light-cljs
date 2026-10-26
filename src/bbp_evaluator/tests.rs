@@ -1022,6 +1022,32 @@ fn memory_limit_denial_is_catchable_and_the_runtime_recovers() {
     );
 }
 
+#[test]
+fn native_gensym_reservations_count_against_the_shared_heap_limit() {
+    let options = EvaluatorOptions {
+        memory_limit: 4 << 20,
+        ..Default::default()
+    };
+    let shared = BbpRuntime::new(&options).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let result = evaluator.evaluate_unit("rt => { const prefix='x'.repeat(4096); let n=0; try { for(;n<20000;n++) rt.core.gensym(prefix); } catch(e) { return n; } throw new Error('unaccounted gensym names'); }");
+    match result {
+        Ok(value) => assert!(
+            matches!(evaluator.cx().unwrap().values.borrow()[&value.index].view(), ValueView::Number(n) if n > 0.0 && n < 20000.0)
+        ),
+        // A full reservation table may also deny the result table's entry.
+        Err(error) => assert!(error.0.contains("heap byte limit exceeded"), "{error}"),
+    }
+    let bridge = shared.0.bridge.lock().unwrap();
+    assert!(!bridge.generated_names.is_empty());
+    assert!(bridge.generated_names.len() < 20000);
+    let stats = shared.0.runtime.heap_stats();
+    assert!(
+        stats.peak_managed_bytes <= options.memory_limit,
+        "{stats:?}"
+    );
+}
+
 /// A large live result that leaves only a little room must still be
 /// releasable: the release allocates no value-table entry for it.
 #[test]
