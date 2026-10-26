@@ -83,10 +83,9 @@ impl Bridge {
             imported.occurrence.is_live()
                 || imported.native.as_ref().is_some_and(WeakHandle::is_live)
         });
-        // A native map can collapse reader-distinct equal keys and discard
-        // overwritten values. Exporting a surviving parent still restores
-        // its original Datum, including those now-dead native descendants.
-        // Keep their provenance and conversion costs, without rooting them.
+        // Exporting a surviving parent restores its full original Datum.
+        // Keep every descendant's provenance and conversion costs even if
+        // its occurrence wrapper has died (raw metadata can outlive it).
         let mut reachable = HashSet::new();
         let mut pending: Vec<_> = self.imports.values().map(|i| i.data.clone()).collect();
         while let Some(data) = pending.pop() {

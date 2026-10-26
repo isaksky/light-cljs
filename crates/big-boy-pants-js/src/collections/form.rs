@@ -968,11 +968,20 @@ pub(crate) fn literal_from_sequence(
     items: &Value,
     set: bool,
 ) -> Result<Value, CollectionError> {
-    let items = sequential(heap, items)?.to_vec();
+    let values = sequential(heap, items)?;
     if set {
-        new_literal_set(heap, &items)
+        new_literal_set(heap, &values.to_vec())
     } else {
-        new_literal_map(heap, &items)
+        if !values.len().is_multiple_of(2) {
+            return Err(CollectionError::MissingKey);
+        }
+        // Alternating map operands are already in a charged immutable trie.
+        // Share it rather than copying a counted constructor's payload.
+        alloc(
+            heap,
+            FormObject::new(FormBody::Map(FormMap::Positional(values)), None),
+            std::slice::from_ref(items),
+        )
     }
 }
 
@@ -1803,7 +1812,7 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
         OneOf(Vec<[(Value, Value); 2]>),
         /// Array-map lookup stops at the first equal key, even when its
         /// value differs. Keep key comparison on this explicit work stack.
-        Lookup(Value, Option<Value>, Vec<(Value, Value)>),
+        Lookup(Value, Option<Value>, bool, Vec<(Value, Value)>),
         /// The rest of two sequences, compared element by element so that
         /// an unequal element ends the comparison before a tail is
         /// realized (light-cljs-479).
@@ -1827,6 +1836,7 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
             candidates: Vec<(Value, Value)>,
             found: Option<Value>,
             checking_value: bool,
+            reverse_value: bool,
         },
     }
     /// What comparing one pair yields.
@@ -1909,7 +1919,7 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                     let mut candidates = q.entries_with_hash(h);
                     if q.positional() {
                         candidates.reverse();
-                        steps.push(Step::Lookup(k, None, candidates));
+                        steps.push(Step::Lookup(k, None, false, candidates));
                         continue;
                     }
                     match candidates.len() {
@@ -1938,7 +1948,7 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                     let mut candidates = q.entries_with_hash(h);
                     if q.positional() {
                         candidates.reverse();
-                        steps.push(Step::Lookup(k, Some(v), candidates));
+                        steps.push(Step::Lookup(k, Some(v), !p.positional(), candidates));
                         continue;
                     }
                     match candidates.len() {
@@ -1947,13 +1957,26 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                             let (qk, qv) = candidates.pop().unwrap();
                             // Popped last-first: the (cheaper) value first.
                             steps.push(Step::Pair(k, qk));
-                            steps.push(Step::Pair(v, qv));
+                            steps.push(if p.positional() {
+                                Step::Pair(v, qv)
+                            } else {
+                                Step::Pair(qv, v)
+                            });
                         }
                         _ => steps.push(Step::OneOf(
                             candidates
                                 .into_iter()
                                 .rev()
-                                .map(|(qk, qv)| [(k.clone(), qk), (v.clone(), qv)])
+                                .map(|(qk, qv)| {
+                                    [
+                                        (k.clone(), qk),
+                                        if p.positional() {
+                                            (v.clone(), qv)
+                                        } else {
+                                            (qv, v.clone())
+                                        },
+                                    ]
+                                })
                                 .collect(),
                         )),
                     }
@@ -1986,18 +2009,36 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                 pe.for_each_hashed(heap, |h, k, v| entries.push((h, k.clone(), v.clone())));
                 for (h, k, v) in entries {
                     let mut candidates = qe.entries_with_hash(h);
+                    if qe.positional() {
+                        candidates.reverse();
+                        steps.push(Step::Lookup(k, Some(v), !pe.positional(), candidates));
+                        continue;
+                    }
                     match candidates.len() {
                         0 => return Outcome::Refuted((ia, ib)),
                         1 => {
                             let (qk, qv) = candidates.pop().unwrap();
                             steps.push(Step::Pair(k, qk));
-                            steps.push(Step::Pair(v, qv));
+                            steps.push(if pe.positional() {
+                                Step::Pair(v, qv)
+                            } else {
+                                Step::Pair(qv, v)
+                            });
                         }
                         _ => steps.push(Step::OneOf(
                             candidates
                                 .into_iter()
                                 .rev()
-                                .map(|(qk, qv)| [(k.clone(), qk), (v.clone(), qv)])
+                                .map(|(qk, qv)| {
+                                    [
+                                        (k.clone(), qk),
+                                        if pe.positional() {
+                                            (v.clone(), qv)
+                                        } else {
+                                            (qv, v.clone())
+                                        },
+                                    ]
+                                })
                                 .collect(),
                         )),
                     }
@@ -2045,13 +2086,16 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                         }
                     },
                     Some(Step::OneOf(alternatives)) => frames.push(Frame::Any(alternatives)),
-                    Some(Step::Lookup(key, value, candidates)) => frames.push(Frame::Lookup {
-                        key,
-                        value,
-                        candidates,
-                        found: None,
-                        checking_value: false,
-                    }),
+                    Some(Step::Lookup(key, value, reverse_value, candidates)) => {
+                        frames.push(Frame::Lookup {
+                            key,
+                            value,
+                            candidates,
+                            found: None,
+                            checking_value: false,
+                            reverse_value,
+                        })
+                    }
                     Some(Step::Seq(p, q, seen)) => match (seq_split(heap, p), seq_split(heap, q)) {
                         (Split::Empty, Split::Empty) => {}
                         (Split::Item(x, p), Split::Item(y, q)) => {
@@ -2071,6 +2115,7 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                 candidates,
                 found,
                 checking_value,
+                reverse_value,
             } => {
                 if *checking_value {
                     frames.pop();
@@ -2079,10 +2124,15 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                     if let Some(value) = value {
                         let other = found.take().unwrap();
                         let value = value.clone();
+                        let pair = if *reverse_value {
+                            Step::Pair(other, value)
+                        } else {
+                            Step::Pair(value, other)
+                        };
                         *checking_value = true;
                         frames.push(Frame::All {
                             memo: None,
-                            pending: vec![Step::Pair(value, other)],
+                            pending: vec![pair],
                         });
                     } else {
                         frames.pop();

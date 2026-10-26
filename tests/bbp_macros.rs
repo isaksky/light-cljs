@@ -2146,6 +2146,14 @@ fn native_positional_literal_matrix_matches_legacy() {
             r#"(defmacro probe [] (let [m '{:b 2 :a 1} h (apply hash-map [:a 1 :b 2]) s '#{2 1} t (set [1 2])] [(= m h) (= h m) (= (hash m) (hash h)) (= s t) (= t s) (= (hash s) (hash t)) (= '{\a 1 "a" 2} '{\a 1 "a" 2}) (= '#{1 1.0} '#{1 2})])) (probe)"#,
         ),
         (
+            "nested-directional-equality",
+            r#"(defmacro probe [m] (let [a '#{1 1.0} b '#{1 2} p (assoc m :k a) q (apply hash-map [:k b])] [(= p q) (= q p) (= [a] [b]) (= [b] [a])])) (probe {:k nil})"#,
+        ),
+        (
+            "positional-metadata",
+            r#"(defmacro probe [] (let [v ^{\a 1 "a" 2} [] m (meta v)] (list 'quote [(count m) (get m "a") (vec (seq m))]))) (probe)"#,
+        ),
+        (
             "bridge",
             r#"(defmacro probe [m s] (list 'quote [(count m) (get m "a") (vec (seq m)) (count s) (vec (seq s)) (get (assoc m "a" 9) "a") (vec (seq (disj s 1)))])) (probe {\a 1 "a" 2} #{1 1.0})"#,
         ),
@@ -2190,7 +2198,11 @@ fn native_positional_literal_matrix_matches_legacy() {
         };
         if let Some((expected_native, expected_legacy)) = bridge_outputs {
             assert_eq!(native_output, expected_native, "{name}: native inputs");
-            assert_eq!(legacy_output, expected_legacy, "{name}: legacy inputs");
+            if cfg!(any(feature = "quickjs", feature = "v8-macros")) {
+                assert_eq!(legacy_output, expected_legacy, "{name}: legacy inputs");
+            } else {
+                assert_eq!(native_output, legacy_output, "{name}: native-only host");
+            }
         } else {
             assert_eq!(native_output, legacy_output, "{name}");
             assert_eq!(native, legacy, "{name}: expanded form");

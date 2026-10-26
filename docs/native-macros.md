@@ -53,9 +53,8 @@ native metadata maps, whose engine contract does not wrap metadata in occurrence
 Scalar values still use distinct occurrence wrappers, even when their values agree.
 After a collection, the next import prunes dead memo entries and their compiler
 provenance. Surviving imported Datums keep source information and conversion
-costs for their entire compiler subtree, including metadata and reader entries
-collapsed by native map equality. Those descendants do not keep dead native
-objects alive. Reimporting a reclaimed occurrence creates a new wrapper; any
+costs for their entire compiler subtree, including metadata and every positional
+reader entry. Reimporting a reclaimed occurrence creates a new wrapper; any
 occurrence still held by a macro, another task or a saved continuation keeps
 its identity and exact original Datum. A raw metadata map can outlive its
 wrapper: reimport wraps that same native map while it remains observable.
@@ -858,10 +857,11 @@ and source reuse, enforces conversion budgets on memo hits and verifies dead
 provenance is pruned.
 
 The pruning regressions also retain only the raw metadata of
-`^{1 [1 [2 [3]]] 1.0 nil} []`: the native map discards the overwritten vector,
-but restoring the original compiler Datum still requires ten nodes and depth
-five. Descendant source spans and nested metadata survive pruning without
-retaining their dead native objects. A real emitted macro saves its first
+`^{1 [1 [2 [3]]] 1.0 nil} []`: positional metadata now retains the first key's
+vector as well as the second equal key. Restoring the original compiler Datum
+requires ten nodes and depth five. Descendant source spans and nested metadata
+survive collection and pruning; releasing the metadata reclaims every descendant.
+A real emitted macro saves its first
 environment in task state across an envelope update, input-handle release,
 collection and pruning; the old/new slot values and shared namespace identity
 remain intact. After this review fix, the forced-final-collection regression

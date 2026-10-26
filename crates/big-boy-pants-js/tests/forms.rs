@@ -217,6 +217,8 @@ fn positional_forms_share_equality_hash_and_first_match_update_contracts() {
         const nestedLeft = __rt.formVector(left), nestedRight = __rt.formVector(right);
         __rt.formHash(nestedLeft); __rt.formHash(nestedRight);
         if (!__rt.formEquals(nestedLeft, nestedRight)) throw 'nested duplicate equality';
+        const positional = map(__rt.formVector('k', left)), hashed = __rt.formMap('k', right);
+        if (!__rt.formEquals(positional, hashed) || !__rt.formEquals(hashed, positional)) throw 'map value direction';
         const lazy = __rt.lazySeq(() => __rt.formList(3, 4));
         const rebuilt = __rt.cljRealizeAll(map(__rt.formVector('a', lazy, 'a', 2)));
         if (__rt.formCount(rebuilt) !== 2 || __rt.formKind(__rt.formGet(rebuilt, 'a', null)) !== 'list' ||
