@@ -2118,6 +2118,26 @@ fn native_scalar_predicates_and_binding_probes_match_legacy() {
 }
 
 #[test]
+fn native_exists_does_not_suppress_an_initializer_error() {
+    // The definition throws in the emitted application too, so compare its
+    // compilation without running it. The macro assertion checks the value.
+    let source = r#"
+        (def broken (throw (js/Error. "unavailable definition: cljs.user/broken")))
+        (defmacro m []
+          (assert (= :caught
+                     (try (exists? broken)
+                          (catch :default e
+                            (if (.includes (.-message e) "unavailable definition: cljs.user/broken")
+                              :caught :wrong-error)))))
+          true)
+        (m)"#;
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    assert_eq!(emit_js(&program), light_cljs::compile(source).unwrap());
+}
+
+#[test]
 fn native_resolve_reports_the_missing_var_runtime() {
     let source = "(declare absent) (defmacro m [] (resolve 'absent)) (m)";
     let mut host = MacroHost::new();

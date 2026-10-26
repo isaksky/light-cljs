@@ -580,11 +580,11 @@ const native = (() => {
     // `exists?` demands a definition's value, while `resolve` only tests
     // whether its binding was registered (a declaration counts).
     nativeRootExists:(name,binding)=>{
-      const roots=globalThis.__lightCompilerRoots;
-      if(!(name in roots))return false;
+      const bindings=globalThis.__lightCompilerRoots;
+      if(!(name in bindings))return false;
       if(binding)return true;
-      try{return roots[name]!==undefined;}
-      catch(e){if(e instanceof Error&&e.message==='unavailable definition: '+name)return false;throw e;}
+      if(roots.has(name)&&roots.get(name).unit===null)return false;
+      return bindings[name]!==undefined;
     },
     juxt:(...fs)=>{
       const functions=fs.length===0?__rt.formVector(undefined,undefined,undefined):vector(fs);
