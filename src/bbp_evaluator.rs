@@ -70,7 +70,7 @@ struct Bridge {
     initializer_callers: HashMap<u64, BTreeMap<u64, u64>>,
     initializer_parents: HashMap<u64, HashSet<u64>>,
     caller_gensyms: HashMap<u64, crate::generated_names::NativeGensyms>,
-    initializer_namespaces: HashMap<(u64, u64), u64>,
+    initializer_namespaces: HashMap<(u64, u64), (u64, bool)>,
     next_namespace: u64,
 }
 impl Bridge {
@@ -140,6 +140,37 @@ impl Bridge {
             }
         }
         earliest.map(|(_, context)| context)
+    }
+    fn initializer_namespace(&self, unit: u64) -> Option<u64> {
+        // An explicit dynamic binding between two initializer demands stays
+        // in force when the parent inherits an earlier caller. Carry the
+        // nearest such snapshot along each ancestry path. Prefer a direct
+        // caller at the same source position, then a deterministic unit ID.
+        let mut pending = vec![(unit, None, 0usize)];
+        let mut visited = HashSet::new();
+        let mut earliest = None;
+        while let Some((unit, bound, depth)) = pending.pop() {
+            if !visited.insert((unit, bound)) {
+                continue;
+            }
+            let Some((&position, &scope)) = self
+                .initializer_callers
+                .get(&unit)
+                .and_then(|callers| callers.first_key_value())
+            else {
+                continue;
+            };
+            let &(id, explicit) = self.initializer_namespaces.get(&(unit, scope))?;
+            let key = (position, depth, unit);
+            if earliest.is_none_or(|(prior, _)| key < prior) {
+                earliest = Some((key, bound.unwrap_or(id)));
+            }
+            let bound = bound.or(explicit.then_some(id));
+            if let Some(parents) = self.initializer_parents.get(&unit) {
+                pending.extend(parents.iter().map(|parent| (*parent, bound, depth + 1)));
+            }
+        }
+        earliest.map(|(_, id)| id)
     }
     fn poll(&self) -> Result<(), EvalError> {
         self.control.as_ref().map_or(Ok(()), ExecutionControl::poll)
@@ -1194,7 +1225,7 @@ impl BbpEvaluator {
         cx: &TaskContext,
         key: DependencyKey,
     ) -> Result<Option<RunOutcome>, EvalError> {
-        if [HELPER, INITIALIZER, LANE].contains(&key.kind()) {
+        if [HELPER, INITIALIZER, LANE, NAMESPACE].contains(&key.kind()) {
             cx.resumable.set(true);
         }
         // What produces `key` inherits this task's lane position while it
@@ -1511,6 +1542,11 @@ impl BbpEvaluator {
                 .global_value("__lightInitializerNamespace")
                 .map_err(error)?
                 .ok_or_else(|| error("missing initializer namespace"))?;
+            let bound = cx
+                .task
+                .global_value("__lightInitializerNamespaceBound")
+                .map_err(error)?
+                .is_some_and(|v| matches!(v.view(), ValueView::Bool(true)));
             let position = self
                 .shared
                 .lanes()
@@ -1518,7 +1554,7 @@ impl BbpEvaluator {
                     lanes.caller_position(crate::effect_lanes::identity(cx.task.id()))
                 })
                 .unwrap_or(0);
-            let namespace_id = {
+            let namespace_claim = {
                 let mut bridge = self.bridge.lock().unwrap();
                 if let Some(scope) = crate::generated_names::NativeGensyms::capture_scope(serial) {
                     bridge.caller_gensyms.insert(serial, scope);
@@ -1544,16 +1580,18 @@ impl BbpEvaluator {
                 } else {
                     bridge.next_namespace += 1;
                     let id = bridge.next_namespace;
+                    let key =
+                        DependencyKey::new(self.runtime.world(), DependencyId::new(id), NAMESPACE);
+                    // Reserve before another task can observe the snapshot
+                    // ID through the caller table and demand its cell.
+                    let request = self.runtime.claim(key).map_err(error)?;
                     bridge
                         .initializer_namespaces
-                        .insert((unit as u64, serial), id);
-                    Some(id)
+                        .insert((unit as u64, serial), (id, bound));
+                    Some((key, request))
                 }
             };
-            if let Some(id) = namespace_id {
-                let namespace_key =
-                    DependencyKey::new(self.runtime.world(), DependencyId::new(id), NAMESPACE);
-                let request = self.runtime.claim(namespace_key).map_err(error)?;
+            if let Some((namespace_key, request)) = namespace_claim {
                 let wakeups = self
                     .runtime
                     .complete(
@@ -1886,14 +1924,10 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
                 return Err("invalid initializer namespace request".into());
             };
             let bridge = self.4.lock().unwrap();
-            let context = bridge
-                .initializer_context(unit as u64)
-                .ok_or("initializer namespace caller unavailable")?;
             let id = bridge
-                .initializer_namespaces
-                .get(&context)
+                .initializer_namespace(unit as u64)
                 .ok_or("initializer namespace unavailable")?;
-            return Ok(Primitive::Number(*id as f64));
+            return Ok(Primitive::Number(id as f64));
         }
         if call.op == GENSYM_EFFECT {
             let Primitive::String(request) = call.arg else {

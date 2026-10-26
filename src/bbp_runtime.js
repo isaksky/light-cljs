@@ -279,7 +279,9 @@ const decl = (() => {
   const leave = () => { frontier = frontiers.pop() ?? Infinity; return null; };
   const isRecord = x => { const ty = __rt.structTypeOf(x); return ty !== null && views.get(ty)?.record === true; };
   return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, isRecord,
-    printer:x=>resolve(methodTable('IPrintWithWriter/-pr-writer',3),x)};
+    printer:x=>resolve(methodTable('IPrintWithWriter/-pr-writer',3),x),
+    writer:x=>resolve(methodTable('IWriter/-write',2),x),
+    flusher:x=>resolve(methodTable('IWriter/-flush',1),x)};
 })();
 const native = (() => {
   let gensymScope = 0, gensymPrefix = '';
@@ -362,7 +364,21 @@ const native = (() => {
     return (__rt.formKind(x)==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);
   };
   const printOption = (options,name,root) => options==null?core[root]:get(options,__rt.cljKeyword(name));
-  const write = (writer,text) => { writer.text+=val(text); return null; };
+  const writers=new WeakSet(),bufferWriters=new WeakSet();
+  const stringWriter=()=>{const w={text:''};writers.add(w);return w;};
+  function StringBufferWriter(sb){this.sb=sb;writers.add(this);bufferWriters.add(this);}
+  const write = (writer,text) => {
+    if(writers.has(writer)){if(bufferWriters.has(writer))return writer.sb.append(val(text));writer.text+=val(text);return null;}
+    const method=decl.writer(writer);
+    if(method!=null)return method.call(writer,writer,text);
+    throw new Error('No protocol method IWriter/-write defined for this value');
+  };
+  const flushWriter = writer => {
+    if(writers.has(writer))return null;
+    const method=decl.flusher(writer);
+    if(method!=null)return method.call(writer,writer);
+    throw new Error('No protocol method IWriter/-flush defined for this value');
+  };
   const printSequential = (writer,one,begin,separator,end,options,coll) => {
     const saved=core.printLevel;
     core.printLevel=val(saved)==null?null:val(saved)-1;
@@ -435,7 +451,7 @@ const native = (() => {
     throw new Error('unsupported operation: native macro runtime pr-str of '+(kind??typeof x));
   };
   const printValues = (values,options) => {
-    const writer={text:''};let printed=false;
+    const writer=stringWriter();let printed=false;
     for(let s=seq(values);s!==null;s=__rt.cljNext(s)){
       if(printed)write(writer,' ');printWriter(__rt.cljFirst(s),writer,options);printed=true;
     }
@@ -739,12 +755,12 @@ const native = (() => {
     prStr, printStr, prnStr:(...xs)=>prStr(...xs)+'\n', printlnStr:(...xs)=>printStr(...xs)+'\n',
     prStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1]):arity(a.length),
     prnStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1])+'\n':arity(a.length),
-    prWriter, prStrStar:x=>{const w={text:''};prWriter(x,w,null);return w.text;},
+    prWriter, prStrStar:x=>{const w=stringWriter();prWriter(x,w,null);return w.text;},
     printMetaQ:(...a)=>a.length!==2?arity(a.length):truth(printOption(a[0],'meta','printMeta'))&&__rt.cljMeta(a[1])!==null,
-    write, flushWriter:()=>null,
+    write, flushWriter, StringBufferWriter,
     writeAll:(w,...xs)=>{for(const x of xs)write(w,x);return null;},
-    prSequentialWriter:printSequential,
-    prSeqWriter:(xs,w,o)=>{let printed=false;for(let s=seq(xs);s!==null;s=__rt.cljNext(s)){if(printed)write(w,' ');printWriter(__rt.cljFirst(s),w,o);printed=true;}return null;},
+    prSequentialWriter:(...a)=>a.length===7?printSequential(...a):arity(a.length),
+    prSeqWriter:(...a)=>{if(a.length!==3)return arity(a.length);const [xs,w,o]=a;printWriter(__rt.cljFirst(xs),w,o);for(let s=__rt.cljNext(xs);s!==null;s=__rt.cljNext(s)){write(w,' ');printWriter(__rt.cljFirst(s),w,o);}return null;},
     createNs, findNs, Namespace,
     theNs:name=>{const ns=findNs(name);if(ns===null)throw new Error('No namespace: '+core.str(name));return ns;},
     nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
@@ -792,7 +808,7 @@ const native = (() => {
       if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}
       if(kind==='type')return __rt.formName(x);
       if(kind==='struct')return String(interop(x));
-      if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const w={text:''};printWriterImpl(x,w,null,true);return w.text;}finally{core.printReadably=saved;}}return String(x);}).join(''),
+      if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const w=stringWriter();printWriterImpl(x,w,null,true);return w.text;}finally{core.printReadably=saved;}}return String(x);}).join(''),
     identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     divide:(...xs)=>xs.length===0?NaN:xs.length===1?1/val(xs[0]):xs.slice(1).reduce((a,b)=>a/val(b),val(xs[0])),
@@ -963,6 +979,7 @@ const native = (() => {
     makeIFn:f=>f,
     compilerForms:{gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
       namespaceName:()=>currentNamespace instanceof Namespace?currentNamespace.name:currentNamespace,
+      namespaceBound:()=>namespaceFrames.some(frame=>frame.bound),
       enterNamespace:unit=>{namespaceFrames.push({unit,saved:currentNamespace,bound:false});return null;},
       leaveNamespace:()=>{currentNamespace=namespaceFrames.pop().saved;return null;},
       takeGensyms:()=>__rt.formVector(__rt.effect(65531,'t')),
@@ -1000,6 +1017,7 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
       // Capture without reading the dynamic Var: only an initializer that
       // observes *ns* needs its lane. Inherited callers are selected in Rust.
       globalThis.__lightInitializerNamespace=native.compilerForms.namespaceName();
+      globalThis.__lightInitializerNamespaceBound=native.compilerForms.namespaceBound();
       const producer=__rt.need(serial,beginKind);
       if(producer){
         let failed=false,failure;

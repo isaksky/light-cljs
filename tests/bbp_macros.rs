@@ -139,6 +139,9 @@ fn native_printing_matches_quickjs_for_every_native_value_kind() {
         ("collections", "", "(pr-str '(1 [2] {:a 3} #{4}) [1 nil false] {:a 1 :b 2} #{:a :b})", "nil"),
         ("map ordering", "", "(pr-str (into {} (map (fn [i] [i (- i)]) (range 40))))", "nil"),
         ("set ordering", "", "(pr-str (into #{} (range 40)))", "nil"),
+        ("small constructors", "", "(let [f hash-map] (pr-str (array-map :a 1 :b 2) (f :a 1 :b 2) (hash-set :a :b) (set [:a :b]) (into {} [[:a 1] [:b 2]]) (assoc nil :a 1 :b 2)))", "nil"),
+        ("retained promotion", "", "(let [m (into {} (map (fn [i] [i i]) (range 40))) s (into #{} (range 40))] (pr-str (apply dissoc m (range 35)) (apply disj s (range 35))))", "nil"),
+        ("hash collisions", "", "(let [f hash-map] (pr-str (f \"Aa\" 1 \"BB\" 2 0 3 2147483647 4 nil 5) (hash-set \"Aa\" \"BB\" 0 2147483647 nil)))", "nil"),
         ("lazy", "", "(pr-str (map inc '(1 2 3)) (cons 0 (map inc [1 2])) (range 3) (take 3 (repeat :x)))", "nil"),
         ("lazy bound", "", "(binding [*print-length* 3] (pr-str (range) (repeat :x)))", "nil"),
         ("lazy effects", "", "(let [a (js/Array.) s (map (fn [x] (.push a x) x) '(1 2 3 4)) p (binding [*print-length* 2] (pr-str s)) n (.-length a)] (pr-str p n (pr-str s) (vec a)))", "nil"),
@@ -157,11 +160,14 @@ fn native_printing_matches_quickjs_for_every_native_value_kind() {
         ("printer restoration on error", "", "(pr-str (try (binding [*print-level* 1] (pr-str (lazy-seq (throw (js/Error. \"print failure\"))))) (catch :default e (.-message e))) (pr-str [[1]]))", "nil"),
         ("restoration", "", "(let [a (binding [*print-length* 1 *print-level* 1] (pr-str [[1] 2]))] (pr-str a [[1] 2]))", "nil"),
         ("record", "(defrecord R [a b])", "(pr-str (->R 1 [2]) (assoc (->R 1 2) :c 3) R)", "nil"),
+        ("record extensions", "(defrecord R [a b])", "(pr-str (assoc (->R 1 2) :z 3 :c 4 :d 5))", "nil"),
         ("record options", "(defrecord R [a b])", "(binding [*print-meta* true *print-length* 1 *print-level* 2] (pr-str (with-meta (->R 1 [2]) {:m 1})))", "nil"),
         ("type", "(deftype T [a])", "(pr-str (T. 1) T)", "nil"),
         ("mutable type", "(deftype T [^:mutable a])", "(pr-str (T. 1) T)", "nil"),
         ("type string", "(deftype T [a] Object (toString [_] (str \"value=\" a)))", "(pr-str (T. 1) (str (T. 2)))", "nil"),
         ("printer protocol", "(deftype T [a] IPrintWithWriter (-pr-writer [this writer opts] (-write writer \"<\") (-pr-writer a writer opts) (-write writer \">\")))", "(pr-str (T. [1 2]))", "nil"),
+        ("writer protocol", "(deftype W [^:mutable s] IWriter (-write [_ text] (set! s (str s text))) (-flush [_] nil))", "(let [w (W. \"\")] (-pr-writer [1 \"x\"] w {:readably true}) (-flush w) (.-s w))", "nil"),
+        ("writer errors", "", "(pr-str (try (-write (js/Object.) \"x\") (catch :default e (.-message e))) (try (-flush (js/Object.)) (catch :default e (.-message e))))", "nil"),
         ("regex", "", "(pr-str #\"a\\\\b\")", "nil"),
         ("namespace", "", "(pr-str (str *ns*) (ns-name *ns*) *ns*)", "nil"),
     ].into_iter().chain(include_str!("fixtures/compiler-native-printing.tsv").lines().filter(|line|!line.starts_with('#')).map(|line| {
@@ -187,6 +193,21 @@ fn native_printing_matches_quickjs_for_every_native_value_kind() {
 }
 
 #[test]
+fn native_printer_rejects_unimplemented_host_values_explicitly() {
+    use light_cljs::evaluator::MacroEvaluator;
+    let evaluator = light_cljs::bbp_evaluator::BbpEvaluator::new(Default::default()).unwrap();
+    let result=evaluator.evaluate_unit(r#"rt=>{
+        for(const [value,kind] of [[{},'object'],[[1,2],'object'],[()=>1,'function'],[__rt.cljReduced(1),'reduced']]){
+            let message;
+            try{rt.core.prStr(value);}catch(e){message=e.message;}
+            if(message!=='unsupported operation: native macro runtime pr-str of '+kind)throw new Error('printer boundary: '+message);
+        }
+        return null;
+    }"#).unwrap();
+    evaluator.release(result).unwrap();
+}
+
+#[test]
 fn native_namespace_context_matches_quickjs_across_helpers_and_jobs() {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
     let root = temp_dir::TempDir::new("native-namespace-context");
@@ -197,8 +218,11 @@ fn native_namespace_context_matches_quickjs_across_helpers_and_jobs() {
             (def initial [(str *ns*) (str (ns-name *ns*))])
             (def nested-initial [initial (str *ns*)])
             (def bound-value [(str *ns*) (meta (ns-name *ns*))])
-            (defn nested [] [(str *ns*) (str (ns-name *ns*))])
-            (defn context [] [nested-initial (nested)])"#,
+            (def binding-inner [(str *ns*) (meta (ns-name *ns*))])
+            (def binding-outer (binding [*ns* (create-ns (with-meta 'inside-initializer {:bound true}))] binding-inner))
+            (defmacro helper-site [] (str *ns*))
+            (defn nested [] [(helper-site) (str *ns*) (str (ns-name *ns*))])
+            (defn context [] [binding-outer nested-initial (nested)])"#,
         ),
         (
             "macros.cljs",
