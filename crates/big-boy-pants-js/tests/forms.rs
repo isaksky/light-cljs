@@ -333,7 +333,7 @@ fn record_extensions_publish_and_trace_map_identity_and_metadata() {
         const meta = __rt.formMap('tag', __rt.formVector('kept'));
         const ext = __rt.formWithMeta(__rt.formLiteralMap(__rt.formVector('a', 1, 'a', 2)), meta);
         const r = __rt.structNew(R, 0, null, ext);
-        return __rt.formVector(r, __rt.formWithMeta(r, meta), ext, meta);
+        return __rt.formVector(r, __rt.formWithMeta(r, __rt.formMap('copy', true)), ext, meta);
     }"#,
         &[],
     );
