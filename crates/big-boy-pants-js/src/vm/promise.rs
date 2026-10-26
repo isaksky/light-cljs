@@ -33,7 +33,6 @@ pub(crate) struct Promise {
     // The rejecting task owns the bounded diagnostic. This weak receipt
     // permits handling on a different task without retaining the owner.
     rejection: Option<(Weak<JobInbox>, bool)>,
-    reservation: crate::heap::budget::ByteReservation,
 }
 
 /// A fresh resolve/reject pair shares this concurrent first-call guard.
@@ -222,7 +221,6 @@ fn new_with_prototype(
             reactions: vec![],
             is_handled: false,
             rejection: None,
-            reservation: Default::default(),
         }),
     )
 }

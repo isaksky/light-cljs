@@ -586,3 +586,41 @@ fn byte_denial_respects_disabled_automatic_collection() {
     rt.request_collection().unwrap();
     assert!(!rt.byte_starved());
 }
+
+/// Join and String.raw retain one charged part per element; once they hand
+/// the parts to the string builder, the charge must stay while the builder
+/// copies them in slices across yields.
+#[test]
+fn join_and_raw_keep_part_charges_across_string_build_yields() {
+    for source in [
+        "function f() { return new Array(20000).fill('x').join(''); }",
+        "function f() { return String.raw({raw: new Array(20000).fill('x')}); }",
+    ] {
+        let (rt, _) = with_headroom(64 * 1024 * 1024);
+        let before = rt.heap_stats().managed_bytes;
+        let code = compile_function(source).unwrap();
+        let task = rt.spawn(&code, &[]).unwrap();
+        let mut samples = vec![];
+        loop {
+            match task
+                .run_with(Budget::instructions(1), &mut Effectless)
+                .unwrap()
+            {
+                RunOutcome::Yielded => samples.push(rt.heap_stats().managed_bytes),
+                RunOutcome::Complete(result) => {
+                    assert_eq!(result.string().unwrap().len(), 20000, "{source}");
+                    break;
+                }
+                outcome => panic!("{source}: {outcome:?}"),
+            }
+        }
+        // The last yields are inside the string build, after every part.
+        assert!(samples.len() > 20, "{source}: {} yields", samples.len());
+        let late = samples[samples.len() - 5];
+        assert!(
+            late - before >= 20000 * 64,
+            "{source}: parts charge released while building: {} bytes above start",
+            late - before
+        );
+    }
+}
