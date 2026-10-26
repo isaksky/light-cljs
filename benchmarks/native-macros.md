@@ -252,3 +252,26 @@ itself is one `__rt.cljDispatch` per call; around it the macro still reads
 `rt.core.*` properties and calls `core.add`/`core.multiply` through
 `Array.prototype.reduce` (arithmetic is not lowered in native units), and each
 method call goes through `m.call(x, x, …)`.
+
+Re-measured after the review fixes (`e0dcf363`, which change `Object` methods,
+`implements?` and methodless deftypes, none of which the workload uses): the
+native-only release binary (sha256 `cf85def7…`) and the default V8 release
+binary built at `f294deff` (sha256 `33ea3cf4…`; the delta to `e0dcf363` touches
+only native-unit code), one run of five per `n`, load averages 3.3–4.8 with two
+peer workers. Analysis time, median [min–max], ms:
+
+| `n` | V8 | native | k |
+| ---: | --- | --- | ---: |
+| 0 | 24.2 [23.2–24.9] | 12.1 [11.4–12.3] | – |
+| 100 | 28.5 [27.9–29.9] | 46.6 [43.5–47.5] | 8.0 |
+| 400 | 32.2 [31.2–33.0] | 77.2 [74.0–78.7] | 8.1 |
+| 1,600 | 40.6 [39.4–43.5] | 204.1 [198.0–207.5] | 11.7 |
+| 6,400 | 66.1 [63.4–69.1] | 705.4 [691.0–717.3] | 16.5 |
+
+The same `/usr/bin/sample` profile (twelve `(churn 6400)` calls, 3 s) has the
+same shape: `execute_budgeted` 271 samples at the top of the stack, `Fault`
+drop glue 71, SipHash 56, `lookup_cached` 40, the heap slot directory 37,
+`Value` drop glue 34, `start_conversion` 32, `property_read_step` 32,
+`enter_constructor` 30 and `cached_callee` 27. The miss of k <= ~4 is
+light-cljs-501: lower arithmetic and core calls in native units and call
+protocol implementations without `Function.prototype.call`.
