@@ -57,6 +57,19 @@ fn native_core_services_match_quickjs() {
             "[false true true true false true true false false [false 2] [[0 false] [2 2]] [1 2]]",
         ),
         (
+            // Discard a whole input chunk before producing anything, then
+            // demand the second and third chunks repeatedly without replay.
+            r#"(let [seen (js/Array.)
+                      s (keep-indexed (fn [i x] (.push seen i) (if (>= i 32) [i x] nil)) (vec (range 65)))
+                      before (.-length seen) a (first s) after-first (.-length seen)
+                      again (first s) after-again (.-length seen)
+                      n (count s) after-count (.-length seen)
+                      repeated-n (count s) after-repeat (.-length seen)]
+                  [before a after-first again after-again n after-count repeated-n after-repeat
+                   (vec s) (.-length seen) (= (vec seen) (vec (range 65)))])"#,
+            "[0 [32 32] 64 [32 32] 64 33 65 33 65 [[32 32] [33 33] [34 34] [35 35] [36 36] [37 37] [38 38] [39 39] [40 40] [41 41] [42 42] [43 43] [44 44] [45 45] [46 46] [47 47] [48 48] [49 49] [50 50] [51 51] [52 52] [53 53] [54 54] [55 55] [56 56] [57 57] [58 58] [59 59] [60 60] [61 61] [62 62] [63 63] [64 64]] 65 true]",
+        ),
+        (
             r#"[(replace {:a nil :b false} [:a :b :c]) (vec (replace {1 2} '(1 3)))
               (into [] (replace {1 2}) [1 3]) (meta (replace {1 2} (with-meta [1] {:tag true})))]"#,
             "[[nil false :c] [2 3] [2 3] {:tag true}]",
@@ -181,6 +194,63 @@ fn native_unscoped_gensym_reserves_imported_symbols_and_cache_names() {
     evaluator.release(value).unwrap();
     let result = evaluator.evaluate_unit("rt => { const a=rt.core.gensym(); rt.compilerForms.raiseGensyms(40); const names=[a,rt.core.gensym(),rt.core.gensym(null),rt.core.gensym(false),rt.core.gensym('x\\ud800')].map(rt.core.name); const expected=['G__2','G__41','42','false43','x\\ud80044']; for(let i=0;i<names.length;i++) if(names[i]!==expected[i]) throw new Error('gensym name '+i+': '+names[i]); return null; }").unwrap();
     evaluator.release(result).unwrap();
+}
+
+#[test]
+fn native_gensym_bindings_share_the_rust_core_macro_counter() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-gensym-bindings");
+    std::fs::write(
+        root.join("app.cljs"),
+        r#"(ns app)
+           (defmacro hygienic []
+             (let [g (gensym "logic")]
+               (list 'let [g 7] [g (list 'or false g)])))
+           (defn values [] [(hygienic) (or false 11) (hygienic)])
+           (js/console.log (pr-str (values)))"#,
+    )
+    .unwrap();
+    let mut reference = None;
+    for jobs in [1, 2, 4] {
+        let build = |native| {
+            let mut host = MacroHost::new();
+            let mut stats = light_cljs::CompileStats::default();
+            if native {
+                host.use_native_macros();
+            }
+            let (program, _) = analyze_namespace_entry_recorded(
+                "app",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                EntryRecorders {
+                    stats: Some(&mut stats),
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|error| panic!("jobs {jobs}, native {native}: {error}"));
+            if native {
+                assert!(stats.native_helpers.units_evaluated > 0);
+            }
+            emit_js(&program)
+        };
+        let native = build(true);
+        assert_eq!(program_output(&native), "[[7 7] 11 [7 7]]\n");
+        if let Some(reference) = &reference {
+            assert_eq!(&native, reference, "jobs {jobs}");
+        } else {
+            reference = Some(native.clone());
+        }
+        #[cfg(feature = "quickjs")]
+        {
+            let legacy = build(false);
+            // Exact emitted names must agree as well as binding behavior.
+            assert_eq!(native, legacy, "jobs {jobs}");
+            assert_eq!(program_output(&legacy), "[[7 7] 11 [7 7]]\n");
+        }
+    }
 }
 
 #[test]

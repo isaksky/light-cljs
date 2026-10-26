@@ -268,6 +268,12 @@ scalar occurrences, including large integer spellings and character/string
 provenance. A focused evaluator test checks exact Datum reuse. Captured
 UTF-16 name reservation sets also match QuickJS for every namespace in the
 gensym fixture, including macros compiled on fresh helper tasks.
+The binding-hygiene regression interleaves native `gensym "logic"` bindings
+with Rust `or` expansion in the same function scope, comparing emitted names
+and application results against QuickJS at one, two and four jobs. The
+core-service table also discards the first whole chunk of a 65-element vector
+in `keep-indexed`, checking later indices, callback counts and repeated demand
+against QuickJS across both remaining chunks.
 
 `native_compiler_macro_fixtures_keep_their_legacy_results` also reuses the
 source-order, nested-demand, captured-function, failed-initializer and
