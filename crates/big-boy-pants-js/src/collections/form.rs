@@ -2450,9 +2450,17 @@ impl<'s> Scope<'s> {
     }
 
     /// A new form set of `items` with structural members; of equal members
-    /// the first is kept.
+    /// the first is kept. Embedder structural keys must already be realized.
     pub fn new_form_set(&self, items: &[Local<'s>]) -> Result<Local<'s>, CollectionError> {
-        self.result(realized_keys(|| new_set(self.heap(), &self.values(items))))
+        self.result(realized_keys(|| {
+            let values = self.values(items);
+            // Small sets no longer hash while inserting. Preserve the
+            // embedding API's rejection of unrealized structural keys.
+            for value in &values {
+                hash(self.heap(), value);
+            }
+            new_set(self.heap(), &values)
+        }))
     }
 
     /// A positional literal map, preserving equal lowered keys and source
