@@ -228,7 +228,11 @@ const decl = (() => {
   // of task-owned JavaScript instances. `view` constructs the JavaScript
   // object a struct's interop reads.
   const type = (fields, specs, view, mutable, ty) => {
-    views.set(ty, {ty, view, fields, names: new Set(), members: new Map(), mutable, record: __rt.formKind(__rt.structNew(ty)) === 'record'});
+    const record = __rt.formKind(__rt.structNew(ty)) === 'record';
+    // The generated constructor assigns fields in declaration order, already
+    // munged for JavaScript. Reuse those names when printing mutable records.
+    const fieldMembers = mutable && record ? Object.keys(new view()).slice(0, fields.length) : null;
+    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), mutable, record});
     if (mutable) {
       view.__lightNativeType = ty;
       view.prototype.__lightNativeType = ty;
@@ -277,8 +281,12 @@ const decl = (() => {
   };
   const enter = next => { frontiers.push(frontier); frontier = next; return null; };
   const leave = () => { frontier = frontiers.pop() ?? Infinity; return null; };
-  const isRecord = x => { const ty = __rt.structTypeOf(x); return ty !== null && views.get(ty)?.record === true; };
-  return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, isRecord,
+  const mutableRecord = x => {
+    if (x === null || typeof x !== 'object' || __rt.formKind(x) !== null) return null;
+    const info = views.get(x.__lightNativeType);
+    return info?.mutable && info.record ? info : null;
+  };
+  return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, mutableRecord,
     printer:x=>resolve(methodTable('IPrintWithWriter/-pr-writer',3),x),
     writer:x=>resolve(methodTable('IWriter/-write',2),x),
     flusher:x=>resolve(methodTable('IWriter/-flush',1),x)};
@@ -367,11 +375,11 @@ const native = (() => {
     return (__rt.formKind(x)==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);
   };
   const printOption = (options,name,root) => options==null?core[root]:get(options,__rt.cljKeyword(name));
-  const writers=new WeakSet(),bufferWriters=new WeakSet();
-  const stringWriter=()=>{const w={text:''};writers.add(w);return w;};
-  function StringBufferWriter(sb){this.sb=sb;writers.add(this);bufferWriters.add(this);}
+  const writers=new WeakSet();
+  const stringWriter=()=>new StringBufferWriter({text:'',append(text){this.text+=text;return this;}});
+  function StringBufferWriter(sb){this.sb=sb;writers.add(this);}
   const write = (writer,text) => {
-    if(writers.has(writer)){if(bufferWriters.has(writer))return writer.sb.append(val(text));writer.text+=val(text);return null;}
+    if(writers.has(writer))return writer.sb.append(val(text));
     const method=decl.writer(writer);
     if(method!=null)return method.call(writer,writer,text);
     throw new Error('No protocol method IWriter/-write defined for this value');
@@ -408,9 +416,10 @@ const native = (() => {
   const printWriterImpl = (value,writer,options,skipMetadata=false) => {
     const x=val(value);
     if(x==null)return write(writer,'nil');
+    const record=decl.mutableRecord(x);
     if(!skipMetadata&&truth(printOption(options,'meta','printMeta'))){
-      const m=__rt.cljMeta(value);
-      if(m!==null){write(writer,'^');printWriter(m,writer,options);write(writer,' ');}
+      const m=record===null?__rt.cljMeta(value):x.__meta;
+      if(m!=null){write(writer,'^');printWriter(m,writer,options);write(writer,' ');}
     }
     const custom=decl.printer(x);
     if(custom!=null)return custom.call(x,x,writer,options);
@@ -444,6 +453,11 @@ const native = (() => {
       },(ns?'#:'+ns:'')+'{',', ','}',options,__rt.formPrintItems(x));
     }
     if(kind==='record')return printSequential(writer,(e,w,o)=>printSequential(w,printWriter,'',' ','',o,e),'#'+__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.')+'{',', ','}',options,__rt.formPrintItems(x));
+    if(record!==null){
+      let entries=vector(record.fields.map((f,i)=>__rt.formVector(__rt.cljKeyword(f),x[record.fieldMembers[i]])));
+      if(x.__extmap!=null)for(let s=seq(__rt.formPrintItems(x.__extmap));s!==null;s=__rt.cljNext(s))entries=__rt.formConj(entries,__rt.cljFirst(s));
+      return printSequential(writer,(e,w,o)=>printSequential(w,printWriter,'',' ','',o,e),'#'+__rt.formName(record.ty).replaceAll('/','.')+'{',', ','}',options,entries);
+    }
     if(kind==='struct')return write(writer,'#object['+__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.')+' '+String(interop(x))+']');
     if(kind===null&&(typeof x==='object'||typeof x==='function')){
       const ty=x.__lightNativeType;
@@ -460,19 +474,23 @@ const native = (() => {
     for(let s=seq(values);s!==null;s=__rt.cljNext(s)){
       if(printed)write(writer,' ');printWriter(__rt.cljFirst(s),writer,options);printed=true;
     }
-    return writer.text;
+    flushWriter(writer);return writer.sb.text;
   };
   const prStr = (...values) => printValues(vector(values),null);
   const prWriter = (x,w,o) => {
     const custom=decl.printer(val(x));
     if(custom!=null)return custom.call(val(x),x,w,o);
     const kind=__rt.formKind(val(x));
-    if(!['keyword','symbol','list','vector','map','set','lazy-seq','cons','record','reduced'].includes(kind)&&!__rt.cljIsAtom(val(x)))
+    if(!['keyword','symbol','list','vector','map','set','lazy-seq','cons','record','reduced'].includes(kind)&&!__rt.cljIsAtom(val(x))&&decl.mutableRecord(val(x))===null)
       throw new Error('No protocol method IPrintWithWriter/-pr-writer defined for this value');
     return printWriterImpl(x,w,o,true);
   };
   const printStr = (...values) => {const saved=core.printReadably;core.printReadably=false;try{return prStr(...values);}finally{core.printReadably=saved;}};
   const namespaces=new Map();
+  // Explicit Namespace values are not registry entries. A snapshot contains
+  // their original name occurrence; each task restores the same local object
+  // for repeated reads of that snapshot, without interning it by name.
+  const explicitNamespaces=new Map();
   let currentNamespace;
   const namespaceFrames=[];
   function Namespace(obj,name){if(!(this instanceof Namespace))return new Namespace(obj,name);this.obj=obj;this.name=name;}
@@ -779,7 +797,7 @@ const native = (() => {
     prStr, printStr, prnStr:(...xs)=>prStr(...xs)+'\n', printlnStr:(...xs)=>printStr(...xs)+'\n',
     prStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1]):arity(a.length),
     prnStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1])+'\n':arity(a.length),
-    prWriter, prStrStar:x=>{const w=stringWriter();prWriter(x,w,null);return w.text;},
+    prWriter, prStrStar:x=>{const w=stringWriter();prWriter(x,w,null);flushWriter(w);return w.sb.text;},
     printMetaQ:(...a)=>a.length!==2?arity(a.length):truth(printOption(a[0],'meta','printMeta'))&&__rt.cljMeta(a[1])!==null,
     write, flushWriter, StringBufferWriter,
     writeAll:(w,...xs)=>{for(const x of xs)write(w,x);return null;},
@@ -832,8 +850,8 @@ const native = (() => {
       if(kind==='reduced'||__rt.cljIsAtom(x))return '[object Object]';
       if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}
       if(kind==='type')return __rt.formName(x);
-      if(kind==='struct')return String(interop(x));
-      if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const w=stringWriter();printWriterImpl(x,w,null,true);return w.text;}finally{core.printReadably=saved;}}return String(x);}).join(''),
+      if(kind==='struct'||kind==='record')return String(interop(x));
+      if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const w=stringWriter();printWriterImpl(x,w,null,true);flushWriter(w);return w.sb.text;}finally{core.printReadably=saved;}}return String(x);}).join(''),
     identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     divide:(...xs)=>xs.length===0?NaN:xs.length===1?1/val(xs[0]):xs.slice(1).reduce((a,b)=>a/val(b),val(xs[0])),
@@ -980,7 +998,11 @@ const native = (() => {
       if(frame===undefined||frame.bound)return currentNamespace;
       const cell=__rt.effect(65532,0);if(cell!==0)__rt.need(cell,5);
       const context=__rt.need(__rt.effect(65530,frame.unit),7),value=__rt.formNth(context,1);
-      return __rt.formNth(context,0)?createNs(value):value;
+      const kind=__rt.formNth(context,0);
+      if(kind===0)return value;
+      if(kind===1)return createNs(value);
+      if(!explicitNamespaces.has(context))explicitNamespaces.set(context,new Namespace(null,value));
+      return explicitNamespaces.get(context);
     },
     set:value=>{currentNamespace=value;const frame=namespaceFrames[namespaceFrames.length-1];if(frame!==undefined)frame.bound=true;}
   });
@@ -1006,7 +1028,14 @@ const native = (() => {
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f,
     compilerForms:{gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
-      namespaceContext:()=>__rt.formVector(currentNamespace instanceof Namespace,currentNamespace instanceof Namespace?currentNamespace.name:currentNamespace),
+      namespaceContext:()=>{
+        if(!(currentNamespace instanceof Namespace))return __rt.formVector(0,currentNamespace);
+        const name=currentNamespace.name,kind=__rt.formKind(val(name));
+        const interned=kind==='symbol'&&namespaces.get(namedText(name))===currentNamespace;
+        const context=__rt.formVector(interned?1:2,name);
+        if(!interned)explicitNamespaces.set(context,currentNamespace);
+        return context;
+      },
       namespaceBound:()=>namespaceFrames.some(frame=>frame.bound),
       enterNamespace:unit=>{namespaceFrames.push({unit,saved:currentNamespace,bound:false});return null;},
       leaveNamespace:()=>{currentNamespace=namespaceFrames.pop().saved;return null;},

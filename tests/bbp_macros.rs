@@ -252,16 +252,30 @@ fn native_printing_matches_quickjs_for_every_native_value_kind() {
         ("record hashed extensions", "(defrecord R [a])", "(pr-str (reduce (fn [r i] (assoc r i (- i))) (->R 1) (range 12)))", "nil"),
         ("record positional extensions", "(defrecord R [a])", r#"(pr-str (R. 0 nil '{\a 1 "a" 2 :z 3}) (map->R '{\a 1 :a 0 "a" 2 :z 3}))"#, "nil"),
         ("record options", "(defrecord R [a b])", "(binding [*print-meta* true *print-length* 1 *print-level* 2] (pr-str (with-meta (->R 1 [2]) {:m 1})))", "nil"),
+        ("record string functions", "(defrecord R [a])", "(let [r (->R \"x\")] (pr-str (str r) (pr-str r) (print-str r)))", "nil"),
+        ("record custom string functions", "(defrecord R [a] Object (toString [_] (str \"value=\" a)))", "(let [r (->R \"x\")] (pr-str (str r) (pr-str r) (print-str r)))", "nil"),
+        ("mutable record string functions", "(defrecord R [^:mutable a])", "(let [r (->R \"x\")] (set! (.-a r) \"y\") (pr-str (str r) (pr-str r) (print-str r) (pr-str* r)))", "nil"),
+        ("mutable record custom string functions", "(defrecord R [^:mutable a] Object (toString [_] (str \"value=\" a)))", "(let [r (->R \"x\")] (pr-str (str r) (pr-str r) (print-str r)))", "nil"),
+        ("mutable record options", "(defrecord R [^:mutable a-b ready?])", "(let [r (R. \"x\" [2 3] {:m true} {:z 3 :c 4})] (pr-str (binding [*print-meta* true *print-length* 1 *print-level* 2] (pr-str r)) (binding [*print-level* 0] (pr-str r)) (print-str r)))", "nil"),
         ("type", "(deftype T [a])", "(pr-str (T. 1) T)", "nil"),
         ("mutable type", "(deftype T [^:mutable a])", "(pr-str (T. 1) T)", "nil"),
         ("type string", "(deftype T [a] Object (toString [_] (str \"value=\" a)))", "(pr-str (T. 1) (str (T. 2)))", "nil"),
+        ("type string functions", "(deftype T [a])", "(let [t (T. \"x\")] (pr-str (str t) (pr-str t) (print-str t)))", "nil"),
+        ("type custom string functions", "(deftype T [a] Object (toString [_] (str \"value=\" a)))", "(let [t (T. \"x\")] (pr-str (str t) (pr-str t) (print-str t)))", "nil"),
+        ("mutable type string functions", "(deftype T [^:mutable a])", "(let [t (T. \"x\")] (pr-str (str t) (pr-str t) (print-str t)))", "nil"),
+        ("mutable type custom string functions", "(deftype T [^:mutable a] Object (toString [_] (str \"value=\" a)))", "(let [t (T. \"x\")] (pr-str (str t) (pr-str t) (print-str t)))", "nil"),
         ("printer protocol", "(deftype T [a] IPrintWithWriter (-pr-writer [this writer opts] (-write writer \"<\") (-pr-writer a writer opts) (-write writer \">\")))", "(pr-str (T. [1 2]))", "nil"),
+        ("printer writer identity", "(deftype T [] IPrintWithWriter (-pr-writer [_ w o] (-write w (if (instance? StringBufferWriter w) \"writer\" \"other\"))))", "(pr-str (pr-str (T.)) (pr-str* (T.)) (print-str (T.)))", "nil"),
+        ("printer write result", "(deftype T [] IPrintWithWriter (-pr-writer [_ w o] (let [b (-write w \"x\")] (-write w (if (nil? b) \"nil\" \"buffer\")) (.append b \"!\"))))", "(pr-str (pr-str (T.)) (pr-str* (T.)) (print-str (T.)))", "nil"),
         ("writer protocol", "(deftype W [^:mutable s] IWriter (-write [_ text] (set! s (str s text))) (-flush [_] nil))", "(let [w (W. \"\")] (-pr-writer [1 \"x\"] w {:readably true}) (-flush w) (.-s w))", "nil"),
         ("nil printer protocol", "(extend-protocol IPrintWithWriter nil (-pr-writer [_ w o] (-write w \"NULL\")))", "(pr-str (pr-str* nil) (pr-str nil))", "nil"),
         ("writer errors", "", "(pr-str (try (-write (js/Object.) \"x\") (catch :default e (.-message e))) (try (-flush (js/Object.)) (catch :default e (.-message e))))", "nil"),
         ("regex", "", "(pr-str #\"a\\\\b\")", "nil"),
         ("namespace", "", "(pr-str (str *ns*) (ns-name *ns*) *ns*)", "nil"),
         ("namespace constructor", "", "(let [s (with-meta 'printing.namespace {:doc \"fresh\"}) n (Namespace. nil s)] (pr-str (str n) (meta (ns-name n)) (identical? s (ns-name n)) (ns-name 'a/b) (Namespace. nil \"text\")))", "nil"),
+        ("namespace registry", "", "(let [s (with-meta 'printing.namespace {:doc \"first\"}) n (create-ns s) again (create-ns (with-meta 'printing.namespace {:doc \"second\"}))] (pr-str n (str n) (meta (ns-name n)) (identical? n again) (identical? n (find-ns s)) (identical? n (find-ns n)) (find-ns 'absent)))", "nil"),
+        ("namespace explicit initializer", "(def captured [(str *ns*) (meta (ns-name *ns*)) (identical? *ns* *ns*)])", "(binding [*ns* (Namespace. nil (with-meta 'cljs.user {:tag true}))] (pr-str captured))", "nil"),
+        ("namespace text initializer", "(def captured [(str *ns*) (ns-name *ns*) (identical? *ns* *ns*)])", "(binding [*ns* (Namespace. nil \"text\")] (pr-str captured))", "nil"),
     ].into_iter().chain(include_str!("fixtures/compiler-native-printing.tsv").lines().filter(|line|!line.starts_with('#')).map(|line| {
         let mut columns=line.split('\t');
         (columns.next().unwrap(),"(defn observe [x] x)",columns.next().unwrap(),"nil")
@@ -312,6 +326,8 @@ fn native_namespace_context_matches_quickjs_across_helpers_and_jobs() {
             (def bound-value [(str *ns*) (meta (ns-name *ns*))])
             (def nil-context (str *ns*))
             (def symbol-context [(str *ns*) (ns-name *ns*) (meta *ns*)])
+            (def explicit-context [(str *ns*) (meta (ns-name *ns*)) (identical? *ns* *ns*)])
+            (def text-context [(str *ns*) (ns-name *ns*) (identical? *ns* *ns*)])
             (def binding-inner [(str *ns*) (meta (ns-name *ns*))])
             (def binding-outer (binding [*ns* (create-ns (with-meta 'inside-initializer {:bound true}))] binding-inner))
             (defmacro helper-site [] (str *ns*))
@@ -326,7 +342,9 @@ fn native_namespace_context_matches_quickjs_across_helpers_and_jobs() {
                     bound (binding [*ns* (create-ns (with-meta 'temporary {:tag true}))]
                             [(str *ns*) (meta (ns-name *ns*)) h/bound-value
                              (binding [*ns* nil] h/nil-context)
-                             (binding [*ns* (with-meta 'bound-symbol {:bound :symbol})] h/symbol-context)])
+                             (binding [*ns* (with-meta 'bound-symbol {:bound :symbol})] h/symbol-context)
+                             (binding [*ns* (Namespace. nil (with-meta (ns-name *ns*) {:explicit true}))] h/explicit-context)
+                             (binding [*ns* (Namespace. nil "text")] h/text-context)])
                     thrown (try (binding [*ns* (create-ns 'throwing)]
                                   (throw (js/Error. (str *ns*))))
                                 (catch :default e (.-message e)))]
