@@ -2058,6 +2058,14 @@ fn native_positional_literal_matrix_matches_legacy() {
     // reader inputs, mutation semantics, metadata, and exported duplicate keys.
     let cases = [
         (
+            "empty",
+            r#"(defmacro probe [] [(count '#{}) (nil? (seq '#{})) (count '{}) (nil? (seq '{})) (= '#{} (set [])) (= '{} (apply hash-map []))]) (probe)"#,
+        ),
+        (
+            "small-constructors",
+            r#"(defmacro probe [] (let [m (array-map \a 1 "a" 2) s (hash-set \a "a")] (list 'quote [(count m) (get m "a") (vec (seq m)) (count s) (vec (seq s))]))) (probe)"#,
+        ),
+        (
             "char-string",
             r#"(defmacro probe [] [(count {\a 1 "a" 2}) (get {\a 1 "a" 2} \a) (count #{\a "a"}) (contains? #{\a "a"} "a")]) (probe)"#,
         ),
