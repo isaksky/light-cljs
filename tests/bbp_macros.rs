@@ -76,6 +76,51 @@ fn bootstrap_namespace_macros_match_quickjs() {
                     (identical? target (doto target)) (vec seen)])))"#,
             "[[1 2] true [\"target\" \"first\" \"symbol\"]]\n",
         ),
+        (
+            "iteration limit and array effects",
+            r#"(ns bootstrap.app)
+               (let [seen (js/Array.) a (array 1 2 3) v (volatile! 0)]
+                 (dotimes [i (do (.push seen "limit") 3)] (.push seen i))
+                 (dotimes [i -1] (.push seen "bad"))
+                 (while (< @v 2) (vswap! v inc))
+                 (js/console.log (pr-str
+                   [(vec (amap (do (.push seen "map") a) i ret
+                           (+ (aget a i) i)))
+                    (areduce (do (.push seen "reduce") a) i ret 0
+                      (+ ret (aget a i)))
+                    (vec a) @v (vec seen)])))"#,
+            "[[1 3 5] 6 [1 2 3] 2 [\"limit\" 0 1 2 \"map\" \"reduce\"]]\n",
+        ),
+        (
+            "interop and unchecked extrema",
+            r#"(ns bootstrap.app)
+               (let [upper (memfn toUpperCase) seen (js/Array.)]
+                 (js/console.log (pr-str
+                   [(upper "abc") (.. "abc" (toUpperCase) (charAt 1))
+                    (js-fn? upper) (js-fn? 42)
+                    (unchecked-max 4) (unchecked-min 4 4)
+                    (unchecked-max (do (.push seen 1) 2)
+                                   (do (.push seen 2) 7))
+                    (unchecked-min 8 3 5 1) (vec seen)])))"#,
+            "[\"ABC\" \"B\" true false 4 4 7 1 [1 2]]\n",
+        ),
+        (
+            "discarded forms and lazy concatenation",
+            r#"(ns bootstrap.app)
+               (defn timed [] (time 42))
+               (defn input [] (with-in-str "" nil))
+               (let [seen (js/Array.)
+                     xs (lazy-cat (do (.push seen 1) [1])
+                                  (do (.push seen 2) [2 3]))]
+                 (js/console.log (pr-str
+                   [(vec seen) (vec xs) (vec seen)
+                    (locking (throw (js/Error. "discarded")) 42)
+                    (comment (unresolved)) (js-debugger)
+                    (js-comment "first\n   second\n")
+                    (js-fn? timed) (js-fn? input)
+                    (= {:a 1 :b 2} (hash-map :a 1 :b 2))])))"#,
+            "[[] [1 2 3] [1 2] 42 nil nil nil true true true]\n",
+        ),
     ] {
         std::fs::write(root.join("bootstrap/app.cljs"), source).unwrap();
         let build = |native| {
@@ -124,7 +169,10 @@ fn as_thread_namespace_errors_keep_the_original_step_location() {
         .unwrap_err()
     };
     let native = build(true);
-    assert_eq!(native.path, Some(root.join("app.cljs").canonicalize().unwrap()));
+    assert_eq!(
+        native.path,
+        Some(root.join("app.cljs").canonicalize().unwrap())
+    );
     let span = native.span.clone().unwrap();
     assert_eq!(&source[span], "(let [x] value)");
     assert_eq!(native.line_column, Some((3, 3)));

@@ -38,6 +38,23 @@ pub(crate) fn native(name: &str) -> bool {
             | "->>"
             | "as->"
             | "doto"
+            | "js-fn?"
+            | "while"
+            | "dotimes"
+            | "memfn"
+            | "amap"
+            | "areduce"
+            | ".."
+            | "lazy-cat"
+            | "comment"
+            | "with-in-str"
+            | "js-debugger"
+            | "js-comment"
+            | "locking"
+            | "time"
+            | "unchecked-max"
+            | "unchecked-min"
+            | "hash-map"
             | "cond->"
             | "cond->>"
             | "some->"
@@ -258,6 +275,122 @@ pub(crate) fn expand(
     };
     Ok(match name {
         "and" | "or" => Some(short_circuit(args, name == "or", gensym)?),
+        "js-fn?" => match args {
+            [value] => Some(list(vec![
+                symbol("js*"),
+                C.string(
+                    "typeof ~{} === 'function'"
+                        .encode_utf16()
+                        .collect::<Vec<_>>(),
+                ),
+                value.clone(),
+            ])),
+            _ => None,
+        },
+        "comment" => Some(C.nil()),
+        "locking" => Some(list(
+            std::iter::once(symbol("do"))
+                .chain(args.iter().skip(1).cloned())
+                .collect(),
+        )),
+        "with-in-str" => args.split_first().map(|(text, body)| {
+            list(vec![
+                core("compiler-reader-with-input"),
+                text.clone(),
+                list([vec![symbol("fn*"), vector(vec![])], body.to_vec()].concat()),
+            ])
+        }),
+        "js-debugger" => Some(list(vec![
+            symbol("do"),
+            list(vec![
+                symbol("js*"),
+                C.string("debugger".encode_utf16().collect::<Vec<_>>()),
+            ]),
+            C.nil(),
+        ])),
+        "js-comment" => args.first().and_then(js_comment),
+        "lazy-cat" => Some(list(
+            std::iter::once(core("concat"))
+                .chain(
+                    args.iter()
+                        .map(|coll| list(vec![core("lazy-seq"), coll.clone()])),
+                )
+                .collect(),
+        )),
+        ".." => match args {
+            [value, form, more @ ..] => {
+                let step = list(vec![symbol("."), value.clone(), form.clone()]);
+                Some(if more.is_empty() {
+                    step
+                } else {
+                    list([vec![core(".."), step], more.to_vec()].concat())
+                })
+            }
+            _ => None,
+        },
+        "memfn" => match args.split_first() {
+            Some((method, args)) => {
+                let target = gensym(&["target"])?.remove(0);
+                Some(list(vec![
+                    core("fn"),
+                    vector([vec![target.clone()], args.to_vec()].concat()),
+                    list(vec![
+                        symbol("."),
+                        target,
+                        list([vec![method.clone()], args.to_vec()].concat()),
+                    ]),
+                ]))
+            }
+            None => None,
+        },
+        "while" => args.split_first().map(|(test, body)| {
+            let mut body = [vec![symbol("do")], body.to_vec()].concat();
+            body.push(list(vec![symbol("recur")]));
+            list(vec![
+                symbol("loop*"),
+                vector(vec![]),
+                list(vec![symbol("if"), test.clone(), list(body), C.nil()]),
+            ])
+        }),
+        "dotimes" => match args.split_first() {
+            Some((bindings, body)) if is_vector(bindings) && children(bindings).len() == 2 => Some(
+                dotimes(&children(bindings)[0], &children(bindings)[1], body, gensym)?,
+            ),
+            _ => None,
+        },
+        "amap" => match args {
+            [array, index, result, expr, ..] => {
+                Some(array_iteration(array, index, result, None, expr, gensym)?)
+            }
+            _ => None,
+        },
+        "areduce" => match args {
+            [array, index, result, init, expr, ..] => Some(array_iteration(
+                array,
+                index,
+                result,
+                Some(init),
+                expr,
+                gensym,
+            )?),
+            _ => None,
+        },
+        "unchecked-max" | "unchecked-min" => match args {
+            [value] => Some(value.clone()),
+            [x, y, more @ ..] => Some(unchecked_extreme(
+                x,
+                y,
+                more,
+                name == "unchecked-max",
+                gensym,
+            )?),
+            _ => None,
+        },
+        "hash-map" => Some(hash_map(args)),
+        "time" => match args.first() {
+            Some(expr) => Some(timed(expr, gensym)?),
+            None => None,
+        },
         "when" => args.split_first().map(|(test, body)| {
             list(vec![
                 symbol("if"),
@@ -522,6 +655,201 @@ fn conditional_thread(
         };
     }
     Ok(Some(list(vec![symbol("let*"), vector(bindings), result])))
+}
+
+/// `macro-dotimes`: evaluate the limit once, including for empty loops.
+fn dotimes(
+    name: &Datum,
+    limit: &Datum,
+    body: &[Datum],
+    gensym: Gensym<'_>,
+) -> Result<Datum, String> {
+    let bound = gensym(&["limit"])?.remove(0);
+    let mut body = [vec![symbol("do")], body.to_vec()].concat();
+    body.push(list(vec![
+        symbol("recur"),
+        list(vec![core("inc"), name.clone()]),
+    ]));
+    Ok(list(vec![
+        symbol("let*"),
+        vector(vec![bound.clone(), limit.clone()]),
+        list(vec![
+            core("loop"),
+            vector(vec![name.clone(), number(0.0)]),
+            list(vec![
+                symbol("if"),
+                list(vec![core("<"), name.clone(), bound]),
+                list(body),
+                C.nil(),
+            ]),
+        ]),
+    ]))
+}
+
+/// `macro-amap` and `macro-areduce`: bind the input and its length once.
+fn array_iteration(
+    array: &Datum,
+    index: &Datum,
+    result: &Datum,
+    init: Option<&Datum>,
+    expr: &Datum,
+    gensym: Gensym<'_>,
+) -> Result<Datum, String> {
+    let names = gensym(&["array", "length"])?;
+    let (arr, len) = (names[0].clone(), names[1].clone());
+    let mut bindings = vec![
+        arr.clone(),
+        array.clone(),
+        len.clone(),
+        list(vec![core("alength"), arr.clone()]),
+    ];
+    let mut loop_bindings = vec![index.clone(), number(0.0)];
+    let next = list(vec![core("inc"), index.clone()]);
+    let body = if let Some(init) = init {
+        loop_bindings.extend([result.clone(), init.clone()]);
+        list(vec![symbol("recur"), next, expr.clone()])
+    } else {
+        bindings.extend([result.clone(), list(vec![core("aclone"), arr])]);
+        list(vec![
+            symbol("do"),
+            list(vec![
+                core("aset"),
+                result.clone(),
+                index.clone(),
+                expr.clone(),
+            ]),
+            list(vec![symbol("recur"), next]),
+        ])
+    };
+    Ok(list(vec![
+        core("let"),
+        vector(bindings),
+        list(vec![
+            core("loop"),
+            vector(loop_bindings),
+            list(vec![
+                symbol("if"),
+                list(vec![core("<"), index.clone(), len]),
+                body,
+                result.clone(),
+            ]),
+        ]),
+    ]))
+}
+
+/// `macro-unchecked-extreme`: the n-ary form nests ordinary max/min calls.
+fn unchecked_extreme(
+    x: &Datum,
+    y: &Datum,
+    more: &[Datum],
+    max: bool,
+    gensym: Gensym<'_>,
+) -> Result<Datum, String> {
+    let extreme = core(if max { "max" } else { "min" });
+    if !more.is_empty() {
+        return Ok(list(
+            [
+                vec![extreme.clone(), list(vec![extreme, x.clone(), y.clone()])],
+                more.to_vec(),
+            ]
+            .concat(),
+        ));
+    }
+    let names = gensym(&["x", "y"])?;
+    let (a, b) = (names[0].clone(), names[1].clone());
+    Ok(list(vec![
+        symbol("let*"),
+        vector(vec![a.clone(), x.clone(), b.clone(), y.clone()]),
+        list(vec![
+            symbol("if"),
+            list(vec![
+                core(if max { ">" } else { "<" }),
+                a.clone(),
+                b.clone(),
+            ]),
+            a,
+            b,
+        ]),
+    ]))
+}
+
+/// `macro-hash-map`, including its operand grouping and missing-value marker.
+fn hash_map(args: &[Datum]) -> Datum {
+    if args.is_empty() {
+        return list(vec![symbol(".-EMPTY"), core("PersistentHashMap")]);
+    }
+    let mut keys = vec![core("array")];
+    let mut values = vec![core("array")];
+    let mut complete = true;
+    for pair in args.chunks(2) {
+        let pair: Vec<_> = pair.iter().filter(|d| {
+            !matches!(d.kind(), DatumKind::Keyword(n) if *n == Name::new(Some("cljs.core"), "missing"))
+        }).cloned().collect();
+        keys.push(pair.first().cloned().unwrap_or_else(|| C.nil()));
+        complete &= pair.len() == 2;
+        if complete {
+            values.push(pair[1].clone());
+        }
+    }
+    list(vec![
+        core("PersistentHashMap.fromArrays"),
+        list(keys),
+        list(values),
+    ])
+    .with_metadata(
+        C.map(&[(C.keyword(Name::new(None, "tag")), core("PersistentHashMap"))])
+            .unwrap(),
+    )
+}
+
+/// `macro-js-comment`: split and trim UTF-16 directly, preserving lone surrogates.
+fn js_comment(comment: &Datum) -> Option<Datum> {
+    let DatumKind::String(text) = comment.kind() else {
+        return None;
+    };
+    let mut lines: Vec<_> = text.split(|c| *c == 10).collect();
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    let mut template: Vec<_> = "\n/**\n * ".encode_utf16().collect();
+    template.extend(lines.first().copied().unwrap_or_default());
+    template.push(10);
+    for line in lines.iter().skip(1) {
+        template.extend(" * ".encode_utf16());
+        template.extend(line.strip_prefix(&[32, 32, 32]).unwrap_or(line));
+        template.push(10);
+    }
+    template.extend(" */\n".encode_utf16());
+    Some(list(vec![
+        symbol("do"),
+        list(vec![symbol("js*"), C.string(template)]),
+        C.nil(),
+    ]))
+}
+
+/// `macro-time`: retain the expression's result after printing elapsed time.
+fn timed(expr: &Datum, gensym: Gensym<'_>) -> Result<Datum, String> {
+    let names = gensym(&["start", "ret"])?;
+    let (start, ret) = (names[0].clone(), names[1].clone());
+    let clock = || list(vec![core("system-time")]);
+    Ok(list(vec![
+        core("let"),
+        vector(vec![start.clone(), clock(), ret.clone(), expr.clone()]),
+        list(vec![
+            core("prn"),
+            list(vec![
+                core("str"),
+                C.string("Elapsed time: ".encode_utf16().collect::<Vec<_>>()),
+                list(vec![
+                    symbol(".toFixed"),
+                    list(vec![core("-"), clock(), start]),
+                    number(6.0),
+                ]),
+                C.string(" msecs".encode_utf16().collect::<Vec<_>>()),
+            ]),
+        ]),
+        ret,
+    ]))
 }
 
 /// `macro-conditional-binding`: `if-let`, `if-some`, `when-let`,
@@ -1748,6 +2076,71 @@ mod tests {
             "(some-> x f (g 1) (h))",
             "(some->> x f (g 1) (h))",
             "(some->)",
+        ]);
+    }
+
+    #[cfg(light_quickjs)]
+    #[test]
+    fn bootstrap_macros_expand_as_their_quickjs_definitions() {
+        compare_all(&[
+            "(as-> x n)",
+            "(as-> x n (f n n) (as-> n n (g n)))",
+            "(doto x f (g a) ^:discarded (h) ())",
+            "(cond-> x a f b (g 1))",
+            "(cond->> x a f b (g 1))",
+            "(some-> x f (g 1))",
+            "(some->> x f (g 1))",
+            "(js-fn? x)",
+            "(js-fn?)",
+            "(js-fn? x y)",
+            "(comment (unresolved) x)",
+            "(locking (unresolved) a b)",
+            "(locking)",
+            "(with-in-str x a b)",
+            "(with-in-str x)",
+            "(with-in-str)",
+            "(js-debugger)",
+            "(js-debugger ignored)",
+            "(js-comment \"first\\n   second\\n\\n\")",
+            "(js-comment \"\\n\")",
+            "(js-comment \"\\uD800\\n   \\uDC00\")",
+            "(js-comment 1)",
+            "(lazy-cat)",
+            "(lazy-cat a (f x) [1 2])",
+            "(.. x (f a) -b (g))",
+            "(.. x f)",
+            "(.. x)",
+            "(memfn f a b)",
+            "(memfn f)",
+            "(memfn)",
+            "(while test a b)",
+            "(while test)",
+            "(while)",
+            "(dotimes [i n] a b)",
+            "(dotimes [i n])",
+            "(dotimes (i n) a)",
+            "(dotimes [i n j m] a)",
+            "(amap a i ret (f i ret))",
+            "(amap a i ret (f i ret) ignored)",
+            "(amap a i ret)",
+            "(areduce a i ret 0 (f i ret))",
+            "(areduce a i ret 0 (f i ret) ignored)",
+            "(areduce a i ret 0)",
+            "(unchecked-max x)",
+            "(unchecked-max x y)",
+            "(unchecked-min x y)",
+            "(unchecked-max x y a b)",
+            "(unchecked-min x y a b)",
+            "(unchecked-max)",
+            "(hash-map)",
+            "(hash-map :a 1 :b 2 :a 3)",
+            "(hash-map :a 1 :b)",
+            "(hash-map :cljs.core/missing a b c)",
+            "(hash-map :cljs.core/missing :cljs.core/missing a b)",
+            "(hash-map :a 1.0 :b 1 :c -0.0)",
+            "(time x)",
+            "(time (f) ignored)",
+            "(time)",
         ]);
     }
 
