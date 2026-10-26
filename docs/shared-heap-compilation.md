@@ -339,16 +339,46 @@ three-namespace stress fixture, 24 on the twelve-helper one):
 | 4 | 24.9 s | 2.62 | 461 MB | 1.38 | 400 | 404 |
 | 8 | 50.0 s | 5.25 | 603 MB | 1.81 | 400 | 408 |
 
-The chain is serial by construction, so this measures overhead, not
-speedup, and both targets are missed. An 8-second sample at eight jobs is
-mostly condition-variable and mutex waits; of the rest, about three quarters
-is stop-the-world `Heap::mark_and_sweep` with its SipHash mark set, the cost
-light-cljs-495 covers, which every worker waits out. Each worker slot that
-analyzes a macro unit still boots its own task context, installs every
-catalog registration into it and evaluates the source macros it calls, so
-the heap grows with the worker count. The chain also retains about 1 MB per
-macro call at `--jobs 1`, even without helpers (light-cljs-499). No
-same-commit Stage A (V8) comparison was run.
+Both targets are missed. An 8-second sample at eight jobs is mostly
+condition-variable and mutex waits; of the rest, about three quarters is
+stop-the-world `Heap::mark_and_sweep` with its SipHash mark set, the cost
+light-cljs-495 covers, which every worker waits out. The chain also retains
+about 1 MB per macro call at `--jobs 1`, even without helpers
+(light-cljs-499). No same-commit Stage A (V8) comparison was run.
+
+The second attempt (rebased on light-cljs-478) lends task contexts: a pool
+slot parks its context after each macro unit and the next macro unit, on any
+slot, borrows it (docs/native-macros.md); workers catching up install root
+registrations in catalog-aligned blocks of 64; and a parked task's next step
+is queued on the pool from the completion's wakeups. Same machine, release
+native-only build, peer workers building (load average about 4), one run per
+cell. JavaScript and source maps are identical at 1, 2, 4 and 8 jobs, and the
+pool fixtures pass 576 perturbed builds over 12 seeds:
+
+| Jobs | Wall | vs 1 | Peak RSS | vs 1 | Helper inits | Contexts booted / borrowed | In-task evaluations |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 9.9 s | 1.00 | 338 MB | 1.00 | 400 | 401 / 0 | 3,680 |
+| 2 | 11.8 s | 1.19 | 375 MB | 1.11 | 400 | 402 / 399 | 3,490 |
+| 4 | 27.8 s | 2.80 | 483 MB | 1.43 | 400 | 404 / 397 | 3,960 |
+| 8 | 47.6 s | 4.81 | 574 MB | 1.70 | 400 | 408 / 393 | 3,920 |
+
+The chain is not serial: each namespace's 50 callers are independent
+deferred units, and at eight jobs seven run at once, so seven worker
+contexts are in use together and lending cannot share one; it removes the
+per-slot duplication only when fewer macro units run at once than there are
+slots. Block installs cut in-task evaluations at eight jobs from 16,197 to
+3,920 and task steps from 61,758 to 38,508, yet wall and RSS hardly moved:
+the build is bound by collection. At `--jobs 1`, 383 automatic collections
+pause 6.9 s of the 9.9 s, each marking the retained live set
+(light-cljs-499) with the SipHash mark set (light-cljs-495). At eight jobs a
+10-second sample has 47,067 samples in condition-variable waits, nearly all
+at `Heap::park_at` and `RunGuard::collect_at_point` while one thread
+collects, and the top running frames are `Heap::mark_and_sweep` (1,790),
+SipHash `Hasher::write` and `hash_one` and `HeapObject::trace`: collection
+is serial and stops every worker, and the live set grows with the contexts
+and producers alive at once. No helper waits on another task's result in
+this chain, so no task was woken from a wakeup (`native.tasks.woken` 0);
+the evaluator test and the stress fixtures exercise that path.
 
 ### Single-thread speed
 

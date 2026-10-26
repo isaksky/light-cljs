@@ -2767,7 +2767,7 @@ fn install_registrations(
                 location,
                 test: *test,
             });
-            if (first + index + 1) % ROOT_BLOCK == 0 {
+            if (first + index + 1).is_multiple_of(ROOT_BLOCK) {
                 engine
                     .register_compiler_roots(&std::mem::take(&mut roots))
                     .map_err(|e| e.to_string())?;
