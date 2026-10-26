@@ -55,6 +55,8 @@ pub(super) struct State {
     result: Value,
     output: Value,
     items: Vec<JsString>,
+    /// An iterable may yield one string any number of times: charge each slot.
+    items_charge: crate::heap::budget::GrowthCharge,
     text: JsString,
     index: usize,
     pending: Option<Exception>,
@@ -126,6 +128,7 @@ impl State {
             result: Value::Undefined,
             output: Value::Undefined,
             items: Vec::new(),
+            items_charge: Default::default(),
             text: JsString::from(""),
             index: 0,
             pending: None,
@@ -338,6 +341,8 @@ impl State {
                 let Value::String(text) = &self.result else {
                     return Err(Fault::TypeError("iterable yielded non-string value".into()));
                 };
+                self.items_charge
+                    .admit(heap, self.items.len(), std::mem::size_of::<JsString>())?;
                 self.items.push(text.clone());
                 self.result = Value::Undefined;
                 self.stage = Stage::Next;
@@ -423,7 +428,7 @@ impl State {
             )?;
             property::append(heap, task, &self.output, Some(part))
         } else {
-            self.text = self.text.concat_accounted(heap, &text)?;
+            self.text = self.text.append_accounted(heap, &text)?;
             Ok(())
         }
     }

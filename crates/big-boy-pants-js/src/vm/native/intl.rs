@@ -52,6 +52,7 @@ pub(super) struct Intl {
     single: bool,
     result: Value,
     seen: std::collections::BTreeSet<String>,
+    seen_charge: crate::heap::budget::ByteReservation,
     base_applied: bool,
 }
 impl Trace for Intl {
@@ -80,6 +81,7 @@ impl Intl {
             single: false,
             result: Value::Undefined,
             seen: Default::default(),
+            seen_charge: Default::default(),
             base_applied: false,
         })
     }
@@ -192,12 +194,22 @@ impl Intl {
     }
     fn add(&mut self, heap: &Heap, task: TaskId, value: Value) -> Result<Action, Fault> {
         let canonical = Self::parse(&value)?.to_string();
-        if self.seen.insert(canonical.clone()) {
+        if !self.seen.contains(&canonical) {
+            // A list may name any number of distinct tags: charge the set
+            // entry and the result string before keeping either.
+            let entry = heap
+                .reserve_bytes(canonical.len() + 64)
+                .ok_or(Fault::HeapLimit)?;
+            let ticket = JsString::reserve(heap, canonical.len(), 1)?;
+            self.seen.insert(canonical.clone());
+            self.seen_charge.merge(entry);
             property::append(
                 heap,
                 task,
                 &self.result,
-                Some(Value::String(JsString::from(canonical.as_str()))),
+                Some(Value::String(
+                    JsString::from(canonical.as_str()).with_reservation(ticket),
+                )),
             )?;
         }
         self.index += 1;

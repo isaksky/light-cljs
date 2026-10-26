@@ -246,16 +246,72 @@ Its catch block can release references and return or continue after collection.
 The operation is not replayed. The cap includes unreachable unswept objects and
 can reject a multi-allocation instruction before its next safepoint. Scope users
 can use `try_new_object` instead of the legacy panicking `new_object` API.
-This object limit does **not** bound retained payload bytes, strings, executable
-storage, allocator overhead or RSS. Aggregate managed-byte accounting remains
-unfinished; the compiler does not translate its memory-byte option to objects.
+The object limit does not bound payload bytes; the byte limit below does.
+
+### Byte accounting
+
+`HeapPolicy::hard_limit_bytes` is one aggregate admission counter
+(`src/heap/budget.rs`) shared by every task, worker and host scope of the
+runtime. Storage is charged **before** it is allocated, with checked arithmetic,
+by an RAII `ByteReservation` kept by the storage's owner and released when that
+storage is released (a sweep, a shrink, or the last alias of an immutable
+payload). A denial therefore leaves the requesting operation's inputs intact:
+a failed `transfer`, freeze, push or concatenation changes nothing. Without a
+byte limit nothing is measured and reserving costs no atomic.
+
+Charged, each conservatively (overcharging is allowed, undercharging a
+data-sized payload is not):
+
+- every object slot plus its boxed body and fixed boxed internal slots (Intl
+  records, iterator cursors, error records; `HeapObject::boxed_bytes`), and the
+  object table's segment growth;
+- ordinary-object properties (512 bytes per entry, covering capacity, index and
+  shape metadata), array dense capacity and sparse/attribute entries, Map/Set
+  and weak tables, private elements, atom versions and the property-key table;
+- string bodies (two bytes per unit plus 256 per body, ropes including their
+  possible flattened copy), BigInt limbs, ArrayBuffer stores, native persistent
+  vectors/maps/forms and builders, RegExp programs and captures;
+- saved continuations: detached activations, closure captures, bound arguments,
+  promise reactions, queued jobs, disposable resources, async-generator queues;
+- retained native scratch: sort buffers, join/raw/JSON parts, string search,
+  split and normalization state, Intl NumberFormat digits, ListFormat items and
+  output, DisplayNames codes, locale lists, and own-key snapshots
+  (`vm::keys::SNAPSHOT_KEY_BYTES` per key, charged before a string's or typed
+  array's virtual keys are listed and per element while a Proxy `ownKeys` trap
+  result is read). A for-in walk keeps its snapshot's charge until its visited
+  names are released; fresh index spellings are charged string bodies.
+
+Not counted: executable code and constants, the realm's Rust-side tables,
+allocator overhead and fragmentation, Rust and VM stacks of running frames,
+transient values that exist only within one leaf step (bounded by the step's
+inputs), and the embedder's own data. Accounted bytes therefore approximate and
+do not bound RSS; `docs/measurement.md` records the realm's accounted footprint.
+
+A denial fails the requesting operation with `VmErrorKind::HeapLimit`,
+catchable as the primitive string `heap byte limit exceeded` (no Error object
+is allocated at the limit). Leaf helpers with boolean or `Option` results record
+the denial in a thread-local flag that the VM converts at the same instruction
+or native-step boundary. Allocation never parks, so there is no last-resort
+collection at the allocation itself: a denial instead requests a collection at
+the next safe boundary (where a handler may already have released data), and
+until a collection leaves an eighth of the limit free, every run slice begins
+with one, so a task started after others released their data succeeds. Between
+denials, collections are also requested once the bytes admitted since the last
+collection exceed half the live bytes (at least 64 KiB), capped at half the
+remaining headroom. The limit includes unswept garbage and the realm.
+`Runtime::try_with_heap_policy` builds the realm and one probe global before
+returning, and reports `RuntimeStartError::HeapLimit` instead of failing the
+first task; a sweep of limits around the realm footprint never panics.
 
 `HeapStats` reports collection count, last live-object count, total pause and
-maximum pause. Pause timing covers tracing and sweeping while the world is
-stopped; it excludes waiting for mutators, deferred payload destruction and
-observer callbacks. `bench gc` reports these at one and eight workers. The
-automatic eight-worker root-inventory test retains suspended tasks, native forms,
-atoms and completed dependency outcomes without requesting collections itself.
+maximum pause, and under a byte limit the managed, peak and last-live bytes, the
+total admitted volume and the configured limit. Pause timing covers tracing and
+sweeping while the world is stopped; it excludes waiting for mutators, deferred
+payload destruction and observer callbacks. `bench gc` reports these at one and
+eight workers. The automatic eight-worker root-inventory tests, under an object
+cap and under the byte limit alone (admitting several times the limit in
+total), retain suspended tasks, native forms, atoms and completed dependency
+outcomes without requesting collections themselves.
 Moving/generational/concurrent collection remains deferred.
 
 ## Ordinary objects and named property caches

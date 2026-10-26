@@ -295,6 +295,58 @@ impl HeapObject {
         HeapObject::Plain(OrdinaryObject::new(heap, None))
     }
 
+    /// What allocating an object boxed as `T` (with no boxed internal
+    /// slots) charges: the slot and the box. For tests sizing exact headroom.
+    #[cfg(test)]
+    pub(crate) const fn charged_with_box<T>() -> usize {
+        std::mem::size_of::<HeapObject>() + std::mem::size_of::<T>()
+    }
+
+    /// Fixed metadata this object owns through boxes, beyond the slot's own
+    /// `size_of::<HeapObject>()`: a boxed body and an ordinary object's boxed
+    /// internal slots (`OrdinaryObject::boxed_bytes`). Charged with the slot
+    /// at allocation. Data-sized storage inside (properties, elements,
+    /// entries, buffers, payload strings) is charged where it grows instead.
+    pub(crate) fn boxed_bytes(&self) -> usize {
+        use std::mem::size_of_val;
+        match self {
+            HeapObject::Plain(o) => o.boxed_bytes(),
+            HeapObject::Native(p) => size_of_val(&**p),
+            HeapObject::Array(a) => size_of_val(&**a) + a.object().boxed_bytes(),
+            HeapObject::JsMap(m) | HeapObject::JsSet(m) => {
+                size_of_val(&**m) + m.object().boxed_bytes()
+            }
+            HeapObject::WeakMap(m) | HeapObject::WeakSet(m) => {
+                size_of_val(&**m) + m.object().boxed_bytes()
+            }
+            HeapObject::WeakRef(m) => size_of_val(&**m) + m.object().boxed_bytes(),
+            HeapObject::FinalizationRegistry(m) => size_of_val(&**m) + m.object().boxed_bytes(),
+            HeapObject::DisposableStack(m) => size_of_val(&**m) + m.object().boxed_bytes(),
+            HeapObject::ArrayBuffer(b) => size_of_val(&**b) + b.object.boxed_bytes(),
+            HeapObject::TypedArray(a) => size_of_val(&**a) + a.object.boxed_bytes(),
+            HeapObject::Generator(g) => size_of_val(&**g) + g.object.boxed_bytes(),
+            HeapObject::AsyncState(s) => size_of_val(&**s),
+            HeapObject::ModuleNamespace(n) => size_of_val(&**n),
+            HeapObject::Promise(p) => p
+                .properties
+                .as_deref()
+                .map_or(0, |o| size_of_val(o) + o.boxed_bytes()),
+            HeapObject::Builtin(f) => f.properties.boxed_bytes(),
+            HeapObject::Vector(_)
+            | HeapObject::Map(_)
+            | HeapObject::Occurrence(_)
+            | HeapObject::Builder(_)
+            | HeapObject::Function(_)
+            | HeapObject::Cell(_)
+            | HeapObject::Atom(_)
+            | HeapObject::BoundFunction(_)
+            | HeapObject::PromiseReaction(_)
+            | HeapObject::PromiseResolving(_)
+            | HeapObject::Proxy(_)
+            | HeapObject::Form(_) => 0,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn kind(&self) -> ObjectKind {
         match self {
@@ -414,17 +466,53 @@ pub struct HeapStats {
     pub pause_total: std::time::Duration,
     /// Longest stop-the-world pause.
     pub pause_max: std::time::Duration,
+    /// Accounted bytes currently admitted under
+    /// [`HeapPolicy::hard_limit_bytes`], including garbage not yet swept.
+    /// Zero when the runtime has no byte limit (nothing is accounted then).
+    pub managed_bytes: usize,
+    /// Highest [`managed_bytes`](Self::managed_bytes) seen so far.
+    pub peak_managed_bytes: usize,
+    /// Accounted bytes still admitted once the last collection had released
+    /// its garbage: the live set, plus whatever other workers admitted after
+    /// the pause. Zero before the first collection or without a byte limit.
+    pub last_live_bytes: usize,
+    /// Total bytes ever admitted under the byte limit (allocation volume).
+    pub admitted_bytes_total: usize,
+    /// The configured [`HeapPolicy::hard_limit_bytes`].
+    pub byte_limit: Option<usize>,
 }
 
 /// One collection policy shared by every task and worker of a runtime.
+///
+/// Both hard limits are aggregate: every task, worker thread and host scope
+/// of the runtime draws on the same counters, so one worker's denial can be
+/// caused by the others' live data. Construct it with `..Default::default()`
+/// so later fields keep their defaults.
 #[derive(Clone, Copy, Debug)]
 pub struct HeapPolicy {
     /// Minimum allocations between automatic collections. `None` disables
-    /// automatic collection. The actual threshold grows with the live set.
+    /// automatic collection, including collection driven by
+    /// [`hard_limit_bytes`](Self::hard_limit_bytes) pressure. The actual
+    /// threshold grows with the live set.
     pub allocation_threshold: Option<usize>,
     /// Aggregate allocated-object admission limit, including unreachable
     /// objects until swept. This is an object count, not a byte or RSS cap.
     pub hard_limit_objects: Option<usize>,
+    /// Aggregate accounted-byte admission limit (`docs/architecture.md`,
+    /// "Byte accounting"): object slots and their boxed bodies, property and
+    /// element storage, strings, BigInts, buffers, native collections and
+    /// forms, saved continuations and retained native-operation scratch.
+    /// Each is charged conservatively before it is allocated, so a denial
+    /// leaves the requesting operation's inputs unchanged. Includes the
+    /// realm's intrinsics (use [`crate::Runtime::try_with_heap_policy`] to
+    /// learn at startup whether they fit) and garbage until it is swept.
+    /// Accounted bytes approximate, and do not bound, process RSS:
+    /// allocator overhead, code, compiler caches, Rust stacks and the
+    /// embedder's own data are outside it. A denial fails the requesting
+    /// operation with catchable [`VmErrorKind::HeapLimit`](crate::VmErrorKind::HeapLimit)
+    /// (the primitive string `heap byte limit exceeded`). `None` (the
+    /// default) accounts nothing and costs no atomic per allocation.
+    pub hard_limit_bytes: Option<usize>,
 }
 
 impl Default for HeapPolicy {
@@ -432,6 +520,7 @@ impl Default for HeapPolicy {
         Self {
             allocation_threshold: Some(16_384),
             hard_limit_objects: None,
+            hard_limit_bytes: None,
         }
     }
 }
@@ -514,6 +603,9 @@ impl Heap {
     pub(crate) fn has_byte_limit(&self) -> bool {
         self.byte_budget.is_limited()
     }
+    pub(crate) fn byte_starved(&self) -> bool {
+        self.byte_budget.starved()
+    }
     pub(crate) fn take_byte_denial(&self) -> bool {
         self.byte_budget.take_denial()
     }
@@ -562,7 +654,7 @@ impl Heap {
     }
 
     pub(crate) fn with_policy(policy: HeapPolicy) -> Self {
-        let budget = budget::ByteBudget::new(None);
+        let budget = budget::ByteBudget::new(policy.hard_limit_bytes);
         Self {
             keys: PropertyKeys::with_budget(budget.clone()),
             byte_budget: budget,
@@ -606,7 +698,14 @@ impl Heap {
         if self.byte_budget.denied() {
             return None;
         }
-        let Some(reservation) = self.reserve_bytes(std::mem::size_of::<HeapObject>()) else {
+        // The slot's boxed body and fixed internal slots are charged with it;
+        // without a byte limit nothing is measured.
+        let bytes = if self.byte_budget.is_limited() {
+            std::mem::size_of::<HeapObject>() + object.boxed_bytes()
+        } else {
+            0
+        };
+        let Some(reservation) = self.reserve_bytes(bytes) else {
             self.byte_budget.note_denial();
             return None;
         };
@@ -796,6 +895,7 @@ impl Heap {
         };
         let persistent_roots = lock(&self.roots).live();
         let objects = lock(&self.objects).live();
+        let bytes = &self.byte_budget;
         HeapStats {
             objects,
             persistent_roots,
@@ -803,6 +903,11 @@ impl Heap {
             last_live_objects,
             pause_total,
             pause_max,
+            managed_bytes: bytes.used(),
+            peak_managed_bytes: bytes.peak(),
+            last_live_bytes: bytes.last_live(),
+            admitted_bytes_total: bytes.volume(),
+            byte_limit: bytes.limit(),
         }
     }
 

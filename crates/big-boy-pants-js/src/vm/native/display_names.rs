@@ -323,8 +323,13 @@ impl State {
                 if self.slots.as_ref().unwrap().fallback == "code" {
                     self.normalized = self
                         .normalized
-                        .concat(&JsString::from(chunk.as_str()))
-                        .ok_or_else(|| Fault::RangeError("calendar code too long".into()))?;
+                        .append_accounted(heap, &JsString::from(chunk.as_str()))
+                        .map_err(|fault| match fault {
+                            Fault::StringTooLong => {
+                                Fault::RangeError("calendar code too long".into())
+                            }
+                            fault => fault,
+                        })?;
                 }
                 if done {
                     // All snapshot calendar keys and aliases fit in 32 units:

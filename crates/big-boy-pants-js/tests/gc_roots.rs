@@ -1693,8 +1693,44 @@ fn automatic_collections_retain_inventory_across_eight_workers() {
         HeapPolicy {
             allocation_threshold: Some(256),
             hard_limit_objects: Some(10_000),
+            ..Default::default()
         },
     );
+    let stats = churn_retaining_inventory(&rt, 2_000);
+    assert!(
+        stats.objects < 10_000,
+        "bounded allocation churn: {stats:?}"
+    );
+}
+
+/// The same inventory under the aggregate byte limit alone: eight workers
+/// admit several times the limit in total, with no explicit collection.
+#[test]
+fn byte_limited_automatic_collections_retain_inventory_across_eight_workers() {
+    use big_boy_pants_js::{HeapPolicy, VmLimits};
+    let policy = |bytes| HeapPolicy {
+        hard_limit_bytes: Some(bytes),
+        ..Default::default()
+    };
+    let realm = Runtime::try_with_heap_policy(VmLimits::default(), policy(usize::MAX / 2))
+        .unwrap()
+        .heap_stats()
+        .managed_bytes;
+    let limit = realm + 3 * 1024 * 1024;
+    let rt = Runtime::try_with_heap_policy(VmLimits::default(), policy(limit)).unwrap();
+    let stats = churn_retaining_inventory(&rt, 8_000);
+    assert!(stats.peak_managed_bytes <= limit, "{stats:?}");
+    assert!(
+        stats.admitted_bytes_total > 2 * limit,
+        "churn exceeds the limit: {stats:?}"
+    );
+    assert!(stats.last_live_bytes >= realm, "{stats:?}");
+}
+
+/// Hold every root-inventory kind while eight workers allocate `n` vector
+/// generations each; return the statistics after all of them finished.
+fn churn_retaining_inventory(rt: &Runtime, n: u32) -> big_boy_pants_js::HeapStats {
+    let rt = rt.clone();
     let helds = [
         persistent_handle(&rt),
         persistent_collection(&rt),
@@ -1716,7 +1752,7 @@ fn automatic_collections_retain_inventory_across_eight_workers() {
     let mut published = dependency_ready(&rt, 7001);
     published.extend(dependency_failed(&rt, 7002));
     let code = compile_function(CHURN).unwrap();
-    let count = rt.scope(|s| s.persist(s.primitive(Primitive::Number(2_000.0))));
+    let count = rt.scope(|s| s.persist(s.primitive(Primitive::Number(f64::from(n)))));
     let start = std::sync::Barrier::new(8);
     thread::scope(|threads| {
         for _ in 0..8 {
@@ -1728,16 +1764,12 @@ fn automatic_collections_retain_inventory_across_eight_workers() {
                 let _registered = rt.register_thread();
                 let task = rt.spawn(code, &[count]).unwrap();
                 start.wait();
-                assert_eq!(run_to_end(&task).view(), ValueView::Number(2_000.0));
+                assert_eq!(run_to_end(&task).view(), ValueView::Number(f64::from(n)));
             });
         }
     });
     let stats = rt.heap_stats();
     assert!(stats.collections > 1);
-    assert!(
-        stats.objects < 10_000,
-        "bounded allocation churn: {stats:?}"
-    );
     assert!(stats.last_live_objects > 0);
     assert!(stats.pause_total >= stats.pause_max);
     assert!(!stats.pause_max.is_zero());
@@ -1746,6 +1778,7 @@ fn automatic_collections_retain_inventory_across_eight_workers() {
     }
     assert_live(&published);
     // No explicit collection is needed for either progress or retention.
+    stats
 }
 
 /// Every public holder at once, while two executor workers allocate and

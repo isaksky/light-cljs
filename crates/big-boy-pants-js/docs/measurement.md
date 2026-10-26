@@ -82,6 +82,19 @@ documentation, so source/build checks were reused. This checkpoint does not
 complete aggregate managed-byte accounting or `--macro-memory-limit` mapping;
 receiver changes after that base remain for the continuation's combined checks.
 
+## Byte-limit footprint (2026-10-26)
+
+With `HeapPolicy::hard_limit_bytes` set, a runtime started by
+`Runtime::try_with_heap_policy` reports **1,152,448 accounted bytes** after its
+startup collection (realm intrinsics, key table, object-table segment), and a
+peak of 1,180,400 while the probe task global existed (about 28 KB per task
+global). Debug build, macOS aarch64, Rust 1.99.1, measured from the
+`realm_bytes` helper of `tests/automatic_gc.rs`; the figure is accounted
+admission, not RSS, and changes whenever charging rates or the realm change.
+The startup sweep in that test tries 320 limits from zero to 1.25 times this
+footprint: every limit below it fails with `RuntimeStartError::HeapLimit`, none
+panics, and each successful start peaks within its limit.
+
 ## Compiler-shaped kernel baseline (2026-10-25)
 
 Run from this crate directory (or add `-p big-boy-pants-js` from the repository

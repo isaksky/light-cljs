@@ -241,7 +241,9 @@ mod tests {
 
     #[test]
     fn byte_denial_and_allocator_failure_refund_before_recovery() {
-        let heap = Arc::new(Heap::with_byte_limit(8 + std::mem::size_of::<HeapObject>()));
+        let heap = Arc::new(Heap::with_byte_limit(
+            8 + HeapObject::charged_with_box::<ArrayBuffer>(),
+        ));
         let scope = Scope::new(&heap);
         let task = TaskId::from_raw(1);
         FAIL_RESERVATION.set(true);
@@ -288,7 +290,8 @@ mod tests {
     fn configured_byte_denial_is_catchable_and_runtime_recovers_after_gc() {
         use crate::frontend::compile_function;
         use crate::{Budget, RunOutcome, Runtime, ValueView};
-        let runtime = Runtime::with_byte_limit(1024 + std::mem::size_of::<HeapObject>());
+        let runtime =
+            Runtime::with_byte_limit(1024 + HeapObject::charged_with_box::<ArrayBuffer>());
         let code = compile_function("function f() { let b = new ArrayBuffer(1024); try { b.transfer(1024); } catch (e) { return e === 'heap byte limit exceeded' && b.byteLength === 1024 && !b.detached; } }").unwrap();
         let task = runtime.spawn(&code, &[]).unwrap();
         let result = loop {

@@ -540,7 +540,38 @@ struct InternalSlots {
     private: crate::vm::private::Elements,
 }
 
+/// Charged per boxed internal slot beyond the box itself: the bounded
+/// strings and vectors such a record owns (a locale tag is under 512 bytes).
+const BOXED_SLOT_EXTRA: usize = 1024;
+
 impl OrdinaryObject {
+    /// The fixed metadata in this object's boxed internal slots
+    /// (`HeapObject::boxed_bytes`). Every slot is installed before the
+    /// object is allocated except the private-element record, whose
+    /// elements are charged as they are added (`crate::vm::private`).
+    pub(crate) fn boxed_bytes(&self) -> usize {
+        fn boxed<T: ?Sized>(slot: &Option<Box<T>>) -> usize {
+            slot.as_deref()
+                .map_or(0, |body| std::mem::size_of_val(body) + BOXED_SLOT_EXTRA)
+        }
+        let internal = self.internal.as_deref().map_or(0, |internal| {
+            std::mem::size_of_val(internal)
+                + boxed(&internal.regexp_iterator)
+                + boxed(&internal.engine_error)
+        });
+        internal
+            + boxed(&self.locale_data)
+            + boxed(&self.number_format)
+            + boxed(&self.iterator)
+            + boxed(&self.plural_rules)
+            + boxed(&self.collator)
+            + boxed(&self.date_time_format)
+            + boxed(&self.list_format)
+            + boxed(&self.intl_service)
+            + boxed(&self.segmenter)
+            + boxed(&self.duration_format)
+    }
+
     pub(crate) fn with_regexp_iterator(
         mut self,
         data: crate::vm::native::string_regexp::IteratorData,

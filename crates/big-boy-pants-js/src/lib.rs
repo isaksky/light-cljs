@@ -123,7 +123,7 @@ pub use heap::{
 };
 pub use host::{Host, HostCall};
 pub use ids::{DependencyId, DependencyKey, ProducerId, ResultKind, TaskId, WakeHandle, WorldId};
-pub use runtime::Runtime;
+pub use runtime::{Runtime, RuntimeStartError};
 pub use task::{
     Budget, Cancel, RunError, RunGuard, RunOutcome, Task, TaskStats, TaskStatus,
     UnhandledRejection, UnhandledRejections, Wake,

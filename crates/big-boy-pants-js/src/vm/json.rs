@@ -687,6 +687,8 @@ enum Members {
     },
     Object {
         keys: std::vec::IntoIter<keys::OwnKey>,
+        /// The snapshot's charge, held while the container is open.
+        _charge: crate::heap::budget::ByteReservation,
         emitted: bool,
     },
 }
@@ -901,11 +903,13 @@ impl Stringifier {
                 return Ok(());
             }
             check_key_snapshot(heap, task, id)?;
-            let mut keys = keys::own_property_keys(heap, task, id, keys::KeyFilter::Enumerable)?;
+            let (mut keys, charge) =
+                keys::own_property_keys_charged(heap, task, id, keys::KeyFilter::Enumerable)?;
             keys.retain(|key| !matches!(key.key, property::Key::Symbol(_)));
             self.append(heap, JsString::from("{"))?;
             Members::Object {
                 keys: keys.into_iter(),
+                _charge: charge,
                 emitted: false,
             }
         };
@@ -946,6 +950,11 @@ impl Stringifier {
                         return Err(Fault::Internal("Proxy JSON keys length"));
                     };
                     check_property_count(len as usize)?;
+                    let charge = crate::heap::budget::reserve_elements(
+                        heap,
+                        len as usize,
+                        keys::SNAPSHOT_KEY_BYTES,
+                    )?;
                     let mut keys = Vec::new();
                     for i in 0..len as u32 {
                         let Value::String(name) =
@@ -967,6 +976,7 @@ impl Stringifier {
                         value: self.value.clone(),
                         members: Members::Object {
                             keys: keys.into_iter(),
+                            _charge: charge,
                             emitted: false,
                         },
                     });

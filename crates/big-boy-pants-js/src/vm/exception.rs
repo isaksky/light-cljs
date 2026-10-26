@@ -73,9 +73,10 @@
 //! at once without running catch or finally blocks, as QuickJS's uncatchable
 //! errors do.
 //!
-//! The configured aggregate object admission limit is separate from allocator
-//! exhaustion: `HeapLimit` is catchable as the primitive string
-//! `heap object limit exceeded`. No Error object is allocated at the limit.
+//! The configured aggregate object and byte admission limits are separate
+//! from allocator exhaustion: `HeapLimit` is catchable as the primitive string
+//! `heap object limit exceeded` or `heap byte limit exceeded`. No Error object
+//! is allocated at the limit.
 //! A finally block preserves its original diagnostic; explicitly throwing the
 //! caught string again reports `Thrown`, like any other primitive exception.
 //!

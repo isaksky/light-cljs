@@ -29,9 +29,11 @@ pub enum VmErrorKind {
     HostEffect,
     /// The heap could not allocate an object (its object table is full).
     OutOfMemory,
-    /// The runtime-wide object admission limit was reached. Catchable as
-    /// the primitive string `heap object limit exceeded`, without needing
-    /// to allocate another heap object. This is not a process byte/RSS cap.
+    /// A runtime-wide [`HeapPolicy`](crate::HeapPolicy) admission limit was
+    /// reached: `hard_limit_objects` (catchable as the primitive string
+    /// `heap object limit exceeded`) or `hard_limit_bytes` (`heap byte limit
+    /// exceeded`). Neither needs another heap object to be raised. Accounted
+    /// bytes approximate, and do not bound, process RSS.
     HeapLimit,
     /// A collection intrinsic rejected its operands by the collection
     /// contract: wrong operand kind, invalid or out-of-bounds index, or a
