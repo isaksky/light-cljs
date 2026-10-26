@@ -221,8 +221,9 @@ struct Raw {
 /// The own keys of `target` as `task` sees them, in
 /// OrdinaryOwnPropertyKeys order (module docs, "Order"), restricted by
 /// `filter`; or the failure of the module docs' table. The shared key
-/// enumeration of `Object.keys`, `Object.getOwnPropertyNames` and (later)
-/// `for`-`in` and object spread/rest copies.
+/// enumeration of `Object.keys`, `Object.getOwnPropertyNames`, for-in,
+/// JSON and object spread/rest copies, which use the charged form below.
+#[cfg(test)]
 pub(crate) fn own_property_keys(
     heap: &Heap,
     task: TaskId,
