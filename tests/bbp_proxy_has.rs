@@ -31,6 +31,10 @@ fn source_macro_demands_foreign_printer_extension_through_package_has() {
     let error = compile_namespace_with_macros("fixture", &[root.path().to_path_buf()], &mut host)
         .unwrap_err()
         .to_string();
-    assert!(error.contains("unsupported Proxy trap: get"), "{error}");
+    assert!(
+        error.contains("extension: unsupported Proxy trap: get"),
+        "{error}"
+    );
+    assert!(error.contains("macro fixture/demand-printer"), "{error}");
     assert!(!error.contains("unsupported Proxy trap: has"), "{error}");
 }

@@ -201,6 +201,29 @@ The final `app.main` failure supersedes the earlier uncommitted-build success;
 neither entry completes on this tree. No default backend, legacy runtime or
 read-only research file was changed.
 
+### Proxy presence at foreign printer extensions (light-cljs-514)
+
+The emitted package helper checks `name in Object(registry)` before retrieving
+an imported package. `MacroHost`'s opaque package registry supplies a `has` trap
+that returns true. The engine previously rejected this trap during Transit
+printer extension demand. Presence checks now execute the trap through traced
+native continuations, including inherited Proxies, trap getters, key conversion,
+dependency waits and target descriptor/extensibility invariants. Array methods,
+descriptor readers, locale lists and Error cause options use the same path.
+The semantic fixture `crates/big-boy-pants-js/tests/fixtures/js/proxy_has.js`
+runs unchanged in Node/V8 and the native engine; `tests/proxy_has.rs` exercises
+collection and worker migration during waits.
+
+`tests/bbp_proxy_has.rs` compiles a real source macro that invokes a source-defined
+printer protocol with a Transit package extension. It demands the extension,
+passes the package's `has` trap and reaches `extension: unsupported Proxy trap:
+get`. That is the next distinct engine boundary: the opaque package registry's
+getter remains unsupported. The regression preserves that error instead of
+discarding the extension or treating an unavailable foreign type as a native one.
+It uses its own printer protocol so it can run before light-cljs-513's native
+core printer services land. End-to-end Penpot validation with those services
+still requires integrating light-cljs-513; this change does not duplicate them.
+
 ### Bootstrap macro audit (light-cljs-509, 2026-10-26)
 
 The native branch of `compiler_bootstrap::build_in` keeps an empty bootstrap
