@@ -253,6 +253,26 @@ fn native_reader_unwraps_input_and_retains_eof_and_callback_occurrences() {
 }
 
 #[test]
+fn native_reader_options_and_streams_accept_supplied_scalar_occurrences() {
+    let source = r###"
+      (defmacro probe [opts missing-opts text chunk]
+        (let [read compiler-reader-read-string
+              s (compiler-reader-input-provider "chunks.edn" (let [chunks (atom [chunk nil])]
+                  (fn [] (let [c (first @chunks)] (swap! chunks rest) c))))]
+          (list 'quote [(read opts text)
+                        (try (read missing-opts "#x 1") (catch :default e (.-message e)))
+                        (compiler-reader-read s)])))
+      (js/console.log (pr-str (probe {:default nil :readers nil} {:default nil :readers {x nil}} "[1 2]" "3")))"###;
+    let native = expand(source, true).unwrap();
+    assert_eq!(
+        output(&native),
+        "[[1 2] \"No reader function for tag x at <read-string>:1:5\" 3]\n"
+    );
+    #[cfg(feature = "quickjs")]
+    assert_eq!(native, expand(source, false).unwrap());
+}
+
+#[test]
 fn reader_facade_initializes_and_runs_in_a_source_macro() {
     for jobs in [1, 2, 4] {
         let native = namespace_js("reader-use", true, jobs);

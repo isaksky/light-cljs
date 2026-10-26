@@ -9869,6 +9869,7 @@
     return stream;
   }
   function inputProvider(name, provider) {
+    name = valueOf(name);
     if (typeof name !== 'string' || typeof provider !== 'function') throw new TypeError('Expected source name and input provider');
     const stream = stringReader('', name), state = streams.get(stream);
     state.provider = provider; state.eof = false;
@@ -9884,7 +9885,7 @@
   function peek(s) {
     while (s.position === s.text.length && !s.eof) {
       let chunk;
-      try { chunk = s.provider(); }
+      try { chunk = valueOf(s.provider()); }
       catch (_) { fail(s, 'Input provider failed', 'host'); }
       if (chunk == null) { s.eof = true; break; }
       if (typeof chunk !== 'string' || chunk.length === 0) fail(s, 'Input provider must return a nonempty string or nil', 'host');
@@ -9983,6 +9984,7 @@
     try { return parseTimestamp(value); } catch (_) { fail(s, 'Invalid instant'); }
   }
   function timestampFields(value) {
+    value = valueOf(value);
     const m = typeof value === 'string' && /^(\d{4})(?:-(\d{2})(?:-(\d{2})(?:T(\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?)?)?)?(?:Z|([-+])(\d{2}):(\d{2}))?$/.exec(value);
     if (!m) throw new Error('Unrecognized date/time syntax: ' + str(value).slice(0,1024));
     const [year, month, day, hour, minute, second] = [Number(m[1]),Number(m[2] ?? 1),Number(m[3] ?? 1),Number(m[4] ?? 0),Number(m[5] ?? 0),Number(m[6] ?? 0)];
@@ -10026,10 +10028,10 @@
       if (k?.kind !== 'keyword' || k.namespace !== null) throw new TypeError('Invalid reader option');
       if (k.name === 'eof') result.eof = value;
       else if (profile !== 'code' && k.name === 'default') {
-        if (value != null && !callable(value)) throw new TypeError('Expected default reader function');
-        result.fallback = value;
+        if (valueOf(value) != null && !callable(value)) throw new TypeError('Expected default reader function');
+        result.fallback = valueOf(value) == null ? null : value;
       } else if (profile !== 'code' && k.name === 'readers') {
-        if (value == null) continue;
+        if (valueOf(value) == null) continue;
         let entries = typeof value === 'object' && value !== null ? readerMaps.get(value) : undefined;
         if (entries === undefined) {
           const readers = inspect(value);
@@ -10037,7 +10039,7 @@
           entries = readers.entries.map(([tag, handler]) => {
             const n = inspect(tag);
             if (n?.kind !== 'symbol') throw new TypeError('Expected symbol reader key');
-            if (handler != null && !callable(handler)) throw new TypeError('Expected reader function');
+            if (valueOf(handler) != null && !callable(handler)) throw new TypeError('Expected reader function');
             return [n.spelling, handler];
           });
           // Only immutable privately branded maps have stable validated entries.
@@ -10129,7 +10131,7 @@
     function metadata(depth) {
       take(s); let metadata = required(depth + 1); const kind = inspect(metadata);
       if (kind?.kind === 'keyword') metadata = hashMap(metadata, true);
-      else if (typeof metadata === 'string' || kind?.kind === 'symbol') metadata = hashMap(rt.keyword(null, 'tag'), metadata);
+      else if (typeof valueOf(metadata) === 'string' || kind?.kind === 'symbol') metadata = hashMap(rt.keyword(null, 'tag'), metadata);
       else if (kind?.kind !== 'map') fail(s, 'Invalid metadata');
       const value = required(depth + 1);
       try { return withMeta(value, merge(meta(value), metadata)); }
@@ -10192,7 +10194,7 @@
       const symbol = named(s, tag), value = required(depth + 1);
       if (suppressTags) return value;
       let handler = opts.readers.get(tag), result;
-      if (handler != null) {
+      if (valueOf(handler) != null) {
         if (handler === builtinTags.get(tag)) {
           if (rt.readBuiltin) return rt.readBuiltin(tag, value);
           if (tag === 'inst') result = instant(s, value);
@@ -10344,11 +10346,11 @@
   function tagName(tag) { const name = inspect(tag); if (name?.kind !== 'symbol') throw new TypeError('Expected data reader symbol'); return name.spelling; }
   function register(tag, handler) {
     if (arguments.length !== 2) arity(arguments.length);
-    if (handler != null && !callable(handler)) throw new TypeError('Expected reader function');
+    if (valueOf(handler) != null && !callable(handler)) throw new TypeError('Expected reader function');
     const name = tagName(tag), previous = tags.get(name) ?? null; tags.set(name, handler); return previous;
   }
   function deregister(tag) { if (arguments.length !== 1) arity(arguments.length); const name = tagName(tag), previous = tags.get(name) ?? null; tags.delete(name); return previous; }
-  function registerDefault(handler) { if (arguments.length !== 1) arity(arguments.length); if (handler != null && !callable(handler)) throw new TypeError('Expected reader function'); const previous = defaultTag; defaultTag = handler; return previous; }
+  function registerDefault(handler) { if (arguments.length !== 1) arity(arguments.length); if (valueOf(handler) != null && !callable(handler)) throw new TypeError('Expected reader function'); const previous = defaultTag; defaultTag = valueOf(handler) == null ? null : handler; return previous; }
   function deregisterDefault() { if (arguments.length !== 0) arity(arguments.length); const previous = defaultTag; defaultTag = null; return previous; }
   function withInput(text, thunk) {
     if (arguments.length !== 2) arity(arguments.length);
@@ -10362,7 +10364,7 @@
   function compilerInputWindow(more = false) {
     const s = stateOf(coreCells.readerCurrentInputValue);
     if ((more || s.position === s.text.length) && !s.eof) {
-      const chunk = s.provider();
+      const chunk = valueOf(s.provider());
       if (chunk == null) s.eof = true;
       else {
         if (typeof chunk !== 'string' || !chunk.length) fail(s, 'Invalid input chunk', 'host');
