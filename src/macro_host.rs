@@ -924,6 +924,7 @@ impl MacroHost {
             };
             for (name, source) in self.tables.native_helpers.iter() {
                 let mut seed = MacroHost::new();
+                seed.use_native_macros();
                 seed.tables.bootstrap_seed = true;
                 let syntax =
                     crate::parse(source).map_err(|e| crate::evaluator::EvalError(e.to_string()))?;

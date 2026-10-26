@@ -506,6 +506,29 @@ fn metadata_environment_form_and_syntax_quote() {
 }
 
 #[test]
+fn preloaded_native_helper_expands_bootstrap_macros_in_namespaces() {
+    let root = temp_dir::TempDir::new("native-preloaded-bootstrap");
+    std::fs::write(
+        root.join("app.cljs"),
+        "(ns app) (declare helper) (defmacro m [x] (helper x)) (js/console.log (m 41))",
+    )
+    .unwrap();
+    let mut host = MacroHost::new();
+    host.preload_native_helper("app/helper", "(fn* [x] (as-> x n (list '+ n 1)))")
+        .unwrap();
+    let program = light_cljs::compiler::analyze_namespace_entry(
+        "app",
+        &[root.path().to_path_buf()],
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(program_output(&emit_js(&program)), "42\n");
+    assert_eq!(host.native_macro_calls().len(), 1);
+}
+
+#[test]
 fn preloaded_real_helper_and_ordinary_js_interop() {
     let mut host = MacroHost::new();
     host.preload_native_helper(
