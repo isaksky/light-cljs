@@ -1693,6 +1693,7 @@ fn automatic_collections_retain_inventory_across_eight_workers() {
         HeapPolicy {
             allocation_threshold: Some(256),
             hard_limit_objects: Some(10_000),
+            ..Default::default()
         },
     );
     let helds = [

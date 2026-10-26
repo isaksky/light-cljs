@@ -414,17 +414,53 @@ pub struct HeapStats {
     pub pause_total: std::time::Duration,
     /// Longest stop-the-world pause.
     pub pause_max: std::time::Duration,
+    /// Accounted bytes currently admitted under
+    /// [`HeapPolicy::hard_limit_bytes`], including garbage not yet swept.
+    /// Zero when the runtime has no byte limit (nothing is accounted then).
+    pub managed_bytes: usize,
+    /// Highest [`managed_bytes`](Self::managed_bytes) seen so far.
+    pub peak_managed_bytes: usize,
+    /// Accounted bytes still admitted once the last collection had released
+    /// its garbage: the live set, plus whatever other workers admitted after
+    /// the pause. Zero before the first collection or without a byte limit.
+    pub last_live_bytes: usize,
+    /// Total bytes ever admitted under the byte limit (allocation volume).
+    pub admitted_bytes_total: usize,
+    /// The configured [`HeapPolicy::hard_limit_bytes`].
+    pub byte_limit: Option<usize>,
 }
 
 /// One collection policy shared by every task and worker of a runtime.
+///
+/// Both hard limits are aggregate: every task, worker thread and host scope
+/// of the runtime draws on the same counters, so one worker's denial can be
+/// caused by the others' live data. Construct it with `..Default::default()`
+/// so later fields keep their defaults.
 #[derive(Clone, Copy, Debug)]
 pub struct HeapPolicy {
     /// Minimum allocations between automatic collections. `None` disables
-    /// automatic collection. The actual threshold grows with the live set.
+    /// automatic collection, including collection driven by
+    /// [`hard_limit_bytes`](Self::hard_limit_bytes) pressure. The actual
+    /// threshold grows with the live set.
     pub allocation_threshold: Option<usize>,
     /// Aggregate allocated-object admission limit, including unreachable
     /// objects until swept. This is an object count, not a byte or RSS cap.
     pub hard_limit_objects: Option<usize>,
+    /// Aggregate accounted-byte admission limit (`docs/architecture.md`,
+    /// "Byte accounting"): object slots and their boxed bodies, property and
+    /// element storage, strings, BigInts, buffers, native collections and
+    /// forms, saved continuations and retained native-operation scratch.
+    /// Each is charged conservatively before it is allocated, so a denial
+    /// leaves the requesting operation's inputs unchanged. Includes the
+    /// realm's intrinsics (use [`crate::Runtime::try_with_heap_policy`] to
+    /// learn at startup whether they fit) and garbage until it is swept.
+    /// Accounted bytes approximate, and do not bound, process RSS:
+    /// allocator overhead, code, compiler caches, Rust stacks and the
+    /// embedder's own data are outside it. A denial fails the requesting
+    /// operation with catchable [`VmErrorKind::HeapLimit`](crate::VmErrorKind::HeapLimit)
+    /// (the primitive string `heap byte limit exceeded`). `None` (the
+    /// default) accounts nothing and costs no atomic per allocation.
+    pub hard_limit_bytes: Option<usize>,
 }
 
 impl Default for HeapPolicy {
@@ -432,6 +468,7 @@ impl Default for HeapPolicy {
         Self {
             allocation_threshold: Some(16_384),
             hard_limit_objects: None,
+            hard_limit_bytes: None,
         }
     }
 }
@@ -562,7 +599,7 @@ impl Heap {
     }
 
     pub(crate) fn with_policy(policy: HeapPolicy) -> Self {
-        let budget = budget::ByteBudget::new(None);
+        let budget = budget::ByteBudget::new(policy.hard_limit_bytes);
         Self {
             keys: PropertyKeys::with_budget(budget.clone()),
             byte_budget: budget,
@@ -796,6 +833,7 @@ impl Heap {
         };
         let persistent_roots = lock(&self.roots).live();
         let objects = lock(&self.objects).live();
+        let bytes = &self.byte_budget;
         HeapStats {
             objects,
             persistent_roots,
@@ -803,6 +841,11 @@ impl Heap {
             last_live_objects,
             pause_total,
             pause_max,
+            managed_bytes: bytes.used(),
+            peak_managed_bytes: bytes.peak(),
+            last_live_bytes: bytes.last_live(),
+            admitted_bytes_total: bytes.volume(),
+            byte_limit: bytes.limit(),
         }
     }
 

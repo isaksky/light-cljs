@@ -9,6 +9,7 @@ fn limited() -> Runtime {
         HeapPolicy {
             allocation_threshold: Some(32),
             hard_limit_objects: Some(2_048),
+            ..Default::default()
         },
     )
 }
@@ -65,6 +66,7 @@ fn quota_denial_while_building_an_error_remains_catchable() {
         HeapPolicy {
             allocation_threshold: None,
             hard_limit_objects: Some(host.1),
+            ..Default::default()
         },
     );
     let mut host = Snapshot(&rt, 0);
@@ -106,6 +108,7 @@ fn object_admission_limit_is_one_atomic_budget_across_eight_threads() {
         HeapPolicy {
             allocation_threshold: Some(32),
             hard_limit_objects: Some(512),
+            ..Default::default()
         },
     );
     let admitted = AtomicUsize::new(0);
@@ -170,4 +173,71 @@ fn automatic_collection_does_not_charge_instruction_slices() {
     assert_eq!(explicit.0, automatic.0);
     assert_eq!(explicit.1, 0);
     assert!(automatic.1 > 0);
+}
+
+fn byte_limited(bytes: usize) -> Result<Runtime, big_boy_pants_js::RuntimeStartError> {
+    Runtime::try_with_heap_policy(
+        Default::default(),
+        HeapPolicy {
+            hard_limit_bytes: Some(bytes),
+            ..Default::default()
+        },
+    )
+}
+
+/// The fixed accounted footprint of a started runtime.
+fn realm_bytes() -> usize {
+    let rt = byte_limited(usize::MAX / 2).unwrap();
+    let stats = rt.heap_stats();
+    assert_eq!(stats.byte_limit, Some(usize::MAX / 2));
+    assert!(stats.managed_bytes > 0);
+    assert!(stats.peak_managed_bytes >= stats.managed_bytes);
+    stats.managed_bytes
+}
+
+#[test]
+fn checked_startup_fails_without_panicking_at_every_tight_byte_limit() {
+    use big_boy_pants_js::RuntimeStartError;
+    let realm = realm_bytes();
+    let mut failed = 0;
+    for step in 0..320 {
+        let limit = realm * step / 256;
+        match byte_limited(limit) {
+            Err(error) => {
+                assert_eq!(error, RuntimeStartError::HeapLimit, "limit {limit}");
+                assert!(limit < realm * 2, "a generous limit {limit} failed");
+                failed += 1;
+            }
+            Ok(rt) => {
+                assert!(limit >= realm, "started below the realm footprint: {limit}");
+                assert!(rt.heap_stats().peak_managed_bytes <= limit);
+            }
+        }
+    }
+    assert!(failed >= 256, "every limit below the realm footprint fails");
+    let rt = byte_limited(realm * 2).unwrap();
+    let code = compile_function("function f() { return [1, 2, 3].join('-'); }").unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let RunOutcome::Complete(result) = task.run().unwrap() else {
+        panic!("a started runtime runs a task");
+    };
+    assert_eq!(result.view(), ValueView::String);
+}
+
+#[test]
+fn unchecked_startup_under_a_tiny_byte_limit_fails_the_first_task_without_abort() {
+    let rt = Runtime::with_heap_policy(
+        Default::default(),
+        HeapPolicy {
+            hard_limit_bytes: Some(4096),
+            ..Default::default()
+        },
+    );
+    let code = compile_function("function f() { return {a: 1}; }").unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let RunOutcome::Failed(error) = task.run().unwrap() else {
+        panic!("the realm cannot fit in 4 KiB");
+    };
+    assert_eq!(error.kind(), VmErrorKind::HeapLimit);
+    assert!(rt.heap_stats().peak_managed_bytes <= 4096);
 }

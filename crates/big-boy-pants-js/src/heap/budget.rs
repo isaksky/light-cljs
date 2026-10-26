@@ -21,12 +21,29 @@ pub(crate) struct ByteBudget {
     id: usize,
     limit: Option<AtomicUsize>,
     used: AtomicUsize,
+    peak: AtomicUsize,
+    last_live: AtomicUsize,
     volume: AtomicUsize,
     collected_volume: AtomicUsize,
     next_collection: AtomicUsize,
 }
 
 impl ByteBudget {
+    /// Highest admitted total since the budget was created.
+    pub(crate) fn peak(&self) -> usize {
+        self.peak.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn last_live(&self) -> usize {
+        self.last_live.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn limit(&self) -> Option<usize> {
+        self.limit
+            .as_ref()
+            .map(|limit| limit.load(Ordering::Relaxed))
+    }
+
     pub(crate) fn is_limited(&self) -> bool {
         self.limit.is_some()
     }
@@ -52,6 +69,8 @@ impl ByteBudget {
             id: NEXT_BUDGET.fetch_add(1, Ordering::Relaxed),
             limit: limit.map(AtomicUsize::new),
             used: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            last_live: AtomicUsize::new(0),
             volume: AtomicUsize::new(0),
             collected_volume: AtomicUsize::new(0),
             next_collection: AtomicUsize::new(limit.map_or(usize::MAX, |bytes| (bytes / 4).max(1))),
@@ -89,6 +108,7 @@ impl ByteBudget {
         // completions may arrive in either order, so the watermark only advances.
         self.collected_volume.fetch_max(volume, Ordering::Relaxed);
         let live = self.used();
+        self.last_live.store(live, Ordering::Relaxed);
         let growth = (live / 2)
             .max(64 * 1024)
             .min(limit.load(Ordering::Relaxed).saturating_sub(live) / 2)
@@ -110,7 +130,10 @@ impl ByteBudget {
                 .used
                 .compare_exchange_weak(used, next, Ordering::Relaxed, Ordering::Relaxed)
             {
-                Ok(_) => break,
+                Ok(_) => {
+                    self.peak.fetch_max(next, Ordering::Relaxed);
+                    break;
+                }
                 Err(actual) => used = actual,
             }
         }

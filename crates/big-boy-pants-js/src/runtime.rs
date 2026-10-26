@@ -40,6 +40,27 @@ struct RuntimeShared {
 #[derive(Clone, Debug)]
 pub struct Runtime(Arc<RuntimeShared>);
 
+/// Why [`Runtime::try_with_heap_policy`] could not start a runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeStartError {
+    /// The realm's intrinsics and one task global do not fit the policy's
+    /// `hard_limit_bytes` or `hard_limit_objects`.
+    HeapLimit,
+    /// The object table or the process allocator was exhausted.
+    OutOfMemory,
+}
+
+impl std::fmt::Display for RuntimeStartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::HeapLimit => "the heap limit cannot hold the runtime's realm",
+            Self::OutOfMemory => "heap exhausted while building the runtime's realm",
+        })
+    }
+}
+
+impl std::error::Error for RuntimeStartError {}
+
 impl Default for Runtime {
     fn default() -> Self {
         Self::new()
@@ -59,9 +80,51 @@ impl Runtime {
     }
 
     /// Set the runtime-wide collection policy alongside per-task VM limits.
+    ///
+    /// The realm is built lazily, by the first task or scope that needs it.
+    /// Under a hard limit too small for it, that first use fails with
+    /// [`VmErrorKind::HeapLimit`](crate::VmErrorKind::HeapLimit) (a task) or
+    /// `None` (a checked scope operation). Use
+    /// [`Runtime::try_with_heap_policy`] to find this out at startup instead.
     pub fn with_heap_policy(limits: VmLimits, policy: crate::HeapPolicy) -> Runtime {
         let heap = Arc::new(Heap::with_policy(policy));
         Self::with_heap(limits, heap)
+    }
+
+    /// [`Runtime::with_heap_policy`], building the realm's shared intrinsics
+    /// and probing one task's global object before returning, so a hard
+    /// limit that cannot hold them fails here rather than in the first task.
+    /// Never panics or aborts on a denial; a runtime that fails to start is
+    /// dropped with everything it allocated.
+    ///
+    /// On success the probe global has been collected again:
+    /// [`HeapStats::managed_bytes`](crate::HeapStats::managed_bytes) then
+    /// reports the fixed footprint of the realm under a byte limit.
+    pub fn try_with_heap_policy(
+        limits: VmLimits,
+        policy: crate::HeapPolicy,
+    ) -> Result<Runtime, RuntimeStartError> {
+        let runtime = Self::with_heap_policy(limits, policy);
+        let heap = &runtime.0.heap;
+        {
+            let _scope = Scope::new(heap);
+            let started = crate::realm::intrinsics(heap).is_some()
+                && crate::realm::new_global_object(heap, TaskId::from_raw(0)).is_some();
+            if !started {
+                // Classify while this thread's allocator registration (which
+                // records the denial) is still open.
+                let limited = heap.take_byte_denial() || heap.take_limit_failure();
+                return Err(if limited {
+                    RuntimeStartError::HeapLimit
+                } else {
+                    RuntimeStartError::OutOfMemory
+                });
+            }
+        }
+        runtime
+            .collect()
+            .map_err(|_| RuntimeStartError::OutOfMemory)?;
+        Ok(runtime)
     }
 
     fn with_heap(limits: VmLimits, heap: Arc<Heap>) -> Runtime {
