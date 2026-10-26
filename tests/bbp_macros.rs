@@ -497,9 +497,14 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
             "(defmacro lazy-result [] (range 3)) (lazy-result)",
             "unsupported operation: native macro runtime core.range",
         ),
+        // Sorted collections and transients remain JavaScript-only types.
         (
-            "(defmacro input [x] x) (input #{1 2})",
-            "unsupported operation: native set forms",
+            "(defmacro sorted [] (sorted-map 1 2)) (sorted)",
+            "unsupported operation: native macro runtime core.sortedMap",
+        ),
+        (
+            "(defmacro edit [] (transient [])) (edit)",
+            "unsupported operation: native macro runtime core.transient",
         ),
         (
             "(defmacro js-collection [x] (js/Object.keys x)) (js-collection [1 2])",
@@ -812,6 +817,112 @@ fn native_expansions_match_the_legacy_compiler_output() {
     }
 }
 
+/// Macro code over native collections, keywords and symbols, which the
+/// native unit lowers to engine intrinsics (light-cljs-477), expands as the
+/// legacy compiler does and runs.
+const COLLECTION_FIXTURES: &[(&str, &str)] = &[
+    (
+        "(defmacro members [s] (count (conj (disj s 1) 3 2))) (js/console.log (members #{1 2}))",
+        "2\n",
+    ),
+    (
+        "(defmacro has? [m k] (contains? m k)) (js/console.log (has? {:a 1} :a) (has? #{:b} :a) (has? [5] 0))",
+        "true false true\n",
+    ),
+    (
+        "(defmacro drop-key [m] (list 'quote (dissoc m :a))) (js/console.log (pr-str (drop-key {:a 1 :b 2})))",
+        "{:b 2}\n",
+    ),
+    (
+        "(defmacro same-hash? [a b] (if (= a b) (= (hash a) (hash b)) false)) (js/console.log (same-hash? [1 #{2}] (1 #{2})))",
+        "true\n",
+    ),
+    (
+        "(defmacro input-set [s] (list 'quote s)) (js/console.log (pr-str (input-set #{:a})) (count (input-set #{1 2 3})))",
+        "#{:a} 3\n",
+    ),
+    (
+        "(defmacro picks [v m] [(nth v 1) (nth v 5 :none) (get m :k 0) (:k m) (:z m 9) (first v) (second v)]) (js/console.log (pr-str (picks [10 20] {:k 5})))",
+        "[20 :none 5 5 9 10 20]\n",
+    ),
+    (
+        "(defmacro sum-rest [v] `(+ ~@(rest v) ~@(next (next v)))) (js/console.log (sum-rest [0 1 2]))",
+        "5\n",
+    ),
+    (
+        "(defmacro grow [v] (list 'quote (assoc (conj v :c) 0 :z))) (js/console.log (pr-str (grow [:a :b])))",
+        "[:z :b :c]\n",
+    ),
+    (
+        "(defmacro kinds [x] [(keyword? x) (symbol? x) (vector? x) (map? x) (set? x) (seq? x) (nil? x) (empty? x)]) (js/console.log (pr-str (kinds #{})))",
+        "[false false false false true false false true]\n",
+    ),
+    (
+        "(defmacro tag-of [x] (list 'quote (:tag (meta (with-meta x {:tag 'my-tag}))))) (js/console.log (str (tag-of [1])))",
+        "my-tag\n",
+    ),
+    (
+        "(defmacro walk [xs] (loop [s (seq xs) n 0] (if s (recur (next s) (+ n (first s))) n))) (js/console.log (walk [1 2 3 4]))",
+        "10\n",
+    ),
+    (
+        "(defmacro built [] (list 'quote (list (vector 1 2) (hash-set 3) (cons 0 [5])))) (js/console.log (pr-str (built)))",
+        "([1 2] #{3} (0 5))\n",
+    ),
+];
+
+#[test]
+fn collection_core_lowering_matches_the_legacy_compiler_and_runs() {
+    for (source, expected) in COLLECTION_FIXTURES {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+            .unwrap_or_else(|e| panic!("{source}: {e}"));
+        let native = emit_js(&program);
+        assert_eq!(program_output(&native), *expected, "{source}");
+        // In a build with a legacy engine (`quickjs`, or the default V8),
+        // `compile` expands with it: the comparison is then cross-backend.
+        let legacy = light_cljs::compile(source).unwrap();
+        assert_eq!(native, legacy, "{source}");
+    }
+}
+
+#[test]
+fn collection_helpers_publish_once_at_one_and_two_slots() {
+    // A set constant and two functions built only from lowered core
+    // operations and literals: each value is initialized once and shared,
+    // not initialized again in each consuming task.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/collections");
+    for jobs in [1, 2] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut stats = light_cljs::CompileStats::new();
+        let mut warnings = Vec::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "coll.app",
+            std::slice::from_ref(&root),
+            &mut host,
+            Default::default(),
+            &mut warnings,
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("jobs {jobs}: {error}"));
+        assert_eq!(
+            program_output(&emit_js(&program)),
+            "[{:op :get} 2] [{} 1]\n",
+            "jobs {jobs}"
+        );
+        assert_eq!(stats.native_helpers.compiled, 3, "jobs {jobs}");
+        assert_eq!(stats.native_helpers.published, 3, "jobs {jobs}");
+        assert_eq!(stats.native_helpers.per_task, 0, "jobs {jobs}");
+    }
+}
+
 #[test]
 fn helper_namespace_output_is_deterministic_with_one_two_and_four_slots() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -838,8 +949,10 @@ fn helper_namespace_output_is_deterministic_with_one_two_and_four_slots() {
         let js = emit_js(&program);
         assert_eq!(program_output(&js), "42 42 3\n");
         assert_eq!(stats.native_helpers.compiled, 1);
-        assert_eq!(stats.native_helpers.published, 0);
-        assert!(stats.native_helpers.per_task >= 1);
+        // The helper builds its expansion with native core intrinsics, so its
+        // value publishes once instead of initializing in each task.
+        assert_eq!(stats.native_helpers.published, 1);
+        assert_eq!(stats.native_helpers.per_task, 0);
         assert!(warnings.is_empty());
         if let Some(reference) = &reference {
             assert_eq!(&js, reference);

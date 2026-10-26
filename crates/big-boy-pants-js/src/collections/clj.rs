@@ -273,6 +273,14 @@ pub(crate) fn cons(heap: &Heap, x: &Value, coll: &Value) -> Result<Value> {
     Ok(form::new_list(heap, &items)?)
 }
 
+/// `concat` of two collections: a new list of the elements of `a` and then
+/// those of `b` (empty when both are; `nil` contributes none).
+pub(crate) fn concat(heap: &Heap, a: &Value, b: &Value) -> Result<Value> {
+    let mut items = seq_items(heap, "concat", a)?.unwrap_or_default();
+    items.extend(seq_items(heap, "concat", b)?.unwrap_or_default());
+    Ok(form::new_list(heap, &items)?)
+}
+
 /// `nth`: the element at index `i` of a list, vector or string; `nil` for
 /// `nil`. Past the end: `default`, or `RangeError` without one.
 pub(crate) fn nth(heap: &Heap, coll: &Value, i: &Value, default: Option<&Value>) -> Result<Value> {

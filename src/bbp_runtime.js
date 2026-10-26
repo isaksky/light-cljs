@@ -7,58 +7,67 @@ const native = (() => {
     if (kind !== null) throw new Error('unsupported operation: JavaScript interop with native ' + kind + ' form');
     return value;
   };
-  const truth = x => val(x) !== null && val(x) !== undefined && val(x) !== false;
+  // Core operations are the engine's `__rt.clj*` intrinsics (light-cljs-477):
+  // Rust over native forms, nil-punning and transparent to occurrences.
+  // Macro units call them directly; these entries serve the core values a
+  // unit passes around (`(map first xs)`) and variadic calls.
+  const truth = x => __rt.cljTruth(x);
   const arr = x => {
-    if (val(x) == null) return [];
     if (Array.isArray(x)) return x;
+    let value = val(x);
+    const kind = __rt.formKind(value);
+    if (kind !== 'list' && kind !== 'vector') {
+      const items = __rt.cljSeq(x);
+      if (items === null) return [];
+      value = val(items);
+    }
     const out = [];
-    for (let i = 0; i < __rt.formCount(val(x)); i++) out.push(__rt.formNth(val(x), i));
+    for (let i = 0, n = __rt.formCount(value); i < n; i++) out.push(__rt.formNth(value, i));
     return out;
   };
   const list = a => { let v = __rt.formList(); for(let i=a.length-1;i>=0;i--) v=__rt.formConj(v,a[i]); return v; };
   const vector = a => { let v=__rt.formVector();for(const x of a)v=__rt.formConj(v,x);return v; };
   const map = a => { let v=__rt.formMap();for(let i=0;i<a.length;i+=2)v=__rt.formAssoc(v,a[i],a[i+1]);return v; };
-  const seq = x => {
-    const value = val(x), kind = __rt.formKind(value);
-    if (value == null) return null;
-    if (kind === 'list') return __rt.formCount(value) === 0 ? null : x;
-    let items;
-    if (kind === 'vector') items = arr(value);
-    else if (kind === 'map') items = arr(__rt.formKeys(value)).map(k => vector([k, __rt.formGet(value, k, null)]));
-    else if (typeof value === 'string') {
-      items = [];
-      for (let i = 0; i < value.length; i++) items.push(value.charAt(i));
-    } else throw new Error('unsupported operation: native macro runtime seq on ' + (kind || typeof value));
-    return items.length === 0 ? null : list(items);
-  };
-  const get = (m,k,n=null) => val(m) == null ? n : __rt.formGet(val(m),val(k),n);
+  const set = a => { let v=__rt.formSet();for(const x of a)v=__rt.formConj(v,x);return v; };
+  // A set literal with members that are not constants rejects duplicates.
+  const literalSet = a => { const v=set(a); if(__rt.formCount(v)!==a.length)throw new Error('Duplicate key'); return v; };
+  const seq = x => __rt.cljSeq(x);
+  const get = (m,k,n=null) => __rt.cljGet(m,k,n);
   const invoke = (f,...args) => typeof f === 'function' ? f(...args) : __rt.formKind(val(f))==='keyword' ? get(args[0],f,args.length>1?args[1]:null) : get(f,args[0],args.length>1?args[1]:null);
   const unsupported = name => function(){throw new Error('unsupported operation: native macro runtime '+name);};
+  const each = (op, x, xs) => { for (const y of xs) x = op(x, y); return x; };
   const core = {
     assertions:true,
-    invoke, truth, get, identity:x=>x, sequence:x=>x, macroReaderFunction:f=>f,
-    list:(...a)=>list(a), vector:(...a)=>vector(a), hashMap:(...a)=>map(a),
-    first:x=>val(x)==null||__rt.formCount(val(x))===0?null:__rt.formNth(val(x),0),
-    second:x=>val(x)==null||__rt.formCount(val(x))<2?null:__rt.formNth(val(x),1),
-    nth:(x,n,d)=>val(n)<__rt.formCount(val(x))?__rt.formNth(val(x),val(n)):d===undefined?(()=>{throw new Error('index out of bounds')})():d,
-    count:x=>val(x)==null?0:__rt.formCount(val(x)),
-    seq,
-    rest:x=>list(arr(x).slice(1)), next:x=>arr(x).length<2?null:list(arr(x).slice(1)),
-    cons:(x,xs)=>list([x,...arr(xs)]), concat:(...xs)=>list(xs.flatMap(arr)),
+    invoke, truth, get, identity:x=>x, macroReaderFunction:f=>f,
+    sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
+    list:(...a)=>list(a), vector:(...a)=>vector(a), hashMap:(...a)=>map(a), hashSet:(...a)=>set(a), set:x=>set(arr(x)),
+    first:x=>__rt.cljFirst(x), second:x=>__rt.cljFirst(__rt.cljNext(x)),
+    nth:(x,n,...d)=>d.length?__rt.cljNthOr(x,n,d[0]):__rt.cljNth(x,n),
+    count:x=>__rt.cljCount(x),
+    seq, isEmpty:x=>__rt.cljSeq(x)===null,
+    rest:x=>__rt.cljRest(x), next:x=>__rt.cljNext(x),
+    cons:(x,xs)=>__rt.cljCons(x,xs), concat:(...xs)=>list(xs.flatMap(arr)),
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),
     apply:(f,...xs)=>invoke(f,...xs.slice(0,-1),...arr(xs[xs.length-1])),
-    assoc:(m,...xs)=>{const original=m;for(let i=0;i<xs.length;i+=2)m=__rt.formAssoc(val(m),xs[i],xs[i+1]);return val(original)===m?original:m;},
-    conj:(m,...xs)=>{for(const x of xs)m=__rt.formConj(val(m),x);return m;},
-    meta:x=>__rt.formMeta(val(x)), withMeta:(x,m)=>{const updated=__rt.formWithMeta(val(x),val(m));return updated===val(x)?x:updated;},
+    assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
+    dissoc:(m,...ks)=>each((m,k)=>__rt.cljDissoc(m,k),m,ks),
+    conj:(m,...xs)=>each((m,x)=>__rt.cljConj(m,x),m,xs),
+    disj:(s,...xs)=>each((s,x)=>__rt.cljDisj(s,x),s,xs),
+    contains:(c,k)=>__rt.cljContains(c,k),
+    keys:m=>{const k=__rt.formValue(m)==null?null:__rt.formKeys(__rt.formValue(m));return k===null||__rt.formCount(k)===0?null:list(arr(k));},
+    vals:m=>{const k=core.keys(m);return k===null?null:list(arr(k).map(key=>__rt.cljGet(m,key,null)));},
+    meta:x=>__rt.cljMeta(x), withMeta:(x,m)=>__rt.cljWithMeta(x,m),
     isKeyword:x=>__rt.formKind(val(x))==='keyword', isSymbol:x=>__rt.formKind(val(x))==='symbol',
     isVector:x=>__rt.formKind(val(x))==='vector', isMap:x=>__rt.formKind(val(x))==='map', isSeq:x=>__rt.formKind(val(x))==='list',
+    isSet:x=>__rt.formKind(val(x))==='set',
     isNil:x=>val(x)==null, not:x=>!truth(x), boolean:truth,
-    equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)),
+    equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
     name:x=>__rt.formName(val(x)), namespace:x=>__rt.formNamespace(val(x)),
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     exInfo:(m,d)=>new Error(val(m)),
     registerReaderNamespace:()=>null, addReaderDefinitions:()=>null, setReaderNamespace:()=>null,
     PersistentVector:{EMPTY:__rt.formVector()}, PersistentArrayMap:{EMPTY:__rt.formMap()}, List:{EMPTY:__rt.formList()},
+    PersistentHashSet:{EMPTY:__rt.formSet()},
   };
   for (const name of [/* CORE_KEYS */]) if (!(name in core)) Object.defineProperty(core,name,{get:unsupported('core.'+name)});
   const rt={core,
@@ -67,6 +76,7 @@ const native = (() => {
     vector:(...xs)=>vector(xs),vectorFromArray:vector,listFromArray:list,mapFromArray:map,arrayMapFromArray:map,constantMapFromArray:map,
     mapFromArrays:(ks,vs)=>map(ks.flatMap((k,i)=>[k,vs[i]])),
     mapShape:keys=>keys,mapFromShape:(ks,vs)=>map(ks.flatMap((k,i)=>[k,vs[i]])),
+    setFromArray:set,arraySetFromArray:set,constantSetFromArray:set,literalSetFromArray:literalSet,
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f,
     compilerForms:{gensymScope:()=>null,takeEncodePeak:()=>0,

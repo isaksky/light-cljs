@@ -461,11 +461,8 @@ fn emit_js_mode(
         emitter.record_kits = record_kits;
         emitter.output.push_str(PRELUDE_OPEN);
         if native_forms {
-            emitter.output.push_str("  const truth = (value) => ");
-            emitter.rt(RuntimeName::export("core"));
-            // The macro binding renamer also renames the local `truth`.
-            // Keep the runtime property a string so it remains its ABI name.
-            emitter.output.push_str("[\"truth\"](value);\n");
+            // Truth tests are the engine's `__rt.cljTruth` ([`Emitter::truth_open`]):
+            // no local `truth` closes over the task's runtime object.
         } else {
             emitter.output.push_str(PRELUDE_TRUTH);
         }
@@ -1348,6 +1345,11 @@ impl EmptyCollection {
 /// neither engine gains. Measured in benchmarks/compiler.md ("Constant
 /// collection pool").
 const LAZY_CONSTANT_NODES: u32 = 1024;
+
+/// The most operands a native compile-time unit passes to one counted
+/// engine constructor (`__rt.formVector(…)`); larger literals and calls use
+/// the runtime's array constructors, whose operand stack stays small.
+const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
 
 /// What the pool knows about an expression (indexed by `ExprId`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2547,9 +2549,17 @@ impl<'a> Emitter<'a> {
     /// `rt.keyword(namespace, name)` or `rt.symbol(namespace, name)`.
     fn construct_named(&mut self, literal: NamedLiteralId, symbol: bool) {
         let name = &self.program.named_literals[literal.0];
-        let constructor = if symbol { "symbol" } else { "keyword" };
-        self.rt(RuntimeName::export(constructor));
-        self.output.push('(');
+        if self.native_forms {
+            self.output.push_str(if symbol {
+                "__rt.formSymbol("
+            } else {
+                "__rt.formKeyword("
+            });
+        } else {
+            let constructor = if symbol { "symbol" } else { "keyword" };
+            self.rt(RuntimeName::export(constructor));
+            self.output.push('(');
+        }
         if let Some(namespace) = name.namespace {
             self.string(namespace);
         } else {
@@ -2877,6 +2887,17 @@ impl<'a> Emitter<'a> {
     /// (`rt$PersistentVectorValue.EMPTY` at `Advanced`), which an empty
     /// literal reads at every level instead of allocating.
     fn empty_collection(&mut self, empty: EmptyCollection) {
+        if self.native_forms {
+            // A native unit builds its empty form; no closure reads the
+            // task's runtime object for it.
+            self.output.push_str(match empty {
+                EmptyCollection::Vector => "__rt.formVector()",
+                EmptyCollection::Map => "__rt.formMap()",
+                EmptyCollection::Set => "__rt.formSet()",
+                EmptyCollection::List => "__rt.formList()",
+            });
+            return;
+        }
         let binding = match empty {
             EmptyCollection::Set => Some("PersistentHashSetValue"),
             EmptyCollection::Map => Some("PersistentArrayMapValue"),
@@ -2921,6 +2942,35 @@ impl<'a> Emitter<'a> {
                 item(emitter, index);
             }
         };
+        if self.native_forms
+            && count <= NATIVE_CONSTRUCTOR_LIMIT
+            && let Some(intrinsic) = match constructor {
+                Composite::Vector => Some("formVector"),
+                Composite::List => Some("formList"),
+                Composite::ArrayMap | Composite::HashMap | Composite::LiteralMap => Some("formMap"),
+                Composite::Set | Composite::CheckedSet | Composite::LiteralSet => Some("formSet"),
+                Composite::WithMeta => Some("cljWithMeta"),
+                Composite::Uuid => None,
+            }
+        {
+            // A native unit's literal is the engine's form constructor
+            // (light-cljs-477). Map items alternate keys and values. A set
+            // whose members are not constants rejects equal members.
+            let checked = constructor == Composite::CheckedSet;
+            if checked {
+                self.output.push_str(
+                    "((set, count) => { if (__rt.formCount(set) !== count) \
+                     throw new Error(\"Duplicate key\"); return set; })(",
+                );
+            }
+            write!(self.output, "__rt.{intrinsic}(").unwrap();
+            items(self, &mut (0..count));
+            self.output.push(')');
+            if checked {
+                write!(self.output, ", {count})").unwrap();
+            }
+            return;
+        }
         self.rt(match constructor {
             Composite::Vector => RuntimeName::export("vectorFromArray"),
             Composite::List => RuntimeName::export("listFromArray"),
@@ -3260,10 +3310,20 @@ impl<'a> Emitter<'a> {
         {
             self.value(id);
         } else {
-            self.truth_used = true;
-            self.output.push_str("truth(");
+            self.truth_open();
             self.value(id);
             self.output.push(')');
+        }
+    }
+
+    /// The opening of a ClojureScript truth test of a value: `truth(`, or in
+    /// a native compile-time unit the engine intrinsic `__rt.cljTruth(`.
+    fn truth_open(&mut self) {
+        if self.native_forms {
+            self.output.push_str("__rt.cljTruth(");
+        } else {
+            self.truth_used = true;
+            self.output.push_str("truth(");
         }
     }
 
@@ -3454,6 +3514,108 @@ impl<'a> Emitter<'a> {
     /// At `Advanced`, a call that emission writes as JavaScript operators or a
     /// field read instead of calling the runtime (docs/advanced-optimization.md,
     /// "Phase 2 type inference extension points"); whether it wrote one.
+    /// In a native compile-time unit, write a call of a core operation on
+    /// forms as the engine's `__rt` intrinsic and return true
+    /// (light-cljs-477; docs/native-macros.md, "Native core lowering"). The
+    /// operation runs in Rust, and no closure reaches the task's mutable
+    /// runtime object through it, so helper values built with it publish.
+    /// A keyword invocation is `get`. Other calls return false.
+    fn native_call(&mut self, callee: ExprId, args: &[ExprId]) -> bool {
+        use crate::CoreFnId as C;
+        let core = match self.program.exprs[callee.0].kind {
+            ExprKind::Keyword(_) if matches!(args.len(), 1 | 2) => {
+                self.output.push_str("__rt.cljGet(");
+                self.value(args[0]);
+                self.output.push_str(", ");
+                self.value(callee);
+                self.output.push_str(", ");
+                match args.get(1) {
+                    Some(&default) => self.value(default),
+                    None => self.output.push_str("null"),
+                }
+                self.output.push(')');
+                return true;
+            }
+            ExprKind::CoreFn(core) if !self.replaced(core.runtime_name()) => core,
+            _ => return false,
+        };
+        let kind_test = |kind: &'static str| -> (&'static str, &'static str, bool, &'static str) {
+            ("(__rt.formKind(", "formValue", false, kind)
+        };
+        // Text before the intrinsic, its name, whether a missing default
+        // is passed as `null`, and the text after its call.
+        let (before, intrinsic, null_default, after) = match (core, args.len()) {
+            (C::Count, 1) => ("", "cljCount", false, ""),
+            (C::Seq, 1) => ("", "cljSeq", false, ""),
+            // `(sequence x)`: its seq, or `()` for an empty one.
+            (C::Sequence, 1) => (
+                "((items) => items === null ? __rt.formList() : items)(",
+                "cljSeq",
+                false,
+                ")",
+            ),
+            (C::First, 1) => ("", "cljFirst", false, ""),
+            (C::Second, 1) => ("__rt.cljFirst(", "cljNext", false, ")"),
+            (C::Rest, 1) => ("", "cljRest", false, ""),
+            (C::Next, 1) => ("", "cljNext", false, ""),
+            (C::Cons, 2) => ("", "cljCons", false, ""),
+            (C::Nth, 2) => ("", "cljNth", false, ""),
+            (C::Nth, 3) => ("", "cljNthOr", false, ""),
+            (C::Get, 2) => ("", "cljGet", true, ""),
+            (C::Get, 3) => ("", "cljGet", false, ""),
+            (C::Contains, 2) => ("", "cljContains", false, ""),
+            (C::Assoc, 3) => ("", "cljAssoc", false, ""),
+            (C::Dissoc, 2) => ("", "cljDissoc", false, ""),
+            (C::Conj, 2) => ("", "cljConj", false, ""),
+            (C::Disj, 2) => ("", "cljDisj", false, ""),
+            (C::Meta, 1) => ("", "cljMeta", false, ""),
+            (C::WithMeta, 2) => ("", "cljWithMeta", false, ""),
+            (C::Equal, 2) => ("", "formEquals", false, ""),
+            (C::Hash, 1) => ("", "formHash", false, ""),
+            (C::Concat, 1) => ("", "cljConcat", true, ""),
+            (C::Concat, 0) => ("", "formList", false, ""),
+            (C::Not, 1) => ("(!", "cljTruth", false, ")"),
+            (C::Boolean, 1) => ("", "cljTruth", false, ""),
+            (C::IsNil, 1) => ("(", "formValue", false, " == null)"),
+            (C::IsEmpty, 1) => ("(", "cljSeq", false, " === null)"),
+            (C::IsKeyword, 1) => kind_test(") === \"keyword\")"),
+            (C::IsSymbol, 1) => kind_test(") === \"symbol\")"),
+            (C::IsVector, 1) => kind_test(") === \"vector\")"),
+            (C::IsMap, 1) => kind_test(") === \"map\")"),
+            (C::IsSet, 1) => kind_test(") === \"set\")"),
+            (C::IsSeq, 1) => kind_test(") === \"list\")"),
+            (C::Vector, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formVector", false, ""),
+            (C::List, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formList", false, ""),
+            (C::HashSet, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formSet", false, ""),
+            (C::HashMap, n) if n <= NATIVE_CONSTRUCTOR_LIMIT && n % 2 == 0 => {
+                ("", "formMap", false, "")
+            }
+            // `(concat a b c)` is `(concat (concat a b) c)`: each copies.
+            (C::Concat, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => {
+                for _ in 1..n {
+                    self.output.push_str("__rt.cljConcat(");
+                }
+                self.value(args[0]);
+                for &arg in &args[1..] {
+                    self.output.push_str(", ");
+                    self.value(arg);
+                    self.output.push(')');
+                }
+                return true;
+            }
+            _ => return false,
+        };
+        self.output.push_str(before);
+        write!(self.output, "__rt.{intrinsic}(").unwrap();
+        self.arguments(args);
+        if null_default {
+            self.output.push_str(", null");
+        }
+        self.output.push(')');
+        self.output.push_str(after);
+        true
+    }
+
     fn lowered_call(&mut self, callee: ExprId, args: &[ExprId]) -> bool {
         let Some(inference) = self.inference else {
             return false;
@@ -4473,8 +4635,8 @@ impl<'a> Emitter<'a> {
                 if js {
                     write!(self.output, "operand{operand}").unwrap();
                 } else {
-                    self.truth_used = true;
-                    write!(self.output, "truth(operand{operand})").unwrap();
+                    self.truth_open();
+                    write!(self.output, "operand{operand})").unwrap();
                 }
                 self.output.push_str(") {\n");
                 self.indent += 1;
@@ -6633,7 +6795,8 @@ impl<'a> Emitter<'a> {
                     self.output.push_str(" if (!(");
                     self.condition(*test);
                 } else {
-                    self.output.push_str(" if (!truth(");
+                    self.output.push_str(" if (!");
+                    self.truth_open();
                     self.value(*test);
                 }
                 self.output
@@ -7483,6 +7646,9 @@ impl<'a> Emitter<'a> {
                 }
                 if let Some(membership) = self.membership(id) {
                     self.membership_value(&membership, membership.contains);
+                    return;
+                }
+                if self.native_forms && self.native_call(*callee, args) {
                     return;
                 }
                 if self.lowered_call(*callee, args) {

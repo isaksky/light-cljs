@@ -257,7 +257,13 @@ pub fn compiler_identity(host: &MacroHost) -> Digest {
     }
     #[cfg(feature = "bbp-macros")]
     if host.native_macro_backend() {
-        fingerprint.text("big-boy-pants-js").text("native-forms-1");
+        // The native form ABI (sets since light-cljs-477) and the
+        // compile-time emission mode the backend selects: core operations
+        // and literals lowered to the engine's `__rt` intrinsics.
+        fingerprint
+            .text("big-boy-pants-js")
+            .text("native-forms-2")
+            .text("native-core-intrinsics-1");
         for (name, source) in host.tables.native_helpers.iter() {
             fingerprint.text(name).text(source);
         }

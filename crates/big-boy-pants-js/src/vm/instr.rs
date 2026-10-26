@@ -1434,11 +1434,13 @@ pub enum FormOp {
     CljMeta = 33,
     /// v meta → v' (`cljWithMeta`).
     CljWithMeta = 34,
+    /// a b → list (`cljConcat`).
+    CljConcat = 35,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 35] = [
+    pub const ALL: [FormOp; 36] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1474,6 +1476,7 @@ impl FormOp {
         FormOp::CljDisj,
         FormOp::CljMeta,
         FormOp::CljWithMeta,
+        FormOp::CljConcat,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1513,7 +1516,8 @@ impl FormOp {
             | FormOp::CljDissoc
             | FormOp::CljConj
             | FormOp::CljDisj
-            | FormOp::CljWithMeta => 2,
+            | FormOp::CljWithMeta
+            | FormOp::CljConcat => 2,
             FormOp::Get | FormOp::Assoc | FormOp::CljNthOr | FormOp::CljGet | FormOp::CljAssoc => 3,
         }
     }
@@ -1556,6 +1560,7 @@ impl FormOp {
             FormOp::CljDisj => "cljDisj",
             FormOp::CljMeta => "cljMeta",
             FormOp::CljWithMeta => "cljWithMeta",
+            FormOp::CljConcat => "cljConcat",
         }
     }
 }

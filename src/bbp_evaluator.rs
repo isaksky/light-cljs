@@ -118,7 +118,7 @@ impl Bridge {
                             .map(|p| (p[0], p[1]))
                             .collect::<Vec<_>>(),
                     ),
-                    C::Set => return Err(error("unsupported operation: native set forms")),
+                    C::Set => s.new_form_set(&values),
                 }
                 .map_err(error)?
             }
@@ -288,6 +288,7 @@ impl Bridge {
                     kind: match k {
                         FormKind::List => C::List,
                         FormKind::Vector => C::Vector,
+                        FormKind::Set => C::Set,
                         _ => C::Map,
                     },
                     children: children.into(),

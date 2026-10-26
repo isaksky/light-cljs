@@ -132,7 +132,7 @@
 //! `cljRest(c)`, `cljNext(c)`, `cljCons(x, c)`, `cljNth(c, i)`,
 //! `cljNthOr(c, i, d)`, `cljGet(c, k, d)`, `cljContains(c, k)`,
 //! `cljAssoc(c, k, v)`, `cljDissoc(m, k)`, `cljConj(c, x)`,
-//! `cljDisj(s, x)`, `cljMeta(v)` and `cljWithMeta(v, m)` are further
+//! `cljDisj(s, x)`, `cljConcat(a, b)`, `cljMeta(v)` and `cljWithMeta(v, m)` are further
 //! `form_op` selectors with the semantics of the ClojureScript functions of
 //! those names on forms, strings and `nil`, which light-cljs lowers macro
 //! code to (light-cljs-477): occurrences are transparent, `nil` puns, and
@@ -392,6 +392,7 @@ fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Fault> {
         FormOp::CljDisj => Some(clj::disj(heap, &a(0), &a(1))?),
         FormOp::CljMeta => Some(clj::meta(heap, &a(0))),
         FormOp::CljWithMeta => Some(clj::with_meta(heap, &a(0), &a(1))?),
+        FormOp::CljConcat => Some(clj::concat(heap, &a(0), &a(1))?),
         _ => None,
     };
     if let Some(result) = clj {
@@ -482,7 +483,8 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         | FormOp::CljConj
         | FormOp::CljDisj
         | FormOp::CljMeta
-        | FormOp::CljWithMeta => Value::Undefined,
+        | FormOp::CljWithMeta
+        | FormOp::CljConcat => Value::Undefined,
     })
 }
 
