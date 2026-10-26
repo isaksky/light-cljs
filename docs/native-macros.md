@@ -235,9 +235,10 @@ asserts that a throwing `then` read rejects with its original reason.
 `tests/bbp_proxy_has.rs` compiles a source macro printing `[nil]`, which demands
 the TransitUUID `IUUID`/`IPrintWithWriter` extension through the opaque package
 registry. It produces `"[nil]"`; the same source without a supplied package
-fails explicitly. A separate source fixture preserves the unsupported native
-printer extension on `js/Promise`. Printer dispatch is not weakened and no
-legacy runtime is used for native expansion.
+fails explicitly. A separate source fixture originally preserved the unsupported
+native printer extension on `js/Promise`; after the reader work below adds
+Promise dispatch, that rejection fixture uses `js/Date`. Printer dispatch is
+not weakened and no legacy runtime is used for native expansion.
 
 On the implementation rebased on `964782f7`, both documented Penpot entries
 were rebuilt and rerun natively with the five absolute read-only source roots,
@@ -256,9 +257,9 @@ light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/com
 light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/config.cljs:236:3: macro expansion: while expanding app.common.data.macros/assert!: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/config.cljs:236:3: macro app.common.data.macros/assert!: big-boy-pants-js: Error: /Users/admin/src/light-cljs/research/penpot-light/vendor/promesa/impl.cljc:380:4: extension: unsupported operation: native protocol extension of [object Function]; definition /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/data/macros.cljc:105:1 (bytes 8211..8260)
 ```
 
-The reader service is tracked by light-cljs-516. Neither Penpot entry completes;
-the Promise extension remains an explicit unsupported foreign-constructor
-boundary. The read-only research tree and default backend are unchanged.
+At this checkpoint neither Penpot entry completes: the reader service and the
+Promise extension remain boundaries. Light-cljs-516 below supersedes those two
+errors. The read-only research tree and default backend are unchanged.
 
 Validation at `b438d3fa`, macOS arm64, Homebrew Rust/Cargo 1.99.1 and Node
 26.12.1: a single all-target engine run passes 2,123 tests, and seven doctests
@@ -284,6 +285,126 @@ passes strictly.
 
 V8 compiler validation remains with the orchestrator because its machine cache
 is inaccessible in this sandbox.
+
+### Native reader service (light-cljs-516, 2026-10-26)
+
+Cuerdas `interpolate-ffmt` calls `cljs.reader/read-string` on a placeholder's
+numeric suffix, such as `"2"` in `%2`. The reader facade now calls the shared
+bounded parser with native constructors and native inspection. `createReader`
+in `src/js_runtime.js` is the same parser used by legacy engines and emitted
+applications; `src/bbp_reader.js` supplies its native adapters. Only that parser
+unit is embedded in the native task, without loading a legacy runtime or
+calling an evaluator fallback. The source compiler's code reader remains
+separate: the facade reads data and rejects code-only syntax.
+
+The native service supports strings and escapes, numbers, characters, names,
+collections, metadata, namespaced maps, discard forms, synchronous streams,
+`:eof`, custom `:readers` and `:default` functions, including Clojure callable
+values. It keeps the canonical limits of 1,048,576 input UTF-16 units,
+100,000 parser nodes and 32 active depth levels. Reader error source, line,
+column, offset, category and message follow the canonical parser. Reader-created
+forms keep the legacy macro call-site attribution; supplied EOF values and tag
+results keep their original occurrences and metadata. Invalid metadata targets
+produce catchable reader errors before calling a native intrinsic.
+
+Large reader-created maps and sets retain legacy hash traversal positionally,
+so native traversal and returned compiler forms agree with QuickJS. Fresh maps
+and sets exported by the native bridge use `Scope::form_print_items`, sharing
+the existing printer traversal without changing native lookup or the general
+native seq contract. Coverage includes collection thresholds, nil-first hash
+traversal, updates and large custom-tag results, alongside input-scope restoration.
+
+Tag callbacks run in the task's VM and can suspend for compiler helpers without
+replaying earlier effects. The facade's published initial tag table contains
+shareable entry points. Native forms still have no representation for the
+builtin `#inst`, `#uuid`, `#queue` or `#js` literals: these fail explicitly,
+including when their builtin handlers come from another task's table. Custom
+handlers for those names can return supported native data. Code-profile
+`cljs.core/read-string` and its namespace qualification remain unsupported;
+the new services expose the data profiles used by `cljs.reader` and
+`clojure.edn`. Native `merge` supplies the facade's option-map operations.
+Legacy engines and emitted applications retain their original adapters and
+builtin literals.
+
+Native extension tables also recognize `js/Promise`, so promesa's
+`IPrintWithWriter` extension installs and participates in real dispatch.
+Promise-specific implementations precede object/default fallbacks and use the
+existing declaration frontier and source order. The regression compares
+printing, a user protocol method, `satisfies?` and `implements?` with QuickJS;
+other foreign constructors retain their explicit unsupported boundary.
+
+`tests/bbp_reader.rs` has one differential table for forms, nested metadata,
+exact emitted string units, compiler expression source positions, options,
+custom and callable tags, reader conditionals' rejection, limits and errors.
+Its source fixtures cover the actual reader facade and a callback that demands
+a helper at jobs 1/2/4, observing its before/after effects exactly once. A reduced
+Cuerdas fixture retains `concat`, `interpolate-ffmt` and `ffmt` verbatim, with
+the existing string-repeat reduction; indexed, sequential and escaped-percent
+formats match QuickJS. Separate tests preserve supplied occurrence identity
+and check the unsupported literal boundaries.
+
+At `f5b0d139`, based on `d83372e5` including landed light-cljs-514, both Penpot
+entries were rebuilt and run natively with the five absolute read-only source roots,
+`--jobs 1 --no-cache`, `--optimize none --esm --stats` and every budget in the
+reproduction below. Both pass the former reader and Promise extension errors.
+Both `--entry app.render` and `--entry app.main` exit 1 with this exact next
+diagnostic, tracked by light-cljs-518:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:893:4: macro expansion: while expanding fnc: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:893:4: macro rumext.v2/fnc: big-boy-pants-js: Error: unsupported operation: native macro runtime core.reduceKv; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:320:1 (bytes 27920..28218)
+```
+
+Neither Penpot entry completes, and `research/` was left untouched.
+
+Verification on macOS arm64, Homebrew Rust/Cargo 1.99.1 and Node 26.12.1:
+
+- Native-only nextest passes 121 targeted tests: all 75 macro integration
+  tests, seven reader/Promise tests, two Proxy source tests and 37 native
+  evaluator tests. This run covers `f5b0d139`.
+- With `bbp-macros,quickjs`, library, binary and those integration targets pass
+  420 tests with one normally ignored test, including the expanded collection
+  table and its explicit `undefined` registration assertion.
+- The QuickJS-only library, binaries and every available integration target
+  other than `compiler` run 824 tests: 822 pass, 52 are normally skipped, and
+  two retain the established environment failures. `playground_crate_checks_for_wasm32`
+  discovers `/Users/admin/src/light-cljs/Cargo.toml` as its enclosing workspace;
+  `a_failed_restart_waits_for_work` cannot spawn `ps` (`PermissionDenied`,
+  `Operation not permitted`). Both failures reproduce alone.
+- The `compiler` target cannot build its eight missing pinned research
+  includes. Running its existing reader, map-reader and runtime-manifest
+  modules through a temporary `rustc --test` runner under `target/` passes 43
+  tests with one normally ignored test. The manifest's existing update test
+  regenerates the `requires` headers; no second test implementation is added.
+
+The full default V8 suite remains with the orchestrator because the machine
+cache is inaccessible. The engine's all-target suite passes 2,123 tests and
+its doctests pass seven, covering the shared traversal helper and Scope API.
+Its native integration checks include the landed Proxy implementation.
+
+Both formatter checks and the direct JavaScript runtime checks pass. Strict
+engine Clippy retains the same eight library/nine all-target diagnostics in
+`deprecated`, `clippy::chunks_exact_to_as_chunks` and
+`clippy::byte_char_slices`. Allowing only those categories passes all engine
+targets and the native/native-plus-QuickJS library, binary and macro/source
+targets. QuickJS-only and engine-free library/binary Clippy pass strictly.
+Full compiler all-target lint remains blocked by the eight missing includes.
+
+The compiler feature checks use three Cargo build jobs and eight test workers,
+with feature configurations run sequentially:
+
+```sh
+CARGO_BUILD_JOBS=3 cargo nextest run --locked --no-default-features \
+  --features bbp-macros --lib --test bbp_macros --test bbp_reader --test bbp_proxy_has -j 8 \
+  -E 'binary(bbp_macros) | binary(bbp_reader) | binary(bbp_proxy_has) | test(bbp_evaluator::tests::)'
+CARGO_BUILD_JOBS=3 cargo nextest run --locked --no-default-features \
+  --features bbp-macros,quickjs --lib --bins \
+  --test bbp_macros --test bbp_reader --test bbp_proxy_has -j 8
+CARGO_BUILD_JOBS=3 cargo nextest run --locked --no-default-features --features quickjs \
+  --lib --bins --test artifact_store --test benchmark_variants --test cache_matrix \
+  --test cli --test compiler_cache --test config_file --test dev_nrepl --test dev_repl \
+  --test dev_server --test dev_watch --test evaluation --test execution --test frontend \
+  --test provenance --test v8_cache --no-fail-fast -j 8
+```
 
 ### Bootstrap macro audit (light-cljs-509, 2026-10-26)
 
