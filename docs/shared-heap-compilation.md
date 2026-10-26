@@ -311,40 +311,44 @@ timeouts, raw diagnostics/resource samples and unavailable metrics are in
 
 ### Deferred units across the pool (October 26, 2026)
 
-light-cljs-481's checkpoint, on the native-only release compiler at its
-commit (Apple M3 Ultra, load average about 3), cache off, one run per cell.
-Both full projects are still unsupported at `--jobs 1`, now later: the
-generated 200k project (seed 42) at `workload.fonam/zalstok` ("native set
-forms"), Penpot `app.main` at `cuerdas.core/unsafe-concat` ("native macro
-runtime core.comp"), both light-cljs-477's surface. The largest supported
-workloads are therefore the pool fixtures of `tests/bbp_macros.rs` and a
-generated chain of eight namespaces, each requiring the previous, with 50
-helper/macro/caller triples apiece (400 helpers, all demanded on use).
+light-cljs-481's checkpoint, on the native-only release compiler rebased on
+light-cljs-477's native collections (Apple M3 Ultra, load average about 3),
+cache off, one run per cell. Both full projects are still unsupported at
+`--jobs 1`, now later: the generated 200k project (seed 42) at
+`workload.fonam/buvaiskum` ("native macro runtime core.mapSeq", lazy
+sequences, light-cljs-479), Penpot `app.main` at `cuerdas.core/unsafe-concat`
+("native macro runtime core.comp"). The largest supported workloads are
+therefore the pool fixtures of `tests/bbp_macros.rs` and a generated chain of
+eight namespaces, each requiring the previous, with 50 helper/macro/caller
+triples apiece (400 helpers, all demanded on use).
 
 Before this checkpoint the chain failed at `--jobs 2` and above with
 `cannot read property 'call' of undefined`: a producer task took
 registrations its worker's engine never got. Now JavaScript and source maps
 are identical at 1, 2, 4 and 8 jobs, and the pool fixtures pass 576 perturbed
-builds over 12 seeds. On the chain, `--jobs 1` went from 25.1 s and 745 MB
-RSS to 9.8 s and 334 MB (shared unit factories, block registration replay):
+builds over 12 seeds. Before this work (`c5ac529d`) the chain took 25.1 s and
+745 MB RSS at `--jobs 1`; with shared unit factories and block registration
+replay it takes 9.5 s and 333 MB. Every helper value now publishes, so helper
+initializations equal the serial count at every N (400 here, 4 on the
+three-namespace stress fixture, 24 on the twelve-helper one):
 
 | Jobs | Wall | vs 1 | Peak RSS | vs 1 | Helper inits | Task contexts |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 9.8 s | 1.00 | 334 MB | 1.00 | 400 | 401 |
-| 2 | 11.9 s | 1.21 | 376 MB | 1.13 | 400 | 402 |
-| 4 | 25.8 s | 2.62 | 465 MB | 1.39 | 400 | 404 |
-| 8 | 41.2 s | 4.19 | 596 MB | 1.78 | 400 | 408 |
+| 1 | 9.5 s | 1.00 | 333 MB | 1.00 | 400 | 401 |
+| 2 | 11.5 s | 1.21 | 388 MB | 1.16 | 400 | 402 |
+| 4 | 24.9 s | 2.62 | 461 MB | 1.38 | 400 | 404 |
+| 8 | 50.0 s | 5.25 | 603 MB | 1.81 | 400 | 408 |
 
 The chain is serial by construction, so this measures overhead, not
-speedup. An 8-second sample at eight jobs is mostly condition-variable and
-mutex waits; of the rest, about three quarters is stop-the-world `Heap::mark_and_sweep`
-with its SipHash mark set, the cost light-cljs-495 covers, which every
-worker waits out. Helper initializations equal the serial count here, where
-each helper has one consumer, but not on the three-namespace stress fixture
-(4 at one job, 9 at four, 13 at eight), because helper values do not publish
-yet. Each worker with a macro unit still boots its own task context. The
-chain also retains about 1 MB per macro call at `--jobs 1`, even without
-helpers. No same-commit Stage A (V8) comparison was run.
+speedup, and both targets are missed. An 8-second sample at eight jobs is
+mostly condition-variable and mutex waits; of the rest, about three quarters
+is stop-the-world `Heap::mark_and_sweep` with its SipHash mark set, the cost
+light-cljs-495 covers, which every worker waits out. Each worker slot that
+analyzes a macro unit still boots its own task context, installs every
+catalog registration into it and evaluates the source macros it calls, so
+the heap grows with the worker count. The chain also retains about 1 MB per
+macro call at `--jobs 1`, even without helpers (light-cljs-499). No
+same-commit Stage A (V8) comparison was run.
 
 ### Single-thread speed
 

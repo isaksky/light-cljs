@@ -214,9 +214,9 @@ bbp-macros --test bbp_macros native_pool_builds` (debug builds only).
 Worker engines are still per slot: each slot that analyzes a macro unit boots
 its own task, installs the catalog's registrations and evaluates the source
 macros it calls, and helper values that do not publish initialize once in
-each task that consumes them. No helper value in the pool fixtures publishes
-yet (`native.helpers.published` is 0), so a helper several tasks consume
-initializes more often than at `--jobs 1`.
+each task that consumes them. Every helper value in the pool fixtures
+publishes, so their helper initializations equal the `--jobs 1` count at
+every slot count.
 
 Consumer cancellation withdraws that task's waits without cancelling a shared
 producer or another consumer. Build cancellation stops the shared execution

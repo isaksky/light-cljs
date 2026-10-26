@@ -1584,10 +1584,15 @@ fn native_pool_builds_match_one_slot_under_seeded_scheduling_stress() {
                         build, reference,
                         "{entry}: seed {seed}, {slots} slots, mode {mode}"
                     );
-                    // Each helper factory is compiled once per build; its
-                    // per-task initializations still grow with the tasks
-                    // that consume it until helper values publish.
+                    // Each helper factory is compiled once per build, and
+                    // each helper, whose value publishes, initializes as
+                    // often as at one slot.
                     assert_eq!(counts.compiled, serial.compiled);
+                    assert_eq!(
+                        (counts.published, counts.per_task),
+                        (serial.published, serial.per_task),
+                        "{entry}: seed {seed}, {slots} slots, mode {mode}"
+                    );
                 }
             }
         }
