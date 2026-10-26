@@ -286,6 +286,10 @@ allocator overhead and fragmentation, Rust and VM stacks of running frames,
 transient values that exist only within one leaf step (bounded by the step's
 inputs), and the embedder's own data. Accounted bytes therefore approximate and
 do not bound RSS; `docs/measurement.md` records the realm's accounted footprint.
+Known retained-storage gaps, not yet charged: the cached flat copy of an
+accumulated rope whose first piece was shared (light-cljs-491), and strings
+produced by string index reads and the Date formatters (light-cljs-492). The
+two heap-limit exception messages share one uncharged body each.
 
 A denial fails the requesting operation with `VmErrorKind::HeapLimit`,
 catchable as the primitive string `heap byte limit exceeded` (no Error object
