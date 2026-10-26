@@ -139,6 +139,14 @@ fn native_core_services_match_quickjs() {
             "[\"a\" 1 \"a\" [\"a a\" \" a\"] \"a\" 2]",
         ),
         (
+            r#"(let [x (with-meta 'props {:old true}) v vary-meta seen (js/Array.)
+                     result (v x (fn [m k value] (.push seen (str k)) (assoc m k value)) :tag 'js)]
+                [(= x result) (meta result) (meta x) (= (meta x) (meta (v x identity)))
+                 (vary-meta nil (fn [m] (.push seen (nil? m)) {:tag true}))
+                 (vec seen) (meta (vary-meta (with-meta 'props {:source true}) assoc :tag 'js))])"#,
+            "[true {:old true, :tag js} {:old true} true nil [\":tag\" true] {:source true, :tag js}]",
+        ),
+        (
             r#"[(mapv true? [true false nil 0 1 "true" :true])
                 (let [p true?] (p true))]"#,
             "[[true false false false false false false] true]",
@@ -1968,6 +1976,10 @@ fn declaration_bundle_registration_preserves_preloaded_roots_and_defers_its_code
 
 #[test]
 fn unsupported_operations_are_explicit_and_do_not_fall_back() {
+    assert_native_matches_legacy(
+        "(defmacro sorted [] (sorted-map 1 2)) (js/console.log (pr-str (sorted)))",
+        "{1 2}\n",
+    );
     for (source, expected) in [
         (
             "(defprotocol Sample (value [this])) (defmacro demand [] Sample) (demand)",
@@ -1977,10 +1989,10 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
             "(defmacro lazy-result [] (take 3 (cycle [1 2]))) (lazy-result)",
             "unsupported operation: native macro runtime core.cycle",
         ),
-        // Sorted collections and transients remain JavaScript-only types.
+        // Custom sorted comparators and transients remain unsupported.
         (
-            "(defmacro sorted [] (sorted-map 1 2)) (sorted)",
-            "unsupported operation: native macro runtime core.sortedMap",
+            "(defmacro sorted [] (sorted-map-by > 1 2)) (sorted)",
+            "unsupported operation: native macro runtime core.sortedMapBy",
         ),
         (
             "(defmacro edit [] (transient [])) (edit)",
