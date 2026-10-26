@@ -811,6 +811,39 @@ fn scalar_predicates_and_callable_collections_preserve_occurrences() {
     assert_eq!(result.view(), ValueView::Bool(true));
 }
 
+#[test]
+fn map_entry_calls_require_exact_indices_and_preserve_stored_occurrences() {
+    let rt = Runtime::new();
+    let [zero, no] = rt.scope(|s| {
+        [Primitive::Number(-0.0), Primitive::Bool(false)].map(|value| {
+            let value = s.primitive(value);
+            let occurrence = s.new_occurrence(value, at(1, 1)).unwrap();
+            s.persist(occurrence)
+        })
+    });
+    let result = call(
+        &rt,
+        r#"function check(zero, no) {
+        const entry = __rt.cljFirst(__rt.formMap(zero, no));
+        if (__rt.cljInvoke(entry, zero, null) !== zero ||
+            __rt.cljInvoke(entry, 1, null) !== no) throw new Error('entry identity');
+        for (const index of [0.5, 1.5, -0.5, 2, NaN, Infinity, '0']) {
+            let message;
+            try { __rt.cljInvoke(entry, index, null); } catch (e) { message = e.message; }
+            if (message !== 'Index out of bounds') throw new Error('entry bounds');
+        }
+        // Entry and vector keys still compare and hash alike.
+        const vector = __rt.formVector(zero, no);
+        const map = __rt.formMap(entry, no);
+        return __rt.cljGet(map, vector, null) === no &&
+               __rt.cljInvoke(vector, 0.5, null) === zero &&
+               __rt.cljInvoke(__rt.cljWithMeta(entry, null), 1.5, null) === no;
+    }"#,
+        &[&zero, &no],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
 /// Form operations reject other values with a `Collection` error naming the
 /// expected and found kinds; the SameValueZero collections keep their own
 /// identity-keyed contract and are not forms.

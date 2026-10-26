@@ -2054,6 +2054,28 @@ fn function_combinators_match_the_legacy_compiler_and_run() {
 }
 
 #[test]
+fn native_map_entry_calls_match_legacy() {
+    assert_native_matches_legacy(
+        r#"(defmacro m []
+            (let [e (first {:a 1}) v [:a 1] c comp
+                  message (fn [f x]
+                            (try (f x) (catch :default e (.-message e))))]
+              [(e 0) (e 1) ((comp identity e) 0) ((c identity e) 1)
+               (message e 0.5) (message e 1.5)
+               (message (comp identity e) 0.5) (message (comp identity e) 1.5)
+               (message (c identity e) 0.5) (message (c identity e) 1.5)
+               (v 0.5) (v 1.5) ((comp identity v) 0.5) ((c identity v) 1.5)
+               ((vec e) 0.5) ((with-meta e nil) 0.5)
+               ((with-meta e {:tag true}) 1.5)
+               ((assoc e 0 :a) 0.5) ((assoc e 1 2) 1.5) ((conj e 2) 2.5)]))
+           (js/console.log (pr-str (m)))"#,
+        "[:a 1 :a 1 \"Index out of bounds\" \"Index out of bounds\" \
+         \"Index out of bounds\" \"Index out of bounds\" \"Index out of bounds\" \
+         \"Index out of bounds\" :a 1 :a 1 :a :a 1 :a 2 2]\n",
+    );
+}
+
+#[test]
 fn native_callable_objects_keep_the_legacy_call_abi() {
     assert_native_matches_legacy(
         r#"(defmacro m []

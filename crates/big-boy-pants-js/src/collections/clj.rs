@@ -32,7 +32,8 @@
 //! * **Unchanged updates return their input.** An `assoc` of an identical
 //!   value, a `dissoc` or `disj` of an absent key, a `conj` of a present set
 //!   member and `with-meta` of the same metadata return the operand itself
-//!   (the occurrence, if it was one).
+//!   (the occurrence, if it was one). A map seq entry's `assoc`, `conj`
+//!   and `with-meta` instead produce ordinary vectors.
 //!
 //! A value of a kind the operation does not support (a number for `seq`, a
 //! JavaScript object for `count`) fails with a catchable JavaScript
@@ -164,7 +165,7 @@ fn code_unit(heap: &Heap, s: &JsString, index: usize) -> Result<Option<Value>> {
 
 /// A map entry as the two-element form vector `seq` yields.
 fn entry(heap: &Heap, key: &Value, value: &Value) -> Result<Value> {
-    Ok(form::new_vector(heap, &[key.clone(), value.clone()])?)
+    Ok(form::new_map_entry(heap, key, value)?)
 }
 
 /// The elements `seq` of `v` would hold, or `None` for `nil`. A lazy or
@@ -865,7 +866,11 @@ pub(crate) fn invoke(heap: &Heap, f: &Value, arg: &Value, default: &Value) -> Re
         Shape::Form(FormKind::Map | FormKind::Set, _) => get(heap, f, arg, default),
         Shape::Form(FormKind::Vector, vector) => {
             let Value::Number(index) = form::unwrap(heap, arg.clone()) else {
-                return Err(CljError::Operands("Key must be integer"));
+                return Err(CljError::Operands(if vector.is_map_entry() {
+                    "Index out of bounds"
+                } else {
+                    "Key must be integer"
+                }));
             };
             let FormBody::Vector(items) = vector.body() else {
                 unreachable!("a vector shape has a vector body");
@@ -873,7 +878,13 @@ pub(crate) fn invoke(heap: &Heap, f: &Value, arg: &Value, default: &Value) -> Re
             // The legacy callable checks numeric bounds before its bitwise
             // indexing truncates a fractional index. Keep nth/get's index
             // contract separate, including rejection of negative fractions.
-            if index >= 0.0 && index < items.len() as f64 {
+            // Map entries instead accept only exact 0/1 indices.
+            let in_bounds = if vector.is_map_entry() {
+                index == 0.0 || index == 1.0
+            } else {
+                index >= 0.0 && index < items.len() as f64
+            };
+            if in_bounds {
                 Ok(items.get(index as usize).expect("index within bounds"))
             } else {
                 Err(CljError::Operands("Index out of bounds"))

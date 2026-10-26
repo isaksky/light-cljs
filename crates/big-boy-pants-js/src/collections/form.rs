@@ -111,6 +111,9 @@
 //! task returns unchanged is the same object Rust gave it, and a no-op
 //! update (`assoc` of an identical value, `dissoc` of an absent key,
 //! `with_meta` of the same metadata) returns its input object itself.
+//! Map seq entries have vector equality and hashing but exact 0/1 call
+//! indices; their `assoc`, `conj` and `with_meta` produce ordinary vectors,
+//! including when the element or metadata is unchanged.
 //!
 //! # Exact literals and provenance
 //!
@@ -425,6 +428,9 @@ pub(crate) struct StructBody {
 pub(crate) struct FormObject {
     body: FormBody,
     meta: Option<Value>,
+    /// A map's seq entry has a vector body but requires exact 0/1 call
+    /// indices. Vector-producing updates and `with-meta` clear this flag.
+    map_entry: bool,
     /// [`hash`] of this value, computed once (metadata-independent). An
     /// interior cache, not an edge or part of the value: readers of the
     /// frozen body may race to set it, and every writer stores the same
@@ -437,11 +443,13 @@ impl FormObject {
         FormObject {
             body,
             meta,
+            map_entry: false,
             hash: OnceLock::new(),
         }
     }
 
-    /// A copy with other metadata, keeping the cached hash.
+    /// A copy with other metadata, keeping the cached hash. A map entry
+    /// becomes an ordinary vector, as in the legacy runtime.
     fn with_meta(&self, meta: Option<Value>) -> FormObject {
         let hash = OnceLock::new();
         if let Some(h) = self.hash.get() {
@@ -450,6 +458,7 @@ impl FormObject {
         FormObject {
             body: self.body.clone(),
             meta,
+            map_entry: false,
             hash,
         }
     }
@@ -492,6 +501,10 @@ impl FormObject {
 
     pub(crate) fn body(&self) -> &FormBody {
         &self.body
+    }
+
+    pub(crate) fn is_map_entry(&self) -> bool {
+        self.map_entry
     }
 
     pub(crate) fn meta(&self) -> Option<&Value> {
@@ -715,6 +728,20 @@ pub(crate) fn list_sharing(
 pub(crate) fn new_vector(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
     let body = FormBody::Vector(PVector::try_from_values(heap, items)?);
     alloc(heap, FormObject::new(body, None), items)
+}
+
+/// A map's seq entry: vector equality, hashing and export, but exact
+/// indexing when called (the legacy runtime's `MapEntryType`).
+pub(crate) fn new_map_entry(
+    heap: &Heap,
+    key: &Value,
+    value: &Value,
+) -> Result<Value, CollectionError> {
+    let items = [key.clone(), value.clone()];
+    let body = FormBody::Vector(PVector::try_from_values(heap, &items)?);
+    let mut object = FormObject::new(body, None);
+    object.map_entry = true;
+    alloc(heap, object, &items)
 }
 
 /// A new map; a later duplicate (equal) key replaces an earlier one's
@@ -1340,7 +1367,7 @@ pub(crate) fn assoc(
                 let old = items
                     .get(index)
                     .ok_or(CollectionError::IndexOutOfBounds { index, count })?;
-                if identical(&old, &value) {
+                if !f.is_map_entry() && identical(&old, &value) {
                     return Ok(coll.clone());
                 }
                 items.try_set(heap, index, value)?
@@ -1432,7 +1459,7 @@ pub(crate) fn with_meta(heap: &Heap, v: &Value, meta: &Value) -> Result<Value, C
         (Some(a), Some(b)) => a.same_object(b),
         _ => false,
     };
-    if same {
+    if same && !f.is_map_entry() {
         return Ok(v.clone());
     }
     let parts: Vec<Value> = std::iter::once(v.clone()).chain(meta.clone()).collect();
