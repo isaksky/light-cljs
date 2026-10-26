@@ -710,11 +710,12 @@ struct ArrayJoin {
     len: u64,
     next: u64,
     parts: Vec<(JsString, usize, usize)>,
+    parts_reservation: crate::heap::budget::ByteReservation,
     units: usize,
 }
 
 impl ArrayJoin {
-    fn append(&mut self, text: JsString) -> Result<(), Fault> {
+    fn append(&mut self, heap: &Heap, text: JsString) -> Result<(), Fault> {
         let len = text.len();
         self.units = self
             .units
@@ -722,7 +723,10 @@ impl ArrayJoin {
             .filter(|n| *n <= crate::value::string::MAX_STRING_LEN)
             .ok_or(Fault::StringTooLong)?;
         if len != 0 {
+            let charge = heap.reserve_bytes(128).ok_or(Fault::HeapLimit)?;
+            let text = text.import(heap).ok_or(Fault::HeapLimit)?;
             self.parts.push((text, 0, len));
+            self.parts_reservation.merge(charge);
         }
         Ok(())
     }
@@ -733,7 +737,7 @@ impl ArrayJoin {
             return Ok(Action::ToString(value));
         }
         if !matches!(value, Value::Undefined | Value::Null) {
-            self.append(dispatch::to_js_string_accounted(heap, &value)?)?;
+            self.append(heap, dispatch::to_js_string_accounted(heap, &value)?)?;
         }
         self.next += 1;
         self.stage = JoinStage::Element;
@@ -793,7 +797,7 @@ impl ArrayJoin {
                     let Value::String(separator) = &self.separator else {
                         return Err(Fault::Internal("join separator is not a string"));
                     };
-                    self.append(separator.clone())?;
+                    self.append(heap, separator.clone())?;
                 }
                 self.stage = JoinStage::ElementValue;
                 match property::read(heap, task, &self.this, &index_key(self.next))? {
@@ -816,7 +820,7 @@ impl ArrayJoin {
                 let Input::CallResult(Value::String(text)) = input else {
                     return Err(Fault::Internal("join expected element string"));
                 };
-                self.append(text)?;
+                self.append(heap, text)?;
                 self.next += 1;
                 self.stage = JoinStage::Element;
                 Ok(Action::Continue)
@@ -2690,6 +2694,7 @@ fn start_builtin_slow(
                     len: view.length as u64,
                     next: 0,
                     parts: vec![],
+                    parts_reservation: Default::default(),
                     units: 0,
                 })))
             }
@@ -2709,6 +2714,7 @@ fn start_builtin_slow(
                 len: 0,
                 next: 0,
                 parts: vec![],
+                parts_reservation: Default::default(),
                 units: 0,
             }))),
             Builtin::ArrayPrototypeToString => Some(NativeState::ArrayToString {
@@ -5918,6 +5924,7 @@ mod tests {
             len: 2,
             next: 1,
             parts: vec![],
+            parts_reservation: Default::default(),
             units: crate::value::string::MAX_STRING_LEN - 1,
         };
         assert!(matches!(
@@ -5925,9 +5932,9 @@ mod tests {
             Err(Fault::StringTooLong)
         ));
         join.units = crate::value::string::MAX_STRING_LEN;
-        assert!(join.append(JsString::from("")).is_ok());
+        assert!(join.append(&heap, JsString::from("")).is_ok());
         assert!(matches!(
-            join.append(JsString::from("x")),
+            join.append(&heap, JsString::from("x")),
             Err(Fault::StringTooLong)
         ));
     }

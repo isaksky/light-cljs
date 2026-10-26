@@ -27,6 +27,7 @@ pub(super) struct StringRaw {
     len: u64,
     next: u64,
     parts: Vec<(JsString, usize, usize)>,
+    parts_reservation: crate::heap::budget::ByteReservation,
     units: usize,
 }
 
@@ -60,6 +61,7 @@ impl StringRaw {
             len: 0,
             next: 0,
             parts: vec![],
+            parts_reservation: Default::default(),
             units: 0,
         })
     }
@@ -79,7 +81,7 @@ impl StringRaw {
         .map(Some)
     }
 
-    fn append(&mut self, text: JsString) -> Result<Action, Fault> {
+    fn append(&mut self, heap: &Heap, text: JsString) -> Result<Action, Fault> {
         let len = text.len();
         self.units = self
             .units
@@ -87,7 +89,10 @@ impl StringRaw {
             .filter(|n| *n <= crate::value::string::MAX_STRING_LEN)
             .ok_or(Fault::StringTooLong)?;
         if len != 0 {
+            let charge = heap.reserve_bytes(128).ok_or(Fault::HeapLimit)?;
+            let text = text.import(heap).ok_or(Fault::HeapLimit)?;
             self.parts.push((text, 0, len));
+            self.parts_reservation.merge(charge);
         }
         Ok(Action::Continue)
     }
@@ -161,14 +166,14 @@ impl StringRaw {
                     return Ok(Action::ToString(value));
                 }
                 self.stage = Stage::Substitution;
-                self.append(dispatch::to_js_string(&value)?)
+                self.append(heap, dispatch::to_js_string_accounted(heap, &value)?)
             }
             Stage::ElementString => {
                 let Value::String(text) = Self::value(input)? else {
                     return Err(Fault::Internal("String.raw expected string"));
                 };
                 self.stage = Stage::Substitution;
-                self.append(text)
+                self.append(heap, text)
             }
             Stage::Substitution => {
                 self.next += 1;
@@ -186,7 +191,9 @@ impl StringRaw {
                         self.stage = Stage::SubstitutionString;
                         Ok(Action::ToString(value))
                     }
-                    Some(value) => self.append(dispatch::to_js_string(&value)?),
+                    Some(value) => {
+                        self.append(heap, dispatch::to_js_string_accounted(heap, &value)?)
+                    }
                     None => Ok(Action::Continue),
                 }
             }
@@ -195,7 +202,7 @@ impl StringRaw {
                     return Err(Fault::Internal("String.raw expected substitution string"));
                 };
                 self.stage = Stage::Element;
-                self.append(text)
+                self.append(heap, text)
             }
             _ => Err(Fault::Internal("invalid String.raw stage")),
         }

@@ -63,6 +63,7 @@ pub(super) struct State {
     max_significant: Option<usize>,
     to_parts: bool,
     parts: std::collections::VecDeque<(&'static str, String)>,
+    parts_reservation: Option<std::sync::Arc<crate::heap::budget::ByteReservation>>,
     result: Value,
 }
 impl Trace for State {
@@ -116,6 +117,7 @@ impl State {
             max_significant: None,
             to_parts: which == builtin::Builtin::IntlNumberFormatToParts,
             parts: Default::default(),
+            parts_reservation: None,
             result: Value::Undefined,
         })
     }
@@ -385,12 +387,16 @@ impl State {
                 } else {
                     let slots = number_format::record(heap, task, &self.this)?;
                     if self.to_parts {
-                        self.parts = slots.parts(&self.argument)?.into();
+                        let (parts, charge) = slots.parts_accounted(heap, &self.argument)?;
+                        self.parts = parts.into();
+                        self.parts_reservation = charge;
                         self.result = property::new_array(heap, task)?;
                         self.stage = Stage::Parts;
                         Ok(Action::Continue)
                     } else {
-                        slots.format(&self.argument).map(Action::Return)
+                        slots
+                            .format_accounted(heap, &self.argument)
+                            .map(Action::Return)
                     }
                 }
             }
@@ -408,7 +414,13 @@ impl State {
                     task,
                     [
                         ("type", Value::String(JsString::from(kind))),
-                        ("value", Value::String(JsString::from(text.as_str()))),
+                        (
+                            "value",
+                            Value::String(
+                                JsString::from(text.as_str())
+                                    .with_reservation(self.parts_reservation.clone()),
+                            ),
+                        ),
                     ],
                 )?;
                 property::append(heap, task, &self.result, Some(item))?;

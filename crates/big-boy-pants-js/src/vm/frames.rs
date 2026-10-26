@@ -406,11 +406,7 @@ impl VmState {
             .saturating_sub(top.base)
             .saturating_add(top.arguments.as_ref().map_or(0, Vec::capacity));
         let handlers = self.handlers.iter().filter(|h| h.frame >= index).count();
-        let natives = self
-            .natives
-            .iter()
-            .filter(|n| n.depth() >= index + 1)
-            .count();
+        let natives = self.natives.iter().filter(|n| n.depth() > index).count();
         let bytes = values
             .checked_mul(std::mem::size_of::<Value>())
             .and_then(|n| handlers.checked_mul(512).and_then(|h| n.checked_add(h)))

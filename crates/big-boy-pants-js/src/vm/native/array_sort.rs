@@ -31,6 +31,7 @@ pub(super) struct State {
     copy: bool,
     result: Value,
     source: Vec<Value>,
+    reservation: crate::heap::budget::ByteReservation,
     destination: Vec<Value>,
     length: u64,
     index: u64,
@@ -67,6 +68,7 @@ impl State {
             copy,
             result: Value::Undefined,
             source: Vec::new(),
+            reservation: Default::default(),
             destination: Vec::new(),
             length: 0,
             index: 0,
@@ -179,7 +181,12 @@ impl State {
                 }
             }
             Stage::Element => {
-                self.source.push(Self::value(input)?);
+                let value = Self::value(input)?;
+                let charge = heap
+                    .reserve_bytes(4 * std::mem::size_of::<Value>() + 64)
+                    .ok_or(Fault::HeapLimit)?;
+                self.source.push(value);
+                self.reservation.merge(charge);
                 self.stage = Stage::Scan;
                 Ok(Action::Continue)
             }

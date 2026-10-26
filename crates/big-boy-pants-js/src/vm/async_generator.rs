@@ -32,6 +32,7 @@ impl Trace for Request {
 #[derive(Debug, Default)]
 pub(crate) struct Data {
     queue: VecDeque<Request>,
+    queue_reservation: crate::heap::budget::ByteReservation,
     busy: bool,
 }
 impl Trace for Data {
@@ -269,6 +270,27 @@ pub(crate) fn enqueue(
             _ => unreachable!(),
         })
         .ok_or(Fault::Internal("async generator reclaimed"))?;
+    // Admit geometric queue capacity before installing a native boundary.
+    let capacity = heap
+        .read(id, |o| match o {
+            HeapObject::Generator(g) => {
+                let queue = &g.asynchronous.as_ref().unwrap().queue;
+                if queue.len() == queue.capacity() {
+                    queue.capacity().max(4)
+                } else {
+                    0
+                }
+            }
+            _ => unreachable!(),
+        })
+        .ok_or(Fault::Internal("async generator reclaimed"))?;
+    let charge = heap
+        .reserve_bytes(
+            capacity
+                .checked_mul(std::mem::size_of::<Request>())
+                .ok_or(Fault::HeapLimit)?,
+        )
+        .ok_or(Fault::HeapLimit)?;
     // Reserve the native boundary and catch handler before claiming the
     // queue, so a limit cannot leave it marked busy without a driver.
     if start {
@@ -278,6 +300,7 @@ pub(crate) fn enqueue(
         HeapObject::Generator(g) => {
             let a = g.asynchronous.as_mut().unwrap();
             a.queue.push_back(request);
+            a.queue_reservation.merge(charge);
             a.busy = true;
         }
         _ => unreachable!(),

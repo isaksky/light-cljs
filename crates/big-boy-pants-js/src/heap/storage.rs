@@ -1056,7 +1056,7 @@ mod tests {
     const OTHER: TaskId = TaskId::from_raw(2);
 
     fn owned(heap: &Heap, owner: TaskId) -> ObjectId {
-        heap.alloc(HeapObject::Plain(OrdinaryObject::new(&heap, Some(owner))))
+        heap.alloc(HeapObject::Plain(OrdinaryObject::new(heap, Some(owner))))
             .unwrap()
     }
 

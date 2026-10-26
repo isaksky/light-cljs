@@ -143,6 +143,11 @@ impl ByteReservation {
             budget.used.fetch_sub(bytes, Ordering::Relaxed);
         }
     }
+    pub(crate) fn shrink_to(&mut self, bytes: usize) {
+        if self.is_charged() && self.bytes > bytes {
+            self.refund(self.bytes - bytes);
+        }
+    }
     pub(crate) fn is_charged(&self) -> bool {
         self.budget.is_some()
     }
@@ -293,6 +298,11 @@ mod tests {
         for expression in [
             "'x'.repeat(1000000)",
             "1n << 1000000n",
+            "Array.prototype.join.call({length: 100000})",
+            "String.raw({raw: {length: 100000}})",
+            "JSON.stringify(new Array(100000))",
+            "new Intl.NumberFormat().format(\"1e9999\")",
+            "new Intl.NumberFormat().formatToParts(\"1e9999\")",
             "BigInt('9'.repeat(40000))",
             "('x'.repeat(20000)).normalize('NFKD')",
         ] {

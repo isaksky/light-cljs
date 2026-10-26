@@ -761,6 +761,7 @@ pub(super) struct Stringifier {
     active: HashSet<ObjectId>,
     stage: StringifyStage,
     parts: Vec<(JsString, usize, usize)>,
+    parts_reservation: crate::heap::budget::ByteReservation,
     units: usize,
 }
 
@@ -789,6 +790,7 @@ impl Stringifier {
             active: HashSet::new(),
             stage: StringifyStage::Space,
             parts: Vec::new(),
+            parts_reservation: Default::default(),
             units: 0,
         }
     }
@@ -821,11 +823,11 @@ impl Stringifier {
         };
     }
 
-    fn indent(&mut self, depth: usize, after: AfterIndent) -> Result<(), Fault> {
+    fn indent(&mut self, heap: &Heap, depth: usize, after: AfterIndent) -> Result<(), Fault> {
         if self.gap.is_empty() {
             self.after_indent(after);
         } else {
-            self.append(JsString::from("\n"))?;
+            self.append(heap, JsString::from("\n"))?;
             self.stage = StringifyStage::Indent {
                 remaining: depth * self.gap.len(),
                 after,
@@ -834,7 +836,7 @@ impl Stringifier {
         Ok(())
     }
 
-    fn append(&mut self, text: JsString) -> Result<(), Fault> {
+    fn append(&mut self, heap: &Heap, text: JsString) -> Result<(), Fault> {
         self.units = self
             .units
             .checked_add(text.len())
@@ -842,7 +844,10 @@ impl Stringifier {
             .ok_or(Fault::StringTooLong)?;
         if !text.is_empty() {
             let len = text.len();
+            let charge = heap.reserve_bytes(128).ok_or(Fault::HeapLimit)?;
+            let text = text.import(heap).ok_or(Fault::HeapLimit)?;
             self.parts.push((text, 0, len));
+            self.parts_reservation.merge(charge);
         }
         Ok(())
     }
@@ -887,7 +892,7 @@ impl Stringifier {
             })
             .ok_or(Fault::Internal("JSON.stringify object reclaimed"))??;
         let members = if let Some(len) = len {
-            self.append(JsString::from("["))?;
+            self.append(heap, JsString::from("["))?;
             Members::Array { next: 0, len }
         } else {
             if super::proxy::inspect(heap, task, id)?.is_some() {
@@ -898,7 +903,7 @@ impl Stringifier {
             check_key_snapshot(heap, task, id)?;
             let mut keys = keys::own_property_keys(heap, task, id, keys::KeyFilter::Enumerable)?;
             keys.retain(|key| !matches!(key.key, property::Key::Symbol(_)));
-            self.append(JsString::from("{"))?;
+            self.append(heap, JsString::from("{"))?;
             Members::Object {
                 keys: keys.into_iter(),
                 emitted: false,
@@ -953,7 +958,7 @@ impl Stringifier {
                             enumerable: true,
                         });
                     }
-                    self.append(JsString::from("{"))?;
+                    self.append(heap, JsString::from("{"))?;
                     let Value::Object(id) = self.value else {
                         return Err(Fault::Internal("Proxy JSON container"));
                     };
@@ -1101,17 +1106,17 @@ impl Stringifier {
                     let comma = *emitted;
                     *emitted = true;
                     if comma {
-                        self.append(JsString::from(","))?;
+                        self.append(heap, JsString::from(","))?;
                     }
-                    self.indent(self.stack.len(), AfterIndent::Key)?;
+                    self.indent(heap, self.stack.len(), AfterIndent::Key)?;
                 } else if self.stack.is_empty() {
                     self.stage = S::Emit;
                 } else {
-                    self.indent(self.stack.len(), AfterIndent::Emit)?;
+                    self.indent(heap, self.stack.len(), AfterIndent::Emit)?;
                 }
             }
             S::Key => {
-                self.append(JsString::from("\""))?;
+                self.append(heap, JsString::from("\""))?;
                 // The cursor releases the source incrementally too; do not
                 // retain a redundant owner until a later native transition.
                 let text = std::mem::replace(&mut self.key, JsString::from(""));
@@ -1132,6 +1137,7 @@ impl Stringifier {
                     .map(|i| gap[(offset + i) % gap.len()])
                     .collect::<Vec<_>>();
                 self.append(
+                    heap,
                     JsString::from_owned_code_units(units)
                         .expect("bounded indentation chunk")
                         .with_reservation(ticket),
@@ -1145,10 +1151,10 @@ impl Stringifier {
                     };
                 }
             }
-            S::Close(array) => self.append(JsString::from(if array { "]" } else { "}" }))?,
+            S::Close(array) => self.append(heap, JsString::from(if array { "]" } else { "}" }))?,
             S::Emit => match &self.value {
                 Value::String(_) => {
-                    self.append(JsString::from("\""))?;
+                    self.append(heap, JsString::from("\""))?;
                     let Value::String(text) = std::mem::replace(&mut self.value, Value::Undefined)
                     else {
                         unreachable!("emitting a string")
@@ -1159,16 +1165,21 @@ impl Stringifier {
                         key: false,
                     };
                 }
-                Value::Number(n) => self.append(JsString::from(
-                    if n.is_finite() {
-                        number_to_string(*n)
-                    } else {
-                        "null".into()
-                    }
-                    .as_str(),
-                ))?,
-                Value::Null => self.append(JsString::from("null"))?,
-                Value::Bool(b) => self.append(JsString::from(if *b { "true" } else { "false" }))?,
+                Value::Number(n) => self.append(
+                    heap,
+                    JsString::from(
+                        if n.is_finite() {
+                            number_to_string(*n)
+                        } else {
+                            "null".into()
+                        }
+                        .as_str(),
+                    ),
+                )?,
+                Value::Null => self.append(heap, JsString::from("null"))?,
+                Value::Bool(b) => {
+                    self.append(heap, JsString::from(if *b { "true" } else { "false" }))?
+                }
                 Value::Object(id) => self.container(heap, task, *id)?,
                 Value::BigInt(_) => {
                     return Err(Fault::TypeError(
@@ -1210,7 +1221,7 @@ impl Stringifier {
                         Members::Object { emitted, .. } => (false, emitted),
                     };
                     if emitted {
-                        self.indent(self.stack.len(), AfterIndent::Close(array))?;
+                        self.indent(heap, self.stack.len(), AfterIndent::Close(array))?;
                     } else {
                         self.stage = S::Close(array);
                     }
@@ -1230,7 +1241,7 @@ impl Stringifier {
                     ));
                 }
                 if comma {
-                    self.append(JsString::from(","))?;
+                    self.append(heap, JsString::from(","))?;
                 }
                 match property::read(heap, task, &holder, &key)? {
                     Some(property::Read::Getter(callee)) => {
@@ -1290,17 +1301,21 @@ impl Stringifier {
                 }
                 if !units.is_empty() {
                     self.append(
+                        heap,
                         JsString::from_owned_code_units(units)
                             .expect("bounded JSON quote chunk")
                             .with_reservation(ticket),
                     )?;
                 }
                 if done {
-                    self.append(JsString::from(if key {
-                        if self.gap.is_empty() { "\":" } else { "\": " }
-                    } else {
-                        "\""
-                    }))?;
+                    self.append(
+                        heap,
+                        JsString::from(if key {
+                            if self.gap.is_empty() { "\":" } else { "\": " }
+                        } else {
+                            "\""
+                        }),
+                    )?;
                     self.stage = if key { S::Emit } else { S::Next };
                 } else {
                     self.stage = S::Quote { cursor, high, key };
@@ -1352,9 +1367,13 @@ mod stringify_budget_tests {
     fn stringify_overflow_precedes_output_allocation() {
         let mut stringify = Stringifier::new(Value::Null, Value::Undefined);
         stringify.units = MAX_STRING_LEN;
-        assert!(stringify.append(JsString::from("")).is_ok());
+        assert!(
+            stringify
+                .append(&Heap::default(), JsString::from(""))
+                .is_ok()
+        );
         assert!(matches!(
-            stringify.append(JsString::from("x")),
+            stringify.append(&Heap::default(), JsString::from("x")),
             Err(Fault::StringTooLong)
         ));
         assert!(stringify.parts.is_empty());

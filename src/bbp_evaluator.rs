@@ -24,8 +24,12 @@ fn error(e: impl std::fmt::Display) -> EvalError {
     EvalError(format!("big-boy-pants-js: {e}"))
 }
 fn string(scope: &Scope<'_>, units: &[u16]) -> Result<JsString, EvalError> {
-    let local = scope.try_string_units(units).ok_or_else(|| error("heap byte or string limit exceeded"))?;
-    scope.string(local).ok_or_else(|| error("expected imported string"))
+    let local = scope
+        .try_string_units(units)
+        .ok_or_else(|| error("heap byte or string limit exceeded"))?;
+    scope
+        .string(local)
+        .ok_or_else(|| error("expected imported string"))
 }
 
 pub type BridgeStats = crate::compile_stats::NativeBridgeCall;
@@ -468,7 +472,13 @@ impl BbpEvaluator {
     }
     fn evaluate(&self, source: &str) -> Result<ValueId, EvalError> {
         let id = self.id();
-        self.request(0, id, self.runtime.try_root(Primitive::string(source)).ok_or_else(|| error("heap byte limit exceeded"))?)?;
+        self.request(
+            0,
+            id,
+            self.runtime
+                .try_root(Primitive::string(source))
+                .ok_or_else(|| error("heap byte limit exceeded"))?,
+        )?;
         Ok(id)
     }
     fn import(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {

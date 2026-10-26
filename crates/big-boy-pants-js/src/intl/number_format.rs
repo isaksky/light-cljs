@@ -24,6 +24,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+type AccountedParts = (
+    Vec<(&'static str, String)>,
+    Option<std::sync::Arc<crate::heap::budget::ByteReservation>>,
+);
+
 use super::{LocaleData, data::numbers, table_string};
 use crate::heap::{Heap, HeapObject};
 use crate::ids::TaskId;
@@ -73,6 +78,46 @@ impl NumberFormat {
             unit: None,
             unit_display: "short",
         }
+    }
+    fn reserve_format(
+        &self,
+        heap: &Heap,
+        value: &Value,
+    ) -> Result<crate::heap::budget::ByteReservation, Fault> {
+        // Decimal parsing bounds exponents to 10,000; grouping and localized
+        // symbols can expand every input digit. Admit peak copies before parsing.
+        let units = match value {
+            Value::String(s) => s.len().checked_add(11_000),
+            _ => Some(1024),
+        }
+        .ok_or(Fault::HeapLimit)?;
+        heap.reserve_bytes(units.checked_mul(512).ok_or(Fault::HeapLimit)?)
+            .ok_or(Fault::HeapLimit)
+    }
+    pub(crate) fn format_accounted(&self, heap: &Heap, value: &Value) -> Result<Value, Fault> {
+        let mut charge = self.reserve_format(heap, value)?;
+        let Value::String(text) = self.format(value)? else {
+            unreachable!()
+        };
+        charge.shrink_to(text.len() * 2 + 256);
+        let charge = charge.is_charged().then(|| std::sync::Arc::new(charge));
+        Ok(Value::String(text.with_reservation(charge)))
+    }
+    pub(crate) fn parts_accounted(
+        &self,
+        heap: &Heap,
+        value: &Value,
+    ) -> Result<AccountedParts, Fault> {
+        let mut charge = self.reserve_format(heap, value)?;
+        let parts = self.parts(value)?;
+        let retained = parts.capacity() * std::mem::size_of::<(&str, String)>()
+            + parts
+                .iter()
+                .map(|(_, text)| text.capacity() + text.encode_utf16().count() * 2 + 512)
+                .sum::<usize>();
+        charge.shrink_to(retained);
+        let charge = charge.is_charged().then(|| std::sync::Arc::new(charge));
+        Ok((parts, charge))
     }
     pub fn format(&self, value: &Value) -> Result<Value, Fault> {
         let result: String = self
