@@ -491,11 +491,7 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
     for (source, expected) in [
         (
             "(defprotocol Sample (value [this])) (defmacro demand [] Sample) (demand)",
-            "helper not preloaded: cljs.user/Sample",
-        ),
-        (
-            "(defn absent [x] x) (defmacro use-helper [x] (absent x)) (use-helper 1)",
-            "helper not preloaded: cljs.user/absent",
+            "unavailable definition: cljs.user/Sample",
         ),
         (
             "(defmacro lazy-result [] (range 3)) (lazy-result)",
@@ -538,6 +534,15 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
             .to_string();
         assert!(message.contains(expected), "{source}: {message}");
     }
+}
+
+#[test]
+fn demands_a_real_helper_without_replaying_the_macro() {
+    let source = include_str!("fixtures/native-helper-demand/macro.cljs");
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    assert_eq!(program_output(&emit_js(&program)), "42\n");
 }
 
 #[test]

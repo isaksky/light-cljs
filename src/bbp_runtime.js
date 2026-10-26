@@ -75,10 +75,49 @@ const native = (() => {
   return rt;
 })();
 globalThis.__lightNativeRuntime=native;
-globalThis.__lightRegisterUnit=name=>{if(!(name in globalThis.__lightCompilerRoots))Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:()=>{throw new Error("unsupported operation: helper not preloaded: "+name);}});return null;};
+const roots=new Map();
+let initializerSerial=0;
+globalThis.__lightInitializerUnit=null;
+globalThis.__lightInitializerResult=null;
+globalThis.__lightInitializerFailure=null;
+globalThis.__lightRegisterUnit=(name,unit)=>{
+  if(!roots.has(name)&&(name in globalThis.__lightCompilerRoots))return null;
+  if(roots.has(name)&&roots.get(name).unit===unit)return null;
+  const slot={unit,state:0,value:null};roots.set(name,slot);
+  Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:()=>{
+    if(unit===null)throw new Error('unavailable definition: '+name);
+    __rt.need(unit,2);
+    const factory=__rt.need(unit,3);
+    if(slot.state===2){__rt.need(unit,4);return slot.value;}
+    if(slot.state===1)throw new Error('root initialization cycle: '+name);
+    if(slot.state===3)throw slot.value;
+    slot.state=1;
+    try{
+      const serial=++initializerSerial;
+      globalThis.__lightInitializerUnit=unit;
+      const producer=__rt.need(serial,beginKind);
+      if(producer){
+        let failure=null;
+        try{slot.value=factory(native);}catch(e){failure=e;}
+        globalThis.__lightInitializerUnit=unit;
+        globalThis.__lightInitializerResult=slot.value;
+        globalThis.__lightInitializerFailure=failure===null?null:String(failure);
+        __rt.need(serial,finishKind);
+        if(failure!==null)throw failure;
+        __rt.need(unit,4);
+      }else{
+        const initialized=__rt.need(unit,4);
+        if(__rt.nth(initialized,0))slot.value=__rt.nth(initialized,1);
+        else {slot.value=factory(native);__rt.effect(65535,unit);}
+      }
+      slot.state=2;return slot.value;
+    }
+    catch(e){slot.value=e;slot.state=3;throw e;}
+  }});return null;
+};
 // Declaration bundles advertise their products without demanding their code.
 // Keep preloaded roots and the same explicit unsupported-demand getters as units.
-globalThis.__lightRegisterBundle=names=>{for(const name of names)globalThis.__lightRegisterUnit(name);return null;};
+globalThis.__lightRegisterBundle=names=>{for(const name of names)if(!(name in globalThis.__lightCompilerRoots))Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:()=>{throw new Error('unsupported operation: helper not preloaded: '+name);}});return null;};
 globalThis.__lightEnterCompilerFrontier=()=>null;
 globalThis.__lightLeaveCompilerFrontier=()=>null;
 globalThis.__lightCompilerRoots={};
@@ -86,7 +125,7 @@ const values=new Map();
 globalThis.__lightResult=null;
 globalThis.__lightFailure=null;
 for(let serial=1;;serial++){
-  const command=__rt.need(serial,1);
+  const command=__rt.need(serial,commandKind);
   const op=__rt.nth(command,0), id=__rt.nth(command,1), input=__rt.nth(command,2);
   globalThis.__lightFailure=null;
   try {

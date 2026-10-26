@@ -156,6 +156,13 @@ pub(crate) struct DeferredUnit {
 }
 
 impl DeferredUnit {
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn prepare_native(program: &Program) -> Self {
+        Self {
+            source: emit_native_macro_unit(program, true),
+            tables: crate::reader_registration::ReaderTables::of(program),
+        }
+    }
     pub(crate) fn prepare(program: &Program) -> Self {
         Self {
             source: emit_deferred_unit(program),
@@ -455,8 +462,10 @@ fn emit_js_mode(
         emitter.output.push_str(PRELUDE_OPEN);
         if native_forms {
             emitter.output.push_str("  const truth = (value) => ");
-            emitter.rt(RuntimeName::core("truth"));
-            emitter.output.push_str("(value);\n");
+            emitter.rt(RuntimeName::export("core"));
+            // The macro binding renamer also renames the local `truth`.
+            // Keep the runtime property a string so it remains its ABI name.
+            emitter.output.push_str("[\"truth\"](value);\n");
         } else {
             emitter.output.push_str(PRELUDE_TRUTH);
         }

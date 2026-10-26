@@ -496,6 +496,11 @@ pub(crate) struct SharedCatalog {
     /// What the build's isolates share when its pool runs engines: its
     /// deadline, cancellation and memory ([`crate::evaluator::BuildResources`]).
     resources: std::sync::OnceLock<crate::evaluator::BuildResources>,
+    #[cfg(feature = "bbp-macros")]
+    native_units: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "bbp-macros")]
+    native_runtime:
+        std::sync::OnceLock<Result<crate::bbp_evaluator::BbpRuntime, crate::evaluator::EvalError>>,
     /// One more than the lowest unit ID of a pool job whose analysis
     /// failed, or 0: the drain stops at that unit, so no job after it in
     /// unit order is needed and none starts ([`Self::admits`]).
@@ -564,6 +569,21 @@ const DEPTH_LIMIT: &str = "compiler macro expansion depth limit exceeded in defe
 /// Why a wait for a pooled unit after a failed one ends ([`SharedCatalog::claim`]).
 const SKIPPED_AFTER_FAILURE: &str = "an earlier unit in unit order failed";
 impl SharedCatalog {
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn select_native(&self) {
+        self.native_units
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn native_runtime(
+        &self,
+        options: &crate::evaluator::EvaluatorOptions,
+    ) -> Result<crate::bbp_evaluator::BbpRuntime, crate::evaluator::EvalError> {
+        self.native_runtime
+            .get_or_init(|| crate::bbp_evaluator::BbpRuntime::new(options))
+            .clone()
+    }
+
     fn lock(&self) -> MutexGuard<'_, Catalog> {
         match self.catalog.try_lock() {
             Ok(catalog) => catalog,
@@ -2104,7 +2124,16 @@ impl SharedCatalog {
         };
         // Prepared outside the lock; the analyzed program is dropped by its
         // last holder, outside it too.
-        let prepared = Arc::new(crate::emitter::DeferredUnit::prepare(&program));
+        let prepared = Arc::new({
+            #[cfg(feature = "bbp-macros")]
+            if self.native_units.load(std::sync::atomic::Ordering::Relaxed) {
+                crate::emitter::DeferredUnit::prepare_native(&program)
+            } else {
+                crate::emitter::DeferredUnit::prepare(&program)
+            }
+            #[cfg(not(feature = "bbp-macros"))]
+            crate::emitter::DeferredUnit::prepare(&program)
+        });
         let previous = {
             let mut c = self.lock();
             let state = &mut c.units[id].state;
@@ -2672,9 +2701,12 @@ fn prepare_engine(
     binding: &EngineBinding,
 ) -> Result<(), String> {
     if evaluator.native_forms() {
-        // This serial backend accepts already installed helpers only. Demand
-        // services require resumable compiler scheduling and are not installed.
-        return Ok(());
+        return install_catalog_services(
+            evaluator,
+            view,
+            binding.build.clone(),
+            binding.dependency_log.clone(),
+        );
     }
     install_catalog_services(
         evaluator,
@@ -2779,7 +2811,16 @@ fn compile_unit_in(
         }
         match analyze() {
             Ok((program, _)) => {
-                let code = crate::emitter::emit_deferred_unit(&program);
+                let code = {
+                    #[cfg(feature = "bbp-macros")]
+                    if active.native_bridge_stats().is_some() {
+                        crate::emitter::emit_native_macro_unit(&program, true)
+                    } else {
+                        crate::emitter::emit_deferred_unit(&program)
+                    }
+                    #[cfg(not(feature = "bbp-macros"))]
+                    crate::emitter::emit_deferred_unit(&program)
+                };
                 shared.set_emitted(id);
                 register(&crate::reader_registration::ReaderTables::of(&program))?;
                 Ok(code)

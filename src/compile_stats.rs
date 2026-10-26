@@ -27,6 +27,10 @@ pub struct NativeBridgeCall {
     pub exported: usize,
     pub reused: usize,
     pub nanos: u128,
+    pub helper_compiled: usize,
+    pub helper_published: usize,
+    pub helper_per_task: usize,
+    pub helper_waits: usize,
 }
 
 /// Wall time per phase of a compilation. The phases do not overlap; work a
@@ -530,6 +534,19 @@ impl CompileStats {
             line(&format!("macro.bridge.{i}.exported"), &call.exported);
             line(&format!("macro.bridge.{i}.reused"), &call.reused);
             line(&format!("macro.bridge.{i}.ns"), &call.nanos);
+            line(
+                &format!("macro.helpers.{i}.compiled"),
+                &call.helper_compiled,
+            );
+            line(
+                &format!("macro.helpers.{i}.published"),
+                &call.helper_published,
+            );
+            line(
+                &format!("macro.helpers.{i}.per-task"),
+                &call.helper_per_task,
+            );
+            line(&format!("macro.helpers.{i}.waits"), &call.helper_waits);
         }
         line("macro-nodes.peak", &self.peak_macro_nodes);
         line("deferred-units.registered", &self.deferred_units.registered);
