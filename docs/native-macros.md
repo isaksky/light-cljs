@@ -223,6 +223,15 @@ callback order across dependency waits, collection and migration on 64 KiB
 worker stacks, including every supported descriptor reader and extensibility
 callbacks during enumeration and reflection.
 
+JSON array serialization reads the original Proxy receiver's `length` and
+converts it through resumable ToLength after array classification. Transparent
+Proxies preserve conversion lookup mode for ordinary and bound functions.
+`proxy_builtin_reads.js` runs unchanged in Node/V8 and checks exact read order,
+virtual lengths and exceptions for JSON, Array.from/concat/join/sort/flat,
+spread, Object.assign and string conversion. The engine repeats the table
+with 113 dependency waits, collection and migration; the promise regression
+asserts that a throwing `then` read rejects with its original reason.
+
 `tests/bbp_proxy_has.rs` compiles a source macro printing `[nil]`, which demands
 the TransitUUID `IUUID`/`IPrintWithWriter` extension through the opaque package
 registry. It produces `"[nil]"`; the same source without a supplied package
@@ -251,12 +260,12 @@ The reader service is tracked by light-cljs-516. Neither Penpot entry completes;
 the Promise extension remains an explicit unsupported foreign-constructor
 boundary. The read-only research tree and default backend are unchanged.
 
-Validation at `3011586b`, macOS arm64, Homebrew Rust/Cargo 1.99.1 and Node
-26.12.1: all engine targets pass 2,120 tests and seven doctests. The all-target
-run was completed in target groups after updating formerly unsupported-trap
-expectations. `cargo test --locked --no-default-features --features bbp-macros
---test bbp_macros --test bbp_proxy_has` passes 75 macro tests and two source
-regressions; the native evaluator's 37 unit tests pass. With
+Validation at `b438d3fa`, macOS arm64, Homebrew Rust/Cargo 1.99.1 and Node
+26.12.1: a single all-target engine run passes 2,123 tests, and seven doctests
+pass. Both documented Penpot commands were rerun on this implementation and
+retain the exact next errors above. `cargo test --locked --no-default-features
+--features bbp-macros --test bbp_macros --test bbp_proxy_has` passes 75 macro
+tests and two source regressions; the native evaluator's 37 unit tests pass. With
 `--features bbp-macros,quickjs`, the full library passes 333 tests (one ignored),
 the CLI unit test passes, and the macro/source targets pass 77 and two tests.
 
