@@ -300,6 +300,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn split_moves_charge_between_owners() {
+        let budget = ByteBudget::new(Some(1000));
+        let mut whole = budget.reserve(600).unwrap();
+        let part = whole.split(100).unwrap();
+        assert_eq!(budget.used(), 600);
+        assert!(whole.split(501).is_none());
+        assert!(ByteReservation::default().split(1).is_none());
+        drop(whole);
+        assert_eq!(budget.used(), 100);
+        drop(part);
+        assert_eq!(budget.used(), 0);
+    }
+
+    /// Join and String.raw hand their parts vector to a `StringBuild`,
+    /// whose charge must stay held until the builder (and the vector) drops.
+    #[test]
+    fn join_and_raw_keep_part_charges_while_building() {
+        let rt = crate::Runtime::try_with_heap_policy(
+            Default::default(),
+            crate::HeapPolicy {
+                hard_limit_bytes: Some(64 << 20),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let heap = rt.heap();
+        let before = heap.byte_budget().used();
+        let parts = vec![(crate::value::JsString::from("ab"), 0, 2); 3];
+        let charge = heap.reserve_bytes(4096).unwrap();
+        let build = crate::value::string::StringBuild::with_length_accounted(heap, parts, 6)
+            .ok()
+            .expect("builder admitted")
+            .with_parts_reservation(charge);
+        assert!(heap.byte_budget().used() >= before + 4096);
+        drop(build);
+        assert_eq!(heap.byte_budget().used(), before);
+    }
+
+    #[test]
     fn checked_reservation_refunds_and_rejects_overflow() {
         let budget = ByteBudget::new(Some(usize::MAX));
         let reservation = budget.reserve(usize::MAX).unwrap();

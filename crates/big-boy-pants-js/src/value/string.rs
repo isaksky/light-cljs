@@ -603,6 +603,9 @@ pub(crate) struct StringBuild {
     units: Vec<u16>,
     concatenated: Option<JsString>,
     reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
+    /// The charge for `parts`' retained allocation, carried over from the
+    /// operation that collected them; released with the builder.
+    parts_reservation: crate::heap::budget::ByteReservation,
 }
 
 impl StringBuild {
@@ -664,6 +667,7 @@ impl StringBuild {
             units: Vec::new(),
             concatenated: Some(JsString::from("")),
             reservation: None,
+            parts_reservation: Default::default(),
         })
     }
 
@@ -692,7 +696,17 @@ impl StringBuild {
             units,
             concatenated: None,
             reservation: None,
+            parts_reservation: Default::default(),
         })
+    }
+
+    /// Keep the charge of the parts vector this builder now owns.
+    pub(crate) fn with_parts_reservation(
+        mut self,
+        parts: crate::heap::budget::ByteReservation,
+    ) -> Self {
+        self.parts_reservation.merge(parts);
+        self
     }
 
     /// Copy at most `budget` units/part boundaries; moving the finished Vec

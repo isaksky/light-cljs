@@ -78,7 +78,9 @@ impl StringRaw {
             std::mem::take(&mut self.parts),
             self.units,
         )
-        .map(Some)
+        .map(|build| {
+            Some(build.with_parts_reservation(std::mem::take(&mut self.parts_reservation)))
+        })
     }
 
     fn append(&mut self, heap: &Heap, text: JsString) -> Result<Action, Fault> {

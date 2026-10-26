@@ -4517,7 +4517,8 @@ impl NativeState {
                             heap,
                             std::mem::take(&mut join.parts),
                             join.units,
-                        )?,
+                        )?
+                        .with_parts_reservation(std::mem::take(&mut join.parts_reservation)),
                     );
                     return Ok(Action::Continue);
                 }
