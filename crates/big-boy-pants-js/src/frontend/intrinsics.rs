@@ -264,6 +264,7 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::CljIsEditable),
     form_op(FormOp::PrintItems),
     form_op(FormOp::ReaderCollection),
+    form_op(FormOp::SortedMap),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {

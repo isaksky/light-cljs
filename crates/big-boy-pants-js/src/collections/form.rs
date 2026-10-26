@@ -257,7 +257,7 @@
 //! supported (not claimed): keyword and symbol names whose spelling does
 //! not split back (rejected, see "Names"), and a runtime keyword whose
 //! stored spelling differs from its namespace and name (the runtime's
-//! one-argument `(keyword "a/b/c")`); sorted maps and sets, seq views of
+//! one-argument `(keyword "a/b/c")`); custom sorted-map comparators and sorted sets, seq views of
 //! maps, sets and strings, user hashing or equality
 //! (`IHash`/`IEquiv`) of structs,
 //! interned or cached keyword identity, characters as a separate kind (a
@@ -515,6 +515,9 @@ pub(crate) struct FormObject {
     /// Runtime reader collections use legacy hash traversal for seq as well as
     /// printing. Keep their actual hash storage through every persistent update.
     reader_traversal: bool,
+    /// A default-comparator sorted map. Its positional storage is already
+    /// sorted, never promotes, and is not an editable collection.
+    sorted: bool,
     /// [`hash`] of this value, computed once (metadata-independent). An
     /// interior cache, not an edge or part of the value: readers of the
     /// frozen body may race to set it, and every writer stores the same
@@ -529,6 +532,7 @@ impl FormObject {
             meta,
             map_entry: false,
             reader_traversal: false,
+            sorted: false,
             hash: OnceLock::new(),
         }
     }
@@ -545,6 +549,7 @@ impl FormObject {
             meta,
             map_entry: false,
             reader_traversal: self.reader_traversal,
+            sorted: self.sorted,
             hash,
         }
     }
@@ -553,7 +558,12 @@ impl FormObject {
     fn updated(&self, body: FormBody) -> FormObject {
         let mut object = FormObject::new(body, self.meta.clone());
         object.reader_traversal = self.reader_traversal;
+        object.sorted = self.sorted;
         object
+    }
+
+    pub(crate) fn is_sorted(&self) -> bool {
+        self.sorted
     }
 
     pub(crate) fn kind(&self) -> FormKind {
@@ -813,6 +823,130 @@ fn map_dissoc(heap: &Heap, map: &FormMap, key: &Value) -> Result<Option<FormMap>
             )?)))
         }
     }
+}
+
+/// The default ClojureScript comparator over native immutable keys. Use an
+/// explicit stack for nested vectors; no JavaScript, hashing or equality runs.
+fn compare_keys(heap: &Heap, a: &Value, b: &Value) -> Result<std::cmp::Ordering, CollectionError> {
+    use std::cmp::Ordering;
+    let mut pending = vec![(a.clone(), b.clone())];
+    while let Some((a, b)) = pending.pop() {
+        let (a, b) = (unwrap(heap, a), unwrap(heap, b));
+        if identical(&a, &b) {
+            continue;
+        }
+        let order = match (&a, &b) {
+            (Value::Null | Value::Undefined, _) => Ordering::Less,
+            (_, Value::Null | Value::Undefined) => Ordering::Greater,
+            (Value::Number(a), Value::Number(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+            (Value::String(a), Value::String(b)) => a.code_units().cmp(b.code_units()),
+            _ => {
+                let (left, right) = (form_object(heap, &a), form_object(heap, &b));
+                match (
+                    left.as_deref().map(FormObject::body),
+                    right.as_deref().map(FormObject::body),
+                ) {
+                    (Some(FormBody::Keyword(a)), Some(FormBody::Keyword(b)))
+                    | (Some(FormBody::Symbol(a)), Some(FormBody::Symbol(b))) => a
+                        .namespace
+                        .as_ref()
+                        .map(JsString::code_units)
+                        .cmp(&b.namespace.as_ref().map(JsString::code_units))
+                        .then_with(|| a.name.code_units().cmp(b.name.code_units())),
+                    (Some(FormBody::Vector(a)), Some(FormBody::Vector(b))) => {
+                        let order = a.len().cmp(&b.len());
+                        if order == Ordering::Equal {
+                            for i in (0..a.len()).rev() {
+                                pending.push((a.get(i).unwrap(), b.get(i).unwrap()));
+                            }
+                        }
+                        order
+                    }
+                    (Some(FormBody::Keyword(_) | FormBody::Symbol(_)), _)
+                    | (_, Some(FormBody::Keyword(_) | FormBody::Symbol(_))) => {
+                        return Err(CollectionError::CannotCompare);
+                    }
+                    _ => return Err(CollectionError::CannotCompare),
+                }
+            }
+        };
+        if order != Ordering::Equal {
+            return Ok(order);
+        }
+    }
+    Ok(Ordering::Equal)
+}
+
+fn sorted_position(
+    heap: &Heap,
+    pairs: &PVector,
+    key: &Value,
+) -> Result<(usize, bool), CollectionError> {
+    let (mut lo, mut hi) = (0, pairs.len() / 2);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if compare_keys(heap, &pairs.get(mid * 2).unwrap(), key)?.is_lt() {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    Ok((
+        lo * 2,
+        lo * 2 < pairs.len() && compare_keys(heap, &pairs.get(lo * 2).unwrap(), key)?.is_eq(),
+    ))
+}
+
+fn sorted_assoc(
+    heap: &Heap,
+    map: &FormMap,
+    key: Value,
+    value: Value,
+) -> Result<Option<FormMap>, CollectionError> {
+    let FormMap::Positional(pairs) = map else {
+        unreachable!("sorted map storage")
+    };
+    let (i, exists) = sorted_position(heap, pairs, &key)?;
+    if exists {
+        return if equals(heap, &pairs.get(i + 1).unwrap(), &value) {
+            Ok(None)
+        } else {
+            Ok(Some(FormMap::Positional(pairs.try_set(
+                heap,
+                i + 1,
+                value,
+            )?)))
+        };
+    }
+    let mut items = pairs.to_vec();
+    items.splice(i..i, [key, value]);
+    Ok(Some(FormMap::Positional(PVector::try_from_values(
+        heap, &items,
+    )?)))
+}
+
+/// A default-comparator sorted map. Odd trailing operands have nil values,
+/// matching the legacy constructor; compare-equal keys retain the first key.
+pub(crate) fn sorted_map_from_sequence(
+    heap: &Heap,
+    items: &Value,
+) -> Result<Value, CollectionError> {
+    let values = sequential(heap, items)?;
+    let mut map = FormMap::Positional(PVector::default());
+    for i in (0..values.len()).step_by(2) {
+        if let Some(updated) = sorted_assoc(
+            heap,
+            &map,
+            values.get(i).unwrap(),
+            values.get(i + 1).unwrap_or(Value::Null),
+        )? {
+            map = updated;
+        }
+    }
+    let mut object = FormObject::new(FormBody::Map(map), None);
+    object.sorted = true;
+    alloc(heap, object, std::slice::from_ref(items))
 }
 
 // ---- Construction ----
@@ -1672,6 +1806,13 @@ pub(crate) fn get(
     coll: &Value,
     key: &Value,
 ) -> Result<Option<Value>, CollectionError> {
+    if let Some(f) = form_object(heap, coll)
+        && f.sorted
+        && let FormBody::Map(FormMap::Positional(pairs)) = f.body()
+    {
+        let (i, exists) = sorted_position(heap, pairs, key)?;
+        return Ok(exists.then(|| pairs.get(i + 1).unwrap()));
+    }
     match form_object(heap, coll).as_deref().map(FormObject::body) {
         Some(FormBody::Map(map) | FormBody::Set(map)) => Ok(map_get(heap, map, key)),
         Some(FormBody::Vector(items)) => Ok(index_from_value(key).ok().and_then(|i| items.get(i))),
@@ -1699,7 +1840,11 @@ pub(crate) fn assoc(
     };
     let parts = [coll.clone(), key.clone(), value.clone()];
     match &f.body {
-        FormBody::Map(map) => match map_assoc(heap, map, key, value)? {
+        FormBody::Map(map) => match if f.sorted {
+            sorted_assoc(heap, map, key, value)?
+        } else {
+            map_assoc(heap, map, key, value)?
+        } {
             Some(updated) => alloc(heap, f.updated(FormBody::Map(updated)), &parts),
             None => Ok(coll.clone()),
         },
@@ -1731,6 +1876,24 @@ pub(crate) fn dissoc(heap: &Heap, map: &Value, key: &Value) -> Result<Value, Col
     let FormBody::Map(body) = &f.body else {
         return Err(wrong(heap, "form map", map));
     };
+    if f.sorted {
+        let FormMap::Positional(pairs) = body else {
+            unreachable!("sorted map storage")
+        };
+        let (i, exists) = sorted_position(heap, pairs, key)?;
+        if !exists {
+            return Ok(map.clone());
+        }
+        let mut items = pairs.to_vec();
+        items.drain(i..i + 2);
+        return alloc(
+            heap,
+            f.updated(FormBody::Map(FormMap::Positional(
+                PVector::try_from_values(heap, &items)?,
+            ))),
+            std::slice::from_ref(map),
+        );
+    }
     match map_dissoc(heap, body, key)? {
         Some(updated) => alloc(
             heap,

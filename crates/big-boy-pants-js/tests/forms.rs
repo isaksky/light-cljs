@@ -76,6 +76,63 @@ fn printer_traversal_uses_legacy_hash_paths_and_preserves_key_identity() {
     ));
 }
 
+#[test]
+fn default_sorted_maps_keep_order_identity_and_metadata_across_tasks_and_gc() {
+    let rt = Runtime::new();
+    let made = call(
+        &rt,
+        r#"function make(){
+        const key=__rt.formWithMeta(__rt.formVector(2),__rt.formMap('key',true));
+        const value=__rt.formVector('kept'), meta=__rt.formMap('map',true);
+        let m=__rt.formSortedMap(__rt.formVector(key,value,__rt.formVector(1),'first'));
+        m=__rt.formWithMeta(m,meta);
+        const same=__rt.formAssoc(m,__rt.formVector(2),__rt.formVector('kept'));
+        if(same!==m)throw new Error('compare-equal persistent update');
+        m=__rt.formAssoc(m,__rt.formVector(3),'last');
+        if(__rt.cljIsEditable(m))throw new Error('sorted map is editable');
+        if(__rt.formGet(m,__rt.formVector(2),null)!==value)throw new Error('vector lookup');
+        const keys=__rt.formKeys(m);
+        if(__rt.formNth(keys,1)!==key)throw new Error('retained key identity');
+        if(__rt.formMeta(m)!==meta)throw new Error('metadata');
+        return __rt.formVector(m,key,value,meta);
+    }"#,
+        &[],
+    );
+    let (map, weak) = rt.scope(|s| {
+        let v = s.local(&made).unwrap();
+        (
+            s.persist(s.form_nth(v, 0).unwrap()),
+            [1, 2, 3].map(|i| s.downgrade(s.form_nth(v, i).unwrap())),
+        )
+    });
+    rt.publish(&map).unwrap();
+    drop(made);
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| w.is_live()));
+    let result = call(
+        &rt,
+        r#"function read(m){
+        let n=__rt.formSortedMap(__rt.formVector());
+        for(let i=15;i>=0;i--)n=__rt.cljAssoc(n,i,i);
+        n=__rt.cljDissoc(n,3);
+        const entries=__rt.formPrintItems(n);
+        if(__rt.formNth(__rt.formNth(entries,0),0)!==0||__rt.formNth(__rt.formNth(entries,14),0)!==15)throw new Error('wide sorted order');
+        if(__rt.cljIsEditable(n)||__rt.formCount(n)!==15)throw new Error('promotion');
+        const d=__rt.cljDissoc(m,__rt.formVector(1));
+        const first=__rt.cljFirst(__rt.cljSeq(d));
+        if(__rt.formNth(__rt.formNth(first,0),0)!==2||__rt.formMeta(d)!==__rt.formMeta(m))throw new Error('sorted removal');
+        const plain=__rt.formMap(__rt.formVector(1),'first',__rt.formVector(2),__rt.formVector('kept'),__rt.formVector(3),'last');
+        if(!__rt.formEquals(m,plain)||!__rt.formEquals(plain,m)||__rt.formHash(m)!==__rt.formHash(plain))throw new Error('map semantics');
+        return true;
+    }"#,
+        &[&map],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+    drop(map);
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| !w.is_live()));
+}
+
 fn at(line: u32, column: u32) -> Provenance {
     Provenance {
         source: 1,

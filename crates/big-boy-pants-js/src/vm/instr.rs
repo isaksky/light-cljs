@@ -1512,11 +1512,13 @@ pub enum FormOp {
     ArrayMap = 68,
     /// map/set → persistent reader traversal view, preserving hash storage.
     ReaderCollection = 69,
+    /// alternating operands → default-comparator sorted map.
+    SortedMap = 70,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 70] = [
+    pub const ALL: [FormOp; 71] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1587,6 +1589,7 @@ impl FormOp {
         FormOp::PrintItems,
         FormOp::ArrayMap,
         FormOp::ReaderCollection,
+        FormOp::SortedMap,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1602,6 +1605,7 @@ impl FormOp {
             | FormOp::LiteralSet
             | FormOp::ArrayMap
             | FormOp::ReaderCollection
+            | FormOp::SortedMap
             | FormOp::Namespace
             | FormOp::Name
             | FormOp::Count
@@ -1692,6 +1696,7 @@ impl FormOp {
             FormOp::Keys => "formKeys",
             FormOp::PrintItems => "formPrintItems",
             FormOp::ReaderCollection => "formReaderCollection",
+            FormOp::SortedMap => "formSortedMap",
             FormOp::Disj => "formDisj",
             FormOp::CljTruth => "cljTruth",
             FormOp::CljCount => "cljCount",

@@ -318,7 +318,7 @@ pub(crate) fn is_false(heap: &Heap, v: &Value) -> bool {
 pub(crate) fn is_editable(heap: &Heap, v: &Value) -> bool {
     match shape(heap, v) {
         Shape::Form(FormKind::Vector, f) => !f.is_map_entry(),
-        Shape::Form(FormKind::Map | FormKind::Set, _) => true,
+        Shape::Form(FormKind::Map | FormKind::Set, f) => !f.is_sorted(),
         _ => false,
     }
 }
@@ -1346,6 +1346,7 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
         Vector,
         Set(bool),
         Map(bool),
+        SortedMap,
     }
     enum Work {
         Enter(Value),
@@ -1399,7 +1400,11 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                         (Rebuild::Set(set.positional()), members)
                     }
                     FormBody::Map(map) => (
-                        Rebuild::Map(map.positional()),
+                        if f.is_sorted() {
+                            Rebuild::SortedMap
+                        } else {
+                            Rebuild::Map(map.positional())
+                        },
                         map.to_vec().into_iter().flat_map(|(k, v)| [k, v]).collect(),
                     ),
                     _ if f.meta().is_some() => (Rebuild::Meta, Vec::new()),
@@ -1456,6 +1461,10 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                         Rebuild::Set(true) => form::new_literal_set(heap, &new_children)?,
                         Rebuild::Set(false) => form::new_set(heap, &new_children)?,
                         Rebuild::Map(true) => form::new_literal_map(heap, &new_children)?,
+                        Rebuild::SortedMap => {
+                            let pairs = form::new_vector(heap, &new_children)?;
+                            form::sorted_map_from_sequence(heap, &pairs)?
+                        }
                         Rebuild::Map(false) => {
                             let entries: Vec<(Value, Value)> = new_children
                                 .as_chunks::<2>()

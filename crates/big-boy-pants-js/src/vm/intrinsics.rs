@@ -115,6 +115,7 @@
 //! | `formKeys(m)` | `form_op` | a new form vector of the map's keys (the stored key objects), in trie order | `WrongType` |
 //! | `formPrintItems(m)` | `form_op` | map/record entries or set members in legacy printer order, retaining key identity | wrong type |
 //! | `formReaderCollection(m)` | `form_op` | map/set with legacy seq traversal retained through updates, sharing storage | wrong type |
+//! | `formSortedMap(pairs)` | `form_op` | default-comparator sorted map from alternating operands; odd trailing key has nil value | wrong type; incomparable keys |
 //! | `formEquals(a, b)`, `formHash(v)` | `form_op` | value equality (boolean) and the light-cljs runtime's 32-bit hash (number) | – |
 //! | `formMeta(v)` | `form_op` | the form's metadata map, or `null` | – |
 //! | `formWithMeta(v, m)` | `form_op` | a symbol, list, vector or map with metadata `m` (a form map or `null`); `v` itself for the same `m` | `WrongType` |
@@ -530,6 +531,7 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         FormOp::LiteralMap => form::literal_from_sequence(heap, &arg(), false)?,
         FormOp::LiteralSet => form::literal_from_sequence(heap, &arg(), true)?,
         FormOp::ArrayMap => form::array_map_from_sequence(heap, &arg())?,
+        FormOp::SortedMap => form::sorted_map_from_sequence(heap, &arg())?,
         FormOp::Kind => {
             let v = arg();
             match form::kind(heap, &v) {

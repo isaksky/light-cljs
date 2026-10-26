@@ -270,6 +270,28 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "sorted maps retain order through updates",
+            "",
+            r#"(let [m (with-meta (apply sorted-map (mapcat (fn [i] [i (- i)]) (reverse (range 12)))) {:sorted true})
+                     updated (dissoc (assoc m 4 :updated 20 :new) 0)
+                     result (reduce-kv (fn [a k v] (conj a [k v])) [] updated)]
+                 [result (sorted? m) (sorted? updated) (meta updated) (get updated 4) (count m)
+                  (reduce-kv (fn [a k v] (reduced [k v])) nil m)
+                  (reduce-kv (fn [a k v] (conj a [k v])) [] (sorted-map :z 1 :a 2 :n))])"#,
+            "nil",
+        ),
+        (
+            "sorted native key types",
+            "",
+            r#"(mapv (fn [m] (reduce-kv (fn [a k v] (conj a [k v])) [] m))
+                [(sorted-map :z 1 nil 2 :a/x 3 :a/y 4 :a 5)
+                 (sorted-map 'b/x 1 'a/y 2 'a 3)
+                 (sorted-map [1 2] :a [0] :b [] :c [1 1] :d)
+                 (sorted-map "😀" 1 "\uE000" 2 "a" 3)
+                 (sorted-map true 1 false 2 nil 3)])"#,
+            "nil",
+        ),
+        (
             "initial and source stay persistent",
             "",
             r#"(let [m (with-meta (array-map :a 1 :b 2) {:tag true}) original m
@@ -304,6 +326,86 @@ fn native_reduce_kv_matches_quickjs() {
         }
         assert_eq!(program_output(&native), program_output(&legacy), "{label}");
         assert_eq!(native, legacy, "{label}: expansion");
+    }
+}
+
+#[test]
+fn rumext_property_filters_resume_reduce_kv_callbacks() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-reduce-kv");
+    std::fs::write(
+        root.join("filters.cljs"),
+        // Property filters reduced from rumext.v2. Each callback demands a
+        // cold helper after recording its input, so VM suspension cannot
+        // replay effects or lose the reduction's persistent accumulator.
+        r#"(ns filters)
+        (defn qualified [k] (qualified-keyword? k))
+        (defn empty-value [v] (nil? v))
+        (defn without-qualified [data seen]
+          (reduce-kv (fn [data k _]
+                       (.push seen (str "qualified:" k))
+                       (if (qualified k) (dissoc data k) data)) data data))
+        (defn without-nils [data seen]
+          (reduce-kv (fn [data k v]
+                       (.push seen (str "nil:" k))
+                       (if (empty-value v) (dissoc data k) data)) data data))
+        (defn stop [a k v] (reduced (conj a [k v])))
+        (defmacro probe []
+          (let [seen (js/Array.) data (with-meta (array-map :ns/private 0 :nil nil :false false :kept 42) {:tag :kept})
+                filtered (without-nils (without-qualified data seen) seen)
+                early (reduce-kv (fn [a k v] (.push seen (str "stop:" k)) (stop a k v)) [] data)]
+            (list 'quote [filtered (meta filtered) (vec seen) early
+                          (mapv qualified-keyword? [nil false 1 "a/b" 'a/b :a :a/b])])) )"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app.cljs"),
+        "(ns app (:require [filters :refer [probe]])) (js/console.log (pr-str [(probe) (probe)]))",
+    )
+    .unwrap();
+    let expected = "[{:false false, :kept 42} {:tag :kept} [\"qualified::ns/private\" \"qualified::nil\" \"qualified::false\" \"qualified::kept\" \"nil::nil\" \"nil::false\" \"nil::kept\" \"stop::ns/private\"] [[:ns/private 0]] [false false false false false false true]]";
+    let expected = format!("[{expected} {expected}]\n");
+    let mut reference = None;
+    for jobs in [1, 2, 4] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut stats = light_cljs::CompileStats::new();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                stats: Some(&mut stats),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("jobs {jobs}: {e}"));
+        let native = emit_js(&program);
+        assert_eq!(program_output(&native), expected, "jobs {jobs}");
+        assert!(stats.native_helpers.compiled >= 5, "{stats:?}");
+        assert!(stats.native_helpers.published > 0, "{stats:?}");
+        assert!(stats.native_helpers.waits >= 2, "{stats:?}");
+        if let Some(reference) = &reference {
+            assert_eq!(&native, reference, "jobs {jobs}");
+        } else {
+            reference = Some(native);
+        }
+        #[cfg(feature = "quickjs")]
+        {
+            let (legacy, _) = analyze_namespace_entry_recorded(
+                "app",
+                &[root.path().to_path_buf()],
+                &mut MacroHost::new(),
+                Default::default(),
+                &mut Vec::new(),
+                EntryRecorders::default(),
+            )
+            .unwrap();
+            assert_eq!(program_output(&emit_js(&legacy)), expected, "legacy");
+        }
     }
 }
 
@@ -4152,9 +4254,8 @@ fn native_transducer_call_shapes_match_legacy() {
         assert_native_matches_legacy(&source, &expected);
     }
 
-    // Sorted native forms are outside the delivered collection boundary.
-    // Establish their noneditable reducer contract against QuickJS as well,
-    // and retain an explicit native error rather than substituting hash forms.
+    // Default sorted maps now preserve the noneditable reducer contract.
+    // Sorted sets remain an explicit unsupported boundary.
     for (target, input, expected, operation) in [
         (
             "(sorted-map :a 1)",
@@ -4181,8 +4282,10 @@ fn native_transducer_call_shapes_match_legacy() {
             program_output(&light_cljs::compile(&source).unwrap()),
             expected
         );
-        #[cfg(not(feature = "quickjs"))]
-        let _ = expected;
+        if operation == "sortedMap" {
+            assert_native_matches_legacy(&source, expected);
+            continue;
+        }
         let mut host = MacroHost::new();
         host.use_native_macros();
         let error = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)

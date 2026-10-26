@@ -216,6 +216,8 @@ pub enum CollectionError {
     /// namespace/name pair has the same spelling (`crate::collections::form`,
     /// "Names").
     AmbiguousName,
+    /// Default sorted-map comparison rejected these operands.
+    CannotCompare,
 }
 
 impl fmt::Display for CollectionError {
@@ -236,6 +238,7 @@ impl fmt::Display for CollectionError {
             CollectionError::AmbiguousName => f.write_str(
                 "a keyword or symbol spelling must split back into its namespace and name at its first '/'",
             ),
+            CollectionError::CannotCompare => f.write_str("Cannot compare different types"),
         }
     }
 }

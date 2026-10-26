@@ -865,6 +865,8 @@ const native = (() => {
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
     list:(...a)=>list(a), vector:(...a)=>vector(a), hashMap:(...a)=>map(a), hashSet:(...a)=>set(a), set:x=>set(arr(x)), vec:x=>vector(arr(x)),
     arrayMap:(...a)=>{ if (a.length % 2) throw new Error('No value supplied for key'); return arrayMap(a); },
+    sortedMap:(...a)=>__rt.formSortedMap(vector(a)),
+    isSorted:x=>__rt.formKind(val(x))==='map'&&!__rt.cljIsEditable(x),
     seqToMap:value=>{
       if (__rt.cljNext(value) === null) return seq(value) === null ? arrayMap([]) : __rt.cljFirst(value);
       const values = arr(value).slice(), trailing = values.length % 2 ? values.pop() : null;
@@ -892,6 +894,7 @@ const native = (() => {
     vals:m=>{const s=__rt.cljSeq(m);return s===null?null:list(arr(s).map(e=>__rt.formNth(e,1)));},
     meta:x=>__rt.cljMeta(x), withMeta:(x,m)=>__rt.cljWithMeta(x,m),
     isKeyword:x=>__rt.formKind(val(x))==='keyword', isSymbol:x=>__rt.formKind(val(x))==='symbol',
+    isQualifiedKeyword:x=>__rt.formKind(val(x))==='keyword'&&__rt.formNamespace(val(x))!==null,
     isVector:x=>__rt.formKind(val(x))==='vector', isMap:x=>{const k=__rt.formKind(val(x));return k==='map'||k==='record';}, isSeq:x=>{const k=__rt.formKind(val(x));return k==='list'||k==='lazy-seq'||k==='cons';},
     isSet:x=>__rt.formKind(val(x))==='set',
     isNil:x=>val(x)==null, isSome:x=>val(x)!=null, isFalse:x=>__rt.cljIsFalse(x), isString:x=>typeof val(x)==='string', not:x=>!truth(x), boolean:truth,
