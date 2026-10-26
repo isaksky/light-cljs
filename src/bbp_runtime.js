@@ -44,10 +44,14 @@ const decl = (() => {
     if (key === 'js/Promise' && specs.some(spec => spec[0].startsWith('Object/')))
       throw new Error('unsupported operation: native Promise Object extension');
     const overlay = order === 0 ? ++overlays : 0, info = views.get(key);
-    for (const [name, arity, fn, , variadic, member] of specs) {
+    for (const [name, arity, fn, , variadic, member, direct] of specs) {
       const object = name.startsWith('Object/');
       const n = object && variadic != null ? -1 : arity;
-      methodTable(name, n).entries.push({order, overlay, key, fn});
+      // Native fixed entries take their hidden receiver from the first
+      // operand. Adapt scope-sensitive legacy entries once at installation;
+      // their raw JavaScript and `this-as` still see the original receiver.
+      const entry = object || direct || arity === 0 ? fn : (x, ...args) => fn.call(x, x, ...args);
+      methodTable(name, n).entries.push({order, overlay, key, fn: entry});
       if (!object) continue;
       let arities = objectArities.get(name);
       if (arities === undefined) objectArities.set(name, arities = new Set());
@@ -130,17 +134,17 @@ const decl = (() => {
   const method = (key, name, arities, viaMetadata) => {
     const ts = arities.map(n => methodTable(key, n));
     const find = (t, x) => {
-      if (viaMetadata) { const f = viaMeta(name, x); if (f !== null) return [f, false]; }
+      if (viaMetadata) { const f = viaMeta(name, x); if (f !== null) return f; }
       const m = resolve(t, x);
       if (m == null) throw missing(name, x);
-      return [m, true];
+      return m;
     };
     if (arities.length === 1 && !viaMetadata) {
       const t = ts[0], n = arities[0];
       switch (n) {
-        case 1: return x => { const m = resolve(t, x); if (m == null) throw missing(name, x); return m.call(x, x); };
-        case 2: return (x, a) => { const m = resolve(t, x); if (m == null) throw missing(name, x); return m.call(x, x, a); };
-        case 3: return (x, a, b) => { const m = resolve(t, x); if (m == null) throw missing(name, x); return m.call(x, x, a, b); };
+        case 1: return x => { const m = resolve(t, x); if (m == null) throw missing(name, x); return m(x); };
+        case 2: return (x, a) => { const m = resolve(t, x); if (m == null) throw missing(name, x); return m(x, a); };
+        case 3: return (x, a, b) => { const m = resolve(t, x); if (m == null) throw missing(name, x); return m(x, a, b); };
       }
     }
     return function (x, ...args) {
@@ -149,8 +153,8 @@ const decl = (() => {
       // call would be.
       if (arities.length === 1) { i = 0; args.length = arities[0] - 1; }
       if (i < 0) throw new Error('Invalid arity: ' + (args.length + 1));
-      const [m, own] = find(ts[i], x);
-      return own ? m.call(x, x, ...args) : m(x, ...args);
+      const m = find(ts[i], x);
+      return m(x, ...args);
     };
   };
   const satisfies = (key, x) => resolve(methodTable(key, 0), x) != null;
@@ -1179,6 +1183,9 @@ const native = (() => {
   /* NATIVE_READER */
   for (const name of [/* CORE_KEYS */]) if (!(name in core)) Object.defineProperty(core,name,{get:unsupported('core.'+name)});
   const rt={core,
+    // Inspect data properties without running an unsupported entry's getter.
+    // Units keep that getter's access at the original expression site.
+    nativeCoreBinding:name=>Object.getOwnPropertyDescriptor(core,name),
     nativeInterop:interop,declarationReceiver:x=>x,
     protocol:name=>Object.freeze({name}),
     protocolMethod:(key,name,arities,viaMetadata)=>decl.method(key,name,arities,viaMetadata===true),

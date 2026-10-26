@@ -458,6 +458,19 @@ fn emit_js_mode(
         );
         emitter.brand_types = brand_types;
         emitter.native_forms = native_forms;
+        if native_forms {
+            emitter.native_replaced_core = program
+                .exprs
+                .iter()
+                .filter_map(|expr| match expr.kind {
+                    ExprKind::SetGlobal { target, .. } => match program.exprs[target.0].kind {
+                        ExprKind::CoreFn(core) => Some(core.runtime_name()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+        }
         emitter.record_kits = record_kits;
         emitter.output.push_str(PRELUDE_OPEN);
         if native_forms {
@@ -669,6 +682,13 @@ fn emit_js_mode(
         // operations: `let core$inc = rt$inc;`.
         for (name, initial) in &emitter.core_cells {
             writeln!(runtime, "  let core${name} = {initial};").unwrap();
+        }
+        for name in &emitter.native_core_bindings {
+            writeln!(
+                runtime,
+                "  const {{value: nativeCore${name}, get: nativeCoreGetter${name}}} = rt.nativeCoreBinding(\"{name}\");"
+            )
+            .unwrap();
         }
         // The constant table follows the runtime it reads.
         let constants_at = runtime.len();
@@ -1651,6 +1671,12 @@ enum TypeBrands {
 
 struct Emitter<'a> {
     native_forms: bool,
+    /// Native units bind their immutable core functions once per factory call.
+    native_core_bindings: Vec<&'static str>,
+    native_replaced_core: HashSet<&'static str>,
+    /// A protocol entry that receives its hidden receiver explicitly. Object,
+    /// IFn and scope-sensitive methods retain the JavaScript receiver ABI.
+    native_protocol_target: Option<RecurTargetId>,
     /// Direct operands already evaluated by `native_form_statements`, in
     /// occurrence order (the same ExprId can occur more than once), with
     /// the operand array's temporary name and slot index.
@@ -1879,6 +1905,9 @@ impl<'a> Emitter<'a> {
             .filter(|_| direct.is_some());
         Emitter {
             native_forms: false,
+            native_core_bindings: Vec::new(),
+            native_replaced_core: HashSet::new(),
+            native_protocol_target: None,
             native_arguments: Default::default(),
             native_temporary: 0,
             native_invoke_temporary: None,
@@ -2296,6 +2325,23 @@ impl<'a> Emitter<'a> {
     /// when the program may replace the operation, or else to the binding (or
     /// member of one) holding it.
     fn runtime_read(&mut self, name: RuntimeName, site: Option<ExprId>, used: NameUse) -> String {
+        if self.native_forms
+            && name.binding == CORE_HUB
+            && let Some(member) = name.member
+            && crate::CoreFnId::ALL
+                .iter()
+                .find(|core| core.runtime_name() == member)
+                .is_some_and(|core| core.operation().value == crate::core_operations::Type::FN)
+            && !self.replaced(member)
+        {
+            self.runtime_root(name, site, used);
+            if !self.native_core_bindings.contains(&member) {
+                self.native_core_bindings.push(member);
+            }
+            // Unsupported entries are getters that throw on access. Keep
+            // that access at its original site, before call operands run.
+            return format!("(nativeCore${member} ?? nativeCoreGetter${member}())");
+        }
         if self.replaced_core.is_none() {
             self.runtime_root(name, site, used);
             return name.to_string();
@@ -2382,8 +2428,10 @@ impl<'a> Emitter<'a> {
     /// Whether the program may replace the core operation with this runtime name,
     /// so that `Advanced` output reads it through an output-level cell.
     fn replaced(&self, name: &str) -> bool {
-        self.replaced_core
-            .is_some_and(|replaced| replaced.binary_search(&name).is_ok())
+        self.native_replaced_core.contains(name)
+            || self
+                .replaced_core
+                .is_some_and(|replaced| replaced.binary_search(&name).is_ok())
     }
 
     /// Whether a call of this core operation may be a plain call of its unit
@@ -3648,6 +3696,9 @@ impl<'a> Emitter<'a> {
             self.output.push(')');
             return true;
         }
+        if self.native_numeric_call(core, args) {
+            return true;
+        }
         let kind_test = |kind: &'static str| -> (&'static str, &'static str, bool, &'static str) {
             ("(__rt.formKind(", "formValue", false, kind)
         };
@@ -3796,6 +3847,106 @@ impl<'a> Emitter<'a> {
         }
         self.output.push(')');
         self.output.push_str(after);
+        true
+    }
+
+    /// Fixed operands avoid the runtime's rest arrays and reducer callbacks.
+    /// Unwrap occurrences at the operator, retaining JavaScript nil, string,
+    /// NaN and signed-zero coercion. Wider calls evaluate every operand before
+    /// coercing any of them, including a comparison that short-circuits.
+    fn native_numeric_call(&mut self, core: crate::CoreFnId, args: &[ExprId]) -> bool {
+        use crate::CoreFnId as C;
+        let (operator, comparison) = match core {
+            C::Add => (" + ", false),
+            C::Subtract => (" - ", false),
+            C::Multiply => (" * ", false),
+            C::Divide => (" / ", false),
+            C::Less => (" < ", true),
+            C::LessEqual => (" <= ", true),
+            C::Greater => (" > ", true),
+            C::GreaterEqual => (" >= ", true),
+            _ => return false,
+        };
+        match args {
+            [] => match core {
+                C::Add => self.output.push('0'),
+                C::Multiply => self.output.push('1'),
+                _ => return false,
+            },
+            [arg] => match core {
+                C::Add | C::Multiply => self.value(*arg),
+                C::Subtract | C::Divide => {
+                    self.output.push_str(if core == C::Subtract {
+                        "(-__rt.formValue("
+                    } else {
+                        "(1 / __rt.formValue("
+                    });
+                    self.value(*arg);
+                    self.output.push_str("))");
+                }
+                _ => self.wrapped("", *arg, ", true"),
+            },
+            _ => {
+                let positional = args.len() > 2;
+                let temporary = if positional {
+                    self.operands.as_mut().map(|operands| {
+                        let base = operands.live;
+                        operands.live += args.len();
+                        operands.declared = operands.declared.max(operands.live);
+                        base
+                    })
+                } else {
+                    None
+                };
+                if let Some(base) = temporary {
+                    self.output.push('(');
+                    for (index, &arg) in args.iter().enumerate() {
+                        write!(self.output, "operand{} = ", base + index).unwrap();
+                        self.value(arg);
+                        self.output.push_str(", ");
+                    }
+                } else if positional {
+                    self.output.push_str("((");
+                    self.positional_params(args.len());
+                    self.output.push_str(") => ");
+                }
+                self.output.push('(');
+                let count = if comparison { args.len() - 1 } else { 1 };
+                for pair in 0..count {
+                    if pair > 0 {
+                        self.output.push_str(" && ");
+                    }
+                    let operands = if comparison {
+                        pair..pair + 2
+                    } else {
+                        0..args.len()
+                    };
+                    for (index, arg) in operands.enumerate() {
+                        if index > 0 {
+                            self.output.push_str(operator);
+                        }
+                        self.output.push_str("__rt.formValue(");
+                        if let Some(base) = temporary {
+                            write!(self.output, "operand{}", base + arg).unwrap();
+                        } else if positional {
+                            write!(self.output, "a{arg}").unwrap();
+                        } else {
+                            self.value(args[arg]);
+                        }
+                        self.output.push(')');
+                    }
+                }
+                self.output.push(')');
+                if let Some(base) = temporary {
+                    self.output.push(')');
+                    self.operands.as_mut().unwrap().live = base;
+                } else if positional {
+                    self.output.push_str(")(");
+                    self.arguments(args);
+                    self.output.push(')');
+                }
+            }
+        }
         true
     }
 
@@ -5189,7 +5340,11 @@ impl<'a> Emitter<'a> {
             self.output.push_str("const ");
             self.local(param);
             if frame.receiver_from_this && index == 0 {
-                self.output.push_str(" = this;\n");
+                if self.native_protocol_target == Some(target) {
+                    writeln!(self.output, " = receiver{};", target.0).unwrap();
+                } else {
+                    self.output.push_str(" = this;\n");
+                }
             } else {
                 writeln!(self.output, " = r{}_{index};", target.0).unwrap();
             }
@@ -5303,6 +5458,13 @@ impl<'a> Emitter<'a> {
 
     /// The statements of `method`'s function, after its opening brace.
     fn method_body(&mut self, method: &FnMethod, ifn_call: bool, through_this: bool) {
+        let explicit_receiver = self.native_protocol_target == Some(method.target);
+        if explicit_receiver {
+            self.indentation();
+            write!(self.output, "const receiver{} = ", method.target.0).unwrap();
+            self.local(method.params[0]);
+            self.output.push_str(";\n");
+        }
         let field_reset = ifn_call
             && self.program.type_methods.contains(&method.target)
             && self.program.recur_targets[method.target.0].used;
@@ -5328,20 +5490,26 @@ impl<'a> Emitter<'a> {
             || self.program.type_methods.contains(&method.target)
         {
             self.indentation();
-            writeln!(
+            write!(
                 self.output,
-                "{} self{} = this;",
+                "{} self{} = ",
                 if field_reset { "let" } else { "const" },
                 method.target.0
             )
             .unwrap();
-            if let Some(receiver) = method.params.first() {
+            if explicit_receiver {
+                writeln!(self.output, "receiver{};", method.target.0).unwrap();
+            } else {
+                self.output.push_str("this;\n");
+            }
+            if !explicit_receiver && let Some(receiver) = method.params.first() {
                 self.indentation();
                 self.local(*receiver);
                 self.output.push_str(" = this;\n");
             }
         }
         if self.program.recur_targets[method.target.0].receiver_from_this
+            && !explicit_receiver
             && !self.reify_receivers.contains(&method.target)
             && !self.program.type_methods.contains(&method.target)
             && let Some(receiver) = method.params.first()
@@ -7195,7 +7363,18 @@ impl<'a> Emitter<'a> {
             .unwrap();
             // Callable adapters supply the receiver as the first argument;
             // their rest binding still needs the ordinary fn dispatcher.
+            let direct = self.native_forms
+                && !ifn
+                && !matches!(dispatch, MethodDispatch::Builtin(name) if name.starts_with("Object/"))
+                && method.rest.is_none()
+                && !method.params.is_empty()
+                && self.scope_flags(method.body) & SCOPE_READ == 0;
+            let enclosing_target = self.native_protocol_target;
+            if direct {
+                self.native_protocol_target = Some(method.target);
+            }
             self.entry_function(method, ifn);
+            self.native_protocol_target = enclosing_target;
             if ifn {
                 self.output.push_str(", ");
                 self.entry_function(method, false);
@@ -7221,6 +7400,9 @@ impl<'a> Emitter<'a> {
                 self.output.push_str(", ");
                 let member = crate::analyzer::munge_js_member(member);
                 self.string_units(&member.encode_utf16().collect::<Vec<_>>());
+            }
+            if direct {
+                self.output.push_str(", null, null, null, true");
             }
             self.output.push(']');
         }
@@ -8423,7 +8605,10 @@ impl<'a> Emitter<'a> {
                     return;
                 }
                 if let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind
-                    && self.known_unit(core)
+                    && (self.known_unit(core)
+                        || self.native_forms
+                            && core.operation().value == crate::core_operations::Type::FN
+                            && !self.replaced(core.runtime_name()))
                 {
                     // `rt$add(1, 2)`: a core operation in a unit binding of its
                     // own. Only called, its value does not escape, so the slice

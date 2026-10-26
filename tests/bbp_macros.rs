@@ -4150,6 +4150,91 @@ fn protocol_type_and_record_macros_match_the_legacy_compiler_and_run() {
 }
 
 #[test]
+fn fixed_native_arithmetic_preserves_coercion_occurrences_and_evaluation_order() {
+    for (source, expected) in [
+        (
+            r#"(defmacro m [x] [(+ x) (* x) (+) (*) (- x) (/ x)
+                 (+ x 2) (* x 2) (- 10 x 1) (/ 100 x 2)
+                 (< x 4 9) (<= x 3 4) (> 5 x 1) (>= 4 x 3)])
+               (js/console.log (pr-str (m 2)))"#,
+            "[2 2 0 1 -2 0.5 4 4 7 25 true true true false]\n",
+        ),
+        (
+            r#"(defmacro m [x] [(+ x) (* x) (+ x nil) (* x 2)
+                 (+ "a") (* "2") (+ "a" "b") (+ "a" "b" "c")
+                 (/ 1 (+ -0.0)) (/ 1 (* -0.0)) (< x) (< x 1) (>= x 0)])
+               (js/console.log (pr-str (m nil)))"#,
+            "[nil nil 0 0 \"a\" \"2\" \"ab\" \"abc\" ##-Inf ##-Inf true true true]\n",
+        ),
+        (
+            r#"(defmacro m []
+                (let [seen (js/Array.)
+                      x (js/Object.)
+                      _ (set! (.-valueOf x) (fn [] (.push seen 10) 2))
+                      arg (fn [n] (.push seen n) n)
+                      sum (+ x (arg 3) (arg 4))
+                      comparison (< (arg 3) (arg 2) (arg 9))]
+                  [sum comparison (vec seen)]))
+               (js/console.log (pr-str (m)))"#,
+            "[9 false [3 4 10 3 2 9]]\n",
+        ),
+    ] {
+        assert_native_matches_legacy(source, expected);
+    }
+}
+
+#[test]
+fn direct_native_protocol_entries_keep_receivers_recur_and_scope_sensitive_methods() {
+    for (source, expected) in [
+        (
+            r#"(defprotocol P (p [x n]) (q [x] [x a] [x a b] [x a b c]))
+               (deftype T [a] P
+                 (p [this n] (if (= n 0) [a (.-a this)] (recur nil (dec n))))
+                 (q [_] a) (q [_ b] (+ a b)) (q [_ b c] (+ a b c)) (q [_ b c d] (+ a b c d)))
+               (defmacro m [] (let [t (T. 7)] [(p t 3) (q t) (q t 1) (q t 1 2) (q t 1 2 3)]))
+               (js/console.log (pr-str (m)))"#,
+            "[[7 7] 7 8 10 13]\n",
+        ),
+        (
+            r#"(defprotocol P (p [x]) (q [x]))
+               (deftype T [^:mutable a] P
+                 (p [_] (set! a (inc a)) (fn [] a))
+                 (q [_] (this-as receiver (.-a receiver))))
+               (defmacro m [] (let [t (T. 1) f (p t) x (q t) g (p t)] [(f) x (g)]))
+               (js/console.log (pr-str (m)))"#,
+            "[3 2 3]\n",
+        ),
+        (
+            r#"(defprotocol P (p [x]) (q [x]))
+               (deftype T [a] P (p [_] (js* "this")) (q [_] (this-as receiver (.-a receiver))))
+               (defmacro m [] (let [t (T. 8)] [(identical? t (p t)) (q t)]))
+               (js/console.log (pr-str (m)))"#,
+            "[true 8]\n",
+        ),
+    ] {
+        assert_native_matches_legacy(source, expected);
+    }
+}
+
+#[test]
+fn native_core_bindings_keep_unsupported_getters_at_the_original_read() {
+    let source = r#"(defmacro m [x]
+             (let [seen (js/Array.)
+                   unused (if x (cycle [1]) :unreached)
+                   caught (try (cycle (do (.push seen 1) [1]))
+                            (catch :default e :caught))]
+               [unused caught (vec seen)]))
+           (js/console.log (pr-str (m false)))"#;
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    assert_eq!(
+        program_output(&emit_js(&program)),
+        "[:unreached :caught []]\n"
+    );
+}
+
+#[test]
 fn record_helpers_publish_once_at_one_and_two_slots() {
     // A record built by a helper initializer and a function over records:
     // each value is initialized once and shared by the consuming tasks.
@@ -5471,10 +5556,10 @@ fn for_and_doseq_over_lazy_helpers_match_the_legacy_compiler_at_one_two_and_four
             "jobs {jobs}"
         );
         assert_eq!(js, legacy, "jobs {jobs}");
-        // `pairs`, `incs` and `tagged` publish; `squares` and `evens` call
-        // core functions through the task's runtime object.
+        // Arithmetic lowering lets `squares` publish, and binding the pure
+        // core predicate once lets `evens` publish as well.
         assert_eq!(stats.native_helpers.compiled, 5, "jobs {jobs}");
-        assert_eq!(stats.native_helpers.published, 3, "jobs {jobs}");
-        assert!(stats.native_helpers.per_task >= 2, "jobs {jobs}");
+        assert_eq!(stats.native_helpers.published, 5, "jobs {jobs}");
+        assert_eq!(stats.native_helpers.per_task, 0, "jobs {jobs}");
     }
 }
