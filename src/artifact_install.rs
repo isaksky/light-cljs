@@ -1396,6 +1396,7 @@ impl Installer<'_> {
                     masks: self.optional(layout.masks),
                     map_constructor: self.optional_global(layout.map_constructor),
                     fields: layout.fields.clone(),
+                    mutable: layout.mutable,
                 }),
             },
             ExprKind::Construct { callee, args } => K::Construct {

@@ -923,10 +923,36 @@ fn large_literals_use_runtime_constructors_that_keep_the_inline_checks() {
 
 #[test]
 fn a_record_built_by_a_helper_initializer_is_published_and_read_by_two_tasks_by_identity() {
-    // Unit 3 is the defrecord's declaration bundle, unit 7 a helper whose
-    // initializer builds a record (light-cljs-478).
-    let bundle = native("(defrecord R [a b])");
-    let helper = native("(defrecord R [a b]) (->R 1 [2])");
+    published_by_two_tasks(
+        "(defrecord R [a b])",
+        "(->R 1 [2])",
+        r#""cljs.user/R", "cljs.user/->R", "cljs.user/map->R""#,
+        "if (__rt.cljGet(r, __rt.formKeyword(null, 'a'), null) !== 1) throw new Error('field');
+         if (!__rt.formEquals(r, roots['cljs.user/->R'](1, __rt.formVector(2)))) throw new Error('equality');",
+    );
+}
+
+#[test]
+fn an_immutable_methodless_deftype_built_by_a_helper_initializer_is_published() {
+    // A `deftype` without methods or mutable fields is a native struct
+    // type all the same (light-cljs-478).
+    published_by_two_tasks(
+        "(deftype R [a b])",
+        "(R. 1 [2])",
+        r#""cljs.user/R", "cljs.user/->R""#,
+        "if (rt.nativeInterop(r).b === undefined) throw new Error('field b');",
+    );
+}
+
+/// Two tasks read the value `construct` that a helper initializer builds
+/// with the type `declaration` makes (a bundle registering `names`): one
+/// published struct of the task's type, read by identity, whose field `a`
+/// is 1. `check` reads `r` and `roots` further.
+fn published_by_two_tasks(declaration: &str, construct: &str, names: &str, check: &str) {
+    // Unit 3 is the declaration bundle, unit 7 a helper whose initializer
+    // builds the value (light-cljs-478).
+    let bundle = native(declaration);
+    let helper = native(&format!("{declaration} {construct}"));
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let mut records = Vec::new();
     let mut counts = BridgeStats::default();
@@ -948,7 +974,7 @@ fn a_record_built_by_a_helper_initializer_is_published_and_read_by_two_tasks_by_
             .unwrap();
         evaluator
             .register_compiler_bundle(
-                "rt => globalThis.__lightRegisterBundle([\"cljs.user/R\", \"cljs.user/->R\", \"cljs.user/map->R\"], null, [], \"fixture.cljs:1\", false, false, 3)",
+                &format!("rt => globalThis.__lightRegisterBundle([{names}], null, [], \"fixture.cljs:1\", false, false, 3)"),
                 3,
             )
             .unwrap();
@@ -963,14 +989,13 @@ fn a_record_built_by_a_helper_initializer_is_published_and_read_by_two_tasks_by_
         // Each task reads a field, and the record's type is the task's `R`:
         // one struct type, made with the bundle's shared factory.
         let check = evaluator
-            .evaluate_unit(
-                "rt => { const roots = globalThis.__lightCompilerRoots, r = roots['cljs.user/helper'];
+            .evaluate_unit(&format!(
+                "rt => {{ const roots = globalThis.__lightCompilerRoots, r = roots['cljs.user/helper'];
                  if (rt.nativeInterop(r).a !== 1) throw new Error('interop before the type is read');
-                 if (__rt.cljGet(r, __rt.formKeyword(null, 'a'), null) !== 1) throw new Error('field');
+                 {check}
                  if (__rt.structTypeOf(r) !== roots['cljs.user/R']) throw new Error('type identity');
-                 if (!__rt.formEquals(r, roots['cljs.user/->R'](1, __rt.formVector(2)))) throw new Error('equality');
-                 return null; }",
-            )
+                 return null; }}",
+            ))
             .unwrap();
         evaluator.release(check).unwrap();
         let stats = evaluator.bridge_stats();

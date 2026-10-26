@@ -2499,6 +2499,9 @@ pub struct TypeLayout {
     pub masks: Option<ExprId>,
     pub map_constructor: Option<GlobalId>,
     pub fields: Vec<String>,
+    /// Whether a declared field is `^:mutable`, `^:unsynchronized-mutable`
+    /// or `^:volatile-mutable`. A record's own `__hash` slot does not count.
+    pub mutable: bool,
 }
 
 /// Each overload owns a separate parameter scope and shares the function name.
@@ -10605,6 +10608,7 @@ impl Analyzer<'_> {
                     body: None,
                     masks: None,
                     map_constructor,
+                    mutable: fields.iter().any(|&(_, mutable)| mutable),
                     fields: fields.into_iter().map(|(name, _)| name).collect(),
                 }),
             },
@@ -10707,6 +10711,7 @@ impl Analyzer<'_> {
                     map_constructor: None,
                     body: Some(body),
                     masks: Some(masks),
+                    mutable: fields.iter().any(|&(_, mutable)| mutable),
                     fields: fields.into_iter().map(|(name, _)| name).collect(),
                 }),
             },

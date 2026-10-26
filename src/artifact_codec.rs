@@ -66,7 +66,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -1493,12 +1493,14 @@ impl Writer<'_> {
                     masks,
                     map_constructor,
                     fields,
+                    mutable,
                 } = &**layout;
                 self.option_global(*constructor);
                 self.option_index(body.map(|b| b.0));
                 self.option_index(masks.map(|m| m.0));
                 self.option_global(*map_constructor);
                 self.strs(fields);
+                self.bool(*mutable);
             }
             K::Construct { callee, args } => {
                 self.u8(32);
@@ -2994,6 +2996,7 @@ impl<'a> Reader<'a> {
                         masks: self.option_index()?.map(ExprRef),
                         map_constructor: self.option_global()?,
                         fields: self.strings()?,
+                        mutable: self.bool()?,
                     })
                 },
             },
@@ -3377,6 +3380,7 @@ mod tests {
                     masks: None,
                     map_constructor: Some(GlobalRef::External(0)),
                     fields: vec!["a".into(), "b".into()],
+                    mutable: true,
                 }),
             },
             K::Construct {

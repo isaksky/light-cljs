@@ -499,6 +499,7 @@ pub struct TypeLayout {
     pub masks: Option<ExprRef>,
     pub map_constructor: Option<GlobalRef>,
     pub fields: Vec<String>,
+    pub mutable: bool,
 }
 
 /// `crate::analyzer::ExprKind` with artifact references.

@@ -6225,15 +6225,25 @@ impl<'a> Emitter<'a> {
         self.output.push(']');
     }
 
-    /// Whether a method of these is one of a type with a `^:mutable` or
-    /// `^:volatile-mutable` field (light-cljs-478).
-    /// A `deftype` without methods has no field bindings to tell, so it
-    /// keeps task-owned instances; a `defrecord` has no mutable fields.
-    fn mutable_type(&self, record: bool, methods: &[(MethodDispatch, FnMethod)]) -> bool {
-        if methods.is_empty() {
+    /// Whether the type `layout` describes keeps task-owned JavaScript
+    /// instances (light-cljs-478): one with a `^:mutable`,
+    /// `^:unsynchronized-mutable` or `^:volatile-mutable` field, or a raw
+    /// `deftype*` type, whose body may install prototype members.
+    fn mutable_type(
+        &self,
+        record: bool,
+        layout: &crate::analyzer::TypeLayout,
+        methods: &[(MethodDispatch, FnMethod)],
+    ) -> bool {
+        debug_assert!(
+            methods
+                .iter()
+                .all(|(_, m)| self.struct_fields(m.target) != layout.mutable)
+        );
+        if layout.body.is_some() {
             return !record;
         }
-        methods.iter().any(|(_, m)| !self.struct_fields(m.target))
+        layout.mutable
     }
 
     /// Whether no field of the method `target`'s type is mutable. A record's
@@ -6294,7 +6304,7 @@ impl<'a> Emitter<'a> {
             fields,
             ..
         } = layout;
-        let mutable = self.mutable_type(record, methods);
+        let mutable = self.mutable_type(record, layout, methods);
         let wrapper = self.iife_open(id, true);
         self.output.push(' ');
         self.product(global);
@@ -7136,6 +7146,7 @@ impl<'a> Emitter<'a> {
                     masks,
                     map_constructor,
                     fields,
+                    ..
                 } = layout.as_ref();
                 let wrapper = self.iife_open(id, true);
                 self.output.push(' ');
