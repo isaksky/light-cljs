@@ -61,7 +61,42 @@ engine source, and includes preloaded helper source.
 
 ## Supported boundary
 
-### Penpot reproduction (light-cljs-507, 2026-10-26)
+### Bootstrap macro audit (light-cljs-509, 2026-10-26)
+
+The native branch of `compiler_bootstrap::build_in` keeps an empty bootstrap
+function table; `MacroHost::expand_core_javascript` reports `unsupported
+operation: bootstrap macro NAME` when a call reaches that table. Namespace
+builds first try `native_core_macros`, with the same form construction,
+generated names and occurrence provenance as the JavaScript definitions.
+
+The audit found 21 bootstrap names without Rust expansion: `as->`, `doto`,
+`js-fn?`, `while`, `dotimes`, `memfn`, `amap`, `areduce`, `..`, `lazy-cat`,
+`comment`, `with-in-str`, `js-debugger`, `js-comment`, `locking`, `time`,
+`unchecked-max`, `unchecked-min`, `hash-map`, `selector` and `simple-benchmark`.
+The first 19 now expand in Rust. `cond->`, `cond->>`, `some->` and `some->>`
+already did; they are included in the differential table as well.
+
+`native_core_macros::tests::bootstrap_macros_expand_as_their_quickjs_definitions`
+compares the added form builders with QuickJS in one table, including metadata,
+generated names, source spans and origins. `bootstrap_namespace_macros_match_quickjs`
+in `tests/bbp_macros.rs` compiles namespace source with both backends and runs
+the emitted JavaScript in Node. Its checked-in `as->` fixture covers repeated
+uses, effects exactly once, zero steps, destructuring, nested threading and
+shadowing, including an `as->` in a source macro body. The error fixture checks
+the exact original step location against QuickJS.
+
+The remaining unimplemented bootstrap algorithms are `selector` (ordered
+map construction, metadata and selector destructuring) and `simple-benchmark`
+(option maps and legacy `pr-str` of arbitrary forms). These require more than
+the direct form builders added here. The existing fallback boundaries also
+remain: unscoped text entry points, malformed calls, bridge/depth limits and
+valid calls the Rust path deliberately declines, such as large `js-obj` maps
+or `defmulti` metadata merges. On the native backend a declined call still
+fails explicitly through the empty bootstrap table. Expanding a wrapper such
+as `with-in-str` or `lazy-cat` does not add runtime support for operations its
+body calls.
+
+### Penpot reproduction (light-cljs-507/509, 2026-10-26)
 
 On macOS arm64, Rust 1.99.1, the native transducer fixtures produce the same
 application JavaScript as QuickJS (`--no-default-features --features
@@ -100,17 +135,29 @@ target/debug/light-cljs --compile --esm --entry app.render \
 In an isolated worktree with `research/` left untouched, use the same five
 source roots under `/Users/admin/src/light-cljs/research/penpot-light`.
 
-Both this command and the same command with `--entry app.main` exit 1, with
-this exact first error (the read-only port's canonical source path):
+After light-cljs-509, both entries pass the former cuerdas `as->` error. At
+`3f62549f`, both commands exit 1, with these exact first errors (the read-only
+port's canonical source paths):
+
+`--entry app.render`:
 
 ```text
-light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:324:6: macro expansion: while expanding as->: big-boy-pants-js: unsupported operation: bootstrap macro as-> (bytes 9312..9365)
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/record.cljc:343:1: macro expansion: big-boy-pants-js: RangeError: eval source exceeds 16,384 UTF-16 code units (bytes 15154..17475)
+```
+
+`--entry app.main`:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/promesa/util.cljc:228:1: macro expansion: big-boy-pants-js: SyntaxError: nesting exceeds the limit of 256 units (bytes 5371..6033)
 ```
 
 The former `core.partitionBy` error is gone: cuerdas' `(partition-by string?)`,
 one-argument `filter` and `mapcat`, their `comp`, and three-argument `into` now
-run natively. The next failure is bootstrap expansion of `as->`, tracked by
-light-cljs-509. Neither Penpot entry completes natively yet.
+run natively, as do the cuerdas `as->` occurrences. The next failures are native
+JavaScript frontend limits, tracked together by light-cljs-510. Neither Penpot
+entry completes natively yet. This is separate from light-cljs-505's removed
+reader-registration source growth; the failing declarations here are
+`app.common.record/defrecord` and `promesa.util/with-open`, respectively.
 
 ### Native forms
 
@@ -475,12 +522,12 @@ sequences are chunked; lists and shorter vectors are not). The clj intrinsics re
 the rest. `cons` and `conj` keep a lazy sequence as an unrealized tail, and
 a `concat` involving one is lazy, realizing one collection at a time.
 Equality stops at the first unequal element. Not provided:
-`cycle`, `lazy-cat`, `eduction`, `sequence` of a transducer, transducers other
+`cycle`, `eduction`, `sequence` of a transducer, transducers other
 than `map`, `filter`, `mapcat` and `partition-by`, and sorted sequences.
 The text-mode compile entry points (`--text`,
-`analyze_with_macros`) expand `for`, `doseq` and `when` through the JavaScript
-bootstrap, which this backend does not have; namespace builds expand them in
-Rust.
+`analyze_with_macros`) expand `for`, `doseq`, `when` and `lazy-cat` through the
+JavaScript bootstrap, which this backend does not have; namespace builds expand
+them in Rust.
 
 A realization runs the thunk once, in the task that first needs the
 sequence; a task that needs it while another task realizes it parks (it
