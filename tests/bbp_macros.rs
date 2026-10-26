@@ -1352,6 +1352,24 @@ const PROTOCOL_FIXTURES: &[(&str, &str)] = &[
          (js/console.log (pr-str (m)))",
         "[2 2 4 4]\n",
     ),
+    // A colliding Object method that a later extension installs holds the
+    // member from the first call after it, and not at an earlier frontier.
+    (
+        "(deftype T [a] Object (foo-bar [_] 1)) (deftype U [^:mutable a] Object (foo-bar [_] 3)) \
+         (defmacro early [] [(.foo-bar (T. 0)) (.foo-bar (U. 0))]) (def e (early)) \
+         (extend-type T Object (foo_bar [_] 2)) (extend-type U Object (foo_bar [_] 4)) \
+         (defmacro m [] [(.foo-bar (T. 0)) (.foo-bar (T. 0)) (.foo-bar (U. 0)) (.foo-bar (U. 0))]) \
+         (js/console.log (pr-str [e (m) (early)]))",
+        "[[1 3] [2 2 4 4] [2 4]]\n",
+    ),
+    // An object inheriting a struct's or a mutable instance's Object
+    // method reads the fields it inherits.
+    (
+        "(deftype T [x] Object (f [_] x)) (deftype U [^:mutable x] Object (f [_] x)) \
+         (defmacro m [] [(.f (js/Object.create (T. 7))) (.f (js/Object.create (U. 8)))]) \
+         (js/console.log (pr-str (m)))",
+        "[7 8]\n",
+    ),
     // Variadic Object methods, alone and beside a fixed overload, with too
     // few, exact and extra arguments.
     (
