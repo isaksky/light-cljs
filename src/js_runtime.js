@@ -10029,7 +10029,7 @@
       if (k.name === 'eof') result.eof = value;
       else if (profile !== 'code' && k.name === 'default') {
         if (valueOf(value) != null && !callable(value)) throw new TypeError('Expected default reader function');
-        result.fallback = valueOf(value) == null ? null : value;
+        result.fallback = valueOf(value) == null ? valueOf(value) : value;
       } else if (profile !== 'code' && k.name === 'readers') {
         if (valueOf(value) == null) continue;
         let entries = typeof value === 'object' && value !== null ? readerMaps.get(value) : undefined;
@@ -10350,7 +10350,7 @@
     const name = tagName(tag), previous = tags.get(name) ?? null; tags.set(name, handler); return previous;
   }
   function deregister(tag) { if (arguments.length !== 1) arity(arguments.length); const name = tagName(tag), previous = tags.get(name) ?? null; tags.delete(name); return previous; }
-  function registerDefault(handler) { if (arguments.length !== 1) arity(arguments.length); if (valueOf(handler) != null && !callable(handler)) throw new TypeError('Expected reader function'); const previous = defaultTag; defaultTag = valueOf(handler) == null ? null : handler; return previous; }
+  function registerDefault(handler) { if (arguments.length !== 1) arity(arguments.length); if (valueOf(handler) != null && !callable(handler)) throw new TypeError('Expected reader function'); const previous = defaultTag; defaultTag = valueOf(handler) == null ? valueOf(handler) : handler; return previous; }
   function deregisterDefault() { if (arguments.length !== 0) arity(arguments.length); const previous = defaultTag; defaultTag = null; return previous; }
   function withInput(text, thunk) {
     if (arguments.length !== 2) arity(arguments.length);

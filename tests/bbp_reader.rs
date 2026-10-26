@@ -115,6 +115,10 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
             r###"(mapv (fn [opts] (try (compiler-reader-read-string opts "1") (catch :default e (.-message e)))) [nil [] {:other true} {"eof" nil} {:readers []} {:readers {:x identity}} {:readers {'x 1}} {:default 1}])"###,
         ),
         (
+            "undefined default registration",
+            r###"(let [old (compiler-reader-register-default-tag-parser js/undefined) previous (compiler-reader-deregister-default-tag-parser)] (js* "(~{} === undefined)" previous))"###,
+        ),
+        (
             "empty explicit options",
             r###"(try (compiler-reader-read-string {} "") (catch :default e [(.-message e) (.-source e) (.-line e) (.-column e) (.-offset e) (.-category e)]))"###,
         ),
@@ -181,6 +185,9 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
             Ok(native_program) => {
                 let native = emit_js(&native_program);
                 assert!(!output(&native).is_empty(), "{label}");
+                if label == "undefined default registration" {
+                    assert_eq!(output(&native), "true\n", "{label}");
+                }
                 #[cfg(feature = "quickjs")]
                 match analyzed(&source, false) {
                     Ok(legacy_program) => {
