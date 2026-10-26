@@ -1489,6 +1489,221 @@ fn weak_bridge_entries_preserve_live_occurrences_and_raw_metadata() {
     });
 }
 
+fn collapsed_metadata_after_collection(text: &str) -> (Runtime, Bridge, Form, Rooted) {
+    let rt = Runtime::new();
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let form = host
+        .read_compiler_form(&crate::compiler_data::Source::new(
+            "collapsed-metadata.cljs",
+            text,
+        ))
+        .unwrap()
+        .unwrap();
+    let metadata = form.metadata().unwrap();
+    let overwritten = metadata.children()[1].data();
+    let mut bridge = Bridge::default();
+    let raw = rt.scope(|s| {
+        bridge.remember(&form, 128, &mut 1000).unwrap();
+        let value = bridge.import(s, &form.data(), 128, &mut 1000).unwrap();
+        s.persist(s.form_meta(s.form_value(value)).unwrap())
+    });
+    let discarded = bridge.imports[&overwritten.identity()].occurrence.clone();
+    rt.collect().unwrap();
+    assert!(!discarded.is_live(), "the native map overwrites the vector");
+    rt.scope(|_| bridge.prune(rt.heap_stats().collections));
+    assert!(!bridge.imports.contains_key(&overwritten.identity()));
+    (rt, bridge, form, raw)
+}
+
+#[test]
+fn weak_bridge_pruning_preserves_collapsed_descendant_provenance() {
+    let (rt, mut bridge, form, raw) =
+        collapsed_metadata_after_collection("^{1 ^{:tag [9]} [1 [2 [3]]] 1.0 nil} []");
+    let metadata = form.metadata().unwrap();
+    rt.scope(|s| {
+        let exported = bridge
+            .export(s, s.local(&raw).unwrap(), 128, &mut 1000)
+            .unwrap();
+        assert_eq!(exported.identity(), metadata.data().identity());
+        let expanded = Form::from_bridge_expansion(
+            exported,
+            &form,
+            ExpansionOrigin {
+                macro_name: Name::new(None, "metadata"),
+                call: form.span(),
+                definition: None,
+                helpers: vec![],
+            },
+            &bridge.forms,
+        );
+        fn check_spans(original: &Form, restored: &Form) {
+            assert_eq!(restored.data().identity(), original.data().identity());
+            assert_eq!(
+                restored.span().source().name(),
+                original.span().source().name()
+            );
+            assert_eq!(restored.span().bytes(), original.span().bytes());
+            assert_eq!(restored.node().origin, original.node().origin);
+            for (original, restored) in original.children().iter().zip(restored.children()) {
+                check_spans(original, &restored);
+            }
+            if let Some(metadata) = original.metadata() {
+                check_spans(&metadata, &restored.metadata().unwrap());
+            }
+        }
+        check_spans(&metadata, &expanded);
+    });
+    drop(raw);
+    rt.collect().unwrap();
+    rt.scope(|_| bridge.prune(rt.heap_stats().collections));
+    assert!(bridge.forms.is_empty());
+    assert!(bridge.costs.is_empty());
+}
+
+#[test]
+fn weak_bridge_pruning_charges_the_complete_restored_datum() {
+    let (rt, mut bridge, form, raw) =
+        collapsed_metadata_after_collection("^{1 [1 [2 [3]]] 1.0 nil} []");
+    let metadata = form.metadata().unwrap().data();
+    rt.scope(|s| {
+        assert!(
+            bridge.import(s, &metadata, 5, &mut 5).is_err(),
+            "rewrapping must charge overwritten reader descendants"
+        );
+        assert!(
+            bridge.import(s, &metadata, 2, &mut 10).is_err(),
+            "rewrapping must retain the reader subtree's original depth"
+        );
+        let mut remaining = 10;
+        let restored = bridge.import(s, &metadata, 5, &mut remaining).unwrap();
+        assert_eq!(remaining, 0);
+        assert!(s.same_object(s.form_value(restored), s.local(&raw).unwrap()));
+        assert_eq!(
+            bridge.export(s, restored, 5, &mut 10).unwrap().identity(),
+            metadata.identity()
+        );
+        assert!(bridge.export(s, restored, 5, &mut 9).is_err());
+        assert!(bridge.export(s, restored, 4, &mut 10).is_err());
+    });
+}
+
+#[test]
+fn retained_environment_snapshots_survive_collection_and_pruning() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let function = evaluator
+        .evaluate_unit(&native(
+            "(fn [form env]\n\
+               (if (js* \"globalThis.savedEnvironment\")\n\
+                 [(js* \"globalThis.savedEnvironment\") env]\n\
+                 (do (js* \"(globalThis.savedEnvironment = ~{})\" env) env)))",
+        ))
+        .unwrap();
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let read = |host: &mut MacroHost, text| {
+        host.read_compiler_form(&crate::compiler_data::Source::new("environment.cljs", text))
+            .unwrap()
+            .unwrap()
+    };
+    let namespace = read(&mut host, "{:name saved.ns :bindings [1 2 3]}").data();
+    let mut envelope = |text| {
+        let data = read(&mut host, text).data();
+        let D::Collection { kind, children } = data.kind() else {
+            panic!("expected an environment map")
+        };
+        let mut children = children.clone();
+        children[1] = namespace.clone();
+        Datum::new(D::Collection {
+            kind: *kind,
+            children,
+        })
+    };
+    let first = envelope("{:ns nil :line 1 :old-only true}");
+    let second = envelope("{:ns nil :line 2 :new-only true}");
+    let call = read(&mut host, "(snapshot)");
+    let expand = |host: &mut MacroHost, environment| {
+        host.expand_javascript(
+            &evaluator,
+            function,
+            &call,
+            environment,
+            ExpansionOrigin {
+                macro_name: Name::new(None, "snapshot"),
+                call: call.span(),
+                definition: None,
+                helpers: vec![],
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        expand(&mut host, &first).data().identity(),
+        first.identity()
+    );
+    let saved = shared.0.bridge.lock().unwrap().imports[&first.identity()]
+        .occurrence
+        .clone();
+    expand(&mut host, &second);
+    // expand_javascript releases every input/result handle. Only macro task
+    // state holds the first envelope; the bridge roots the second one.
+    assert_eq!(
+        shared
+            .0
+            .bridge
+            .lock()
+            .unwrap()
+            .environment
+            .as_ref()
+            .unwrap()
+            .0
+            .identity(),
+        second.identity()
+    );
+    shared.0.runtime.collect().unwrap();
+    assert!(saved.is_live());
+    let result = expand(&mut host, &second);
+    assert_eq!(
+        shared.0.bridge.lock().unwrap().collected,
+        shared.0.runtime.heap_stats().collections
+    );
+    let snapshots = result.children();
+    assert_eq!(snapshots[0].data().identity(), first.identity());
+    assert_eq!(snapshots[1].data().identity(), second.identity());
+    for (snapshot, line, present, absent) in [
+        (&snapshots[0], 1, "old-only", "new-only"),
+        (&snapshots[1], 2, "new-only", "old-only"),
+    ] {
+        let get = |key| {
+            snapshot
+                .data()
+                .get(&Datum::new(D::Keyword(Name::new(None, key))))
+                .unwrap()
+        };
+        assert_eq!(get("ns").unwrap().identity(), namespace.identity());
+        assert!(matches!(get("line").unwrap().kind(), D::Integer(n) if *n == line));
+        assert!(matches!(get(present).unwrap().kind(), D::Boolean(true)));
+        assert!(get(absent).is_none());
+    }
+    shared.0.runtime.scope(|s| {
+        let bridge = shared.0.bridge.lock().unwrap();
+        let old = s.form_value(s.upgrade(&saved).unwrap());
+        let new = s.form_value(s.local(&bridge.environment.as_ref().unwrap().1).unwrap());
+        let key = s
+            .new_keyword(
+                None,
+                string(s, &"ns".encode_utf16().collect::<Vec<_>>()).unwrap(),
+            )
+            .unwrap();
+        assert!(s.same_object(
+            s.form_get(old, key).unwrap().unwrap(),
+            s.form_get(new, key).unwrap().unwrap()
+        ));
+    });
+    evaluator.release(function).unwrap();
+}
+
 /// The original 400-call namespace chain exceeded 64 MiB after 224 calls.
 /// Collect while the compiler/session are still alive, so teardown cannot
 /// conceal command or bridge retention. All macro definitions remain usable.

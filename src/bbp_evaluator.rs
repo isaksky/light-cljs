@@ -19,7 +19,7 @@ use big_boy_pants_js::{
 };
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     rc::Rc,
     sync::{
         Arc, Condvar, Mutex,
@@ -63,7 +63,7 @@ struct Bridge {
     native_objects: HashMap<ObjectIdentity, (usize, WeakHandle)>,
 }
 impl Bridge {
-    /// Only observable native objects keep their compiler-side provenance.
+    /// Observable native objects keep their full compiler-side Datum tree.
     /// Check after a collection, under the caller's no-GC host scope.
     fn prune(&mut self, collected: u64) {
         if self.collected == collected {
@@ -74,8 +74,23 @@ impl Bridge {
             imported.occurrence.is_live()
                 || imported.native.as_ref().is_some_and(WeakHandle::is_live)
         });
-        self.forms.retain(|key, _| self.imports.contains_key(key));
-        self.costs.retain(|key, _| self.imports.contains_key(key));
+        // A native map can collapse reader-distinct equal keys and discard
+        // overwritten values. Exporting a surviving parent still restores
+        // its original Datum, including those now-dead native descendants.
+        // Keep their provenance and conversion costs, without rooting them.
+        let mut reachable = HashSet::new();
+        let mut pending: Vec<_> = self.imports.values().map(|i| i.data.clone()).collect();
+        while let Some(data) = pending.pop() {
+            if !reachable.insert(data.identity()) {
+                continue;
+            }
+            if let D::Collection { children, .. } = data.kind() {
+                pending.extend(children.iter().cloned());
+            }
+            pending.extend(data.metadata());
+        }
+        self.forms.retain(|key, _| reachable.contains(key));
+        self.costs.retain(|key, _| reachable.contains(key));
         self.native_objects
             .retain(|_, (key, value)| self.imports.contains_key(key) && value.is_live());
     }

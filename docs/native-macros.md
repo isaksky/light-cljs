@@ -52,7 +52,10 @@ An opaque heap-and-generation identity table preserves the same reuse for raw
 native metadata maps, whose engine contract does not wrap metadata in occurrences.
 Scalar values still use distinct occurrence wrappers, even when their values agree.
 After a collection, the next import prunes dead memo entries and their compiler
-provenance. Reimporting a reclaimed occurrence creates a new wrapper; any
+provenance. Surviving imported Datums keep source information and conversion
+costs for their entire compiler subtree, including metadata and reader entries
+collapsed by native map equality. Those descendants do not keep dead native
+objects alive. Reimporting a reclaimed occurrence creates a new wrapper; any
 occurrence still held by a macro, another task or a saved continuation keeps
 its identity and exact original Datum. A raw metadata map can outlive its
 wrapper: reimport wraps that same native map while it remains observable.
@@ -745,6 +748,16 @@ CARGO_BUILD_JOBS=3 cargo test --locked --no-default-features --features bbp-macr
 collection around retained occurrences and raw metadata, checks exact Datum
 and source reuse, enforces conversion budgets on memo hits and verifies dead
 provenance is pruned.
+
+The pruning regressions also retain only the raw metadata of
+`^{1 [1 [2 [3]]] 1.0 nil} []`: the native map discards the overwritten vector,
+but restoring the original compiler Datum still requires ten nodes and depth
+five. Descendant source spans and nested metadata survive pruning without
+retaining their dead native objects. A real emitted macro saves its first
+environment in task state across an envelope update, input-handle release,
+collection and pruning; the old/new slot values and shared namespace identity
+remain intact. After this review fix, the forced-final-collection regression
+reproduces the table's exact live and peak managed byte counts at both sizes.
 
 Validation on the same toolchain: all 66 native `bbp_macros` tests pass, as
 does the pool stress with `LIGHT_CLJS_STRESS_SEEDS=12` (one, two, four and
