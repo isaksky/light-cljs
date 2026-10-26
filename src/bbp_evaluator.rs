@@ -61,6 +61,8 @@ struct Bridge {
     // Native metadata is a raw immutable map, so it can emerge without its
     // occurrence wrapper. Map that exact object back without traversing it.
     native_objects: HashMap<ObjectIdentity, (usize, WeakHandle)>,
+    gensym_counter: u64,
+    generated_names: HashSet<Vec<u16>>,
 }
 impl Bridge {
     /// Observable native objects keep their full compiler-side Datum tree.
@@ -146,6 +148,9 @@ impl Bridge {
                 let ns = n.namespace().map(|units| string(s, units)).transpose()?;
                 let name = string(s, n.name())?;
                 if matches!(d.kind(), D::Symbol(_)) {
+                    if n.namespace().is_none() {
+                        self.generated_names.insert(n.name().to_vec());
+                    }
                     s.new_symbol(ns, name)
                 } else {
                     s.new_keyword(ns, name)
@@ -499,6 +504,8 @@ const LANE: ResultKind = ResultKind::new(5);
 /// the atoms it makes); else, given the atom's owner token, 0 to go on or a
 /// lane cell to park on (`bbp_runtime.js`).
 const LANE_EFFECT: u16 = 65532;
+/// Compiler-owned generated names, independent of the worker running a step.
+const GENSYM_EFFECT: u16 = 65531;
 
 /// The runtime-wide collection and admission policy for `options`.
 ///
@@ -1051,7 +1058,13 @@ impl BbpEvaluator {
             while matches!(
                 cx.task.run_with(
                     Budget::instructions(10_000),
-                    &mut NativeHost(&cx.per_task, &self.shared.0.counters, None)
+                    &mut NativeHost(
+                        &cx.per_task,
+                        &self.shared.0.counters,
+                        None,
+                        &crate::generated_names::NativeGensyms::capture(),
+                        &self.bridge
+                    )
                 ),
                 Ok(RunOutcome::Yielded)
             ) {}
@@ -1066,6 +1079,8 @@ impl BbpEvaluator {
             lanes: self.shared.lanes().cloned(),
             last_thread: cx.last_thread.clone(),
             admitted: Arc::new(Mutex::new(true)),
+            gensyms: crate::generated_names::NativeGensyms::capture(),
+            bridge: self.bridge.clone(),
         }
     }
     fn run_inner(&self, cx: &TaskContext) -> Result<(), EvalError> {
@@ -1685,6 +1700,8 @@ pub(crate) struct NativeStep {
     lanes: Option<Arc<crate::effect_lanes::Lanes>>,
     last_thread: Arc<Mutex<std::thread::ThreadId>>,
     admitted: Arc<Mutex<bool>>,
+    gensyms: crate::generated_names::NativeGensyms,
+    bridge: Arc<Mutex<Bridge>>,
 }
 impl NativeStep {
     pub(crate) fn handoff(&self) -> NativeHandoff {
@@ -1714,7 +1731,13 @@ impl NativeStep {
         self.task
             .run_with(
                 Budget::instructions(10_000),
-                &mut NativeHost(&self.per_task, &self.counters, self.lanes.as_deref()),
+                &mut NativeHost(
+                    &self.per_task,
+                    &self.counters,
+                    self.lanes.as_deref(),
+                    &self.gensyms,
+                    &self.bridge,
+                ),
             )
             .map_err(|e| e.to_string())
     }
@@ -1743,9 +1766,65 @@ struct NativeHost<'a>(
     &'a AtomicUsize,
     &'a NativeCounters,
     Option<&'a crate::effect_lanes::Lanes>,
+    &'a crate::generated_names::NativeGensyms,
+    &'a Mutex<Bridge>,
 );
 impl big_boy_pants_js::Host for NativeHost<'_> {
     fn effect(&mut self, call: big_boy_pants_js::HostCall) -> Result<Primitive, String> {
+        if call.op == GENSYM_EFFECT {
+            let Primitive::String(request) = call.arg else {
+                return Err("invalid native gensym request".into());
+            };
+            let units = request.code_units();
+            let Some((&op, argument)) = units.split_first() else {
+                return Err("empty native gensym request".into());
+            };
+            return match op as u8 {
+                b'g' => {
+                    let serial = String::from_utf16_lossy(argument)
+                        .parse()
+                        .map_err(|_| "invalid gensym scope")?;
+                    let suffix = self
+                        .3
+                        .suffix(serial)
+                        .ok_or("native gensym scope unavailable")?;
+                    Ok(Primitive::string(&suffix))
+                }
+                b'L' => {
+                    self.3.log(argument);
+                    Ok(Primitive::Null)
+                }
+                b't' => Ok(Primitive::Number(
+                    self.4.lock().unwrap().gensym_counter as f64,
+                )),
+                b'r' => {
+                    let floor = String::from_utf16_lossy(argument)
+                        .parse()
+                        .map_err(|_| "invalid gensym floor")?;
+                    let mut bridge = self.4.lock().unwrap();
+                    bridge.gensym_counter = bridge.gensym_counter.max(floor);
+                    Ok(Primitive::Null)
+                }
+                b'a' => {
+                    let mut bridge = self.4.lock().unwrap();
+                    let name = loop {
+                        bridge.gensym_counter = bridge
+                            .gensym_counter
+                            .checked_add(1)
+                            .ok_or("gensym identities exhausted")?;
+                        let mut name = argument.to_vec();
+                        name.extend(bridge.gensym_counter.to_string().encode_utf16());
+                        if bridge.generated_names.insert(name.clone()) {
+                            break name;
+                        }
+                    };
+                    Ok(Primitive::String(
+                        JsString::from_code_units(name).ok_or("gensym string limit exceeded")?,
+                    ))
+                }
+                _ => Err("unknown native gensym request".into()),
+            };
+        }
         if call.op == LANE_EFFECT {
             let task = crate::effect_lanes::identity(call.task);
             let argument = match call.arg {

@@ -281,7 +281,7 @@ const decl = (() => {
   return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, isRecord};
 })();
 const native = (() => {
-  let gensymFloor=0;
+  let gensymScope = 0, gensymLogging = false;
   const val = x => __rt.formValue(x);
   const interop = x => {
     const value = val(x), kind = __rt.formKind(value);
@@ -317,6 +317,14 @@ const native = (() => {
   const constantSet = a => counted(set(a), a.length, 'unsupported operation: native literal set with reader-distinct equal members');
   const constantMap = a => counted(map(a), a.length / 2, 'unsupported operation: native literal map with reader-distinct equal keys');
   const arity = n => { throw new Error('Invalid arity: ' + n); };
+  const gensym = (...args) => {
+    if (args.length > 1) return arity(args.length);
+    const base = core.str(args.length === 0 ? 'G__' : args[0]);
+    const name = gensymScope === 0 ? __rt.effect(65531, 'a' + base)
+      : base + __rt.effect(65531, 'g' + gensymScope);
+    if (gensymLogging) __rt.effect(65531, 'L' + name);
+    return __rt.cljSymbol(name);
+  };
   const seq = x => __rt.cljSeq(x);
   const get = (m,k,n=null) => __rt.cljGet(m,k,n);
   // Read `.call` before evaluating nested callback arguments. A custom
@@ -393,6 +401,26 @@ const native = (() => {
   // sources (a vector's seq, a range and `chunk-cons` sequences) are read
   // 32 elements at a time, as in ClojureScript; lists one at a time.
   const lazy = f => __rt.lazySeq(f);
+  // Match now, advance the same RegExp only when the tail is demanded.
+  // Offsets, empty matches and slicing all use JavaScript UTF-16 units.
+  const reSeq = (self, re, text) => {
+    text = val(text);
+    if (typeof text !== 'string') throw new TypeError('regex matching requires a string');
+    const match = re.exec(text);
+    if (match === null) return null;
+    const value = match.length === 1 ? match[0] : vector(Array.from(match));
+    return __rt.cljCons(value, lazy(() => {
+      const offset = match.index + Math.max(1, match[0].length);
+      return offset <= text.length ? self(self, re, text.slice(offset)) : null;
+    }));
+  };
+  const rePattern = pattern => {
+    pattern = val(pattern);
+    if (pattern instanceof RegExp) return pattern;
+    if (typeof pattern !== 'string') throw new TypeError('regex pattern requires a string');
+    const prefix = /^\(\?([dgimsuxy]*)\)/.exec(pattern);
+    return new RegExp(prefix ? pattern.slice(prefix[0].length) : pattern, prefix ? prefix[1] : '');
+  };
   const seqOf = x => __rt.cljSeq(x);
   const chunked = (s, step) => {
     const ch = __rt.cljChunkFirst(s), b = __rt.vectorBuilder();
@@ -554,6 +582,7 @@ const native = (() => {
   const intoReducer = (...a) => a.length === 1 ? a[0] : a.length === 2 ? __rt.cljConj(a[0], a[1]) : arity(a.length);
   const core = {
     assertions:true,
+    gensym, rePattern, reSeq:(re,text)=>reSeq(reSeq,re,text),
     invoke, truth, get, identity:x=>x, macroReaderFunction:f=>f,
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
     list:(...a)=>list(a), vector:(...a)=>vector(a), hashMap:(...a)=>map(a), hashSet:(...a)=>set(a), set:x=>set(arr(x)), vec:x=>vector(arr(x)),
@@ -712,8 +741,9 @@ const native = (() => {
     setFromArray:set,arraySetFromArray:set,constantSetFromArray:constantSet,literalSetFromArray:literalSet,
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f,
-    compilerForms:{gensymScope:()=>null,takeEncodePeak:()=>0,
-      takeGensyms:()=>__rt.formVector(gensymFloor),raiseGensyms:n=>{gensymFloor=Math.max(gensymFloor,n);}},
+    compilerForms:{gensymScope:serial=>{gensymScope=serial;return null;},takeEncodePeak:()=>0,
+      takeGensyms:()=>{gensymLogging=true;return __rt.formVector(__rt.effect(65531,'t'));},
+      raiseGensyms:n=>{__rt.effect(65531,'r'+n);return null;}},
   };
   return rt;
 })();

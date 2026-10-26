@@ -39,6 +39,192 @@ fn program_output(js: &str) -> String {
 }
 
 #[test]
+fn native_core_services_match_quickjs() {
+    for (body, expected) in [
+        (r#"(vec (re-seq #"a" "banana"))"#, "[\"a\" \"a\" \"a\"]"),
+        (
+            r#"(mapv (fn [m] (mapv (fn [x] (if (nil? x) :missing x)) m)) (re-seq #"(a)(b)?" "a ab"))"#,
+            "[[\"a\" \"a\" :missing] [\"ab\" \"a\" \"b\"]]",
+        ),
+        (
+            r#"[(re-seq #"z" "abc") (vec (re-seq #"" "😀")) (vec (re-seq (js/RegExp. "a" "g") "a a a"))]"#,
+            "[nil [\"\" \"\" \"\"] [\"a\" \"a\"]]",
+        ),
+        (
+            r#"(let [seen (js/Array.) re (js* "({exec(text){ ~{}.push(text); return /a/.exec(text); }})" seen)
+                      s (re-seq re "a a") a (first s) n (.-length seen) b (first (next s))]
+                   [a n b (vec seen) (first (next s)) (.-length seen)])"#,
+            "[\"a\" 1 \"a\" [\"a a\" \" a\"] \"a\" 2]",
+        ),
+        (
+            r#"[(try (re-seq #"a" 42) (catch :default e (.-message e)))
+             (try (let [g gensym] (g "a" "b")) (catch :default e (.-message e)))]"#,
+            "[\"regex matching requires a string\" \"Invalid arity: 2\"]",
+        ),
+    ] {
+        let source = format!("(defmacro m [] (list 'quote {body})) (js/console.log (pr-str (m)))");
+        assert_native_matches_legacy(&source, &format!("{expected}\n"));
+    }
+}
+
+#[test]
+fn native_unscoped_gensym_reserves_imported_symbols_and_cache_names() {
+    use light_cljs::compiler_data::{Datum, DatumKind, Name};
+    use light_cljs::evaluator::MacroEvaluator;
+    let evaluator = light_cljs::bbp_evaluator::BbpEvaluator::new(Default::default()).unwrap();
+    let reserved = Datum::new(DatumKind::Symbol(Name::new(None, "G__1")));
+    let value = evaluator
+        .import_data(&reserved, Default::default())
+        .unwrap();
+    evaluator.release(value).unwrap();
+    let result = evaluator.evaluate_unit("rt => { const a=rt.core.gensym(); rt.compilerForms.raiseGensyms(40); const names=[a,rt.core.gensym(),rt.core.gensym(null),rt.core.gensym(false),rt.core.gensym('x\\ud800')].map(rt.core.name); const expected=['G__2','G__41','42','false43','x\\ud80044']; for(let i=0;i<names.length;i++) if(names[i]!==expected[i]) throw new Error('gensym name '+i+': '+names[i]); return null; }").unwrap();
+    evaluator.release(result).unwrap();
+}
+
+#[test]
+fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    use light_cljs::namespace_artifact::NamespaceCapture;
+    let root = temp_dir::TempDir::new("native-gensym");
+    std::fs::create_dir(root.join("names")).unwrap();
+    std::fs::write(
+        root.join("names/macros.cljs"),
+        r#"
+      (ns names.macros)
+      (declare helper)
+      (defmacro fresh []
+        (let [before (gensym) middle (helper) after (gensym "explicit")]
+          (list 'quote [before middle after (gensym nil) (gensym false) (gensym 7)])))
+      (defmacro compiled [] (list 'quote (gensym "compiled")))
+      (defn helper [] [(compiled) (gensym "helper")])
+      (def retained (fresh))"#,
+    )
+    .unwrap();
+    for ns in ["a", "b", "c"] {
+        std::fs::write(
+            root.join(format!("names/{ns}.cljs")),
+            format!(
+                r#"
+          (ns names.{ns} (:require [names.macros :refer [fresh]]))
+          (def first-names (fresh))
+          (defn second-names [] (fresh))"#
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("app.cljs"),
+        r#"
+      (ns app (:require [names.macros :as m] [names.a :as a] [names.b :as b] [names.c :as c]))
+      (js/console.log (pr-str [m/retained a/first-names (a/second-names)
+                             b/first-names (b/second-names) c/first-names (c/second-names)]))"#,
+    )
+    .unwrap();
+    let mut reference = None;
+    for (jobs, fixed) in [
+        (1, false),
+        (2, false),
+        (4, false),
+        (1, true),
+        (2, true),
+        (4, true),
+    ] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut artifacts = std::collections::BTreeMap::new();
+        let mut capture = |captured: NamespaceCapture| {
+            if let Ok(artifact) = captured.artifact {
+                artifacts.insert(captured.namespace, artifact);
+            }
+        };
+        let (cold, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                capture: Some(&mut capture),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(debug_assertions)]
+                perturbation: Some(light_cljs::scheduler::Perturbation {
+                    seed: 3,
+                    fixed,
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        admitted_jobs: if fixed {
+                            1
+                        } else {
+                            light_cljs::scheduler::Limits::default().admitted_jobs
+                        },
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("jobs {jobs}, fixed {fixed}: {error}"));
+        let cold = emit_js(&cold);
+        let output = program_output(&cold);
+        assert!(
+            output.contains("compiled") && output.contains("helper") && output.contains("explicit"),
+            "{output}"
+        );
+        assert!(!artifacts["names.macros"].names.gensyms.is_empty());
+        if let Some(reference) = &reference {
+            assert_eq!(&cold, reference);
+        } else {
+            reference = Some(cold.clone());
+        }
+        drop(host);
+        for installed in [&["names.macros"][..], &["names.macros", "names.a"][..]] {
+            let lookup = |name: &str| {
+                installed
+                    .contains(&name)
+                    .then(|| artifacts.get(name))
+                    .flatten()
+            };
+            let reservation = light_cljs::generated_names::Reservation::of(
+                installed.iter().map(|name| &artifacts[*name].names),
+            );
+            let mut host = MacroHost::new();
+            host.use_native_macros();
+            let mut stats = light_cljs::CompileStats::new();
+            let (warm, _) = analyze_namespace_entry_recorded(
+                "app",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                EntryRecorders {
+                    install: Some(&lookup),
+                    reserve: Some(&reservation),
+                    stats: Some(&mut stats),
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|error| panic!("jobs {jobs}, install {installed:?}: {error}"));
+            assert_eq!(stats.install.unwrap().installed, installed);
+            assert_eq!(emit_js(&warm), cold, "jobs {jobs}, install {installed:?}");
+        }
+    }
+    #[cfg(feature = "quickjs")]
+    {
+        let program = light_cljs::compiler::analyze_namespace_entry(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut MacroHost::new(),
+            Default::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(Some(emit_js(&program)), reference);
+    }
+}
+
+#[test]
 fn penpot_macro_declarations_fit_the_native_frontend() {
     // Verbatim defrecord and with-open declarations, with unrelated source
     // removed. The former emitted >16 KiB; both exceeded weighted nesting256.

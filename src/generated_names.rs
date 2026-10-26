@@ -103,8 +103,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub use crate::namespace_artifact::{Counters, GeneratedNames};
 
@@ -164,7 +164,7 @@ pub(crate) struct Scope {
     /// scope, whichever side allocates it: a core macro expanded natively
     /// ([`gensym`]) or a runtime put in the scope ([`serve_gensym`]), so
     /// that the two interleave as one counter (light-cljs-432).
-    gensym: Cell<u64>,
+    gensym: Arc<AtomicU64>,
     /// Whether a compile-time runtime was put in the scope, whose `gensym`
     /// may still number in it after it ends ([`ENDED`]).
     installed: Cell<bool>,
@@ -191,7 +191,7 @@ impl Scope {
     /// What the scope's `gensym` appends to its prefix argument, `D_N`,
     /// taking the next number of the scope's count.
     fn gensym_suffix(&self) -> String {
-        format!("{}{}", self.gensym_prefix(), Self::next(&self.gensym))
+        gensym_suffix(&self.gensym_prefix(), &self.gensym)
     }
 
     /// What a custom data reader's `gensym` appends in the scope: `D_0_`,
@@ -263,7 +263,55 @@ thread_local! {
     /// While the compilation on this thread logs them, what the compile-time
     /// runtime's `gensym` returned, in the order it returned them, whichever
     /// side allocated them ([`start_log`]).
-    static LOG: RefCell<Option<Vec<Vec<u16>>>> = const { RefCell::new(None) };
+    static LOG: RefCell<Option<NameLog>> = const { RefCell::new(None) };
+}
+
+type NameLog = Arc<Mutex<Vec<Vec<u16>>>>;
+
+fn gensym_suffix(prefix: &str, counter: &AtomicU64) -> String {
+    let number = counter
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+        .expect("scoped gensym identities exhausted");
+    format!("{prefix}{number}")
+}
+
+/// Only the generated-name state a native VM step needs. The analyzer keeps
+/// its scopes and capture log; a migrated step shares their counters and log,
+/// never consulting the unrelated analyzer thread that happens to run it.
+#[cfg(feature = "bbp-macros")]
+pub(crate) struct NativeGensyms {
+    scopes: BTreeMap<u64, (String, Arc<AtomicU64>)>,
+    log: Option<NameLog>,
+}
+
+#[cfg(feature = "bbp-macros")]
+impl NativeGensyms {
+    pub(crate) fn capture() -> Self {
+        let mut scopes = BTreeMap::new();
+        for scope in ENDED
+            .with(|s| s.borrow().clone())
+            .into_iter()
+            .chain(SCOPES.with(|s| s.borrow().clone()))
+        {
+            scopes.insert(scope.serial, (scope.gensym_prefix(), scope.gensym.clone()));
+        }
+        Self {
+            scopes,
+            log: LOG.with(|log| log.borrow().clone()),
+        }
+    }
+
+    pub(crate) fn suffix(&self, serial: u64) -> Option<String> {
+        self.scopes
+            .get(&serial)
+            .map(|(prefix, count)| gensym_suffix(prefix, count))
+    }
+
+    pub(crate) fn log(&self, name: &[u16]) {
+        if let Some(log) = &self.log {
+            log.lock().unwrap().push(name.to_vec());
+        }
+    }
 }
 
 /// How many ended scopes [`ENDED`] keeps.
@@ -361,7 +409,7 @@ pub(crate) fn serve_gensym(request: &str) -> String {
 fn log(name: impl FnOnce() -> Vec<u16>) {
     LOG.with(|log| {
         if let Some(log) = log.borrow_mut().as_mut() {
-            log.push(name());
+            log.lock().unwrap().push(name());
         }
     });
 }
@@ -372,18 +420,22 @@ fn log(name: impl FnOnce() -> Vec<u16>) {
 /// namespaces' analyses generated ([`GeneratedNames`]). A runtime logs its
 /// own once the session has read its log (`takeGensyms`).
 pub(crate) fn start_log() {
-    LOG.with(|log| *log.borrow_mut() = Some(Vec::new()));
+    LOG.with(|log| *log.borrow_mut() = Some(Arc::default()));
 }
 
 /// What was logged on this thread since the log started or was last
 /// taken, in order.
 pub(crate) fn take_log() -> Vec<Vec<u16>> {
-    LOG.with(|log| log.borrow_mut().as_mut().map(std::mem::take))
-        .unwrap_or_default()
+    LOG.with(|log| {
+        log.borrow()
+            .as_ref()
+            .map(|log| std::mem::take(&mut *log.lock().unwrap()))
+    })
+    .unwrap_or_default()
 }
 
 /// While alive, this thread logs nothing ([`unlogged`]).
-pub(crate) struct Unlogged(Option<Vec<Vec<u16>>>);
+pub(crate) struct Unlogged(Option<NameLog>);
 
 impl Drop for Unlogged {
     fn drop(&mut self) {
@@ -426,7 +478,9 @@ pub(crate) fn nest_log() -> NestedLog {
 /// Stop logging on this thread, and what was logged since the log started
 /// or was last taken.
 pub(crate) fn stop_log() -> Vec<Vec<u16>> {
-    LOG.with(|log| log.borrow_mut().take()).unwrap_or_default()
+    let names = take_log();
+    LOG.with(|log| *log.borrow_mut() = None);
+    names
 }
 
 /// Enter the scope `prefix`, counting from one, until the guard is dropped.
@@ -440,7 +494,7 @@ pub(crate) fn enter(prefix: Arc<str>) -> ScopeGuard {
             prefix,
             read: Cell::new(1),
             expanded: Cell::new(1),
-            gensym: Cell::new(1),
+            gensym: Arc::new(AtomicU64::new(1)),
             installed: Cell::new(false),
         }))
     });
