@@ -7886,7 +7886,10 @@ impl Analyzer<'_> {
                     SymbolUse::Ineligible
                 } else if matches!(name.as_str(), "let" | "loop" | "fn" | "letfn") {
                     SymbolUse::Free
-                } else if crate::native_core_macros::native(&name) {
+                } else if crate::native_core_macros::native(
+                    &name,
+                    self.macro_host.native_macro_backend(),
+                ) {
                     // A name the namespace shadows is no core macro to
                     // analysis (`Analyzer::expand_macro`): nothing to judge
                     // by expanding it.
@@ -11336,10 +11339,9 @@ impl Analyzer<'_> {
         }
         // The hottest core macros expand natively, as their definitions
         // would (light-cljs-426); a call one would reject is left to it.
-        if let Some(core_name) = core_name
-            .as_deref()
-            .filter(|name| crate::native_core_macros::native(name))
-        {
+        if let Some(core_name) = core_name.as_deref().filter(|name| {
+            crate::native_core_macros::native(name, self.macro_host.native_macro_backend())
+        }) {
             if self.expansion_depth_exceeded(self.macro_depth) {
                 return Err(error(
                     "compiler macro expansion depth limit exceeded".into(),

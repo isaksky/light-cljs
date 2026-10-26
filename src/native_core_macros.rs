@@ -23,8 +23,11 @@
 use crate::CollectionKind;
 use crate::compiler_data::{DataBuilder, Datum, DatumKind, Name};
 
-/// The core macros [`expand`] knows, by their `cljs.core` names.
-pub(crate) fn native(name: &str) -> bool {
+/// The core macros the analyzer expands in Rust for the selected backend.
+/// Additional bootstrap form builders serve the native backend's empty
+/// bootstrap table; legacy engines retain their expansion accounting,
+/// environment conversion and poll-budget behavior for those calls.
+pub(crate) fn native(name: &str, native_backend: bool) -> bool {
     matches!(
         name,
         "and"
@@ -36,25 +39,6 @@ pub(crate) fn native(name: &str) -> bool {
             | "condp"
             | "->"
             | "->>"
-            | "as->"
-            | "doto"
-            | "js-fn?"
-            | "while"
-            | "dotimes"
-            | "memfn"
-            | "amap"
-            | "areduce"
-            | ".."
-            | "lazy-cat"
-            | "comment"
-            | "with-in-str"
-            | "js-debugger"
-            | "js-comment"
-            | "locking"
-            | "time"
-            | "unchecked-max"
-            | "unchecked-min"
-            | "hash-map"
             | "cond->"
             | "cond->>"
             | "some->"
@@ -71,7 +55,29 @@ pub(crate) fn native(name: &str) -> bool {
             | "vswap!"
             | "for"
             | "doseq"
-    )
+    ) || native_backend
+        && matches!(
+            name,
+            "as->"
+                | "doto"
+                | "js-fn?"
+                | "while"
+                | "dotimes"
+                | "memfn"
+                | "amap"
+                | "areduce"
+                | ".."
+                | "lazy-cat"
+                | "comment"
+                | "with-in-str"
+                | "js-debugger"
+                | "js-comment"
+                | "locking"
+                | "time"
+                | "unchecked-max"
+                | "unchecked-min"
+                | "hash-map"
+        )
 }
 
 /// Allocates names with the compile-time runtime's `gensym`, one per
@@ -1924,7 +1930,7 @@ mod tests {
             panic!("{source}: no operator");
         };
         let name = String::from_utf16_lossy(operator.name());
-        assert!(native(&name), "{source}: {name} is not native");
+        assert!(native(&name, true), "{source}: {name} is not native");
         let environment = {
             let key = |name| C.keyword(Name::new(None, name));
             let namespace = C

@@ -68,6 +68,10 @@ function table; `MacroHost::expand_core_javascript` reports `unsupported
 operation: bootstrap macro NAME` when a call reaches that table. Namespace
 builds first try `native_core_macros`, with the same form construction,
 generated names and occurrence provenance as the JavaScript definitions.
+The additional bootstrap form builders are selected only for the native
+backend. Legacy backends keep expanding these calls in their bootstrap engine,
+including its environment conversion, resource charging and macro-free unit
+classification.
 
 The audit found 21 bootstrap names without Rust expansion: `as->`, `doto`,
 `js-fn?`, `while`, `dotimes`, `memfn`, `amap`, `areduce`, `..`, `lazy-cat`,
