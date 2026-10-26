@@ -1179,9 +1179,8 @@ fn functions_over_lowered_core_operations_publish() {
 }
 
 /// Literals past the counted-constructor limit (4,096 operands) emit the
-/// runtime's array constructors, which check what the inline forms check:
-/// dynamic set members are distinct, and reader-distinct literal members or
-/// keys that lowered to equal values fail explicitly instead of collapsing.
+/// runtime's array constructors: dynamic sets reject duplicates, while
+/// constant literals preserve every position after lowering.
 #[test]
 fn large_literals_use_runtime_constructors_that_keep_the_inline_checks() {
     let numbers = |n: usize| (0..n).map(|i| format!("{i} ")).collect::<String>();
@@ -1219,14 +1218,8 @@ fn large_literals_use_runtime_constructors_that_keep_the_inline_checks() {
     let many = "const a = []; for (let i = 0; i < 300; i++) a.push(i);";
     for (body, outcome) in [
         ("rt.literalSetFromArray([...a, 7])", Err("Duplicate key")),
-        (
-            "rt.constantSetFromArray(['a', ...a, 'a'])",
-            Err("native literal set with reader-distinct equal members"),
-        ),
-        (
-            "rt.constantMapFromArray(['a', 1, 'a', 2])",
-            Err("native literal map with reader-distinct equal keys"),
-        ),
+        ("rt.constantSetFromArray(['a', ...a, 'a'])", Ok(302)),
+        ("rt.constantMapFromArray(['a', 1, 'a', 2])", Ok(2)),
         ("rt.literalSetFromArray(a)", Ok(300)),
         ("rt.constantSetFromArray(['a', ...a])", Ok(301)),
         ("rt.constantMapFromArray(['a', 1, 'b', 2])", Ok(2)),
@@ -1552,37 +1545,40 @@ fn weak_bridge_entries_preserve_live_occurrences_and_raw_metadata() {
     });
 }
 
-fn collapsed_metadata_after_collection(text: &str) -> (Runtime, Bridge, Form, Rooted) {
+fn positional_metadata_after_collection(text: &str) -> (Runtime, Bridge, Form, Rooted) {
     let rt = Runtime::new();
     let mut host = MacroHost::new();
     host.use_native_macros();
     let form = host
         .read_compiler_form(&crate::compiler_data::Source::new(
-            "collapsed-metadata.cljs",
+            "positional-metadata.cljs",
             text,
         ))
         .unwrap()
         .unwrap();
     let metadata = form.metadata().unwrap();
-    let overwritten = metadata.children()[1].data();
+    let retained = metadata.children()[1].data();
     let mut bridge = Bridge::default();
     let raw = rt.scope(|s| {
         bridge.remember(&form, 128, &mut 1000).unwrap();
         let value = bridge.import(s, &form.data(), 128, &mut 1000).unwrap();
         s.persist(s.form_meta(s.form_value(value)).unwrap())
     });
-    let discarded = bridge.imports[&overwritten.identity()].occurrence.clone();
+    let descendant = bridge.imports[&retained.identity()].occurrence.clone();
     rt.collect().unwrap();
-    assert!(!discarded.is_live(), "the native map overwrites the vector");
+    assert!(
+        descendant.is_live(),
+        "positional metadata traces the first equal key’s vector"
+    );
     rt.scope(|_| bridge.prune(rt.heap_stats().collections));
-    assert!(!bridge.imports.contains_key(&overwritten.identity()));
+    assert!(bridge.imports.contains_key(&retained.identity()));
     (rt, bridge, form, raw)
 }
 
 #[test]
-fn weak_bridge_pruning_preserves_collapsed_descendant_provenance() {
+fn weak_bridge_pruning_preserves_positional_descendant_provenance() {
     let (rt, mut bridge, form, raw) =
-        collapsed_metadata_after_collection("^{1 ^{:tag [9]} [1 [2 [3]]] 1.0 nil} []");
+        positional_metadata_after_collection("^{1 ^{:tag [9]} [1 [2 [3]]] 1.0 nil} []");
     let metadata = form.metadata().unwrap();
     rt.scope(|s| {
         let exported = bridge
@@ -1627,12 +1623,12 @@ fn weak_bridge_pruning_preserves_collapsed_descendant_provenance() {
 #[test]
 fn weak_bridge_pruning_charges_the_complete_restored_datum() {
     let (rt, mut bridge, form, raw) =
-        collapsed_metadata_after_collection("^{1 [1 [2 [3]]] 1.0 nil} []");
+        positional_metadata_after_collection("^{1 [1 [2 [3]]] 1.0 nil} []");
     let metadata = form.metadata().unwrap().data();
     rt.scope(|s| {
         assert!(
             bridge.import(s, &metadata, 5, &mut 5).is_err(),
-            "rewrapping must charge overwritten reader descendants"
+            "rewrapping must charge every positional reader descendant"
         );
         assert!(
             bridge.import(s, &metadata, 2, &mut 10).is_err(),

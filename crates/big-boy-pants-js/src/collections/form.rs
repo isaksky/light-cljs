@@ -17,8 +17,8 @@
 //! | symbol | namespace (optional) and name, exact UTF-16 strings | yes |
 //! | list | elements in order (stored in a persistent vector trie) | yes |
 //! | vector | elements in order | yes |
-//! | map | entries, keys unique by value equality (a hash trie) | yes |
-//! | set | members unique by value equality (a hash trie; light-cljs-477) | yes |
+//! | map | structural entries in a hash trie, or positional literal entries | yes |
+//! | set | structural members in a hash trie, or positional literal members | yes |
 //! | lazy-seq | a once-realized cell: a thunk, then what it realized (light-cljs-479, `crate::collections::lazy`) | yes |
 //! | cons | realized elements followed by an unrealized tail (light-cljs-479) | yes |
 //! | reduced | opaque early-termination marker with a traced payload (light-cljs-507) | no |
@@ -79,6 +79,12 @@
 //! * Sets are equal with the same count and an equal member in the other
 //!   for every member of one; the hash is `hashUnorderedColl` of the
 //!   members. A set never equals a map, list or vector.
+//! * Positional literals retain equal lowered keys/members in source order.
+//!   Lookup uses the first equal key; hashing includes every stored position.
+//!   Unique positional forms compare and hash like hashed forms. Duplicates
+//!   retain the legacy anomalies: set equality can be directional, and maps
+//!   with different values at equal keys can compare unequal to a copy.
+//!   Equality cannot reject by cached hash, even for enclosing collections.
 //! * Metadata never takes part: `with_meta` changes neither equality nor
 //!   hash.
 //! * Reduced markers compare and hash by identity, independent of their
@@ -387,12 +393,12 @@ pub(crate) enum FormBody {
     Symbol(FormName),
     List(PVector),
     Vector(PVector),
-    /// Keys stored with the trie hash of their value hash ([`trie_hash`]),
-    /// compared by [`equals`]. Never read with the SameValueZero API.
-    Map(PMap),
+    /// Structural keys, hashed or positional, compared by [`equals`].
+    /// Never read with the SameValueZero API.
+    Map(FormMap),
     /// Members stored as keys that map to themselves (the stored member),
-    /// hashed and compared like map keys.
-    Set(PMap),
+    /// stored and compared like map keys.
+    Set(FormMap),
     /// A struct type ("Structs" in the module docs).
     Type(Arc<TypeInfo>),
     /// An instance of a struct type.
@@ -427,7 +433,77 @@ pub(crate) struct StructBody {
     pub(crate) info: Arc<TypeInfo>,
     pub(crate) fields: PVector,
     /// A record's further entries, structural keys as in a form map.
-    pub(crate) ext: Option<PMap>,
+    pub(crate) ext: Option<FormMap>,
+}
+
+/// Structural map storage. Literal entries retain every source position,
+/// including keys that become equal after reader values are lowered. Their
+/// lookup and updates follow the legacy PersistentArrayMap constructor.
+/// PVector charges its immutable nodes and traces every retained value.
+#[derive(Clone, Debug)]
+pub(crate) enum FormMap {
+    Hashed(PMap),
+    Positional(PVector),
+}
+
+impl Default for FormMap {
+    fn default() -> Self {
+        Self::Hashed(PMap::default())
+    }
+}
+
+impl FormMap {
+    pub(crate) fn positional(&self) -> bool {
+        matches!(self, Self::Positional(_))
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Hashed(map) => map.len(),
+            Self::Positional(pairs) => pairs.len() / 2,
+        }
+    }
+
+    pub(crate) fn for_each(&self, mut f: impl FnMut(&Value, &Value)) {
+        match self {
+            Self::Hashed(map) => map.for_each(f),
+            Self::Positional(pairs) => {
+                for i in (0..pairs.len()).step_by(2) {
+                    f(&pairs.get(i).unwrap(), &pairs.get(i + 1).unwrap());
+                }
+            }
+        }
+    }
+
+    pub(crate) fn to_vec(&self) -> Vec<(Value, Value)> {
+        let mut out = Vec::with_capacity(self.len());
+        self.for_each(|k, v| out.push((k.clone(), v.clone())));
+        out
+    }
+
+    fn for_each_hashed(&self, heap: &Heap, mut f: impl FnMut(u64, &Value, &Value)) {
+        match self {
+            Self::Hashed(map) => map.for_each_hashed(f),
+            Self::Positional(_) => self.for_each(|k, v| f(trie_hash(hash(heap, k)), k, v)),
+        }
+    }
+
+    fn entries_with_hash(&self, h: u64) -> Vec<(Value, Value)> {
+        match self {
+            Self::Hashed(map) => map.entries_with_hash(h),
+            // Array-map lookup compares keys without consulting their hash.
+            Self::Positional(_) => self.to_vec(),
+        }
+    }
+}
+
+impl Trace for FormMap {
+    fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
+        match self {
+            Self::Hashed(map) => map.trace(visit),
+            Self::Positional(pairs) => pairs.trace(visit),
+        }
+    }
 }
 
 /// One form heap object: immutable once allocated, shared by `Arc` so a
@@ -655,17 +731,85 @@ fn trie_hash(hash: i32) -> u64 {
 
 fn map_assoc(
     heap: &Heap,
-    map: &PMap,
+    map: &FormMap,
     key: Value,
     value: Value,
-) -> Result<Option<PMap>, CollectionError> {
+) -> Result<Option<FormMap>, CollectionError> {
+    if let FormMap::Positional(pairs) = map {
+        for i in (0..pairs.len()).step_by(2) {
+            if equals(heap, &key, &pairs.get(i).unwrap()) {
+                return if identical(&value, &pairs.get(i + 1).unwrap()) {
+                    Ok(None)
+                } else {
+                    Ok(Some(FormMap::Positional(pairs.try_set(
+                        heap,
+                        i + 1,
+                        value,
+                    )?)))
+                };
+            }
+        }
+        if map.len() < 8 {
+            return Ok(Some(FormMap::Positional(
+                pairs.try_push(heap, key)?.try_push(heap, value)?,
+            )));
+        }
+        // Appending to a full array map promotes its existing entries first,
+        // merging equal keys with last-value wins, then adds the new entry.
+        let mut promoted = FormMap::default();
+        for (k, v) in map.to_vec().into_iter().chain([(key, value)]) {
+            if let Some(updated) = map_assoc(heap, &promoted, k, v)? {
+                promoted = updated;
+            }
+        }
+        return Ok(Some(promoted));
+    }
+    let FormMap::Hashed(map) = map else {
+        unreachable!()
+    };
     let h = trie_hash(hash(heap, &key));
     map.try_assoc_with(heap, h, key, value, &|a, b| equals(heap, a, b))
+        .map(|m| m.map(FormMap::Hashed))
 }
 
-fn map_get(heap: &Heap, map: &PMap, key: &Value) -> Option<Value> {
-    let h = trie_hash(hash(heap, key));
-    map.get_with(h, key, &|a, b| equals(heap, a, b))
+fn map_get(heap: &Heap, map: &FormMap, key: &Value) -> Option<Value> {
+    match map {
+        FormMap::Hashed(map) => {
+            let h = trie_hash(hash(heap, key));
+            map.get_with(h, key, &|a, b| equals(heap, a, b))
+        }
+        FormMap::Positional(pairs) => (0..pairs.len())
+            .step_by(2)
+            .find(|&i| equals(heap, key, &pairs.get(i).unwrap()))
+            .and_then(|i| pairs.get(i + 1)),
+    }
+}
+
+fn map_dissoc(heap: &Heap, map: &FormMap, key: &Value) -> Result<Option<FormMap>, CollectionError> {
+    match map {
+        FormMap::Hashed(map) => map
+            .try_dissoc_with(heap, trie_hash(hash(heap, key)), key, &|a, b| {
+                equals(heap, a, b)
+            })
+            .map(|m| m.map(FormMap::Hashed)),
+        FormMap::Positional(_) => {
+            if map_get(heap, map, key).is_none() {
+                return Ok(None);
+            }
+            let mut retained: Vec<Value> = map
+                .to_vec()
+                .into_iter()
+                .filter(|(k, _)| !equals(heap, key, k))
+                .flat_map(|(k, v)| [k, v])
+                .collect();
+            // CLJS reserves space for exactly one removed entry but copies
+            // every unequal key. Equal lowered keys therefore leave holes.
+            retained.resize((map.len() - 1) * 2, Value::Undefined);
+            Ok(Some(FormMap::Positional(PVector::try_from_values(
+                heap, &retained,
+            )?)))
+        }
+    }
 }
 
 // ---- Construction ----
@@ -768,7 +912,7 @@ pub(crate) fn new_map_entry(
 /// A new map; a later duplicate (equal) key replaces an earlier one's
 /// value, keeping the earlier key object.
 pub(crate) fn new_map(heap: &Heap, entries: &[(Value, Value)]) -> Result<Value, CollectionError> {
-    let mut map = PMap::default();
+    let mut map = FormMap::default();
     for (key, value) in entries {
         if let Some(updated) = map_assoc(heap, &map, key.clone(), value.clone())? {
             map = updated;
@@ -783,7 +927,7 @@ pub(crate) fn new_map(heap: &Heap, entries: &[(Value, Value)]) -> Result<Value, 
 
 /// `set` with `member` added, or `None` when an equal member is present
 /// (the stored member is kept, as `conj` of a present member does).
-fn set_add(heap: &Heap, set: &PMap, member: Value) -> Result<Option<PMap>, CollectionError> {
+fn set_add(heap: &Heap, set: &FormMap, member: Value) -> Result<Option<FormMap>, CollectionError> {
     if map_get(heap, set, &member).is_some() {
         return Ok(None);
     }
@@ -792,13 +936,44 @@ fn set_add(heap: &Heap, set: &PMap, member: Value) -> Result<Option<PMap>, Colle
 
 /// A new set of `items`; of equal members the first is kept.
 pub(crate) fn new_set(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
-    let mut set = PMap::default();
+    let mut set = FormMap::default();
     for item in items {
         if let Some(updated) = set_add(heap, &set, item.clone())? {
             set = updated;
         }
     }
     alloc(heap, FormObject::new(FormBody::Set(set), None), items)
+}
+
+/// A literal map: every alternating key/value position is retained.
+pub(crate) fn new_literal_map(heap: &Heap, pairs: &[Value]) -> Result<Value, CollectionError> {
+    if !pairs.len().is_multiple_of(2) {
+        return Err(CollectionError::MissingKey);
+    }
+    let body = FormBody::Map(FormMap::Positional(PVector::try_from_values(heap, pairs)?));
+    alloc(heap, FormObject::new(body, None), pairs)
+}
+
+/// A literal set: every member position is retained, even when equal.
+pub(crate) fn new_literal_set(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
+    let pairs: Vec<Value> = items.iter().flat_map(|v| [v.clone(), v.clone()]).collect();
+    let body = FormBody::Set(FormMap::Positional(PVector::try_from_values(heap, &pairs)?));
+    alloc(heap, FormObject::new(body, None), items)
+}
+
+/// Literal constructors accepting a list/vector of operands. The runtime's
+/// wide array adapters use the same path as inline native literal lowering.
+pub(crate) fn literal_from_sequence(
+    heap: &Heap,
+    items: &Value,
+    set: bool,
+) -> Result<Value, CollectionError> {
+    let items = sequential(heap, items)?.to_vec();
+    if set {
+        new_literal_set(heap, &items)
+    } else {
+        new_literal_map(heap, &items)
+    }
 }
 
 // ---- Structs (light-cljs-478) ----
@@ -863,7 +1038,7 @@ pub(crate) fn new_struct(
     let mut meta = None;
     let mut ext = None;
     if info.record {
-        let map = |i: usize| -> Result<Option<(Value, PMap)>, CollectionError> {
+        let map = |i: usize| -> Result<Option<(Value, FormMap)>, CollectionError> {
             let Some(v) = values.get(i) else {
                 return Ok(None);
             };
@@ -986,7 +1161,7 @@ fn record_like(
     f: &FormObject,
     s: &StructBody,
     fields: PVector,
-    ext: Option<PMap>,
+    ext: Option<FormMap>,
     parts: &[Value],
 ) -> Result<Value, CollectionError> {
     let ext = ext.filter(|e| e.len() > 0);
@@ -1053,8 +1228,7 @@ pub(crate) fn record_dissoc(
     let Some(ext) = &s.ext else {
         return Ok(record.clone());
     };
-    let h = trie_hash(hash(heap, key));
-    match ext.try_dissoc_with(heap, h, key, &|a, b| equals(heap, a, b))? {
+    match map_dissoc(heap, ext, key)? {
         Some(ext) => record_like(
             heap,
             &f,
@@ -1087,7 +1261,7 @@ pub(crate) fn record_from_map(
         _ => return Err(wrong(heap, "form map or record", map)),
     };
     let mut fields = vec![Value::Null; info.fields.len()];
-    let mut ext = PMap::default();
+    let mut ext = FormMap::default();
     for (k, v) in entries {
         match field_index(heap, &info, &k) {
             Some(i) => fields[i] = v,
@@ -1296,7 +1470,7 @@ fn sequential(heap: &Heap, v: &Value) -> Result<PVector, CollectionError> {
     }
 }
 
-fn map_body(heap: &Heap, v: &Value) -> Result<PMap, CollectionError> {
+fn map_body(heap: &Heap, v: &Value) -> Result<FormMap, CollectionError> {
     match form_object(heap, v).as_deref().map(FormObject::body) {
         Some(FormBody::Map(map)) => Ok(map.clone()),
         _ => Err(wrong(heap, "form map", v)),
@@ -1407,8 +1581,7 @@ pub(crate) fn dissoc(heap: &Heap, map: &Value, key: &Value) -> Result<Value, Col
     let FormBody::Map(body) = &f.body else {
         return Err(wrong(heap, "form map", map));
     };
-    let h = trie_hash(hash(heap, key));
-    match body.try_dissoc_with(heap, h, key, &|a, b| equals(heap, a, b))? {
+    match map_dissoc(heap, body, key)? {
         Some(updated) => alloc(
             heap,
             f.updated(FormBody::Map(updated)),
@@ -1446,8 +1619,7 @@ pub(crate) fn disj(heap: &Heap, set: &Value, member: &Value) -> Result<Value, Co
     let FormBody::Set(body) = &f.body else {
         return Err(wrong(heap, "form set", set));
     };
-    let h = trie_hash(hash(heap, member));
-    match body.try_dissoc_with(heap, h, member, &|a, b| equals(heap, a, b))? {
+    match map_dissoc(heap, body, member)? {
         Some(updated) => alloc(
             heap,
             f.updated(FormBody::Set(updated)),
@@ -1629,6 +1801,9 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
         Pair(Value, Value),
         /// Candidate (key pair, value pair) alternatives for one entry.
         OneOf(Vec<[(Value, Value); 2]>),
+        /// Array-map lookup stops at the first equal key, even when its
+        /// value differs. Keep key comparison on this explicit work stack.
+        Lookup(Value, Option<Value>, Vec<(Value, Value)>),
         /// The rest of two sequences, compared element by element so that
         /// an unequal element ends the comparison before a tail is
         /// realized (light-cljs-479).
@@ -1646,6 +1821,13 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
         },
         /// One alternative must hold.
         Any(Vec<[(Value, Value); 2]>),
+        Lookup {
+            key: Value,
+            value: Option<Value>,
+            candidates: Vec<(Value, Value)>,
+            found: Option<Value>,
+            checking_value: bool,
+        },
     }
     /// What comparing one pair yields.
     enum Outcome {
@@ -1681,11 +1863,9 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
         if unequal.contains(&(ia, ib)) {
             return Outcome::Decided(false);
         }
-        if let (Some(h), Some(k)) = (x.hash.get(), y.hash.get())
-            && h != k
-        {
-            return Outcome::Decided(false);
-        }
+        // Positional duplicate sets retain the legacy directional membership
+        // comparison. It can succeed despite different hashes, also when
+        // nested, so cached hashes cannot reject an equality comparison.
         match (&x.body, &y.body) {
             (FormBody::Keyword(m), FormBody::Keyword(n))
             | (FormBody::Symbol(m), FormBody::Symbol(n)) => Outcome::Decided(m.same(n)),
@@ -1723,10 +1903,15 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                     return Outcome::Decided(false);
                 }
                 let mut members = Vec::with_capacity(p.len());
-                p.for_each_hashed(|h, k, _| members.push((h, k.clone())));
+                p.for_each_hashed(heap, |h, k, _| members.push((h, k.clone())));
                 let mut steps = Vec::with_capacity(members.len());
                 for (h, k) in members {
                     let mut candidates = q.entries_with_hash(h);
+                    if q.positional() {
+                        candidates.reverse();
+                        steps.push(Step::Lookup(k, None, candidates));
+                        continue;
+                    }
                     match candidates.len() {
                         0 => return Outcome::Refuted((ia, ib)),
                         1 => steps.push(Step::Pair(k, candidates.pop().unwrap().0)),
@@ -1747,10 +1932,15 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                     return Outcome::Decided(false);
                 }
                 let mut entries = Vec::with_capacity(p.len());
-                p.for_each_hashed(|h, k, v| entries.push((h, k.clone(), v.clone())));
+                p.for_each_hashed(heap, |h, k, v| entries.push((h, k.clone(), v.clone())));
                 let mut steps = Vec::with_capacity(2 * entries.len());
                 for (h, k, v) in entries {
                     let mut candidates = q.entries_with_hash(h);
+                    if q.positional() {
+                        candidates.reverse();
+                        steps.push(Step::Lookup(k, Some(v), candidates));
+                        continue;
+                    }
                     match candidates.len() {
                         0 => return Outcome::Refuted((ia, ib)),
                         1 => {
@@ -1776,7 +1966,7 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                 if !(p.info.record && q.info.record && p.ty.same_object(&q.ty)) {
                     return Outcome::Decided(false);
                 }
-                let empty = PMap::default();
+                let empty = FormMap::default();
                 let (pe, qe) = (
                     p.ext.as_ref().unwrap_or(&empty),
                     q.ext.as_ref().unwrap_or(&empty),
@@ -1793,7 +1983,7 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                     .map(|(a, b)| Step::Pair(a, b))
                     .collect();
                 let mut entries = Vec::with_capacity(pe.len());
-                pe.for_each_hashed(|h, k, v| entries.push((h, k.clone(), v.clone())));
+                pe.for_each_hashed(heap, |h, k, v| entries.push((h, k.clone(), v.clone())));
                 for (h, k, v) in entries {
                     let mut candidates = qe.entries_with_hash(h);
                     match candidates.len() {
@@ -1855,6 +2045,13 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                         }
                     },
                     Some(Step::OneOf(alternatives)) => frames.push(Frame::Any(alternatives)),
+                    Some(Step::Lookup(key, value, candidates)) => frames.push(Frame::Lookup {
+                        key,
+                        value,
+                        candidates,
+                        found: None,
+                        checking_value: false,
+                    }),
                     Some(Step::Seq(p, q, seen)) => match (seq_split(heap, p), seq_split(heap, q)) {
                         (Split::Empty, Split::Empty) => {}
                         (Split::Item(x, p), Split::Item(y, q)) => {
@@ -1866,6 +2063,41 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                         }
                         _ => returned = Some(false),
                     },
+                }
+            }
+            Frame::Lookup {
+                key,
+                value,
+                candidates,
+                found,
+                checking_value,
+            } => {
+                if *checking_value {
+                    frames.pop();
+                    // The value comparison's result is delivered unchanged.
+                } else if returned.take() == Some(true) {
+                    if let Some(value) = value {
+                        let other = found.take().unwrap();
+                        let value = value.clone();
+                        *checking_value = true;
+                        frames.push(Frame::All {
+                            memo: None,
+                            pending: vec![Step::Pair(value, other)],
+                        });
+                    } else {
+                        frames.pop();
+                        returned = Some(true);
+                    }
+                } else if let Some((other, candidate_value)) = candidates.pop() {
+                    *found = Some(candidate_value);
+                    let key = key.clone();
+                    frames.push(Frame::All {
+                        memo: None,
+                        pending: vec![Step::Pair(key, other)],
+                    });
+                } else {
+                    frames.pop();
+                    returned = Some(false);
                 }
             }
             Frame::Any(alternatives) => match returned.take() {
@@ -2205,6 +2437,24 @@ impl<'s> Scope<'s> {
     /// the first is kept.
     pub fn new_form_set(&self, items: &[Local<'s>]) -> Result<Local<'s>, CollectionError> {
         self.result(realized_keys(|| new_set(self.heap(), &self.values(items))))
+    }
+
+    /// A positional literal map, preserving equal lowered keys and source
+    /// order. Lookup returns the first matching value.
+    pub fn new_literal_map(
+        &self,
+        entries: &[(Local<'s>, Local<'s>)],
+    ) -> Result<Local<'s>, CollectionError> {
+        let pairs: Vec<Value> = entries
+            .iter()
+            .flat_map(|(k, v)| [self.local_value(*k), self.local_value(*v)])
+            .collect();
+        self.result(new_literal_map(self.heap(), &pairs))
+    }
+
+    /// A positional literal set, preserving every member and source order.
+    pub fn new_literal_set(&self, items: &[Local<'s>]) -> Result<Local<'s>, CollectionError> {
+        self.result(new_literal_set(self.heap(), &self.values(items)))
     }
 
     /// A new set without the member equal to `member`.

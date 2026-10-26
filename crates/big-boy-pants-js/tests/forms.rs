@@ -180,6 +180,143 @@ fn equal_separately_allocated_keys_retrieve_the_same_entry() {
     );
 }
 
+#[test]
+fn positional_forms_share_equality_hash_and_first_match_update_contracts() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function check() {
+        const map = xs => __rt.formLiteralMap(xs), set = xs => __rt.formLiteralSet(xs);
+        const m = map(__rt.formVector('b', 2, 'a', 1)), h = __rt.formMap('a', 1, 'b', 2);
+        const s = set(__rt.formVector(2, 1)), t = __rt.formSet(1, 2);
+        if (!__rt.formEquals(m, h) || !__rt.formEquals(h, m) || __rt.formHash(m) !== __rt.formHash(h) ||
+            !__rt.formEquals(s, t) || !__rt.formEquals(t, s) || __rt.formHash(s) !== __rt.formHash(t)) throw 'hashed equality';
+        // Positional forms also work as structural keys in hashed forms.
+        if (__rt.formGet(__rt.formMap(m, s), h, null) !== s ||
+            __rt.formGet(__rt.formMap(s, m), t, null) !== m) throw 'structural keys';
+        const d = map(__rt.formVector('a', 1, 'a', 2, 'b', 3));
+        if (__rt.formCount(d) !== 3 || __rt.formGet(d, 'a', null) !== 1 ||
+            __rt.formAssoc(d, 'a', 1) !== d || __rt.formDissoc(d, 'missing') !== d) throw 'first lookup';
+        const updated = __rt.formAssoc(d, 'a', 9);
+        const entries = __rt.cljSeq(updated);
+        if (__rt.formGet(updated, 'a', null) !== 9 || __rt.formNth(__rt.formNth(entries, 1), 1) !== 2) throw 'first assoc';
+        // Value mismatch at the first equal key cannot fall through to the second.
+        if (__rt.formEquals(map(__rt.formVector('a', 2, 'a', 1, 'b', 3)), d)) throw 'first equality';
+        const removed = __rt.formDissoc(d, 'a');
+        if (__rt.formCount(removed) !== 2 || !__rt.cljContains(removed, null) ||
+            __rt.formGet(removed, 'b', null) !== 3) throw 'dissoc holes';
+        const dup = set(__rt.formVector(1, 1, 2));
+        if (__rt.formConj(dup, 1) !== dup || __rt.formDisj(dup, 7) !== dup ||
+            __rt.formCount(__rt.formConj(dup, 3)) !== 4 ||
+            __rt.formCount(__rt.formDisj(dup, 1)) !== 2) throw 'set updates';
+        // Legacy duplicate sets have directional membership equality, including
+        // after hashing both operands. Hash caches must not change that result.
+        const left = set(__rt.formVector(1, 1)), right = set(__rt.formVector(1, 2));
+        __rt.formHash(left); __rt.formHash(right);
+        if (!__rt.formEquals(left, right) || __rt.formEquals(right, left)) throw 'duplicate equality';
+        const nestedLeft = __rt.formVector(left), nestedRight = __rt.formVector(right);
+        __rt.formHash(nestedLeft); __rt.formHash(nestedRight);
+        if (!__rt.formEquals(nestedLeft, nestedRight)) throw 'nested duplicate equality';
+        const lazy = __rt.lazySeq(() => __rt.formList(3, 4));
+        const rebuilt = __rt.cljRealizeAll(map(__rt.formVector('a', lazy, 'a', 2)));
+        if (__rt.formCount(rebuilt) !== 2 || __rt.formKind(__rt.formGet(rebuilt, 'a', null)) !== 'list' ||
+            __rt.formNth(__rt.formNth(__rt.cljSeq(rebuilt), 1), 1) !== 2) throw 'realization keeps positions';
+        const meta = map(__rt.formVector('tag', 'literal'));
+        const tagged = __rt.formWithMeta(m, meta), taggedDup = __rt.formWithMeta(d, meta);
+        return __rt.formEquals(m, tagged) && __rt.formHash(m) === __rt.formHash(tagged) &&
+            __rt.formMeta(__rt.formAssoc(taggedDup, 'a', 3)) === meta &&
+            __rt.formMeta(__rt.formDissoc(taggedDup, 'a')) === meta;
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
+fn positional_forms_publish_and_trace_every_duplicate_and_metadata() {
+    let rt = Runtime::new();
+    let (root, weak) = rt.scope(|s| {
+        let one = s.primitive(Primitive::Number(1.0));
+        let first = s.new_occurrence(one, at(1, 1)).unwrap();
+        let second = s.new_occurrence(one, at(1, 2)).unwrap();
+        let payload = s.new_form_vector(&[second]).unwrap();
+        let map = s
+            .new_literal_map(&[(first, first), (second, payload)])
+            .unwrap();
+        let set = s.new_literal_set(&[first, second]).unwrap();
+        let meta = s.new_literal_map(&[(first, payload)]).unwrap();
+        let map = s.form_with_meta(map, Some(meta)).unwrap();
+        let root = s.new_form_vector(&[map, set]).unwrap();
+        (
+            s.persist(root),
+            [first, second, payload, meta].map(|v| s.downgrade(v)),
+        )
+    });
+    rt.publish(&root).unwrap();
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| w.is_live()));
+    let result = call(
+        &rt,
+        r#"function read(root) {
+        const m = __rt.formNth(root, 0), s = __rt.formNth(root, 1);
+        return __rt.formCount(m) === 2 && __rt.formCount(s) === 2 &&
+            __rt.formValue(__rt.formGet(m, 1, null)) === 1 &&
+            __rt.formCount(__rt.formNth(__rt.formNth(__rt.cljSeq(m), 1), 1)) === 1;
+    }"#,
+        &[&root],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+    drop(result);
+    drop(root);
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| !w.is_live()));
+
+    for expression in [
+        "__rt.formLiteralMap(__rt.formVector(1, 0, 1, {}))",
+        "__rt.formLiteralSet(__rt.formVector(1, {}))",
+        "__rt.formWithMeta(__rt.formLiteralSet(__rt.formVector(1, 1)), __rt.formLiteralMap(__rt.formVector(1, {})))",
+    ] {
+        let value = call(
+            &rt,
+            &format!("function make() {{ return {expression}; }}"),
+            &[],
+        );
+        assert!(
+            matches!(rt.publish(&value), Err(PublishError::NotShareable { .. })),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn positional_storage_obeys_the_aggregate_byte_limit() {
+    use big_boy_pants_js::{HeapPolicy, VmLimits};
+    let policy = |bytes| HeapPolicy {
+        hard_limit_bytes: Some(bytes),
+        ..Default::default()
+    };
+    let realm = Runtime::try_with_heap_policy(VmLimits::default(), policy(usize::MAX / 2))
+        .unwrap()
+        .heap_stats()
+        .managed_bytes;
+    let limit = realm + 256 * 1024;
+    let rt = Runtime::try_with_heap_policy(VmLimits::default(), policy(limit)).unwrap();
+    rt.scope(|s| {
+        let one = s.primitive(Primitive::Number(1.0));
+        // One rooted scalar repeated many times: the payload nodes, rather
+        // than member objects, must be charged before they are allocated.
+        assert_eq!(
+            s.new_literal_set(&vec![one; 65_536]).err(),
+            Some(CollectionError::HeapLimit)
+        );
+        assert_eq!(
+            s.new_literal_map(&vec![(one, one); 65_536]).err(),
+            Some(CollectionError::HeapLimit)
+        );
+    });
+    assert!(rt.heap_stats().peak_managed_bytes <= limit);
+}
+
 /// Metadata never changes equality or hashing, and does not change identity
 /// rules: a new object, unless the metadata is the same object. Updates
 /// keep metadata.

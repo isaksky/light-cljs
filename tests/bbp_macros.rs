@@ -2052,41 +2052,149 @@ fn native_dynamic_set_literals_reject_duplicates_after_operand_effects() {
 }
 
 #[test]
-fn native_literal_collections_keep_reader_distinct_members_or_fail_explicitly() {
-    // Distinct after lowering: the same values as the legacy backends.
-    assert_native_matches_legacy(
-        "(defmacro fine [] [(count '#{:a :b \"c\"}) (contains? '#{\\a :b} \"a\") (count #{\\a \"b\"}) \
-         (get '{\\a 1 \"b\" 2} \"a\")]) (js/console.log (pr-str (fine)))",
-        "[3 true 2 1]\n",
-    );
-    // Reader-distinct members or keys that lower to equal values cannot
-    // be native set members or map keys: an explicit error, never a
-    // collection that silently lost one.
-    for (source, expected) in [
+fn native_positional_literal_matrix_matches_legacy() {
+    // Every row executes inside a macro. With bbp-macros,quickjs this is a
+    // table-driven differential against QuickJS, including emitted constants,
+    // reader inputs, mutation semantics, metadata, and exported duplicate keys.
+    let cases = [
         (
-            "(defmacro literal-count [] (count '#{\\a \"a\"})) (literal-count)",
-            "native literal set with reader-distinct equal members",
+            "char-string",
+            r#"(defmacro probe [] [(count {\a 1 "a" 2}) (get {\a 1 "a" 2} \a) (count #{\a "a"}) (contains? #{\a "a"} "a")]) (probe)"#,
         ),
         (
-            "(defmacro literal-count [] (count #{\\a \"a\"})) (literal-count)",
-            "native literal set with reader-distinct equal members",
+            "map-order",
+            r#"(defmacro probe [] (let [m {\a 1 "a" 2}] (list 'quote [(count m) (get m \a) (get m "a") (contains? m \a) (contains? m "a") (vec (seq m)) (vec (keys m)) (vec (vals m))]))) (probe)"#,
         ),
         (
-            "(defmacro literal-count [] (count '#{1 1.0})) (literal-count)",
-            "native literal set with reader-distinct equal members",
+            "reverse",
+            r#"(defmacro probe [] (let [m {"a" 2 \a 1} s #{"a" \a}] (list 'quote [(get m \a) (vec (seq m)) (count s) (vec (seq s)) (get s "a")])) ) (probe)"#,
         ),
         (
-            "(defmacro literal-count [] (count '{\\a 1 \"a\" 2})) (literal-count)",
-            "native literal map with reader-distinct equal keys",
+            "set-lookup",
+            r#"(defmacro probe [] (let [s #{\a "a"}] (list 'quote [(count s) (contains? s \a) (contains? s "a") (get s \a) (get s "a") (vec (seq s))]))) (probe)"#,
         ),
-    ] {
+        (
+            "quoted",
+            r#"(defmacro probe [] (let [m '{\a 1 "a" 2} s '#{\a "a"}] (list 'quote [(count m) (get m \a) (vec (seq m)) (count s) (vec (seq s))]))) (probe)"#,
+        ),
+        (
+            "numbers",
+            r#"(defmacro probe [] (list 'quote [(count {1 :int 1.0 :float}) (get {1 :int 1.0 :float} 1) (count #{1 1.0}) (vec (seq '#{1 1.0}))])) (probe)"#,
+        ),
+        (
+            "nested",
+            r#"(defmacro probe [] (let [x [{:m {\a 1 "a" 2} :s #{\a "a"}}] m (:m (first x)) s (:s (first x))] (list 'quote [(count m) (get m \a) (vec (seq m)) (count s) (vec (seq s))]))) (probe)"#,
+        ),
+        (
+            "quoted-nested",
+            r#"(defmacro probe [] (let [x '({:m {\a 1 "a" 2} :s #{\a "a"}}) m (:m (first x)) s (:s (first x))] (list 'quote [(count m) (get m \a) (count s) (vec (seq s))]))) (probe)"#,
+        ),
+        (
+            "unicode",
+            r#"(defmacro probe [] (list 'quote [(get {\u0061 1 "a" 2} \a) (vec (seq #{\u0061 "a"})) (get {\newline 1 "\n" 2} \u000a) (vec (seq #{\space " "}))])) (probe)"#,
+        ),
+        (
+            "operand-effects",
+            r#"(defmacro probe [] (let [events (atom []) m {\a (do (swap! events conj :first) 11) "a" (do (swap! events conj :second) 22)}] (list 'quote [(count m) (get m \a) (vec (seq m)) @events]))) (probe)"#,
+        ),
+        (
+            "eight-pairs",
+            r#"(defmacro probe [] (let [m {\a 1 "a" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8}] (list 'quote [(count m) (get m "a") (vec (vals m))]))) (probe)"#,
+        ),
+        (
+            "nine-pairs",
+            r#"(defmacro probe [] (let [m {\a 1 "a" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8 :h 9}] [(count m) (get m \a) (get m "a")])) (probe)"#,
+        ),
+        (
+            "ten-members",
+            r#"(defmacro probe [] (let [s #{\a "a" :b :c :d :e :f :g :h :i}] (list 'quote [(count s) (vec (seq s)) (contains? s :i)]))) (probe)"#,
+        ),
+        (
+            "composite-keys",
+            r#"(defmacro probe [] (let [m '{[\a] 1 ["a"] 2} n '{{\a 1} 11 {"a" 1} 22} t '{#{\a} 33 #{"a"} 44}] (list 'quote [(count m) (get m [\a]) (vec (seq m)) (count n) (get n {"a" 1}) (count t) (get t #{"a"})]))) (probe)"#,
+        ),
+        (
+            "composite-members",
+            r#"(defmacro probe [] (let [s '#{[\a] ["a"]} t '#{{\a 1} {"a" 1}} u '#{#{\a} #{"a"}}] (list 'quote [(count s) (vec (seq s)) (contains? s ["a"]) (count t) (contains? t {"a" 1}) (count u) (contains? u #{"a"})]))) (probe)"#,
+        ),
+        (
+            "mixed",
+            r#"(defmacro probe [] (let [s '#{\a "a" 1 1.0 :a a 'b} m '{\a 1 "a" 2 1 :int 1.0 :float :a :keyword a :symbol}] (list 'quote [(count s) (vec (seq s)) (count m) (vec (seq m)) (get m 'a) (contains? s 'a)]))) (probe)"#,
+        ),
+        (
+            "inner-quote",
+            r#"(defmacro probe [] (let [s '#{\a "a" '\b \b} m '{\a 1 "a" 2 '\b 3 \b 4}] (list 'quote [(count s) (contains? s \b) (contains? s '(quote \b)) (vec (seq s)) (count m) (get m \b) (get m '(quote \b)) (vec (vals m))]))) (probe)"#,
+        ),
+        (
+            "metadata",
+            r#"(defmacro probe [] (let [m ^{:tag :map} {\a 1 "a" 2} s ^{:tag :set} #{1 1.0}] (list 'quote [(meta m) (meta s) (vec (seq m)) (vec (seq s)) (meta (assoc m "a" 3)) (meta (disj s 1))]))) (probe)"#,
+        ),
+        (
+            "assoc-conj",
+            r#"(defmacro probe [] (let [m '{\a 1 "a" 2} s '#{1 1.0}] (list 'quote [(vec (seq (assoc m "a" 9))) (vec (seq (conj m ["b" 3]))) (vec (seq (conj s 1))) (vec (seq (conj s 2)))]))) (probe)"#,
+        ),
+        (
+            "dissoc-disj",
+            r#"(defmacro probe [] (let [m '{\a 1 "a" 2 :b 3} s '#{1 1.0 2}] (list 'quote [(mapv (fn [e] [(nil? (first e)) (nil? (second e))]) (seq (dissoc m "a"))) (mapv nil? (seq (disj s 1))) (count (dissoc m "a")) (count (disj s 1)) (contains? (dissoc m "a") nil) (contains? (disj s 1) nil)]))) (probe)"#,
+        ),
+        (
+            "promotion",
+            r#"(defmacro probe [] (let [m '{\a 1 "a" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8} s '#{1 1.0 2 3 4 5 6 7}] [(count (assoc m :h 9)) (get (assoc m :h 9) "a") (count (conj s 8)) (count (assoc m "a" 9)) (get (assoc m "a" 9) "a")])) (probe)"#,
+        ),
+        (
+            "equality-hash",
+            r#"(defmacro probe [] (let [m '{:b 2 :a 1} h (apply hash-map [:a 1 :b 2]) s '#{2 1} t (set [1 2])] [(= m h) (= h m) (= (hash m) (hash h)) (= s t) (= t s) (= (hash s) (hash t)) (= '{\a 1 "a" 2} '{\a 1 "a" 2}) (= '#{1 1.0} '#{1 2})])) (probe)"#,
+        ),
+        (
+            "bridge",
+            r#"(defmacro probe [m s] (list 'quote [(count m) (get m "a") (vec (seq m)) (count s) (vec (seq s)) (get (assoc m "a" 9) "a") (vec (seq (disj s 1)))])) (probe {\a 1 "a" 2} #{1 1.0})"#,
+        ),
+        (
+            "bridge-nested-metadata",
+            r#"(defmacro probe [x] (let [m (:m (first x)) s (:s (first x))] (list 'quote [(count m) (vec (seq m)) (meta m) (count s) (vec (seq s)) (meta s)]))) (probe [{:m ^{:tag :map} {\a 1 "a" 2} :s ^{:tag :set} #{1 1.0}}])"#,
+        ),
+        (
+            "export-changed",
+            r#"(defmacro probe [m s] (list 'quote [(assoc m "a" 9) (conj s 2)])) (probe {\a 1 "a" 2} #{1 1.0})"#,
+        ),
+        (
+            "realize-rebuild",
+            r#"(defmacro probe [] (let [m (assoc '{\a nil "a" 2} "a" (map inc [1 2])) s (conj '#{1 1.0} (map inc [1 2]))] (list 'quote [(vec (seq m)) (vec (seq s))]))) (probe)"#,
+        ),
+    ];
+    for (name, expression) in cases {
+        let (declaration, call) = expression.split_at(expression.rfind("(probe").unwrap());
+        let source = format!("{declaration}(js/console.log (pr-str {call}))");
         let mut host = MacroHost::new();
         host.use_native_macros();
-        let message = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
-            .err()
-            .unwrap_or_else(|| panic!("{source}: expanded"))
-            .to_string();
-        assert!(message.contains(expected), "{source}: {message}");
+        let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+            .unwrap_or_else(|e| panic!("{name}, native: {e}"));
+        let native = emit_js(&program);
+        let legacy = light_cljs::compile(&source).unwrap_or_else(|e| panic!("{name}, legacy: {e}"));
+        let native_output = program_output(&native);
+        let legacy_output = program_output(&legacy);
+        // Reader inputs previously collapsed in both bridges. Native inputs
+        // now retain their original positions, an intentional extension; the
+        // legacy bridge stays unchanged. Pin both results in this same matrix.
+        let bridge_outputs = match name {
+            "bridge" => Some((
+                "[2 1 [[\"a\" 1] [\"a\" 2]] 2 [1 1] 9 [nil]]\n",
+                "[1 2 [[\"a\" 2]] 1 [1] 9 []]\n",
+            )),
+            "bridge-nested-metadata" => Some((
+                "[2 [[\"a\" 1] [\"a\" 2]] {:tag :map} 2 [1 1] {:tag :set}]\n",
+                "[1 [[\"a\" 2]] {:tag :map} 1 [1] {:tag :set}]\n",
+            )),
+            "export-changed" => Some(("[{\"a\" 9, \"a\" 2} #{1 1 2}]\n", "[{\"a\" 9} #{1 2}]\n")),
+            _ => None,
+        };
+        if let Some((expected_native, expected_legacy)) = bridge_outputs {
+            assert_eq!(native_output, expected_native, "{name}: native inputs");
+            assert_eq!(legacy_output, expected_legacy, "{name}: legacy inputs");
+        } else {
+            assert_eq!(native_output, legacy_output, "{name}");
+            assert_eq!(native, legacy, "{name}: expanded form");
+        }
     }
 }
 

@@ -119,6 +119,8 @@
 //! | `formValue(v)` | `form_op` | an occurrence's value (through nested occurrences), else `v` | – |
 //!
 //! | `formSet(x1, …, xn)` | `new_form_set n` | new set of the values; of equal members the first is kept (light-cljs-477) | – |
+//! | `formLiteralMap(pairs)` | `form_op LiteralMap` | positional map from alternating operands in a form list/vector; retains equal keys, first-match lookup | wrong type; odd operand count |
+//! | `formLiteralSet(items)` | `form_op LiteralSet` | positional set from a form list/vector; retains equal members and source order | wrong type |
 //! | `formDisj(s, x)` | `form_op` | new set without the member equal to `x` (absent: `s`) | `WrongType` |
 //!
 //! | `structType(name, fields, record)` | `form_op` | a new struct type (light-cljs-478; [`crate::collections::form`], "Structs") | `WrongType` |
@@ -522,6 +524,8 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
     Ok(match op {
         FormOp::Keyword => form::new_named_from_values(heap, FormKind::Keyword, arg(), arg())?,
         FormOp::Symbol => form::new_named_from_values(heap, FormKind::Symbol, arg(), arg())?,
+        FormOp::LiteralMap => form::literal_from_sequence(heap, &arg(), false)?,
+        FormOp::LiteralSet => form::literal_from_sequence(heap, &arg(), true)?,
         FormOp::Kind => {
             let v = arg();
             match form::kind(heap, &v) {

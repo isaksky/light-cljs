@@ -455,12 +455,25 @@ sequence that their bridge exports with an explicit `nil` metadata wrapper
 rejects equal members with `Duplicate key`, without the member's printed form,
 after every member has been evaluated. Reader-distinct constants that lower to
 equal values (`#{\a "a"}`, `'#{1 1.0}`, `'{\a 1 "a" 2}`) stay distinct members
-or keys in the legacy runtimes (`constantSetFromArray` keeps them positionally);
-a native set or map cannot hold two equal members or keys, so such a literal in
-a macro fails with `unsupported operation: native literal set with
-reader-distinct equal members` (or `... map with reader-distinct equal keys`)
-instead of silently losing one. Literals whose members stay distinct are native
-sets and maps as usual. Positional native literals are light-cljs-496.
+or keys in positional native sets and maps, as in the legacy literal
+constructors. They count and iterate every stored position and look up the
+first equal key. `assoc` replaces only its first value; `conj` keeps an existing
+member or appends a new one. Appending past eight entries promotes the backing
+map to hashed storage, merging equal keys. `dissoc`/`disj` retain the legacy
+array-map removal behavior: all equal keys are skipped but the count decreases
+by one, leaving trailing undefined positions (observed as nil by core operations).
+Equality and unordered hashing use the same entry/member rules as hashed forms.
+Duplicate literals retain the legacy anomalies: set equality can be directional,
+and two maps with differing values at equal keys can compare unequal even with
+the same entries. Hash caches do not alter those comparisons.
+
+Native reader inputs also use positional forms, preserving their original
+members, keys, metadata and occurrence identity through updates and export.
+This intentionally differs from the legacy input bridges, which still collapse
+equal lowered keys and members. Literal expressions evaluated inside a macro
+match QuickJS; `tests/bbp_macros.rs` pins both behaviors in its differential
+matrix. Positional payload nodes use the aggregate allocation budget and trace
+every stored position, including entries hidden by first-match lookup.
 Plain JavaScript functions and ordinary interop such as `Math.max` run in the same task.
 Direct JavaScript calls, constructors, method calls, instance checks,
 property/index access and property assignment unwrap imported scalar occurrences. For example,

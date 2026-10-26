@@ -2996,8 +2996,10 @@ impl<'a> Emitter<'a> {
             && let Some(intrinsic) = match constructor {
                 Composite::Vector => Some("formVector"),
                 Composite::List => Some("formList"),
-                Composite::ArrayMap | Composite::HashMap | Composite::LiteralMap => Some("formMap"),
-                Composite::Set | Composite::CheckedSet | Composite::LiteralSet => Some("formSet"),
+                Composite::ArrayMap | Composite::HashMap => Some("formMap"),
+                Composite::Set | Composite::CheckedSet => Some("formSet"),
+                Composite::LiteralMap => Some("formLiteralMap"),
+                Composite::LiteralSet => Some("formLiteralSet"),
                 Composite::WithMeta => Some("cljWithMeta"),
                 Composite::Uuid => None,
             }
@@ -3014,24 +3016,10 @@ impl<'a> Emitter<'a> {
                 self.output.push_str("))");
                 return;
             }
-            // The member or key count the value must keep, and the error
-            // when it does not, checked after every operand has run. A set
-            // whose members are not constants rejects equal members. A
-            // literal of reader-distinct constants (`#{\a "a"}`, quoted
-            // sets and maps) keeps such members apart in the JavaScript
-            // runtime (`constantSetFromArray`); native forms cannot
-            // represent two equal members or keys, so one that lowering
-            // made equal fails explicitly instead of collapsing.
+            // Dynamic set literals reject equal members after every operand
+            // has run. Constant literals retain their positional storage.
             let check = match constructor {
                 Composite::CheckedSet => Some((count, "Duplicate key")),
-                Composite::LiteralSet => Some((
-                    count,
-                    "unsupported operation: native literal set with reader-distinct equal members",
-                )),
-                Composite::LiteralMap => Some((
-                    count / 2,
-                    "unsupported operation: native literal map with reader-distinct equal keys",
-                )),
                 _ => None,
             };
             if let Some((_, message)) = check {
@@ -3043,8 +3031,15 @@ impl<'a> Emitter<'a> {
                 .unwrap();
             }
             write!(self.output, "__rt.{intrinsic}(").unwrap();
+            let positional = matches!(constructor, Composite::LiteralMap | Composite::LiteralSet);
+            if positional {
+                self.output.push_str("__rt.formVector(");
+            }
             items(self, &mut (0..count));
             self.output.push(')');
+            if positional {
+                self.output.push(')');
+            }
             if let Some((expected, _)) = check {
                 write!(self.output, ", {expected})").unwrap();
             }

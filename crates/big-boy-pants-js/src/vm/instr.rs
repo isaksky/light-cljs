@@ -1502,11 +1502,15 @@ pub enum FormOp {
     CljUnreduced = 63,
     /// v → whether it is a builtin editable collection (`cljIsEditable`).
     CljIsEditable = 64,
+    /// list/vector of alternating operands → positional literal map.
+    LiteralMap = 65,
+    /// list/vector of operands → positional literal set.
+    LiteralSet = 66,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 65] = [
+    pub const ALL: [FormOp; 67] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1572,6 +1576,8 @@ impl FormOp {
         FormOp::CljIsReduced,
         FormOp::CljUnreduced,
         FormOp::CljIsEditable,
+        FormOp::LiteralMap,
+        FormOp::LiteralSet,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1583,6 +1589,8 @@ impl FormOp {
     pub const fn arity(self) -> usize {
         match self {
             FormOp::Kind
+            | FormOp::LiteralMap
+            | FormOp::LiteralSet
             | FormOp::Namespace
             | FormOp::Name
             | FormOp::Count
@@ -1717,6 +1725,8 @@ impl FormOp {
             FormOp::CljIsReduced => "cljIsReduced",
             FormOp::CljUnreduced => "cljUnreduced",
             FormOp::CljIsEditable => "cljIsEditable",
+            FormOp::LiteralMap => "formLiteralMap",
+            FormOp::LiteralSet => "formLiteralSet",
             FormOp::CljInvoke => "cljInvoke",
         }
     }

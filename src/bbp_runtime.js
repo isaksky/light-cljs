@@ -310,12 +310,11 @@ const native = (() => {
   const map = a => { let v=__rt.formMap();for(let i=0;i<a.length;i+=2)v=__rt.formAssoc(v,a[i],a[i+1]);return v; };
   const set = a => { let v=__rt.formSet();for(const x of a)v=__rt.formConj(v,x);return v; };
   // A set literal with members that are not constants rejects duplicates.
-  // Equal members or keys of a reader-distinct literal (`#{\a "a"}`) are not
-  // representable natively and fail explicitly instead of collapsing.
+  // Reader-distinct constants retain every position after lowering.
   const counted = (v, n, message) => { if (__rt.formCount(v) !== n) throw new Error(message); return v; };
   const literalSet = a => counted(set(a), a.length, 'Duplicate key');
-  const constantSet = a => counted(set(a), a.length, 'unsupported operation: native literal set with reader-distinct equal members');
-  const constantMap = a => counted(map(a), a.length / 2, 'unsupported operation: native literal map with reader-distinct equal keys');
+  const constantSet = a => __rt.formLiteralSet(vector(a));
+  const constantMap = a => __rt.formLiteralMap(vector(a));
   const arity = n => { throw new Error('Invalid arity: ' + n); };
   const gensym = (...args) => {
     if (args.length > 1) return arity(args.length);
@@ -643,7 +642,7 @@ const native = (() => {
     contains:(c,k)=>__rt.cljContains(c,k),
     keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:list(arr(s).map(e=>__rt.formNth(e,0)));}
       const k=__rt.formValue(m)==null?null:__rt.formKeys(__rt.formValue(m));return k===null||__rt.formCount(k)===0?null:list(arr(k));},
-    vals:m=>{const k=core.keys(m);return k===null?null:list(arr(k).map(key=>__rt.cljGet(m,key,null)));},
+    vals:m=>{const s=__rt.cljSeq(m);return s===null?null:list(arr(s).map(e=>__rt.formNth(e,1)));},
     meta:x=>__rt.cljMeta(x), withMeta:(x,m)=>__rt.cljWithMeta(x,m),
     isKeyword:x=>__rt.formKind(val(x))==='keyword', isSymbol:x=>__rt.formKind(val(x))==='symbol',
     isVector:x=>__rt.formKind(val(x))==='vector', isMap:x=>{const k=__rt.formKind(val(x));return k==='map'||k==='record';}, isSeq:x=>{const k=__rt.formKind(val(x));return k==='list'||k==='lazy-seq'||k==='cons';},

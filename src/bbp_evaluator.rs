@@ -196,7 +196,7 @@ impl Bridge {
                 match kind {
                     C::List | C::AnonymousFn => s.new_list(&values),
                     C::Vector => s.new_form_vector(&values),
-                    C::Map => s.new_form_map(
+                    C::Map => s.new_literal_map(
                         &values
                             .as_chunks::<2>()
                             .0
@@ -204,7 +204,7 @@ impl Bridge {
                             .map(|p| (p[0], p[1]))
                             .collect::<Vec<_>>(),
                     ),
-                    C::Set => s.new_form_set(&values),
+                    C::Set => s.new_literal_set(&values),
                 }
                 .map_err(error)?
             }

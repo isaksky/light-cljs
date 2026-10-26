@@ -17,7 +17,8 @@
 //!   is `(x)`, `(contains? nil k)` is `false`.
 //! * **Sequences are lists.** `seq`, `rest`, `next` and `cons` return form
 //!   lists (or `nil`): a vector's elements (its `seq` in chunks, below), a map's entries as two-element
-//!   vectors and a set's members (both in their trie order), and a string's
+//!   vectors and a set's members (in trie order for hashed forms, source
+//!   order for positional literals), and a string's
 //!   UTF-16 code units as one-unit strings. A nonempty list is its own
 //!   `seq` (the same value, occurrence included). The `rest` and `next` of
 //!   a list or vector share its trie (light-cljs-502): O(1), allocating one
@@ -1347,8 +1348,8 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
         Meta,
         List,
         Vector,
-        Set,
-        Map,
+        Set(bool),
+        Map(bool),
     }
     enum Work {
         Enter(Value),
@@ -1399,10 +1400,10 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                     FormBody::Set(set) => {
                         let mut members = Vec::with_capacity(set.len());
                         set.for_each(|k, _| members.push(k.clone()));
-                        (Rebuild::Set, members)
+                        (Rebuild::Set(set.positional()), members)
                     }
                     FormBody::Map(map) => (
-                        Rebuild::Map,
+                        Rebuild::Map(map.positional()),
                         map.to_vec().into_iter().flat_map(|(k, v)| [k, v]).collect(),
                     ),
                     _ if f.meta().is_some() => (Rebuild::Meta, Vec::new()),
@@ -1456,8 +1457,10 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                         Rebuild::Meta => original.clone(),
                         Rebuild::Seq(_) | Rebuild::List => form::new_list(heap, &new_children)?,
                         Rebuild::Vector => form::new_vector(heap, &new_children)?,
-                        Rebuild::Set => form::new_set(heap, &new_children)?,
-                        Rebuild::Map => {
+                        Rebuild::Set(true) => form::new_literal_set(heap, &new_children)?,
+                        Rebuild::Set(false) => form::new_set(heap, &new_children)?,
+                        Rebuild::Map(true) => form::new_literal_map(heap, &new_children)?,
+                        Rebuild::Map(false) => {
                             let entries: Vec<(Value, Value)> = new_children
                                 .as_chunks::<2>()
                                 .0
