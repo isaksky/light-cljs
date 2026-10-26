@@ -109,3 +109,35 @@ if identities are ambiguous. Current top-level native macro fixtures emit no
 `unit` rows, so a per-unit V8 ratio is unavailable, even if whole-process timings
 exist. No V8 reference is needed for the smoke or claimed by the implementation
 verification. No performance ratio is computed automatically.
+
+## Native core lowering (light-cljs-477), October 26, 2026
+
+`bb benchmarks/native-macros.bb` (five runs per cell, jobs 1/2/4/8) ran on
+master `21f68ddb` (before) and on the lowering branch `dd619ba8` (after), one
+after the other on the machine of `native-macros-6405a52c/README.md`, with one
+peer worker active (load averages about 2.6–3.4). Medians of compiler wall time,
+ms [min–max]:
+
+| Fixture, jobs | Before | After |
+| --- | --- | --- |
+| collections, 1 | 18.15 [17.99–26.22] | 18.63 [18.00–23.19] |
+| collections, 8 | 19.73 [18.32–20.32] | 18.96 [18.55–19.02] |
+| environment, 1 | 18.20 [18.02–24.09] | 18.34 [17.26–18.61] |
+| environment, 8 | 18.96 [18.71–19.29] | 19.70 [18.97–19.87] |
+
+Jobs 2 and 4 are within the same 18.4–18.9 ms band on both. Every cell is
+dominated by process start; the differences are within the run-to-run spread,
+so these fixtures show neither a gain nor a loss from lowering. The per-thread
+factor k is unavailable: no V8 figures were recorded for these fixtures (the
+6405a52c baseline had no qualified V8 binary) and they emit no `unit` rows.
+
+Helper publication from `--stats` on the helper fixture, at every job count:
+before `native.helpers.published 0`, `per-task 1`; after `published 1`,
+`per-task 0` (the runner still labels the cell `unverified-helper`). The
+largest workload this backend supports is still these fixtures and the
+`tests/bbp_macros.rs` namespaces: the seeded generated project (20k lines,
+seed 42) now passes native sets and `vec` but stops at lazy `map`
+(`core.mapSeq`, light-cljs-479). In `tests/fixtures/native-helper-demand`,
+`pool` goes from 0 published / at least 1 per-task to 1 / 0, and the new
+`collections` namespace (a set constant and two collection helpers) publishes
+3 of 3 at one and two slots.

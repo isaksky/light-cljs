@@ -86,8 +86,12 @@ are the engine's `__rt.clj*` intrinsics (big-boy-pants-js
 `src/collections/clj.rs`): Rust, nil-punning, transparent to input
 occurrences. Truth tests are `__rt.cljTruth`. Other arities, core functions
 used as values (`(map first xs)`) and the remaining operations call the
-runtime object, whose entries use the same intrinsics. `rest` and `next` copy
-the remaining elements into a new list; there are no shared seq views.
+runtime object, whose entries use the same intrinsics (it also provides `set`,
+`vec`, `keys`, `vals`, `hash-set` and variadic `assoc`/`dissoc`/`conj`/`disj`).
+`rest` and `next` copy the remaining elements into a new list; there are no
+shared seq views. Lazy `map`, `filter` and friends are not implemented
+(light-cljs-479 owns lazy sequences), which still stops the generated
+benchmark project.
 
 Lowering is what lets helper values publish: a function whose body uses only
 lowered operations, literals and other compiler roots captures no task-owned

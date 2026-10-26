@@ -869,6 +869,10 @@ const COLLECTION_FIXTURES: &[(&str, &str)] = &[
         "(defmacro built [] (list 'quote (list (vector 1 2) (hash-set 3) (cons 0 [5])))) (js/console.log (pr-str (built)))",
         "([1 2] #{3} (0 5))\n",
     ),
+    (
+        "(defmacro as-vec [l] (list 'quote (vec l))) (js/console.log (pr-str (as-vec (1 2))))",
+        "[1 2]\n",
+    ),
 ];
 
 #[test]
