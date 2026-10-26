@@ -3504,6 +3504,12 @@ fn worker_view(
 /// reports root reads.
 struct WorkerSlot {
     view: Option<Rc<WorkerView>>,
+    /// On the native backend, the slot's view without an engine, in which
+    /// it analyzes the units proven macro-free ([`UnitJob::help_ready`]):
+    /// such a unit never enters an engine, so a worker, or a waiting
+    /// worker's nested help, boots no runtime task and installs no
+    /// registrations for it.
+    plain: Option<Rc<WorkerView>>,
     /// The slot's engines: the pool's for the first workers, none for the
     /// ones beyond the isolates the macro memory limit allows.
     engines: PoolEngines,
@@ -3531,6 +3537,7 @@ fn help_pool(
         .help(
             |_| WorkerSlot {
                 view: None,
+                plain: None,
                 engines,
                 _trace: None,
             },
@@ -3552,8 +3559,8 @@ fn execute_pool_job(
     environment: &MacroEnvironment,
 ) {
     let _depth = HelpDepth(HELP_DEPTH.replace(worker.help_depth()));
-    let id = match job {
-        UnitJob::Analyze(id, _, _) => id,
+    let (id, macro_free) = match job {
+        UnitJob::Analyze(id, _, macro_free) => (id, macro_free),
         #[cfg(feature = "bbp-macros")]
         UnitJob::Native(step, reply) => {
             #[cfg(test)]
@@ -3570,9 +3577,22 @@ fn execute_pool_job(
     if !shared.admits(id) {
         return shared.skipped();
     }
-    let view = match slot.view.take() {
+    #[cfg(feature = "bbp-macros")]
+    let plain =
+        macro_free && slot.engines != PoolEngines::None && environment.native_macro_backend();
+    #[cfg(not(feature = "bbp-macros"))]
+    let plain = {
+        let _ = macro_free;
+        false
+    };
+    let (kept, engines) = if plain {
+        (slot.plain.take(), PoolEngines::None)
+    } else {
+        (slot.view.take(), slot.engines)
+    };
+    let view = match kept {
         Some(view) => view,
-        None => match worker_view(shared, slot.engines, environment) {
+        None => match worker_view(shared, engines, environment) {
             Ok(view) => view,
             Err(error) => {
                 shared.fail_unstarted(id, error);
@@ -3668,13 +3688,15 @@ fn execute_pool_job(
     }
     shared.note_job(id);
     PoolCounters::add(&shared.counters.unit_ns, started);
-    if slot.engines == PoolEngines::None {
+    if slot.engines == PoolEngines::None || plain {
         shared
             .counters
             .engine_less_units
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    if reusable
+    if plain {
+        slot.plain = Some(view);
+    } else if reusable
         && slot.engines != PoolEngines::Fresh
         && !view.terminal()
         && !view.holds_excess_headroom()
@@ -3720,6 +3742,7 @@ fn serve_pool(
         // the slot's thread records its units' for it (light-cljs-369).
         |slot| WorkerSlot {
             view: None,
+            plain: None,
             engines: match slot <= engine_workers {
                 true => engines,
                 false => PoolEngines::None,
@@ -4428,6 +4451,7 @@ mod worker_tests {
             &crate::scheduler::Config::new(crate::scheduler::Slots::ONE, 1),
             |_| WorkerSlot {
                 view: None,
+                plain: None,
                 engines: PoolEngines::Persistent,
                 _trace: None,
             },
@@ -4595,6 +4619,7 @@ mod worker_tests {
             &config,
             |slot| WorkerSlot {
                 view: None,
+                plain: None,
                 engines: PoolEngines::Persistent,
                 _trace: Some(crate::compile_trace::record_worker(slot)),
             },
