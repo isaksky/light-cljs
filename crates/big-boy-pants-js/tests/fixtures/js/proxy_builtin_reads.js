@@ -1,5 +1,7 @@
-// First-party observable Proxy reads. Run unchanged in Node/V8; the Rust test
-// replaces pause with a dependency wait at every read and length conversion.
+// First-party observable Proxy reads. For the Node/V8 read-order oracle, reduce
+// the 2^32 virtual length to 4: V8 rejects huge JSON lengths before index 0 with
+// an output-size RangeError. The engine tests keep the full virtual length.
+// The Rust test replaces pause with a dependency wait at every read/conversion.
 function pause() {}
 function assert(v, label) {if (!v) throw new Error(label);}
 const cases = [
@@ -42,6 +44,19 @@ for (let row of [[-1,'[]'],[NaN,'[]'],[undefined,'[]'],['1.9','[3]'],[4,'[3,1,2,
     let p=new Proxy([3,1,2],{get(t,k,r){pause();return k==='length' ? row[0] : Reflect.get(t,k,r);}});
     assert(JSON.stringify(p)===row[1], 'JSON ToLength '+row[0]);
 }
+// A virtual length of 2^32 must reach index 0, without allocating that length.
+// Narrowing it to u32 would instead serialize an empty array and skip the throw.
+let largeReads=[], largeReason;
+try {
+    JSON.stringify(new Proxy([],{get(t,k,r){
+        pause();largeReads.push(k);
+        if(k==='length') return 4294967296;
+        if(k==='0') throw 42;
+        return Reflect.get(t,k,r);
+    }}));
+} catch(e) {largeReason=e;}
+assert(largeReason===42, 'JSON length above u32 propagates element exception');
+assert(largeReads.join(',')==='toJSON,length,0', 'JSON length above u32 reads: '+largeReads.join(','));
 let nested=new Proxy(new Proxy([1,2],{get(t,k,r){pause();return k==='length' ? 1 : Reflect.get(t,k,r);}}),{});
 assert(JSON.stringify(nested)==='[1]', 'nested JSON array');
 assert(JSON.stringify(new Proxy(Array.prototype,{}))==='[]', 'intrinsic array brand');

@@ -1,6 +1,7 @@
 use big_boy_pants_js::frontend::compile_script;
 use big_boy_pants_js::{
-    Budget, Completion, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView,
+    Budget, Completion, HeapPolicy, Host, HostCall, Primitive, RunOutcome, Runtime, ValueView,
+    VmLimits,
 };
 
 #[test]
@@ -45,7 +46,14 @@ fn proxy_array_length_is_observable() {
         "function pause() {}",
         "let pauses=0; function pause() {__rt.need(1800 + pauses++, 1);}",
     );
-    let rt = Runtime::new();
+    // Virtual lengths above u32 must also work within a bounded heap.
+    let rt = Runtime::with_heap_policy(
+        VmLimits::default(),
+        HeapPolicy {
+            hard_limit_bytes: Some(16 * 1024 * 1024),
+            ..Default::default()
+        },
+    );
     let code = compile_script("proxy-array-length-waits", &source).unwrap();
     let mut task = rt.spawn(&code, &[]).unwrap();
     let mut waits = 0;
@@ -82,7 +90,7 @@ fn proxy_array_length_is_observable() {
             }
             RunOutcome::Complete(value) => {
                 assert_eq!(value.view(), ValueView::Bool(true));
-                assert_eq!(waits, 113); // Same pause count in Node/V8.
+                assert_eq!(waits, 116); // Same pause count in Node/V8.
                 assert!(yields > waits);
                 return;
             }
