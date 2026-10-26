@@ -21,6 +21,7 @@
 //! | set | members unique by value equality (a hash trie; light-cljs-477) | yes |
 //! | lazy-seq | a once-realized cell: a thunk, then what it realized (light-cljs-479, `crate::collections::lazy`) | yes |
 //! | cons | realized elements followed by an unrealized tail (light-cljs-479) | yes |
+//! | reduced | opaque early-termination marker with a traced payload (light-cljs-507) | no |
 //!
 //! Elements, keys, values and metadata may be any value: `nil`
 //! (`null`/`undefined`), booleans, numbers, strings, other forms, and
@@ -80,6 +81,8 @@
 //!   members. A set never equals a map, list or vector.
 //! * Metadata never takes part: `with_meta` changes neither equality nor
 //!   hash.
+//! * Reduced markers compare and hash by identity, independent of their
+//!   payload. They are not sequences; `cljUnreduced` unwraps one marker.
 //! * Occurrences are transparent: an occurrence equals (and hashes as) the
 //!   value it wraps, so provenance never affects equality.
 //! * The same object always equals itself (`identical?` first, as `=`

@@ -3802,7 +3802,7 @@ impl<'a> Emitter<'a> {
             C::MapSeq => {
                 r#"f => rf => (...a) => {
                 if (a.length < 2) return invoke(rf, ...a);
-                return invoke(rf, a[0], invoke(f, ...a.slice(1)));
+                return prepare(rf)(a[0], invoke(f, ...a.slice(1)));
             }"#
             }
             C::Mapcat => {
@@ -3843,11 +3843,12 @@ impl<'a> Emitter<'a> {
             }
             _ => return false,
         };
-        self.output.push_str("((invoke) => (");
+        self.output
+            .push_str("((prepare) => { const invoke = (f, ...a) => prepare(f)(...a); return (");
         self.output.push_str(constructor);
-        self.output.push_str("))((f, ...a) => ");
+        self.output.push_str("); })(");
         self.output.push_str(NATIVE_PREPARE_INVOKE);
-        self.output.push_str("(f)(...a))");
+        self.output.push(')');
         true
     }
 

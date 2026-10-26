@@ -319,6 +319,17 @@ const native = (() => {
   const arity = n => { throw new Error('Invalid arity: ' + n); };
   const seq = x => __rt.cljSeq(x);
   const get = (m,k,n=null) => __rt.cljGet(m,k,n);
+  // Read `.call` before evaluating nested callback arguments. A custom
+  // callable's getter and receiver have the same order as `rf.call(null, ...)`.
+  const prepareInvoke = f => {
+    const value = val(f), kind = __rt.formKind(value);
+    if (kind === 'vector' || kind === 'map' || kind === 'set' || kind === 'keyword' || kind === 'symbol') return (...args) => {
+      if (kind !== 'vector' && (args.length < 1 || args.length > 2)) arity(args.length);
+      return __rt.cljInvoke(f, args[0], args.length > 1 ? args[1] : null, args.length);
+    };
+    const call = value.call;
+    return (...args) => Reflect.apply(call, value, [null, ...args]);
+  };
   const invoke = (f,...args) => {
     const value=val(f),kind=__rt.formKind(value);
     if(kind!=='vector'&&kind!=='map'&&kind!=='set'&&kind!=='keyword'&&kind!=='symbol')return value.call(null,...args);
@@ -499,7 +510,7 @@ const native = (() => {
     if (a.length === 2) return step(a[0], a[1]);
     return arity(a.length);
   };
-  const mapTransform = f => rf => (...a) => a.length < 2 ? invoke(rf, ...a) : invoke(rf, a[0], invoke(f, ...a.slice(1)));
+  const mapTransform = f => rf => (...a) => a.length < 2 ? invoke(rf, ...a) : prepareInvoke(rf)(a[0], invoke(f, ...a.slice(1)));
   const filterTransform = f => rf => reducing(rf, (result, x) => truth(invoke(f, x)) ? invoke(rf, result, x) : result);
   const mapcatTransform = f => rf => (...a) => {
     if (a.length < 2) return invoke(rf, ...a);
@@ -538,7 +549,7 @@ const native = (() => {
     if (a.length !== 3 && a.length !== 4) return arity(a.length);
     const xf = a[0], rf = a[1], init = a.length === 3 ? invoke(rf) : a[2], coll = a[a.length - 1];
     const transformed = invoke(xf, rf);
-    return invoke(transformed, reduceSeq(transformed, init, coll));
+    return prepareInvoke(transformed)(reduceSeq(transformed, init, coll));
   };
   const intoReducer = (...a) => a.length === 1 ? a[0] : a.length === 2 ? __rt.cljConj(a[0], a[1]) : arity(a.length);
   const core = {

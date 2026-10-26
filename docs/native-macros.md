@@ -61,13 +61,16 @@ engine source, and includes preloaded helper source.
 
 ## Supported boundary
 
-### Penpot reproduction (light-cljs-506, 2026-10-26)
+### Penpot reproduction (light-cljs-507, 2026-10-26)
 
-On macOS arm64, Rust 1.99.1, the native combinator fixtures produce the same
+On macOS arm64, Rust 1.99.1, the native transducer fixtures produce the same
 application JavaScript as QuickJS (`--no-default-features --features
-bbp-macros,quickjs --test bbp_macros`). Six combinator helper values each
-initialize once and publish at one, two and four workers, with identical
-JavaScript at each worker count and in QuickJS.
+bbp-macros,quickjs --test bbp_macros`). The table covers grouping, completion
+flushing, nil and empty inputs, repeated and interleaved reductions, callback
+and callable-getter effect order, reduced termination and constructor/reducer
+arities. A reduced cuerdas namespace keeps `make-concat-xform` and
+`unsafe-concat` verbatim (its external string-repeat helper is reduced to
+JavaScript string repetition).
 
 Rebuild the native-only compiler before running the port; feature-variant test
 builds overwrite the same CLI binary. From the repository root, with the existing
@@ -91,14 +94,13 @@ Both this command and the same command with `--entry app.main` exit 1, with
 this exact first error (the read-only port's canonical source path):
 
 ```text
-light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:293:15: macro expansion: while expanding unsafe-concat: /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:293:15: macro cuerdas.core/unsafe-concat: big-boy-pants-js: Error: unsupported operation: native macro runtime core.partitionBy; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:87:1 (bytes 8532..8571)
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:324:6: macro expansion: while expanding as->: big-boy-pants-js: unsupported operation: bootstrap macro as-> (bytes 9312..9365)
 ```
 
-The former `core.comp` error is gone. The remaining failure is in the same
-macro's transducer construction: `(partition-by string?)`, followed by
-one-argument `filter` and `mapcat` and three-argument `into`. Transducers remain
-outside this backend's supported sequence boundary; light-cljs-507 owns this
-next gap. Neither Penpot entry completes natively yet.
+The former `core.partitionBy` error is gone: cuerdas' `(partition-by string?)`,
+one-argument `filter` and `mapcat`, their `comp`, and three-argument `into` now
+run natively. The next failure is bootstrap expansion of `as->`, tracked by
+light-cljs-509. Neither Penpot entry completes natively yet.
 
 ### Native forms
 
@@ -163,6 +165,25 @@ table supplies equivalent constructors when passed as values. `(comp)` returns
 the core identity function, and `(comp f)` and `(partial f)` return `f` itself.
 With no arguments, `(partial)` preserves the legacy deferred callable with an
 undefined target and three undefined prefix arguments.
+
+One-argument `map`, `filter`, `mapcat` and `partition-by` construct native
+transducers (light-cljs-507), and their collection overloads remain lazy.
+`comp` combines them, `into` supports zero through three arguments, and
+`transduce` and `completing` supply initialization and completion. A
+`partition-by` factory captures immutable inputs; each application to a
+reducer allocates its own task-owned buffer and prior-key cell. The buffer
+holds a persistent native vector and clears before downstream calls, including
+the final completion flush. A transformed reducer with mutable cells cannot
+publish; the factory can publish when its inputs can. Callbacks execute on the
+task VM and can park without replaying effects. `mapcat` stops on downstream
+termination before reading another flattened element or source input.
+
+`reduced`, `reduced?`, `ensure-reduced`, `unreduced` and dereferencing a reduced
+value use an opaque native form with identity equality/hash. Its payload is
+traced, charged to the same heap budget and checked for publication. `reduce`
+unwraps one marker and stops before advancing its input; `transduce` then calls
+the transformed reducer's completion arity once. Buffered completion unwraps a
+marker from its final downstream step before calling downstream completion.
 Invocation of native keywords, symbols, maps, sets and vectors uses
 `__rt.cljInvoke`; collection lookups retain input occurrences. Vector calls
 check numeric bounds before truncating an in-range fractional index; the
@@ -431,8 +452,7 @@ is `__rt.lazySeq(thunk)`. The runtime object provides `map` (`mapSeq`, of one
 or more collections), `filter`, `remove`, `keep`, `mapcat`, `map-indexed`,
 `take`, `drop`, `take-while`, `drop-while`, `interleave`, `iterate`, `repeat`,
 `range`, `partition` (two and three arguments), `concat`, `doall`, `dorun`,
-and over sequences `reduce` (without `reduced`), `into` (without a
-transducer), `every?`, `not-every?`, `some`, `not-any?`, `last`, `butlast`,
+and over sequences `reduce`, `into`, `every?`, `not-every?`, `some`, `not-any?`, `last`, `butlast`,
 `reverse`, `mapv`, `filterv`, with `even?`, `odd?`, `zero?`, `pos?`, `neg?`,
 `comp`, `partial`, `complement` and `constantly`. `for` and `doseq` are the
 compiler's Rust expansions, over chunked sequences as in ClojureScript (a
@@ -442,8 +462,9 @@ sequences are chunked; lists and shorter vectors are not). The clj intrinsics re
 the rest. `cons` and `conj` keep a lazy sequence as an unrealized tail, and
 a `concat` involving one is lazy, realizing one collection at a time.
 Equality stops at the first unequal element. Not provided:
-`cycle`, `lazy-cat`, `reduced`, transducers and `eduction`, `sequence` of a
-transducer, sorted sequences. The text-mode compile entry points (`--text`,
+`cycle`, `lazy-cat`, `eduction`, `sequence` of a transducer, transducers other
+than `map`, `filter`, `mapcat` and `partition-by`, and sorted sequences.
+The text-mode compile entry points (`--text`,
 `analyze_with_macros`) expand `for`, `doseq` and `when` through the JavaScript
 bootstrap, which this backend does not have; namespace builds expand them in
 Rust.

@@ -169,6 +169,12 @@
 //! sequence (or parks the task while another task does) and then executes the
 //! instruction again with the same operands.
 //!
+//! `cljReduced(v)`, `cljIsReduced(v)` and `cljUnreduced(v)` (light-cljs-507)
+//! construct/test/unwrap an immutable native early-termination marker. Its
+//! payload is traced and publication-checked, and its allocation uses the
+//! ordinary persistent-form byte budget. Reduction callbacks and mutable
+//! transducer state run on the task VM; these intrinsics run no user code.
+//!
 //! Updates keep the input's metadata and follow the identity rules of
 //! [`crate::collections::form`]. A `formEquals`, `formHash` or structural
 //! lookup runs to completion inside its instruction, like the collection

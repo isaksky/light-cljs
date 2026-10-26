@@ -2514,6 +2514,21 @@ fn native_transducer_call_shapes_match_legacy() {
             "[[:done] [[] [] [[1 2]]] [[] [] [1 2]] [[] [] [false]]]",
         ),
         (
+            r#"(let [log (js/Array.)
+                       rf (js* "({get call() { ~{}.push('get'); return function(_, result, input) { ~{}.push('run'); return result; }; }})" log log)
+                       f (fn [x] (.push log "map") x)
+                       m map a ((map f) rf) b ((m f) rf)]
+                 [(a [] 1) (b [] 2) (.join log ",")])"#,
+            "[[] [] \"get,map,run,get,map,run\"]",
+        ),
+        (
+            r#"(let [log (js/Array.)
+                       xf (fn [rf] (js* "({get call() { ~{}.push('get'); return function(_, result, input) { if (arguments.length === 2) ~{}.push('done'); else { ~{}.push('step'); result++; } return result; }; }})" log log log))
+                       result (transduce xf + 0 [1 2])]
+                 [result (.join log ",")])"#,
+            "[2 \"get,get,step,get,step,done\"]",
+        ),
+        (
             r#"(let [error (fn [f a] (try (apply f a) :ok (catch :default e (.-message e))))]
                  [(error map []) (error mapcat []) (error filter []) (error filter [identity nil nil])
                   (error partition-by []) (error partition-by [identity nil nil])
