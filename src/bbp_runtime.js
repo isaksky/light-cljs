@@ -93,15 +93,16 @@ const decl = (() => {
     return m;
   };
   const resolve = (t, x) => {
-    const m = lookup(t, x);
-    return m == null && declare(x) ? lookup(t, x) : m;
+    declare(x);
+    return lookup(t, x);
   };
   const missing = (name, x) => new Error('No protocol method ' + name + ' defined for type ' + (x === null || x === undefined ? 'null' : __rt.formKind(x) ?? typeof x));
   // `:extend-via-metadata`: the receiver's metadata entry for the method's
   // qualified symbol comes first.
   const viaMeta = (name, x) => {
     const meta = __rt.cljMeta(x);
-    return meta === null ? null : __rt.cljGet(meta, __rt.cljSymbol(name), null);
+    const f = meta === null ? null : __rt.cljGet(meta, __rt.cljSymbol(name), null);
+    return __rt.cljTruth(f) ? f : null;
   };
   const method = (key, name, arities, viaMetadata) => {
     const ts = arities.map(n => methodTable(key, n));
@@ -264,7 +265,8 @@ const native = (() => {
     isSet:x=>__rt.formKind(val(x))==='set',
     isNil:x=>val(x)==null, not:x=>!truth(x), boolean:truth,
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
-    name:x=>__rt.formName(val(x)), namespace:x=>__rt.formNamespace(val(x)),
+    name:x=>{if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
+    namespace:x=>{if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support namespace: '+__rt.formName(val(x)));return __rt.formNamespace(val(x));},
     inc:x=>val(x)+1, dec:x=>val(x)-1, multiply:(...xs)=>xs.reduce((a,b)=>a*val(b),1),
     less:(...xs)=>chain(xs,(a,b)=>a<b), greater:(...xs)=>chain(xs,(a,b)=>a>b), lessEqual:(...xs)=>chain(xs,(a,b)=>a<=b), greaterEqual:(...xs)=>chain(xs,(a,b)=>a>=b),
     str:(...xs)=>xs.map(x=>{x=val(x);if(x==null)return '';if(__rt.formKind(x)!==null)throw new Error('unsupported operation: native macro runtime str of a native form');return String(x);}).join(''),
