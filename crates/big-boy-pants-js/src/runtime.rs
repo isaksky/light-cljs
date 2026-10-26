@@ -338,6 +338,18 @@ impl Runtime {
         self.0.heap.stats()
     }
 
+    /// Whether a [`HeapPolicy::hard_limit_bytes`](crate::HeapPolicy::hard_limit_bytes)
+    /// denial happened and no collection since has left an eighth of the
+    /// limit free. Every run slice then begins with a collection; an embedder
+    /// about to allocate in a host scope outside any run (importing values,
+    /// building a request) can do the same with
+    /// [`Runtime::request_collection`], since the garbage a task released
+    /// after catching its denial is freed only by a later collection
+    /// (`docs/architecture.md`, "Byte accounting"). One relaxed atomic load.
+    pub fn byte_starved(&self) -> bool {
+        self.0.heap.byte_starved()
+    }
+
     /// A read-only snapshot of the object table: live objects by kind and
     /// the shallow bytes the table owns ([`HeapUsage`], whose docs say what
     /// is excluded). Walks every slot under the object-table lock: for tests and

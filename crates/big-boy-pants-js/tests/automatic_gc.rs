@@ -313,6 +313,35 @@ fn public_byte_limit_denial_is_catchable_and_the_runtime_recovers() {
     }
 }
 
+/// The collection a denial requests runs at the handler's first
+/// instruction, before it drops anything; a host scope opened between runs
+/// sees the released data only after a later collection, which
+/// `byte_starved` tells the embedder to request.
+#[test]
+fn byte_starved_tells_a_host_scope_to_collect_what_a_handler_released() {
+    let (rt, limit) = with_headroom(2 * 1024 * 1024);
+    assert!(!rt.byte_starved());
+    let code = compile_function(
+        "function f() { let kept = []; try { for (;;) kept.push({a: 1, b: 2}); } catch (e) { kept = null; return e === 'heap byte limit exceeded'; } }",
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let RunOutcome::Complete(result) = task.run_with(Budget::UNLIMITED, &mut Effectless).unwrap()
+    else {
+        panic!("the denial is caught");
+    };
+    assert_eq!(result.view(), ValueView::Bool(true));
+    drop((result, task));
+    assert!(rt.byte_starved());
+    // A quarter of the limit: two bytes per code unit.
+    let large = || Primitive::string(&"x".repeat(limit / 8));
+    assert!(rt.try_root(large()).is_none(), "{:?}", rt.heap_stats());
+    rt.request_collection().unwrap();
+    assert!(!rt.byte_starved(), "{:?}", rt.heap_stats());
+    assert!(rt.try_root(large()).is_some(), "{:?}", rt.heap_stats());
+    assert!(rt.heap_stats().peak_managed_bytes <= limit);
+}
+
 #[test]
 fn retained_key_snapshots_and_intl_buffers_are_charged() {
     let (rt, limit) = with_headroom(4 * 1024 * 1024);

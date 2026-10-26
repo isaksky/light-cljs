@@ -295,7 +295,12 @@ or native-step boundary. Allocation never parks, so there is no last-resort
 collection at the allocation itself: a denial instead requests a collection at
 the next safe boundary (where a handler may already have released data), and
 until a collection leaves an eighth of the limit free, every run slice begins
-with one, so a task started after others released their data succeeds. Between
+with one, so a task started after others released their data succeeds. The
+collection a denial requests usually runs before its handler has released
+anything, so data a handler drops is reclaimed only by such a later
+collection; `Runtime::byte_starved` lets an embedder that allocates in host
+scopes between runs request one first, as light-cljs's native macro evaluator
+does. Between
 denials, collections are also requested once the bytes admitted since the last
 collection exceed half the live bytes (at least 64 KiB), capped at half the
 remaining headroom. The limit includes unswept garbage and the realm.
