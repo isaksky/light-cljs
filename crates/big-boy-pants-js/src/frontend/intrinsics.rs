@@ -258,6 +258,7 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::CljReduced),
     form_op(FormOp::CljIsReduced),
     form_op(FormOp::CljUnreduced),
+    form_op(FormOp::CljIsEditable),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {

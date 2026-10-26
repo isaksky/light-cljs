@@ -68,7 +68,7 @@ application JavaScript as QuickJS (`--no-default-features --features
 bbp-macros,quickjs --test bbp_macros`). The table covers grouping, completion
 flushing, nil and empty inputs, repeated and interleaved reductions, callback
 and callable-getter effect order, reduced termination and constructor/reducer
-arities. The `into` target table checks vector, list, nil, map and set targets,
+arities. The `into` target table checks vector, map entry, list, nil, map and set targets,
 including reducer initialization and variadic calls for noneditable targets;
 sorted map/set rows establish the legacy contract and check the native
 unsupported error. A published composed factory is consumed at one, two and
@@ -177,7 +177,7 @@ One-argument `map`, `filter`, `mapcat` and `partition-by` construct native
 transducers (light-cljs-507), and their collection overloads remain lazy.
 `comp` combines them, `into` supports zero through three arguments, and
 `transduce` and `completing` supply initialization and completion. Three-argument
-`into` supplies `conj` to noneditable targets (including list and nil), retaining
+`into` supplies `conj` to noneditable targets (including map entry, list and nil), retaining
 its zero-argument initialization and variadic arities; native vector, map and
 set targets use the legacy step/completion-only adapter. Sorted forms remain
 unsupported. A

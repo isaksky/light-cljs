@@ -1500,11 +1500,13 @@ pub enum FormOp {
     CljIsReduced = 62,
     /// v → a marker's value, or v itself (`cljUnreduced`).
     CljUnreduced = 63,
+    /// v → whether it is a builtin editable collection (`cljIsEditable`).
+    CljIsEditable = 64,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 64] = [
+    pub const ALL: [FormOp; 65] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1569,6 +1571,7 @@ impl FormOp {
         FormOp::CljReduced,
         FormOp::CljIsReduced,
         FormOp::CljUnreduced,
+        FormOp::CljIsEditable,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1593,6 +1596,7 @@ impl FormOp {
             | FormOp::CljReduced
             | FormOp::CljIsReduced
             | FormOp::CljUnreduced
+            | FormOp::CljIsEditable
             | FormOp::CljCount
             | FormOp::CljSeq
             | FormOp::CljFirst
@@ -1712,6 +1716,7 @@ impl FormOp {
             FormOp::CljReduced => "cljReduced",
             FormOp::CljIsReduced => "cljIsReduced",
             FormOp::CljUnreduced => "cljUnreduced",
+            FormOp::CljIsEditable => "cljIsEditable",
             FormOp::CljInvoke => "cljInvoke",
         }
     }

@@ -812,6 +812,35 @@ fn scalar_predicates_and_callable_collections_preserve_occurrences() {
 }
 
 #[test]
+fn editable_collection_test_preserves_map_entry_and_occurrence_distinctions() {
+    let rt = Runtime::new();
+    let entry = call(
+        &rt,
+        "function entry() { return __rt.cljFirst(__rt.cljSeq(__rt.formMap('a', 1))); }",
+        &[],
+    );
+    let occurrence = rt.scope(|s| {
+        let entry = s.local(&entry).unwrap();
+        let occurrence = s.new_occurrence(entry, at(3, 4)).unwrap();
+        s.persist(occurrence)
+    });
+    let result = call(
+        &rt,
+        r#"function probe(entry, occurrence) {
+        const normalized = __rt.cljWithMeta(entry, null);
+        const lazy = __rt.lazySeq(() => { throw new Error('must not realize'); });
+        return !__rt.cljIsEditable(entry) && !__rt.cljIsEditable(occurrence) &&
+            __rt.cljIsEditable(normalized) && __rt.cljIsEditable(__rt.formVector()) &&
+            __rt.cljIsEditable(__rt.formMap()) && __rt.cljIsEditable(__rt.formSet()) &&
+            !__rt.cljIsEditable(__rt.formList()) && !__rt.cljIsEditable(null) &&
+            !__rt.cljIsEditable(lazy);
+    }"#,
+        &[&entry, &occurrence],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
 fn reduced_markers_preserve_payload_identity_and_trace_it_through_collection() {
     let rt = Runtime::new();
     let (payload, weak) = rt.scope(|s| {

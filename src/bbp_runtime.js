@@ -625,8 +625,7 @@ const native = (() => {
       // Legacy editable targets use a step/completion adapter. Other targets
       // receive conj itself, whose initialization and variadic arities a
       // custom transducer may call even though transduce has an explicit init.
-      const kind = __rt.formKind(val(a[0]));
-      const rf = kind === 'vector' || kind === 'map' || kind === 'set' ? intoReducer : core.conj;
+      const rf = __rt.cljIsEditable(a[0]) ? intoReducer : core.conj;
       return transduce(a[1], rf, a[0], a[2]);
     },
     every:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s))if(!truth(invoke(f,__rt.cljFirst(s))))return false;return true;},

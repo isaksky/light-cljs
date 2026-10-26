@@ -2552,6 +2552,14 @@ fn native_transducer_call_shapes_match_legacy() {
     // variadic arities. A transducer may inspect those arities itself.
     for (target, empty, input, result, variadic, editable) in [
         ("[]", "[]", "[1 2]", "[1 2]", "", true),
+        (
+            "(first {:a 1})",
+            "[:a 1]",
+            "[1 2]",
+            "[:a 1 1 2]",
+            "[:a 1 1 1 2 2]",
+            false,
+        ),
         ("'(9)", "(9)", "[1 2]", "(2 1 9)", "(2 2 1 1 9)", false),
         ("'()", "()", "[1 2]", "(2 1)", "(2 2 1 1)", false),
         ("nil", "nil", "[1 2]", "(2 1)", "(2 2 1 1)", false),

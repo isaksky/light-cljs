@@ -174,6 +174,8 @@
 //! payload is traced and publication-checked, and its allocation uses the
 //! ordinary persistent-form byte budget. Reduction callbacks and mutable
 //! transducer state run on the task VM; these intrinsics run no user code.
+//! `cljIsEditable(v)` tests the builtin editable collection kinds without
+//! allocating or realizing a sequence; map entries and records are excluded.
 //!
 //! Updates keep the input's metadata and follow the identity rules of
 //! [`crate::collections::form`]. A `formEquals`, `formHash` or structural
@@ -465,6 +467,7 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::CljReduced => Some(form::new_reduced(heap, a(0))?),
         FormOp::CljIsReduced => Some(Value::Bool(clj::is_reduced(heap, &a(0)))),
         FormOp::CljUnreduced => Some(clj::unreduced(heap, &a(0))),
+        FormOp::CljIsEditable => Some(Value::Bool(clj::is_editable(heap, &a(0)))),
         FormOp::CljInvoke => Some(clj::invoke(
             heap,
             &a(0),
@@ -598,6 +601,7 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         | FormOp::CljReduced
         | FormOp::CljIsReduced
         | FormOp::CljUnreduced
+        | FormOp::CljIsEditable
         | FormOp::CljInvoke
         | FormOp::CljCount
         | FormOp::CljSeq

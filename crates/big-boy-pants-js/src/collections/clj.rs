@@ -315,6 +315,17 @@ pub(crate) fn is_false(heap: &Heap, v: &Value) -> bool {
     matches!(form::unwrap(heap, v.clone()), Value::Bool(false))
 }
 
+/// Builtin editable collections used by `into`'s reducer selection. A map
+/// entry has a vector body but, like a record, is not editable. Read through
+/// occurrences without realizing sequences or invoking user code.
+pub(crate) fn is_editable(heap: &Heap, v: &Value) -> bool {
+    match shape(heap, v) {
+        Shape::Form(FormKind::Vector, f) => !f.is_map_entry(),
+        Shape::Form(FormKind::Map | FormKind::Set, _) => true,
+        _ => false,
+    }
+}
+
 /// `reduced?`, transparent to input occurrences.
 pub(crate) fn is_reduced(heap: &Heap, v: &Value) -> bool {
     form::kind(heap, &form::unwrap(heap, v.clone())) == Some(FormKind::Reduced)
