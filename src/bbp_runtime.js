@@ -319,7 +319,11 @@ const native = (() => {
   const arity = n => { throw new Error('Invalid arity: ' + n); };
   const seq = x => __rt.cljSeq(x);
   const get = (m,k,n=null) => __rt.cljGet(m,k,n);
-  const invoke = (f,...args) => typeof f === 'function' ? f(...args) : __rt.formKind(val(f))==='keyword' ? get(args[0],f,args.length>1?args[1]:null) : get(f,args[0],args.length>1?args[1]:null);
+  const invoke = (f,...args) => {
+    if(typeof f==='function')return f(...args);
+    if(__rt.formKind(val(f))!=='vector'&&(args.length<1||args.length>2))arity(args.length);
+    return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null);
+  };
   const unsupported = name => function(){throw new Error('unsupported operation: native macro runtime '+name);};
   // A comparison of adjacent operands, true for one; as the legacy runtimes.
   const chain = (xs, test) => { if (xs.length === 0) arity(0); for (let i = 1; i < xs.length; i++) if (!test(val(xs[i - 1]), val(xs[i]))) return false; return true; };
@@ -506,7 +510,7 @@ const native = (() => {
     isKeyword:x=>__rt.formKind(val(x))==='keyword', isSymbol:x=>__rt.formKind(val(x))==='symbol',
     isVector:x=>__rt.formKind(val(x))==='vector', isMap:x=>{const k=__rt.formKind(val(x));return k==='map'||k==='record';}, isSeq:x=>{const k=__rt.formKind(val(x));return k==='list'||k==='lazy-seq'||k==='cons';},
     isSet:x=>__rt.formKind(val(x))==='set',
-    isNil:x=>val(x)==null, not:x=>!truth(x), boolean:truth,
+    isNil:x=>val(x)==null, isSome:x=>val(x)!=null, isFalse:x=>__rt.cljIsFalse(x), not:x=>!truth(x), boolean:truth,
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
     name:x=>{if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
     namespace:x=>{if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support namespace: '+__rt.formName(val(x)));return __rt.formNamespace(val(x));},
@@ -556,11 +560,46 @@ const native = (() => {
     // Small helpers the sequence functions are used with.
     isEven:n=>{n=val(n);if(!Number.isInteger(n))throw new Error('Argument must be an integer: '+n);return (n&1)===0;},
     isOdd:n=>{n=val(n);if(!Number.isInteger(n))throw new Error('Argument must be an integer: '+n);return (n&1)!==0;},
-    isZero:n=>val(n)===0, isPositive:n=>val(n)>0, isNegative:n=>val(n)<0,
-    comp:(...fs)=>fs.length===0?(x=>x):(...a)=>{let r=invoke(fs[fs.length-1],...a);for(let i=fs.length-2;i>=0;i--)r=invoke(fs[i],r);return r;},
-    partial:(f,...p)=>(...a)=>invoke(f,...p,...a),
+    isZero:n=>__rt.cljIsZero(n), isPositive:n=>val(n)>0, isNegative:n=>val(n)<0,
+    // Keep the pure constructors in emitter.rs equivalent: the returned
+    // closures capture native vectors, so a composed helper can publish.
+    comp:(...fs)=>{
+      const n=fs.length;
+      if(n===0)return core.identity;
+      if(n===1)return fs[0];
+      const functions=vector(fs);
+      return (...a)=>{let r=invoke(__rt.formNth(functions,n-1),...a);for(let i=n-2;i>=0;i--)r=invoke(__rt.formNth(functions,i),r);return r;};
+    },
+    partial:(f,...p)=>{
+      if(p.length===0)return f;
+      const prefix=vector(p);
+      return (...a)=>{const args=arr(prefix);return invoke(f,...args,...a);};
+    },
     complement:f=>(...a)=>!truth(invoke(f,...a)),
     constantly:x=>()=>x,
+    // `exists?` demands a definition's value, while `resolve` only tests
+    // whether its binding was registered (a declaration counts).
+    nativeRootExists:(name,binding)=>{
+      const roots=globalThis.__lightCompilerRoots;
+      if(!(name in roots))return false;
+      if(binding)return true;
+      try{return roots[name]!==undefined;}
+      catch(e){if(e instanceof Error&&e.message==='unavailable definition: '+name)return false;throw e;}
+    },
+    juxt:(...fs)=>{
+      const functions=fs.length===0?__rt.formVector(undefined,undefined,undefined):vector(fs);
+      return (...a)=>{let result=__rt.formVector();for(let i=0,n=__rt.formCount(functions);i<n;i++)result=__rt.formConj(result,invoke(__rt.formNth(functions,i),...a));return result;};
+    },
+    fnil:(f,...ds)=>{
+      const n=ds.length;
+      if(n<1||n>3)arity(n+1);
+      const defaults=vector(ds);
+      return (...a)=>{
+        if(a.length<(n===1?1:2))a.length=3;
+        for(let i=0;i<n&&i<a.length;i++)if(val(a[i])==null)a[i]=__rt.formNth(defaults,i);
+        return invoke(f,...a);
+      };
+    },
     registerReaderNamespace:()=>null, addReaderDefinitions:()=>null, setReaderNamespace:()=>null,
     PersistentVector:{EMPTY:__rt.formVector()}, PersistentArrayMap:{EMPTY:__rt.formMap()}, List:{EMPTY:__rt.formList()},
     PersistentHashSet:{EMPTY:__rt.formSet()},

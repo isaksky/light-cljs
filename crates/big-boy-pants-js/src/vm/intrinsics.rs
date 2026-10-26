@@ -453,6 +453,9 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
     let a = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     Ok(match op {
         FormOp::CljTruth => Some(Value::Bool(clj::truth(heap, &a(0)))),
+        FormOp::CljIsZero => Some(Value::Bool(clj::is_zero(heap, &a(0)))),
+        FormOp::CljIsFalse => Some(Value::Bool(clj::is_false(heap, &a(0)))),
+        FormOp::CljInvoke => Some(clj::invoke(heap, &a(0), &a(1), &a(2))?),
         FormOp::CljCount => Some(clj::count(heap, &a(0))?),
         FormOp::CljSeq => Some(clj::seq(heap, &a(0))?),
         FormOp::CljFirst => Some(clj::first(heap, &a(0))?),
@@ -574,6 +577,9 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         }
         // Dispatched by `form_op` before reaching here.
         FormOp::CljTruth
+        | FormOp::CljIsZero
+        | FormOp::CljIsFalse
+        | FormOp::CljInvoke
         | FormOp::CljCount
         | FormOp::CljSeq
         | FormOp::CljFirst

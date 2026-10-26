@@ -767,6 +767,40 @@ fn sets_and_clojure_core_operations_follow_the_runtime() {
     );
 }
 
+#[test]
+fn scalar_predicates_and_callable_collections_preserve_occurrences() {
+    let rt = Runtime::new();
+    let [zero, no] = rt.scope(|s| {
+        let zero = s.primitive(Primitive::Number(-0.0));
+        let no = s.primitive(Primitive::Bool(false));
+        [zero, no].map(|v| {
+            let occurrence = s.new_occurrence(v, at(1, 1)).unwrap();
+            s.persist(occurrence)
+        })
+    });
+    let result = call(
+        &rt,
+        r#"function check(zero, no) {
+        if (!__rt.cljIsZero(zero) || !__rt.cljIsZero(0) || __rt.cljIsZero('0') ||
+            __rt.cljIsZero(null) || __rt.cljIsZero(false) || __rt.cljIsZero(NaN) ||
+            !__rt.cljIsFalse(no) || __rt.cljIsFalse(0) || __rt.cljIsFalse(null)) throw new Error('predicates');
+        const k = __rt.formKeyword(null, 'x'), sym = __rt.formSymbol('n', 'x');
+        const m = __rt.formMap(k, no, sym, zero), v = __rt.formVector(no, zero);
+        if (__rt.cljInvoke(k, m, null) !== no || __rt.cljInvoke(sym, m, null) !== zero ||
+            __rt.cljInvoke(m, sym, null) !== zero || __rt.cljInvoke(v, 0, null) !== no ||
+            __rt.cljInvoke(__rt.formSet(no), false, null) !== no ||
+            __rt.cljInvoke(m, 'absent', zero) !== zero) throw new Error('lookup identity');
+        let keyError, boundsError, callableError;
+        try { __rt.cljInvoke(v, '0', null); } catch (e) { keyError = e.message; }
+        try { __rt.cljInvoke(v, 2, 'ignored'); } catch (e) { boundsError = e.message; }
+        try { __rt.cljInvoke(null, 0, null); } catch (e) { callableError = e instanceof TypeError; }
+        return keyError === 'Key must be integer' && boundsError === 'Index out of bounds' && callableError;
+    }"#,
+        &[&zero, &no],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
 /// Form operations reject other values with a `Collection` error naming the
 /// expected and found kinds; the SameValueZero collections keep their own
 /// identity-keyed contract and are not forms.

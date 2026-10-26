@@ -1365,6 +1365,10 @@ const LAZY_CONSTANT_NODES: u32 = 1024;
 /// those constructors and that they check what the inline forms check.)
 const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
 
+/// Native callable collections keep form identity; functions run on this task
+/// and can suspend. This expression captures no task-owned runtime object.
+const NATIVE_INVOKE: &str = "((f, ...a) => { if (typeof f === 'function') return f(...a); if (__rt.formKind(__rt.formValue(f)) !== 'vector' && (a.length < 1 || a.length > 2)) throw new Error('Invalid arity: ' + a.length); return __rt.cljInvoke(f, a[0], a.length > 1 ? a[1] : null); })";
+
 /// What the pool knows about an expression (indexed by `ExprId`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConstantClass {
@@ -3602,6 +3606,20 @@ impl<'a> Emitter<'a> {
             ExprKind::CoreFn(core) if !self.replaced(core.runtime_name()) => core,
             _ => return false,
         };
+        if core == C::Comp && args.is_empty() {
+            self.rt(RuntimeName::core("identity"));
+            return true;
+        }
+        if matches!(core, C::Identity | C::Comp | C::Partial) && args.len() == 1 {
+            self.value(args[0]);
+            return true;
+        }
+        if self.native_combinator(core) {
+            self.output.push('(');
+            self.arguments(args);
+            self.output.push(')');
+            return true;
+        }
         let kind_test = |kind: &'static str| -> (&'static str, &'static str, bool, &'static str) {
             ("(__rt.formKind(", "formValue", false, kind)
         };
@@ -3639,7 +3657,10 @@ impl<'a> Emitter<'a> {
             (C::Concat, 0) => ("", "formList", false, ""),
             (C::Not, 1) => ("(!", "cljTruth", false, ")"),
             (C::Boolean, 1) => ("", "cljTruth", false, ""),
+            (C::IsZero, 1) => ("", "cljIsZero", false, ""),
+            (C::IsFalse, 1) => ("", "cljIsFalse", false, ""),
             (C::IsNil, 1) => ("(", "formValue", false, " == null)"),
+            (C::IsSome, 1) => ("(", "formValue", false, " != null)"),
             (C::IsEmpty, 1) => ("(", "cljSeq", false, " === null)"),
             (C::IsKeyword, 1) => kind_test(") === \"keyword\")"),
             (C::IsSymbol, 1) => kind_test(") === \"symbol\")"),
@@ -3733,6 +3754,76 @@ impl<'a> Emitter<'a> {
         }
         self.output.push(')');
         self.output.push_str(after);
+        true
+    }
+
+    /// Pure function constructors: their closures capture native persistent
+    /// vectors, never the rest arrays or the task's runtime object. Keep the
+    /// core-value adapters in `bbp_runtime.js` equivalent. Calls inside these
+    /// closures still run on the task VM and may park at a helper dependency.
+    fn native_combinator(&mut self, core: crate::CoreFnId) -> bool {
+        use crate::CoreFnId as C;
+        let constructor = match core {
+            C::Identity => "x => x",
+            C::Constantly => "x => (...a) => x",
+            C::Complement => "f => (...a) => !__rt.cljTruth(invoke(f, ...a))",
+            C::Comp => {
+                r#"(...fs) => {
+                const n = fs.length;
+                if (n === 0) return x => x;
+                if (n === 1) return fs[0];
+                const functions = fs.reduce((v, f) => __rt.formConj(v, f), __rt.formVector());
+                return (...a) => {
+                    let r = invoke(__rt.formNth(functions, n - 1), ...a);
+                    for (let i = n - 2; i >= 0; i--) r = invoke(__rt.formNth(functions, i), r);
+                    return r;
+                };
+            }"#
+            }
+            C::Partial => {
+                r#"(f, ...p) => {
+                if (p.length === 0) return f;
+                const prefix = p.reduce((v, x) => __rt.formConj(v, x), __rt.formVector());
+                return (...a) => {
+                    const args = [];
+                    for (let i = 0, n = __rt.formCount(prefix); i < n; i++) args.push(__rt.formNth(prefix, i));
+                    return invoke(f, ...args, ...a);
+                };
+            }"#
+            }
+            C::Juxt => {
+                r#"(...fs) => {
+                const functions = fs.length === 0 ? __rt.formVector(undefined, undefined, undefined) : fs.reduce((v, f) => __rt.formConj(v, f), __rt.formVector());
+                return (...a) => {
+                    let result = __rt.formVector();
+                    for (let i = 0, n = __rt.formCount(functions); i < n; i++) result = __rt.formConj(result, invoke(__rt.formNth(functions, i), ...a));
+                    return result;
+                };
+            }"#
+            }
+            C::Fnil => {
+                r#"(f, ...ds) => {
+                const n = ds.length;
+                if (n < 1 || n > 3) throw new Error('Invalid arity: ' + (n + 1));
+                const defaults = ds.reduce((v, x) => __rt.formConj(v, x), __rt.formVector());
+                return (...a) => {
+                    // The legacy callable's missing fixed arity takes its
+                    // variadic branch with three undefined operands.
+                    if (a.length < (n === 1 ? 1 : 2)) a.length = 3;
+                    for (let i = 0; i < n && i < a.length; i++) if (__rt.formValue(a[i]) == null) a[i] = __rt.formNth(defaults, i);
+                    return invoke(f, ...a);
+                };
+            }"#
+            }
+            _ => return false,
+        };
+        // This small invocation adapter has the runtime's callable-collection
+        // semantics. It captures no runtime object and preserves occurrences.
+        self.output.push_str("((invoke) => (");
+        self.output.push_str(constructor);
+        self.output.push_str("))(");
+        self.output.push_str(NATIVE_INVOKE);
+        self.output.push(')');
         true
     }
 
@@ -7563,6 +7654,10 @@ impl<'a> Emitter<'a> {
                 symbol,
                 metadata,
             } => {
+                if self.native_forms {
+                    self.output.push_str("(() => { throw new Error('unsupported operation: native macro runtime Var reflection'); })()");
+                    return;
+                }
                 self.rt(RuntimeName::export(if *definition {
                     "definitionVar"
                 } else {
@@ -7661,6 +7756,19 @@ impl<'a> Emitter<'a> {
                     *value
                 };
                 if self.compiler_binding(value) {
+                    if self.native_forms {
+                        self.rt(RuntimeName::core("nativeRootExists"));
+                        self.output.push('(');
+                        self.binding_name(value);
+                        self.output.push_str(
+                            if matches!(self.program.exprs[id.0].kind, ExprKind::BindingExists(_)) {
+                                ", true)"
+                            } else {
+                                ", false)"
+                            },
+                        );
+                        return;
+                    }
                     self.output.push_str(
                         if matches!(self.program.exprs[id.0].kind, ExprKind::BindingExists(_)) {
                             "globalThis.__lightHasCompilerRoot("
@@ -8065,8 +8173,22 @@ impl<'a> Emitter<'a> {
                     self.output.push(')');
                     return;
                 }
-                self.output.push('(');
                 let specialized = self.specialized_calls.and_then(|calls| calls.get(&id));
+                if self.native_forms
+                    && specialized.is_none()
+                    && !matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_))
+                {
+                    self.output.push_str(NATIVE_INVOKE);
+                    self.output.push('(');
+                    self.value(*callee);
+                    if !args.is_empty() {
+                        self.output.push_str(", ");
+                    }
+                    self.arguments(args);
+                    self.output.push(')');
+                    return;
+                }
+                self.output.push('(');
                 let cell = match self.program.exprs[callee.0].kind {
                     ExprKind::CoreFn(core) if specialized.is_none() => {
                         self.chunks.is_some() && self.replaced(core.runtime_name())

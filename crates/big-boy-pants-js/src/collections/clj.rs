@@ -300,6 +300,16 @@ pub(crate) fn truth(heap: &Heap, v: &Value) -> bool {
     )
 }
 
+/// `zero?`: strict numeric zero, including negative zero; occurrences unwrap.
+pub(crate) fn is_zero(heap: &Heap, v: &Value) -> bool {
+    matches!(form::unwrap(heap, v.clone()), Value::Number(n) if n == 0.0)
+}
+
+/// `false?`: only boolean false, through an input occurrence.
+pub(crate) fn is_false(heap: &Heap, v: &Value) -> bool {
+    matches!(form::unwrap(heap, v.clone()), Value::Bool(false))
+}
+
 /// `count`: elements, entries, members or UTF-16 code units; `nil` is 0.
 /// A lazy or cons sequence is realized to its end.
 pub(crate) fn count(heap: &Heap, v: &Value) -> Result<Value> {
@@ -843,6 +853,27 @@ pub(crate) fn get(heap: &Heap, coll: &Value, key: &Value, default: &Value) -> Re
         Shape::Nil | Shape::Other(_) => None,
     }
     .unwrap_or_else(|| default.clone()))
+}
+
+/// Invoke a native callable collection. Functions are called by the VM-side
+/// JavaScript adapter instead. A vector's call ignores a default and throws
+/// outside its bounds, as the legacy runtime's fixed `call` method does.
+pub(crate) fn invoke(heap: &Heap, f: &Value, arg: &Value, default: &Value) -> Result<Value> {
+    let shape = shape(heap, f);
+    match &shape {
+        Shape::Form(FormKind::Keyword | FormKind::Symbol, _) => get(heap, arg, f, default),
+        Shape::Form(FormKind::Map | FormKind::Set, _) => get(heap, f, arg, default),
+        Shape::Form(FormKind::Vector, _) => {
+            if !matches!(form::unwrap(heap, arg.clone()), Value::Number(_)) {
+                return Err(CljError::Operands("Key must be integer"));
+            }
+            nth(heap, f, arg, None).map_err(|e| match e {
+                CljError::OutOfBounds => CljError::Operands("Index out of bounds"),
+                other => other,
+            })
+        }
+        _ => Err(unsupported("invoke", &shape)),
+    }
 }
 
 /// `contains?`: a map key, a set member, or a vector or string index.

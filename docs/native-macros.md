@@ -61,6 +61,47 @@ engine source, and includes preloaded helper source.
 
 ## Supported boundary
 
+### Penpot reproduction (light-cljs-506, 2026-10-26)
+
+On macOS arm64, Rust 1.99.1, the native combinator fixtures produce the same
+application JavaScript as QuickJS (`--no-default-features --features
+bbp-macros,quickjs --test bbp_macros`). Six combinator helper values each
+initialize once and publish at one, two and four workers, with identical
+JavaScript at each worker count and in QuickJS.
+
+Rebuild the native-only compiler before running the port; feature-variant test
+builds overwrite the same CLI binary. From the repository root, with the existing
+Penpot port at `research/penpot-light`:
+
+```sh
+CARGO_BUILD_JOBS=3 cargo build --locked --no-default-features --features bbp-macros
+target/debug/light-cljs --compile --esm --entry app.render \
+  --source-root research/penpot-light/frontend/src \
+  --source-root research/penpot-light/common/src \
+  --source-root research/penpot-light/vendor \
+  --source-root research/penpot-light/generated \
+  --source-root research/penpot-light/shims \
+  --optimize none --jobs 1 --no-cache --stats \
+  --macro-expansions 100000000 --macro-nodes 4000000000 \
+  --macro-timeout-ms 3600000 --macro-memory-limit 4000000000 \
+  --macro-poll-budget 1000000000000
+```
+
+Both this command and the same command with `--entry app.main` exit 1, with
+this exact first error (the read-only port's canonical source path):
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:293:15: macro expansion: while expanding unsafe-concat: /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:293:15: macro cuerdas.core/unsafe-concat: big-boy-pants-js: Error: unsupported operation: native macro runtime core.partitionBy; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/cuerdas/core.cljc:87:1 (bytes 8532..8571)
+```
+
+The former `core.comp` error is gone. The remaining failure is in the same
+macro's transducer construction: `(partition-by string?)`, followed by
+one-argument `filter` and `mapcat` and three-argument `into`. Transducers remain
+outside this backend's supported sequence boundary; light-cljs-507 owns this
+next gap. Neither Penpot entry completes natively yet.
+
+### Native forms
+
 This is a finite-form integration, not backend parity. Lists, vectors, maps,
 sets, keywords, symbols, scalar occurrences, metadata, construction, lookup,
 basic finite sequence operations, equality, hashing, arithmetic
@@ -112,6 +153,35 @@ sequence they read through it (see "Lazy sequences"). `(lazy-seq …)`,
 `chunk-cons`, `chunk-buffer`, `chunk-append`, `chunk`, `-nth`, `<`, `<=`, `>`
 and `>=` of two values and `inc` and `dec` are lowered too, so that the helper
 functions `for` and `doseq` expand into need no runtime object.
+
+`comp`, `partial`, `juxt`, `complement`, `constantly`, `identity` and `fnil`
+also have native compile-time lowering (light-cljs-506). Their returned
+functions run on the task VM, including suspension on a demanded helper;
+captured function lists, partial arguments and defaults are native persistent
+vectors. They can therefore publish when their captured values can. The core
+table supplies equivalent constructors when passed as values. `(comp)` returns
+the core identity function, and `(comp f)` and `(partial f)` return `f` itself.
+Invocation of native keywords, symbols, maps, sets and vectors uses
+`__rt.cljInvoke`; collection lookups retain input occurrences. `fnil` replaces
+nil and undefined occurrences while keeping false, zero and empty strings.
+Its short calls preserve the legacy callable's variadic fallback behavior.
+
+`zero?` and `false?` use occurrence-transparent engine predicates, directly or
+as core function values; `some?` unwraps its input. `exists?` supports registered
+definitions, declarations, host paths and expressions. Probing a declaration
+does not demand its unavailable value; a definition is demanded and its
+initializer's error propagates. Nil and false definitions exist, an undefined
+one does not. The differential fixtures include the unchanged
+`MUTUAL_RECURSION` source from `tests/compiler/macros.rs`.
+
+`resolve` already has analyzer-side namespace lookup. An absent binding returns
+nil, but a present one needs the Var runtime and reports
+`unsupported operation: native macro runtime Var reflection`. Completing this
+is larger than a namespace-lookup adapter: native Vars need identity by symbol,
+invocation, dereference, equality/hash, metadata, and generation-aware deferred
+`:test` metadata without demanding an initializer. `var?` is also unsupported;
+the verbatim `DEFONCE_PENDING` fixture in `tests/compiler/macros.rs` therefore
+still stops there. This work does not claim that fixture passes natively.
 
 Lowering is what lets helper values publish: a function whose body uses only
 lowered operations, literals and other compiler roots captures no task-owned

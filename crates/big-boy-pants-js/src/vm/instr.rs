@@ -1488,11 +1488,17 @@ pub enum FormOp {
     CljRealizeAll = 56,
     /// chunk rest → a finite range's chunked sequence (`cljRangeCons`).
     CljRangeCons = 57,
+    /// v → strict numeric zero test (`cljIsZero`).
+    CljIsZero = 58,
+    /// v → strict boolean false test (`cljIsFalse`).
+    CljIsFalse = 59,
+    /// callable collection arg default → lookup result (`cljInvoke`).
+    CljInvoke = 60,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 58] = [
+    pub const ALL: [FormOp; 61] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1551,6 +1557,9 @@ impl FormOp {
         FormOp::CljChunkCons,
         FormOp::CljRealizeAll,
         FormOp::CljRangeCons,
+        FormOp::CljIsZero,
+        FormOp::CljIsFalse,
+        FormOp::CljInvoke,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1570,6 +1579,8 @@ impl FormOp {
             | FormOp::Value
             | FormOp::Keys
             | FormOp::CljTruth
+            | FormOp::CljIsZero
+            | FormOp::CljIsFalse
             | FormOp::CljCount
             | FormOp::CljSeq
             | FormOp::CljFirst
@@ -1618,6 +1629,7 @@ impl FormOp {
             | FormOp::CljNthOr
             | FormOp::CljGet
             | FormOp::CljAssoc
+            | FormOp::CljInvoke
             | FormOp::StructType => 3,
         }
     }
@@ -1683,6 +1695,9 @@ impl FormOp {
             FormOp::CljChunkCons => "cljChunkCons",
             FormOp::CljRealizeAll => "cljRealizeAll",
             FormOp::CljRangeCons => "cljRangeCons",
+            FormOp::CljIsZero => "cljIsZero",
+            FormOp::CljIsFalse => "cljIsFalse",
+            FormOp::CljInvoke => "cljInvoke",
         }
     }
 }

@@ -1102,7 +1102,8 @@ fn assert_native_matches_legacy(source: &str, expected: &str) {
         .unwrap_or_else(|e| panic!("{source}: {e}"));
     let native = emit_js(&program);
     assert_eq!(program_output(&native), expected, "{source}");
-    assert_eq!(native, light_cljs::compile(source).unwrap(), "{source}");
+    let legacy = light_cljs::compile(source).unwrap_or_else(|error| panic!("{source}: {error}"));
+    assert_eq!(native, legacy, "{source}");
 }
 
 /// A macro-local JavaScript array `a` and `t`, which records its operand
@@ -1959,6 +1960,190 @@ fn an_earlier_unit_demanding_a_parked_initializer_lends_it_its_lane() {
         assert_eq!(build, reference, "seed {seed}");
         assert!(stats.lanes.inherited >= 1, "seed {seed}: {:?}", stats.lanes);
     }
+}
+
+/// Function combinators at compile time, including constructors passed as
+/// values, callable collections, input occurrences and variadic invocation.
+const COMBINATOR_FIXTURES: &[(&str, &str)] = &[
+    (
+        "(defmacro m [x] [((comp) x) ((comp inc) x) ((comp inc inc) x) \
+         ((comp inc inc inc inc) x) ((comp inc +) 1 2 3 4) ((comp vector +)) \
+         (identical? identity (comp))]) \
+         (js/console.log (pr-str (m 0)))",
+        "[0 1 2 4 11 [0] true]\n",
+    ),
+    (
+        "(defmacro m [] (let [f (fn [x] x)] [(identical? f (comp f)) (identical? f (partial f)) \
+         ((partial + 10)) ((partial + 10 20 30 40) 1 2 3 4) ((partial :x) {:x 42})])) \
+         (js/console.log (pr-str (m)))",
+        "[true true 10 110 42]\n",
+    ),
+    (
+        "(defmacro m [x] [(identity x) ((constantly x)) ((constantly x) 1 2 3 4) \
+         ((complement identity) x) ((complement (constantly 0))) ((complement +) 1 2 3 4)]) \
+         (js/console.log (pr-str (m false)) (pr-str (m nil)))",
+        "[false false false true false false] [nil nil nil true false false]\n",
+    ),
+    (
+        "(defmacro m [] [((juxt + vector)) ((juxt + vector) 1 2 3 4) \
+         ((juxt :x {:x :mapped} #{:x}) :x) ((juxt [:zero :one] {1 :mapped} #{1}) 1) \
+         ((juxt inc dec identity) 2)]) \
+         (js/console.log (pr-str (m)))",
+        "[[0 []] [10 [1 2 3 4]] [nil :mapped :x] [:one :mapped 1] [3 1 2]]\n",
+    ),
+    (
+        "(defmacro m [n f] [((fnil vector :a) n) ((fnil vector :a :b) n f) \
+         ((fnil vector :a :b :c) n n) ((fnil vector :a :b :c) n f n 4 5) \
+         ((fnil vector :a) 0 \"\" false nil)]) (js/console.log (pr-str (m nil false)))",
+        "[[:a] [:a false] [:a :b] [:a false :c 4 5] [0 \"\" false nil]]\n",
+    ),
+    (
+        "(defmacro m [] (let [c comp p partial j juxt n fnil k constantly o complement i identity] \
+         [((c inc +) 1 2) ((p vector :a :b) :c) ((j + vector) 1 2) ((n vector :x) nil) \
+         ((k false) 1) ((o i) nil)])) (js/console.log (pr-str (m)))",
+        "[4 [:a :b :c] [3 [1 2]] [:x] false true]\n",
+    ),
+    (
+        "(defmacro m [] (let [a (js/Array.) f (fn [x] (.push a 1) (inc x)) \
+         g (fn [& xs] (.push a 2) (apply + xs)) c (comp f g) j (juxt f f)] \
+         [(c 1 2) (j 3) (vec a)])) (js/console.log (pr-str (m)))",
+        "[4 [4 4] [2 1 1 1]]\n",
+    ),
+    (
+        "(defmacro m [] [((juxt inc dec identity (constantly :four)) 2) \
+         ((comp 'x identity) {'x 42}) ((partial 'x) {'x 43}) \
+         ((fnil vector :a :b :c) js/undefined nil false 4)]) \
+         (js/console.log (pr-str (m)))",
+        "[[3 1 2 :four] 42 43 [:a :b false 4]]\n",
+    ),
+    (
+        "(defmacro m [] (let [message (fn [e] (js* \"(typeof ~{} === 'string' ? ~{} : ~{}.message)\" e e e))] \
+         [(try (fnil vector) (catch :default e (message e))) \
+         (mapv nil? ((fnil vector :a))) \
+         (mapv nil? ((fnil vector :a :b) nil)) \
+         (try ((comp identity [:a]) :x) (catch :default e (message e)))])) \
+         (js/console.log (pr-str (m)))",
+        "[\"Invalid arity: 1\" [false true true] [false false true] \"Key must be integer\"]\n",
+    ),
+];
+
+#[test]
+fn function_combinators_match_the_legacy_compiler_and_run() {
+    for (source, expected) in COMBINATOR_FIXTURES {
+        assert_native_matches_legacy(source, expected);
+    }
+}
+
+#[test]
+fn combinator_helpers_publish_once_at_one_two_and_four_slots() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/combinators");
+    let mut expected_js = None;
+    for jobs in [1, 2, 4] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut stats = light_cljs::CompileStats::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "combinators.app",
+            std::slice::from_ref(&root),
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("jobs {jobs}: {error}"));
+        let js = emit_js(&program);
+        assert_eq!(
+            program_output(&js),
+            "[3 [:p 1] [2 0 1] [:a 1] false :v] [4 [:p 2] [3 1 2] [:a 2] false :v]\n"
+        );
+        assert_eq!(stats.native_helpers.compiled, 6, "jobs {jobs}");
+        assert_eq!(stats.native_helpers.published, 6, "jobs {jobs}");
+        assert_eq!(stats.native_helpers.per_task, 0, "jobs {jobs}");
+        if let Some(expected) = &expected_js {
+            assert_eq!(&js, expected, "jobs {jobs}");
+        } else {
+            expected_js = Some(js);
+        }
+        #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+        {
+            let mut legacy = MacroHost::new();
+            let program = light_cljs::compiler::analyze_namespace_entry(
+                "combinators.app",
+                std::slice::from_ref(&root),
+                &mut legacy,
+                Default::default(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(emit_js(&program), *expected_js.as_ref().unwrap());
+        }
+    }
+}
+
+#[test]
+fn native_scalar_predicates_and_binding_probes_match_legacy() {
+    for (source, expected) in [
+        (
+            "(defmacro m [z f n] (let [zero zero? no false?] \
+          [(zero? z) (zero z) (zero? \"0\") (zero? n) (false? f) (no f) (false? z) (false? n)])) \
+          (js/console.log (pr-str (m 0 false nil)))",
+            "[true true false false true true false false]\n",
+        ),
+        (
+            "(declare absent) (def n nil) (def f false) (def u js/undefined) \
+          (defmacro m [] [(exists? absent) (exists? n) (exists? f) (exists? u) \
+          (exists? unknown) (exists? js/noSuchGlobal.child) (exists? js/Math.max) \
+          (exists? (identity false)) (exists? (identity js/undefined))]) \
+          (js/console.log (pr-str (m)))",
+            "[false true true false false false true true false]\n",
+        ),
+        (
+            "(defmacro m [] (nil? (resolve 'absent))) (js/console.log (m))",
+            "true\n",
+        ),
+        (
+            "(def hits (atom 0)) (def value (do (swap! hits inc) 42)) \
+          (defmacro m [] [(exists? value) @hits (exists? value) @hits]) \
+          (js/console.log (pr-str (m)))",
+            "[true 1 true 1]\n",
+        ),
+    ] {
+        assert_native_matches_legacy(source, expected);
+    }
+}
+
+#[test]
+fn native_resolve_reports_the_missing_var_runtime() {
+    let source = "(declare absent) (defmacro m [] (resolve 'absent)) (m)";
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let error = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        error.contains("unsupported operation: native macro runtime Var reflection"),
+        "{error}"
+    );
+}
+
+#[test]
+fn native_helpers_use_zero_in_the_verbatim_mutual_recursion_fixture() {
+    // MUTUAL_RECURSION from tests/compiler/macros.rs, followed by an
+    // observable application of the same macro.
+    let source = r#"
+          (declare even-step odd-step)
+          (defn even-step [n] (if (zero? n) true (odd-step (dec n))))
+          (defn odd-step [n] (if (zero? n) false (even-step (dec n))))
+          (defmacro m [] (even-step 20))
+          (m)
+          (js/console.log (m))"#;
+    assert_native_matches_legacy(source, "true\n");
 }
 
 /// Macro code over lazy sequences, which the native unit runs on the

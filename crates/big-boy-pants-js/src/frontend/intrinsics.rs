@@ -252,6 +252,9 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::CljChunkCons),
     form_op(FormOp::CljRealizeAll),
     form_op(FormOp::CljRangeCons),
+    form_op(FormOp::CljIsZero),
+    form_op(FormOp::CljIsFalse),
+    form_op(FormOp::CljInvoke),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {
