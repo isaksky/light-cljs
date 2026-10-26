@@ -468,3 +468,97 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod byte_budget_tests {
+    use super::*;
+
+    fn calendar_state(heap: &Heap, code: &str) -> State {
+        let task = TaskId::from_raw(1);
+        let proto = crate::realm::intrinsics(heap)
+            .unwrap()
+            .intl_display_names_prototype;
+        let mut slots = DisplayNames::new("en".into());
+        slots.kind = "calendar";
+        slots.fallback = "code";
+        let this = Value::Object(
+            heap.alloc(HeapObject::Plain(
+                OrdinaryObject::with_prototype(heap, task, proto).with_display_names(slots),
+            ))
+            .unwrap(),
+        );
+        State::new(
+            builtin::Builtin::IntlDisplayNamesOf,
+            &this,
+            &[Value::String(JsString::from(code))],
+            heap,
+            task,
+        )
+        .unwrap_or_else(|_| panic!("DisplayNames state construction failed"))
+    }
+
+    fn run(state: &mut State, heap: &Heap) -> Result<Value, Fault> {
+        loop {
+            match state.step(heap, TaskId::from_raw(1), Input::Start)? {
+                Action::Continue => (),
+                Action::Return(value) => return Ok(value),
+                _ => panic!("unexpected native action"),
+            }
+        }
+    }
+
+    /// The charge of one fresh string body of `units` code units.
+    fn body_charge(heap: &Heap, units: usize) -> usize {
+        let before = heap.byte_budget().used();
+        let ticket = JsString::reserve(heap, units, 1).ok().unwrap();
+        let charge = heap.byte_budget().used() - before;
+        drop(ticket);
+        charge
+    }
+
+    #[test]
+    fn calendar_chunks_are_charged_and_refunded() {
+        // Longer than the 32-unit leaf parse: one 128-unit chunk, then two.
+        let one = "ABCDEFGH-abcdefgh-ABCDEFGH-abcdefgh";
+        let two = format!("{}abcdefgh", "abcdefgh-".repeat(21));
+        assert!(one.len() > 32 && two.len() > 128);
+        for code in [one, two.as_str()] {
+            let heap = Heap::with_byte_limit(256 * 1024);
+            let mut state = calendar_state(&heap, code);
+            let before = heap.byte_budget().used();
+            let value = run(&mut state, &heap).ok().unwrap();
+            let Value::String(text) = &value else {
+                panic!("fallback code returns a string")
+            };
+            assert_eq!(text.to_string_lossy(), code.to_ascii_lowercase());
+            drop(state);
+            let retained = heap.byte_budget().used() - before;
+            if code.len() <= 128 {
+                // The output shares the single chunk: its body's charge
+                // must outlive the native frame.
+                assert_eq!(retained, body_charge(&heap, code.len()));
+            } else {
+                assert!(retained >= 2 * code.len(), "uncharged output: {retained}");
+            }
+            drop(value);
+            assert_eq!(heap.byte_budget().used(), before, "{code}: not refunded");
+        }
+    }
+
+    #[test]
+    fn calendar_chunk_admission_is_denied_without_headroom() {
+        let code = "ABCDEFGH-abcdefgh-ABCDEFGH-abcdefgh";
+        let heap = Heap::with_byte_limit(256 * 1024);
+        let mut state = calendar_state(&heap, code);
+        let charge = body_charge(&heap, code.len());
+        let budget = heap.byte_budget();
+        let before = budget.used();
+        let fill = heap
+            .reserve_bytes(budget.limit().unwrap() - before - (charge - 1))
+            .unwrap();
+        assert!(matches!(run(&mut state, &heap), Err(Fault::HeapLimit)));
+        drop(state);
+        drop(fill);
+        assert_eq!(budget.used(), before, "a denial keeps no charge");
+    }
+}

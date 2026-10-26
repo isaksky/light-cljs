@@ -164,7 +164,6 @@ impl Drop for Body {
 /// body, whose flatten cache shares that body's reservation: the credit
 /// lives as long as either the rope or its cached flat copy, whichever is
 /// released last.
-#[derive(Debug)]
 pub(crate) struct StringAccumulator {
     /// Only the accumulator holds the latest node until `finish`, so the
     /// credit can still be moved into it.
@@ -172,6 +171,17 @@ pub(crate) struct StringAccumulator {
     /// Charge for the flattened copy of `text`; uncharged until the first
     /// piece is extended.
     flat_credit: crate::heap::budget::ByteReservation,
+}
+
+/// Reports metadata only. Formatting `text` would flatten it, and the
+/// flatten cache would share the node charge that `finish` must still own.
+impl std::fmt::Debug for StringAccumulator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StringAccumulator")
+            .field("len", &self.text.len())
+            .field("flat_credit_charged", &self.flat_credit.is_charged())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for StringAccumulator {
@@ -2791,6 +2801,25 @@ mod byte_budget_tests {
             "flat copy uncharged: {retained}"
         );
         drop(flat);
+        assert_eq!(heap.byte_budget().used(), baseline);
+    }
+
+    #[test]
+    fn accumulator_debug_does_not_break_finish() {
+        let heap = crate::heap::Heap::with_byte_limit(256 * 1024);
+        let baseline = heap.byte_budget().used();
+        let first = JsString::copy_units(&heap, &[120; 40]).unwrap();
+        let mut output = StringAccumulator::default();
+        output.push(&heap, &first).ok().unwrap();
+        output.push(&heap, &JsString::from("y")).ok().unwrap();
+        // Diagnostic formatting must not flatten the output, whose cache
+        // would share the node charge that finish moves the credit into.
+        let debug = format!("{output:?}");
+        let text = output.finish();
+        assert!(debug.contains("len: 41"), "{debug}");
+        assert_eq!(text.code_units()[40..], [121]);
+        drop(text);
+        drop(first);
         assert_eq!(heap.byte_budget().used(), baseline);
     }
 }
