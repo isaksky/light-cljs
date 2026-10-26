@@ -759,13 +759,15 @@ collection and pruning; the old/new slot values and shared namespace identity
 remain intact. After this review fix, the forced-final-collection regression
 reproduces the table's exact live and peak managed byte counts at both sizes.
 
-Validation on the same toolchain: all 66 native `bbp_macros` tests pass, as
-does the pool stress with `LIGHT_CLJS_STRESS_SEEDS=12` (one, two, four and
-eight slots). The engine's `--all-targets` suite passes 2,102 tests and its
+Review-fix validation on the same toolchain: all 33 native evaluator tests and
+all 66 native `bbp_macros` tests pass, as does the pool stress with
+`LIGHT_CLJS_STRESS_SEEDS=12` (one, two, four and eight slots).
+The engine's `--all-targets` suite passes 2,102 tests and its
 seven doctests pass. With `bbp-macros,quickjs`, all 66 macro integration
-tests (including QuickJS comparisons) and the memory regressions pass; the available compiler targets run
-854 tests, with 852 passes and two environment failures: the playground's
-wasm crate discovers the enclosing main-checkout workspace, and
+tests (including QuickJS comparisons) and the memory regressions pass; the
+available compiler targets run 933 tests, with 931 passes and two matching
+environment failures: the playground's wasm crate discovers the enclosing
+main-checkout workspace, and
 `dev_watch::a_failed_restart_waits_for_work` cannot execute `ps` in the
 sandbox (the same permission failure when run alone). The `compiler`
 integration target cannot build its eight missing pinned research includes;
