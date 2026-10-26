@@ -1825,8 +1825,16 @@ impl MacroHost {
             },
         );
         if let Some(evaluator) = evaluator {
-            host.prepare_compiler_evaluator(evaluator.as_ref())
-                .map_err(|e| e.to_string())?;
+            // A native task context another pool slot parked holds these
+            // settings already ([`crate::bbp_evaluator::TaskContext`]).
+            #[cfg(feature = "bbp-macros")]
+            let prepared = evaluator.native_shell().is_some_and(|e| e.prepared());
+            #[cfg(not(feature = "bbp-macros"))]
+            let prepared = false;
+            if !prepared {
+                host.prepare_compiler_evaluator(evaluator.as_ref())
+                    .map_err(|e| e.to_string())?;
+            }
             host.engine.bootstrap = Some(crate::compiler_bootstrap::bind(evaluator)?);
         }
         Ok(host)

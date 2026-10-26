@@ -4,7 +4,8 @@ use crate::{
     CollectionKind as C,
     compiler_data::{Datum, DatumKind as D, ExpansionOrigin, Form, Name},
     compiler_evaluator::{
-        CompilerEvaluator, NativeRunner, StringService, UnitService, WaitService,
+        CompilerEvaluator, NativeRunner, NativeSubmit, NativeSubmitter, StringService, UnitService,
+        WaitService,
     },
     evaluator::{
         EvalError, EvaluatorOptions, ExecutionControl, MacroEvaluator, NEXT_SESSION, ValueId,
@@ -360,10 +361,31 @@ struct SharedRuntime {
     /// task calls the one published function. `None` records a source
     /// whose factory cannot be shared, which tasks evaluate themselves.
     factories: Mutex<HashMap<String, Arc<std::sync::OnceLock<Option<Rooted>>>>>,
+    /// Task contexts that pool slots parked between jobs, for any slot to
+    /// borrow ([`BbpEvaluator::park`], [`BbpEvaluator::adopt`]).
+    idle: Mutex<Vec<TaskContext>>,
+    /// Tasks parked on a dependency whose next step a completion queues on
+    /// their pool ([`BbpRuntime::wake`]), by task.
+    parked: Mutex<HashMap<big_boy_pants_js::TaskId, Parked>>,
     #[cfg(test)]
     on_wait: Mutex<Option<WaitHook>>,
     #[cfg(test)]
     on_initializer: Mutex<Option<WaitHook>>,
+}
+/// A task parked on a dependency: its next step, where that step's outcome
+/// goes, and the pool that runs it once a completion wakes the task.
+struct Parked {
+    step: NativeStep,
+    reply: std::sync::mpsc::SyncSender<Result<RunOutcome, String>>,
+    submit: NativeSubmit,
+}
+/// Removes a parked task's entry when its owner stops waiting, so that a
+/// later wakeup queues nothing for it.
+struct Unpark<'a>(&'a SharedRuntime, big_boy_pants_js::TaskId);
+impl Drop for Unpark<'_> {
+    fn drop(&mut self) {
+        self.0.parked.lock().unwrap().remove(&self.1);
+    }
 }
 #[derive(Default)]
 struct NativeCounters {
@@ -377,6 +399,9 @@ struct NativeCounters {
     units_compiled: AtomicUsize,
     units_shared: AtomicUsize,
     units_evaluated: AtomicUsize,
+    lent: AtomicUsize,
+    borrowed: AtomicUsize,
+    woken: AtomicUsize,
     #[cfg(test)]
     cleanups: AtomicUsize,
 }
@@ -479,6 +504,8 @@ impl BbpRuntime {
             changed: Condvar::new(),
             graph: Mutex::new(big_boy_pants_js::DependencyGraph::new()),
             factories: Mutex::new(HashMap::new()),
+            idle: Mutex::new(Vec::new()),
+            parked: Mutex::new(HashMap::new()),
             #[cfg(test)]
             on_wait: Mutex::new(None),
             #[cfg(test)]
@@ -492,6 +519,50 @@ impl BbpRuntime {
     }
     pub fn evaluator(&self) -> Result<BbpEvaluator, EvalError> {
         BbpEvaluator::in_runtime(self.clone(), 0)
+    }
+    /// A pool slot's evaluator: on an idle task context another slot parked,
+    /// with the state of the view that parked it, or, if none is idle, on a
+    /// fresh one.
+    pub(crate) fn lent_evaluator(&self) -> Result<(BbpEvaluator, Option<LentState>), EvalError> {
+        let evaluator = BbpEvaluator::shell(self.clone(), 0);
+        match evaluator.adopt() {
+            Some(state) => Ok((evaluator, Some(state))),
+            None => {
+                evaluator.boot()?;
+                Ok((evaluator, None))
+            }
+        }
+    }
+    /// Queue on its pool the next step of each task `wakeups` made runnable
+    /// that parked there ([`BbpEvaluator::park_until_woken`]); a task its
+    /// owner still runs itself is not parked and is left to it.
+    fn wake(&self, wakeups: big_boy_pants_js::Wakeups) {
+        for task in wakeups.into_runnable() {
+            let parked = self.0.parked.lock().unwrap().remove(&task.id());
+            if let Some(Parked {
+                step,
+                reply,
+                submit,
+            }) = parked
+            {
+                self.0.counters.woken.fetch_add(1, Ordering::Relaxed);
+                submit(step, reply);
+            }
+        }
+    }
+    /// The idle task context with the most catalog registrations installed.
+    fn take_idle(&self) -> Option<TaskContext> {
+        let mut idle = self.0.idle.lock().unwrap();
+        let best = (0..idle.len()).max_by_key(|&i| idle[i].lent.borrow().installed)?;
+        let cx = idle.swap_remove(best);
+        drop(idle);
+        self.0.counters.borrowed.fetch_add(1, Ordering::Relaxed);
+        Some(cx)
+    }
+    /// Drop the idle task contexts, once no pool slot will borrow one.
+    pub(crate) fn clear_idle(&self) {
+        let idle = std::mem::take(&mut *self.0.idle.lock().unwrap());
+        drop(idle);
     }
     pub(crate) fn cancel(&self) {
         self.0.control.cancel();
@@ -510,6 +581,9 @@ impl BbpRuntime {
             units_compiled: c.units_compiled.load(Ordering::Relaxed),
             units_shared: c.units_shared.load(Ordering::Relaxed),
             units_evaluated: c.units_evaluated.load(Ordering::Relaxed),
+            contexts_lent: c.lent.load(Ordering::Relaxed),
+            contexts_borrowed: c.borrowed.load(Ordering::Relaxed),
+            woken: c.woken.load(Ordering::Relaxed),
         }
     }
     /// The runtime's one published factory for unit `source`, compiled now
@@ -592,39 +666,94 @@ impl BbpRuntime {
     }
 }
 
-pub struct BbpEvaluator {
-    shared: BbpRuntime,
-    runtime: Runtime,
+/// One task of the runtime with what the compiler keeps about it: its
+/// boundaries, value handles and registrations, and, while it waits idle
+/// for a pool slot to borrow it ([`BbpRuntime::lent_evaluator`]), the state
+/// of the worker view that used it last. It is `Send`, so an idle context
+/// moves between slots; one evaluator on one thread uses it at a time.
+pub(crate) struct TaskContext {
     task: Task,
-    control: ExecutionControl,
     command_kind: ResultKind,
     begin_kind: ResultKind,
     finish_kind: ResultKind,
     initializers: RefCell<HashMap<DependencyKey, ProducerRequest>>,
-    service_depth: usize,
-    service: RefCell<Option<UnitService>>,
-    help: RefCell<Option<WaitService>>,
-    runner: RefCell<Option<NativeRunner>>,
     resumable: Cell<bool>,
     per_task: Arc<AtomicUsize>,
     last_thread: Arc<Mutex<std::thread::ThreadId>>,
     registrations: RefCell<Vec<String>>,
     session: u64,
     next: Cell<u64>,
-    bridge: Arc<Mutex<Bridge>>,
-    stats: Cell<BridgeStats>,
     values: RefCell<HashMap<u64, Rooted>>,
     /// This task's handle on its `globalThis.__lightNativeRuntime`, which
     /// shared unit factories are called with; made on first use.
     native_runtime: Cell<Option<ValueId>>,
+    /// Whether a worker view prepared it (its settings and service stubs
+    /// evaluated), which a view that borrows it then does not repeat.
+    prepared: Cell<bool>,
+    /// The borrowing view's state that names this task's values or
+    /// registrations, kept here while the context is idle.
+    lent: RefCell<LentState>,
+}
+const _: () = {
+    const fn send<T: Send>() {}
+    send::<TaskContext>();
+};
+/// What a worker view knows about the task it borrowed: how many catalog
+/// registrations it installed, the source macros it evaluated in it by code
+/// identity (`EngineBinding::foreign_macros`) and the reader declarations
+/// it sent (`EngineBinding::reader_declared`).
+#[derive(Default)]
+pub(crate) struct LentState {
+    pub(crate) installed: usize,
+    pub(crate) foreign_macros: HashMap<usize, ValueId>,
+    pub(crate) reader_declared: HashMap<String, (usize, usize)>,
+}
+/// A compile-time engine on a [`BbpRuntime`]: the services of the thread
+/// that uses it, over one task context, which a pool slot's view returns to
+/// the runtime between jobs and borrows again ([`Self::park`]).
+pub struct BbpEvaluator {
+    shared: BbpRuntime,
+    runtime: Runtime,
+    control: ExecutionControl,
+    service_depth: usize,
+    service: RefCell<Option<UnitService>>,
+    help: RefCell<Option<WaitService>>,
+    runner: RefCell<Option<NativeRunner>>,
+    submitter: RefCell<Option<NativeSubmitter>>,
+    bridge: Arc<Mutex<Bridge>>,
+    stats: Cell<BridgeStats>,
+    context: RefCell<Option<Rc<TaskContext>>>,
 }
 impl BbpEvaluator {
     pub fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
         BbpRuntime::new(&options)?.evaluator()
     }
     fn in_runtime(shared: BbpRuntime, service_depth: usize) -> Result<Self, EvalError> {
-        let runtime = shared.0.runtime.clone();
-        let kind = shared
+        let this = Self::shell(shared, service_depth);
+        this.boot()?;
+        Ok(this)
+    }
+    /// An evaluator without a task context yet.
+    fn shell(shared: BbpRuntime, service_depth: usize) -> Self {
+        Self {
+            runtime: shared.0.runtime.clone(),
+            control: shared.0.control.clone(),
+            bridge: shared.0.bridge.clone(),
+            shared,
+            service_depth,
+            service: RefCell::new(None),
+            help: RefCell::new(None),
+            runner: RefCell::new(None),
+            submitter: RefCell::new(None),
+            stats: Cell::new(BridgeStats::default()),
+            context: RefCell::new(None),
+        }
+    }
+    /// Give this evaluator a fresh task and run it to its first boundary.
+    fn boot(&self) -> Result<(), EvalError> {
+        let runtime = &self.runtime;
+        let kind = self
+            .shared
             .0
             .next_command
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |kind| {
@@ -635,45 +764,94 @@ impl BbpEvaluator {
         let begin = runtime.root(Primitive::Number((kind + 1) as f64));
         let finish = runtime.root(Primitive::Number((kind + 2) as f64));
         let task = runtime
-            .spawn(&shared.0.executable, &[&argument, &begin, &finish])
+            .spawn(&self.shared.0.executable, &[&argument, &begin, &finish])
             .map_err(error)?;
-        let control = shared.0.control.clone();
-        let bridge = shared.0.bridge.clone();
-        let this = Self {
-            shared,
-            runtime,
+        *self.context.borrow_mut() = Some(Rc::new(TaskContext {
             task,
             command_kind: ResultKind::new(kind),
             begin_kind: ResultKind::new(kind + 1),
             finish_kind: ResultKind::new(kind + 2),
             initializers: RefCell::new(HashMap::new()),
-            service_depth,
-            service: RefCell::new(None),
-            help: RefCell::new(None),
-            runner: RefCell::new(None),
             resumable: Cell::new(false),
             per_task: Arc::new(AtomicUsize::new(0)),
             last_thread: Arc::new(Mutex::new(std::thread::current().id())),
             registrations: RefCell::new(Vec::new()),
-            control: control.clone(),
             session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             next: Cell::new(1),
-            bridge,
-            stats: Cell::new(BridgeStats::default()),
             values: RefCell::new(HashMap::new()),
             native_runtime: Cell::new(None),
-        };
-        this.shared
+            prepared: Cell::new(false),
+            lent: RefCell::new(LentState::default()),
+        }));
+        self.shared
             .0
             .counters
             .contexts
             .fetch_add(1, Ordering::Relaxed);
-        this.run()?;
-        Ok(this)
+        let booted = self.run();
+        if booted.is_err() {
+            self.context.borrow_mut().take();
+        }
+        booted
+    }
+    /// The task context this evaluator runs on.
+    fn cx(&self) -> Result<Rc<TaskContext>, EvalError> {
+        self.context
+            .borrow()
+            .clone()
+            .ok_or_else(|| error("the evaluator has no task context"))
+    }
+    /// Whether it has a task context: a pool slot's evaluator has none
+    /// between jobs once it parked its own ([`Self::park`]).
+    pub(crate) fn has_context(&self) -> bool {
+        self.context.borrow().is_some()
+    }
+    /// Whether its task context was prepared by a worker view
+    /// ([`TaskContext::prepared`]): a view that borrows it does not
+    /// evaluate its settings and services again.
+    pub(crate) fn prepared(&self) -> bool {
+        self.context
+            .borrow()
+            .as_ref()
+            .is_some_and(|cx| cx.prepared.get())
+    }
+    /// Return the task context to the runtime's idle contexts with the state
+    /// of the view that used it, for any pool slot to borrow
+    /// ([`Self::adopt`]). The evaluator has no context afterwards. A context
+    /// still referenced or mid-initialization is dropped instead; false then.
+    pub(crate) fn park(&self, state: LentState) -> bool {
+        let Some(cx) = self.context.borrow_mut().take() else {
+            return false;
+        };
+        let Ok(cx) = Rc::try_unwrap(cx) else {
+            return false;
+        };
+        if !cx.initializers.borrow().is_empty() || self.control.check().is_err() {
+            return false;
+        }
+        cx.prepared.set(true);
+        *cx.lent.borrow_mut() = state;
+        self.shared.0.idle.lock().unwrap().push(cx);
+        self.shared.0.counters.lent.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+    /// Borrow an idle task context of the runtime, the one with the most
+    /// catalog registrations installed, if this evaluator has none and one
+    /// is idle: the state of the view that parked it, for this one to take.
+    pub(crate) fn adopt(&self) -> Option<LentState> {
+        if self.has_context() {
+            return None;
+        }
+        let cx = self.shared.take_idle()?;
+        let state = std::mem::take(&mut *cx.lent.borrow_mut());
+        *self.context.borrow_mut() = Some(Rc::new(cx));
+        Some(state)
     }
     pub fn bridge_stats(&self) -> BridgeStats {
         let mut stats = self.stats.get();
-        stats.helper_per_task += self.per_task.load(Ordering::Relaxed);
+        if let Some(cx) = self.context.borrow().as_ref() {
+            stats.helper_per_task += cx.per_task.load(Ordering::Relaxed);
+        }
         // Collections are runtime-wide: every worker's tasks share this heap.
         let gc = self.runtime.heap_stats();
         BridgeStats {
@@ -741,59 +919,71 @@ impl BbpEvaluator {
         self.release(result?)
     }
     fn run(&self) -> Result<(), EvalError> {
-        let result = self.run_inner();
+        let cx = self.cx()?;
+        let result = self.run_inner(&cx);
         if let Err(failure) = &result {
-            self.shared.0.graph.lock().unwrap().withdraw(self.task.id());
-            self.fail_initializers(&failure.0);
-            let _cancel = self.task.cancel();
+            self.shared.0.graph.lock().unwrap().withdraw(cx.task.id());
+            self.fail_initializers(&cx, &failure.0);
+            let _cancel = cx.task.cancel();
             // The VM bounds cancellation cleanup independently of the spent
             // aggregate fuel. Finally blocks finish on saved task frames.
             while matches!(
-                self.task.run_with(
+                cx.task.run_with(
                     Budget::instructions(10_000),
-                    &mut NativeHost(&self.per_task, &self.shared.0.counters)
+                    &mut NativeHost(&cx.per_task, &self.shared.0.counters)
                 ),
                 Ok(RunOutcome::Yielded)
             ) {}
         }
         result
     }
-    fn run_inner(&self) -> Result<(), EvalError> {
+    fn step(&self, cx: &TaskContext) -> NativeStep {
+        NativeStep {
+            task: cx.task.clone(),
+            per_task: cx.per_task.clone(),
+            counters: self.shared.0.counters.clone(),
+            last_thread: cx.last_thread.clone(),
+            admitted: Arc::new(Mutex::new(true)),
+        }
+    }
+    fn run_inner(&self, cx: &TaskContext) -> Result<(), EvalError> {
+        // The step a pool worker already ran after a wakeup.
+        let mut woken = None;
         loop {
             self.control.poll()?;
-            let step = NativeStep {
-                task: self.task.clone(),
-                per_task: self.per_task.clone(),
-                counters: self.shared.0.counters.clone(),
-                last_thread: self.last_thread.clone(),
-                admitted: Arc::new(Mutex::new(true)),
+            let outcome = match woken.take() {
+                Some(outcome) => outcome,
+                None => {
+                    let step = self.step(cx);
+                    // Before the first helper wait, the worker already owns
+                    // this runnable task. Only suspended continuations need
+                    // pool handoff.
+                    let runner = cx
+                        .resumable
+                        .get()
+                        .then(|| self.runner.borrow().clone())
+                        .flatten();
+                    match runner {
+                        Some(run) => run(step),
+                        None => step.run(),
+                    }
+                    .map_err(error)?
+                }
             };
-            // Before the first helper wait, the worker already owns this
-            // runnable task. Only suspended continuations need pool handoff.
-            let runner = self
-                .resumable
-                .get()
-                .then(|| self.runner.borrow().clone())
-                .flatten();
-            let outcome = match runner {
-                Some(run) => run(step),
-                None => step.run(),
-            }
-            .map_err(error)?;
             {
                 let mut graph = self.shared.0.graph.lock().unwrap();
-                for key in self.task.dependency_log().edges() {
+                for key in cx.task.dependency_log().edges() {
                     if [BINDING, HELPER, INITIALIZER].contains(&key.kind()) {
-                        graph.record_use(self.task.id(), *key);
+                        graph.record_use(cx.task.id(), *key);
                     }
                 }
-                graph.withdraw(self.task.id());
+                graph.withdraw(cx.task.id());
                 if let RunOutcome::Waiting(key) = outcome
                     && [HELPER, INITIALIZER].contains(&key.kind())
                 {
                     graph
                         .wait(
-                            self.task.id(),
+                            cx.task.id(),
                             key,
                             big_boy_pants_js::DemandSite::new("native compiler helper"),
                         )
@@ -801,8 +991,8 @@ impl BbpEvaluator {
                 }
             }
             match outcome {
-                RunOutcome::Waiting(key) if key.kind() == self.command_kind => return Ok(()),
-                RunOutcome::Waiting(key) => self.demand(key)?,
+                RunOutcome::Waiting(key) if key.kind() == cx.command_kind => return Ok(()),
+                RunOutcome::Waiting(key) => woken = self.demand(cx, key)?,
                 RunOutcome::Yielded => {}
                 RunOutcome::Failed(e) => return Err(error(e)),
                 RunOutcome::Cancelled => return Err(error("macro task cancelled")),
@@ -810,25 +1000,33 @@ impl BbpEvaluator {
             }
         }
     }
-    fn demand(&self, key: DependencyKey) -> Result<(), EvalError> {
+    /// Wait for `key`, producing what this task was asked to produce first.
+    /// In a pool, a task that waits for another's result is parked: the
+    /// completion that wakes it queues its next step on the pool
+    /// ([`BbpRuntime::wake`]), whose outcome this returns.
+    fn demand(
+        &self,
+        cx: &TaskContext,
+        key: DependencyKey,
+    ) -> Result<Option<RunOutcome>, EvalError> {
         if [HELPER, INITIALIZER].contains(&key.kind()) {
-            self.resumable.set(true);
+            cx.resumable.set(true);
         }
         #[cfg(test)]
         let hook = self.shared.0.on_wait.lock().unwrap().clone();
         #[cfg(test)]
         if let Some(hook) = hook {
-            hook(&self.task, key);
+            hook(&cx.task, key);
         }
         if key.kind() == HELPER || key.kind() == INITIALIZER {
             self.note(|s| s.helper_waits += 1);
         }
         let shared = &self.shared.0;
-        let requests = self.task.take_producer_requests();
+        let requests = cx.task.take_producer_requests();
         for request in requests {
-            let result = self.produce(&request);
+            let result = self.produce(cx, &request);
             if let Err(failure) = &result {
-                self.fail_initializers(&failure.0);
+                self.fail_initializers(cx, &failure.0);
             }
             let value = match &result {
                 Ok(value) => value.clone(),
@@ -840,13 +1038,21 @@ impl BbpEvaluator {
             };
             // Completing wakes saved VM frames; it never executes JS inline.
             shared.graph.lock().unwrap().resolve(request.key());
-            let _runnable = self
+            let wakeups = self
                 .runtime
                 .complete(request.key(), request.producer(), completion)
-                .map_err(error)?
-                .into_runnable();
+                .map_err(error)?;
+            self.shared.wake(wakeups);
             *shared.generation.lock().unwrap() += 1;
             shared.changed.notify_all();
+        }
+        let runner = cx.resumable.get() && self.runner.borrow().is_some();
+        if let Some(submit) = runner
+            .then(|| self.submitter.borrow().clone())
+            .flatten()
+            .and_then(|submitter| submitter())
+        {
+            return self.park_until_woken(cx, key, submit);
         }
         let mut generation = shared.generation.lock().unwrap();
         while matches!(
@@ -854,7 +1060,7 @@ impl BbpEvaluator {
             big_boy_pants_js::CellStatus::Pending { .. }
         ) {
             self.control.poll()?;
-            if self.task.cancel_requested() {
+            if cx.task.cancel_requested() {
                 return Err(error("macro task cancelled"));
             }
             if let Some(help) = self.help.borrow().clone() {
@@ -878,12 +1084,82 @@ impl BbpEvaluator {
                 .unwrap()
                 .0;
         }
-        Ok(())
+        Ok(None)
     }
-    fn produce(&self, request: &ProducerRequest) -> Result<Rooted, EvalError> {
+    /// Park this task until a completion of `key` wakes it, then return the
+    /// outcome of the step that woke it, which `submit` queued on the pool
+    /// for any worker, this one included while it helps. If `key` completed
+    /// before the task was parked, nothing was queued and this returns
+    /// `None`: the caller runs the step.
+    fn park_until_woken(
+        &self,
+        cx: &TaskContext,
+        key: DependencyKey,
+        submit: NativeSubmit,
+    ) -> Result<Option<RunOutcome>, EvalError> {
+        let shared = &self.shared.0;
+        let id = cx.task.id();
+        let step = self.step(cx);
+        // Until the woken step's outcome arrives, unwinding first takes the
+        // task back from a queued or running step (`NativeHandoff`).
+        let mut handoff = step.handoff();
+        let (reply, outcome) = std::sync::mpsc::sync_channel(1);
+        shared.parked.lock().unwrap().insert(
+            id,
+            Parked {
+                step,
+                reply,
+                submit,
+            },
+        );
+        let _unpark = Unpark(shared, id);
+        let pending = |key| {
+            matches!(
+                self.runtime.cell_status(key),
+                big_boy_pants_js::CellStatus::Pending { .. }
+            )
+        };
+        // A completion before the task was parked found nothing to queue.
+        if !pending(key) && shared.parked.lock().unwrap().remove(&id).is_some() {
+            handoff.finish();
+            return Ok(None);
+        }
+        loop {
+            match outcome.try_recv() {
+                Ok(result) => {
+                    handoff.finish();
+                    return result.map(Some).map_err(error);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return Err(error("native task worker stopped"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            self.control.poll()?;
+            if cx.task.cancel_requested() {
+                return Err(error("macro task cancelled"));
+            }
+            if let Some(help) = self.help.borrow().clone()
+                && help().map_err(error)?
+            {
+                continue;
+            }
+            match outcome.recv_timeout(std::time::Duration::from_millis(20)) {
+                Ok(result) => {
+                    handoff.finish();
+                    return result.map(Some).map_err(error);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(error("native task worker stopped"));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+    fn produce(&self, cx: &TaskContext, request: &ProducerRequest) -> Result<Rooted, EvalError> {
         let key = request.key();
-        if key.kind() == self.begin_kind || key.kind() == self.finish_kind {
-            return self.initialize(key.kind() == self.begin_kind);
+        if key.kind() == cx.begin_kind || key.kind() == cx.finish_kind {
+            return self.initialize(cx, key.kind() == cx.begin_kind);
         }
         if key.kind() != HELPER {
             return Err(error(format!("unsupported compiler result: {key}")));
@@ -907,15 +1183,17 @@ impl BbpEvaluator {
         // The requesting task is parked. Compiler registration and nested
         // macro expansion use independent mutable state on the same heap.
         let active = Self::in_runtime(self.shared.clone(), self.service_depth + 1)?;
+        let producer_cx = active.cx()?;
         self.shared.0.graph.lock().unwrap().bind_producer(
             key,
             request.producer(),
-            active.task.id(),
+            producer_cx.task.id(),
         );
         *active.service.borrow_mut() = Some(callback.clone());
         *active.help.borrow_mut() = self.help.borrow().clone();
         *active.runner.borrow_mut() = self.runner.borrow().clone();
-        let registrations = self.registrations.borrow().clone();
+        *active.submitter.borrow_mut() = self.submitter.borrow().clone();
+        let registrations = cx.registrations.borrow().clone();
         // Replayed in fixed blocks from the first registration: a full
         // block's text never changes, so every producer task calls the one
         // factory compiled for it (`evaluate_unit`).
@@ -923,7 +1201,8 @@ impl BbpEvaluator {
             let value = active.evaluate_unit(&replay_source(block))?;
             active.release(value)?;
         }
-        *active.registrations.borrow_mut() = registrations;
+        *producer_cx.registrations.borrow_mut() = registrations;
+        drop(producer_cx);
         let source = callback(&active, id).map_err(error)?;
         // Only the factory expression runs here. Its initializer runs in each
         // consumer's task, preserving task-owned mutable values.
@@ -951,8 +1230,8 @@ impl BbpEvaluator {
             }
         }
     }
-    fn initialize(&self, begin: bool) -> Result<Rooted, EvalError> {
-        let unit = self
+    fn initialize(&self, cx: &TaskContext, begin: bool) -> Result<Rooted, EvalError> {
+        let unit = cx
             .task
             .global_value("__lightInitializerUnit")
             .map_err(error)?
@@ -971,14 +1250,14 @@ impl BbpEvaluator {
                     self.shared.0.graph.lock().unwrap().bind_producer(
                         key,
                         request.producer(),
-                        self.task.id(),
+                        cx.task.id(),
                     );
-                    self.initializers.borrow_mut().insert(key, request);
+                    cx.initializers.borrow_mut().insert(key, request);
                     #[cfg(test)]
                     {
                         let hook = self.shared.0.on_initializer.lock().unwrap().clone();
                         if let Some(hook) = hook {
-                            hook(&self.task, key);
+                            hook(&cx.task, key);
                         }
                     }
                     true
@@ -987,18 +1266,18 @@ impl BbpEvaluator {
             };
             return Ok(self.runtime.root(Primitive::Bool(claimed)));
         }
-        let producer = self
+        let producer = cx
             .initializers
             .borrow()
             .get(&key)
             .ok_or_else(|| error("initializer completed without its producer claim"))?
             .producer();
-        let failed = self
+        let failed = cx
             .task
             .global_value("__lightInitializerFailure")
             .map_err(error)?
             .ok_or_else(|| error("missing initializer outcome"))?;
-        let value = self
+        let value = cx
             .task
             .global_value("__lightInitializerResult")
             .map_err(error)?
@@ -1030,12 +1309,12 @@ impl BbpEvaluator {
             Completion::Ready(&outcome)
         };
         self.shared.0.graph.lock().unwrap().resolve(key);
-        let _runnable = self
+        let wakeups = self
             .runtime
             .complete(key, producer, completion)
-            .map_err(error)?
-            .into_runnable();
-        self.initializers.borrow_mut().remove(&key);
+            .map_err(error)?;
+        self.shared.wake(wakeups);
+        cx.initializers.borrow_mut().remove(&key);
         if !failure {
             self.note(|s| {
                 if shared_value {
@@ -1049,17 +1328,20 @@ impl BbpEvaluator {
         self.shared.0.changed.notify_all();
         Ok(self.runtime.root(Primitive::Null))
     }
-    fn fail_initializers(&self, message: &str) {
-        let requests = std::mem::take(&mut *self.initializers.borrow_mut());
+    fn fail_initializers(&self, cx: &TaskContext, message: &str) {
+        let requests = std::mem::take(&mut *cx.initializers.borrow_mut());
         if requests.is_empty() {
             return;
         }
         let failure = self.failure_root(message);
         for (key, request) in requests {
             self.shared.0.graph.lock().unwrap().resolve(key);
-            let _wakeups =
+            if let Ok(wakeups) =
                 self.runtime
-                    .complete(key, request.producer(), Completion::Failed(&failure));
+                    .complete(key, request.producer(), Completion::Failed(&failure))
+            {
+                self.shared.wake(wakeups);
+            }
         }
         *self.shared.0.generation.lock().unwrap() += 1;
         self.shared.0.changed.notify_all();
@@ -1084,16 +1366,18 @@ impl BbpEvaluator {
             .try_root(Primitive::string(message))
             .unwrap_or_else(|| self.runtime.root(Primitive::string(message)))
     }
-    fn id(&self) -> ValueId {
-        let index = self.next.get();
-        self.next.set(index + 1);
-        ValueId {
-            session: self.session,
+    fn id(&self) -> Result<ValueId, EvalError> {
+        let cx = self.cx()?;
+        let index = cx.next.get();
+        cx.next.set(index + 1);
+        Ok(ValueId {
+            session: cx.session,
             index,
-        }
+        })
     }
     fn check(&self, id: ValueId) -> Result<(), EvalError> {
-        if id.session != self.session || !self.values.borrow().contains_key(&id.index) {
+        let cx = self.cx()?;
+        if id.session != cx.session || !cx.values.borrow().contains_key(&id.index) {
             Err(error("invalid value handle"))
         } else {
             Ok(())
@@ -1101,6 +1385,7 @@ impl BbpEvaluator {
     }
     fn request(&self, op: u32, id: ValueId, input: Rooted) -> Result<(), EvalError> {
         self.control.check()?;
+        let cx = self.cx()?;
         // Built before the boundary is taken: a denied message leaves the
         // task waiting at the same boundary for the next request.
         let message = self.host_scope(|s| {
@@ -1109,7 +1394,7 @@ impl BbpEvaluator {
             let message = s.new_vector(&[op, id, s.local(&input).map_err(error)?]);
             Ok::<_, EvalError>(s.persist(message.map_err(error)?))
         })?;
-        let request = self
+        let request = cx
             .task
             .take_producer_requests()
             .pop()
@@ -1123,7 +1408,7 @@ impl BbpEvaluator {
             )
             .map_err(error)?;
         self.run()?;
-        let failed = self
+        let failed = cx
             .task
             .global_value("__lightFailure")
             .map_err(error)?
@@ -1132,12 +1417,12 @@ impl BbpEvaluator {
             return Err(error(message.to_string_lossy()));
         }
         if op != 3 {
-            let value = self
+            let value = cx
                 .task
                 .global_value("__lightResult")
                 .map_err(error)?
                 .ok_or_else(|| error("missing macro result"))?;
-            self.values.borrow_mut().insert(id.index, value);
+            cx.values.borrow_mut().insert(id.index, value);
         }
         Ok(())
     }
@@ -1147,7 +1432,7 @@ impl BbpEvaluator {
                 .map(|local| s.persist(local))
                 .ok_or_else(|| error("heap byte limit exceeded"))
         })?;
-        let id = self.id();
+        let id = self.id()?;
         self.request(0, id, source)?;
         Ok(id)
     }
@@ -1160,7 +1445,7 @@ impl BbpEvaluator {
             Ok::<_, EvalError>(s.persist(v))
         })?;
         self.note(|s| s.nanos += started.elapsed().as_nanos());
-        let id = self.id();
+        let id = self.id()?;
         self.request(1, id, value)?;
         Ok(id)
     }
@@ -1264,28 +1549,34 @@ impl MacroEvaluator for BbpEvaluator {
         location: &str,
         test: Option<usize>,
     ) -> Result<(), EvalError> {
-        if let Some(unit) = unit {
-            let id = DependencyId::new(unit as u64);
-            let key = DependencyKey::new(self.runtime.world(), id, HELPER);
-            self.shared
-                .0
-                .definitions
-                .lock()
-                .unwrap()
-                .insert(key, unit as u64);
-            let binding = DependencyKey::new(self.runtime.world(), id, BINDING);
-            if let Ok(request) = self.runtime.claim(binding) {
-                let value = self.runtime.root(Primitive::Null);
-                let _wakeups = self
-                    .runtime
-                    .complete(binding, request.producer(), Completion::Ready(&value))
-                    .map_err(error)?;
-            }
-        }
+        self.define_root(unit)?;
         let source = crate::evaluator::compiler_root_source(name, unit, once, location, test);
         let value = self.evaluate_unit(&source)?;
         self.release(value)?;
-        self.registrations.borrow_mut().push(source);
+        self.cx()?.registrations.borrow_mut().push(source);
+        Ok(())
+    }
+    /// One evaluation for all of `roots`, as a producer task replays them
+    /// ([`replay_source`]): a full catalog block has the same text in every
+    /// task, so its factory compiles once for the runtime.
+    fn register_compiler_roots(
+        &self,
+        roots: &[crate::evaluator::CompilerRoot<'_>],
+    ) -> Result<(), EvalError> {
+        let mut sources = Vec::with_capacity(roots.len());
+        for root in roots {
+            self.define_root(root.unit)?;
+            sources.push(crate::evaluator::compiler_root_source(
+                root.name,
+                root.unit,
+                root.once,
+                root.location,
+                root.test,
+            ));
+        }
+        let value = self.evaluate_unit(&replay_source(&sources))?;
+        self.release(value)?;
+        self.cx()?.registrations.borrow_mut().extend(sources);
         Ok(())
     }
     /// A declaration bundle's unit is a helper result like a root's: the
@@ -1293,25 +1584,13 @@ impl MacroEvaluator for BbpEvaluator {
     /// of a dispatched protocol is read (light-cljs-478). Nested producers
     /// replay the registration with the roots'.
     fn register_compiler_bundle(&self, source: &str, unit: usize) -> Result<(), EvalError> {
-        let id = DependencyId::new(unit as u64);
-        let key = DependencyKey::new(self.runtime.world(), id, HELPER);
-        self.shared
-            .0
-            .definitions
-            .lock()
-            .unwrap()
-            .insert(key, unit as u64);
-        let binding = DependencyKey::new(self.runtime.world(), id, BINDING);
-        if let Ok(request) = self.runtime.claim(binding) {
-            let value = self.runtime.root(Primitive::Null);
-            let _wakeups = self
-                .runtime
-                .complete(binding, request.producer(), Completion::Ready(&value))
-                .map_err(error)?;
-        }
+        self.define_root(Some(unit))?;
         let value = self.evaluate_unit(source)?;
         self.release(value)?;
-        self.registrations.borrow_mut().push(source.to_owned());
+        self.cx()?
+            .registrations
+            .borrow_mut()
+            .push(source.to_owned());
         Ok(())
     }
     fn native_bridge_stats(&self) -> Option<BridgeStats> {
@@ -1321,7 +1600,12 @@ impl MacroEvaluator for BbpEvaluator {
         self.control.clone()
     }
     fn heap(&self) -> usize {
-        self.session as usize
+        // The task's: a pool view's evaluator changes heaps as it borrows
+        // contexts, which [`crate::generated_names`] is told of.
+        self.context
+            .borrow()
+            .as_ref()
+            .map_or(0, |cx| cx.session as usize)
     }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
         if source.len() >= SHARED_UNIT_BYTES
@@ -1348,7 +1632,7 @@ impl MacroEvaluator for BbpEvaluator {
                 .collect::<Vec<_>>();
             Ok::<_, EvalError>(s.persist(s.new_vector(&values).map_err(error)?))
         })?;
-        let id = self.id();
+        let id = self.id()?;
         self.request(2, id, input)?;
         Ok(id)
     }
@@ -1374,7 +1658,7 @@ impl MacroEvaluator for BbpEvaluator {
             Ok::<_, EvalError>(s.persist(v))
         })?;
         self.note(|s| s.nanos += started.elapsed().as_nanos());
-        let id = self.id();
+        let id = self.id()?;
         self.request(1, id, value)?;
         Ok(id)
     }
@@ -1387,8 +1671,8 @@ impl MacroEvaluator for BbpEvaluator {
     ) -> Result<Form, EvalError> {
         self.check(id)?;
         let started = std::time::Instant::now();
+        let v = self.cx()?.values.borrow().get(&id.index).unwrap().clone();
         let data = self.host_scope(|s| {
-            let v = self.values.borrow().get(&id.index).unwrap().clone();
             self.with_bridge(|b| {
                 b.export(
                     s,
@@ -1406,7 +1690,7 @@ impl MacroEvaluator for BbpEvaluator {
     fn release(&self, id: ValueId) -> Result<(), EvalError> {
         self.check(id)?;
         self.request(3, id, self.runtime.root(Primitive::Null))?;
-        self.values.borrow_mut().remove(&id.index);
+        self.cx()?.values.borrow_mut().remove(&id.index);
         Ok(())
     }
 }
@@ -1416,6 +1700,9 @@ impl CompilerEvaluator for BbpEvaluator {
     }
     fn install_native_runner(&self, callback: NativeRunner) {
         *self.runner.borrow_mut() = Some(callback);
+    }
+    fn install_native_submitter(&self, callback: NativeSubmitter) {
+        *self.submitter.borrow_mut() = Some(callback);
     }
     fn native_forms(&self) -> bool {
         true
@@ -1444,35 +1731,67 @@ impl CompilerEvaluator for BbpEvaluator {
     }
     fn value_roots(&self) -> Result<usize, EvalError> {
         // The task's own runtime handle is not a value its callers hold.
-        let own = usize::from(self.native_runtime.get().is_some());
-        Ok(self.values.borrow().len() - own + self.bridge.lock().unwrap().imports.len())
+        let held = self.context.borrow().as_ref().map_or(0, |cx| {
+            cx.values.borrow().len() - usize::from(cx.native_runtime.get().is_some())
+        });
+        Ok(held + self.bridge.lock().unwrap().imports.len())
     }
     fn collect_garbage(&self) {
         let _ = self.runtime.collect();
     }
+    #[cfg(feature = "bbp-macros")]
+    fn native_shell(&self) -> Option<&BbpEvaluator> {
+        Some(self)
+    }
     #[cfg(all(test, light_v8))]
     fn number(&self, id: ValueId) -> Result<f64, EvalError> {
         self.check(id)?;
-        match self.values.borrow()[&id.index].view() {
+        match self.cx()?.values.borrow()[&id.index].view() {
             ValueView::Number(n) => Ok(n),
             _ => Err(error("not a number")),
         }
     }
 }
 impl BbpEvaluator {
+    /// Record root `unit`'s helper definition and complete its binding cell.
+    fn define_root(&self, unit: Option<usize>) -> Result<(), EvalError> {
+        let Some(unit) = unit else {
+            return Ok(());
+        };
+        let id = DependencyId::new(unit as u64);
+        let key = DependencyKey::new(self.runtime.world(), id, HELPER);
+        self.shared
+            .0
+            .definitions
+            .lock()
+            .unwrap()
+            .insert(key, unit as u64);
+        let binding = DependencyKey::new(self.runtime.world(), id, BINDING);
+        if let Ok(request) = self.runtime.claim(binding) {
+            let value = self.runtime.root(Primitive::Null);
+            let wakeups = self
+                .runtime
+                .complete(binding, request.producer(), Completion::Ready(&value))
+                .map_err(error)?;
+            self.shared.wake(wakeups);
+        }
+        Ok(())
+    }
     /// Evaluate a unit through its shared factory: the factory enters this
     /// task as a value and is called with this task's runtime, as the
     /// evaluated source would have called it.
     fn call_factory(&self, factory: Rooted) -> Result<ValueId, EvalError> {
-        let runtime = match self.native_runtime.get() {
+        let cx = self.cx()?;
+        let runtime = match cx.native_runtime.get() {
             Some(id) => id,
             None => {
                 let id = self.evaluate("globalThis.__lightNativeRuntime")?;
-                self.native_runtime.set(Some(id));
+                cx.native_runtime.set(Some(id));
                 id
             }
         };
-        let function = self.id();
+        drop(cx);
+        let function = self.id()?;
         self.request(1, function, factory)?;
         let result = self.call(function, &[runtime]);
         let released = self.release(function);
@@ -1492,9 +1811,16 @@ impl BbpEvaluator {
         let source = format!(
             "rt => {{ globalThis.{name} = () => {{ throw new Error('unsupported operation: native compiler service {name}'); }}; return null; }}"
         );
+        // A borrowed context has its services' stubs from the view that
+        // prepared it ([`TaskContext::prepared`]).
+        let cx = self.cx()?;
+        if cx.prepared.get() && cx.registrations.borrow().contains(&source) {
+            return Ok(());
+        }
+        drop(cx);
         let value = self.evaluate_unit(&source)?;
         self.release(value)?;
-        self.registrations.borrow_mut().push(source);
+        self.cx()?.registrations.borrow_mut().push(source);
         Ok(())
     }
 }

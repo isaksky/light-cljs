@@ -211,12 +211,31 @@ source maps, warnings and compiled helpers with the one-slot build:
 `LIGHT_CLJS_STRESS_SEEDS=12 cargo test --locked --no-default-features --features
 bbp-macros --test bbp_macros native_pool_builds` (debug builds only).
 
-Worker engines are still per slot: each slot that analyzes a macro unit boots
-its own task, installs the catalog's registrations and evaluates the source
-macros it calls, and helper values that do not publish initialize once in
-each task that consumes them. Every helper value in the pool fixtures
-publishes, so their helper initializations equal the `--jobs 1` count at
-every slot count.
+A pool slot holds no task between jobs. After a macro unit it parks its task
+context with the runtime, together with what its view knows about that task
+(how many catalog registrations it installed, the source macros it evaluated
+in it and the reader declarations it sent), and its next macro unit, on any
+slot, borrows the idle context with the most registrations installed; a slot
+boots a new one only when every context is in use. A pool therefore runs as
+many worker tasks as it analyzes macro units at once, and each installs a
+registration and evaluates a source macro once, not once per slot. A worker
+catching up on the catalog installs consecutive root registrations in blocks
+of 64 aligned to the catalog, one evaluation per block, so a full block's
+factory compiles once for the runtime. `--stats` reports
+`native.tasks.lent` (parked) and `native.tasks.borrowed`. Helper values that
+do not publish still initialize once in each task that consumes them. Every
+helper value in the pool fixtures publishes, so their helper initializations
+equal the `--jobs 1` count at every slot count.
+
+A pool worker whose task waits for a result another task produces parks
+it: the task's next step is registered with the runtime, and the completion
+that makes the task runnable queues that step on the pool from the wakeups
+`Runtime::complete` returns, where any worker, the waiting one included while
+it helps, runs it; the waiting worker continues with its outcome
+(`native.tasks.woken`). The worker's Rust analysis frames stay on its stack
+meanwhile, so it frees its thread for other jobs only by helping. A task
+whose result arrived before it parked, or that runs outside a pool, polls as
+before.
 
 Consumer cancellation withdraws that task's waits without cancelling a shared
 producer or another consumer. Build cancellation stops the shared execution

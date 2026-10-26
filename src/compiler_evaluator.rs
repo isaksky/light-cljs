@@ -10,14 +10,35 @@ pub(crate) type WaitService = Rc<dyn Fn() -> Result<bool, String>>;
 #[cfg(feature = "bbp-macros")]
 pub(crate) type NativeRunner =
     Rc<dyn Fn(crate::bbp_evaluator::NativeStep) -> Result<big_boy_pants_js::RunOutcome, String>>;
+/// Queue, from any thread, a woken native task's next step on the pool of
+/// the worker that parked it, with where its outcome goes.
+#[cfg(feature = "bbp-macros")]
+pub(crate) type NativeSubmit = std::sync::Arc<
+    dyn Fn(
+            crate::bbp_evaluator::NativeStep,
+            std::sync::mpsc::SyncSender<Result<big_boy_pants_js::RunOutcome, String>>,
+        ) + Send
+        + Sync,
+>;
+/// The current job's [`NativeSubmit`], if the evaluator runs in a pool.
+#[cfg(feature = "bbp-macros")]
+pub(crate) type NativeSubmitter = Rc<dyn Fn() -> Option<NativeSubmit>>;
 pub(crate) trait CompilerEvaluator: MacroEvaluator {
     /// Useful compiler work while a native task waits. The callback must
     /// construct independent nested analyzer state, never reuse the caller.
     fn install_wait_service(&self, _callback: WaitService) {}
     #[cfg(feature = "bbp-macros")]
     fn install_native_runner(&self, _callback: NativeRunner) {}
+    #[cfg(feature = "bbp-macros")]
+    fn install_native_submitter(&self, _callback: NativeSubmitter) {}
     fn native_forms(&self) -> bool {
         false
+    }
+    /// The native evaluator, whose task context a pool slot's view parks
+    /// between jobs and borrows ([`crate::bbp_evaluator::BbpEvaluator::park`]).
+    #[cfg(feature = "bbp-macros")]
+    fn native_shell(&self) -> Option<&crate::bbp_evaluator::BbpEvaluator> {
+        None
     }
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError>;
     fn install_compiler_service(

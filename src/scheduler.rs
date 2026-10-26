@@ -964,12 +964,24 @@ pub struct HelpHandle<J: Job, O> {
     depth: usize,
     _thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
+/// A handle any thread may use to queue urgent jobs on a running pool, such
+/// as the continuation of a task another thread's completion woke. A job
+/// queued once the pool shut down is dropped.
+pub struct Submitter<J: Job, O>(Arc<Shared<J, O>>);
+impl<J: Job, O> Submitter<J, O> {
+    pub fn push_urgent(&self, job: J) {
+        self.0.submit_urgent(job);
+    }
+}
 impl<J: Job, O> HelpHandle<J, O> {
     pub fn cancelled(&self) -> bool {
         self.shared.cancelled.load(Ordering::Relaxed)
     }
     pub fn push_urgent(&self, job: J) {
         self.shared.submit_urgent(job);
+    }
+    pub fn submitter(&self) -> Submitter<J, O> {
+        Submitter(self.shared.clone())
     }
     pub fn help<W>(
         &self,

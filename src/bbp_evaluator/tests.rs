@@ -13,7 +13,15 @@ fn native(source: &str) -> String {
 }
 
 fn numeric_global(evaluator: &BbpEvaluator, name: &str) -> f64 {
-    match evaluator.task.global_value(name).unwrap().unwrap().view() {
+    match evaluator
+        .cx()
+        .unwrap()
+        .task
+        .global_value(name)
+        .unwrap()
+        .unwrap()
+        .view()
+    {
         ValueView::Number(value) => value,
         value => panic!("{name}: {value:?}"),
     }
@@ -33,7 +41,76 @@ fn two_real_consumers_share_one_helper_and_input_across_a_parked_collection() {
             shared.0.runtime.collect().unwrap();
             assert_eq!(shared.0.runtime.heap_stats().collections, before + 1);
         }),
+        false,
     );
+}
+
+#[test]
+fn a_parked_consumer_is_resumed_from_the_producers_wakeup() {
+    // The producer compiles the helper only once the other consumer is
+    // parked, so its completion's wakeups queue that consumer's next step.
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    share_one_helper_while_parked(
+        shared.clone(),
+        Arc::new(|shared: &BbpRuntime| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while shared.0.parked.lock().unwrap().is_empty() {
+                assert!(std::time::Instant::now() < deadline, "no consumer parked");
+                std::thread::yield_now();
+            }
+        }),
+        true,
+    );
+    // The other consumer, at least; either may also park on the other's
+    // initializer of the helper.
+    assert!(shared.helper_counts().woken >= 1);
+    assert!(shared.0.parked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_parked_context_is_borrowed_with_its_view_state_and_handles() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let (first, state) = shared.lent_evaluator().unwrap();
+    assert!(state.is_none() && !first.prepared());
+    first
+        .install_string_service("__lightBuildService", Rc::new(|_| String::new()))
+        .unwrap();
+    let registrations = first.cx().unwrap().registrations.borrow().len();
+    let value = first
+        .evaluate_unit("rt => { globalThis.kept = 41; return 1; }")
+        .unwrap();
+    let heap = first.heap();
+    assert!(first.park(LentState {
+        installed: 5,
+        ..Default::default()
+    }));
+    assert!(!first.has_context() && first.heap() == 0);
+    // Another evaluator, as another slot's view would have, takes it.
+    let (second, state) = shared.lent_evaluator().unwrap();
+    assert_eq!(state.unwrap().installed, 5);
+    assert!(second.prepared() && second.heap() == heap);
+    second.release(value).unwrap();
+    assert_eq!(numeric_global(&second, "kept"), 41.0);
+    // A prepared context keeps its service stubs: none is evaluated again.
+    second
+        .install_string_service("__lightBuildService", Rc::new(|_| String::new()))
+        .unwrap();
+    assert_eq!(
+        second.cx().unwrap().registrations.borrow().len(),
+        registrations
+    );
+    // The first evaluator borrows nothing while the context is in use.
+    assert!(first.adopt().is_none());
+    let counts = shared.helper_counts();
+    assert_eq!(
+        (
+            counts.contexts,
+            counts.contexts_lent,
+            counts.contexts_borrowed
+        ),
+        (1, 1, 1)
+    );
+    shared.clear_idle();
 }
 
 fn churn(iterations: usize) -> String {
@@ -97,10 +174,14 @@ fn parked_consumers_survive_automatic_collection_under_the_memory_limit() {
             );
             assert!(after.peak_managed_bytes <= cap, "{after:?}");
         }),
+        false,
     );
 }
 
-fn share_one_helper_while_parked(shared: BbpRuntime, while_parked: WhileParked) {
+/// With `pooled`, each consumer runs its steps through a runner and parks
+/// with a submitter that runs a woken step on a thread of its own, as a
+/// pool worker would.
+fn share_one_helper_while_parked(shared: BbpRuntime, while_parked: WhileParked, pooled: bool) {
     let parked = Arc::new((Mutex::new(0usize), Condvar::new()));
     let seen = parked.clone();
     *shared.0.on_wait.lock().unwrap() = Some(Arc::new(move |_, key| {
@@ -131,6 +212,15 @@ fn share_one_helper_while_parked(shared: BbpRuntime, while_parked: WhileParked) 
             .map(|_| {
                 scope.spawn(|| {
                     let evaluator = Rc::new(shared.evaluator().unwrap());
+                    if pooled {
+                        evaluator.install_native_runner(Rc::new(|step: NativeStep| step.run()));
+                        let submit: NativeSubmit = Arc::new(|step: NativeStep, reply| {
+                            std::thread::spawn(move || {
+                                let _ = reply.send(step.run());
+                            });
+                        });
+                        evaluator.install_native_submitter(Rc::new(move || Some(submit.clone())));
+                    }
                     let in_runtime = shared.clone();
                     let while_parked = while_parked.clone();
                     let producers = &producers;
@@ -178,7 +268,7 @@ fn share_one_helper_while_parked(shared: BbpRuntime, while_parked: WhileParked) 
                     let argument = evaluator
                         .import_form(&input, ConversionLimits::default())
                         .unwrap();
-                    let root = evaluator.values.borrow()[&argument.index].clone();
+                    let root = evaluator.cx().unwrap().values.borrow()[&argument.index].clone();
                     start.wait();
                     let result = evaluator.call(function, &[argument]).unwrap();
                     let expanded = evaluator
@@ -272,7 +362,7 @@ fn immutable_initializers_publish_and_mutable_initializers_run_once_per_task() {
                     .evaluate_unit("rt => globalThis.__lightCompilerRoots['cljs.user/helper']")
                     .unwrap();
                 if read == 0 {
-                    roots.push(evaluator.values.borrow()[&result.index].clone());
+                    roots.push(evaluator.cx().unwrap().values.borrow()[&result.index].clone());
                 }
                 evaluator.release(result).unwrap();
             }
@@ -281,13 +371,15 @@ fn immutable_initializers_publish_and_mutable_initializers_run_once_per_task() {
             } else {
                 assert!(
                     evaluator
+                        .cx()
+                        .unwrap()
                         .task
                         .global_value("initialized")
                         .unwrap()
                         .is_none()
                 );
             }
-            let log = evaluator.task.dependency_log();
+            let log = evaluator.cx().unwrap().task.dependency_log();
             for kind in [BINDING, HELPER, INITIALIZER] {
                 assert!(log.depends_on(DependencyKey::new(
                     shared.0.runtime.world(),
@@ -360,6 +452,8 @@ fn initializer_failure_wakes_later_consumers_without_repeating_effects() {
         } else {
             assert!(
                 evaluator
+                    .cx()
+                    .unwrap()
                     .task
                     .global_value("initialized")
                     .unwrap()
@@ -415,6 +509,8 @@ fn falsy_initializer_failures_are_shared_without_repeating_effects() {
             } else {
                 assert!(
                     evaluator
+                        .cx()
+                        .unwrap()
                         .task
                         .global_value("initialized")
                         .unwrap()
@@ -689,7 +785,7 @@ fn recursive_helper_functions_do_not_form_initializer_wait_cycles() {
         .evaluate_unit("rt => globalThis.__lightCompilerRoots['cljs.user/helper'](10)")
         .unwrap();
     assert_eq!(
-        evaluator.values.borrow()[&value.index].view(),
+        evaluator.cx().unwrap().values.borrow()[&value.index].view(),
         ValueView::Number(42.0)
     );
     assert_eq!(shared.helper_counts().compiled, 1);
@@ -700,15 +796,15 @@ fn abandoned_handoff_invalidates_its_queued_step_before_task_cleanup() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let evaluator = shared.evaluator().unwrap();
     let step = NativeStep {
-        task: evaluator.task.clone(),
-        per_task: evaluator.per_task.clone(),
+        task: evaluator.cx().unwrap().task.clone(),
+        per_task: evaluator.cx().unwrap().per_task.clone(),
         counters: shared.0.counters.clone(),
-        last_thread: evaluator.last_thread.clone(),
+        last_thread: evaluator.cx().unwrap().last_thread.clone(),
         admitted: Arc::new(Mutex::new(true)),
     };
     let before = shared.helper_counts().steps;
     drop(step.handoff());
-    assert!(evaluator.task.cancel_requested());
+    assert!(evaluator.cx().unwrap().task.cancel_requested());
     assert!(step.run().unwrap_err().contains("handoff cancelled"));
     assert_eq!(shared.helper_counts().steps, before);
     assert!(evaluator.run().unwrap_err().0.contains("cancelled"));
@@ -733,21 +829,21 @@ fn memory_limit_denial_is_catchable_and_the_runtime_recovers() {
     let padded = format!("rt => {{ /*{}*/ return 7; }}", "x".repeat(16_000));
     for _ in 0..2 {
         let value = evaluator.evaluate_unit(hog).unwrap();
-        let retained = evaluator.values.borrow()[&value.index].view();
+        let retained = evaluator.cx().unwrap().values.borrow()[&value.index].view();
         assert!(
             matches!(retained, ValueView::Number(n) if n > 1000.0),
             "{retained:?}"
         );
         let value = evaluator.evaluate_unit(&padded).unwrap();
         assert!(matches!(
-            evaluator.values.borrow()[&value.index].view(),
+            evaluator.cx().unwrap().values.borrow()[&value.index].view(),
             ValueView::Number(7.0)
         ));
     }
     let peer = shared.evaluator().unwrap();
     let value = peer.evaluate_unit(&churn(1000)).unwrap();
     assert!(matches!(
-        peer.values.borrow()[&value.index].view(),
+        peer.cx().unwrap().values.borrow()[&value.index].view(),
         ValueView::Number(999.0)
     ));
     let stats = shared.0.runtime.heap_stats();
@@ -780,7 +876,7 @@ fn releasing_a_deferred_value_at_the_memory_limit_recovers() {
             .unwrap_or_else(|e| panic!("freed {freed}: {e}"));
         let value = evaluator.evaluate_unit(&churn(1000)).unwrap();
         assert!(matches!(
-            evaluator.values.borrow()[&value.index].view(),
+            evaluator.cx().unwrap().values.borrow()[&value.index].view(),
             ValueView::Number(999.0)
         ));
     }
@@ -815,7 +911,7 @@ fn failure_roots_survive_an_exhausted_heap() {
     drop(filler);
     let value = evaluator.evaluate_unit(&churn(1000)).unwrap();
     assert!(matches!(
-        evaluator.values.borrow()[&value.index].view(),
+        evaluator.cx().unwrap().values.borrow()[&value.index].view(),
         ValueView::Number(999.0)
     ));
     assert!(runtime.heap_stats().peak_managed_bytes <= options.memory_limit);
@@ -842,7 +938,7 @@ fn functions_over_lowered_core_operations_publish() {
         let f = evaluator
             .evaluate_unit(&format!("rt => ({code})(rt)"))
             .unwrap();
-        let value = evaluator.values.borrow()[&f.index].clone();
+        let value = evaluator.cx().unwrap().values.borrow()[&f.index].clone();
         assert_eq!(
             shared.0.runtime.publish(&value).is_ok(),
             publishes,
@@ -886,7 +982,7 @@ fn large_literals_use_runtime_constructors_that_keep_the_inline_checks() {
         let f = evaluator
             .evaluate_unit(&format!("rt => ({code})(rt)"))
             .unwrap();
-        let value = evaluator.values.borrow()[&f.index].clone();
+        let value = evaluator.cx().unwrap().values.borrow()[&f.index].clone();
         assert!(shared.0.runtime.publish(&value).is_ok(), "{source}");
         evaluator.release(f).unwrap();
     }
@@ -984,7 +1080,7 @@ fn published_by_two_tasks(declaration: &str, construct: &str, names: &str, check
         let result = evaluator
             .evaluate_unit("rt => globalThis.__lightCompilerRoots['cljs.user/helper']")
             .unwrap();
-        records.push(evaluator.values.borrow()[&result.index].clone());
+        records.push(evaluator.cx().unwrap().values.borrow()[&result.index].clone());
         evaluator.release(result).unwrap();
         // Each task reads a field, and the record's type is the task's `R`:
         // one struct type, made with the bundle's shared factory.
@@ -1037,7 +1133,7 @@ fn a_unit_source_compiles_once_for_every_task_and_runs_in_each() {
         let value = evaluator.evaluate_unit(&source).unwrap();
         // Called with the evaluating task's own runtime, in its own globals.
         assert!(matches!(
-            evaluator.values.borrow()[&value.index].view(),
+            evaluator.cx().unwrap().values.borrow()[&value.index].view(),
             ValueView::Number(n) if n == 40.0 + calls
         ));
         evaluator.release(value).unwrap();
@@ -1070,7 +1166,7 @@ fn an_unshareable_or_invalid_unit_is_evaluated_by_its_task_with_the_same_diagnos
         format!("(() => {{ let n = 0; return rt => {{ {padding} n += 1; return n; }}; }})()");
     let value = evaluator.evaluate_unit(&captured).unwrap();
     assert!(matches!(
-        evaluator.values.borrow()[&value.index].view(),
+        evaluator.cx().unwrap().values.borrow()[&value.index].view(),
         ValueView::Number(1.0)
     ));
     let counts = shared.helper_counts();
@@ -1103,7 +1199,15 @@ fn replayed_registration_blocks_run_in_order_and_full_blocks_compile_once() {
             let value = evaluator.evaluate_unit(&replay_source(block)).unwrap();
             evaluator.release(value).unwrap();
         }
-        let global = |name| evaluator.task.global_value(name).unwrap().unwrap();
+        let global = |name| {
+            evaluator
+                .cx()
+                .unwrap()
+                .task
+                .global_value(name)
+                .unwrap()
+                .unwrap()
+        };
         assert_eq!(
             global("order").string().map(|s| s.to_string_lossy()),
             Some(expected.clone())

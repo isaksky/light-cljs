@@ -68,6 +68,12 @@ pub struct NativeHelperCounts {
     pub units_shared: usize,
     /// Unit evaluations compiled by the evaluating task itself.
     pub units_evaluated: usize,
+    /// Task contexts pool slots parked between jobs for others to borrow.
+    pub contexts_lent: usize,
+    /// Parked task contexts a pool slot borrowed instead of booting one.
+    pub contexts_borrowed: usize,
+    /// Parked task steps a completion queued on the pool from its wakeups.
+    pub woken: usize,
 }
 
 /// Wall time per phase of a compilation. The phases do not overlap; work a
@@ -624,6 +630,9 @@ impl CompileStats {
             line("native.units.compiled", &helpers.units_compiled);
             line("native.units.shared", &helpers.units_shared);
             line("native.units.evaluated", &helpers.units_evaluated);
+            line("native.tasks.lent", &helpers.contexts_lent);
+            line("native.tasks.borrowed", &helpers.contexts_borrowed);
+            line("native.tasks.woken", &helpers.woken);
         }
         line("macro-nodes.peak", &self.peak_macro_nodes);
         line("deferred-units.registered", &self.deferred_units.registered);

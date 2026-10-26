@@ -1372,6 +1372,14 @@ pub(crate) fn compiler_root_source(
         test.map_or("null".into(), |n| n.to_string())
     )
 }
+/// One root registration of [`MacroEvaluator::register_compiler_roots`].
+pub struct CompilerRoot<'a> {
+    pub name: &'a str,
+    pub unit: Option<usize>,
+    pub once: bool,
+    pub location: &'a str,
+    pub test: Option<usize>,
+}
 /// Whether an engine's compile-time code has installed an extension that
 /// environment data could reach: one of a core runtime protocol on a type,
 /// or an instance of one, other than a source `deftype` or `defrecord`
@@ -1415,6 +1423,14 @@ pub trait MacroEvaluator {
         let _ = unit;
         let value = self.evaluate_unit(source)?;
         self.release(value)
+    }
+    /// Register `roots` in order, as one [`Self::register_compiler_root`]
+    /// each would.
+    fn register_compiler_roots(&self, roots: &[CompilerRoot<'_>]) -> Result<(), EvalError> {
+        for root in roots {
+            self.register_compiler_root(root.name, root.unit, root.once, root.location, root.test)?;
+        }
+        Ok(())
     }
     /// Execute all namespace registrations in order. Engines may cache the
     /// compiled chunks, but must execute every registration on every call.

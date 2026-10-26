@@ -1525,7 +1525,7 @@ impl CompilationSession {
         installed.installed = end;
         drop(installed);
         let pending = self.shared.lock().registrations[start..end].to_vec();
-        install_registrations(bootstrap.evaluator.as_ref(), &pending, before_last)
+        install_registrations(bootstrap.evaluator.as_ref(), start, &pending, before_last)
     }
     /// Keep the compile-time runtime's `gensym` from returning any of
     /// `names` in this compilation: now if the session has started, else
@@ -2740,18 +2740,46 @@ fn analyze_unit(
     drop(guard);
     result
 }
-/// Install `registrations` in `engine` in order; `before_last` runs in it
-/// before the last of them.
+/// How many consecutive root registrations [`install_registrations`] gives
+/// an engine at once, in blocks aligned to the catalog: an engine catching
+/// up, such as a pool worker's, then installs a full block with the same
+/// text as every other engine ([`MacroEvaluator::register_compiler_roots`]).
+const ROOT_BLOCK: usize = 64;
+/// Install `registrations`, the catalog's from position `first`, in
+/// `engine` in order; `before_last` runs in it before the last of them.
 fn install_registrations(
     engine: &dyn MacroEvaluator,
+    first: usize,
     registrations: &[Registration],
     before_last: impl FnOnce(&dyn MacroEvaluator) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut before_last = Some(before_last);
+    let mut roots = Vec::new();
     for (index, registration) in registrations.iter().enumerate() {
-        if index + 1 == registrations.len()
-            && let Some(before_last) = before_last.take()
+        let last = index + 1 == registrations.len();
+        if let Registration::Root(name, unit, test, once, location) = registration
+            && !last
         {
+            roots.push(crate::evaluator::CompilerRoot {
+                name,
+                unit: *unit,
+                once: *once,
+                location,
+                test: *test,
+            });
+            if (first + index + 1) % ROOT_BLOCK == 0 {
+                engine
+                    .register_compiler_roots(&std::mem::take(&mut roots))
+                    .map_err(|e| e.to_string())?;
+            }
+            continue;
+        }
+        if !roots.is_empty() {
+            engine
+                .register_compiler_roots(&std::mem::take(&mut roots))
+                .map_err(|e| e.to_string())?;
+        }
+        if last && let Some(before_last) = before_last.take() {
             before_last(engine)?;
         }
         match registration {
@@ -2849,6 +2877,12 @@ pub(crate) trait CatalogView {
     ) -> Result<big_boy_pants_js::RunOutcome, String> {
         step.run()
     }
+    /// Where a native task this view parks is queued once woken: the
+    /// pool of the job it runs in, if any.
+    #[cfg(feature = "bbp-macros")]
+    fn native_submit(&self) -> Option<crate::compiler_evaluator::NativeSubmit> {
+        None
+    }
     /// `__lightCompileUnit`: unit `id`'s initializer, analyzed first if it
     /// is not yet, with the registration it needs evaluated in `active`.
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String>;
@@ -2939,6 +2973,8 @@ pub(crate) struct WorkerView {
     help: RefCell<Option<crate::compiler_evaluator::WaitService>>,
     #[cfg(feature = "bbp-macros")]
     runner: RefCell<Option<crate::compiler_evaluator::NativeRunner>>,
+    #[cfg(feature = "bbp-macros")]
+    submit: RefCell<Option<crate::compiler_evaluator::NativeSubmit>>,
     shared: Arc<SharedCatalog>,
     thread: usize,
     /// The worker's host ([`MacroHost::bind`]), whose binding each unit's
@@ -2964,6 +3000,8 @@ impl WorkerView {
                 help: RefCell::new(None),
                 #[cfg(feature = "bbp-macros")]
                 runner: RefCell::new(None),
+                #[cfg(feature = "bbp-macros")]
+                submit: RefCell::new(None),
                 shared,
                 thread,
                 host,
@@ -2992,19 +3030,78 @@ impl WorkerView {
         let producer = active.is_some_and(|active| {
             active.native_bridge_stats().is_some() && active.heap() != bootstrap.evaluator.heap()
         });
+        let first = self.installed.get();
         let pending = {
             let c = self.shared.lock();
-            if c.registrations.len() == self.installed.get() {
+            if c.registrations.len() == first {
                 return Ok(());
             }
-            let pending = c.registrations[self.installed.get()..].to_vec();
+            let pending = c.registrations[first..].to_vec();
             if !producer {
                 self.installed.set(c.registrations.len());
             }
             pending
         };
         let engine = active.unwrap_or(bootstrap.evaluator.as_ref());
-        install_registrations(engine, &pending, |_| Ok(()))
+        install_registrations(engine, first, &pending, |_| Ok(()))
+    }
+    /// The view's native evaluator, whose task context it parks between
+    /// jobs and borrows.
+    #[cfg(feature = "bbp-macros")]
+    fn native_shell(&self) -> Option<&crate::bbp_evaluator::BbpEvaluator> {
+        self.host
+            .engine
+            .bootstrap
+            .as_ref()?
+            .evaluator
+            .native_shell()
+    }
+    /// Take what the view that parked the task context it now runs on knew
+    /// about that task: the registrations installed in it, the source macros
+    /// evaluated in it and the reader declarations sent to it.
+    #[cfg(feature = "bbp-macros")]
+    fn load_context(&self, state: crate::bbp_evaluator::LentState) {
+        self.installed.set(state.installed);
+        *self.host.engine.foreign_macros.borrow_mut() = state.foreign_macros;
+        *self.host.engine.reader_declared.borrow_mut() = state.reader_declared;
+        // Another thread may have put this heap's `gensym` in a scope since.
+        crate::generated_names::forget_installed_scopes();
+    }
+    /// Give the view's native task context back to the runtime with what the
+    /// view knows about it, for whichever slot runs the next macro unit
+    /// (light-cljs-481): a slot holds no task between jobs, so a pool runs
+    /// as many contexts as it runs macro units at once, each installing the
+    /// catalog's registrations and evaluating source macros once.
+    #[cfg(feature = "bbp-macros")]
+    fn park_context(&self) {
+        let Some(shell) = self.native_shell() else {
+            return;
+        };
+        let state = crate::bbp_evaluator::LentState {
+            installed: self.installed.get(),
+            foreign_macros: std::mem::take(&mut *self.host.engine.foreign_macros.borrow_mut()),
+            reader_declared: std::mem::take(&mut *self.host.engine.reader_declared.borrow_mut()),
+        };
+        shell.park(state);
+    }
+    /// Make sure the view has a native task context for a job: its own, or
+    /// an idle one it borrows. False if it has none and none is idle, so the
+    /// slot makes a new view, which boots one.
+    #[cfg(feature = "bbp-macros")]
+    fn adopt_context(&self) -> bool {
+        let Some(shell) = self.native_shell() else {
+            return true;
+        };
+        if shell.has_context() {
+            return true;
+        }
+        match shell.adopt() {
+            Some(state) => {
+                self.load_context(state);
+                true
+            }
+            None => false,
+        }
     }
     /// Whether the view's engine took more headroom from the build's
     /// memory budget than a worker keeps between jobs
@@ -3435,17 +3532,28 @@ fn worker_view(
     environment: &MacroEnvironment,
 ) -> Result<Rc<WorkerView>, String> {
     let started = std::time::Instant::now();
+    #[cfg(feature = "bbp-macros")]
+    let mut lent = None;
     let engine: Option<Rc<dyn crate::compiler_evaluator::CompilerEvaluator>> = match engines {
         PoolEngines::None => None,
+        // A persistent slot borrows a task context another slot parked, if
+        // one is idle (`WorkerView::park_context`).
         #[cfg(feature = "bbp-macros")]
-        PoolEngines::Persistent | PoolEngines::Fresh if environment.native_macro_backend() => {
-            Some(Rc::new(
-                shared
-                    .native_runtime(environment.evaluator_options())
-                    .and_then(|runtime| runtime.evaluator())
-                    .map_err(|e| e.to_string())?,
-            ))
+        PoolEngines::Persistent if environment.native_macro_backend() => {
+            let (evaluator, state) = shared
+                .native_runtime(environment.evaluator_options())
+                .and_then(|runtime| runtime.lent_evaluator())
+                .map_err(|e| e.to_string())?;
+            lent = state;
+            Some(Rc::new(evaluator))
         }
+        #[cfg(feature = "bbp-macros")]
+        PoolEngines::Fresh if environment.native_macro_backend() => Some(Rc::new(
+            shared
+                .native_runtime(environment.evaluator_options())
+                .and_then(|runtime| runtime.evaluator())
+                .map_err(|e| e.to_string())?,
+        )),
         #[cfg(light_v8)]
         PoolEngines::Persistent | PoolEngines::Fresh => Some(Rc::new(
             match shared.resources() {
@@ -3486,6 +3594,10 @@ fn worker_view(
         MacroHost::bind(environment.clone(), engine)?,
     )?;
     view.forwards.set(true);
+    #[cfg(feature = "bbp-macros")]
+    if let Some(state) = lent {
+        view.load_context(state);
+    }
     if counted {
         let counters = &shared.counters;
         counters
@@ -3585,11 +3697,18 @@ fn execute_pool_job(
         let _ = macro_free;
         false
     };
-    let (kept, engines) = if plain {
+    #[cfg_attr(not(feature = "bbp-macros"), allow(unused_mut))]
+    let (mut kept, engines) = if plain {
         (slot.plain.take(), PoolEngines::None)
     } else {
         (slot.view.take(), slot.engines)
     };
+    // A native view parked its task context after its last job: it borrows
+    // an idle one, or makes way for a view that boots one.
+    #[cfg(feature = "bbp-macros")]
+    if kept.as_ref().is_some_and(|view| !view.adopt_context()) {
+        kept = None;
+    }
     let view = match kept {
         Some(view) => view,
         None => match worker_view(shared, engines, environment) {
@@ -3620,6 +3739,10 @@ fn execute_pool_job(
     }));
     #[cfg(feature = "bbp-macros")]
     {
+        let submitter = worker.help_handle().submitter();
+        *view.submit.borrow_mut() = Some(std::sync::Arc::new(move |step, reply| {
+            submitter.push_urgent(UnitJob::Native(step, reply));
+        }));
         let helper = worker.help_handle();
         let catalog = shared.clone();
         let settings = environment.clone();
@@ -3701,6 +3824,8 @@ fn execute_pool_job(
         && !view.terminal()
         && !view.holds_excess_headroom()
     {
+        #[cfg(feature = "bbp-macros")]
+        view.park_context();
         slot.view = Some(view);
     }
 }
@@ -3783,6 +3908,11 @@ fn serve_pool(
             served
         },
     );
+    // No slot borrows a parked task context any more.
+    #[cfg(feature = "bbp-macros")]
+    if let Some(Ok(runtime)) = shared.native_runtime.get() {
+        runtime.clear_idle();
+    }
     match run {
         Ok(result) => result,
         Err(error) => {
@@ -3807,6 +3937,10 @@ impl CatalogView for WorkerView {
             Some(run) => run(step),
             None => step.run(),
         }
+    }
+    #[cfg(feature = "bbp-macros")]
+    fn native_submit(&self) -> Option<crate::compiler_evaluator::NativeSubmit> {
+        self.submit.borrow().clone()
     }
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
         self.install(Some(active))?;
@@ -3862,6 +3996,8 @@ pub(crate) fn install_catalog_services(
                 .ok_or("compilation session expired")?
                 .run_native(step)
         }));
+        let submitting = view.clone();
+        evaluator.install_native_submitter(Rc::new(move || submitting.upgrade()?.native_submit()));
     }
     // `light.build`: a request names the units whose initializers run; the
     // catalog knows the units being analyzed. The runtime also reports on it
