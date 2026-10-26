@@ -19,9 +19,69 @@ fn numeric_global(evaluator: &BbpEvaluator, name: &str) -> f64 {
     }
 }
 
+/// Runs while both consumers are parked on the unavailable helper, on the
+/// producer's thread, before the helper is compiled.
+type WhileParked = Arc<dyn Fn(&BbpRuntime) + Send + Sync>;
+
 #[test]
 fn two_real_consumers_share_one_helper_and_input_across_a_parked_collection() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    share_one_helper_while_parked(
+        shared,
+        Arc::new(|shared: &BbpRuntime| {
+            let before = shared.0.runtime.heap_stats().collections;
+            shared.0.runtime.collect().unwrap();
+            assert_eq!(shared.0.runtime.heap_stats().collections, before + 1);
+        }),
+    );
+}
+
+/// Automatic collection under an aggregate object cap, with no forced
+/// collection: garbage produced by another task of the shared runtime while
+/// both consumers are parked must not disturb their saved frames or input.
+/// The engine's byte admission is private to the engine crate (see
+/// `heap_policy`), so this pressure is the public object cap and threshold.
+#[test]
+fn parked_consumers_survive_automatic_collection_under_an_object_cap() {
+    let options = EvaluatorOptions::default();
+    // The cap leaves room for two booted consumer tasks and little else.
+    let booted = BbpRuntime::new(&options).unwrap();
+    let evaluator = booted.evaluator().unwrap();
+    booted.0.runtime.collect().unwrap();
+    let boot_objects = booted.0.runtime.heap_stats().last_live_objects;
+    drop(evaluator);
+    drop(booted);
+    let cap = boot_objects * 4;
+    let policy = big_boy_pants_js::HeapPolicy {
+        allocation_threshold: Some(256),
+        hard_limit_objects: Some(cap),
+    };
+    let shared = BbpRuntime::with_heap_policy(&options, policy).unwrap();
+    let garbage = 20 * boot_objects;
+    share_one_helper_while_parked(
+        shared,
+        Arc::new(move |shared: &BbpRuntime| {
+            let before = shared.0.runtime.heap_stats().collections;
+            let churn = shared.evaluator().unwrap();
+            let value = churn
+                .evaluate_unit(&format!(
+                    "rt => {{ let kept = null; for (let i = 0; i < {garbage}; i++) {{ kept = [i, {{v: i}}]; }} return kept[0]; }}"
+                ))
+                .unwrap();
+            churn.release(value).unwrap();
+            drop(churn);
+            let after = shared.0.runtime.heap_stats();
+            assert!(
+                after.collections >= before + 2,
+                "{} automatic collections while parked",
+                after.collections - before
+            );
+            assert!(after.objects <= cap, "{after:?}");
+        }),
+    );
+}
+
+fn share_one_helper_while_parked(shared: BbpRuntime, while_parked: WhileParked) {
     let parked = Arc::new((Mutex::new(0usize), Condvar::new()));
     let seen = parked.clone();
     *shared.0.on_wait.lock().unwrap() = Some(Arc::new(move |_, key| {
@@ -52,7 +112,8 @@ fn two_real_consumers_share_one_helper_and_input_across_a_parked_collection() {
             .map(|_| {
                 scope.spawn(|| {
                     let evaluator = Rc::new(shared.evaluator().unwrap());
-                    let runtime = shared.0.runtime.clone();
+                    let in_runtime = shared.clone();
+                    let while_parked = while_parked.clone();
                     let producers = &producers;
                     let collected = &collected;
                     let parked = parked.clone();
@@ -80,7 +141,7 @@ fn two_real_consumers_share_one_helper_and_input_across_a_parked_collection() {
                                     );
                                 }
                                 drop(arrivals);
-                                runtime.collect().unwrap();
+                                while_parked(&in_runtime);
                                 Ok(native(helper))
                             }),
                         )

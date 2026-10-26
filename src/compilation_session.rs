@@ -595,9 +595,16 @@ impl SharedCatalog {
         &self,
         options: &crate::evaluator::EvaluatorOptions,
     ) -> Result<crate::bbp_evaluator::BbpRuntime, crate::evaluator::EvalError> {
-        self.native_runtime
+        let runtime = self
+            .native_runtime
             .get_or_init(|| crate::bbp_evaluator::BbpRuntime::new(options))
-            .clone()
+            .clone();
+        // One runtime per compilation: a later demand cannot change or reset
+        // the aggregate budget the first one built it with.
+        if let Ok(runtime) = &runtime {
+            debug_assert_eq!(runtime.memory_limit(), options.memory_limit);
+        }
+        runtime
     }
 
     fn lock(&self) -> MutexGuard<'_, Catalog> {
@@ -4417,7 +4424,7 @@ mod worker_tests {
                 _trace: None,
             },
             |slot, job, worker| {
-                execute_pool_job(slot, job, worker, &shared, &environment);
+                execute_pool_job(slot, job, worker, shared, &environment);
                 assert!(
                     slot.view.is_none(),
                     "a cancelled VM cannot serve the next analysis"
@@ -4583,7 +4590,7 @@ mod worker_tests {
                 engines: PoolEngines::Persistent,
                 _trace: Some(crate::compile_trace::record_worker(slot)),
             },
-            |slot, job, worker| execute_pool_job(slot, job, worker, &shared, &environment),
+            |slot, job, worker| execute_pool_job(slot, job, worker, shared, &environment),
             |pool| {
                 pool.submit_batch(shared.unit_jobs(vec![left, right, blocked, other], false));
                 loop {

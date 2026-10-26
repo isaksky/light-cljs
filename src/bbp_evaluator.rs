@@ -342,6 +342,8 @@ impl Bridge {
 #[derive(Clone)]
 pub struct BbpRuntime(Arc<SharedRuntime>);
 struct SharedRuntime {
+    /// The aggregate budget this runtime was built for ([`heap_policy`]).
+    memory_limit: usize,
     counters: Arc<NativeCounters>,
     runtime: Runtime,
     executable: Executable,
@@ -375,12 +377,38 @@ const BINDING: ResultKind = ResultKind::new(2);
 const HELPER: ResultKind = ResultKind::new(3);
 const INITIALIZER: ResultKind = ResultKind::new(4);
 
+/// The runtime-wide collection and admission policy for `options`.
+///
+/// `options.memory_limit` is the compilation's one aggregate budget, shared
+/// by every task and worker of the runtime; this is the only place it may
+/// reach the engine. The engine's byte admission (light-cljs-472) is not yet
+/// configurable from outside the engine crate, so the native backend keeps
+/// the default collection policy and does not enforce `memory_limit` until
+/// the public policy is mapped here.
+fn heap_policy(options: &EvaluatorOptions) -> big_boy_pants_js::HeapPolicy {
+    let _aggregate_bytes = options.memory_limit;
+    big_boy_pants_js::HeapPolicy::default()
+}
+
 impl BbpRuntime {
+    /// Build a compilation's native runtime. Every runtime-wide limit comes
+    /// from `options` here, once: evaluators spawned from the result share
+    /// its heap, policy and execution budget and never configure their own.
     pub fn new(options: &EvaluatorOptions) -> Result<Self, EvalError> {
-        let runtime = Runtime::with_limits(big_boy_pants_js::VmLimits {
-            max_stack_values: (options.stack_limit / 16).max(1),
-            ..Default::default()
-        });
+        Self::with_heap_policy(options, heap_policy(options))
+    }
+
+    fn with_heap_policy(
+        options: &EvaluatorOptions,
+        policy: big_boy_pants_js::HeapPolicy,
+    ) -> Result<Self, EvalError> {
+        let runtime = Runtime::with_heap_policy(
+            big_boy_pants_js::VmLimits {
+                max_stack_values: (options.stack_limit / 16).max(1),
+                ..Default::default()
+            },
+            policy,
+        );
         let keys = crate::CoreFnId::ALL
             .iter()
             .map(|k| format!("{:?}", k.runtime_key()))
@@ -393,6 +421,7 @@ impl BbpRuntime {
         .map_err(error)?;
         let control = ExecutionControl::new(options)?;
         Ok(Self(Arc::new(SharedRuntime {
+            memory_limit: options.memory_limit,
             counters: Arc::new(NativeCounters::default()),
             runtime,
             executable,
@@ -413,6 +442,10 @@ impl BbpRuntime {
         })))
     }
 
+    /// The aggregate memory budget `new` received; spawned evaluators share it.
+    pub fn memory_limit(&self) -> usize {
+        self.0.memory_limit
+    }
     pub fn evaluator(&self) -> Result<BbpEvaluator, EvalError> {
         BbpEvaluator::in_runtime(self.clone(), 0)
     }

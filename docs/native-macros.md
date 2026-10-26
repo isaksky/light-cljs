@@ -139,6 +139,9 @@ so repeated imports trade memory retention for stable identity. The runtime
 automatically collects from allocation pressure. Aggregate native byte accounting
 is not yet provided: `--macro-memory-limit` does not cap native engine allocation.
 The engine's optional object-count admission limit is separate from bytes and is
-not used as a substitute for this compiler option.
+not used as a substitute for this compiler option. `BbpRuntime::new` is the one
+place the compilation's runtime is configured; it records `memory_limit`, and
+its `heap_policy` is where the limit will map to the engine's byte policy once
+that is public. Evaluators spawned later share that runtime and cannot reset it.
 Legacy-only unit tests still require the `quickjs` feature; the dedicated
 `bbp_macros` integration target above runs without it.
