@@ -46,8 +46,13 @@ fn timer_callbacks_use_ordinary_call_dispatch() {
     }
     assert_eq!(
         outcomes,
-        vec![(Some(big_boy_pants_js::VmErrorKind::TypeError), vec![]); 4],
-        "ordinary calls and timer callbacks must reject before running the target"
+        vec![
+            (None, vec![]),
+            (None, vec![]),
+            (Some(big_boy_pants_js::VmErrorKind::TypeError), vec![]),
+            (Some(big_boy_pants_js::VmErrorKind::TypeError), vec![]),
+        ],
+        "Proxy apply traps intercept calls; unproxied classes reject before running the target"
     );
 }
 
