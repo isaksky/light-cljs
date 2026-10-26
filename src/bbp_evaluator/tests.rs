@@ -65,6 +65,50 @@ fn initializer_namespace_retains_bindings_and_breaks_ancestry_ties_by_source_uni
     }
 }
 
+#[test]
+fn explicit_namespace_cache_retains_only_observable_snapshots() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let result = evaluator
+        .evaluate_unit(
+            "rt => {
+                const saved = rt.core.currentNs;
+                try {
+                    const ns = new rt.core.Namespace(null, rt.symbol(null, 'ephemeral'));
+                    rt.core.currentNs = ns;
+                    return __rt.vector(rt.compilerForms.namespaceContext(), ns);
+                } finally { rt.core.currentNs = saved; }
+            }",
+        )
+        .unwrap();
+    let (snapshot, namespace) = shared.0.runtime.scope(|s| {
+        let cx = evaluator.cx().unwrap();
+        let values = cx.values.borrow();
+        let result = s.local(&values[&result.index]).unwrap();
+        (
+            s.persist(s.nth(result, 0).unwrap()),
+            s.downgrade(s.nth(result, 1).unwrap()),
+        )
+    });
+    evaluator.release(result).unwrap();
+    shared.0.runtime.collect().unwrap();
+    assert!(
+        namespace.is_live(),
+        "an observable snapshot preserves identity"
+    );
+    let weak_snapshot = snapshot.downgrade();
+    drop(snapshot);
+    shared.0.runtime.collect().unwrap();
+    assert!(
+        !weak_snapshot.is_live(),
+        "the cache must not root snapshots"
+    );
+    assert!(
+        !namespace.is_live(),
+        "an unobserved namespace is collectable"
+    );
+}
+
 /// Runs while both consumers are parked on the unavailable helper, on the
 /// producer's thread, before the helper is compiled.
 type WhileParked = Arc<dyn Fn(&BbpRuntime) + Send + Sync>;

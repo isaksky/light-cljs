@@ -491,8 +491,9 @@ const native = (() => {
   const namespaces=new Map();
   // Explicit Namespace values are not registry entries. A snapshot contains
   // their original name occurrence; each task restores the same local object
-  // for repeated reads of that snapshot, without interning it by name.
-  const explicitNamespaces=new Map();
+  // for repeated reads of that snapshot, without interning it by name. Only
+  // an observable snapshot keeps the cached object and its name alive.
+  const explicitNamespaces=new WeakMap();
   let currentNamespace;
   const namespaceFrames=[];
   function Namespace(obj,name){if(!(this instanceof Namespace))return new Namespace(obj,name);this.obj=obj;this.name=name;}
