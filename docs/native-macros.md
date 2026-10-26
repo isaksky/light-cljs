@@ -68,7 +68,14 @@ application JavaScript as QuickJS (`--no-default-features --features
 bbp-macros,quickjs --test bbp_macros`). The table covers grouping, completion
 flushing, nil and empty inputs, repeated and interleaved reductions, callback
 and callable-getter effect order, reduced termination and constructor/reducer
-arities. A reduced cuerdas namespace keeps `make-concat-xform` and
+arities. The `into` target table checks vector, list, nil, map and set targets,
+including reducer initialization and variadic calls for noneditable targets;
+sorted map/set rows establish the legacy contract and check the native
+unsupported error. A published composed factory is consumed at one, two and
+four slots under seeded scheduling and fixed one-job admission. Cold helper
+demands suspend with buffered input, during final-group flushing and during
+completion, retaining exact callback effects and independent interleaved
+reducers. A reduced cuerdas namespace keeps `make-concat-xform` and
 `unsafe-concat` verbatim (its external string-repeat helper is reduced to
 JavaScript string repetition).
 
@@ -169,7 +176,11 @@ undefined target and three undefined prefix arguments.
 One-argument `map`, `filter`, `mapcat` and `partition-by` construct native
 transducers (light-cljs-507), and their collection overloads remain lazy.
 `comp` combines them, `into` supports zero through three arguments, and
-`transduce` and `completing` supply initialization and completion. A
+`transduce` and `completing` supply initialization and completion. Three-argument
+`into` supplies `conj` to noneditable targets (including list and nil), retaining
+its zero-argument initialization and variadic arities; native vector, map and
+set targets use the legacy step/completion-only adapter. Sorted forms remain
+unsupported. A
 `partition-by` factory captures immutable inputs; each application to a
 reducer allocates its own task-owned buffer and prior-key cell. The buffer
 holds a persistent native vector and clears before downstream calls, including

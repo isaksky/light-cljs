@@ -8,8 +8,9 @@
         (mapcat (fn [x] x))))
 
 ;; Initializers stay cold until the callbacks below demand them. In particular,
-;; step-helper is first read while partition-by holds the first two inputs;
-;; done-helper is first read after completion has flushed the final group.
+;; step-helper is first read while partition-by holds a nonempty group;
+;; flush-helper is read inside the final buffered group's downstream step;
+;; done-helper is first read in the reducer's completion arity.
 (defn step-helper [x] (inc x))
 (defn flush-helper [x] x)
 (defn done-helper [r] (conj r :done))

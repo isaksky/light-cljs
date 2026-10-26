@@ -2672,12 +2672,24 @@ fn native_transducer_helpers_publish_and_resume_without_replay() {
         "[[1 1 2 3 :done] [2 2 1 :done] [:done] [[1 2] [2 1]] ",
         "\"input1,input1,input2,before-step,3,after-step,out1,out1,input3,out2,out3,before-flush,3,after-flush,before-done,after-done,",
         "input2,before-step,3,after-step,input2,before-step,3,after-step,input1,out2,out2,out1,before-done,after-done,before-done,after-done\"] ",
-        "[[2 1 1 2 :done] [2 2 1 :done] [:done] [[1 2] [2 1]] ",
-        "\"input2,before-step,3,after-step,input1,out2,input1,input2,before-step,3,after-step,out1,out1,out2,before-done,after-done,",
+        "[[1 2 2 3 3 :done] [2 2 1 :done] [:done] [[1 2] [2 1]] ",
+        "\"input1,input2,before-step,3,after-step,out1,input2,before-step,3,after-step,input3,out2,out2,input3,",
+        "out3,before-flush,3,after-flush,out3,before-flush,3,after-flush,before-done,after-done,",
         "input2,before-step,3,after-step,input2,before-step,3,after-step,input1,out2,out2,out1,before-done,after-done,before-done,after-done\"]\n"
     );
     let mut reference = None;
-    for jobs in [1, 2, 4] {
+    // Exercise both the seeded parallel schedule and fixed assignments with
+    // one-job admission. Cold helper reads force VM waits in either mode;
+    // no timing assumption controls when the callbacks reach those reads.
+    for (jobs, single_admission) in [
+        (1, false),
+        (2, false),
+        (4, false),
+        (1, true),
+        (2, true),
+        (4, true),
+    ] {
+        let at = format!("jobs {jobs}, single admission {single_admission}");
         let mut host = MacroHost::new();
         host.use_native_macros();
         let mut stats = light_cljs::CompileStats::new();
@@ -2693,10 +2705,14 @@ fn native_transducer_helpers_publish_and_resume_without_replay() {
                 #[cfg(debug_assertions)]
                 perturbation: Some(light_cljs::scheduler::Perturbation {
                     seed: 1,
-                    fixed: true,
+                    fixed: single_admission,
                     limits: Some(light_cljs::scheduler::Limits {
                         batch_jobs: 1,
-                        admitted_jobs: 1,
+                        admitted_jobs: if single_admission {
+                            1
+                        } else {
+                            light_cljs::scheduler::Limits::default().admitted_jobs
+                        },
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -2704,20 +2720,20 @@ fn native_transducer_helpers_publish_and_resume_without_replay() {
                 ..Default::default()
             },
         )
-        .unwrap_or_else(|error| panic!("jobs {jobs}: {error}"));
+        .unwrap_or_else(|error| panic!("{at}: {error}"));
         let js = emit_js(&program);
-        assert_eq!(program_output(&js), expected, "jobs {jobs}");
-        assert_eq!(stats.native_helpers.compiled, 4, "jobs {jobs}");
-        assert_eq!(stats.native_helpers.published, 4, "jobs {jobs}");
-        assert_eq!(stats.native_helpers.per_task, 0, "jobs {jobs}");
+        assert_eq!(program_output(&js), expected, "{at}");
+        assert_eq!(stats.native_helpers.compiled, 4, "{at}");
+        assert_eq!(stats.native_helpers.published, 4, "{at}");
+        assert_eq!(stats.native_helpers.per_task, 0, "{at}");
         // These are actual saved-VM dependency waits, even at one slot.
         assert!(
             stats.native_helpers.waits >= 4,
-            "jobs {jobs}: {:?}",
+            "{at}: {:?}",
             stats.native_helpers
         );
         if let Some(reference) = &reference {
-            assert_eq!(&js, reference, "jobs {jobs}");
+            assert_eq!(&js, reference, "{at}");
         } else {
             reference = Some(js);
         }
