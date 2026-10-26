@@ -101,6 +101,9 @@
 //! walks the trie and reports every heap reference among its elements, keys
 //! and values, so the collector sees all edges (a node shared by several
 //! versions is walked once per version). Nodes never hold `Rooted` handles.
+//! Under a byte limit each node carries the charge for its own allocation
+//! ([`NodeCharge`]), so an update is charged for the path it copies and a
+//! shared node stays charged until the last version holding it is freed.
 //!
 //! A read resolves the collection's identity under the heap's object-table
 //! lock once per operation, copying out an `Arc` to the body; the trie walk
@@ -237,6 +240,51 @@ impl fmt::Display for CollectionError {
 }
 
 impl std::error::Error for CollectionError {}
+
+/// Byte charges for the trie nodes of persistent bodies ([`PMap`],
+/// [`PVector`]).
+///
+/// Every trie node owns the reservation for its own allocation (the `Arc`
+/// header, the node and its exactly sized element buffer), taken before the
+/// node is built. A node is shared by every version that reaches it and
+/// freed with the last of them, so its charge is held exactly as long as
+/// its storage: an update is charged only for the nodes it allocates (the
+/// copied path), and dropping an older version can release only nodes no
+/// other version retains. Without a byte limit nothing is reserved.
+#[derive(Clone, Copy)]
+pub(crate) struct NodeCharge<'a>(Option<&'a Heap>);
+
+impl<'a> NodeCharge<'a> {
+    /// Uncharged nodes, for tests of the trie operations alone.
+    #[cfg(test)]
+    pub(crate) const NONE: NodeCharge<'static> = NodeCharge(None);
+
+    pub(crate) fn of(heap: &'a Heap) -> Self {
+        NodeCharge(heap.has_byte_limit().then_some(heap))
+    }
+
+    /// Reserve one `N` node holding `elements` buffer elements of type `E`.
+    pub(crate) fn reserve<N, E>(
+        self,
+        elements: usize,
+    ) -> Result<crate::heap::budget::ByteReservation, CollectionError> {
+        let Some(heap) = self.0 else {
+            return Ok(Default::default());
+        };
+        node_bytes::<N, E>(elements)
+            .and_then(|bytes| heap.reserve_bytes(bytes))
+            .ok_or(CollectionError::HeapLimit)
+    }
+}
+
+/// The bytes of one `Arc<N>` allocation plus a buffer of `elements` `E`s.
+pub(crate) fn node_bytes<N, E>(elements: usize) -> Option<usize> {
+    // `Arc`'s strong and weak counts precede the value.
+    let header = 2 * std::mem::size_of::<usize>() + std::mem::size_of::<N>();
+    elements
+        .checked_mul(std::mem::size_of::<E>())?
+        .checked_add(header)
+}
 
 /// A collection body copied out of the heap (an `Arc` clone).
 enum Body {

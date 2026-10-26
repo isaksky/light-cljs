@@ -16,14 +16,17 @@
 //!
 //! Each trie level consumes 5 hash bits. Keys whose 64-bit hashes are fully
 //! equal end in a collision node. Nodes are immutable and shared through
-//! `Arc`; an update copies only the path to the changed entry. Iteration
+//! `Arc`; an update copies only the path to the changed entry, and under a
+//! byte limit is charged for exactly those nodes ([`NodeCharge`]). Iteration
 //! order is the trie order: deterministic for the same keys and identities,
 //! but otherwise unspecified (not insertion order).
 
 use std::sync::Arc;
 
+use super::{CollectionError, NodeCharge};
 #[cfg(test)]
 use crate::heap::ObjectId;
+use crate::heap::budget::ByteReservation;
 use crate::heap::gc::Trace;
 use crate::value::Value;
 
@@ -103,8 +106,17 @@ enum Entry {
     Child(Arc<Node>),
 }
 
+/// A trie node and the byte charge for its own allocation
+/// ([`NodeCharge`]): shared by every version that reaches it, so the charge
+/// is released only with the last of them.
 #[derive(Debug)]
-enum Node {
+struct Node {
+    kind: Kind,
+    _charge: ByteReservation,
+}
+
+#[derive(Debug)]
+enum Kind {
     /// One entry per set bit of `bitmap`, in bit order.
     Bitmap { bitmap: u32, entries: Vec<Entry> },
     /// Keys whose full hashes are equal (only below the last hash digit).
@@ -112,6 +124,43 @@ enum Node {
         hash: u64,
         pairs: Vec<(Value, Value)>,
     },
+}
+
+impl Node {
+    /// A bitmap node of exactly `len` entries written by `fill`, charged
+    /// before its buffer is allocated.
+    fn bitmap(
+        charge: NodeCharge<'_>,
+        bitmap: u32,
+        len: usize,
+        fill: impl FnOnce(&mut Vec<Entry>),
+    ) -> Result<Node, CollectionError> {
+        let _charge = charge.reserve::<Node, Entry>(len)?;
+        let mut entries = Vec::with_capacity(len);
+        fill(&mut entries);
+        debug_assert_eq!(entries.len(), len);
+        Ok(Node {
+            kind: Kind::Bitmap { bitmap, entries },
+            _charge,
+        })
+    }
+
+    /// A collision node of exactly `len` pairs written by `fill`.
+    fn collision(
+        charge: NodeCharge<'_>,
+        hash: u64,
+        len: usize,
+        fill: impl FnOnce(&mut Vec<(Value, Value)>),
+    ) -> Result<Node, CollectionError> {
+        let _charge = charge.reserve::<Node, (Value, Value)>(len)?;
+        let mut pairs = Vec::with_capacity(len);
+        fill(&mut pairs);
+        debug_assert_eq!(pairs.len(), len);
+        Ok(Node {
+            kind: Kind::Collision { hash, pairs },
+            _charge,
+        })
+    }
 }
 
 fn bit_for(hash: u64, shift: u32) -> u32 {
@@ -127,7 +176,6 @@ fn position(bitmap: u32, bit: u32) -> usize {
 pub(crate) struct PMap {
     len: usize,
     root: Option<Arc<Node>>,
-    _reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 enum Assoc {
@@ -139,37 +187,39 @@ enum Assoc {
 
 enum Dissoc {
     Absent,
-    /// The node after removal; `None` when it became empty.
-    Removed(Option<Node>),
+    /// The node became empty.
+    Empty,
+    /// One pair remains, which the parent holds inline instead of a node.
+    Single {
+        hash: u64,
+        key: Value,
+        value: Value,
+    },
+    /// The node after removal.
+    Node(Node),
+}
+
+/// The result of an update whose nodes are uncharged, which cannot fail.
+#[cfg(test)]
+fn uncharged<T>(result: Result<T, CollectionError>) -> T {
+    result.expect("uncharged nodes reserve nothing")
 }
 
 impl PMap {
-    // A 64-bit hash has at most 13 radix levels. Charge all levels for every
-    // entry, including geometric Vec capacity and Arc/node headers. Charging
-    // the complete result makes sharing independent of old-version lifetime.
-    fn reserve(
-        heap: &crate::heap::Heap,
-        len: usize,
-    ) -> Result<Option<Arc<crate::heap::budget::ByteReservation>>, super::CollectionError> {
-        let bytes = len
-            .checked_mul(4096)
-            .and_then(|n| n.checked_add(128))
-            .ok_or(super::CollectionError::HeapLimit)?;
-        let reservation = heap
-            .reserve_bytes(bytes)
-            .ok_or(super::CollectionError::HeapLimit)?;
-        Ok(reservation.is_charged().then(|| Arc::new(reservation)))
-    }
-
     pub(crate) fn try_assoc(
         &self,
         heap: &crate::heap::Heap,
         key: Value,
         value: Value,
-    ) -> Result<Option<PMap>, super::CollectionError> {
+    ) -> Result<Option<PMap>, CollectionError> {
         self.try_assoc_with(heap, key_hash(&key), canonical_key(key), value, &key_eq)
     }
 
+    /// A new version mapping `key` to `value` (stored as given) under a
+    /// caller-supplied hash and key equality (see [`PMap::get_with`]), or
+    /// `None` when the key already maps to an identical value (so the
+    /// caller can return the original). Under a byte limit the new version
+    /// is charged for the nodes it allocates: the copied root-to-entry path.
     pub(crate) fn try_assoc_with(
         &self,
         heap: &crate::heap::Heap,
@@ -177,51 +227,28 @@ impl PMap {
         key: Value,
         value: Value,
         eq: KeyEq<'_>,
-    ) -> Result<Option<PMap>, super::CollectionError> {
-        if !heap.has_byte_limit() {
-            return Ok(self.assoc_with(hash, key, value, eq));
-        }
-        let old = self.get_with(hash, &key, eq);
-        if old.as_ref().is_some_and(|old| identical(old, &value)) {
-            return Ok(None);
-        }
-        let len = self
-            .len
-            .checked_add(usize::from(old.is_none()))
-            .ok_or(super::CollectionError::HeapLimit)?;
-        let reservation = Self::reserve(heap, len)?;
-        Ok(self.assoc_with(hash, key, value, eq).map(|mut result| {
-            result._reservation = reservation;
-            result
-        }))
+    ) -> Result<Option<PMap>, CollectionError> {
+        self.assoc_charged(NodeCharge::of(heap), hash, key, value, eq)
     }
 
     pub(crate) fn try_dissoc(
         &self,
         heap: &crate::heap::Heap,
         key: &Value,
-    ) -> Result<Option<PMap>, super::CollectionError> {
+    ) -> Result<Option<PMap>, CollectionError> {
         self.try_dissoc_with(heap, key_hash(key), key, &key_eq)
     }
 
+    /// A new version without `key`, or `None` when the key is absent;
+    /// charged like [`PMap::try_assoc_with`].
     pub(crate) fn try_dissoc_with(
         &self,
         heap: &crate::heap::Heap,
         hash: u64,
         key: &Value,
         eq: KeyEq<'_>,
-    ) -> Result<Option<PMap>, super::CollectionError> {
-        if !heap.has_byte_limit() {
-            return Ok(self.dissoc_with(hash, key, eq));
-        }
-        if self.get_with(hash, key, eq).is_none() {
-            return Ok(None);
-        }
-        let reservation = Self::reserve(heap, self.len - 1)?;
-        Ok(self.dissoc_with(hash, key, eq).map(|mut result| {
-            result._reservation = reservation;
-            result
-        }))
+    ) -> Result<Option<PMap>, CollectionError> {
+        self.dissoc_charged(NodeCharge::of(heap), hash, key, eq)
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -257,8 +284,8 @@ impl PMap {
         let mut node = self.root.as_deref()?;
         let mut shift = 0;
         loop {
-            match node {
-                Node::Bitmap { bitmap, entries } => {
+            match &node.kind {
+                Kind::Bitmap { bitmap, entries } => {
                     let bit = bit_for(hash, shift);
                     if bitmap & bit == 0 {
                         return None;
@@ -277,7 +304,7 @@ impl PMap {
                         }
                     }
                 }
-                Node::Collision { pairs, .. } => {
+                Kind::Collision { pairs, .. } => {
                     return pairs.iter().find(|(k, _)| eq(k, key)).map(|p| p.1.clone());
                 }
             }
@@ -286,58 +313,76 @@ impl PMap {
 
     #[cfg(test)]
     fn assoc_hashed(&self, hash: u64, key: Value, value: Value) -> Option<PMap> {
-        self.assoc_with(hash, canonical_key(key), value, &key_eq)
+        uncharged(self.assoc_charged(NodeCharge::NONE, hash, canonical_key(key), value, &key_eq))
     }
 
-    /// [`PMap::assoc`] with a caller-supplied hash and key equality (see
-    /// [`PMap::get_with`]). The key is stored as given.
-    fn assoc_with(&self, hash: u64, key: Value, value: Value, eq: KeyEq<'_>) -> Option<PMap> {
+    /// [`PMap::try_assoc_with`] with new nodes charged by `charge`.
+    fn assoc_charged(
+        &self,
+        charge: NodeCharge<'_>,
+        hash: u64,
+        key: Value,
+        value: Value,
+        eq: KeyEq<'_>,
+    ) -> Result<Option<PMap>, CollectionError> {
         let Some(root) = &self.root else {
-            let root = Node::Bitmap {
-                bitmap: bit_for(hash, 0),
-                entries: vec![Entry::Pair { hash, key, value }],
-            };
-            return Some(PMap {
+            let root = Node::bitmap(charge, bit_for(hash, 0), 1, |entries| {
+                entries.push(Entry::Pair { hash, key, value })
+            })?;
+            return Ok(Some(PMap {
                 len: 1,
                 root: Some(Arc::new(root)),
-                _reservation: None,
-            });
+            }));
         };
-        let (root, len) = match assoc_in(root, 0, hash, key, value, eq) {
-            Assoc::Unchanged => return None,
+        let (root, len) = match assoc_in(charge, root, 0, hash, key, value, eq)? {
+            Assoc::Unchanged => return Ok(None),
             Assoc::Replaced(n) => (n, self.len),
             Assoc::Added(n) => (n, self.len + 1),
         };
-        Some(PMap {
+        Ok(Some(PMap {
             len,
             root: Some(Arc::new(root)),
-            _reservation: None,
-        })
+        }))
     }
 
     #[cfg(test)]
     fn dissoc_hashed(&self, hash: u64, key: &Value) -> Option<PMap> {
-        self.dissoc_with(hash, key, &key_eq)
+        uncharged(self.dissoc_charged(NodeCharge::NONE, hash, key, &key_eq))
     }
 
-    /// [`PMap::dissoc`] with a caller-supplied hash and key equality (see
-    /// [`PMap::get_with`]).
-    fn dissoc_with(&self, hash: u64, key: &Value, eq: KeyEq<'_>) -> Option<PMap> {
-        match dissoc_in(self.root.as_deref()?, 0, hash, key, eq) {
-            Dissoc::Absent => None,
-            Dissoc::Removed(root) => Some(PMap {
-                len: self.len - 1,
-                root: root.map(Arc::new),
-                _reservation: None,
-            }),
-        }
+    /// [`PMap::try_dissoc_with`] with new nodes charged by `charge`.
+    fn dissoc_charged(
+        &self,
+        charge: NodeCharge<'_>,
+        hash: u64,
+        key: &Value,
+        eq: KeyEq<'_>,
+    ) -> Result<Option<PMap>, CollectionError> {
+        let Some(root) = self.root.as_deref() else {
+            return Ok(None);
+        };
+        let root = match dissoc_in(charge, root, 0, hash, key, eq)? {
+            Dissoc::Absent => return Ok(None),
+            Dissoc::Empty => None,
+            // The root keeps a one-pair node.
+            Dissoc::Single { hash, key, value } => {
+                Some(Node::bitmap(charge, bit_for(hash, 0), 1, |entries| {
+                    entries.push(Entry::Pair { hash, key, value })
+                })?)
+            }
+            Dissoc::Node(n) => Some(n),
+        };
+        Ok(Some(PMap {
+            len: self.len - 1,
+            root: root.map(Arc::new),
+        }))
     }
 
     /// Call `f` on every entry, in trie order.
     pub(crate) fn for_each(&self, mut f: impl FnMut(&Value, &Value)) {
         fn walk(node: &Node, f: &mut dyn FnMut(&Value, &Value)) {
-            match node {
-                Node::Bitmap { entries, .. } => {
+            match &node.kind {
+                Kind::Bitmap { entries, .. } => {
                     for entry in entries {
                         match entry {
                             Entry::Pair { key, value, .. } => f(key, value),
@@ -345,7 +390,7 @@ impl PMap {
                         }
                     }
                 }
-                Node::Collision { pairs, .. } => pairs.iter().for_each(|(k, v)| f(k, v)),
+                Kind::Collision { pairs, .. } => pairs.iter().for_each(|(k, v)| f(k, v)),
             }
         }
         if let Some(root) = &self.root {
@@ -356,8 +401,8 @@ impl PMap {
     /// Call `f` on every entry with its stored hash, in trie order.
     pub(crate) fn for_each_hashed(&self, mut f: impl FnMut(u64, &Value, &Value)) {
         fn walk(node: &Node, f: &mut dyn FnMut(u64, &Value, &Value)) {
-            match node {
-                Node::Bitmap { entries, .. } => {
+            match &node.kind {
+                Kind::Bitmap { entries, .. } => {
                     for entry in entries {
                         match entry {
                             Entry::Pair { hash, key, value } => f(*hash, key, value),
@@ -365,7 +410,7 @@ impl PMap {
                         }
                     }
                 }
-                Node::Collision { hash, pairs } => pairs.iter().for_each(|(k, v)| f(*hash, k, v)),
+                Kind::Collision { hash, pairs } => pairs.iter().for_each(|(k, v)| f(*hash, k, v)),
             }
         }
         if let Some(root) = &self.root {
@@ -381,8 +426,8 @@ impl PMap {
         };
         let mut shift = 0;
         loop {
-            match node {
-                Node::Bitmap { bitmap, entries } => {
+            match &node.kind {
+                Kind::Bitmap { bitmap, entries } => {
                     let bit = bit_for(hash, shift);
                     if bitmap & bit == 0 {
                         return Vec::new();
@@ -402,7 +447,7 @@ impl PMap {
                         }
                     }
                 }
-                Node::Collision { hash: h, pairs } => {
+                Kind::Collision { hash: h, pairs } => {
                     return if *h == hash {
                         pairs.clone()
                     } else {
@@ -425,7 +470,7 @@ impl PMap {
     fn node_addresses(&self) -> Vec<usize> {
         fn walk(node: &Arc<Node>, out: &mut Vec<usize>) {
             out.push(Arc::as_ptr(node) as usize);
-            if let Node::Bitmap { entries, .. } = &**node {
+            if let Kind::Bitmap { entries, .. } = &node.kind {
                 for entry in entries {
                     if let Entry::Child(child) = entry {
                         walk(child, out);
@@ -442,44 +487,53 @@ impl PMap {
 }
 
 /// A node holding exactly the two given pairs, starting at `shift`.
-fn merge(shift: u32, a: (u64, Value, Value), b: (u64, Value, Value)) -> Node {
+fn merge(
+    charge: NodeCharge<'_>,
+    shift: u32,
+    a: (u64, Value, Value),
+    b: (u64, Value, Value),
+) -> Result<Node, CollectionError> {
     if shift >= u64::BITS {
-        return Node::Collision {
-            hash: a.0,
-            pairs: vec![(a.1, a.2), (b.1, b.2)],
-        };
+        return Node::collision(charge, a.0, 2, |pairs| {
+            pairs.push((a.1, a.2));
+            pairs.push((b.1, b.2));
+        });
     }
     let (bit_a, bit_b) = (bit_for(a.0, shift), bit_for(b.0, shift));
     if bit_a == bit_b {
-        return Node::Bitmap {
-            bitmap: bit_a,
-            entries: vec![Entry::Child(Arc::new(merge(shift + BITS, a, b)))],
-        };
+        let child = Arc::new(merge(charge, shift + BITS, a, b)?);
+        return Node::bitmap(charge, bit_a, 1, |entries| {
+            entries.push(Entry::Child(child))
+        });
     }
     let pair = |(hash, key, value)| Entry::Pair { hash, key, value };
-    let entries = if bit_a < bit_b {
-        vec![pair(a), pair(b)]
-    } else {
-        vec![pair(b), pair(a)]
-    };
-    Node::Bitmap {
-        bitmap: bit_a | bit_b,
-        entries,
-    }
+    Node::bitmap(charge, bit_a | bit_b, 2, |entries| {
+        let (first, second) = if bit_a < bit_b { (a, b) } else { (b, a) };
+        entries.push(pair(first));
+        entries.push(pair(second));
+    })
 }
 
-fn assoc_in(node: &Node, shift: u32, hash: u64, key: Value, value: Value, eq: KeyEq<'_>) -> Assoc {
-    match node {
-        Node::Bitmap { bitmap, entries } => {
+fn assoc_in(
+    charge: NodeCharge<'_>,
+    node: &Node,
+    shift: u32,
+    hash: u64,
+    key: Value,
+    value: Value,
+    eq: KeyEq<'_>,
+) -> Result<Assoc, CollectionError> {
+    match &node.kind {
+        Kind::Bitmap { bitmap, entries } => {
             let bit = bit_for(hash, shift);
             let pos = position(*bitmap, bit);
             if bitmap & bit == 0 {
-                let mut copy = entries.clone();
-                copy.insert(pos, Entry::Pair { hash, key, value });
-                return Assoc::Added(Node::Bitmap {
-                    bitmap: bitmap | bit,
-                    entries: copy,
-                });
+                let node = Node::bitmap(charge, bitmap | bit, entries.len() + 1, |copy| {
+                    copy.extend_from_slice(&entries[..pos]);
+                    copy.push(Entry::Pair { hash, key, value });
+                    copy.extend_from_slice(&entries[pos..]);
+                })?;
+                return Ok(Assoc::Added(node));
             }
             let (replacement, added) = match &entries[pos] {
                 Entry::Pair {
@@ -489,7 +543,7 @@ fn assoc_in(node: &Node, shift: u32, hash: u64, key: Value, value: Value, eq: Ke
                 } => {
                     if *h == hash && eq(k, &key) {
                         if identical(v, &value) {
-                            return Assoc::Unchanged;
+                            return Ok(Assoc::Unchanged);
                         }
                         let entry = Entry::Pair {
                             hash: *h,
@@ -498,118 +552,142 @@ fn assoc_in(node: &Node, shift: u32, hash: u64, key: Value, value: Value, eq: Ke
                         };
                         (entry, false)
                     } else {
-                        let child =
-                            merge(shift + BITS, (*h, k.clone(), v.clone()), (hash, key, value));
+                        let child = merge(
+                            charge,
+                            shift + BITS,
+                            (*h, k.clone(), v.clone()),
+                            (hash, key, value),
+                        )?;
                         (Entry::Child(Arc::new(child)), true)
                     }
                 }
-                Entry::Child(child) => match assoc_in(child, shift + BITS, hash, key, value, eq) {
-                    Assoc::Unchanged => return Assoc::Unchanged,
-                    Assoc::Replaced(n) => (Entry::Child(Arc::new(n)), false),
-                    Assoc::Added(n) => (Entry::Child(Arc::new(n)), true),
-                },
+                Entry::Child(child) => {
+                    match assoc_in(charge, child, shift + BITS, hash, key, value, eq)? {
+                        Assoc::Unchanged => return Ok(Assoc::Unchanged),
+                        Assoc::Replaced(n) => (Entry::Child(Arc::new(n)), false),
+                        Assoc::Added(n) => (Entry::Child(Arc::new(n)), true),
+                    }
+                }
             };
-            let mut copy = entries.clone();
-            copy[pos] = replacement;
-            let node = Node::Bitmap {
-                bitmap: *bitmap,
-                entries: copy,
-            };
-            if added {
+            let node = Node::bitmap(charge, *bitmap, entries.len(), |copy| {
+                copy.extend_from_slice(&entries[..pos]);
+                copy.push(replacement);
+                copy.extend_from_slice(&entries[pos + 1..]);
+            })?;
+            Ok(if added {
                 Assoc::Added(node)
             } else {
                 Assoc::Replaced(node)
-            }
+            })
         }
-        Node::Collision { hash: h, pairs } => {
+        Kind::Collision { hash: h, pairs } => {
             // Collision nodes sit below every hash digit, so every key that
             // reaches one has the node's full hash.
             debug_assert_eq!(*h, hash);
-            let mut copy = pairs.clone();
             match pairs.iter().position(|(k, _)| eq(k, &key)) {
-                Some(i) if identical(&pairs[i].1, &value) => Assoc::Unchanged,
-                Some(i) => {
-                    copy[i].1 = value;
-                    Assoc::Replaced(Node::Collision {
-                        hash: *h,
-                        pairs: copy,
-                    })
-                }
-                None => {
-                    copy.push((key, value));
-                    Assoc::Added(Node::Collision {
-                        hash: *h,
-                        pairs: copy,
-                    })
-                }
+                Some(i) if identical(&pairs[i].1, &value) => Ok(Assoc::Unchanged),
+                Some(i) => Ok(Assoc::Replaced(Node::collision(
+                    charge,
+                    *h,
+                    pairs.len(),
+                    |copy| {
+                        copy.extend_from_slice(pairs);
+                        copy[i].1 = value;
+                    },
+                )?)),
+                None => Ok(Assoc::Added(Node::collision(
+                    charge,
+                    *h,
+                    pairs.len() + 1,
+                    |copy| {
+                        copy.extend_from_slice(pairs);
+                        copy.push((key, value));
+                    },
+                )?)),
             }
         }
     }
 }
 
-/// The single pair of a node holding exactly one, so a parent can inline it.
-fn single_pair(node: &Node) -> Option<Entry> {
-    match node {
-        Node::Bitmap { entries, .. } if entries.len() == 1 => match &entries[0] {
-            pair @ Entry::Pair { .. } => Some(pair.clone()),
-            Entry::Child(_) => None,
-        },
-        Node::Collision { hash, pairs } if pairs.len() == 1 => Some(Entry::Pair {
-            hash: *hash,
-            key: pairs[0].0.clone(),
-            value: pairs[0].1.clone(),
-        }),
-        _ => None,
-    }
-}
-
-fn dissoc_in(node: &Node, shift: u32, hash: u64, key: &Value, eq: KeyEq<'_>) -> Dissoc {
-    match node {
-        Node::Bitmap { bitmap, entries } => {
+fn dissoc_in(
+    charge: NodeCharge<'_>,
+    node: &Node,
+    shift: u32,
+    hash: u64,
+    key: &Value,
+    eq: KeyEq<'_>,
+) -> Result<Dissoc, CollectionError> {
+    match &node.kind {
+        Kind::Bitmap { bitmap, entries } => {
             let bit = bit_for(hash, shift);
             if bitmap & bit == 0 {
-                return Dissoc::Absent;
+                return Ok(Dissoc::Absent);
             }
             let pos = position(*bitmap, bit);
             let replacement = match &entries[pos] {
                 Entry::Pair {
                     hash: h, key: k, ..
                 } if *h == hash && eq(k, key) => None,
-                Entry::Pair { .. } => return Dissoc::Absent,
-                Entry::Child(child) => match dissoc_in(child, shift + BITS, hash, key, eq) {
-                    Dissoc::Absent => return Dissoc::Absent,
-                    Dissoc::Removed(None) => None,
-                    Dissoc::Removed(Some(n)) => {
-                        Some(single_pair(&n).unwrap_or_else(|| Entry::Child(Arc::new(n))))
-                    }
+                Entry::Pair { .. } => return Ok(Dissoc::Absent),
+                Entry::Child(child) => match dissoc_in(charge, child, shift + BITS, hash, key, eq)?
+                {
+                    Dissoc::Absent => return Ok(Dissoc::Absent),
+                    Dissoc::Empty => None,
+                    Dissoc::Single { hash, key, value } => Some(Entry::Pair { hash, key, value }),
+                    Dissoc::Node(n) => Some(Entry::Child(Arc::new(n))),
                 },
             };
-            let mut copy = entries.clone();
-            let bitmap = match replacement {
-                Some(entry) => {
-                    copy[pos] = entry;
-                    *bitmap
-                }
-                None => {
-                    copy.remove(pos);
-                    bitmap & !bit
-                }
+            let (bitmap, len) = match replacement {
+                Some(_) => (*bitmap, entries.len()),
+                None => (bitmap & !bit, entries.len() - 1),
             };
-            Dissoc::Removed((!copy.is_empty()).then_some(Node::Bitmap {
-                bitmap,
-                entries: copy,
-            }))
+            if len == 0 {
+                return Ok(Dissoc::Empty);
+            }
+            if len == 1 {
+                let only = match &replacement {
+                    Some(entry) => entry,
+                    None => &entries[1 - pos],
+                };
+                if let Entry::Pair { hash, key, value } = only {
+                    return Ok(Dissoc::Single {
+                        hash: *hash,
+                        key: key.clone(),
+                        value: value.clone(),
+                    });
+                }
+            }
+            let node = Node::bitmap(charge, bitmap, len, |copy| {
+                copy.extend_from_slice(&entries[..pos]);
+                copy.extend(replacement);
+                copy.extend_from_slice(&entries[pos + 1..]);
+            })?;
+            Ok(Dissoc::Node(node))
         }
-        Node::Collision { hash: h, pairs } => {
+        Kind::Collision { hash: h, pairs } => {
             let Some(i) = pairs.iter().position(|(k, _)| eq(k, key)) else {
-                return Dissoc::Absent;
+                return Ok(Dissoc::Absent);
             };
-            let mut copy = pairs.clone();
-            copy.remove(i);
-            Dissoc::Removed((!copy.is_empty()).then_some(Node::Collision {
-                hash: *h,
-                pairs: copy,
-            }))
+            match pairs.len() {
+                1 => Ok(Dissoc::Empty),
+                2 => {
+                    let (key, value) = &pairs[1 - i];
+                    Ok(Dissoc::Single {
+                        hash: *h,
+                        key: key.clone(),
+                        value: value.clone(),
+                    })
+                }
+                len => Ok(Dissoc::Node(Node::collision(
+                    charge,
+                    *h,
+                    len - 1,
+                    |copy| {
+                        copy.extend_from_slice(&pairs[..i]);
+                        copy.extend_from_slice(&pairs[i + 1..]);
+                    },
+                )?)),
+            }
         }
     }
 }
@@ -782,5 +860,178 @@ mod tests {
         assert!(fresh <= 4, "only the root-to-entry path is copied: {fresh}");
         assert!(old.len() > 100);
         assert_eq!(map.get(&num(1234.0)), Some(num(1234.0)));
+    }
+
+    /// The bytes charged for every distinct node reachable from `maps`.
+    fn reachable_node_bytes<'a>(maps: impl IntoIterator<Item = &'a PMap>) -> usize {
+        fn walk(node: &Arc<Node>, seen: &mut HashSet<usize>) -> usize {
+            if !seen.insert(Arc::as_ptr(node) as usize) {
+                return 0;
+            }
+            match &node.kind {
+                Kind::Bitmap { entries, .. } => {
+                    let children: usize = entries
+                        .iter()
+                        .map(|entry| match entry {
+                            Entry::Child(child) => walk(child, seen),
+                            Entry::Pair { .. } => 0,
+                        })
+                        .sum();
+                    children + super::super::node_bytes::<Node, Entry>(entries.len()).unwrap()
+                }
+                Kind::Collision { pairs, .. } => {
+                    super::super::node_bytes::<Node, (Value, Value)>(pairs.len()).unwrap()
+                }
+            }
+        }
+        let mut seen = HashSet::new();
+        maps.into_iter()
+            .filter_map(|map| map.root.as_ref())
+            .map(|root| walk(root, &mut seen))
+            .sum()
+    }
+
+    /// Under a byte limit the budget holds exactly the nodes some live
+    /// version reaches: an update adds only the nodes it copied, and
+    /// dropping a version releases only the nodes no other version shares.
+    /// Truncated hashes force deep merges and full-hash collision nodes.
+    #[test]
+    fn versions_are_charged_for_new_nodes_and_shared_nodes_until_the_last_holder() {
+        let heap = crate::heap::Heap::with_byte_limit(usize::MAX / 2);
+        let budget = heap.byte_budget();
+        let baseline = budget.used();
+        let mut seed: u64 = 0x5851_f42d_4c95_7f2d;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize
+        };
+        for mask in [u64::MAX, 0x3ff] {
+            let hash = |key: &Value| key_hash(key) & mask;
+            let mut live: Vec<PMap> = vec![PMap::default()];
+            for step in 0..3000 {
+                let map = live[next() % live.len()].clone();
+                let key = num((next() % 700) as f64);
+                let updated = if next() % 4 == 0 {
+                    map.try_dissoc_with(&heap, hash(&key), &key, &key_eq)
+                } else {
+                    map.try_assoc_with(&heap, hash(&key), key, num(step as f64), &key_eq)
+                };
+                drop(map);
+                if let Some(updated) = updated.unwrap() {
+                    live.push(updated);
+                }
+                if live.len() > 12 {
+                    live.swap_remove(next() % live.len());
+                }
+                assert_eq!(
+                    budget.used() - baseline,
+                    reachable_node_bytes(&live),
+                    "step {step}"
+                );
+            }
+        }
+        assert_eq!(budget.used(), baseline);
+    }
+
+    /// A reservation denied partway through a multi-node update (a copied
+    /// path, a merge chain down to a collision node) refunds the nodes
+    /// already built and leaves the input intact; with the headroom the
+    /// update needs, it succeeds.
+    #[test]
+    fn denied_path_copy_refunds_partial_nodes() {
+        let heap = crate::heap::Heap::with_byte_limit(usize::MAX / 2);
+        let budget = heap.byte_budget();
+        let mut wide = PMap::default();
+        for i in 0..5000 {
+            wide = wide
+                .try_assoc(&heap, num(i as f64), num(i as f64))
+                .unwrap()
+                .unwrap();
+        }
+        // Every key hashes to 0: the second key merges 13 levels down to a
+        // collision node.
+        let one = PMap::default()
+            .try_assoc_with(&heap, 0, num(0.0), num(0.0), &key_eq)
+            .unwrap()
+            .unwrap();
+        let two = one
+            .try_assoc_with(&heap, 0, num(1.0), num(1.0), &key_eq)
+            .unwrap()
+            .unwrap();
+        type Op<'a> = &'a dyn Fn() -> Result<Option<PMap>, CollectionError>;
+        let ops: [(&str, Op<'_>); 6] = [
+            ("add", &|| wide.try_assoc(&heap, num(-1.0), Value::Null)),
+            ("replace", &|| wide.try_assoc(&heap, num(17.0), Value::Null)),
+            ("remove", &|| wide.try_dissoc(&heap, &num(17.0))),
+            ("merge", &|| {
+                one.try_assoc_with(&heap, 0, num(1.0), num(1.0), &key_eq)
+            }),
+            ("collide", &|| {
+                two.try_assoc_with(&heap, 0, num(2.0), num(2.0), &key_eq)
+            }),
+            ("collapse", &|| {
+                two.try_dissoc_with(&heap, 0, &num(1.0), &key_eq)
+            }),
+        ];
+        for (name, op) in ops {
+            let before = budget.used();
+            let needed = {
+                let _result = op().unwrap().unwrap();
+                budget.used() - before
+            };
+            assert_eq!(budget.used(), before, "{name}");
+            for headroom in (0..needed).step_by((needed / 300).max(1)) {
+                budget.set_limit(before + headroom);
+                assert_eq!(op().unwrap_err(), CollectionError::HeapLimit, "{name}");
+                assert_eq!(budget.used(), before, "{name} with {headroom} of {needed}");
+            }
+            budget.set_limit(before + needed);
+            drop(op().unwrap());
+            assert_eq!(budget.used(), before, "{name}");
+            budget.set_limit(usize::MAX / 2);
+        }
+        let model: Vec<(Value, Value)> =
+            (0..5000).map(|i| (num(i as f64), num(i as f64))).collect();
+        check(&wide, &model);
+        assert_eq!(two.get_with(0, &num(1.0), &key_eq), Some(num(1.0)));
+        assert_eq!(two.len(), 2);
+    }
+
+    /// One `assoc` on a large map admits its path copy, not the map.
+    #[test]
+    fn an_update_of_a_large_map_is_charged_for_its_path_only() {
+        let heap = crate::heap::Heap::with_byte_limit(usize::MAX / 2);
+        let budget = heap.byte_budget();
+        let baseline = budget.used();
+        let mut map = PMap::default();
+        for i in 0..5000 {
+            map = map
+                .try_assoc(&heap, num(i as f64), num(i as f64))
+                .unwrap()
+                .unwrap();
+        }
+        let whole = reachable_node_bytes([&map]);
+        let before = budget.used();
+        let updated = map
+            .try_assoc(&heap, num(1234.0), Value::Null)
+            .unwrap()
+            .unwrap();
+        let path = budget.used() - before;
+        assert_eq!(path, reachable_node_bytes([&map, &updated]) - whole);
+        // At most three copied levels of at most 32 entries each.
+        let widest = super::super::node_bytes::<Node, Entry>(32).unwrap();
+        assert!(path <= 3 * widest && path * 50 < whole, "{path} of {whole}");
+        // The new version keeps the old one's untouched nodes charged.
+        drop(map);
+        let retained = reachable_node_bytes([&updated]);
+        assert_eq!(budget.used() - baseline, retained);
+        assert!(
+            retained + 3 * widest >= whole,
+            "only the old path is released"
+        );
+        drop(updated);
+        assert_eq!(budget.used(), baseline);
     }
 }

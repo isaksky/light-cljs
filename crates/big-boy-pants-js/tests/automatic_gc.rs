@@ -308,7 +308,12 @@ fn caught_on(rt: &Runtime, body: &str, host: &mut dyn Host) {
 
 #[test]
 fn public_byte_limit_denial_is_catchable_and_the_runtime_recovers() {
-    let (rt, limit) = with_headroom(2 * 1024 * 1024);
+    // The object table keeps the slot capacity (about 150 bytes a slot,
+    // charged) that the most numerous denial grew. A three-element vector
+    // is charged about 110 bytes for its node, so about 4,100 of them fit
+    // in 2 MiB, and that capacity would leave the 2,000-object recovery
+    // task too little; the headroom is sized for both.
+    let (rt, limit) = with_headroom(4 * 1024 * 1024);
     for body in [
         "for (;;) kept.push({a: 1, b: 2});",
         "for (;;) kept.push('x'.repeat(1000) + kept.length);",
@@ -951,4 +956,42 @@ fn retained_fixed_text_outputs_share_one_body() {
             "{output}: {held} bytes live against {same_work} storing a literal"
         );
     }
+}
+
+/// Persistent versions are charged for the nodes they allocate, not as
+/// complete representations (light-cljs-498). Growing a form map and a
+/// form vector to 3,200 entries one version at a time used to admit
+/// 4 KiB per map entry per version (about 21 GB in all) and collect every
+/// couple of `assoc`s under a 64 MiB limit; path copies admit a few MB and
+/// need at most a couple of collections. Once the versions are garbage, a
+/// collection releases their nodes' charges.
+#[test]
+fn persistent_versions_are_charged_for_their_path_copies() {
+    let rt = byte_limited(64 << 20).unwrap();
+    let start = rt.heap_stats();
+    let code = compile_function(
+        "function f() { let m = __rt.formMap(); let v = __rt.formVector(); \
+         for (let i = 0; i < 3200; ++i) { m = __rt.formAssoc(m, i, i); v = __rt.formConj(v, i); } \
+         return __rt.formCount(m) + __rt.formCount(v); }",
+    )
+    .unwrap();
+    let run = || {
+        let task = rt.spawn(&code, &[]).unwrap();
+        let RunOutcome::Complete(result) = task.run().unwrap() else {
+            panic!("building the collections failed");
+        };
+        assert_eq!(result.view(), ValueView::Number(6400.0));
+    };
+    run();
+    let stats = rt.heap_stats();
+    let admitted = stats.admitted_bytes_total - start.admitted_bytes_total;
+    assert!(admitted < 32 << 20, "{admitted}: {stats:?}");
+    assert!(stats.collections - start.collections <= 2, "{stats:?}");
+    // The object table keeps the capacity the first run grew; a second
+    // run's versions are released exactly.
+    rt.collect().unwrap();
+    let settled = rt.heap_stats().managed_bytes;
+    run();
+    rt.collect().unwrap();
+    assert_eq!(rt.heap_stats().managed_bytes, settled);
 }

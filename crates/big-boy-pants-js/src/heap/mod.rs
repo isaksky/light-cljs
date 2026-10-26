@@ -332,6 +332,9 @@ impl HeapObject {
                 .as_deref()
                 .map_or(0, |o| size_of_val(o) + o.boxed_bytes()),
             HeapObject::Builtin(f) => f.properties.boxed_bytes(),
+            // The shared body and its `Arc` counts; its trie nodes carry
+            // their own charges (`crate::collections::NodeCharge`).
+            HeapObject::Form(f) => 2 * std::mem::size_of::<usize>() + size_of_val(&**f),
             HeapObject::Vector(_)
             | HeapObject::Map(_)
             | HeapObject::Occurrence(_)
@@ -342,8 +345,7 @@ impl HeapObject {
             | HeapObject::BoundFunction(_)
             | HeapObject::PromiseReaction(_)
             | HeapObject::PromiseResolving(_)
-            | HeapObject::Proxy(_)
-            | HeapObject::Form(_) => 0,
+            | HeapObject::Proxy(_) => 0,
         }
     }
 

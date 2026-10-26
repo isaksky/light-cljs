@@ -244,6 +244,48 @@ at n = 3200 one map version is charged 13 MB, so the 64 MiB budget forces a
 collection every couple of `assoc`s (3,355 collections). Charging persistent
 versions by their path copy is light-cljs-498.
 
+#### Path-copy charges (light-cljs-498)
+
+Each persistent map and vector trie node now carries the byte charge for its
+own allocation, taken before the node is built, instead of every version
+charging a complete representation (`PMap` 4 KiB an entry). An update is
+charged for the nodes it copies, and a node shared by several versions stays
+charged until the last of them is freed; a form's shared body is charged with
+its slot. At n = 400 one `churn` call admits about 4.6 MB instead of about
+350 MB, and each macro call sees at most one collection.
+
+October 26, 2026, same script and flags (five rounds), `before` = master
+`2ea9cb19` (native-only, sha256 `65fa91c2…`), `after` = this change on it
+(native-only, sha256 `ceadb8b5…`), V8 from the shared cache
+(`LIGHT_CLJS_V8_CACHE=require`, sha256 `1559a48e…`); macOS aarch64, 24 CPUs,
+Rust 1.99.1, Node 24.22.1; a peer worker's `rustc` build running (load
+averages 3.5/3.9/4.4). Analysis ms, median [min–max] of five:
+
+| `n` | V8 | before | after | k before | k after |
+| ---: | --- | --- | --- | ---: | ---: |
+| 0 | 23.9 [23.8–24.4] | 10.4 [10.0–11.5] | 8.9 [8.3–9.0] | – | – |
+| 100 | 29.3 [28.4–29.9] | 28.1 [26.6–28.3] | 12.0 [11.9–12.4] | 3.3 | 0.6 |
+| 400 | 36.4 [35.8–36.7] | 164.4 [163.8–166.1] | 25.4 [25.1–26.0] | 12.3 | 1.3 |
+
+k at n = 400 is 1.3 (477: 12.8; 495: 1.5). The engine's macro time grows
+5.3x from n = 100 to 400 (3.1 to 16.5 ms; 5.0x and 5.4x in earlier runs of
+this change on `fe510a3a` at loads 3 to 4.3), V8's 2.3x. Collection is not
+the growth any more: at n = 400 the four calls make one collection between
+them (1.1 ms). A variant walking `v` by index instead of `next` grows 4.5x
+(3.9 to 17.6 ms, on `fe510a3a`), so the rest is the lowered operations:
+`next` copies the remaining elements (`clj::tail`, quadratic over the walk),
+and map path copies widen as second-level HAMT nodes fill.
+
+At n = 3200 a native compile takes about 280 ms (master: 2,557 ms) and three
+`/usr/bin/sample` runs have 18 of 122, 19 of 157 and 20 of 161 samples (13%)
+under `RunGuard::collect_at_point` (master: 1,669 of 1,847, 90%), from three
+or four collections per macro call. Top frames of the third run (inclusive
+samples): `clj::tail` (39) with `PVector::to_vec` (20) and
+`try_from_values` (30) building the `next` copy, dropping garbage vector
+nodes (`Node::drop_slow` 40) and `FormObject` bodies (14), and
+`mark_and_sweep` (19). Sharing the trie in `next` and `rest` instead of
+copying the remainder is light-cljs-502.
+
 ## Protocols and types (light-cljs-478), October 26, 2026
 
 `bb benchmarks/native-macros-k.bb OUTPUT --workload protocol v8=BIN NAME=BIN`

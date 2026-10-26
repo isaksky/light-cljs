@@ -135,11 +135,9 @@ impl ByteBudget {
             self.starved.store(false, Ordering::Relaxed);
         }
         // The next collection is due once half the remaining headroom has
-        // been admitted. Not a fraction of the live bytes: persistent
-        // collections charge a complete representation for every version
-        // (an upper bound over structural sharing), so the bytes admitted
-        // per operation can be as large as the live collection itself, and
-        // a live-proportional trigger then collected after every few
+        // been admitted. Not a fraction of the live bytes: one operation
+        // can admit as much as the live set (a large buffer or string), and
+        // a live-proportional trigger then collected after every few such
         // operations, each marking everything live (light-cljs-495).
         // Ordinary object churn is still collected in proportion to the
         // live objects by the allocation-count trigger (`HeapPolicy`).
@@ -563,28 +561,55 @@ mod tests {
         assert!(stats.last_live_objects < 16384);
     }
 
-    /// Every map version is charged as a complete representation (4 KiB an
-    /// entry), so 400 `assoc`s admit about 330 MB against a 64 MiB limit
-    /// while very little is live. Collecting at half the live bytes did so
-    /// every few operations (hundreds of collections, each marking the whole
-    /// realm); half the remaining headroom takes about a dozen.
+    /// 500 garbage 640 KiB buffers admit 312 MiB against a 64 MiB limit
+    /// while very little is live. Collecting at half the live bytes would
+    /// do so every operation or two (hundreds of collections, each marking
+    /// the whole realm); half the remaining headroom takes about a dozen.
     #[test]
-    fn persistent_versions_collect_by_headroom_not_per_operation() {
+    fn byte_collections_are_due_after_half_the_remaining_headroom() {
         use crate::frontend::compile_function;
         use crate::{RunOutcome, Runtime, ValueView};
         let runtime = Runtime::with_byte_limit(64 << 20);
         let code = compile_function(
-            "function f() { let m = __rt.formMap(); for (let i = 0; i < 400; ++i) m = __rt.formAssoc(m, i, i); return __rt.formCount(m); }",
+            "function f() { let n = 0; for (let i = 0; i < 500; ++i) n += new ArrayBuffer(655360).byteLength > 0; return n; }",
         )
         .unwrap();
         let task = runtime.spawn(&code, &[]).unwrap();
         let RunOutcome::Complete(result) = task.run().unwrap() else {
-            panic!("building the map failed");
+            panic!("allocating the buffers failed");
         };
-        assert_eq!(result.view(), ValueView::Number(400.0));
+        assert_eq!(result.view(), ValueView::Number(500.0));
         let stats = runtime.heap_stats();
         assert!(stats.admitted_bytes_total > 4 * (64 << 20), "{stats:?}");
         assert!((4..=24).contains(&stats.collections), "{stats:?}");
+    }
+
+    /// A form value's shared body is charged with its slot, beyond the
+    /// trie node a plain persistent vector of the same element also has.
+    #[test]
+    fn form_collection_bodies_are_charged_with_their_slots() {
+        use crate::frontend::compile_function;
+        use crate::{RunOutcome, Runtime};
+        let retained = |constructor: &str| {
+            let runtime = Runtime::with_byte_limit(64 << 20);
+            let code = compile_function(&format!(
+                "function f() {{ let kept = []; for (let i = 0; i < 1000; ++i) kept.push({constructor}(i)); return kept; }}"
+            ))
+            .unwrap();
+            let before = runtime.heap().byte_budget().used();
+            let task = runtime.spawn(&code, &[]).unwrap();
+            let RunOutcome::Complete(kept) = task.run().unwrap() else {
+                panic!("{constructor} failed");
+            };
+            runtime.collect().unwrap();
+            let used = runtime.heap().byte_budget().used() - before;
+            drop(kept);
+            used
+        };
+        let forms = retained("__rt.formVector");
+        let vectors = retained("__rt.vector");
+        let body = std::mem::size_of::<crate::collections::form::FormObject>();
+        assert!(forms >= vectors + 1000 * body, "{forms} vs {vectors}");
     }
 
     #[test]

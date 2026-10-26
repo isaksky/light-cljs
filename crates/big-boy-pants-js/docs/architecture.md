@@ -336,12 +336,15 @@ scopes between runs request one first, as light-cljs's native macro evaluator
 does. Between
 denials, collections are also requested once the bytes admitted since the last
 collection reach half the headroom the last collection left. Not a fraction of
-the live bytes: each persistent collection version is charged as a complete
-representation, so one operation can admit as much as the live collection
-itself, and a live-proportional trigger collected every few operations
-(light-cljs-495). Ordinary object churn is still collected in proportion to
-the live objects by the allocation-count trigger above. The limit includes
-unswept garbage and the realm.
+the live bytes: one operation can admit as much as the live set (a large
+buffer or string), and a live-proportional trigger collected every few such
+operations (light-cljs-495). Ordinary object churn is still collected in
+proportion to the live objects by the allocation-count trigger above. The
+limit includes unswept garbage and the realm. Persistent vector and map trie
+nodes each carry the charge for their own allocation, taken before the node
+is built, so an update is charged for the path it copies and a node shared by
+several versions stays charged until the last of them is freed
+(light-cljs-498).
 `Runtime::try_with_heap_policy` builds the realm and one probe global before
 returning, and reports `RuntimeStartError::HeapLimit` instead of failing the
 first task; a sweep of limits around the realm footprint never panics.
