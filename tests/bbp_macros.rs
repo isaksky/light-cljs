@@ -2166,6 +2166,14 @@ fn native_positional_literal_matrix_matches_legacy() {
             r#"(defmacro probe [] (let [v ^{\a 1 "a" 2} [] m (meta v)] (list 'quote [(count m) (get m "a") (vec (seq m))]))) (probe)"#,
         ),
         (
+            "directional-hashed-keys",
+            r#"(defmacro probe [] (let [a '#{0 0.0} b '#{0 2147483647} m (apply hash-map [a :old]) n (assoc m b :new)] [(= (hash a) (hash b)) (= a b) (= b a) (get m b :missing) (count n) (get n a) (get n b) (count (dissoc m b))])) (probe)"#,
+        ),
+        (
+            "map-to-record",
+            r#"(defrecord R [x]) (defmacro probe [] (let [r (map->R '{\a 1 :x 0 "a" 2 :z 3})] (list 'quote [(count r) (get r "a") (:x r) (vec (seq r))]))) (probe)"#,
+        ),
+        (
             "bridge",
             r#"(defmacro probe [m s] (list 'quote [(count m) (get m "a") (vec (seq m)) (count s) (vec (seq s)) (get (assoc m "a" 9) "a") (vec (seq (disj s 1)))])) (probe {\a 1 "a" 2} #{1 1.0})"#,
         ),

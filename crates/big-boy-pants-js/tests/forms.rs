@@ -239,6 +239,52 @@ fn positional_forms_share_equality_hash_and_first_match_update_contracts() {
 }
 
 #[test]
+fn positional_directional_keys_use_query_first_equality() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function check() {
+        const a = __rt.formLiteralSet(__rt.formVector(0, 0));
+        const b = __rt.formLiteralSet(__rt.formVector(0, 2147483647));
+        if (__rt.formHash(a) !== __rt.formHash(b) || !__rt.formEquals(a, b) || __rt.formEquals(b, a)) throw 'fixture';
+        const m = __rt.formMap(a, 'old');
+        if (__rt.formGet(m, b, 'missing') !== 'missing' || __rt.formDissoc(m, b) !== m) throw 'query direction';
+        const updated = __rt.formAssoc(m, b, 'new');
+        if (__rt.formCount(updated) !== 2 || __rt.formGet(updated, a, null) !== 'old' ||
+            __rt.formGet(updated, b, null) !== 'new') throw 'assoc direction';
+        return true;
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
+fn map_to_record_preserves_positional_extensions() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function check() {
+        const R = __rt.structType('example/R', __rt.formVector('x'), true);
+        const x = __rt.formKeyword(null, 'x');
+        const m = __rt.formLiteralMap(__rt.formVector('a', 1, x, 0, 'a', 2, 'z', 3));
+        const r = __rt.recordFromMap(R, m), entries = __rt.cljSeq(r);
+        if (__rt.cljCount(r) !== 4 || __rt.cljGet(r, 'a', null) !== 1 || __rt.cljGet(r, x, null) !== 0 ||
+            __rt.formNth(__rt.formNth(entries, 1), 1) !== 1 ||
+            __rt.formNth(__rt.formNth(entries, 2), 1) !== 2 ||
+            __rt.formNth(__rt.formNth(entries, 3), 1) !== 3) throw 'extension positions';
+        const duplicateField = __rt.formLiteralMap(__rt.formVector(x, 4, x, 5, 'z', 3));
+        const duplicate = __rt.recordFromMap(R, duplicateField);
+        if (__rt.cljGet(duplicate, x, null) !== 4 || __rt.cljCount(duplicate) !== 3 ||
+            !__rt.cljContains(duplicate, null)) throw 'first field and dissoc holes';
+        return true;
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
 fn positional_forms_publish_and_trace_every_duplicate_and_metadata() {
     let rt = Runtime::new();
     let (root, weak) = rt.scope(|s| {

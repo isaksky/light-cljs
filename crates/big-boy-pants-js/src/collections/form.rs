@@ -768,15 +768,17 @@ fn map_assoc(
         unreachable!()
     };
     let h = trie_hash(hash(heap, &key));
-    map.try_assoc_with(heap, h, key, value, &|a, b| equals(heap, a, b))
-        .map(|m| m.map(FormMap::Hashed))
+    map.try_assoc_with(heap, h, key, value, &|stored, query| {
+        equals(heap, query, stored)
+    })
+    .map(|m| m.map(FormMap::Hashed))
 }
 
 fn map_get(heap: &Heap, map: &FormMap, key: &Value) -> Option<Value> {
     match map {
         FormMap::Hashed(map) => {
             let h = trie_hash(hash(heap, key));
-            map.get_with(h, key, &|a, b| equals(heap, a, b))
+            map.get_with(h, key, &|stored, query| equals(heap, query, stored))
         }
         FormMap::Positional(pairs) => (0..pairs.len())
             .step_by(2)
@@ -788,8 +790,8 @@ fn map_get(heap: &Heap, map: &FormMap, key: &Value) -> Option<Value> {
 fn map_dissoc(heap: &Heap, map: &FormMap, key: &Value) -> Result<Option<FormMap>, CollectionError> {
     match map {
         FormMap::Hashed(map) => map
-            .try_dissoc_with(heap, trie_hash(hash(heap, key)), key, &|a, b| {
-                equals(heap, a, b)
+            .try_dissoc_with(heap, trie_hash(hash(heap, key)), key, &|stored, query| {
+                equals(heap, query, stored)
             })
             .map(|m| m.map(FormMap::Hashed)),
         FormMap::Positional(_) => {
@@ -1270,27 +1272,32 @@ pub(crate) fn record_from_map(
     map: &Value,
 ) -> Result<Value, CollectionError> {
     let info = type_info(heap, ty)?;
-    let entries = match resolve(heap, map.clone()) {
+    let source = match resolve(heap, map.clone()) {
         (_, None) if matches!(unwrap(heap, map.clone()), Value::Null | Value::Undefined) => {
-            Vec::new()
+            FormMap::default()
         }
         (_, Some((_, f))) => match f.body() {
-            FormBody::Map(m) => m.to_vec(),
-            FormBody::Struct(s) if s.info.record => record_entries(heap, s)?,
+            FormBody::Map(m) => m.clone(),
+            FormBody::Struct(s) if s.info.record => {
+                let mut source = FormMap::default();
+                for (k, v) in record_entries(heap, s)? {
+                    if let Some(updated) = map_assoc(heap, &source, k, v)? {
+                        source = updated;
+                    }
+                }
+                source
+            }
             _ => return Err(wrong(heap, "form map or record", map)),
         },
         _ => return Err(wrong(heap, "form map or record", map)),
     };
-    let mut fields = vec![Value::Null; info.fields.len()];
-    let mut ext = FormMap::default();
-    for (k, v) in entries {
-        match field_index(heap, &info, &k) {
-            Some(i) => fields[i] = v,
-            None => {
-                if let Some(updated) = map_assoc(heap, &ext, k, v)? {
-                    ext = updated;
-                }
-            }
+    let mut fields = Vec::with_capacity(info.fields.len());
+    let mut ext = source.clone();
+    for name in &info.fields {
+        let key = field_keyword(heap, name)?;
+        fields.push(map_get(heap, &source, &key).unwrap_or(Value::Null));
+        if let Some(updated) = map_dissoc(heap, &ext, &key)? {
+            ext = updated;
         }
     }
     let body = StructBody {
