@@ -786,24 +786,24 @@ fn scalar_predicates_and_callable_collections_preserve_occurrences() {
             !__rt.cljIsFalse(no) || __rt.cljIsFalse(0) || __rt.cljIsFalse(null)) throw new Error('predicates');
         const k = __rt.formKeyword(null, 'x'), sym = __rt.formSymbol('n', 'x');
         const m = __rt.formMap(k, no, sym, zero), v = __rt.formVector(no, zero);
-        if (__rt.cljInvoke(k, m, null) !== no || __rt.cljInvoke(sym, m, null) !== zero ||
-            __rt.cljInvoke(m, sym, null) !== zero || __rt.cljInvoke(v, 0, null) !== no ||
-            __rt.cljInvoke(v, 0.5, null) !== no || __rt.cljInvoke(v, 1.5, null) !== zero ||
-            __rt.cljInvoke(v, zero, null) !== no ||
-            __rt.cljInvoke(__rt.formSet(no), false, null) !== no ||
-            __rt.cljInvoke(m, 'absent', zero) !== zero) throw new Error('lookup identity');
+        if (__rt.cljInvoke(k, m, null, 1) !== no || __rt.cljInvoke(sym, m, null, 1) !== zero ||
+            __rt.cljInvoke(m, sym, null, 1) !== zero || __rt.cljInvoke(v, 0, null, 1) !== no ||
+            __rt.cljInvoke(v, 0.5, null, 1) !== no || __rt.cljInvoke(v, 1.5, null, 1) !== zero ||
+            __rt.cljInvoke(v, zero, null, 1) !== no ||
+            __rt.cljInvoke(__rt.formSet(no), false, null, 1) !== no ||
+            __rt.cljInvoke(m, 'absent', zero, 2) !== zero) throw new Error('lookup identity');
         for (const index of [-0.5, 2, NaN, Infinity, -Infinity]) {
             let message;
-            try { __rt.cljInvoke(v, index, 'ignored'); } catch (e) { message = e.message; }
+            try { __rt.cljInvoke(v, index, 'ignored', 2); } catch (e) { message = e.message; }
             if (message !== 'Index out of bounds') throw new Error('numeric bounds');
         }
         // Fractional truncation belongs only to the legacy callable ABI.
         if (__rt.cljGet(v, 0.5, 'missing') !== 'missing' ||
             __rt.cljNthOr(v, 0.5, 'missing') !== 'missing') throw new Error('index contract');
         let keyError, boundsError, callableError;
-        try { __rt.cljInvoke(v, '0', null); } catch (e) { keyError = e.message; }
-        try { __rt.cljInvoke(v, 2, 'ignored'); } catch (e) { boundsError = e.message; }
-        try { __rt.cljInvoke(null, 0, null); } catch (e) { callableError = e instanceof TypeError; }
+        try { __rt.cljInvoke(v, '0', null, 1); } catch (e) { keyError = e.message; }
+        try { __rt.cljInvoke(v, 2, 'ignored', 2); } catch (e) { boundsError = e.message; }
+        try { __rt.cljInvoke(null, 0, null, 1); } catch (e) { callableError = e instanceof TypeError; }
         return keyError === 'Key must be integer' && boundsError === 'Index out of bounds' && callableError;
     }"#,
         &[&zero, &no],
@@ -825,23 +825,42 @@ fn map_entry_calls_require_exact_indices_and_preserve_stored_occurrences() {
         &rt,
         r#"function check(zero, no) {
         const entry = __rt.cljFirst(__rt.formMap(zero, no));
-        if (__rt.cljInvoke(entry, zero, null) !== zero ||
-            __rt.cljInvoke(entry, 1, null) !== no) throw new Error('entry identity');
-        for (const index of [0.5, 1.5, -0.5, 2, NaN, Infinity, '0']) {
+        if (__rt.cljInvoke(entry, zero, null, 1) !== zero ||
+            __rt.cljInvoke(entry, 1, null, 1) !== no ||
+            __rt.cljInvoke(entry, 1, zero, 2) !== no) throw new Error('entry identity');
+        for (const index of [0.5, 1.5, -0.5, -1, 2, NaN, Infinity, '0', null, undefined, false]) {
             let message;
-            try { __rt.cljInvoke(entry, index, null); } catch (e) { message = e.message; }
+            try { __rt.cljInvoke(entry, index, null, 1); } catch (e) { message = e.message; }
             if (message !== 'Index out of bounds') throw new Error('entry bounds');
+            for (const fallback of [zero, no, null, undefined]) {
+                if (__rt.cljInvoke(entry, index, fallback, 2) !== fallback) throw new Error('fallback identity');
+            }
+        }
+        for (const count of [0, 3, 4]) {
+            let message;
+            try { __rt.cljInvoke(entry, 0, zero, count); } catch (e) { message = e.message; }
+            if (message !== 'Invalid arity: ' + count) throw new Error('entry arity');
         }
         // Entry and vector keys still compare and hash alike.
         const vector = __rt.formVector(zero, no);
         const map = __rt.formMap(entry, no);
-        return __rt.cljGet(map, vector, null) === no &&
-               __rt.cljInvoke(vector, 0.5, null) === zero &&
-               __rt.cljInvoke(__rt.cljWithMeta(entry, null), 1.5, null) === no;
+        if (__rt.cljGet(map, vector, null) !== no ||
+            __rt.cljInvoke(vector, 0.5, null, 1) !== zero ||
+            __rt.cljInvoke(__rt.cljWithMeta(entry, null), 1.5, null, 1) !== no) throw new Error('vector semantics');
+        return __rt.formVector(__rt.cljInvoke(entry, zero, null, 1),
+                               __rt.cljInvoke(entry, 1, null, 1),
+                               __rt.cljInvoke(entry, 0.5, zero, 2),
+                               __rt.cljInvoke(entry, '0', no, 2));
     }"#,
         &[&zero, &no],
     );
-    assert_eq!(result.view(), ValueView::Bool(true));
+    rt.scope(|s| {
+        let items = s.form_items(s.local(&result).unwrap()).unwrap();
+        assert_eq!(items.len(), 4);
+        for (got, want) in items.iter().zip([&zero, &no, &zero, &no]) {
+            assert!(s.same_object(*got, s.local(want).unwrap()));
+        }
+    });
 }
 
 /// Form operations reject other values with a `Collection` error naming the

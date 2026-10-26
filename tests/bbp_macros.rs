@@ -2054,6 +2054,123 @@ fn function_combinators_match_the_legacy_compiler_and_run() {
 }
 
 #[test]
+fn native_vector_and_map_entry_call_matrix_matches_legacy() {
+    let bounds = "[:error \"Index out of bounds\"]";
+    let key_type = "[:error \"Key must be integer\"]";
+    // name, index expression, vector result, entry result (without a fallback).
+    // Keep each numeric and non-numeric category explicit: vector calls truncate
+    // positive fractions, while entries accept only exact numeric zero or one.
+    let indices = [
+        ("zero", "0", "[:value :a]", "[:value :a]"),
+        ("one", "1", "[:value 1]", "[:value 1]"),
+        ("negative-zero", "-0.0", "[:value :a]", "[:value :a]"),
+        ("fraction-zero", "0.5", "[:value :a]", bounds),
+        ("fraction-one", "1.5", "[:value 1]", bounds),
+        ("negative-integer", "-1", bounds, bounds),
+        ("negative-fraction", "-0.5", bounds, bounds),
+        ("past-end", "2", bounds, bounds),
+        ("large-integer", "9007199254740991", bounds, bounds),
+        ("nan", "js/NaN", bounds, bounds),
+        ("infinity", "js/Infinity", bounds, bounds),
+        ("negative-infinity", "(js* \"-Infinity\")", bounds, bounds),
+        ("string-zero", "\"0\"", key_type, bounds),
+        ("string-one", "\"1\"", key_type, bounds),
+        ("empty-string", "\"\"", key_type, bounds),
+        ("nil", "nil", key_type, bounds),
+        ("undefined", "js/undefined", key_type, bounds),
+        ("false", "false", key_type, bounds),
+        ("true", "true", key_type, bounds),
+        ("keyword", ":zero", key_type, bounds),
+        ("symbol", "'zero", key_type, bounds),
+        ("vector", "[]", key_type, bounds),
+        ("map", "{}", key_type, bounds),
+        (
+            "coercible-object",
+            "(js* \"({valueOf() { return 0; }})\")",
+            key_type,
+            bounds,
+        ),
+    ];
+    let table: String = indices
+        .iter()
+        .map(|(name, index, _, _)| format!("[:{name} {index}] "))
+        .collect();
+    let source = format!(
+        r#"(defmacro m [fallback]
+            (let [e (first {{:a 1}}) v [:a 1] c comp p partial
+                  inspect (fn [f index]
+                            [(try [:value (f)] (catch :default ex [:error (.-message ex)]))
+                             (try [:value (f index)] (catch :default ex [:error (.-message ex)]))
+                             (try [:value (f index fallback)] (catch :default ex [:error (.-message ex)]))
+                             (try [:value (f index fallback :extra)] (catch :default ex [:error (.-message ex)]))])
+                  callables [[:vector/direct v] [:entry/direct e]
+                             [:vector/comp (comp identity v)] [:entry/comp (comp identity e)]
+                             [:vector/saved-comp (c identity v)] [:entry/saved-comp (c identity e)]
+                             [:vector/partial (partial (fn [_ & xs] (apply v xs)) nil)]
+                             [:entry/partial (partial (fn [_ & xs] (apply e xs)) nil)]
+                             [:vector/saved-partial (p (fn [_ & xs] (apply v xs)) nil)]
+                             [:entry/saved-partial (p (fn [_ & xs] (apply e xs)) nil)]
+                             [:vector/apply (fn [& xs] (apply v xs))]
+                             [:entry/apply (fn [& xs] (apply e xs))]]]
+              [(mapv (fn [[label index]]
+                       [label (mapv (fn [[kind f]] [kind (inspect f index)]) callables)])
+                     [{table}])
+               (mapv (fn [d]
+                       (mapv (fn [index]
+                               (try (identical? d (e index d)) (catch :default ex false)))
+                             [0.5 1.5 -1 -0.5 2 js/NaN js/Infinity "0" nil false []]))
+                     [nil false 0 "" js/undefined {{:a 1}} [:fallback] fallback])]))
+           (js/console.log (pr-str (m :default)))"#
+    );
+    let mut rows = Vec::new();
+    for (name, _, vector, entry) in indices {
+        let mut calls = Vec::new();
+        for path in [
+            "direct",
+            "comp",
+            "saved-comp",
+            "partial",
+            "saved-partial",
+            "apply",
+        ] {
+            for (kind, value) in [("vector", vector), ("entry", entry)] {
+                let zero = if kind == "entry" {
+                    "[:error \"Invalid arity: 0\"]"
+                } else {
+                    key_type
+                };
+                let two = if kind == "entry" && value == bounds {
+                    "[:value :default]"
+                } else {
+                    value
+                };
+                let three = if kind == "entry" {
+                    "[:error \"Invalid arity: 3\"]"
+                } else {
+                    value
+                };
+                let results = format!("[{zero} {value} {two} {three}]");
+                calls.push(format!("[:{kind}/{path} {results}]"));
+            }
+        }
+        rows.push(format!("[:{name} [{}]]", calls.join(" ")));
+    }
+    let fallbacks = format!("[{}]", ["true"; 11].join(" "));
+    let expected = format!(
+        "[[{}] [{}]]\n",
+        rows.join(" "),
+        vec![fallbacks; 8].join(" ")
+    );
+    // Establish every row against QuickJS before comparing the native backend.
+    #[cfg(feature = "quickjs")]
+    assert_eq!(
+        program_output(&light_cljs::compile(&source).unwrap()),
+        expected
+    );
+    assert_native_matches_legacy(&source, &expected);
+}
+
+#[test]
 fn native_map_entry_calls_match_legacy() {
     assert_native_matches_legacy(
         r#"(defmacro m []

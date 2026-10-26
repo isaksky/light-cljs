@@ -1373,7 +1373,7 @@ const NATIVE_PREPARE_INVOKE: &str = r#"(f => {
     if (kind === 'vector' || kind === 'map' || kind === 'set' || kind === 'keyword' || kind === 'symbol') {
         return (...a) => {
             if (kind !== 'vector' && (a.length < 1 || a.length > 2)) throw new Error('Invalid arity: ' + a.length);
-            return __rt.cljInvoke(f, a[0], a.length > 1 ? a[1] : null);
+            return __rt.cljInvoke(f, a[0], a.length > 1 ? a[1] : null, a.length);
         };
     }
     const call = value.call;

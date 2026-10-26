@@ -1492,7 +1492,7 @@ pub enum FormOp {
     CljIsZero = 58,
     /// v → strict boolean false test (`cljIsFalse`).
     CljIsFalse = 59,
-    /// callable collection arg default → lookup result (`cljInvoke`).
+    /// callable collection arg default argument-count → lookup result (`cljInvoke`).
     CljInvoke = 60,
 }
 
@@ -1629,8 +1629,8 @@ impl FormOp {
             | FormOp::CljNthOr
             | FormOp::CljGet
             | FormOp::CljAssoc
-            | FormOp::CljInvoke
             | FormOp::StructType => 3,
+            FormOp::CljInvoke => 4,
         }
     }
 

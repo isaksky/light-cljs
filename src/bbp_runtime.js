@@ -323,7 +323,7 @@ const native = (() => {
     const value=val(f),kind=__rt.formKind(value);
     if(kind!=='vector'&&kind!=='map'&&kind!=='set'&&kind!=='keyword'&&kind!=='symbol')return value.call(null,...args);
     if(kind!=='vector'&&(args.length<1||args.length>2))arity(args.length);
-    return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null);
+    return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null,args.length);
   };
   const unsupported = name => function(){throw new Error('unsupported operation: native macro runtime '+name);};
   // A comparison of adjacent operands, true for one; as the legacy runtimes.

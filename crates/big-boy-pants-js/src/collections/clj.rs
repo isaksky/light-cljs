@@ -66,6 +66,8 @@ pub(crate) enum CljError {
     /// A constructor's operands have the wrong types (a plain `Error` with
     /// the message of the JavaScript function it replaces).
     Operands(&'static str),
+    /// A callable collection received the wrong number of arguments.
+    Arity(usize),
     /// The operation needs this unrealized lazy sequence realized first
     /// (light-cljs-479): not an error, a request the VM performs before
     /// executing the operation again ([`crate::collections::lazy`]).
@@ -100,6 +102,7 @@ impl CljError {
             }
             CljError::OutOfBounds => "index out of bounds".to_string(),
             CljError::Operands(message) => (*message).to_string(),
+            CljError::Arity(count) => format!("Invalid arity: {count}"),
             CljError::Realize(_) => "lazy sequence realization pending".to_string(),
             CljError::Infinite => "infinite lazy sequence: it contains itself".to_string(),
         }
@@ -859,32 +862,45 @@ pub(crate) fn get(heap: &Heap, coll: &Value, key: &Value, default: &Value) -> Re
 /// Invoke a native callable collection. Functions are called by the VM-side
 /// JavaScript adapter instead. A vector's call ignores a default and throws
 /// outside its bounds, as the legacy runtime's fixed `call` method does.
-pub(crate) fn invoke(heap: &Heap, f: &Value, arg: &Value, default: &Value) -> Result<Value> {
+/// A map entry accepts one index or an index and fallback. Preserve the
+/// argument count so an explicit nil/undefined fallback is still supplied.
+pub(crate) fn invoke(
+    heap: &Heap,
+    f: &Value,
+    arg: &Value,
+    default: &Value,
+    argument_count: usize,
+) -> Result<Value> {
     let shape = shape(heap, f);
     match &shape {
         Shape::Form(FormKind::Keyword | FormKind::Symbol, _) => get(heap, arg, f, default),
         Shape::Form(FormKind::Map | FormKind::Set, _) => get(heap, f, arg, default),
         Shape::Form(FormKind::Vector, vector) => {
-            let Value::Number(index) = form::unwrap(heap, arg.clone()) else {
-                return Err(CljError::Operands(if vector.is_map_entry() {
-                    "Index out of bounds"
-                } else {
-                    "Key must be integer"
-                }));
-            };
             let FormBody::Vector(items) = vector.body() else {
                 unreachable!("a vector shape has a vector body");
+            };
+            let index = form::unwrap(heap, arg.clone());
+            if vector.is_map_entry() {
+                if argument_count != 1 && argument_count != 2 {
+                    return Err(CljError::Arity(argument_count));
+                }
+                // Entries require exact numeric 0/1, even for non-number
+                // operands. A rejected index returns the supplied fallback
+                // unchanged, including its occurrence and nil/undefined value.
+                return match index {
+                    Value::Number(0.0) => Ok(items.get(0).expect("entry key")),
+                    Value::Number(1.0) => Ok(items.get(1).expect("entry value")),
+                    _ if argument_count == 2 => Ok(default.clone()),
+                    _ => Err(CljError::Operands("Index out of bounds")),
+                };
+            }
+            let Value::Number(index) = index else {
+                return Err(CljError::Operands("Key must be integer"));
             };
             // The legacy callable checks numeric bounds before its bitwise
             // indexing truncates a fractional index. Keep nth/get's index
             // contract separate, including rejection of negative fractions.
-            // Map entries instead accept only exact 0/1 indices.
-            let in_bounds = if vector.is_map_entry() {
-                index == 0.0 || index == 1.0
-            } else {
-                index >= 0.0 && index < items.len() as f64
-            };
-            if in_bounds {
+            if index >= 0.0 && index < items.len() as f64 {
                 Ok(items.get(index as usize).expect("index within bounds"))
             } else {
                 Err(CljError::Operands("Index out of bounds"))

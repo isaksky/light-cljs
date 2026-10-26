@@ -426,6 +426,7 @@ impl From<clj::CljError> for Fault {
             clj::CljError::Unsupported { .. } => Fault::TypeError(e.message()),
             // `keywordCore`/`symbolCore` throw a plain `Error`.
             clj::CljError::Operands(_) => Fault::Error(e.message()),
+            clj::CljError::Arity(_) => Fault::Error(e.message()),
             clj::CljError::Infinite => Fault::RangeError(e.message()),
             // Intercepted by `form_op`, which starts the realization.
             clj::CljError::Realize(_) => Fault::Internal("unhandled lazy realization request"),
@@ -455,7 +456,13 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::CljTruth => Some(Value::Bool(clj::truth(heap, &a(0)))),
         FormOp::CljIsZero => Some(Value::Bool(clj::is_zero(heap, &a(0)))),
         FormOp::CljIsFalse => Some(Value::Bool(clj::is_false(heap, &a(0)))),
-        FormOp::CljInvoke => Some(clj::invoke(heap, &a(0), &a(1), &a(2))?),
+        FormOp::CljInvoke => Some(clj::invoke(
+            heap,
+            &a(0),
+            &a(1),
+            &a(2),
+            crate::collections::index_from_value(&a(3))?,
+        )?),
         FormOp::CljCount => Some(clj::count(heap, &a(0))?),
         FormOp::CljSeq => Some(clj::seq(heap, &a(0))?),
         FormOp::CljFirst => Some(clj::first(heap, &a(0))?),

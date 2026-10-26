@@ -167,10 +167,14 @@ Invocation of native keywords, symbols, maps, sets and vectors uses
 `__rt.cljInvoke`; collection lookups retain input occurrences. Vector calls
 check numeric bounds before truncating an in-range fractional index; the
 intrinsics for `nth` and `get` keep their own index contracts. Map seq entries
-retain an internal distinction and require exact `0` or `1` call indices;
-their `vec`, `assoc`, `conj` and `with-meta` results are ordinary vectors.
-Ordinary JavaScript
-callable objects retain their `.call` method and receiver. Emitted calls read
+retain an internal distinction and require exact `0` or `1` call indices.
+With one argument, a rejected entry index throws `Index out of bounds`; with
+two it returns the supplied fallback unchanged, including nil, undefined and
+input occurrences. Entries reject other arities; ordinary vectors ignore
+extra arguments. Both native call adapters preserve the argument count in
+`__rt.cljInvoke`. An entry's `vec`, `assoc`, `conj` and `with-meta` results
+are ordinary vectors. Ordinary JavaScript callable objects retain their `.call`
+method and receiver. Emitted calls read
 that method before evaluating arguments, including when its getter throws.
 `fnil` replaces
 nil and undefined occurrences while keeping false, zero and empty strings.
