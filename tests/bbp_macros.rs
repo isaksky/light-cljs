@@ -125,6 +125,231 @@ fn native_core_services_match_quickjs() {
 }
 
 #[test]
+fn native_printing_matches_quickjs_for_every_native_value_kind() {
+    // One differential table covers constructed values and imported reader
+    // occurrences. Compare emitted strings too: Node's stdout replaces lone
+    // surrogates, whereas the emitted program preserves every UTF-16 unit.
+    let mut failures = Vec::new();
+    for (label, declarations, body, argument) in [
+        ("scalars", "", "(pr-str nil false true 0 -0.0 ##NaN ##Inf ##-Inf (/ 1 3) 9007199254740993)", "nil"),
+        ("strings", "", r#"(pr-str "\"\\\b\f\n\r\t\u0000😀" (js/String.fromCharCode 55296 56320 55296 56320 56320))"#, "nil"),
+        ("reader chars", "", "(pr-str x)", r#"[\a \newline \space \tab \backspace \formfeed \return \u0000 \u263a]"#),
+        ("named", "", "(pr-str 'a 'a/b :a :a/b (symbol \"\") (keyword \"\"))", "nil"),
+        ("empty", "", "(pr-str '() [] {} #{})", "nil"),
+        ("collections", "", "(pr-str '(1 [2] {:a 3} #{4}) [1 nil false] {:a 1 :b 2} #{:a :b})", "nil"),
+        ("map ordering", "", "(pr-str (into {} (map (fn [i] [i (- i)]) (range 40))))", "nil"),
+        ("set ordering", "", "(pr-str (into #{} (range 40)))", "nil"),
+        ("lazy", "", "(pr-str (map inc '(1 2 3)) (cons 0 (map inc [1 2])) (range 3) (take 3 (repeat :x)))", "nil"),
+        ("lazy bound", "", "(binding [*print-length* 3] (pr-str (range) (repeat :x)))", "nil"),
+        ("lazy effects", "", "(let [a (js/Array.) s (map (fn [x] (.push a x) x) '(1 2 3 4)) p (binding [*print-length* 2] (pr-str s)) n (.-length a)] (pr-str p n (pr-str s) (vec a)))", "nil"),
+        ("metadata", "", "(binding [*print-meta* true] (pr-str (with-meta [1] {:tag 'T}) (with-meta 's {:x true}) (with-meta (map inc '(1)) {:m 1}) (with-meta {} {:m 2})))", "nil"),
+        ("no metadata", "", "(pr-str (with-meta [1] {:tag true}))", "nil"),
+        ("length", "", "(binding [*print-length* 0] (pr-str [1] {} {:x 1} #{1} '(1)))", "nil"),
+        ("depth", "", "(binding [*print-level* 1] (pr-str [[1] {:a [2]}] '((1)) {:a #{2}}))", "nil"),
+        ("depth zero", "", "(binding [*print-level* 0] (pr-str [] {} #{} '() :x 1))", "nil"),
+        ("namespace maps", "", "(binding [*print-namespace-maps* true] (pr-str {:a/x 1 :a/y 2} {'a/x 1 :a/y 2} {:a/x 1 :b/y 2} {:x 1}))", "nil"),
+        ("readability", "", "(binding [*print-readably* false *print-dup* true *print-fn-bodies* true] (pr-str [\"a\\n\" \\newline] :x 's))", "nil"),
+        ("string functions", "", "(pr-str (pr-str) (prn-str 1 \"x\") (print-str [\"x\"] \"y\") (println-str :a) (str [\"x\"] {:a 1} #{:x} '(1)))", "nil"),
+        ("direct printer", "", "(pr-str (pr-str* [1 \"x\"]) (try (pr-str* nil) (catch :default e (.-message e))) (try (pr-str* 1) (catch :default e (.-message e))))", "nil"),
+        ("explicit options", "", "(pr-str (pr-str-with-opts [\"x\" [1 2 3]] {:readably true :print-length 1 :more-marker \"MORE\"}) (prn-str-with-opts [] {}))", "nil"),
+        ("options metadata", "", "(pr-str-with-opts [(with-meta [\"x\"] {:m 1})] {:meta true :readably true})", "nil"),
+        ("options implementation", "", "(pr-str-with-opts [[1 2] :x nil] {:readably true :alt-impl (fn [x w o] (-write w \"!\") ((:fallback-impl o) x w (dissoc o :alt-impl)))})", "nil"),
+        ("printer restoration on error", "", "(pr-str (try (binding [*print-level* 1] (pr-str (lazy-seq (throw (js/Error. \"print failure\"))))) (catch :default e (.-message e))) (pr-str [[1]]))", "nil"),
+        ("restoration", "", "(let [a (binding [*print-length* 1 *print-level* 1] (pr-str [[1] 2]))] (pr-str a [[1] 2]))", "nil"),
+        ("record", "(defrecord R [a b])", "(pr-str (->R 1 [2]) (assoc (->R 1 2) :c 3) R)", "nil"),
+        ("record options", "(defrecord R [a b])", "(binding [*print-meta* true *print-length* 1 *print-level* 2] (pr-str (with-meta (->R 1 [2]) {:m 1})))", "nil"),
+        ("type", "(deftype T [a])", "(pr-str (T. 1) T)", "nil"),
+        ("mutable type", "(deftype T [^:mutable a])", "(pr-str (T. 1) T)", "nil"),
+        ("type string", "(deftype T [a] Object (toString [_] (str \"value=\" a)))", "(pr-str (T. 1) (str (T. 2)))", "nil"),
+        ("printer protocol", "(deftype T [a] IPrintWithWriter (-pr-writer [this writer opts] (-write writer \"<\") (-pr-writer a writer opts) (-write writer \">\")))", "(pr-str (T. [1 2]))", "nil"),
+        ("regex", "", "(pr-str #\"a\\\\b\")", "nil"),
+        ("namespace", "", "(pr-str (str *ns*) (ns-name *ns*) *ns*)", "nil"),
+    ].into_iter().chain(include_str!("fixtures/compiler-native-printing.tsv").lines().filter(|line|!line.starts_with('#')).map(|line| {
+        let mut columns=line.split('\t');
+        (columns.next().unwrap(),"(defn observe [x] x)",columns.next().unwrap(),"nil")
+    })) {
+        let source = format!("{declarations} (defmacro m [x] {body}) (js/console.log (m {argument}))");
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let program = match analyze_with_macros(&source, &parse(&source).unwrap_or_else(|e| panic!("{label}: {e}")), &mut host) {
+            Ok(program)=>program,
+            Err(e)=>{failures.push(format!("{label}: {e}"));continue;}
+        };
+        let native = emit_js(&program);
+        assert!(!program_output(&native).is_empty(), "{label}");
+        #[cfg(feature = "quickjs")]
+        {
+            let legacy = light_cljs::compile(&source).unwrap_or_else(|e| panic!("{label}: {e}"));
+            if native!=legacy {failures.push(format!("{label}: native {:?}, legacy {:?}",program_output(&native),program_output(&legacy)));}
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn native_namespace_context_matches_quickjs_across_helpers_and_jobs() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-namespace-context");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+            (def initial [(str *ns*) (str (ns-name *ns*))])
+            (def nested-initial [initial (str *ns*)])
+            (def bound-value [(str *ns*) (meta (ns-name *ns*))])
+            (defn nested [] [(str *ns*) (str (ns-name *ns*))])
+            (defn context [] [nested-initial (nested)])"#,
+        ),
+        (
+            "macros.cljs",
+            r#"(ns macros (:require [helpers :as h]))
+            (defmacro capture []
+              (let [before (str *ns*) result (h/context)
+                    bound (binding [*ns* (create-ns (with-meta 'temporary {:tag true}))]
+                            [(str *ns*) (meta (ns-name *ns*)) h/bound-value])
+                    thrown (try (binding [*ns* (create-ns 'throwing)]
+                                  (throw (js/Error. (str *ns*))))
+                                (catch :default e (.-message e)))]
+                (list 'quote [before result bound thrown (str *ns*) (pr-str *ns*)
+                              (identical? *ns* (find-ns (ns-name *ns*)))])))
+            (defmacro diagnostic [x]
+              (throw (js/Error. (str (str *ns*) ": " (pr-str x)))))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [macros :refer [capture]])) (def value [(capture) (capture)])",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [macros :refer [capture]])) (def value [(capture) (capture)])",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b] [macros :refer [capture]])) (js/console.log (pr-str [a/value b/value (capture)]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let mut reference: Option<String> = None;
+    for (jobs, seed, held) in [
+        (1, 1, false),
+        (2, 1, false),
+        (4, 1, false),
+        (4, 2, false),
+        (4, 3, true),
+    ] {
+        let build = |native| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            let mut stats = light_cljs::CompileStats::default();
+            let (program, _) = analyze_namespace_entry_recorded(
+                "app",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                EntryRecorders {
+                    stats: Some(&mut stats),
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    #[cfg(debug_assertions)]
+                    perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                        seed,
+                        lane_hold: if held {
+                            vec!["a/value".into()]
+                        } else {
+                            Vec::new()
+                        },
+                        limits: Some(light_cljs::scheduler::Limits {
+                            batch_jobs: 1,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("jobs {jobs}, native {native}: {e}"));
+            if native {
+                assert!(stats.native_helpers.units_evaluated > 0);
+                if held {
+                    assert!(stats.lanes.inherited > 0, "no inherited namespace demand");
+                }
+            }
+            emit_js(&program)
+        };
+        let native = build(true);
+        let output = program_output(&native);
+        assert!(output.contains("temporary") && output.contains("throwing"));
+        if let Some(previous) = &reference {
+            assert_eq!(output, program_output(previous), "jobs {jobs}");
+            assert!(&native == previous, "emitted program differs, jobs {jobs}");
+        }
+        reference = Some(native.clone());
+        #[cfg(feature = "quickjs")]
+        {
+            let legacy = build(false);
+            assert_eq!(output, program_output(&legacy), "jobs {jobs}");
+            assert!(native == legacy, "emitted program differs, jobs {jobs}");
+        }
+    }
+    std::fs::write(
+        root.join("error.cljs"),
+        "(ns error (:require [macros :refer [diagnostic]])) (diagnostic [1 :x])",
+    )
+    .unwrap();
+    for jobs in [1, 2, 4] {
+        let build = |native| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            analyze_namespace_entry_recorded(
+                "error",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                EntryRecorders {
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err()
+            .to_string()
+        };
+        let native = build(true);
+        assert!(native.contains("error: [1 :x]"), "{native}");
+        #[cfg(feature = "quickjs")]
+        {
+            let legacy = build(false);
+            // Engine stack frames and the native engine's prefix differ;
+            // the diagnostic message, call and definition provenance do not.
+            let marker = "macro macros/diagnostic: ";
+            let (native_call, native_message) = native.split_once(marker).unwrap();
+            let (legacy_call, legacy_message) = legacy.split_once(marker).unwrap();
+            assert_eq!(native_call, legacy_call, "jobs {jobs}");
+            assert_eq!(
+                native_message
+                    .strip_prefix("big-boy-pants-js: ")
+                    .unwrap()
+                    .split_once("; definition ")
+                    .unwrap()
+                    .0,
+                legacy_message.lines().next().unwrap(),
+                "jobs {jobs}"
+            );
+            assert_eq!(
+                native_message.split_once("; definition ").unwrap().1,
+                legacy_message.split_once("; definition ").unwrap().1,
+                "jobs {jobs}"
+            );
+        }
+    }
+}
+
+#[test]
 fn native_compiler_macro_fixtures_keep_their_legacy_results() {
     let fixtures = include_str!("compiler/macros.rs");
     let root = temp_dir::TempDir::new("native-compiler-macro-fixtures");

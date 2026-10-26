@@ -40,6 +40,32 @@ fn failure(rt: &Runtime, src: &str) -> VmError {
     }
 }
 
+#[test]
+fn printer_traversal_uses_legacy_hash_paths_and_preserves_key_identity() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function f(){
+      const k=__rt.formVector(1), sameHash=__rt.formList(1);
+      const map=__rt.formMap(33,'a',1,'b',32,'c',0,'d',null,'nil');
+      const entries=__rt.formPrintItems(map), keys=[];
+      for(let i=0;i<__rt.formCount(entries);i++)keys.push(__rt.formNth(__rt.formNth(entries,i),0));
+      if(keys[0]!==null||keys[1]!==0||keys[2]!==32||keys[3]!==1||keys[4]!==33)throw new Error('map traversal');
+      const members=__rt.formPrintItems(__rt.formSet(33,1,32,0,null));
+      for(let i=0;i<5;i++)if(__rt.formNth(members,i)!==keys[i])throw new Error('set traversal');
+      const collision=__rt.formPrintItems(__rt.formMap(k,1,sameHash,2));
+      if(__rt.formCount(collision)!==1||__rt.formNth(__rt.formNth(collision,0),0)!==k)throw new Error('retained collision key');
+      return true;
+    }"#,
+        &[],
+    );
+    assert!(matches!(result.view(), ValueView::Bool(true)));
+    assert!(matches!(
+        failure(&rt, "function f(){return __rt.formPrintItems(1);}").kind(),
+        VmErrorKind::Collection(_)
+    ));
+}
+
 fn at(line: u32, column: u32) -> Provenance {
     Provenance {
         source: 1,

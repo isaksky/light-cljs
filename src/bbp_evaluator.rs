@@ -70,6 +70,8 @@ struct Bridge {
     initializer_callers: HashMap<u64, BTreeMap<u64, u64>>,
     initializer_parents: HashMap<u64, HashSet<u64>>,
     caller_gensyms: HashMap<u64, crate::generated_names::NativeGensyms>,
+    initializer_namespaces: HashMap<(u64, u64), u64>,
+    next_namespace: u64,
 }
 impl Bridge {
     /// Observable native objects keep their full compiler-side Datum tree.
@@ -113,6 +115,11 @@ impl Bridge {
         native.map(|value| self.retain(s, data, value)).transpose()
     }
     fn initializer_caller(&self, unit: u64) -> Option<u64> {
+        self.initializer_context(unit).map(|(_, scope)| scope)
+    }
+    // The earliest direct or inherited caller, including the unit whose
+    // namespace snapshot belongs to that caller. No executing-thread state.
+    fn initializer_context(&self, unit: u64) -> Option<(u64, u64)> {
         let mut pending = vec![unit];
         let mut visited = HashSet::new();
         let mut earliest = None;
@@ -126,13 +133,13 @@ impl Bridge {
                 .and_then(|callers| callers.first_key_value())
                 && earliest.is_none_or(|(prior, _)| position < prior)
             {
-                earliest = Some((position, scope));
+                earliest = Some((position, (unit, scope)));
             }
             if let Some(parents) = self.initializer_parents.get(&unit) {
                 pending.extend(parents);
             }
         }
-        earliest.map(|(_, scope)| scope)
+        earliest.map(|(_, context)| context)
     }
     fn poll(&self) -> Result<(), EvalError> {
         self.control.as_ref().map_or(Ok(()), ExecutionControl::poll)
@@ -537,6 +544,9 @@ const LANE_EFFECT: u16 = 65532;
 /// Compiler-owned generated names, independent of the worker running a step.
 const GENSYM_EFFECT: u16 = 65531;
 const GENSYM_PREFIX: ResultKind = ResultKind::new(6);
+/// Immutable namespace-name symbols captured at each initializer demand.
+const NAMESPACE: ResultKind = ResultKind::new(7);
+const NAMESPACE_EFFECT: u16 = 65530;
 
 /// The runtime-wide collection and admission policy for `options`.
 ///
@@ -1496,16 +1506,23 @@ impl BbpEvaluator {
                     _ => None,
                 });
             let serial = cx.gensym_scope.get();
-            if let Some(scope) = crate::generated_names::NativeGensyms::capture_scope(serial) {
-                let position = self
-                    .shared
-                    .lanes()
-                    .and_then(|lanes| {
-                        lanes.caller_position(crate::effect_lanes::identity(cx.task.id()))
-                    })
-                    .unwrap_or(0);
+            let namespace = cx
+                .task
+                .global_value("__lightInitializerNamespace")
+                .map_err(error)?
+                .ok_or_else(|| error("missing initializer namespace"))?;
+            let position = self
+                .shared
+                .lanes()
+                .and_then(|lanes| {
+                    lanes.caller_position(crate::effect_lanes::identity(cx.task.id()))
+                })
+                .unwrap_or(0);
+            let namespace_id = {
                 let mut bridge = self.bridge.lock().unwrap();
-                bridge.caller_gensyms.insert(serial, scope);
+                if let Some(scope) = crate::generated_names::NativeGensyms::capture_scope(serial) {
+                    bridge.caller_gensyms.insert(serial, scope);
+                }
                 bridge
                     .initializer_callers
                     .entry(unit as u64)
@@ -1519,6 +1536,33 @@ impl BbpEvaluator {
                         .or_default()
                         .insert(parent);
                 }
+                if bridge
+                    .initializer_namespaces
+                    .contains_key(&(unit as u64, serial))
+                {
+                    None
+                } else {
+                    bridge.next_namespace += 1;
+                    let id = bridge.next_namespace;
+                    bridge
+                        .initializer_namespaces
+                        .insert((unit as u64, serial), id);
+                    Some(id)
+                }
+            };
+            if let Some(id) = namespace_id {
+                let namespace_key =
+                    DependencyKey::new(self.runtime.world(), DependencyId::new(id), NAMESPACE);
+                let request = self.runtime.claim(namespace_key).map_err(error)?;
+                let wakeups = self
+                    .runtime
+                    .complete(
+                        namespace_key,
+                        request.producer(),
+                        Completion::Ready(&namespace),
+                    )
+                    .map_err(error)?;
+                self.shared.wake(wakeups);
             }
             let claimed = match self.runtime.claim(key) {
                 Ok(request) => {
@@ -1837,6 +1881,20 @@ struct NativeHost<'a>(
 );
 impl big_boy_pants_js::Host for NativeHost<'_> {
     fn effect(&mut self, call: big_boy_pants_js::HostCall) -> Result<Primitive, String> {
+        if call.op == NAMESPACE_EFFECT {
+            let Primitive::Number(unit) = call.arg else {
+                return Err("invalid initializer namespace request".into());
+            };
+            let bridge = self.4.lock().unwrap();
+            let context = bridge
+                .initializer_context(unit as u64)
+                .ok_or("initializer namespace caller unavailable")?;
+            let id = bridge
+                .initializer_namespaces
+                .get(&context)
+                .ok_or("initializer namespace unavailable")?;
+            return Ok(Primitive::Number(*id as f64));
+        }
         if call.op == GENSYM_EFFECT {
             let Primitive::String(request) = call.arg else {
                 return Err("invalid native gensym request".into());

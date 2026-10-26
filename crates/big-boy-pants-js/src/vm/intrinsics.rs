@@ -113,6 +113,7 @@
 //! | `formDissoc(m, k)` | `form_op` | new map without the entry for an equal key (absent: `m`) | `WrongType` |
 //! | `formConj(c, x)` | `form_op` | vector: `x` appended; list: `x` prepended | `WrongType` |
 //! | `formKeys(m)` | `form_op` | a new form vector of the map's keys (the stored key objects), in trie order | `WrongType` |
+//! | `formPrintItems(m)` | `form_op` | map entries or set members in legacy printer order, retaining key identity | wrong type |
 //! | `formEquals(a, b)`, `formHash(v)` | `form_op` | value equality (boolean) and the light-cljs runtime's 32-bit hash (number) | – |
 //! | `formMeta(v)` | `form_op` | the form's metadata map, or `null` | – |
 //! | `formWithMeta(v, m)` | `form_op` | a symbol, list, vector or map with metadata `m` (a form map or `null`); `v` itself for the same `m` | `WrongType` |
@@ -581,6 +582,7 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
                 .collect();
             form::new_vector(heap, &keys)?
         }
+        FormOp::PrintItems => print_items(heap, &arg())?,
         FormOp::Disj => {
             let (s, m) = (arg(), arg());
             form::disj(heap, &s, &m)?
@@ -643,6 +645,56 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         | FormOp::CljRangeCons
         | FormOp::CljSymbolNs => Value::Undefined,
     })
+}
+
+/// The native lookup trie spreads hashes for its own routing. Printing uses
+/// ClojureScript's five-bit hash paths instead, with nil before the trie.
+/// This does not change language lookup or the native seq contract.
+fn print_items(heap: &Heap, value: &Value) -> Result<Value, CollectionError> {
+    let wrong = || CollectionError::WrongType {
+        expected: "form map or set",
+        found: form::kind(heap, value).map_or(value.type_name(), FormKind::name),
+    };
+    let object = form::form_object(heap, value).ok_or_else(wrong)?;
+    let (map, set) = match object.body() {
+        form::FormBody::Map(map) => (map, false),
+        form::FormBody::Set(set) => (set, true),
+        _ => return Err(wrong()),
+    };
+    let mut entries: Vec<_> = map
+        .to_vec()
+        .into_iter()
+        .map(|(key, value)| {
+            let hash = form::hash(heap, &key) as u32;
+            let nil = matches!(
+                form::unwrap(heap, key.clone()),
+                Value::Null | Value::Undefined
+            );
+            ((nil, hash), key, value)
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        let ((an, ah), _, _) = a;
+        let ((bn, bh), _, _) = b;
+        bn.cmp(an).then_with(|| {
+            (0..32)
+                .step_by(5)
+                .map(|shift| ((ah >> shift) & 31).cmp(&((bh >> shift) & 31)))
+                .find(|order| !order.is_eq())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+    let values = entries
+        .into_iter()
+        .map(|(_, key, value)| {
+            if set {
+                Ok(key)
+            } else {
+                form::new_vector(heap, &[key, value])
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    form::new_vector(heap, &values)
 }
 
 /// Early VM tests (hand-assembled bytecode). Cross-task use while the owner

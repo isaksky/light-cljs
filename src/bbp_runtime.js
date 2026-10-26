@@ -278,7 +278,8 @@ const decl = (() => {
   const enter = next => { frontiers.push(frontier); frontier = next; return null; };
   const leave = () => { frontier = frontiers.pop() ?? Infinity; return null; };
   const isRecord = x => { const ty = __rt.structTypeOf(x); return ty !== null && views.get(ty)?.record === true; };
-  return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, isRecord};
+  return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, isRecord,
+    printer:x=>resolve(methodTable('IPrintWithWriter/-pr-writer',3),x)};
 })();
 const native = (() => {
   let gensymScope = 0, gensymPrefix = '';
@@ -354,6 +355,123 @@ const native = (() => {
     return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null,args.length);
   };
   const unsupported = name => function(){throw new Error('unsupported operation: native macro runtime '+name);};
+  // Printing walks native seqs incrementally. In particular, a bounded print
+  // must not realize the whole lazy input. All strings remain exact UTF-16.
+  const namedText = x => {
+    const ns=__rt.formNamespace(x);
+    return (__rt.formKind(x)==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);
+  };
+  const printOption = (options,name,root) => options==null?core[root]:get(options,__rt.cljKeyword(name));
+  const write = (writer,text) => { writer.text+=val(text); return null; };
+  const printSequential = (writer,one,begin,separator,end,options,coll) => {
+    const saved=core.printLevel;
+    core.printLevel=val(saved)==null?null:val(saved)-1;
+    try {
+      if(core.printLevel!==null&&core.printLevel<0)return write(writer,'#');
+      write(writer,begin);
+      let s=seq(coll),remaining=val(printOption(options,'print-length','printLength')),printed=false;
+      while(s!==null&&(remaining===null||remaining!==0)){
+        if(printed)write(writer,separator);
+        invoke(one,__rt.cljFirst(s),writer,options);printed=true;
+        s=__rt.cljNext(s);if(remaining!==null)remaining--;
+      }
+      if(s!==null){if(printed)write(writer,separator);const marker=options==null?null:get(options,__rt.cljKeyword('more-marker'));write(writer,truth(marker)?marker:'...');}
+      return write(writer,end);
+    } finally {core.printLevel=saved;}
+  };
+  const printWriter = (value,writer,options) => {
+    if(options!=null){
+      const alt=get(options,__rt.cljKeyword('alt-impl'));
+      if(truth(alt))return invoke(alt,value,writer,__rt.cljAssoc(options,__rt.cljKeyword('fallback-impl'),printWriterImpl));
+    }
+    return printWriterImpl(value,writer,options);
+  };
+  const printWriterImpl = (value,writer,options,skipMetadata=false) => {
+    const x=val(value);
+    if(x==null)return write(writer,'nil');
+    if(!skipMetadata&&truth(printOption(options,'meta','printMeta'))){
+      const m=__rt.cljMeta(value);
+      if(m!==null){write(writer,'^');printWriter(m,writer,options);write(writer,' ');}
+    }
+    const custom=decl.printer(x);
+    if(custom!=null)return custom.call(x,x,writer,options);
+    const kind=__rt.formKind(x);
+    if(kind==='keyword'||kind==='symbol')return write(writer,namedText(x));
+    if(kind==='type')return write(writer,__rt.formName(x));
+    if(typeof x==='string'){
+      const escapes={'"':'\\"','\\':'\\\\','\b':'\\b','\f':'\\f','\n':'\\n','\r':'\\r','\t':'\\t'};
+      return write(writer,truth(printOption(options,'readably','printReadably'))?'"'+x.replace(/[\\"\b\f\n\r\t]/g,ch=>escapes[ch])+'"':x);
+    }
+    if(typeof x==='number')return write(writer,Number.isNaN(x)?'##NaN':x===Infinity?'##Inf':x===-Infinity?'##-Inf':Object.is(x,-0)?'-0.0':String(x));
+    if(typeof x==='boolean')return write(writer,String(x));
+    if(kind==='vector')return printSequential(writer,printWriter,'[',' ',']',options,x);
+    if(kind==='list'||kind==='lazy-seq'||kind==='cons')return printSequential(writer,printWriter,'(',' ',')',options,x);
+    if(kind==='set')return printSequential(writer,printWriter,'#{',' ','}',options,__rt.formPrintItems(x));
+    if(kind==='map'){
+      let ns=null;
+      if(truth(core.printNamespaceMaps)){
+        const keys=arr(__rt.formKeys(x));
+        if(keys.length&&keys.every(k=>['keyword','symbol'].includes(__rt.formKind(val(k))))){
+          ns=__rt.formNamespace(val(keys[0]));
+          if(!keys.every(k=>__rt.formNamespace(val(k))===ns))ns=null;
+        }
+      }
+      return printSequential(writer,(e,w,o)=>{
+        let k=__rt.cljNth(e,0);
+        if(ns)k=__rt.formKind(val(k))==='keyword'?__rt.cljKeyword(__rt.formName(val(k))):__rt.cljSymbol(__rt.formName(val(k)));
+        printWriter(k,w,o);write(w,' ');return printWriter(__rt.cljNth(e,1),w,o);
+      },(ns?'#:'+ns:'')+'{',', ','}',options,__rt.formPrintItems(x));
+    }
+    if(kind==='record')return printSequential(writer,(e,w,o)=>printSequential(w,printWriter,'',' ','',o,e),'#'+__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.')+'{',', ','}',options,x);
+    if(kind==='struct')return write(writer,'#object['+__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.')+' '+String(interop(x))+']');
+    if(kind===null&&(typeof x==='object'||typeof x==='function')){
+      const ty=x.__lightNativeType;
+      if(__rt.formKind(ty)==='type')return write(writer,typeof x==='function'?__rt.formName(ty):'#object['+__rt.formName(ty).replaceAll('/','.')+' '+String(x)+']');
+    }
+    if(x instanceof Namespace)return write(writer,'#object[Namespace '+namedText(x.name)+']');
+    if(x instanceof RegExp)return write(writer,'#"'+x.source+'"');
+    // Host objects with a printer protocol work above. Other unimplemented
+    // kinds fail explicitly rather than silently stringifying native data.
+    throw new Error('unsupported operation: native macro runtime pr-str of '+(kind??typeof x));
+  };
+  const printValues = (values,options) => {
+    const writer={text:''};let printed=false;
+    for(let s=seq(values);s!==null;s=__rt.cljNext(s)){
+      if(printed)write(writer,' ');printWriter(__rt.cljFirst(s),writer,options);printed=true;
+    }
+    return writer.text;
+  };
+  const prStr = (...values) => printValues(vector(values),null);
+  const prWriter = (x,w,o) => {
+    const kind=__rt.formKind(val(x));
+    if(!['keyword','symbol','list','vector','map','set','lazy-seq','cons','record'].includes(kind)&&decl.printer(val(x))==null)
+      throw new Error('No protocol method IPrintWithWriter/-pr-writer defined for this value');
+    return printWriterImpl(x,w,o,true);
+  };
+  const printStr = (...values) => {const saved=core.printReadably;core.printReadably=false;try{return prStr(...values);}finally{core.printReadably=saved;}};
+  const namespaces=new Map();
+  let currentNamespace;
+  const namespaceFrames=[];
+  function Namespace(name){this.name=name;}
+  Namespace.prototype.toString=function(){return namedText(this.name);};
+  Namespace.prototype.getName=function(){return this.name;};
+  const createNs = (...a) => {
+    if(a.length!==1&&a.length!==2)return arity(a.length);
+    const name=val(a[0]);if(__rt.formKind(name)!=='symbol')throw new TypeError('create-ns requires a symbol');
+    const key=namedText(name);if(!namespaces.has(key))namespaces.set(key,new Namespace(name));return namespaces.get(key);
+  };
+  const findNs = (...a) => {
+    if(a.length!==1)return arity(a.length);
+    const name=val(a[0]);if(name==null)return null;if(name instanceof Namespace)return name;
+    if(__rt.formKind(name)!=='symbol')throw new TypeError('find-ns requires a symbol or Namespace');
+    return namespaces.get(namedText(name))??null;
+  };
+  const macroReaderFunction = fn => Object.assign(function(...args){
+    const env=get(args[1],__rt.cljKeyword('ns')),name=get(env,__rt.cljKeyword('name'));
+    if(val(name)==null)return Reflect.apply(fn,null,args);
+    const saved=core.currentNs;core.currentNs=createNs(name);
+    try{return Reflect.apply(fn,null,args);}finally{core.currentNs=saved;}
+  },fn);
   // A comparison of adjacent operands, true for one; as the legacy runtimes.
   const chain = (xs, test) => { if (xs.length === 0) arity(0); for (let i = 1; i < xs.length; i++) if (!test(val(xs[i - 1]), val(xs[i]))) return false; return true; };
   const fix = x => x >= 0 ? Math.floor(x) : Math.ceil(x);
@@ -615,7 +733,21 @@ const native = (() => {
     gensym, rePattern, reSeq:(re,text)=>reSeq(reSeq,re,text),
     reFind:(re,text)=>reMatch(re,text,false), reMatches:(re,text)=>reMatch(re,text,true),
     isRegex:x=>val(x) instanceof RegExp,
-    invoke, truth, get, identity:x=>x, macroReaderFunction:f=>f,
+    invoke, truth, get, identity:x=>x, macroReaderFunction,
+    printReadably:true, printLength:null, printLevel:null, printNamespaceMaps:false,
+    printMeta:false, printDup:false, printFnBodies:false, printNewline:true, flushOnNewline:true,
+    prStr, printStr, prnStr:(...xs)=>prStr(...xs)+'\n', printlnStr:(...xs)=>printStr(...xs)+'\n',
+    prStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1]):arity(a.length),
+    prnStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1])+'\n':arity(a.length),
+    prWriter, prStrStar:x=>{const w={text:''};prWriter(x,w,null);return w.text;},
+    printMetaQ:(...a)=>a.length!==2?arity(a.length):truth(printOption(a[0],'meta','printMeta'))&&__rt.cljMeta(a[1])!==null,
+    write, flushWriter:()=>null,
+    writeAll:(w,...xs)=>{for(const x of xs)write(w,x);return null;},
+    prSequentialWriter:printSequential,
+    prSeqWriter:(xs,w,o)=>{let printed=false;for(let s=seq(xs);s!==null;s=__rt.cljNext(s)){if(printed)write(w,' ');printWriter(__rt.cljFirst(s),w,o);printed=true;}return null;},
+    createNs, findNs, Namespace,
+    theNs:name=>{const ns=findNs(name);if(ns===null)throw new Error('No namespace: '+core.str(name));return ns;},
+    nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
     list:(...a)=>list(a), vector:(...a)=>vector(a), hashMap:(...a)=>map(a), hashSet:(...a)=>set(a), set:x=>set(arr(x)), vec:x=>vector(arr(x)),
     arrayMap:(...a)=>{ if (a.length % 2) throw new Error('No value supplied for key'); return map(a); },
@@ -658,7 +790,9 @@ const native = (() => {
     less:(...xs)=>chain(xs,(a,b)=>a<b), greater:(...xs)=>chain(xs,(a,b)=>a>b), lessEqual:(...xs)=>chain(xs,(a,b)=>a<=b), greaterEqual:(...xs)=>chain(xs,(a,b)=>a>=b),
     str:(...xs)=>xs.map(x=>{x=val(x);if(x==null)return '';const kind=__rt.formKind(x);
       if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}
-      if(kind!==null)throw new Error('unsupported operation: native macro runtime str of a native '+kind+' form');return String(x);}).join(''),
+      if(kind==='type')return __rt.formName(x);
+      if(kind==='struct')return String(interop(x));
+      if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const w={text:''};printWriterImpl(x,w,null,true);return w.text;}finally{core.printReadably=saved;}}return String(x);}).join(''),
     identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     divide:(...xs)=>xs.length===0?NaN:xs.length===1?1/val(xs[0]):xs.slice(1).reduce((a,b)=>a/val(b),val(xs[0])),
@@ -791,11 +925,21 @@ const native = (() => {
         return invoke(f,...a);
       };
     },
-    registerReaderNamespace:()=>null, addReaderDefinitions:()=>null, setReaderNamespace:()=>null,
+    registerReaderNamespace:name=>createNs(__rt.cljSymbol(val(name))), addReaderDefinitions:()=>null,
     PersistentVector:{EMPTY:__rt.formVector()}, PersistentArrayMap:{EMPTY:__rt.formMap()}, List:{EMPTY:__rt.formList()},
     PersistentHashSet:{EMPTY:__rt.formSet()},
     Keyword:{}, Symbol:{}, PersistentHashMap:{EMPTY:__rt.formMap()}, EmptyList:{},
   };
+  currentNamespace=createNs(__rt.cljSymbol('cljs.user'));
+  Object.defineProperty(core,'currentNs',{
+    get:()=>{
+      const frame=namespaceFrames[namespaceFrames.length-1];
+      if(frame===undefined||frame.bound)return currentNamespace;
+      const cell=__rt.effect(65532,0);if(cell!==0)__rt.need(cell,5);
+      return createNs(__rt.need(__rt.effect(65530,frame.unit),7));
+    },
+    set:value=>{currentNamespace=value;const frame=namespaceFrames[namespaceFrames.length-1];if(frame!==undefined)frame.bound=true;}
+  });
   // `extend-type` of a core type extends the native form kind it is; array
   // and hash maps are one native kind (light-cljs-478).
   for (const [name, key] of [['Keyword','keyword'],['Symbol','symbol'],['PersistentVector','vector'],
@@ -818,6 +962,9 @@ const native = (() => {
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f,
     compilerForms:{gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
+      namespaceName:()=>currentNamespace instanceof Namespace?currentNamespace.name:currentNamespace,
+      enterNamespace:unit=>{namespaceFrames.push({unit,saved:currentNamespace,bound:false});return null;},
+      leaveNamespace:()=>{currentNamespace=namespaceFrames.pop().saved;return null;},
       takeGensyms:()=>__rt.formVector(__rt.effect(65531,'t')),
       raiseGensyms:n=>{__rt.effect(65531,'r'+n);return null;}},
   };
@@ -850,11 +997,15 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
       const serial=++initializerSerial;
       globalThis.__lightInitializerUnit=unit;
       globalThis.__lightInitializerParent=initializerStack[initializerStack.length-1]??null;
+      // Capture without reading the dynamic Var: only an initializer that
+      // observes *ns* needs its lane. Inherited callers are selected in Rust.
+      globalThis.__lightInitializerNamespace=native.compilerForms.namespaceName();
       const producer=__rt.need(serial,beginKind);
       if(producer){
         let failed=false,failure;
         initializerStack.push(unit);
-        try{slot.value=factory(native);}catch(e){failed=true;failure=e;}finally{initializerStack.pop();}
+        native.compilerForms.enterNamespace(unit);
+        try{slot.value=factory(native);}catch(e){failed=true;failure=e;}finally{native.compilerForms.leaveNamespace();initializerStack.pop();}
         globalThis.__lightInitializerUnit=unit;
         globalThis.__lightInitializerResult=slot.value;
         globalThis.__lightInitializerFailure=failed?String(failure):null;
