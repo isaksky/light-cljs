@@ -179,9 +179,10 @@
 //! | `NewFormVector` | 0xC0 | u16 count n | v1 … vn → vec | new Clojure form vector |
 //! | `NewFormMap` | 0xC1 | u16 entry count n | k1 v1 … kn vn → map | new Clojure form map with structural keys; a later equal key wins |
 //! | `FormOp` | 0xC2 | u16 [`FormOp`] | arguments ([`FormOp::arity`]) → result | one form-value operation |
+//! | `NewFormSet` | 0xC3 | u16 count n | v1 … vn → set | new Clojure form set with structural members; the first of equal members is kept (light-cljs-477) |
 //!
-//! Opcodes `0xBF`–`0xC2` are the private form intrinsics behind
-//! `__rt.form*`, documented in [`crate::vm::intrinsics`] and
+//! Opcodes `0xBF`–`0xC3` are the private form intrinsics behind
+//! `__rt.form*` and `__rt.clj*`, documented in [`crate::vm::intrinsics`] and
 //! [`crate::collections::form`]. `FormOp`'s operand selects the operation
 //! and so its operand count; an unknown selector is a load error.
 //!
@@ -772,6 +773,7 @@ pub enum Opcode {
     NewFormVector = 0xC0,
     NewFormMap = 0xC1,
     FormOp = 0xC2,
+    NewFormSet = 0xC3,
 }
 
 /// Operand encoding of an opcode.
@@ -1001,6 +1003,7 @@ impl Opcode {
             0xC0 => NewFormVector,
             0xC1 => NewFormMap,
             0xC2 => FormOp,
+            0xC3 => NewFormSet,
             0x96 => PutGlobalStrict,
             0x97 => PutFieldStrict,
             0x98 => PutElemStrict,
@@ -1205,6 +1208,7 @@ impl Opcode {
             PrivateIn => "private_in",
             NewFormList => "new_form_list",
             NewFormVector => "new_form_vector",
+            NewFormSet => "new_form_set",
             NewFormMap => "new_form_map",
             FormOp => "form_op",
             PutGlobalStrict => "put_global_strict",
@@ -1311,7 +1315,7 @@ impl Opcode {
             NewPrivateName => OperandKind::Name,
             GetPrivate | PutPrivate | DefinePrivateField | DefinePrivateMethod
             | DefinePrivateGetter | DefinePrivateSetter | PrivateIn => OperandKind::None,
-            NewFormList | NewFormVector | NewFormMap => OperandKind::Count,
+            NewFormList | NewFormVector | NewFormSet | NewFormMap => OperandKind::Count,
             FormOp => OperandKind::FormOp,
             PutElemStrict | DeleteStrict | CheckDirectEval | DefineClassMethod
             | DefineClassGetter | DefineClassSetter => OperandKind::None,
@@ -1393,11 +1397,48 @@ pub enum FormOp {
     Value = 15,
     /// map → form vector of its keys, in trie order (`formKeys`).
     Keys = 16,
+    /// set member → set' (`formDisj`).
+    Disj = 17,
+    // The ClojureScript core operations of `crate::collections::clj`.
+    /// v → boolean (`cljTruth`).
+    CljTruth = 18,
+    /// coll → count (`cljCount`).
+    CljCount = 19,
+    /// coll → list or null (`cljSeq`).
+    CljSeq = 20,
+    /// coll → element (`cljFirst`).
+    CljFirst = 21,
+    /// coll → list (`cljRest`).
+    CljRest = 22,
+    /// coll → list or null (`cljNext`).
+    CljNext = 23,
+    /// x coll → list (`cljCons`).
+    CljCons = 24,
+    /// coll i → element (`cljNth`).
+    CljNth = 25,
+    /// coll i default → element (`cljNthOr`).
+    CljNthOr = 26,
+    /// coll key default → value (`cljGet`).
+    CljGet = 27,
+    /// coll key → boolean (`cljContains`).
+    CljContains = 28,
+    /// coll key value → coll' (`cljAssoc`).
+    CljAssoc = 29,
+    /// coll key → coll' (`cljDissoc`).
+    CljDissoc = 30,
+    /// coll x → coll' (`cljConj`).
+    CljConj = 31,
+    /// coll x → coll' (`cljDisj`).
+    CljDisj = 32,
+    /// v → metadata or null (`cljMeta`).
+    CljMeta = 33,
+    /// v meta → v' (`cljWithMeta`).
+    CljWithMeta = 34,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 17] = [
+    pub const ALL: [FormOp; 35] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1415,6 +1456,24 @@ impl FormOp {
         FormOp::WithMeta,
         FormOp::Value,
         FormOp::Keys,
+        FormOp::Disj,
+        FormOp::CljTruth,
+        FormOp::CljCount,
+        FormOp::CljSeq,
+        FormOp::CljFirst,
+        FormOp::CljRest,
+        FormOp::CljNext,
+        FormOp::CljCons,
+        FormOp::CljNth,
+        FormOp::CljNthOr,
+        FormOp::CljGet,
+        FormOp::CljContains,
+        FormOp::CljAssoc,
+        FormOp::CljDissoc,
+        FormOp::CljConj,
+        FormOp::CljDisj,
+        FormOp::CljMeta,
+        FormOp::CljWithMeta,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1432,15 +1491,30 @@ impl FormOp {
             | FormOp::Hash
             | FormOp::Meta
             | FormOp::Value
-            | FormOp::Keys => 1,
+            | FormOp::Keys
+            | FormOp::CljTruth
+            | FormOp::CljCount
+            | FormOp::CljSeq
+            | FormOp::CljFirst
+            | FormOp::CljRest
+            | FormOp::CljNext
+            | FormOp::CljMeta => 1,
             FormOp::Keyword
             | FormOp::Symbol
             | FormOp::Nth
             | FormOp::Dissoc
             | FormOp::Conj
             | FormOp::Equals
-            | FormOp::WithMeta => 2,
-            FormOp::Get | FormOp::Assoc => 3,
+            | FormOp::WithMeta
+            | FormOp::Disj
+            | FormOp::CljCons
+            | FormOp::CljNth
+            | FormOp::CljContains
+            | FormOp::CljDissoc
+            | FormOp::CljConj
+            | FormOp::CljDisj
+            | FormOp::CljWithMeta => 2,
+            FormOp::Get | FormOp::Assoc | FormOp::CljNthOr | FormOp::CljGet | FormOp::CljAssoc => 3,
         }
     }
 
@@ -1464,6 +1538,24 @@ impl FormOp {
             FormOp::WithMeta => "formWithMeta",
             FormOp::Value => "formValue",
             FormOp::Keys => "formKeys",
+            FormOp::Disj => "formDisj",
+            FormOp::CljTruth => "cljTruth",
+            FormOp::CljCount => "cljCount",
+            FormOp::CljSeq => "cljSeq",
+            FormOp::CljFirst => "cljFirst",
+            FormOp::CljRest => "cljRest",
+            FormOp::CljNext => "cljNext",
+            FormOp::CljCons => "cljCons",
+            FormOp::CljNth => "cljNth",
+            FormOp::CljNthOr => "cljNthOr",
+            FormOp::CljGet => "cljGet",
+            FormOp::CljContains => "cljContains",
+            FormOp::CljAssoc => "cljAssoc",
+            FormOp::CljDissoc => "cljDissoc",
+            FormOp::CljConj => "cljConj",
+            FormOp::CljDisj => "cljDisj",
+            FormOp::CljMeta => "cljMeta",
+            FormOp::CljWithMeta => "cljWithMeta",
         }
     }
 }
@@ -1689,6 +1781,8 @@ pub(crate) enum Instr {
     /// Entry count (pops twice as many values).
     NewFormMap(u16),
     FormOp(FormOp),
+    /// Member count.
+    NewFormSet(u16),
 }
 
 impl Instr {
@@ -1883,6 +1977,7 @@ impl Instr {
             Instr::PrivateIn => Opcode::PrivateIn,
             Instr::NewFormList(_) => Opcode::NewFormList,
             Instr::NewFormVector(_) => Opcode::NewFormVector,
+            Instr::NewFormSet(_) => Opcode::NewFormSet,
             Instr::NewFormMap(_) => Opcode::NewFormMap,
             Instr::FormOp(_) => Opcode::FormOp,
             Instr::PutGlobalStrict(_) => Opcode::PutGlobalStrict,
@@ -1952,7 +2047,7 @@ impl Instr {
             ToPropertyKey => (2, 2),
             Jump(_) | PushCatch(_) | PushFinally(_) | PopCatch | PopFinally | EndFinally
             | CallFinally | DropCompletion => (0, 0),
-            NewVector(n) | NewFormList(n) | NewFormVector(n) => (usize::from(n), 1),
+            NewVector(n) | NewFormList(n) | NewFormVector(n) | NewFormSet(n) => (usize::from(n), 1),
             NewFormMap(n) => (2 * usize::from(n), 1),
             FormOp(op) => (op.arity(), 1),
             NewMap(n) | TemplateObject(n) => (2 * usize::from(n), 1),
@@ -1999,6 +2094,6 @@ mod tests {
                 assigned += 1;
             }
         }
-        assert_eq!(assigned, 194);
+        assert_eq!(assigned, 195);
     }
 }

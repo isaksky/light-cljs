@@ -18,6 +18,7 @@
 //! | list | elements in order (stored in a persistent vector trie) | yes |
 //! | vector | elements in order | yes |
 //! | map | entries, keys unique by value equality (a hash trie) | yes |
+//! | set | members unique by value equality (a hash trie; light-cljs-477) | yes |
 //!
 //! Elements, keys, values and metadata may be any value: `nil`
 //! (`null`/`undefined`), booleans, numbers, strings, other forms, and
@@ -227,6 +228,7 @@ pub enum FormKind {
     List,
     Vector,
     Map,
+    Set,
 }
 
 impl FormKind {
@@ -239,6 +241,7 @@ impl FormKind {
             FormKind::List => "list",
             FormKind::Vector => "vector",
             FormKind::Map => "map",
+            FormKind::Set => "set",
         }
     }
 
@@ -247,6 +250,7 @@ impl FormKind {
         match self {
             FormKind::Vector => "form vector",
             FormKind::Map => "form map",
+            FormKind::Set => "form set",
             other => other.name(),
         }
     }
@@ -308,6 +312,9 @@ pub(crate) enum FormBody {
     /// Keys stored with the trie hash of their value hash ([`trie_hash`]),
     /// compared by [`equals`]. Never read with the SameValueZero API.
     Map(PMap),
+    /// Members stored as keys that map to themselves (the stored member),
+    /// hashed and compared like map keys.
+    Set(PMap),
 }
 
 /// One form heap object: immutable once allocated, shared by `Arc` so a
@@ -357,6 +364,7 @@ impl FormObject {
             FormBody::List(_) => FormKind::List,
             FormBody::Vector(_) => FormKind::Vector,
             FormBody::Map(_) => FormKind::Map,
+            FormBody::Set(_) => FormKind::Set,
         }
     }
 
@@ -378,6 +386,7 @@ impl FormObject {
                 f(k);
                 f(v);
             }),
+            FormBody::Set(set) => set.for_each(|k, _| f(k)),
         }
     }
 }
@@ -387,7 +396,7 @@ impl Trace for FormObject {
         match &self.body {
             FormBody::Keyword(_) | FormBody::Symbol(_) => {}
             FormBody::List(items) | FormBody::Vector(items) => items.trace(visit),
-            FormBody::Map(map) => map.trace(visit),
+            FormBody::Map(map) | FormBody::Set(map) => map.trace(visit),
         }
         if let Some(meta) = &self.meta {
             meta.trace(visit);
@@ -559,6 +568,26 @@ pub(crate) fn new_map(heap: &Heap, entries: &[(Value, Value)]) -> Result<Value, 
     alloc(heap, FormObject::new(FormBody::Map(map), None), &parts)
 }
 
+/// `set` with `member` added, or `None` when an equal member is present
+/// (the stored member is kept, as `conj` of a present member does).
+fn set_add(heap: &Heap, set: &PMap, member: Value) -> Result<Option<PMap>, CollectionError> {
+    if map_get(heap, set, &member).is_some() {
+        return Ok(None);
+    }
+    map_assoc(heap, set, member.clone(), member)
+}
+
+/// A new set of `items`; of equal members the first is kept.
+pub(crate) fn new_set(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
+    let mut set = PMap::default();
+    for item in items {
+        if let Some(updated) = set_add(heap, &set, item.clone())? {
+            set = updated;
+        }
+    }
+    alloc(heap, FormObject::new(FormBody::Set(set), None), items)
+}
+
 // ---- Inspection ----
 
 pub(crate) fn kind(heap: &Heap, v: &Value) -> Option<FormKind> {
@@ -575,8 +604,8 @@ pub(crate) fn name(heap: &Heap, v: &Value) -> Result<FormName, CollectionError> 
 pub(crate) fn count(heap: &Heap, v: &Value) -> Result<usize, CollectionError> {
     match form_object(heap, v).as_deref().map(FormObject::body) {
         Some(FormBody::List(items) | FormBody::Vector(items)) => Ok(items.len()),
-        Some(FormBody::Map(map)) => Ok(map.len()),
-        _ => Err(wrong(heap, "list, form vector or form map", v)),
+        Some(FormBody::Map(map) | FormBody::Set(map)) => Ok(map.len()),
+        _ => Err(wrong(heap, "list, form vector, form map or form set", v)),
     }
 }
 
@@ -613,9 +642,18 @@ pub(crate) fn nth_at(heap: &Heap, coll: &Value, index: &Value) -> Result<Value, 
     })
 }
 
-/// The elements of a list or vector, in order.
+/// The elements of a list or vector, in order, or the members of a set in
+/// unspecified (deterministic) trie order.
 pub(crate) fn items(heap: &Heap, coll: &Value) -> Result<Vec<Value>, CollectionError> {
-    Ok(sequential(heap, coll)?.to_vec())
+    if let Some(FormBody::Set(set)) = form_object(heap, coll).as_deref().map(FormObject::body) {
+        let mut members = Vec::with_capacity(set.len());
+        set.for_each(|k, _| members.push(k.clone()));
+        return Ok(members);
+    }
+    match sequential(heap, coll) {
+        Ok(items) => Ok(items.to_vec()),
+        Err(_) => Err(wrong(heap, "list, form vector or form set", coll)),
+    }
 }
 
 /// The entries of a map, in unspecified (deterministic) trie order.
@@ -631,9 +669,9 @@ pub(crate) fn get(
     key: &Value,
 ) -> Result<Option<Value>, CollectionError> {
     match form_object(heap, coll).as_deref().map(FormObject::body) {
-        Some(FormBody::Map(map)) => Ok(map_get(heap, map, key)),
+        Some(FormBody::Map(map) | FormBody::Set(map)) => Ok(map_get(heap, map, key)),
         Some(FormBody::Vector(items)) => Ok(index_from_value(key).ok().and_then(|i| items.get(i))),
-        _ => Err(wrong(heap, "form vector or form map", coll)),
+        _ => Err(wrong(heap, "form vector, form map or form set", coll)),
     }
 }
 
@@ -700,24 +738,49 @@ pub(crate) fn dissoc(heap: &Heap, map: &Value, key: &Value) -> Result<Value, Col
     }
 }
 
-/// `conj`: a vector appends, a list prepends (linear in its length).
+/// `conj`: a vector appends, a list prepends (linear in its length), a set
+/// adds a member (present: the set itself).
 pub(crate) fn conj(heap: &Heap, coll: &Value, value: Value) -> Result<Value, CollectionError> {
+    let expected = "list, form vector or form set";
     let Some(f) = form_object(heap, coll) else {
-        return Err(wrong(heap, "list or form vector", coll));
+        return Err(wrong(heap, expected, coll));
     };
     let parts = [coll.clone(), value.clone()];
     let body = match &f.body {
         FormBody::Vector(items) => FormBody::Vector(items.try_push(heap, value)?),
         FormBody::List(items) => FormBody::List(items.try_prepend(heap, value)?),
-        _ => return Err(wrong(heap, "list or form vector", coll)),
+        FormBody::Set(set) => match set_add(heap, set, value)? {
+            Some(updated) => FormBody::Set(updated),
+            None => return Ok(coll.clone()),
+        },
+        _ => return Err(wrong(heap, expected, coll)),
     };
     alloc(heap, f.updated(body), &parts)
+}
+
+/// `disj` of a set member by an equal value (absent: the set itself).
+pub(crate) fn disj(heap: &Heap, set: &Value, member: &Value) -> Result<Value, CollectionError> {
+    let Some(f) = form_object(heap, set) else {
+        return Err(wrong(heap, "form set", set));
+    };
+    let FormBody::Set(body) = &f.body else {
+        return Err(wrong(heap, "form set", set));
+    };
+    let h = trie_hash(hash(heap, member));
+    match body.try_dissoc_with(heap, h, member, &|a, b| equals(heap, a, b))? {
+        Some(updated) => alloc(
+            heap,
+            f.updated(FormBody::Set(updated)),
+            std::slice::from_ref(set),
+        ),
+        None => Ok(set.clone()),
+    }
 }
 
 /// `with-meta`: `v` (a symbol, list, vector or map) with metadata `meta`
 /// (`nil` or a form map). The same metadata object returns `v` itself.
 pub(crate) fn with_meta(heap: &Heap, v: &Value, meta: &Value) -> Result<Value, CollectionError> {
-    let expected = "symbol, list, form vector or form map";
+    let expected = "symbol, list, form vector, form map or form set";
     let f = match form_object(heap, v) {
         Some(f) if f.kind() != FormKind::Keyword => f,
         _ => return Err(wrong(heap, expected, v)),
@@ -829,6 +892,30 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                     .rev()
                     .map(|(a, b)| Step::Pair(a, b))
                     .collect();
+                Outcome::Expand((ia, ib), steps)
+            }
+            (FormBody::Set(p), FormBody::Set(q)) => {
+                if p.len() != q.len() {
+                    return Outcome::Decided(false);
+                }
+                let mut members = Vec::with_capacity(p.len());
+                p.for_each_hashed(|h, k, _| members.push((h, k.clone())));
+                let mut steps = Vec::with_capacity(members.len());
+                for (h, k) in members {
+                    let mut candidates = q.entries_with_hash(h);
+                    match candidates.len() {
+                        0 => return Outcome::Refuted((ia, ib)),
+                        1 => steps.push(Step::Pair(k, candidates.pop().unwrap().0)),
+                        // A member pair with a trivially equal "value" pair.
+                        _ => steps.push(Step::OneOf(
+                            candidates
+                                .into_iter()
+                                .rev()
+                                .map(|(qk, _)| [(k.clone(), qk), (Value::Null, Value::Null)])
+                                .collect(),
+                        )),
+                    }
+                }
                 Outcome::Expand((ia, ib), steps)
             }
             (FormBody::Map(p), FormBody::Map(q)) => {
@@ -1049,6 +1136,12 @@ fn shallow_hash(heap: &Heap, f: &FormObject) -> i32 {
             });
             mix_collection_hash(sum, map.len())
         }
+        // `hashUnorderedColl` of the members.
+        FormBody::Set(set) => {
+            let mut sum = 0i32;
+            set.for_each(|k, _| sum = sum.wrapping_add(child_hash(heap, k)));
+            mix_collection_hash(sum, set.len())
+        }
     }
 }
 
@@ -1134,6 +1227,22 @@ impl<'s> Scope<'s> {
         self.result(new_map(self.heap(), &entries))
     }
 
+    /// A new form set of `items` with structural members; of equal members
+    /// the first is kept.
+    pub fn new_form_set(&self, items: &[Local<'s>]) -> Result<Local<'s>, CollectionError> {
+        self.result(new_set(self.heap(), &self.values(items)))
+    }
+
+    /// A new set without the member equal to `member`.
+    pub fn form_disj(
+        &self,
+        set: Local<'s>,
+        member: Local<'s>,
+    ) -> Result<Local<'s>, CollectionError> {
+        let (s, m) = (self.local_value(set), self.local_value(member));
+        self.result(disj(self.heap(), &s, &m))
+    }
+
     /// The form kind of a value, or `None` (occurrences included).
     pub fn form_kind(&self, v: Local<'s>) -> Option<FormKind> {
         kind(self.heap(), &self.local_value(v))
@@ -1154,7 +1263,8 @@ impl<'s> Scope<'s> {
         self.result(nth(self.heap(), &self.local_value(coll), index))
     }
 
-    /// The elements of a list or vector, in order.
+    /// The elements of a list or vector, in order, or a set's members in
+    /// unspecified (deterministic) order.
     pub fn form_items(&self, coll: Local<'s>) -> Result<Vec<Local<'s>>, CollectionError> {
         Ok(self.new_locals(items(self.heap(), &self.local_value(coll))?))
     }

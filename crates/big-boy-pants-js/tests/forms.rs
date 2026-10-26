@@ -219,7 +219,7 @@ fn metadata_does_not_change_equality_or_hash() {
         assert_eq!(
             s.form_with_meta(keyword, Some(meta)).err(),
             Some(CollectionError::WrongType {
-                expected: "symbol, list, form vector or form map",
+                expected: "symbol, list, form vector, form map or form set",
                 found: "keyword"
             })
         );
@@ -668,6 +668,92 @@ fn hashes_match_the_light_cljs_runtime() {
     });
 }
 
+/// Sets (light-cljs-477) hash as the light-cljs runtime does, compare and
+/// look members up structurally, and publish; the `__rt.clj*` core
+/// operations pun `nil`, read through occurrences, and raise catchable
+/// errors for unsupported kinds.
+#[test]
+fn sets_and_clojure_core_operations_follow_the_runtime() {
+    let rt = Runtime::new();
+    rt.scope(|s| {
+        let num = |n: f64| s.primitive(Primitive::Number(n));
+        let kw_a = s.new_keyword(None, js("a")).unwrap();
+        let x = s.primitive(Primitive::String(js("x")));
+        let pair = s.new_form_vector(&[num(1.0), num(2.0)]).unwrap();
+        let inner = s.new_form_set(&[num(1.0)]).unwrap();
+        // Computed by the light-cljs runtime's `hash` of `hash-set` under Node.
+        for (members, h) in [
+            (vec![], -15_128_758),
+            (vec![num(1.0), num(2.0)], -1_751_407_317),
+            (vec![kw_a, x, pair], 375_108_620),
+            (vec![inner], -1_056_510_838),
+        ] {
+            let set = s.new_form_set(&members).unwrap();
+            assert_eq!(s.form_hash(set), h);
+            assert_eq!(s.form_kind(set), Some(FormKind::Set));
+        }
+        let a = s.new_form_set(&[num(1.0), pair, num(1.0)]).unwrap();
+        let equal_pair = s.new_list(&[num(1.0), num(2.0)]).unwrap();
+        let b = s.new_form_set(&[equal_pair, num(1.0)]).unwrap();
+        assert_eq!(s.form_count(a), Ok(2));
+        assert!(s.form_equals(a, b));
+        assert!(s.same_object(s.form_get(a, equal_pair).unwrap().unwrap(), pair));
+        let fewer = s.form_disj(a, equal_pair).unwrap();
+        assert!(!s.form_equals(fewer, b));
+        assert_eq!(s.form_items(fewer).unwrap().len(), 1);
+        let shared = s.persist(a);
+        rt.publish(&shared).unwrap();
+    });
+    let src = r#"function check() {
+        const kw = n => __rt.formKeyword(null, n);
+        const s = __rt.formSet(1, kw('a'), __rt.formVector(1));
+        const checks = [
+            __rt.formKind(s) === 'set',
+            __rt.cljCount(s) === 3,
+            __rt.cljContains(s, __rt.formList(1)),
+            !__rt.cljContains(s, 2),
+            __rt.cljCount(__rt.cljDisj(s, kw('a'))) === 2,
+            __rt.cljDisj(s, 9) === s,
+            __rt.cljConj(s, 1) === s,
+            __rt.cljCount(__rt.cljSeq(s)) === 3,
+            __rt.formKind(__rt.cljSeq(s)) === 'list',
+            __rt.cljCount(null) === 0,
+            __rt.cljFirst(null) === null,
+            __rt.cljSeq(__rt.formVector()) === null,
+            __rt.cljGet(null, 1, 'd') === 'd',
+            __rt.cljGet(__rt.formMap(kw('k'), 1), kw('k'), null) === 1,
+            __rt.cljGet(__rt.formVector(5, 6), 1, null) === 6,
+            __rt.formKind(__rt.cljConj(null, 1)) === 'list',
+            __rt.cljGet(__rt.cljAssoc(null, kw('k'), 2), kw('k'), null) === 2,
+            __rt.cljDissoc(null, 1) === null,
+            __rt.cljContains(__rt.formVector(1), 0) && !__rt.cljContains(__rt.formVector(1), 1),
+            __rt.cljFirst(__rt.cljFirst(__rt.formMap(kw('k'), 1))) !== null,
+            __rt.cljFirst('ab') === 'a' && __rt.cljCount('ab') === 2,
+            __rt.cljNthOr(__rt.formList(1), 4, 'd') === 'd',
+            __rt.cljTruth(0) && __rt.cljTruth('') && !__rt.cljTruth(null) && !__rt.cljTruth(false),
+            __rt.cljCount(__rt.cljRest(__rt.formVector(1, 2, 3))) === 2,
+            __rt.cljNext(__rt.formList(1)) === null,
+            __rt.cljCount(__rt.cljCons(0, __rt.formVector(1))) === 2,
+            __rt.cljMeta(__rt.cljWithMeta(__rt.formSet(), __rt.formMap(kw('m'), 1))) !== null,
+        ];
+        let message = null;
+        try { __rt.cljSeq(1); } catch (e) { message = String(e); }
+        let range = null;
+        try { __rt.cljNth(__rt.formVector(), 0); } catch (e) { range = String(e); }
+        const failed = checks.indexOf(false);
+        if (failed >= 0) return 'check ' + failed;
+        return message + ' | ' + range;
+    }"#;
+    let result = call(&rt, src, &[]);
+    assert_eq!(
+        result.string().map(|s| s.to_string_lossy()).as_deref(),
+        Some(
+            "TypeError: unsupported operation: native macro runtime seq on number | \
+             RangeError: index out of bounds"
+        )
+    );
+}
+
 /// Form operations reject other values with a `Collection` error naming the
 /// expected and found kinds; the SameValueZero collections keep their own
 /// identity-keyed contract and are not forms.
@@ -679,15 +765,15 @@ fn operand_kinds_are_checked_and_internal_maps_are_unchanged() {
     for (src, kind) in [
         (
             "__rt.formCount(1)",
-            wrong("list, form vector or form map", "number"),
+            wrong("list, form vector, form map or form set", "number"),
         ),
         (
             "__rt.formCount(__rt.vector(1))",
-            wrong("list, form vector or form map", "vector"),
+            wrong("list, form vector, form map or form set", "vector"),
         ),
         (
             "__rt.formGet(__rt.formList(1), 0, null)",
-            wrong("form vector or form map", "list"),
+            wrong("form vector, form map or form set", "list"),
         ),
         ("__rt.formKeyword(null, 1)", wrong("string name", "number")),
         (
@@ -704,7 +790,7 @@ fn operand_kinds_are_checked_and_internal_maps_are_unchanged() {
         ),
         (
             "__rt.formConj(__rt.formMap(), 1)",
-            wrong("list or form vector", "form map"),
+            wrong("list, form vector or form set", "form map"),
         ),
         (
             "__rt.formNth(__rt.formVector(1), 3)",

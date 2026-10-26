@@ -118,6 +118,29 @@
 //! | `formWithMeta(v, m)` | `form_op` | a symbol, list, vector or map with metadata `m` (a form map or `null`); `v` itself for the same `m` | `WrongType` |
 //! | `formValue(v)` | `form_op` | an occurrence's value (through nested occurrences), else `v` | – |
 //!
+//! | `formSet(x1, …, xn)` | `new_form_set n` | new set of the values; of equal members the first is kept (light-cljs-477) | – |
+//! | `formDisj(s, x)` | `form_op` | new set without the member equal to `x` (absent: `s`) | `WrongType` |
+//!
+//! Sets are the fifth collection kind: `formCount`, `formGet` (the stored
+//! member), `formConj` (absent members only), `formWithMeta`,
+//! `formEquals` and `formHash` (`hashUnorderedColl` of the members) accept
+//! them; `formKind` names them `"set"`.
+//!
+//! # Clojure core intrinsics
+//!
+//! `__rt.cljTruth(v)`, `cljCount(c)`, `cljSeq(c)`, `cljFirst(c)`,
+//! `cljRest(c)`, `cljNext(c)`, `cljCons(x, c)`, `cljNth(c, i)`,
+//! `cljNthOr(c, i, d)`, `cljGet(c, k, d)`, `cljContains(c, k)`,
+//! `cljAssoc(c, k, v)`, `cljDissoc(m, k)`, `cljConj(c, x)`,
+//! `cljDisj(s, x)`, `cljMeta(v)` and `cljWithMeta(v, m)` are further
+//! `form_op` selectors with the semantics of the ClojureScript functions of
+//! those names on forms, strings and `nil`, which light-cljs lowers macro
+//! code to (light-cljs-477): occurrences are transparent, `nil` puns, and
+//! sequences are form lists. [`crate::collections::clj`] documents them.
+//! Unlike the operations above, an unsupported operand kind raises a
+//! catchable `TypeError` and `cljNth` past the end a catchable `RangeError`,
+//! the diagnostics of the JavaScript functions they replace.
+//!
 //! Updates keep the input's metadata and follow the identity rules of
 //! [`crate::collections::form`]. A `formEquals`, `formHash` or structural
 //! lookup runs to completion inside its instruction, like the collection
@@ -135,6 +158,7 @@ use super::frames::VmState;
 use super::instr::{FormOp, Instr};
 use crate::atom::{self, AtomError};
 use crate::collections::builder::{self, BuildFault, BuilderKind};
+use crate::collections::clj;
 use crate::collections::form::{self, FormKind};
 use crate::collections::{self as coll, CollectionError, PersistentKind};
 use crate::heap::Heap;
@@ -291,7 +315,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
             state.replace(3, witness)?;
             state.push(Value::Bool(ok));
         }
-        Instr::NewFormList(n) | Instr::NewFormVector(n) => {
+        Instr::NewFormList(n) | Instr::NewFormVector(n) | Instr::NewFormSet(n) => {
             let n = usize::from(n);
             let ops = state.operands();
             let start = ops
@@ -300,6 +324,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
                 .ok_or(Fault::Internal("operand stack underflow"))?;
             let made = match instr {
                 Instr::NewFormList(_) => form::new_list(heap, &ops[start..])?,
+                Instr::NewFormSet(_) => form::new_set(heap, &ops[start..])?,
                 _ => form::new_vector(heap, &ops[start..])?,
             };
             state.replace(n, made)?;
@@ -336,8 +361,47 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
     Ok(())
 }
 
+impl From<clj::CljError> for Fault {
+    fn from(e: clj::CljError) -> Self {
+        match e {
+            clj::CljError::Collection(e) => e.into(),
+            clj::CljError::OutOfBounds => Fault::RangeError(e.message()),
+            clj::CljError::Unsupported { .. } => Fault::TypeError(e.message()),
+        }
+    }
+}
+
 /// One `FormOp` on its operands (oldest first, exactly [`FormOp::arity`]).
-fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, CollectionError> {
+fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Fault> {
+    let a = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
+    let clj = match op {
+        FormOp::CljTruth => Some(Value::Bool(clj::truth(heap, &a(0)))),
+        FormOp::CljCount => Some(clj::count(heap, &a(0))?),
+        FormOp::CljSeq => Some(clj::seq(heap, &a(0))?),
+        FormOp::CljFirst => Some(clj::first(heap, &a(0))?),
+        FormOp::CljRest => Some(clj::rest(heap, &a(0))?),
+        FormOp::CljNext => Some(clj::next(heap, &a(0))?),
+        FormOp::CljCons => Some(clj::cons(heap, &a(0), &a(1))?),
+        FormOp::CljNth => Some(clj::nth(heap, &a(0), &a(1), None)?),
+        FormOp::CljNthOr => Some(clj::nth(heap, &a(0), &a(1), Some(&a(2)))?),
+        FormOp::CljGet => Some(clj::get(heap, &a(0), &a(1), &a(2))?),
+        FormOp::CljContains => Some(Value::Bool(clj::contains(heap, &a(0), &a(1))?)),
+        FormOp::CljAssoc => Some(clj::assoc(heap, &a(0), &a(1), &a(2))?),
+        FormOp::CljDissoc => Some(clj::dissoc(heap, &a(0), &a(1))?),
+        FormOp::CljConj => Some(clj::conj(heap, &a(0), &a(1))?),
+        FormOp::CljDisj => Some(clj::disj(heap, &a(0), &a(1))?),
+        FormOp::CljMeta => Some(clj::meta(heap, &a(0))),
+        FormOp::CljWithMeta => Some(clj::with_meta(heap, &a(0), &a(1))?),
+        _ => None,
+    };
+    if let Some(result) = clj {
+        return Ok(result);
+    }
+    Ok(strict_form_op(heap, op, args)?)
+}
+
+/// A strict `__rt.form*` operation ([`crate::collections::form`]).
+fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, CollectionError> {
     let mut args = args.into_iter();
     let mut arg = || args.next().unwrap_or(Value::Undefined);
     let string = |s: &str| Value::String(JsString::from(s));
@@ -397,6 +461,28 @@ fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Collectio
                 .collect();
             form::new_vector(heap, &keys)?
         }
+        FormOp::Disj => {
+            let (s, m) = (arg(), arg());
+            form::disj(heap, &s, &m)?
+        }
+        // Dispatched by `form_op` before reaching here.
+        FormOp::CljTruth
+        | FormOp::CljCount
+        | FormOp::CljSeq
+        | FormOp::CljFirst
+        | FormOp::CljRest
+        | FormOp::CljNext
+        | FormOp::CljCons
+        | FormOp::CljNth
+        | FormOp::CljNthOr
+        | FormOp::CljGet
+        | FormOp::CljContains
+        | FormOp::CljAssoc
+        | FormOp::CljDissoc
+        | FormOp::CljConj
+        | FormOp::CljDisj
+        | FormOp::CljMeta
+        | FormOp::CljWithMeta => Value::Undefined,
     })
 }
 

@@ -53,7 +53,10 @@
 //! and the fixed-arity **`__rt.formKeyword(ns, name)`** … **`__rt.formValue(v)`**
 //! (light-cljs-466) construct, inspect, compare and update native Clojure
 //! form values ([`crate::collections::form`]); the table is in
-//! [`crate::vm::intrinsics`] ("Form intrinsics").
+//! [`crate::vm::intrinsics`] ("Form intrinsics"). **`__rt.formSet(…)`**,
+//! **`__rt.formDisj(s, x)`** and the **`__rt.clj*`** ClojureScript core
+//! operations (`cljCount(c)` … `cljWithMeta(v, m)`, light-cljs-477;
+//! [`crate::collections::clj`]) are in the same table.
 //!
 //! A call evaluates its arguments left to right, then runs one VM
 //! instruction; the operand order is the instruction's stack order
@@ -180,6 +183,29 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::WithMeta),
     form_op(FormOp::Value),
     form_op(FormOp::Keys),
+    Intrinsic {
+        name: "formSet",
+        arity: Arity::Any,
+        lowering: Lowering::Counted(Opcode::NewFormSet),
+    },
+    form_op(FormOp::Disj),
+    form_op(FormOp::CljTruth),
+    form_op(FormOp::CljCount),
+    form_op(FormOp::CljSeq),
+    form_op(FormOp::CljFirst),
+    form_op(FormOp::CljRest),
+    form_op(FormOp::CljNext),
+    form_op(FormOp::CljCons),
+    form_op(FormOp::CljNth),
+    form_op(FormOp::CljNthOr),
+    form_op(FormOp::CljGet),
+    form_op(FormOp::CljContains),
+    form_op(FormOp::CljAssoc),
+    form_op(FormOp::CljDissoc),
+    form_op(FormOp::CljConj),
+    form_op(FormOp::CljDisj),
+    form_op(FormOp::CljMeta),
+    form_op(FormOp::CljWithMeta),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {

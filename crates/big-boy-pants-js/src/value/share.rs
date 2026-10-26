@@ -504,6 +504,8 @@ impl Children {
                         f(Step::MapKey(k.clone()), k);
                         f(Step::MapValue(k.clone()), v);
                     }),
+                    // A member's value slot holds the member itself.
+                    FormBody::Set(set) => set.for_each(|k, _| f(Step::MapKey(k.clone()), k)),
                 }
                 if let Some(meta) = form.meta() {
                     f(Step::Metadata, meta);

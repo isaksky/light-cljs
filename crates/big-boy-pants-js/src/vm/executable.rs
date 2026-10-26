@@ -566,6 +566,7 @@ impl Executable {
                 Opcode::NewMap => Instr::NewMap(operand as u16),
                 Opcode::NewFormList => Instr::NewFormList(operand as u16),
                 Opcode::NewFormVector => Instr::NewFormVector(operand as u16),
+                Opcode::NewFormSet => Instr::NewFormSet(operand as u16),
                 Opcode::NewFormMap => Instr::NewFormMap(operand as u16),
                 Opcode::FormOp => match FormOp::from_u16(operand as u16) {
                     Some(op) => Instr::FormOp(op),
@@ -962,6 +963,7 @@ impl Executable {
                 | Instr::NewMap(v)
                 | Instr::NewFormList(v)
                 | Instr::NewFormVector(v)
+                | Instr::NewFormSet(v)
                 | Instr::NewFormMap(v)
                 | Instr::Function(v, _)
                 | Instr::Method(v, _)

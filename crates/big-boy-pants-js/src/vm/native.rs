@@ -1123,7 +1123,7 @@ pub(crate) fn is_resumable(instr: Instr) -> bool {
         | DefinePrivateMethod | DefinePrivateGetter | DefinePrivateSetter => false,
         PendingException | SuppressedError | PendingCancel => false,
         IsCell | IsObject | ToObject => false,
-        NewFormList(_) | NewFormVector(_) | NewFormMap(_) | FormOp(_) => false,
+        NewFormList(_) | NewFormVector(_) | NewFormSet(_) | NewFormMap(_) | FormOp(_) => false,
         RegExpLiteral(_) | Const(_) | Undefined | GetLocal(_) | SetLocal(_) | Pop | Dup | Add
         | Sub | Mul | Lt | StrictEq | Not | Jump(_) | JumpIfFalse(_) | Return | NewObject
         | HostEffect(_) | NewVector(_) | NewMap(_) | TemplateObject(_) | Count | Nth | Get

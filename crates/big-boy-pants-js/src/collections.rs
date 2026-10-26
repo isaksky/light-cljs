@@ -127,6 +127,7 @@
 //!   are separate from these native persistent types.
 
 pub(crate) mod builder;
+pub(crate) mod clj;
 pub mod form;
 pub(crate) mod map;
 mod vector;
