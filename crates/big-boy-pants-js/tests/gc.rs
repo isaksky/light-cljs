@@ -1178,6 +1178,9 @@ fn weak_map_symbol_keys_in_descendant_code_are_traced() {
     let task = rt.spawn(&code, &[&value]).unwrap();
     drop(value);
     assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    // Twice: code traced once per collection must be traced again by the
+    // next one.
+    rt.collect().unwrap();
     rt.collect().unwrap();
     assert!(
         weak.is_live(),

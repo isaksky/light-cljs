@@ -1042,12 +1042,18 @@ impl Executable {
 /// Symbol constants in descendant code are reachable before a closure over
 /// that code is created. Walk the immutable DAG iteratively and visit shared
 /// children once; Rust Executable handles alone are not collector roots.
+/// During a collection's marking a node already traced through another
+/// holder is skipped (`gc::first_code_visit`), so shared code costs one walk
+/// per collection.
 impl Trace for Code {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         let mut pending = vec![self];
-        let mut seen = std::collections::HashSet::new();
+        let mut seen: Option<std::collections::HashSet<*const Code>> = None;
         while let Some(code) = pending.pop() {
-            if seen.insert(std::ptr::from_ref(code)) {
+            let address = std::ptr::from_ref(code);
+            let first = crate::heap::gc::first_code_visit(address.cast())
+                .unwrap_or_else(|| seen.get_or_insert_default().insert(address));
+            if first {
                 code.constants.trace(visit);
                 pending.extend(code.functions.iter().map(AsRef::as_ref));
             }

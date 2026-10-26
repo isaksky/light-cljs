@@ -335,8 +335,13 @@ collection; `Runtime::byte_starved` lets an embedder that allocates in host
 scopes between runs request one first, as light-cljs's native macro evaluator
 does. Between
 denials, collections are also requested once the bytes admitted since the last
-collection exceed half the live bytes (at least 64 KiB), capped at half the
-remaining headroom. The limit includes unswept garbage and the realm.
+collection reach half the headroom the last collection left. Not a fraction of
+the live bytes: each persistent collection version is charged as a complete
+representation, so one operation can admit as much as the live collection
+itself, and a live-proportional trigger collected every few operations
+(light-cljs-495). Ordinary object churn is still collected in proportion to
+the live objects by the allocation-count trigger above. The limit includes
+unswept garbage and the realm.
 `Runtime::try_with_heap_policy` builds the realm and one probe global before
 returning, and reports `RuntimeStartError::HeapLimit` instead of failing the
 first task; a sweep of limits around the realm footprint never panics.

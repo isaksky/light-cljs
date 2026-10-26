@@ -209,6 +209,41 @@ vector and map), and the copies `next` and `rest` make keep triggering
 collections, so marking work grows with `n²`; light-cljs-495 owns the
 collector's marking cost.
 
+#### Proportionate collection (light-cljs-495)
+
+Marking no longer hashes: objects use their slot mark bits, property keys a
+bitset, symbols an identity-hashed set, and code shared by many closures is
+walked once per collection. Byte-triggered collections are now due after half
+the remaining headroom rather than half the live bytes: each persistent
+collection version is charged as a complete representation (`PMap` 4 KiB an
+entry), so at n = 400 the macros admit about 1.4 GB against the 64 MiB
+default and the old trigger collected 444 times (46 now).
+
+October 26, 2026, same script and flags, `before` = master `fe510a3a`
+(native-only), `after` = this change (native-only), V8 from the shared cache
+(`LIGHT_CLJS_V8_CACHE=require`); macOS aarch64, Rust 1.99.1; two peer
+`rustc` builds running (load 4.67 before, 4.70 after). Analysis ms, median
+[min–max] of five:
+
+| `n` | V8 | before | after | k before | k after |
+| ---: | --- | --- | --- | ---: | ---: |
+| 0 | 24.0 [23.4–24.9] | 8.2 [8.1–8.3] | 6.9 [6.7–7.0] | – | – |
+| 100 | 29.9 [29.4–30.6] | 25.7 [24.9–26.2] | 10.6 [10.2–11.6] | 3.0 | 0.6 |
+| 400 | 36.7 [36.0–37.3] | 163.7 [163.2–166.3] | 26.1 [24.8–26.8] | 12.2 | 1.5 |
+
+k at n = 400 is 1.5 (477: 12.8). The engine's macro time grows 5.2x from
+n = 100 to 400 (3.7 to 19.2 ms; 4.7x in an earlier, less loaded run of
+the same binaries), V8's 2.1x; the rest is the lowered `next` copy.
+
+Not met: at n = 3200 a `/usr/bin/sample` (242 samples, same load) still has
+141 (58%) under `RunGuard::collect_at_point`. Top frames: `PMap` trie walks
+from `FormObject::trace`, `mark_and_sweep` itself, `Code`/`FunctionObject`
+and realm intrinsic tracing (the fixed live set, ~100 µs a pause), and dropping
+garbage vector nodes. The collection count is set by the per-version charges:
+at n = 3200 one map version is charged 13 MB, so the 64 MiB budget forces a
+collection every couple of `assoc`s (3,355 collections). Charging persistent
+versions by their path copy is light-cljs-498.
+
 ## Protocols and types (light-cljs-478), October 26, 2026
 
 `bb benchmarks/native-macros-k.bb OUTPUT --workload protocol v8=BIN NAME=BIN`

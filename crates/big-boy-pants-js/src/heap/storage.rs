@@ -563,6 +563,14 @@ impl ObjectTable {
         true
     }
 
+    /// Whether a live object has been marked in the collection in progress
+    /// (stopped world, between marking and sweep). A stale identity is
+    /// unmarked, as [`ObjectTable::mark`] never marks one.
+    pub(super) fn is_marked(&self, id: ObjectId) -> bool {
+        self.slot(id)
+            .is_some_and(|slot| slot.marked.load(Ordering::Relaxed))
+    }
+
     /// Run the collector's conditional pass over a live object. Frozen kinds
     /// have no conditional storage (rule 2), so they are skipped.
     pub(super) fn trace_conditional(&self, id: ObjectId, visit: &mut dyn gc::ConditionalVisitor) {

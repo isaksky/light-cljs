@@ -134,10 +134,16 @@ impl ByteBudget {
         if limit.load(Ordering::Relaxed).saturating_sub(live) >= limit.load(Ordering::Relaxed) / 8 {
             self.starved.store(false, Ordering::Relaxed);
         }
-        let growth = (live / 2)
-            .max(64 * 1024)
-            .min(limit.load(Ordering::Relaxed).saturating_sub(live) / 2)
-            .max(1);
+        // The next collection is due once half the remaining headroom has
+        // been admitted. Not a fraction of the live bytes: persistent
+        // collections charge a complete representation for every version
+        // (an upper bound over structural sharing), so the bytes admitted
+        // per operation can be as large as the live collection itself, and
+        // a live-proportional trigger then collected after every few
+        // operations, each marking everything live (light-cljs-495).
+        // Ordinary object churn is still collected in proportion to the
+        // live objects by the allocation-count trigger (`HeapPolicy`).
+        let growth = (limit.load(Ordering::Relaxed).saturating_sub(live) / 2).max(1);
         self.next_collection.store(growth, Ordering::Relaxed);
     }
 
@@ -555,6 +561,30 @@ mod tests {
         let stats = runtime.heap_stats();
         assert!(stats.collections > 1);
         assert!(stats.last_live_objects < 16384);
+    }
+
+    /// Every map version is charged as a complete representation (4 KiB an
+    /// entry), so 400 `assoc`s admit about 330 MB against a 64 MiB limit
+    /// while very little is live. Collecting at half the live bytes did so
+    /// every few operations (hundreds of collections, each marking the whole
+    /// realm); half the remaining headroom takes about a dozen.
+    #[test]
+    fn persistent_versions_collect_by_headroom_not_per_operation() {
+        use crate::frontend::compile_function;
+        use crate::{RunOutcome, Runtime, ValueView};
+        let runtime = Runtime::with_byte_limit(64 << 20);
+        let code = compile_function(
+            "function f() { let m = __rt.formMap(); for (let i = 0; i < 400; ++i) m = __rt.formAssoc(m, i, i); return __rt.formCount(m); }",
+        )
+        .unwrap();
+        let task = runtime.spawn(&code, &[]).unwrap();
+        let RunOutcome::Complete(result) = task.run().unwrap() else {
+            panic!("building the map failed");
+        };
+        assert_eq!(result.view(), ValueView::Number(400.0));
+        let stats = runtime.heap_stats();
+        assert!(stats.admitted_bytes_total > 4 * (64 << 20), "{stats:?}");
+        assert!((4..=24).contains(&stats.collections), "{stats:?}");
     }
 
     #[test]

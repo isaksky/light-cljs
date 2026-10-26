@@ -217,6 +217,131 @@ impl From<ObjectId> for TraceEdge {
     }
 }
 
+/// A multiplicative hasher for the collector's private identity keys
+/// (object ids, symbol identities, key slots): never user data, so no
+/// flooding resistance is needed, and SipHash dominated marking
+/// (light-cljs-495).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct IdentityHasher(u64);
+
+impl std::hash::Hasher for IdentityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(u64::from(byte));
+        }
+    }
+
+    fn write_u8(&mut self, n: u8) {
+        self.write_u64(u64::from(n));
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.write_u64(u64::from(n));
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+
+    fn write_isize(&mut self, n: isize) {
+        self.write_u64(n as u64);
+    }
+}
+
+pub(crate) type IdentityBuild = std::hash::BuildHasherDefault<IdentityHasher>;
+
+/// What one collection has marked. Objects carry their mark bit in their
+/// table slot ([`super::storage`]); property keys are marked by dense slot
+/// in a bitset and symbol identities in a set, so marking costs no hashing
+/// per object.
+#[derive(Default)]
+struct Marks {
+    keys: Vec<u64>,
+    symbols: HashSet<u64, IdentityBuild>,
+}
+
+impl Marks {
+    /// Mark a non-object edge; false if it was already marked.
+    fn mark_other(&mut self, edge: TraceEdge) -> bool {
+        match edge {
+            TraceEdge::Object(_) => unreachable!("objects are marked in their slots"),
+            TraceEdge::Symbol(identity) => self.symbols.insert(identity),
+            TraceEdge::PropertyKey(key) => {
+                let slot = key.slot() as usize;
+                let (word, bit) = (slot / 64, 1u64 << (slot % 64));
+                if word >= self.keys.len() {
+                    self.keys.resize(word + 1, 0);
+                }
+                let fresh = self.keys[word] & bit == 0;
+                self.keys[word] |= bit;
+                fresh
+            }
+        }
+    }
+
+    fn key_marked(&self, key: crate::object::PropertyKey) -> bool {
+        let slot = key.slot() as usize;
+        self.keys
+            .get(slot / 64)
+            .is_some_and(|word| word & (1u64 << (slot % 64)) != 0)
+    }
+
+    /// Whether `edge` is marked; objects are looked up in `objects`.
+    fn contains(&self, objects: &super::ObjectTable, edge: TraceEdge) -> bool {
+        match edge {
+            TraceEdge::Object(id) => objects.is_marked(id),
+            TraceEdge::Symbol(identity) => self.symbols.contains(&identity),
+            TraceEdge::PropertyKey(key) => self.key_marked(key),
+        }
+    }
+}
+
+thread_local! {
+    /// Executable code nodes already traced by the marking in progress on
+    /// this thread, by address (`None` outside marking). Thread-local
+    /// because [`Trace`] carries no collection context.
+    static TRACED_CODE: std::cell::RefCell<Option<HashSet<usize, IdentityBuild>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Shares one traced-code set across every [`Trace`] call of one marking,
+/// so code shared by many closures and tasks is traced once per collection
+/// rather than once per holder. Code is immutable and every node is kept
+/// alive by a live holder while the world is stopped, so an address cannot
+/// be reused during the marking; addresses are only compared.
+struct CodeMarking;
+
+impl CodeMarking {
+    fn begin() -> Self {
+        TRACED_CODE.with(|set| *set.borrow_mut() = Some(HashSet::default()));
+        Self
+    }
+}
+
+impl Drop for CodeMarking {
+    fn drop(&mut self) {
+        TRACED_CODE.with(|set| *set.borrow_mut() = None);
+    }
+}
+
+/// The first visit of a code node in the marking in progress (`true`
+/// then), or `None` when no marking is in progress on this thread.
+pub(crate) fn first_code_visit(code: *const ()) -> Option<bool> {
+    TRACED_CODE.with(|set| {
+        set.borrow_mut()
+            .as_mut()
+            .map(|set| set.insert(code as usize))
+    })
+}
+
 /// Report every strong object reference, property key and symbol identity
 /// held by `self`.
 /// Implementations must not allocate on the heap, take heap locks, or run
@@ -390,7 +515,8 @@ impl ConditionalVisitor for DiscoverConditional {
 }
 
 struct ClearConditional<'a> {
-    marked: &'a HashSet<TraceEdge>,
+    marks: &'a Marks,
+    objects: &'a super::ObjectTable,
     owner: ObjectId,
     cleared: &'a mut Vec<(ObjectId, u64)>,
     retired_symbols: &'a mut Vec<JsSymbol>,
@@ -398,7 +524,10 @@ struct ClearConditional<'a> {
 
 impl ConditionalVisitor for ClearConditional<'_> {
     fn weak_slot(&mut self, slot: &mut WeakSlot) {
-        if slot.target.is_some_and(|id| !self.marked.contains(&id)) {
+        if slot
+            .target
+            .is_some_and(|id| !self.marks.contains(self.objects, id))
+        {
             slot.target = None;
             if let Some(symbol) = slot.symbol.take() {
                 self.retired_symbols.push(symbol);
@@ -410,7 +539,9 @@ impl ConditionalVisitor for ClearConditional<'_> {
     }
 
     fn ephemeron_table(&mut self, table: &mut EphemeronTable) {
-        table.entries.retain(|key, _| self.marked.contains(key));
+        table
+            .entries
+            .retain(|&key, _| self.marks.contains(self.objects, key));
         table.compact();
     }
 }
@@ -1212,6 +1343,7 @@ impl Heap {
         let mut registry = lock(&self.sources);
         let sources = registry.live();
 
+        let code_marking = CodeMarking::begin();
         let mut grey = Vec::new();
         let mut root_count = 0;
         Self::trace_all_roots(
@@ -1228,15 +1360,14 @@ impl Heap {
 
         let mut objects = lock(&self.objects);
         let mut live = 0;
-        let mut marked = HashSet::new();
+        // Objects are marked in their slots (no hashing per object); keys
+        // and symbols in `marks`.
+        let mut marks = Marks::default();
         // Only reached owners contribute entries. Each waiting entry is
         // awakened once, exactly when its key first becomes marked.
-        let mut pending: HashMap<TraceEdge, Vec<Value>> = HashMap::new();
+        let mut pending: HashMap<TraceEdge, Vec<Value>, IdentityBuild> = HashMap::default();
         let mut conditional_owners = Vec::new();
         while let Some(edge) = grey.pop() {
-            if marked.contains(&edge) {
-                continue;
-            }
             let object = match edge {
                 TraceEdge::Object(id) => {
                     if !objects.mark(id, &mut |child| grey.push(child)) {
@@ -1245,10 +1376,16 @@ impl Heap {
                     live += 1;
                     Some(id)
                 }
-                TraceEdge::Symbol(_) | TraceEdge::PropertyKey(_) => None,
+                TraceEdge::Symbol(_) | TraceEdge::PropertyKey(_) => {
+                    if !marks.mark_other(edge) {
+                        continue;
+                    }
+                    None
+                }
             };
-            marked.insert(edge);
-            if let Some(values) = pending.remove(&edge) {
+            if !pending.is_empty()
+                && let Some(values) = pending.remove(&edge)
+            {
                 values.trace(&mut |child| grey.push(child));
             }
             if let Some(id) = object {
@@ -1258,7 +1395,7 @@ impl Heap {
                     conditional_owners.push(id);
                 }
                 for (key, value) in discovery.entries {
-                    if marked.contains(&key) {
+                    if marks.contains(&objects, key) {
                         value.trace(&mut |child| grey.push(child));
                     } else {
                         pending.entry(key).or_default().push(value);
@@ -1266,6 +1403,7 @@ impl Heap {
                 }
             }
         }
+        drop(code_marking);
         // Empty grey plus no awakened values is the ephemeron fixpoint.
         // Clear before sweep, while all identities and marks are valid.
         let mut cleared = Vec::new();
@@ -1274,7 +1412,8 @@ impl Heap {
             objects.trace_conditional(
                 owner,
                 &mut ClearConditional {
-                    marked: &marked,
+                    marks: &marks,
+                    objects: &objects,
                     owner,
                     cleared: &mut cleared,
                     retired_symbols: &mut retired_symbols,
@@ -1333,8 +1472,7 @@ impl Heap {
         // ephemeron fixpoint, with other heap locks released and the world
         // still stopped: no mutator can hold an unreported operation-local
         // key here or reuse a slot before its last traced holder is gone.
-        self.keys
-            .sweep(|key| marked.contains(&TraceEdge::PropertyKey(key)));
+        self.keys.sweep(|key| marks.key_marked(key));
         self.allocations_since_collection
             .store(0, Ordering::Relaxed);
         self.allocated_objects.store(live, Ordering::Relaxed);
@@ -2174,6 +2312,67 @@ mod tests {
             debug: None,
         };
         rt.spawn(&Executable(Arc::new(code)), args).unwrap()
+    }
+
+    fn code_with(constants: Box<[Value]>, functions: Box<[Arc<Code>]>) -> Code {
+        Code {
+            property_names: Box::new([]),
+            property_caches: Box::new([]),
+            regexps: std::collections::HashMap::new(),
+            eval_sites: std::collections::HashMap::new(),
+            name: "shared".into(),
+            params: 0,
+            function_length: 0,
+            function_name: crate::value::JsString::from("shared"),
+            locals: 0,
+            constants,
+            functions,
+            captures: 0,
+            strict: true,
+            constructor_kind: crate::vm::ConstructorKind::None,
+            uses_arguments: false,
+            offsets: Box::new([0]),
+            instruction_info: crate::vm::dispatch::instruction_info(&[Instr::Return]),
+            instrs: Box::new([Instr::Return]),
+            max_stack: 1,
+            debug: None,
+        }
+    }
+
+    /// Code shared by several holders is walked once per collection's
+    /// marking (light-cljs-495), and again by the next marking; outside a
+    /// marking each trace still reports every edge of its DAG once.
+    #[test]
+    fn shared_code_is_traced_once_per_collection() {
+        let heap = Heap::default();
+        let (inner, outer) = (plain(&heap), plain(&heap));
+        let child = Arc::new(code_with(Box::new([obj(inner)]), Box::new([])));
+        let parent = code_with(
+            Box::new([obj(outer)]),
+            Box::new([child.clone(), child.clone()]),
+        );
+        let edges = |codes: &[&Code]| {
+            let mut seen = Vec::new();
+            for code in codes {
+                code.trace(&mut |edge| seen.push(edge));
+            }
+            seen
+        };
+        let both = [TraceEdge::Object(outer), TraceEdge::Object(inner)];
+        // Outside marking: every holder's trace reports its whole DAG.
+        assert_eq!(edges(&[&parent, &parent]), [both, both].concat());
+        // Within one marking: the parent, a second holder of it and a
+        // holder of the shared child together report each edge once.
+        {
+            let _marking = CodeMarking::begin();
+            assert_eq!(edges(&[&parent, &parent, &child]), both);
+        }
+        // The next marking walks the code again.
+        let _marking = CodeMarking::begin();
+        assert_eq!(
+            edges(&[&child, &parent]),
+            [inner, outer].map(TraceEdge::Object)
+        );
     }
 
     #[test]

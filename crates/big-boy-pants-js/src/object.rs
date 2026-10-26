@@ -97,6 +97,14 @@ use crate::value::{JsString, JsSymbol, Value};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PropertyKey(u32, Option<u64>);
 
+impl PropertyKey {
+    /// The key's dense slot in [`PropertyKeys`]: at most one live key
+    /// occupies a slot at a time (the collector's key marks use it).
+    pub(crate) fn slot(self) -> u32 {
+        self.0
+    }
+}
+
 impl Trace for PropertyKey {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         visit(crate::heap::gc::TraceEdge::PropertyKey(*self));
