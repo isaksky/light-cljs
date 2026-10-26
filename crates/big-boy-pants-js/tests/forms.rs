@@ -978,3 +978,47 @@ fn structs_follow_record_semantics_dispatch_by_type_identity_and_publish() {
         )
     });
 }
+
+/// The `seq`, `rest` and `next` of a list or vector share its trie
+/// (light-cljs-502) and publish by their own elements: a task-owned object
+/// in the hidden prefix does not stop publication, and one among the
+/// remaining elements is reported at its position in the tail, past the
+/// first trie leaf too.
+#[test]
+fn shared_seq_views_publish_only_their_own_elements() {
+    let rt = Runtime::new();
+    let made = call(
+        &rt,
+        "function make() {
+           let head = __rt.formVector({});
+           let tail = __rt.formVector();
+           for (let i = 0; i < 40; i++) {
+             head = __rt.cljConj(head, i);
+             tail = __rt.cljConj(tail, i === 35 ? {} : i);
+           }
+           for (let i = 0; i < 33; i++) tail = __rt.cljNext(tail);
+           return __rt.formVector(
+             __rt.cljRest(head),
+             __rt.cljNext(__rt.cljSeq(head)),
+             __rt.cljRest(__rt.formList({}, 1)),
+             tail);
+         }",
+        &[],
+    );
+    let [rest, next, list_rest, tail] = rt.scope(|s| {
+        let v = s.local(&made).unwrap();
+        std::array::from_fn(|i| s.persist(s.form_nth(v, i).unwrap()))
+    });
+    for view in [&rest, &next, &list_rest] {
+        rt.publish(view).unwrap();
+    }
+    rt.scope(|s| {
+        let tail = s.local(&tail).unwrap();
+        assert_eq!(s.form_kind(tail), Some(FormKind::List));
+        assert_eq!(s.form_count(tail), Ok(7));
+    });
+    let PublishError::NotShareable { path, found, .. } = rt.publish(&tail).unwrap_err() else {
+        panic!("published a tail holding an object");
+    };
+    assert_eq!((path.to_string().as_str(), found), ("value[2]", "object"));
+}

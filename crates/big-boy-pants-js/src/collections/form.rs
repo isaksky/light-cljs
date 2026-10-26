@@ -235,12 +235,13 @@
 //! Supported: the six kinds above, metadata, occurrences as elements and
 //! keys, the operations listed, sequential list/vector equality, and the
 //! ClojureScript core operations of [`crate::collections::clj`] (whose
-//! `rest` copies into a new list). Not
+//! `seq`, `rest` and `next` of a list or vector are lists sharing its trie,
+//! light-cljs-502, and of a map, set or string copy into a new list). Not
 //! supported (not claimed): keyword and symbol names whose spelling does
 //! not split back (rejected, see "Names"), and a runtime keyword whose
 //! stored spelling differs from its namespace and name (the runtime's
 //! one-argument `(keyword "a/b/c")`); sorted maps and sets, lazy sequences,
-//! shared seq views (a list is read by index), user hashing or equality
+//! seq views of maps, sets and strings, user hashing or equality
 //! (`IHash`/`IEquiv`) of structs,
 //! interned or cached keyword identity, characters as a separate kind (a
 //! character is a one-unit string; the reader distinction, like exact
