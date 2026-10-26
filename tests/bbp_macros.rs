@@ -2069,14 +2069,15 @@ fn native_callable_objects_keep_the_legacy_call_abi() {
 #[test]
 fn native_failed_calls_do_not_evaluate_arguments() {
     assert_native_matches_legacy(
-        r#"(defmacro m []
-            (let [a (js/Array.) b (js/Array.) f nil
+        r#"(defmacro m [n]
+            (let [a (js/Array.) b (js/Array.) c (js/Array.) f nil
                   g (js* "({get call() { throw new Error('getter'); }})")]
               (try (f (.push a 1)) (catch :default e nil))
               (try (g (.push b 1)) (catch :default e nil))
-              [(vec a) (vec b)]))
-           (js/console.log (pr-str (m)))"#,
-        "[[] []]\n",
+              (try (n (.push c 1)) (catch :default e nil))
+              [(vec a) (vec b) (vec c)]))
+           (js/console.log (pr-str (m nil)))"#,
+        "[[] [] []]\n",
     );
     // Read the method once before the argument replaces it, retaining its
     // receiver and the callee's own evaluation effects.

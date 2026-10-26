@@ -161,8 +161,15 @@ captured function lists, partial arguments and defaults are native persistent
 vectors. They can therefore publish when their captured values can. The core
 table supplies equivalent constructors when passed as values. `(comp)` returns
 the core identity function, and `(comp f)` and `(partial f)` return `f` itself.
+With no arguments, `(partial)` preserves the legacy deferred callable with an
+undefined target and three undefined prefix arguments.
 Invocation of native keywords, symbols, maps, sets and vectors uses
-`__rt.cljInvoke`; collection lookups retain input occurrences. `fnil` replaces
+`__rt.cljInvoke`; collection lookups retain input occurrences. Vector calls
+check numeric bounds before truncating an in-range fractional index; the
+intrinsics for `nth` and `get` keep their own index contracts. Ordinary JavaScript
+callable objects retain their `.call` method and receiver. Emitted calls read
+that method before evaluating arguments, including when its getter throws.
+`fnil` replaces
 nil and undefined occurrences while keeping false, zero and empty strings.
 Its short calls preserve the legacy callable's variadic fallback behavior.
 

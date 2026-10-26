@@ -1369,15 +1369,15 @@ const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
 /// evaluating arguments. Retain that method and its receiver across suspension;
 /// the adapter captures no task-owned runtime object.
 const NATIVE_PREPARE_INVOKE: &str = r#"(f => {
-    const kind = __rt.formKind(__rt.formValue(f));
+    const value = __rt.formValue(f), kind = __rt.formKind(value);
     if (kind === 'vector' || kind === 'map' || kind === 'set' || kind === 'keyword' || kind === 'symbol') {
         return (...a) => {
             if (kind !== 'vector' && (a.length < 1 || a.length > 2)) throw new Error('Invalid arity: ' + a.length);
             return __rt.cljInvoke(f, a[0], a.length > 1 ? a[1] : null);
         };
     }
-    const call = f.call;
-    return (...a) => Reflect.apply(call, f, [null, ...a]);
+    const call = value.call;
+    return (...a) => Reflect.apply(call, value, [null, ...a]);
 })"#;
 
 /// What the pool knows about an expression (indexed by `ExprId`).
