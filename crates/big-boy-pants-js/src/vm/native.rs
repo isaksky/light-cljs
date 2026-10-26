@@ -3935,6 +3935,20 @@ fn index_key(index: u64) -> property::Key {
     }
 }
 
+/// Internal HasProperty shares In's continuation, using an already converted
+/// key. Numeric indices stay allocation-free until a trap needs their string.
+pub(super) fn has_property(base: Value, key: property::Key) -> Action {
+    let key = match key {
+        property::Key::Index(index) => Value::Number(f64::from(index)),
+        property::Key::Name(name) => Value::String(name),
+        property::Key::Symbol(symbol) => Value::Symbol(symbol),
+    };
+    Action::Instruction {
+        instr: Instr::In,
+        operands: vec![key, base],
+    }
+}
+
 fn to_length(value: &Value) -> Result<u64, Fault> {
     let number = dispatch::to_number(value)?;
     Ok(if number.is_nan() || number <= 0.0 {
@@ -4383,6 +4397,7 @@ impl NativeState {
             }
         };
         match desc.step(heap, task, result)? {
+            descriptor::DefineStep::Has { this, key } => Ok(has_property(this, key)),
             descriptor::DefineStep::Getter { callee, this } => Ok(Action::Call {
                 callee,
                 this,

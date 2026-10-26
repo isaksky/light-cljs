@@ -400,6 +400,19 @@ the live chain walk. Computed properties retain the generic path.
 deletion/order, accessors and freezing, prototype/method replacement, concurrent
 tasks with different shapes, and repeated collection/runtime key rebinding.
 
+Presence lookup stops at a Proxy, including one on the prototype chain. `in`,
+`Reflect.has`, and internal presence checks in array methods, descriptor readers,
+locale lists and Error options enter the same traced native continuation. A
+`has` getter or trap can yield or wait without replaying the walk or advancing
+an element twice. A falsy trap result checks the target's own descriptor, then
+its extensibility only for an existing configurable property, following
+[ECMA-262 10.5.7](https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html#sec-proxy-object-internal-methods-and-internal-slots-hasproperty-p).
+Those invariant probes can themselves call target Proxy traps. Their saved
+target, handler, key, descriptor and callback values remain traced across
+collection and worker migration. Other present traps, including `get`, retain
+their explicit unsupported errors; direct `Object.isExtensible`/`Reflect.isExtensible`
+traps are still outside the supported surface.
+
 ## Publication and native values
 
 `Runtime::publish` walks the transitive graph and reports a path on rejection;

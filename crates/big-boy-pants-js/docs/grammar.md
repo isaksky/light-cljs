@@ -56,7 +56,7 @@ identified in [attribution.md](attribution.md).
 | Date | Time clipping, UTC/local fields and setters, host clock/zone, ISO and pinned fallback parsing, non-locale formats | `tests/date_host.rs`, `tests/js_source.rs`; clock/zone and conversion policy below |
 | Intl | Locale/canonicalization/likely subtags, NumberFormat (decimal/percent/currency/unit), PluralRules, DateTimeFormat, Collator, ListFormat, RelativeTimeFormat, Segmenter, DisplayNames, DurationFormat | `tests/quickjs_intl.rs`, `tests/sim_host.rs`, `tests/js_source.rs`; service/options/data subset below, no blanket Intl compatibility |
 | Promises | Shareable promises (including subclasses), cross-task settlement, owner-task reactions, adoption/chaining and supported static combinators; quiescent rejection reporting | `tests/promises.rs`, `tests/quickjs_async.rs`; await suspends an activation, need waits the task |
-| Proxy | Construction and forwarding, resumable ownKeys/getOwnPropertyDescriptor traps with invariant checks | `tests/js_source.rs` proxy cases; other present traps explicitly error, revocation deferred |
+| Proxy | Construction and forwarding, resumable has/ownKeys/getOwnPropertyDescriptor traps with invariant checks; target isExtensible callbacks during those checks | `tests/js_source.rs` proxy cases; `tests/proxy_has.rs` (including internal built-in presence checks); other present traps explicitly error, revocation deferred |
 
 ## Compiler execution evidence
 

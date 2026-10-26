@@ -1,7 +1,9 @@
-//! Proxy enumeration. Calls and all intermediate values live in traced native
+//! Proxy presence and enumeration. Calls and intermediate values live in traced native
 //! state; no Rust frame survives a trap, getter, budget yield or dependency wait.
 //! Semantics follow QuickJS quickjs.c js_proxy_get_own_property_names and
 //! js_proxy_get_own_property, revision 7d1c13c5d8f8 (fresh Rust implementation).
+//! HasProperty follows ECMA-262 10.5.7, including target descriptor and
+//! extensibility callbacks only after a falsy trap result.
 use super::dispatch::{self, Fault};
 use super::native::{Action, Input};
 use super::{descriptor, integrity, keys, property, prototype};
@@ -584,10 +586,7 @@ impl Operations {
                     return Ok(Progress::Action(Action::Continue));
                 }
                 op.index = 0;
-                op.phase = Stage::TargetKeys;
-                let target = op.proxy.as_ref().unwrap().target;
-                op.extensible = extensible(heap, task, target)?;
-                self.stack.push(Operation::keys(target));
+                op.phase = Stage::TargetExtensible;
             }
             Stage::ElementValue => {
                 let v = result(input)?;
@@ -661,6 +660,9 @@ impl Operations {
                 };
                 let reader = op.reader.as_mut().unwrap();
                 match reader.step(heap, task, delivered)? {
+                    descriptor::DefineStep::Has { this, key } => {
+                        return Ok(Progress::Action(super::native::has_property(this, key)));
+                    }
                     descriptor::DefineStep::Getter { callee, this } => {
                         return Ok(Progress::Action(Action::Call {
                             callee,
@@ -712,13 +714,7 @@ impl Operations {
                         "descriptor cannot hide a non-configurable target property",
                     ));
                 }
-                op.extensible = extensible(heap, task, op.proxy.as_ref().unwrap().target)?;
-                if op.value == Value::Undefined {
-                    op.phase = Stage::CheckDescriptor;
-                } else {
-                    op.reader = Some(descriptor::DefineProperty::reader(op.value.clone())?);
-                    op.phase = Stage::ReadDescriptor;
-                }
+                op.phase = Stage::TargetExtensible;
             }
             Stage::CheckDescriptor => {
                 validate_descriptor(
@@ -738,6 +734,22 @@ impl Operations {
                 let Some(Output::Boolean(extensible)) = self.output.take() else {
                     return Err(Fault::Internal("Proxy target extensibility missing"));
                 };
+                op.extensible = extensible;
+                if op.kind == Kind::Keys {
+                    op.phase = Stage::TargetKeys;
+                    let target = op.proxy.as_ref().unwrap().target;
+                    self.stack.push(Operation::keys(target));
+                    return Ok(Progress::Action(Action::Continue));
+                }
+                if op.kind == Kind::Descriptor {
+                    if op.value == Value::Undefined {
+                        op.phase = Stage::CheckDescriptor;
+                    } else {
+                        op.reader = Some(descriptor::DefineProperty::reader(op.value.clone())?);
+                        op.phase = Stage::ReadDescriptor;
+                    }
+                    return Ok(Progress::Action(Action::Continue));
+                }
                 if op.kind == Kind::Has {
                     if !extensible {
                         return Err(error(

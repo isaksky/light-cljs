@@ -183,9 +183,15 @@ pub(crate) struct DefineProperty {
     attributes: Value,
     desc: PropertyDescriptor,
     next: usize,
+    checking_presence: bool,
+    present: bool,
 }
 
 pub(crate) enum DefineStep {
+    Has {
+        this: Value,
+        key: Key,
+    },
     Getter {
         callee: Value,
         this: Value,
@@ -224,6 +230,8 @@ impl DefineProperty {
             attributes: Value::Undefined,
             desc,
             next: 6,
+            checking_presence: false,
+            present: false,
         }
     }
     pub(crate) fn reader(attributes: Value) -> Result<Self, Fault> {
@@ -238,6 +246,8 @@ impl DefineProperty {
             attributes,
             desc: PropertyDescriptor::default(),
             next: 0,
+            checking_presence: false,
+            present: false,
         })
     }
 
@@ -265,6 +275,8 @@ impl DefineProperty {
             attributes,
             desc: PropertyDescriptor::default(),
             next: 0,
+            checking_presence: false,
+            present: false,
         })
     }
 
@@ -289,6 +301,7 @@ impl DefineProperty {
             _ => return Err(Fault::Internal("descriptor field cursor out of range")),
         }
         self.next += 1;
+        self.present = false;
         Ok(())
     }
 
@@ -299,7 +312,15 @@ impl DefineProperty {
         result: Option<Value>,
     ) -> Result<DefineStep, Fault> {
         if let Some(value) = result {
-            self.field(heap, value)?;
+            if self.checking_presence {
+                self.checking_presence = false;
+                self.present = value.truthy();
+                if !self.present {
+                    self.next += 1;
+                }
+            } else {
+                self.field(heap, value)?;
+            }
         }
         let names = [
             "enumerable",
@@ -311,8 +332,24 @@ impl DefineProperty {
         ];
         while self.next < names.len() {
             let key = Key::Name(JsString::from(names[self.next]));
+            if !self.present {
+                match property::probe(heap, task, &self.attributes, &key)? {
+                    property::Presence::Value(false) => {
+                        self.next += 1;
+                        continue;
+                    }
+                    property::Presence::Value(true) => self.present = true,
+                    property::Presence::Proxy(target) => {
+                        self.checking_presence = true;
+                        return Ok(DefineStep::Has {
+                            this: Value::Object(target),
+                            key,
+                        });
+                    }
+                }
+            }
             match property::read(heap, task, &self.attributes, &key)? {
-                None => self.next += 1,
+                None => self.field(heap, Value::Undefined)?,
                 Some(property::Read::Value(value)) => self.field(heap, value)?,
                 Some(property::Read::Getter(callee)) => {
                     return Ok(DefineStep::Getter {

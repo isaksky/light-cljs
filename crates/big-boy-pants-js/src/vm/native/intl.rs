@@ -33,6 +33,7 @@ enum Stage {
     Length,
     LengthValue,
     Element,
+    ElementPresent,
     ElementValue,
     ElementString,
     Done,
@@ -362,12 +363,17 @@ impl Intl {
                     return Ok(Action::Continue);
                 }
                 let key = index_key(self.index);
-                if !property::has_property(heap, task, &self.source, &key)? {
+                self.stage = Stage::ElementPresent;
+                Ok(has_property(self.source.clone(), key))
+            }
+            Stage::ElementPresent => {
+                if !Self::value(input)?.truthy() {
                     self.index += 1;
+                    self.stage = Stage::Element;
                     return Ok(Action::Continue);
                 }
                 self.stage = Stage::ElementValue;
-                match self.read(heap, task, &self.source, key)? {
+                match self.read(heap, task, &self.source, index_key(self.index))? {
                     Err(action) => Ok(action),
                     Ok(value) => self.element(heap, task, value),
                 }

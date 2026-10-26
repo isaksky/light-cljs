@@ -13,6 +13,7 @@ enum Stage {
     Prepare,
     Saved,
     Move,
+    MovePresent,
     MoveValue,
     MoveAdvance,
     DeleteTail,
@@ -20,8 +21,10 @@ enum Stage {
     SetLength,
     Done,
     Reverse,
+    ReverseLowerPresent,
     ReverseLower,
     ReverseUpper,
+    ReverseUpperPresent,
     ReverseUpperValue,
     ReverseWriteLower,
     ReverseWriteUpper,
@@ -32,6 +35,7 @@ enum Stage {
     CreateRemoved,
     CreatedRemoved,
     Removed,
+    RemovedPresent,
     RemovedValue,
     SpliceMove,
 }
@@ -355,9 +359,18 @@ impl State {
                     self.stage = self.after_move;
                     return Ok(Action::Continue);
                 }
-                let key = index_key(self.from);
-                if property::has_property(heap, task, &self.this, &key)? {
-                    self.read(heap, task, self.this.clone(), key, Stage::MoveValue)
+                self.stage = Stage::MovePresent;
+                Ok(has_property(self.this.clone(), index_key(self.from)))
+            }
+            Stage::MovePresent => {
+                if self.value(input)?.truthy() {
+                    self.read(
+                        heap,
+                        task,
+                        self.this.clone(),
+                        index_key(self.from),
+                        Stage::MoveValue,
+                    )
                 } else {
                     self.delete_at(heap, task, self.to)?;
                     self.stage = Stage::MoveAdvance;
@@ -428,10 +441,19 @@ impl State {
                 }
                 self.lower = Value::Undefined;
                 self.upper = Value::Undefined;
-                let key = index_key(self.index);
-                self.lower_present = property::has_property(heap, task, &self.this, &key)?;
+                self.stage = Stage::ReverseLowerPresent;
+                Ok(has_property(self.this.clone(), index_key(self.index)))
+            }
+            Stage::ReverseLowerPresent => {
+                self.lower_present = self.value(input)?.truthy();
                 if self.lower_present {
-                    self.read(heap, task, self.this.clone(), key, Stage::ReverseLower)
+                    self.read(
+                        heap,
+                        task,
+                        self.this.clone(),
+                        index_key(self.index),
+                        Stage::ReverseLower,
+                    )
                 } else {
                     self.stage = Stage::ReverseUpper;
                     Ok(Action::Continue)
@@ -443,10 +465,22 @@ impl State {
                 Ok(Action::Continue)
             }
             Stage::ReverseUpper => {
-                let key = index_key(self.length - self.index - 1);
-                self.upper_present = property::has_property(heap, task, &self.this, &key)?;
+                self.stage = Stage::ReverseUpperPresent;
+                Ok(has_property(
+                    self.this.clone(),
+                    index_key(self.length - self.index - 1),
+                ))
+            }
+            Stage::ReverseUpperPresent => {
+                self.upper_present = self.value(input)?.truthy();
                 if self.upper_present {
-                    self.read(heap, task, self.this.clone(), key, Stage::ReverseUpperValue)
+                    self.read(
+                        heap,
+                        task,
+                        self.this.clone(),
+                        index_key(self.length - self.index - 1),
+                        Stage::ReverseUpperValue,
+                    )
                 } else {
                     self.stage = Stage::ReverseWriteLower;
                     Ok(Action::Continue)
@@ -548,11 +582,24 @@ impl State {
                         strict: true,
                     });
                 }
-                let key = index_key(self.start + self.index);
-                if property::has_property(heap, task, &self.this, &key)? {
-                    self.read(heap, task, self.this.clone(), key, Stage::RemovedValue)
+                self.stage = Stage::RemovedPresent;
+                Ok(has_property(
+                    self.this.clone(),
+                    index_key(self.start + self.index),
+                ))
+            }
+            Stage::RemovedPresent => {
+                if self.value(input)?.truthy() {
+                    self.read(
+                        heap,
+                        task,
+                        self.this.clone(),
+                        index_key(self.start + self.index),
+                        Stage::RemovedValue,
+                    )
                 } else {
                     self.index += 1;
+                    self.stage = Stage::Removed;
                     Ok(Action::Continue)
                 }
             }

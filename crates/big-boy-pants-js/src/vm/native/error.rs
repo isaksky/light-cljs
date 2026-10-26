@@ -226,16 +226,21 @@ impl ErrorState {
                         *stage = 4;
                         return Ok(Action::Continue);
                     }
+                    8 => {
+                        if delivered.truthy() {
+                            *stage = 2;
+                            match read(heap, task, options, "cause")? {
+                                property::Read::Getter(callee) => return Ok(call(callee, options)),
+                                property::Read::Value(v) => define(heap, object, "cause", v)?,
+                            }
+                        }
+                        *options = Value::Undefined;
+                    }
                     _ => return Err(Fault::Internal("invalid Error constructor stage")),
                 }
-                if matches!(options, Value::Object(_))
-                    && property::has_property(heap, task, options, &key("cause"))?
-                {
-                    *stage = 2;
-                    match read(heap, task, options, "cause")? {
-                        property::Read::Getter(callee) => return Ok(call(callee, options)),
-                        property::Read::Value(v) => define(heap, object, "cause", v)?,
-                    }
+                if matches!(options, Value::Object(_)) {
+                    *stage = 8;
+                    return Ok(super::has_property(options.clone(), key("cause")));
                 }
                 if let Some((error, suppressed)) = suppressed {
                     define(heap, object, "error", error.clone())?;

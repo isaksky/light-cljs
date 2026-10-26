@@ -251,6 +251,7 @@ impl Define {
                     _ => None,
                 };
                 match reader.step(heap, task, value)? {
+                    descriptor::DefineStep::Has { this, key } => Ok(has_property(this, key)),
                     descriptor::DefineStep::Getter { callee, this } => Ok(Action::Call {
                         callee,
                         this,

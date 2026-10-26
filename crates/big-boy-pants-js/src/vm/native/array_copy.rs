@@ -19,12 +19,14 @@ enum Stage {
     Created,
     Ready,
     CopyScan,
+    CopyPresent,
     CopyElement,
     ConcatItem,
     Spread,
     SpreadLength,
     SpreadLengthNumber,
     FlatScan,
+    FlatPresent,
     FlatElement,
     InnerLength,
     InnerLengthNumber,
@@ -215,6 +217,7 @@ impl State {
             | Stage::Ready
             | Stage::OfConstructor => self.create(heap, task, input),
             Stage::FlatScan
+            | Stage::FlatPresent
             | Stage::FlatElement
             | Stage::InnerLength
             | Stage::InnerLengthNumber => self.flatten(heap, task, input),
@@ -511,13 +514,25 @@ impl State {
                 } else {
                     index
                 });
-                if matches!(self.which, ArrayPrototypeSlice | ArrayPrototypeConcat)
-                    && !property::has_property(heap, task, &self.source, &key)?
-                {
-                    self.output += 1;
-                    return Ok(Action::Continue);
+                if matches!(self.which, ArrayPrototypeSlice | ArrayPrototypeConcat) {
+                    self.stage = Stage::CopyPresent;
+                    return Ok(has_property(self.source.clone(), key));
                 }
                 self.read(heap, task, self.source.clone(), key, Stage::CopyElement)
+            }
+            Stage::CopyPresent => {
+                if !self.value(input)?.truthy() {
+                    self.output += 1;
+                    self.stage = Stage::CopyScan;
+                    return Ok(Action::Continue);
+                }
+                self.read(
+                    heap,
+                    task,
+                    self.source.clone(),
+                    index_key(self.index - 1),
+                    Stage::CopyElement,
+                )
             }
             Stage::CopyElement => {
                 let value = self.value(input)?;
@@ -557,11 +572,22 @@ impl State {
                 }
                 let key = index_key(frame.index);
                 frame.index += 1;
-                let source = frame.value.clone();
-                if !property::has_property(heap, task, &source, &key)? {
+                self.stage = Stage::FlatPresent;
+                Ok(has_property(frame.value.clone(), key))
+            }
+            Stage::FlatPresent => {
+                if !self.value(input)?.truthy() {
+                    self.stage = Stage::FlatScan;
                     return Ok(Action::Continue);
                 }
-                self.read(heap, task, source, key, Stage::FlatElement)
+                let frame = self.frames.last().unwrap();
+                self.read(
+                    heap,
+                    task,
+                    frame.value.clone(),
+                    index_key(frame.index - 1),
+                    Stage::FlatElement,
+                )
             }
             Stage::FlatElement => {
                 let value = self.value(input)?;

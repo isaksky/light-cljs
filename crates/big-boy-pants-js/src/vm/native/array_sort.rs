@@ -9,6 +9,7 @@ enum Stage {
     Length,
     LengthNumber,
     Scan,
+    Present,
     Element,
     Merge,
     Compared,
@@ -173,12 +174,20 @@ impl State {
                 }
                 let key = index_key(self.index);
                 self.index += 1;
-                if self.copy || property::has_property(heap, task, &self.this, &key)? {
-                    self.stage = Stage::Element;
-                    self.read(heap, task, key)
-                } else {
-                    Ok(Action::Continue)
+                if !self.copy {
+                    self.stage = Stage::Present;
+                    return Ok(has_property(self.this.clone(), key));
                 }
+                self.stage = Stage::Element;
+                self.read(heap, task, key)
+            }
+            Stage::Present => {
+                if !Self::value(input)?.truthy() {
+                    self.stage = Stage::Scan;
+                    return Ok(Action::Continue);
+                }
+                self.stage = Stage::Element;
+                self.read(heap, task, index_key(self.index - 1))
             }
             Stage::Element => {
                 let value = Self::value(input)?;

@@ -104,4 +104,49 @@ function typeError(f, label) {
         assert(caught === 42, 'invariant callback exception');
     }
 }
+{
+    function hidden(target, key) {return new Proxy(target, {has(t, k) {return k !== key && k in t;}});}
+    let p = hidden([1, 2, 3], '1');
+    let mapped = Array.prototype.map.call(p, x => x * 2);
+    assert(mapped.length === 3 && mapped[0] === 2 && !(1 in mapped) && mapped[2] === 6, 'map presence');
+    assert(Array.prototype.filter.call(p, () => true).join(',') === '1,3', 'filter presence');
+    assert(Array.prototype.reduce.call(p, (a, b) => a + b, 0) === 4, 'reduce presence');
+    assert(Array.prototype.reduceRight.call(p, (a, b) => a + b, 0) === 4, 'reduceRight presence');
+    let visited = '';
+    Array.prototype.forEach.call(p, x => {visited += x;});
+    assert(visited === '13', 'forEach presence');
+    assert(Array.prototype.every.call(p, x => x !== 2) && !Array.prototype.some.call(p, x => x === 2), 'predicate presence');
+    assert(Array.prototype.indexOf.call(p, 2) === -1 && Array.prototype.lastIndexOf.call(p, 2) === -1, 'search presence');
+    assert(Array.prototype.flatMap.call(p, x => [x]).join(',') === '1,3', 'flatMap presence');
+    assert([1].flatMap(() => p).join(',') === '1,3', 'flatMap inner presence');
+    assert([p].flat().join(',') === '1,3', 'flat inner presence');
+    assert(Array.prototype.slice.call(p).join(',') === '1,,3', 'slice presence');
+    assert(Array.prototype.concat.call(p).join(',') === '1,,3', 'concat presence');
+    let target = [3, 2, 1];
+    Array.prototype.sort.call(hidden(target, '1'));
+    assert(target.length === 3 && target[0] === 1 && target[1] === 3 && !(2 in target), 'sort presence');
+    target = [1, 2, 3];
+    Array.prototype.reverse.call(hidden(target, '0'));
+    assert(target[0] === 3 && target[1] === 2 && !(2 in target), 'reverse presence');
+    target = [1, 2, 3];
+    assert(Array.prototype.shift.call(hidden(target, '1')) === 1 && target.length === 2 && !(0 in target) && target[1] === 3, 'shift presence');
+    target = [1, 2, 3];
+    Array.prototype.unshift.call(hidden(target, '1'), 0);
+    assert(target.join(',') === '0,1,,3', 'unshift presence');
+    target = [1, 2, 3];
+    let removed = Array.prototype.splice.call(hidden(target, '1'), 0, 2);
+    assert(removed.length === 2 && removed[0] === 1 && !(1 in removed) && target.join(',') === '3', 'splice presence');
+    target = [1, 2, 3];
+    Array.prototype.copyWithin.call(hidden(target, '1'), 0, 1);
+    assert(!(0 in target) && target[1] === 3, 'copyWithin presence');
+    assert(Intl.getCanonicalLocales(hidden(['en', 'fr'], '1')).join(',') === 'en', 'locale list presence');
+    let options = hidden({cause: 42}, 'cause');
+    assert(!('cause' in new Error('x', options)), 'error cause absence');
+    assert(new Error('x', new Proxy({cause: 42}, {has() {return true;}})).cause === 42, 'error cause presence');
+    let desc = new Proxy({value: 42, writable: true}, {has(t, k) {return k !== 'writable' && k in t;}});
+    let object = Object.defineProperty({}, 'x', desc);
+    assert(object.x === 42 && !Object.getOwnPropertyDescriptor(object, 'x').writable, 'descriptor presence');
+    desc = new Proxy({}, {has(t, k) {return k === 'value';}});
+    assert(Object.getOwnPropertyDescriptor(Object.defineProperty({}, 'x', desc), 'x').value === undefined, 'virtual descriptor presence');
+}
 true;

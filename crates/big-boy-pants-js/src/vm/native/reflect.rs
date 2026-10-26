@@ -191,6 +191,9 @@ impl State {
                     _ => return Err(Fault::Internal("Reflect descriptor input")),
                 };
                 match reader.step(heap, task, value)? {
+                    descriptor::DefineStep::Has { this, key } => {
+                        return Ok(super::has_property(this, key));
+                    }
                     descriptor::DefineStep::Getter { callee, this } => {
                         return Ok(Action::Call {
                             callee,

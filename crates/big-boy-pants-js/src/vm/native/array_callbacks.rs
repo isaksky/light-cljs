@@ -13,12 +13,14 @@ enum Stage {
     Create,
     Created,
     Scan,
+    Present,
     Element,
     Callback,
     Advance,
     InnerLength,
     InnerLengthNumber,
     InnerScan,
+    InnerPresent,
     InnerElement,
 }
 
@@ -204,6 +206,7 @@ impl State {
             Stage::InnerLength
             | Stage::InnerLengthNumber
             | Stage::InnerScan
+            | Stage::InnerPresent
             | Stage::InnerElement => self.flatten(heap, task, input),
             _ => self.iterate(heap, task, input),
         }
@@ -328,11 +331,23 @@ impl State {
                         _ => self.result.clone(),
                     }));
                 }
-                let key = index_key(self.index as u64);
-                if !property::has_property(heap, task, &self.this, &key)? {
+                self.stage = Stage::Present;
+                Ok(has_property(
+                    self.this.clone(),
+                    index_key(self.index as u64),
+                ))
+            }
+            Stage::Present => {
+                if !self.value(input)?.truthy() {
                     return Ok(self.advance());
                 }
-                self.read(heap, task, self.this.clone(), key, Stage::Element)
+                self.read(
+                    heap,
+                    task,
+                    self.this.clone(),
+                    index_key(self.index as u64),
+                    Stage::Element,
+                )
             }
             Stage::Element => {
                 self.element = self.value(input)?;
@@ -411,10 +426,21 @@ impl State {
                 }
                 let key = index_key(self.inner_index);
                 self.inner_index += 1;
-                if !property::has_property(heap, task, &self.inner, &key)? {
+                self.stage = Stage::InnerPresent;
+                Ok(has_property(self.inner.clone(), key))
+            }
+            Stage::InnerPresent => {
+                if !self.value(input)?.truthy() {
+                    self.stage = Stage::InnerScan;
                     return Ok(Action::Continue);
                 }
-                self.read(heap, task, self.inner.clone(), key, Stage::InnerElement)
+                self.read(
+                    heap,
+                    task,
+                    self.inner.clone(),
+                    index_key(self.inner_index - 1),
+                    Stage::InnerElement,
+                )
             }
             Stage::InnerElement => {
                 let value = self.value(input)?;

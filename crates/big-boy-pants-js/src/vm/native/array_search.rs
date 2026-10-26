@@ -10,6 +10,7 @@ enum Stage {
     LengthNumber,
     IndexNumber,
     Scan,
+    Present,
     Element,
     Predicate,
 }
@@ -218,11 +219,17 @@ impl State {
                 if matches!(
                     self.which,
                     ArrayPrototypeIndexOf | ArrayPrototypeLastIndexOf
-                ) && !property::has_property(heap, task, &self.this, &key)?
-                {
-                    return Ok(self.advance());
+                ) {
+                    self.stage = Stage::Present;
+                    return Ok(has_property(self.this.clone(), key));
                 }
                 self.read(heap, task, key, Stage::Element)
+            }
+            Stage::Present => {
+                if !self.value(input)?.truthy() {
+                    return Ok(self.advance());
+                }
+                self.read(heap, task, index_key(self.index as u64), Stage::Element)
             }
             Stage::Element => {
                 self.element = self.value(input)?;
