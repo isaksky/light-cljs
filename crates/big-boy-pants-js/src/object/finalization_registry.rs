@@ -95,6 +95,7 @@ impl FinalizationRegistryObject {
         Some(Job {
             callable: self.callback.clone(),
             args: vec![cell.held],
+            reservation: Default::default(),
         })
     }
 

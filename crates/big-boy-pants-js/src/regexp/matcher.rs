@@ -48,7 +48,8 @@ pub struct Captures {
 /// Immutable bytecode with no VM heap or GC edges. Only [`compile`] constructs it.
 #[derive(Clone, Debug)]
 pub struct Program {
-    code: Vec<Instruction>,
+    code: std::sync::Arc<[Instruction]>,
+    _reservation: Option<std::sync::Arc<crate::heap::budget::ByteReservation>>,
     captures: usize,
     repeats: usize,
     sticky: bool,
@@ -97,13 +98,40 @@ enum Build {
     Label(usize),
 }
 
-pub(super) struct Budget(pub(super) usize);
+pub(super) struct Budget {
+    work: usize,
+    memory: Option<std::sync::Arc<crate::heap::budget::ByteBudget>>,
+    reservation: crate::heap::budget::ByteReservation,
+}
 impl Budget {
+    pub(super) fn new(work: usize) -> Self {
+        Self {
+            work,
+            memory: None,
+            reservation: Default::default(),
+        }
+    }
+    fn for_heap(heap: &crate::heap::Heap) -> Self {
+        Self {
+            memory: heap.has_byte_limit().then(|| heap.byte_budget()),
+            ..Self::new(MAX_MATCH_STEPS)
+        }
+    }
     pub(super) fn charge(&mut self, amount: usize) -> Result<(), MatchError> {
-        self.0 = self
-            .0
+        self.work = self
+            .work
             .checked_sub(amount)
             .ok_or(MatchError::LimitExceeded)?;
+        if let Some(memory) = &self.memory {
+            let Some(ticket) = amount
+                .checked_mul(256)
+                .and_then(|bytes| memory.reserve(bytes))
+            else {
+                memory.note_denial();
+                return Err(MatchError::LimitExceeded);
+            };
+            self.reservation.merge(ticket);
+        }
         Ok(())
     }
 }
@@ -121,12 +149,20 @@ fn merge_span(a: CaptureSpan, b: CaptureSpan) -> CaptureSpan {
 /// is explicitly deferred.
 /// The public arena is checked for invalid edges/indices before indexing it.
 pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
+    compile_budgeted(pattern, Budget::new(MAX_MATCH_STEPS))
+}
+pub(crate) fn compile_accounted(
+    heap: &crate::heap::Heap,
+    pattern: &Pattern,
+) -> Result<Program, MatchError> {
+    compile_budgeted(pattern, Budget::for_heap(heap))
+}
+fn compile_budgeted(pattern: &Pattern, mut budget: Budget) -> Result<Program, MatchError> {
     let unicode = pattern.flags.unicode || pattern.flags.unicode_sets;
     let max_character = if unicode { 0x10ffff } else { 0xffff };
     if pattern.root.0 >= pattern.nodes.len() {
         return Err(MatchError::InvalidPattern);
     }
-    let mut budget = Budget(MAX_MATCH_STEPS);
     budget.charge(pattern.nodes.len())?;
     budget.charge(pattern.captures.len())?;
     // Captures declared inside an atom occupy a contiguous interval in parser
@@ -453,7 +489,11 @@ pub fn compile(pattern: &Pattern) -> Result<Program, MatchError> {
         }
     }
     Ok(Program {
-        code,
+        code: code.into(),
+        _reservation: budget
+            .reservation
+            .is_charged()
+            .then(|| std::sync::Arc::new(budget.reservation)),
         captures: pattern.captures.len() + 1,
         repeats,
         sticky: pattern.flags.sticky,
@@ -781,13 +821,31 @@ pub fn exec(
 
 /// Return the unspent search allowance so the object layer can reserve capture
 /// string copies before allocating results. Range-only callers need no copies.
+pub(super) fn exec_accounted(
+    heap: &crate::heap::Heap,
+    program: &Program,
+    input: &[u16],
+    start: usize,
+) -> Result<(Option<Captures>, Budget), MatchError> {
+    exec_budgeted(program, input, start, Budget::for_heap(heap))
+}
+
 pub(super) fn exec_with_budget(
     program: &Program,
     input: &[u16],
     start: usize,
 ) -> Result<(Option<Captures>, Budget), MatchError> {
+    exec_budgeted(program, input, start, Budget::new(MAX_MATCH_STEPS))
+}
+
+fn exec_budgeted(
+    program: &Program,
+    input: &[u16],
+    start: usize,
+    mut budget: Budget,
+) -> Result<(Option<Captures>, Budget), MatchError> {
     if start > input.len() {
-        return Ok((None, Budget(MAX_MATCH_STEPS)));
+        return Ok((None, budget));
     }
     let start = if program.unicode
         && start > 0
@@ -798,7 +856,6 @@ pub(super) fn exec_with_budget(
     } else {
         start
     };
-    let mut budget = Budget(MAX_MATCH_STEPS);
     budget.charge(program.captures)?;
     budget.charge(program.repeats)?;
     let mut machine = Machine {

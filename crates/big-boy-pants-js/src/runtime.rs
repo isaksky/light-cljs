@@ -123,6 +123,12 @@ impl Runtime {
         Rooted::new(&self.0.heap, Value::from(value))
     }
 
+    /// Import and persist a primitive after checked backing-store admission.
+    /// Returns `None` when admission or allocation fails.
+    pub fn try_root(&self, value: Primitive) -> Option<Rooted> {
+        self.scope(|scope| scope.try_primitive(value).map(|local| scope.persist(local)))
+    }
+
     /// Check that `value` may be handed to another task: the embedding's
     /// publication entry point (`docs/design.md` §4).
     ///

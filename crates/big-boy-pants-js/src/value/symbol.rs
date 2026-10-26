@@ -22,10 +22,37 @@ pub(crate) struct SymbolRegistry(Mutex<RegistryEntries>);
 struct RegistryEntries {
     by_key: HashMap<JsString, JsSymbol>,
     by_id: HashMap<u64, JsString>,
+    reservation: crate::heap::budget::ByteReservation,
 }
 
 impl SymbolRegistry {
+    pub(crate) fn symbol_for_accounted(
+        &self,
+        heap: &crate::heap::Heap,
+        key: JsString,
+    ) -> Result<JsSymbol, crate::vm::dispatch::Fault> {
+        let mut entries = self.0.lock().unwrap();
+        if let Some(symbol) = entries.by_key.get(&key) {
+            return Ok(symbol.clone());
+        }
+        let key = key
+            .import(heap)
+            .ok_or(crate::vm::dispatch::Fault::HeapLimit)?;
+        let ticket = heap
+            .reserve_bytes(1024)
+            .ok_or(crate::vm::dispatch::Fault::HeapLimit)?;
+        let mut symbol = JsSymbol::new_accounted(heap, Some(key.clone()))?;
+        Arc::get_mut(&mut symbol.0)
+            .expect("fresh symbol")
+            .registered = true;
+        entries.by_id.insert(symbol.identity(), key.clone());
+        entries.by_key.insert(key, symbol.clone());
+        entries.reservation.merge(ticket);
+        Ok(symbol)
+    }
+
     /// The caller finishes ToString before entering this leaf operation.
+    #[cfg(test)]
     pub(crate) fn symbol_for(&self, key: JsString) -> JsSymbol {
         let mut entries = self.0.lock().unwrap();
         if let Some(symbol) = entries.by_key.get(&key) {
@@ -99,9 +126,29 @@ struct SymbolData {
     id: u64,
     description: Option<JsString>,
     registered: bool,
+    _reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 impl JsSymbol {
+    pub(crate) fn new_accounted(
+        heap: &crate::heap::Heap,
+        description: Option<JsString>,
+    ) -> Result<Self, crate::vm::dispatch::Fault> {
+        let description = description
+            .map(|text| {
+                text.import(heap)
+                    .ok_or(crate::vm::dispatch::Fault::HeapLimit)
+            })
+            .transpose()?;
+        let ticket = heap
+            .reserve_bytes(256)
+            .ok_or(crate::vm::dispatch::Fault::HeapLimit)?;
+        let mut symbol = Self::create(description, false);
+        Arc::get_mut(&mut symbol.0)
+            .expect("fresh symbol")
+            ._reservation = ticket.is_charged().then(|| Arc::new(ticket));
+        Ok(symbol)
+    }
     /// A fresh symbol with an optional description (distinct from its key).
     pub fn new(description: Option<JsString>) -> Self {
         Self::create(description, false)
@@ -115,6 +162,7 @@ impl JsSymbol {
             id,
             description,
             registered,
+            _reservation: None,
         }))
     }
 

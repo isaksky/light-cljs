@@ -214,13 +214,22 @@ pub(crate) enum Flow {
 pub(super) fn new_function(
     heap: &Heap,
     code: Arc<Code>,
-    captures: Box<[Value]>,
+    captures: &[Value],
     owner: TaskId,
     home_object: Option<ObjectId>,
 ) -> Result<Value, Fault> {
     let generator = code.is_generator();
     let class = code.constructor_kind.is_class();
-    let mut function = FunctionObject::new(code, captures, owner);
+    let ticket = heap
+        .reserve_bytes(
+            captures
+                .len()
+                .checked_mul(std::mem::size_of::<Value>() * 4)
+                .ok_or(Fault::HeapLimit)?,
+        )
+        .ok_or(Fault::HeapLimit)?;
+    let mut function = FunctionObject::new(code, captures.into(), owner);
+    function.reservation = ticket.is_charged().then(|| Arc::new(ticket));
     function.home_object = home_object;
     let object = HeapObject::Function(function);
     let id = heap
@@ -307,6 +316,22 @@ pub(crate) fn to_number(v: &Value) -> Result<f64, Fault> {
 /// `"undefined"`, `"null"`, `"true"` / `"false"`, Number::toString in radix
 /// 10 ([`number_to_string`]), and a string itself (the same body). Objects
 /// are converted with hint string by native::Convert before this helper.
+pub(crate) fn to_js_string_accounted(heap: &Heap, v: &Value) -> Result<JsString, Fault> {
+    if let Value::String(text) = v {
+        return Ok(text.clone());
+    }
+    if let Value::BigInt(number) = v {
+        return crate::value::bigint::BigIntToString::new_accounted(heap, number, 10)?
+            .advance()
+            .ok_or(Fault::Internal(
+                "BigInt ToString requires a resumable frame",
+            ));
+    }
+    // All other successful primitive decimal spellings fit in 32 units.
+    let ticket = JsString::reserve(heap, 32, 1)?;
+    to_js_string(v).map(|text| text.with_reservation(ticket))
+}
+
 pub(crate) fn to_js_string(v: &Value) -> Result<JsString, Fault> {
     Ok(match v {
         Value::String(s) => s.clone(),
@@ -344,8 +369,8 @@ fn plus(heap: &Heap, a: &Value, b: &Value) -> Result<Value, Fault> {
         (Value::Object(_), _) | (_, Value::Object(_)) => {
             Err(Fault::Internal("object reached primitive plus"))
         }
-        (Value::String(_), _) | (_, Value::String(_)) => to_js_string(a)?
-            .concat_accounted(heap, &to_js_string(b)?)
+        (Value::String(_), _) | (_, Value::String(_)) => to_js_string_accounted(heap, a)?
+            .concat_accounted(heap, &to_js_string_accounted(heap, b)?)
             .map(Value::String),
         _ => {
             reject_mixed_bigint(a, b)?;
@@ -1248,7 +1273,7 @@ fn closure_step(
     } else {
         None
     };
-    let captures: Box<[Value]> = top_operands(state, n)?.into();
+    let captures = top_operands(state, n)?;
     let f = new_function(heap, child, captures, state.diag.task, home)?;
     state.replace(n, f)?;
     Ok(Flow::Next)
@@ -1419,9 +1444,9 @@ fn private_step(
 ) -> Result<Flow, Fault> {
     let task = state.diag.task;
     match instr {
-        Instr::NewPrivateName(i) => state.push(Value::Symbol(crate::value::JsSymbol::new(Some(
-            name_constant(code, i)?.clone(),
-        )))),
+        Instr::NewPrivateName(i) => state.push(Value::Symbol(
+            crate::value::JsSymbol::new_accounted(heap, Some(name_constant(code, i)?.clone()))?,
+        )),
         Instr::GetPrivate => {
             let key = state.pop()?;
             let base = state.pop()?;
@@ -2097,6 +2122,10 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
         if len > MESSAGE_LIMIT {
             return Err("error message too long");
         }
+        let ticket = JsString::reserve(heap, len, 1).map_err(|_| {
+            heap.byte_budget().note_denial();
+            "heap byte limit exceeded"
+        })?;
         let mut units = Vec::new();
         #[cfg(test)]
         let reservation_len = if FAIL_MESSAGE_RESERVATION.replace(false) {
@@ -2110,17 +2139,24 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
             .try_reserve_exact(reservation_len)
             .map_err(|_| "error message allocation failed")?;
         units.extend(message.encode_utf16());
-        let message = JsString::from_owned_code_units(units).ok_or("error message too long")?;
+        let message = JsString::from_owned_code_units(units)
+            .ok_or("error message too long")?
+            .with_reservation(ticket);
         define("message", Value::String(message))?;
         if matches!(error.kind, VmErrorKind::DependencyFailed(_)) {
             define("cause", cause)?;
         }
-        let stack = state
-            .error_stack_with_input(pc, input)
-            .map_err(|fault| match fault {
-                Fault::OutOfMemory(message) => message,
-                _ => "error stack too long",
-            })?;
+        let stack =
+            state
+                .error_stack_input_accounted(heap, pc, input)
+                .map_err(|fault| match fault {
+                    Fault::OutOfMemory(message) => message,
+                    Fault::HeapLimit => {
+                        heap.byte_budget().note_denial();
+                        "heap byte limit exceeded"
+                    }
+                    _ => "error stack too long",
+                })?;
         define("stack", Value::String(stack))?;
         heap.alloc(HeapObject::Plain(object))
             .ok_or("heap object table exhausted")
@@ -2541,7 +2577,7 @@ fn step_instruction(
         }
         Instr::ToString => {
             let v = state.pop()?;
-            state.push(Value::String(to_js_string(&v)?));
+            state.push(Value::String(to_js_string_accounted(heap, &v)?));
         }
         Instr::GetField(_)
         | Instr::PutField(_)
@@ -2917,13 +2953,8 @@ fn step_instruction(
                 None => {
                     // The entry frame has no function object until asked for
                     // one; it is kept in the frame (a root) from now on.
-                    let f = new_function(
-                        heap,
-                        state.top().code.shared(),
-                        Box::new([]),
-                        state.diag.task,
-                        None,
-                    )?;
+                    let f =
+                        new_function(heap, state.top().code.shared(), &[], state.diag.task, None)?;
                     if let Value::Object(id) = f {
                         state.top_mut().callee = Some(id);
                     }

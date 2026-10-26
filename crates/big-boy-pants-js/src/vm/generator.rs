@@ -101,7 +101,7 @@ pub(crate) fn create(heap: &Heap, vm: &mut VmState) -> Result<(), Fault> {
             let Value::Object(id) = super::dispatch::new_function(
                 heap,
                 vm.top().code.shared(),
-                Box::new([]),
+                &[],
                 vm.diag.task,
                 None,
             )?
@@ -118,7 +118,7 @@ pub(crate) fn create(heap: &Heap, vm: &mut VmState) -> Result<(), Fault> {
         _ if asynchronous => super::async_generator::prototype(heap)?,
         _ => prototype(heap)?,
     };
-    let activation = vm.detach_activation()?;
+    let activation = vm.detach_activation(heap)?;
     let id = heap
         .alloc(HeapObject::Generator(Box::new(Generator {
             owner: vm.diag.task,
@@ -206,7 +206,7 @@ pub(crate) fn suspend(heap: &Heap, vm: &mut VmState, delegated: bool) -> Result<
     let id =
         super::native::generator_boundary(vm).ok_or(Fault::Internal("yield outside generator"))?;
     let value = vm.pop()?;
-    let activation = vm.detach_activation()?;
+    let activation = vm.detach_activation(heap)?;
     heap.with_object_mut(id, |o| {
         if let HeapObject::Generator(g) = o {
             g.state = if delegated {

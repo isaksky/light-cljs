@@ -499,6 +499,10 @@ pub(crate) fn new_named(
     namespace: Option<JsString>,
     name: JsString,
 ) -> Result<Value, CollectionError> {
+    let namespace = namespace
+        .map(|text| text.import(heap).ok_or(CollectionError::HeapLimit))
+        .transpose()?;
+    let name = name.import(heap).ok_or(CollectionError::HeapLimit)?;
     let name = FormName { namespace, name };
     if !name.splits_back() {
         return Err(CollectionError::AmbiguousName);

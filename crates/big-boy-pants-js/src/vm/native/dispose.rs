@@ -35,7 +35,7 @@ pub(super) fn start_async_stack(
     let function = dispatch::new_function(
         heap,
         code.0.clone(),
-        Box::new([Value::Object(body)]),
+        &[Value::Object(body)],
         state.diag.task,
         None,
     )?;
@@ -167,6 +167,7 @@ pub(super) struct Run {
     needs_await: bool,
     has_awaited: bool,
     stack: JsString,
+    reservation: crate::heap::budget::ByteReservation,
 }
 impl Trace for Run {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
@@ -201,6 +202,7 @@ impl Run {
             needs_await: false,
             has_awaited: false,
             stack,
+            reservation: Default::default(),
         }
     }
     pub(super) fn catches(&self) -> bool {
@@ -365,15 +367,19 @@ impl Stack {
                 } else {
                     Kind::Sync
                 };
-                let resources = stack::access(heap, task, this, kind, false, |s| {
+                let (resources, reservation) = stack::access(heap, task, this, kind, false, |s| {
                     if s.disposed {
-                        vec![]
+                        (vec![], Default::default())
                     } else {
                         s.disposed = true;
-                        std::mem::take(&mut s.resources)
+                        (
+                            std::mem::take(&mut s.resources),
+                            std::mem::take(&mut s.reservation),
+                        )
                     }
                 })?;
                 let mut run = Run::new(resources, None, false, diagnostic);
+                run.reservation = reservation;
                 run.await_all = kind == Kind::Async;
                 Ok(Self::Run(run))
             }
@@ -416,12 +422,15 @@ impl Stack {
                 // repeat the disposed check (ECMAScript use steps 2-6).
                 if kind == Kind::Async || !matches!(method, Value::Undefined) {
                     stack::access(heap, task, this, kind, false, |s| {
-                        s.resources.push(Resource {
-                            value: check.source.clone(),
-                            method,
-                            hint,
-                        })
-                    })?;
+                        s.push(
+                            heap,
+                            Resource {
+                                value: check.source.clone(),
+                                method,
+                                hint,
+                            },
+                        )
+                    })??;
                 }
                 Ok(Action::Return(check.source.clone()))
             }

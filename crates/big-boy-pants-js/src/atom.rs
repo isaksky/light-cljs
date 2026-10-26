@@ -164,7 +164,7 @@ struct Retired {
     ptr: *mut AtomValue,
 }
 
-// SAFETY: `ptr` is a `Box<Value>` allocation that has been unlinked from its
+// SAFETY: `ptr` is a `Box<AtomValue>` allocation that has been unlinked from its
 // atom and is owned by the retire list; it is only dereferenced by readers
 // (shared, read-only, `Value: Sync`) and freed by whoever holds the list's
 // lock after the grace period. Moving that ownership between threads is safe.
@@ -173,7 +173,7 @@ unsafe impl Send for Retired {}
 /// An atom's storage. See the module docs for the representation, the
 /// ordering and the reclamation protocol.
 pub(crate) struct AtomCell {
-    /// Always a valid `Box<Value>` allocation owned by the cell.
+    /// Always a valid `Box<AtomValue>` allocation owned by the cell.
     current: AtomicPtr<AtomValue>,
     /// Single-writer mode: changed only by its [`Publisher`].
     single_writer: bool,
@@ -235,7 +235,7 @@ impl AtomCell {
     /// the caller's mutator registration (module docs).
     fn read(ptr: *mut AtomValue) -> Value {
         // SAFETY: `ptr` was loaded from `current`, which only ever holds
-        // live `Box<Value>` allocations. A box is freed only after it was
+        // live `Box<AtomValue>` allocations. A box is freed only after it was
         // unlinked and a collection completed since; collections cannot run
         // while the caller is registered as a mutator (every caller of the
         // cell's methods is: see `Access`), and the caller loaded `ptr`

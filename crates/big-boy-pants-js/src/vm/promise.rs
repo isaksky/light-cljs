@@ -33,6 +33,7 @@ pub(crate) struct Promise {
     // The rejecting task owns the bounded diagnostic. This weak receipt
     // permits handling on a different task without retaining the owner.
     rejection: Option<(Weak<JobInbox>, bool)>,
+    reservation: crate::heap::budget::ByteReservation,
 }
 
 /// A fresh resolve/reject pair shares this concurrent first-call guard.
@@ -69,6 +70,7 @@ impl Registration {
             let _ = inbox.push(Job {
                 callable: self.callable.clone(),
                 args: vec![],
+                reservation: Default::default(),
             });
         }
     }
@@ -209,6 +211,7 @@ fn new_with_prototype(
             reactions: vec![],
             is_handled: false,
             rejection: None,
+            reservation: Default::default(),
         }),
     )
 }
@@ -745,6 +748,7 @@ impl PromiseState {
                         .push(Job {
                             callable,
                             args: vec![value.clone(), then],
+                            reservation: Default::default(),
                         })
                         .map_err(|_| Fault::Internal("promise task inbox closed"))?;
                 } else {
@@ -1061,6 +1065,11 @@ fn register(
         let HeapObject::Promise(p) = o else {
             unreachable!()
         };
+        let ticket = if p.result.is_none() {
+            Some(heap.reserve_bytes(512).ok_or(Fault::HeapLimit)?)
+        } else {
+            None
+        };
         if p.result.as_ref().is_some_and(|r| r.rejected)
             && !p.is_handled
             && let Some((owner, stored)) = p.rejection.take()
@@ -1077,8 +1086,11 @@ fn register(
             registration.enqueue();
         } else {
             p.reactions.push(registration);
+            p.reservation
+                .merge(ticket.expect("pending promise reserved"));
         }
+        Ok::<(), Fault>(())
     })
-    .ok_or(Fault::Internal("promise reclaimed"))?;
+    .ok_or(Fault::Internal("promise reclaimed"))??;
     Ok(())
 }

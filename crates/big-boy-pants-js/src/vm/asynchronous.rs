@@ -89,7 +89,7 @@ impl Boundary {
 
 pub(crate) fn start(heap: &Heap, vm: &mut VmState) -> Result<Flow, Fault> {
     let (promise, resolve, reject) = super::promise::capability(heap)?;
-    let saved = vm.detach_activation()?;
+    let saved = vm.detach_activation(heap)?;
     let id = heap
         .alloc(HeapObject::AsyncState(Box::new(AsyncState {
             owner: vm.diag.task,
@@ -138,7 +138,7 @@ pub(crate) fn suspend(heap: &Heap, vm: &mut VmState, source: ObjectId) -> Result
     // activation is installed below. Even an already fulfilled source queues.
     super::promise::await_then(heap, &vm.jobs, source, id)?;
     let name = vm.top().code.function_name.to_string_lossy();
-    let saved = vm.detach_activation()?;
+    let saved = vm.detach_activation(heap)?;
     heap.with_object_mut(id, |o| {
         if let HeapObject::AsyncState(a) = o {
             a.activation = Some(saved);

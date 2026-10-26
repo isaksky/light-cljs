@@ -647,7 +647,8 @@ impl State {
             self.stage = Stage::Build;
         } else if self.which == StringAt {
             return Ok(Action::Return(Value::String(
-                self.text.code_unit_at(self.start).unwrap(),
+                JsString::copy_units(heap, &self.text.code_units()[self.start..self.start + 1])
+                    .ok_or(Fault::HeapLimit)?,
             )));
         } else {
             // Cover decoding, Unicode expansion, sorting scratch and the returned body.

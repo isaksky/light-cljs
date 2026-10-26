@@ -421,7 +421,8 @@ pub(crate) fn get_compare(heap: &Heap, task: TaskId, this: &Value) -> Result<Val
             crate::vm::function::BoundFunction {
                 target: Value::Object(realm.intl_collator_bound),
                 this: this.clone(),
-                args: Box::new([]),
+                args: std::sync::Arc::from([]),
+                _reservation: None,
                 owner: task,
                 metadata,
                 properties: None,

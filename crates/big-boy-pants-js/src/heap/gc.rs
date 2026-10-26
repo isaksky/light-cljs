@@ -1340,6 +1340,7 @@ impl Heap {
         self.allocated_objects.store(live, Ordering::Relaxed);
         self.next_collection
             .store(self.policy.threshold(live), Ordering::Relaxed);
+        let byte_volume = self.byte_budget.volume();
         world.gc.last_live_objects = live;
         let pause = started.elapsed();
         world.gc.pause_total += pause;
@@ -1348,6 +1349,7 @@ impl Heap {
         // Reclaimed payloads and possibly-last source references are dropped
         // with no heap lock held, so their destructors cannot deadlock.
         drop((garbage, retired, retired_symbols, sources));
+        self.byte_budget.collection_finished(byte_volume);
         self.notify_observers(&report);
         stats
     }

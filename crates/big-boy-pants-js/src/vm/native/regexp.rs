@@ -159,7 +159,7 @@ pub(crate) fn getter(
     let intrinsic = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("RegExp realm"))?;
     let prototype = matches!(this, Value::Object(id) if *id == intrinsic.regexp_prototype);
     match (which, c) {
-        (Builtin::RegExpSource, Some(c)) => Ok(Value::String(object::source(&c.source)?)),
+        (Builtin::RegExpSource, Some(c)) => Ok(Value::String(object::source(heap, &c.source)?)),
         (Builtin::RegExpSource, None) if prototype => Ok(Value::String(JsString::from("(?:)"))),
         (Builtin::RegExpFlag(f), Some(c)) => Ok(Value::Bool(object::flag(c.flags, f))),
         (Builtin::RegExpFlag(_), None) if prototype => Ok(Value::Undefined),
@@ -306,7 +306,8 @@ impl State {
                     3 => {
                         let source = string(pattern.clone())?;
                         let flags = string(v)?;
-                        let c = object::compile(&source, &flags).map_err(|e| e.fault())?;
+                        let c = object::compile_accounted(heap, &source, &flags)
+                            .map_err(|e| e.fault())?;
                         let result = object::allocate(heap, task, c)?;
                         if let Some(prototype) = prototype {
                             super::construct::initialize_prototype(

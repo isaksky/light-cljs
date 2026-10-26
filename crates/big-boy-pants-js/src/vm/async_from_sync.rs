@@ -153,7 +153,7 @@ pub(crate) fn create(
         let method = dispatch::new_function(
             heap,
             code.0.clone(),
-            Box::new([iterator.clone(), next.clone()]),
+            &[iterator.clone(), next.clone()],
             task,
             None,
         )?;

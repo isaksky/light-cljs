@@ -104,7 +104,7 @@ use crate::realm;
 use crate::value::string::number_to_string_radix;
 use crate::value::{JsString, Value};
 use crate::vm::descriptor;
-use crate::vm::dispatch::{Fault, to_js_string, to_number};
+use crate::vm::dispatch::{Fault, to_js_string_accounted, to_number};
 use crate::vm::integrity;
 use crate::vm::keys::{self, KeyFilter};
 use crate::vm::prototype;
@@ -1901,8 +1901,8 @@ pub(crate) fn call(
         | Builtin::Symbol
         | Builtin::BigInt => primitive_constructor(heap, task, which, args, false),
         Builtin::SymbolFor => {
-            let key = to_js_string(&arg(0))?;
-            Ok(Value::Symbol(heap.symbols.symbol_for(key)))
+            let key = to_js_string_accounted(heap, &arg(0))?;
+            Ok(Value::Symbol(heap.symbols.symbol_for_accounted(heap, key)?))
         }
         Builtin::SymbolKeyFor => match arg(0) {
             Value::Symbol(symbol) => Ok(heap
@@ -1941,15 +1941,15 @@ pub(crate) fn call(
         ))),
         Builtin::NumberPrototypeToString => {
             let n = this_number_value(heap, task, this, "toString")?;
-            number_to_string(n, &arg(0))
+            number_to_string(heap, n, &arg(0))
         }
         Builtin::NumberPrototypeToFixed => {
             let n = this_number_value(heap, task, this, "toFixed")?;
-            number_to_fixed(n, &arg(0))
+            number_to_fixed(heap, n, &arg(0))
         }
         Builtin::NumberPrototypeToExponential | Builtin::NumberPrototypeToPrecision => {
             let n = this_number_value(heap, task, this, which.name())?;
-            number_to_precision_format(which, n, &arg(0), matches!(arg(0), Value::Undefined))
+            number_to_precision_format(heap, which, n, &arg(0), matches!(arg(0), Value::Undefined))
         }
         Builtin::NumberPrototypeValueOf => {
             this_number_value(heap, task, this, "valueOf").map(Value::Number)
@@ -1959,7 +1959,7 @@ pub(crate) fn call(
         }
         Builtin::StringPrototypeCharAt
         | Builtin::StringPrototypeCharCodeAt
-        | Builtin::StringPrototypeCodePointAt => string_access(which, this, &arg(0)),
+        | Builtin::StringPrototypeCodePointAt => string_access(heap, which, this, &arg(0)),
         Builtin::StringFromCharCode | Builtin::StringFromCodePoint => Err(Fault::Internal(
             "string code construction requires a resumable native frame",
         )),
@@ -2124,7 +2124,7 @@ pub(super) fn number_predicate(which: Builtin, value: &Value) -> Result<Value, F
 /// RequireObjectCoercible, ToString, then ToIntegerOrInfinity. These methods
 /// accept any primitive receiver; thisStringValue would be too restrictive.
 /// Object operands have already passed through native::Convert.
-fn string_access(which: Builtin, this: &Value, pos: &Value) -> Result<Value, Fault> {
+fn string_access(heap: &Heap, which: Builtin, this: &Value, pos: &Value) -> Result<Value, Fault> {
     if matches!(this, Value::Undefined | Value::Null) {
         return Err(Fault::TypeError(format!(
             "String.prototype.{} called on {}",
@@ -2132,7 +2132,7 @@ fn string_access(which: Builtin, this: &Value, pos: &Value) -> Result<Value, Fau
             this.type_name()
         )));
     }
-    let string = crate::vm::dispatch::to_js_string(this)?;
+    let string = crate::vm::dispatch::to_js_string_accounted(heap, this)?;
     let number = crate::vm::dispatch::to_number(pos)?;
     let index = if number.is_nan() { 0.0 } else { number.trunc() };
     // Check before casting: infinity and huge indices must not saturate or wrap.
@@ -2143,7 +2143,7 @@ fn string_access(which: Builtin, this: &Value, pos: &Value) -> Result<Value, Fau
     };
     Ok(match (which, unit) {
         (Builtin::StringPrototypeCharAt, Some(unit)) => {
-            Value::String(JsString::from_code_units(vec![unit]).expect("one code unit fits"))
+            Value::String(JsString::copy_units(heap, &[unit]).ok_or(Fault::HeapLimit)?)
         }
         (Builtin::StringPrototypeCharAt, None) => Value::String(JsString::from("")),
         (Builtin::StringPrototypeCharCodeAt, None) => Value::Number(f64::NAN),
@@ -2218,6 +2218,7 @@ fn validate_code_point(n: f64) -> Result<(), Fault> {
 /// operand. In particular, invalid code points must throw before later
 /// arguments' valueOf/toString callbacks can run.
 pub(crate) fn string_builtin_operand(
+    heap: &Heap,
     which: Builtin,
     index: usize,
     value: &Value,
@@ -2228,13 +2229,13 @@ pub(crate) fn string_builtin_operand(
         | Builtin::StringPrototypeCodePointAt
             if index == 0 =>
         {
-            crate::vm::dispatch::to_js_string(value).map(Value::String)
+            crate::vm::dispatch::to_js_string_accounted(heap, value).map(Value::String)
         }
         Builtin::StringPrototypeIndexOf | Builtin::StringPrototypeLastIndexOf if index < 2 => {
-            crate::vm::dispatch::to_js_string(value).map(Value::String)
+            crate::vm::dispatch::to_js_string_accounted(heap, value).map(Value::String)
         }
         _ if string_operand_is_text(which, index) => {
-            crate::vm::dispatch::to_js_string(value).map(Value::String)
+            crate::vm::dispatch::to_js_string_accounted(heap, value).map(Value::String)
         }
         _ => {
             let n = crate::vm::dispatch::to_number(value)?;
@@ -2277,7 +2278,7 @@ pub(crate) fn string_build(
     operands: &[Value],
 ) -> Result<crate::value::string::StringBuild, Fault> {
     use Builtin::*;
-    let text = to_js_string(&operands[0])?;
+    let text = to_js_string_accounted(heap, &operands[0])?;
     let len = text.len();
     let parts = match which {
         StringPrototypeSubstring | StringPrototypeSlice => {
@@ -2304,7 +2305,7 @@ pub(crate) fn string_build(
         StringPrototypeConcat => operands
             .iter()
             .map(|v| {
-                let s = to_js_string(v)?;
+                let s = to_js_string_accounted(heap, v)?;
                 let len = s.len();
                 Ok((s, 0, len))
             })
@@ -2316,7 +2317,7 @@ pub(crate) fn string_build(
             } else {
                 let fill = match operands.get(2) {
                     None => JsString::from(" "),
-                    Some(value) => to_js_string(value)?,
+                    Some(value) => to_js_string_accounted(heap, value)?,
                 };
                 if fill.is_empty() {
                     vec![(text, 0, len)]
@@ -2350,11 +2351,12 @@ pub(crate) fn string_build(
 
 /// Receiver validation precedes radix coercion; the continuation retains only
 /// the validated numeric value and the radix operand.
-pub(crate) fn number_to_string(n: f64, radix: &Value) -> Result<Value, Fault> {
+pub(crate) fn number_to_string(heap: &Heap, n: f64, radix: &Value) -> Result<Value, Fault> {
     let radix = to_radix(radix)?;
-    Ok(Value::String(JsString::from(
-        number_to_string_radix(n, radix).as_str(),
-    )))
+    let ticket = JsString::reserve(heap, 2048, 1)?;
+    Ok(Value::String(
+        JsString::from(number_to_string_radix(n, radix).as_str()).with_reservation(ticket),
+    ))
 }
 
 pub(crate) fn to_radix(radix: &Value) -> Result<u32, Fault> {
@@ -2387,17 +2389,20 @@ fn number_digit_count(digits: &Value, method: &str) -> Result<f64, Fault> {
     Ok(if digits.is_nan() { 0.0 } else { digits.trunc() })
 }
 
-pub(crate) fn number_to_fixed(number: f64, digits: &Value) -> Result<Value, Fault> {
+pub(crate) fn number_to_fixed(heap: &Heap, number: f64, digits: &Value) -> Result<Value, Fault> {
     let digits = number_digit_count(digits, "toFixed")?;
     if !(0.0..=100.0).contains(&digits) {
         return Err(Fault::RangeError("invalid number of digits".into()));
     }
-    Ok(Value::String(JsString::from(
-        crate::number::to_fixed(number, digits as usize).as_str(),
-    )))
+    let ticket = JsString::reserve(heap, 512, 1)?;
+    Ok(Value::String(
+        JsString::from(crate::number::to_fixed(number, digits as usize).as_str())
+            .with_reservation(ticket),
+    ))
 }
 
 pub(crate) fn number_to_precision_format(
+    heap: &Heap,
     which: Builtin,
     number: f64,
     digits: &Value,
@@ -2411,6 +2416,7 @@ pub(crate) fn number_to_precision_format(
     } else {
         number_digit_count(digits, which.name())?
     };
+    let ticket = JsString::reserve(heap, 512, 1)?;
     let text = if !number.is_finite() || (precision && originally_undefined) {
         crate::value::string::number_to_string(number)
     } else {
@@ -2428,7 +2434,9 @@ pub(crate) fn number_to_precision_format(
             crate::number::to_exponential(number, count)
         }
     };
-    Ok(Value::String(JsString::from(text.as_str())))
+    Ok(Value::String(
+        JsString::from(text.as_str()).with_reservation(ticket),
+    ))
 }
 
 /// thisNumberValue (ECMAScript §21.1.3; QuickJS `js_thisNumberValue`): a
@@ -2609,13 +2617,17 @@ pub(crate) fn primitive_constructor(
     let value = match which {
         Builtin::Boolean => Value::Bool(args.first().is_some_and(Value::truthy)),
         Builtin::BigInt if !construct => match args.first().unwrap_or(&Value::Undefined) {
-            Value::Number(n) => Value::BigInt(
-                crate::value::JsBigInt::from_integral_number(*n).ok_or_else(|| {
-                    Fault::RangeError(
+            Value::Number(n) => {
+                if !n.is_finite() || n.fract() != 0.0 {
+                    return Err(Fault::RangeError(
                         "cannot convert non-integral or non-finite Number to BigInt".into(),
-                    )
-                })?,
-            ),
+                    ));
+                }
+                Value::BigInt(crate::value::JsBigInt::accounted(heap, 1024, || {
+                    Ok(crate::value::JsBigInt::from_integral_number(*n)
+                        .expect("validated integral Number"))
+                })?)
+            }
             value => to_bigint(value)?,
         },
         Builtin::Number => Value::Number(match args.first() {
@@ -2627,15 +2639,16 @@ pub(crate) fn primitive_constructor(
         }),
         Builtin::String => Value::String(match args.first() {
             Some(Value::Symbol(s)) if !construct => symbol_descriptive_string(heap, s)?,
-            Some(value) => to_js_string(value)?,
+            Some(value) => to_js_string_accounted(heap, value)?,
             None => JsString::from(""),
         }),
-        Builtin::Symbol if !construct => {
-            Value::Symbol(crate::value::JsSymbol::new(match args.first() {
+        Builtin::Symbol if !construct => Value::Symbol(crate::value::JsSymbol::new_accounted(
+            heap,
+            match args.first() {
                 None | Some(Value::Undefined) => None,
-                Some(value) => Some(to_js_string(value)?),
-            }))
-        }
+                Some(value) => Some(to_js_string_accounted(heap, value)?),
+            },
+        )?),
         _ => return Err(Fault::Internal("not a primitive constructor")),
     };
     if !construct {
@@ -3201,15 +3214,28 @@ fn disposable_stack_method(
         Builtin::DisposableStackMove | Builtin::AsyncDisposableStackMove
     ) {
         let prototype = kind.prototype(heap)?;
-        let mut moved = stack::DisposableStack::new(heap, task, prototype, kind);
-        moved.resources = stack::access(heap, task, this, kind, true, |s| {
-            s.disposed = true;
-            std::mem::take(&mut s.resources)
-        })?;
-        return heap
+        let moved = stack::DisposableStack::new(heap, task, prototype, kind);
+        // Allocate the destination before changing the source. Failed admission
+        // must leave the stack usable with all of its resources.
+        let destination = heap
             .alloc(HeapObject::DisposableStack(Box::new(moved)))
-            .map(Value::Object)
-            .ok_or(Fault::OutOfMemory("heap object table exhausted"));
+            .ok_or(Fault::OutOfMemory("heap object table exhausted"))?;
+        let (resources, reservation) = stack::access(heap, task, this, kind, true, |s| {
+            s.disposed = true;
+            (
+                std::mem::take(&mut s.resources),
+                std::mem::take(&mut s.reservation),
+            )
+        })?;
+        heap.with_object_mut(destination, |object| {
+            let HeapObject::DisposableStack(moved) = object else {
+                unreachable!()
+            };
+            moved.resources = resources;
+            moved.reservation = reservation;
+        })
+        .ok_or(Fault::Internal("moved stack reclaimed"))?;
+        return Ok(Value::Object(destination));
     }
     let (value, method, hint, result) = match which {
         Builtin::DisposableStackAdopt | Builtin::AsyncDisposableStackAdopt => {
@@ -3222,12 +3248,15 @@ fn disposable_stack_method(
     };
     stack::callable(heap, &method)?;
     stack::access(heap, task, this, kind, true, |s| {
-        s.resources.push(Resource {
-            value,
-            method,
-            hint,
-        })
-    })?;
+        s.push(
+            heap,
+            Resource {
+                value,
+                method,
+                hint,
+            },
+        )
+    })??;
     Ok(result)
 }
 

@@ -508,8 +508,8 @@ impl State {
                         1
                     };
                     let value = Value::String(
-                        JsString::from_code_units(units[start..start + count].to_vec())
-                            .ok_or(Fault::OutOfMemory("iterator string"))?,
+                        JsString::copy_units(heap, &units[start..start + count])
+                            .ok_or(Fault::HeapLimit)?,
                     );
                     cursor(heap, task, &self.iterator, |data| {
                         data.index = self.index + count as u64

@@ -692,7 +692,7 @@ impl Task {
         deps: Arc<DependencyTable>,
         mut vm: VmState,
     ) -> Task {
-        let jobs = Arc::new(crate::job::JobInbox::default());
+        let jobs = Arc::new(crate::job::JobInbox::new(&heap));
         vm.jobs = Arc::downgrade(&jobs);
         let inner = Arc::new(TaskInner {
             id,
@@ -1002,7 +1002,11 @@ impl RunGuard<'_> {
         if args.len() >= usize::from(u16::MAX) {
             return Err(crate::job::JobError::TooManyArguments);
         }
-        self.task.jobs.push(crate::job::Job { callable, args })
+        self.task.jobs.push(crate::job::Job {
+            callable,
+            args,
+            reservation: Default::default(),
+        })
     }
     /// The task being run.
     pub fn task_id(&self) -> TaskId {

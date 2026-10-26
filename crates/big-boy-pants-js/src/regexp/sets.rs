@@ -381,7 +381,7 @@ mod tests {
         let set = compile(
             &items,
             true,
-            &mut Budget(super::super::matcher::MAX_MATCH_STEPS),
+            &mut Budget::new(super::super::matcher::MAX_MATCH_STEPS),
         )
         .unwrap();
         for cp in 0..=0x10ffff {

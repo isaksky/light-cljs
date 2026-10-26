@@ -177,7 +177,7 @@ pub(crate) struct FunctionObject {
     pub(crate) code: Arc<Code>,
     /// The closure's environment: `code.captures` values, never changed
     /// after allocation.
-    pub(crate) captures: Box<[Value]>,
+    pub(crate) captures: Arc<[Value]>,
     /// The task whose run created the function: the only one that may
     /// change its properties (module docs, "Own properties").
     pub(crate) owner: TaskId,
@@ -190,6 +190,7 @@ pub(crate) struct FunctionObject {
     /// Set once by a computed literal definition before the closure escapes.
     /// Per-closure metadata; executable code remains shared and immutable.
     pub(crate) computed_name: Option<JsString>,
+    pub(crate) reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 impl FunctionObject {
@@ -198,11 +199,12 @@ impl FunctionObject {
     pub(crate) fn new(code: Arc<Code>, captures: Box<[Value]>, owner: TaskId) -> FunctionObject {
         FunctionObject {
             code,
-            captures,
+            captures: captures.into(),
             owner,
             properties: None,
             home_object: None,
             computed_name: None,
+            reservation: None,
         }
     }
 }
@@ -226,7 +228,8 @@ impl Trace for FunctionObject {
 pub(crate) struct BoundFunction {
     pub(crate) target: Value,
     pub(crate) this: Value,
-    pub(crate) args: Box<[Value]>,
+    pub(crate) args: Arc<[Value]>,
+    pub(crate) _reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
     pub(crate) owner: TaskId,
     pub(crate) metadata: ObjectId,
     pub(crate) properties: Option<ObjectId>,
@@ -298,11 +301,19 @@ pub(crate) fn bind_with_metadata(
         Value::String(name),
         PropertyFlags::FUNCTION_INFO,
     );
+    let ticket = heap
+        .reserve_bytes(
+            args.len()
+                .checked_mul(std::mem::size_of::<Value>() * 4)
+                .ok_or(Fault::HeapLimit)?,
+        )
+        .ok_or(Fault::HeapLimit)?;
     let metadata = heap.alloc(HeapObject::Plain(store)).ok_or_else(exhausted)?;
     heap.alloc(HeapObject::BoundFunction(BoundFunction {
         target: target.clone(),
         this: args.first().cloned().unwrap_or(Value::Undefined),
         args: args.get(1..).unwrap_or(&[]).into(),
+        _reservation: ticket.is_charged().then(|| Arc::new(ticket)),
         owner: task,
         metadata,
         properties: None,

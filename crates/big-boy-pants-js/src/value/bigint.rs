@@ -103,6 +103,25 @@ impl PartialOrd for JsBigInt {
 }
 
 impl JsBigInt {
+    pub(crate) fn import(&self, heap: &crate::heap::Heap) -> Option<Self> {
+        match &self.0 {
+            Repr::Small(_) => Some(self.clone()),
+            Repr::Large { limbs, .. }
+                if !heap.has_byte_limit()
+                    || limbs
+                        .reservation
+                        .as_ref()
+                        .is_some_and(|ticket| ticket.belongs_to(&heap.byte_budget())) =>
+            {
+                Some(self.clone())
+            }
+            _ => Self::accounted(heap, self.bit_length(), || {
+                let (negative, words) = self.to_sign_magnitude();
+                Self::from_sign_magnitude(negative, words)
+            })
+            .ok(),
+        }
+    }
     pub(crate) fn bit_length(&self) -> usize {
         let mut small = [0; 2];
         let (_, limbs) = self.magnitude(&mut small);

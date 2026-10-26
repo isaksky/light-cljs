@@ -14,7 +14,10 @@ use crate::object::{OrdinaryObject, Property, PropertyFlags};
 use crate::value::{JsSymbol, Value};
 
 #[derive(Debug, Default)]
-pub(crate) struct Elements(HashMap<JsSymbol, Property>);
+pub(crate) struct Elements(
+    HashMap<JsSymbol, Property>,
+    crate::heap::budget::ByteReservation,
+);
 
 impl Trace for Elements {
     fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
@@ -191,7 +194,9 @@ pub(crate) fn define(
         } else {
             property.value = value;
         }
+        let ticket = heap.reserve_bytes(512).ok_or(Fault::HeapLimit)?;
         s.0.insert(key.clone(), property);
+        s.1.merge(ticket);
         Ok(())
     })
 }

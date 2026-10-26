@@ -21,6 +21,9 @@ pub(crate) struct ByteBudget {
     id: usize,
     limit: Option<AtomicUsize>,
     used: AtomicUsize,
+    volume: AtomicUsize,
+    collected_volume: AtomicUsize,
+    next_collection: AtomicUsize,
 }
 
 impl ByteBudget {
@@ -49,10 +52,12 @@ impl ByteBudget {
             id: NEXT_BUDGET.fetch_add(1, Ordering::Relaxed),
             limit: limit.map(AtomicUsize::new),
             used: AtomicUsize::new(0),
+            volume: AtomicUsize::new(0),
+            collected_volume: AtomicUsize::new(0),
+            next_collection: AtomicUsize::new(limit.map_or(usize::MAX, |bytes| (bytes / 4).max(1))),
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn used(&self) -> usize {
         self.used.load(Ordering::Relaxed)
     }
@@ -60,6 +65,35 @@ impl ByteBudget {
     #[cfg(test)]
     pub(crate) fn set_limit(&self, bytes: usize) {
         self.limit.as_ref().unwrap().store(bytes, Ordering::Relaxed);
+        self.collection_finished(self.volume());
+    }
+
+    pub(crate) fn volume(&self) -> usize {
+        self.volume.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn collection_due(&self) -> bool {
+        self.is_limited()
+            && self
+                .volume()
+                .saturating_sub(self.collected_volume.load(Ordering::Relaxed))
+                >= self.next_collection.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn collection_finished(&self, volume: usize) {
+        let Some(limit) = &self.limit else {
+            return;
+        };
+        // The snapshot was taken with mutators stopped. Preserve allocations made
+        // while reclaimed payloads were dropped after the pause. Concurrent GC
+        // completions may arrive in either order, so the watermark only advances.
+        self.collected_volume.fetch_max(volume, Ordering::Relaxed);
+        let live = self.used();
+        let growth = (live / 2)
+            .max(64 * 1024)
+            .min(limit.load(Ordering::Relaxed).saturating_sub(live) / 2)
+            .max(1);
+        self.next_collection.store(growth, Ordering::Relaxed);
     }
 
     pub(crate) fn reserve(self: &Arc<Self>, bytes: usize) -> Option<ByteReservation> {
@@ -80,6 +114,7 @@ impl ByteBudget {
                 Err(actual) => used = actual,
             }
         }
+        self.volume.fetch_add(bytes, Ordering::Relaxed);
         Some(ByteReservation {
             budget: Some(self.clone()),
             bytes,
@@ -97,6 +132,11 @@ pub(crate) struct ByteReservation {
 }
 
 impl ByteReservation {
+    pub(crate) fn belongs_to(&self, budget: &Arc<ByteBudget>) -> bool {
+        self.budget
+            .as_ref()
+            .is_some_and(|owner| Arc::ptr_eq(owner, budget))
+    }
     pub(crate) fn refund(&mut self, bytes: usize) {
         if let Some(budget) = &self.budget {
             self.bytes = self.bytes.checked_sub(bytes).expect("owned byte refund");
@@ -329,5 +369,86 @@ mod tests {
         let occupied = heap.byte_budget().used();
         heap.collect().unwrap();
         assert!(heap.byte_budget().used() <= occupied - 4 * 65536);
+    }
+
+    #[test]
+    fn byte_pressure_collects_without_object_threshold_or_explicit_collection() {
+        use crate::frontend::compile_function;
+        use crate::{RunOutcome, Runtime, ValueView};
+        let runtime = Runtime::with_byte_limit(2 * 1024 * 1024);
+        let code = compile_function("function f() { let total = 0; for (let i = 0; i < 300; ++i) { const b = new ArrayBuffer(32768); total += b.byteLength; } return total; }").unwrap();
+        let task = runtime.spawn(&code, &[]).unwrap();
+        let RunOutcome::Complete(result) = task.run().unwrap() else {
+            panic!("automatic byte collection failed");
+        };
+        assert_eq!(result.view(), ValueView::Number(300.0 * 32768.0));
+        let stats = runtime.heap_stats();
+        assert!(stats.collections > 1);
+        assert!(stats.last_live_objects < 16384);
+    }
+
+    #[test]
+    fn checked_imports_keep_body_charge_until_last_alias_drops() {
+        use crate::Primitive;
+        use crate::heap::{Heap, Scope};
+        let heap = Arc::new(Heap::with_byte_limit(4096));
+        let baseline = heap.byte_budget().used();
+        let text = {
+            let scope = Scope::new(&heap);
+            let local = scope.try_string_units(&[120; 1000]).unwrap();
+            let text = scope.string(local).unwrap();
+            let occupied = heap.byte_budget().used();
+            let alias = scope
+                .try_primitive(Primitive::String(text.clone()))
+                .unwrap();
+            assert_eq!(scope.string(alias).unwrap(), text);
+            assert_eq!(heap.byte_budget().used(), occupied);
+            assert!(scope.try_string_units(&[120; 2000]).is_none());
+            assert_eq!(heap.byte_budget().used(), occupied);
+            text
+        };
+        assert!(heap.byte_budget().used() > baseline);
+        drop(text);
+        assert_eq!(heap.byte_budget().used(), baseline);
+    }
+
+    #[test]
+    fn atom_denial_preserves_current_value_and_gc_refunds_retired_versions() {
+        use crate::{AtomErrorKind, CasOutcome, Primitive, Runtime, ValueView};
+        let runtime = Runtime::with_byte_limit(4096);
+        let zero = runtime.root(Primitive::Number(0.0));
+        let one = runtime.root(Primitive::Number(1.0));
+        let atom = runtime.new_atom(&zero).unwrap();
+        let budget = runtime.heap().byte_budget();
+        budget.set_limit(budget.used() + 512);
+        let mut expected = zero.clone();
+        let mut new = one.clone();
+        let mut successful = 0;
+        loop {
+            match runtime.atom_compare_and_set(&atom, &expected, &new) {
+                Ok(CasOutcome::Swapped) => {
+                    std::mem::swap(&mut expected, &mut new);
+                    successful += 1;
+                }
+                Err(error) => {
+                    assert_eq!(error.kind(), AtomErrorKind::HeapLimit);
+                    break;
+                }
+                other => panic!("unexpected CAS {other:?}"),
+            }
+        }
+        assert_eq!(successful, 2);
+        assert_eq!(runtime.atom_load(&atom).unwrap().view(), expected.view());
+        runtime.collect().unwrap();
+        assert!(matches!(
+            runtime
+                .atom_compare_and_set(&atom, &expected, &new)
+                .unwrap(),
+            CasOutcome::Swapped
+        ));
+        assert!(matches!(
+            runtime.atom_load(&atom).unwrap().view(),
+            ValueView::Number(_)
+        ));
     }
 }

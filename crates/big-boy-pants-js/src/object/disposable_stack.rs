@@ -58,6 +58,7 @@ pub(crate) struct DisposableStack {
     kind: Kind,
     pub(crate) disposed: bool,
     pub(crate) resources: Vec<Resource>,
+    pub(crate) reservation: crate::heap::budget::ByteReservation,
 }
 impl DisposableStack {
     pub(crate) fn new(
@@ -71,7 +72,14 @@ impl DisposableStack {
             kind,
             disposed: false,
             resources: vec![],
+            reservation: Default::default(),
         }
+    }
+    pub(crate) fn push(&mut self, heap: &Heap, resource: Resource) -> Result<(), Fault> {
+        let ticket = heap.reserve_bytes(512).ok_or(Fault::HeapLimit)?;
+        self.resources.push(resource);
+        self.reservation.merge(ticket);
+        Ok(())
     }
     pub(crate) fn object(&self) -> &OrdinaryObject {
         &self.object

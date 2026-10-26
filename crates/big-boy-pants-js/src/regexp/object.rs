@@ -15,6 +15,7 @@ pub(crate) struct Compiled {
     pub(crate) flags: parse::Flags,
     pub(crate) names: Vec<Option<JsString>>,
     pub(crate) program: matcher::Program,
+    _reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
 #[derive(Clone, Debug)]
@@ -32,18 +33,53 @@ impl CompileError {
 }
 
 pub(crate) fn compile(source: &JsString, flags: &JsString) -> Result<Arc<Compiled>, CompileError> {
+    compile_inner(None, source, flags)
+}
+pub(crate) fn compile_accounted(
+    heap: &Heap,
+    source: &JsString,
+    flags: &JsString,
+) -> Result<Arc<Compiled>, CompileError> {
+    compile_inner(Some(heap), source, flags)
+}
+fn compile_inner(
+    heap: Option<&Heap>,
+    source: &JsString,
+    flags: &JsString,
+) -> Result<Arc<Compiled>, CompileError> {
+    let ticket = if let Some(heap) = heap {
+        let bytes = source
+            .len()
+            .checked_add(flags.len())
+            .and_then(|n| n.checked_add(1))
+            .and_then(|n| n.checked_mul(1024))
+            .ok_or(CompileError::Limit)?;
+        let Some(ticket) = heap.reserve_bytes(bytes) else {
+            heap.byte_budget().note_denial();
+            return Err(CompileError::Limit);
+        };
+        ticket.is_charged().then(|| Arc::new(ticket))
+    } else {
+        None
+    };
     let pattern = parse::parse(source, flags).map_err(|e| {
         CompileError::Syntax(format!("{} at UTF-16 offset {}", e.message, e.offset))
     })?;
-    let program = matcher::compile(&pattern).map_err(|e| match e {
-        matcher::MatchError::LimitExceeded => CompileError::Limit,
-        _ => CompileError::Syntax(e.to_string()),
-    })?;
+    let program = heap
+        .map_or_else(
+            || matcher::compile(&pattern),
+            |heap| matcher::compile_accounted(heap, &pattern),
+        )
+        .map_err(|e| match e {
+            matcher::MatchError::LimitExceeded => CompileError::Limit,
+            _ => CompileError::Syntax(e.to_string()),
+        })?;
     Ok(Arc::new(Compiled {
         source: source.clone(),
         flags: pattern.flags,
         names: pattern.captures,
         program,
+        _reservation: ticket,
     }))
 }
 
@@ -150,10 +186,15 @@ pub(crate) fn flags(f: parse::Flags) -> JsString {
 
 /// EscapeRegExpPattern preserves existing escapes, slash character classes,
 /// raw NUL and lone surrogates. Only slash and line terminators need quoting.
-pub(crate) fn source(source: &JsString) -> Result<JsString, Fault> {
+pub(crate) fn source(heap: &Heap, source: &JsString) -> Result<JsString, Fault> {
     if source.is_empty() {
         return Ok(JsString::from("(?:)"));
     }
+    let ticket = JsString::reserve(
+        heap,
+        source.len().checked_mul(12).ok_or(Fault::HeapLimit)?,
+        1,
+    )?;
     let mut out = Vec::new();
     let mut escaped = false;
     let mut class = false;
@@ -197,7 +238,9 @@ pub(crate) fn source(source: &JsString) -> Result<JsString, Fault> {
         out.push(c);
         escaped = !escaped && c == 92;
     }
-    JsString::from_code_units(out).ok_or(Fault::StringTooLong)
+    JsString::from_code_units(out)
+        .map(|text| text.with_reservation(ticket))
+        .ok_or(Fault::StringTooLong)
 }
 
 pub(crate) fn exec(
@@ -227,7 +270,7 @@ pub(crate) fn exec_with_capture_budget(
     } else {
         0
     };
-    let (found, mut budget) = matcher::exec_with_budget(&c.program, input.code_units(), start)
+    let (found, mut budget) = matcher::exec_accounted(heap, &c.program, input.code_units(), start)
         .map_err(|e| match e {
             matcher::MatchError::LimitExceeded => {
                 Fault::RangeError("regular expression step limit exceeded".into())
@@ -280,11 +323,14 @@ pub(crate) fn exec_with_capture_budget(
     let mut indices_groups = OrdinaryObject::new(heap, Some(task));
     let mut named = false;
     for (i, capture) in m.groups.iter().enumerate() {
-        let v = capture.as_ref().map_or(Value::Undefined, |r| {
+        let v = if let Some(r) = capture {
             Value::String(
-                JsString::from_code_units(&input.code_units()[r.clone()]).expect("substring fits"),
+                JsString::copy_units(heap, &input.code_units()[r.clone()])
+                    .ok_or(Fault::HeapLimit)?,
             )
-        });
+        } else {
+            Value::Undefined
+        };
         property::append(heap, task, &a, Some(v.clone()))?;
         let pair = if let Some(indices) = &indices {
             let pair = if let Some(range) = capture {

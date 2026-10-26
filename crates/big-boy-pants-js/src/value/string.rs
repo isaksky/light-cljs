@@ -150,6 +150,26 @@ impl Drop for Body {
 }
 
 impl JsString {
+    pub(crate) fn import(&self, heap: &crate::heap::Heap) -> Option<Self> {
+        if !heap.has_byte_limit()
+            || self
+                .0
+                .reservation
+                .as_ref()
+                .is_some_and(|ticket| ticket.belongs_to(&heap.byte_budget()))
+        {
+            return Some(self.clone());
+        }
+        Self::copy_units(heap, self.code_units())
+    }
+
+    pub(crate) fn copy_units(heap: &crate::heap::Heap, units: &[u16]) -> Option<Self> {
+        let ticket = Self::reserve(heap, units.len(), 1).ok()?;
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(units.len()).ok()?;
+        copy.extend_from_slice(units);
+        Self::from_owned_code_units(copy).map(|text| text.with_reservation(ticket))
+    }
     pub(crate) fn with_reservation(
         mut self,
         reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
@@ -193,7 +213,12 @@ impl JsString {
             .ok_or(crate::vm::dispatch::Fault::StringTooLong)?;
         // Include the possible flattened body now: code_units, equality and
         // hashing are infallible and cannot attempt a later quota admission.
-        let reservation = Self::reserve(heap, len, 2)?;
+        let reservation = Self::reserve(
+            heap,
+            len.checked_mul(16)
+                .ok_or(crate::vm::dispatch::Fault::HeapLimit)?,
+            2,
+        )?;
         Ok(self
             .concat(other)
             .expect("checked length")
@@ -2562,5 +2587,26 @@ mod tests {
         let empty = JsString::from("");
         assert!(a.concat(&empty).unwrap().same_body(&a));
         assert!(empty.concat(&a).unwrap().same_body(&a));
+    }
+}
+
+#[cfg(test)]
+mod byte_budget_tests {
+    use super::*;
+
+    #[test]
+    fn cached_flat_body_keeps_reservation_after_rope_and_leaves_drop() {
+        let heap = crate::heap::Heap::with_byte_limit(256 * 1024);
+        let baseline = heap.byte_budget().used();
+        let left = JsString::copy_units(&heap, &[120; 1000]).unwrap();
+        let rope = left.concat_accounted(&heap, &left).ok().unwrap();
+        assert_eq!(rope.code_units().len(), 2000);
+        let flat = rope.0.flat.get().expect("cached flat body").clone();
+        drop(rope);
+        drop(left);
+        assert!(heap.byte_budget().used() > baseline);
+        assert_eq!(flat.code_units(), &[120; 2000]);
+        drop(flat);
+        assert_eq!(heap.byte_budget().used(), baseline);
     }
 }

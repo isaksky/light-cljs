@@ -727,13 +727,13 @@ impl ArrayJoin {
         Ok(())
     }
 
-    fn element(&mut self, value: Value) -> Result<Action, Fault> {
+    fn element(&mut self, heap: &Heap, value: Value) -> Result<Action, Fault> {
         if matches!(value, Value::Object(_) | Value::BigInt(_)) {
             self.stage = JoinStage::ElementString;
             return Ok(Action::ToString(value));
         }
         if !matches!(value, Value::Undefined | Value::Null) {
-            self.append(dispatch::to_js_string(&value)?)?;
+            self.append(dispatch::to_js_string_accounted(heap, &value)?)?;
         }
         self.next += 1;
         self.stage = JoinStage::Element;
@@ -775,7 +775,8 @@ impl ArrayJoin {
                 if matches!(self.separator, Value::Object(_) | Value::BigInt(_)) {
                     return Ok(Action::ToString(self.separator.clone()));
                 }
-                self.separator = Value::String(dispatch::to_js_string(&self.separator)?);
+                self.separator =
+                    Value::String(dispatch::to_js_string_accounted(heap, &self.separator)?);
                 self.stage = JoinStage::Element;
                 Ok(Action::Continue)
             }
@@ -801,15 +802,15 @@ impl ArrayJoin {
                         this: self.this.clone(),
                         args: vec![],
                     }),
-                    Some(property::Read::Value(value)) => self.element(value),
-                    None => self.element(Value::Undefined),
+                    Some(property::Read::Value(value)) => self.element(heap, value),
+                    None => self.element(heap, Value::Undefined),
                 }
             }
             JoinStage::ElementValue => {
                 let Input::CallResult(value) = input else {
                     return Err(Fault::Internal("join expected element"));
                 };
-                self.element(value)
+                self.element(heap, value)
             }
             JoinStage::ElementString => {
                 let Input::CallResult(Value::String(text)) = input else {
@@ -1483,7 +1484,7 @@ fn eval_source(
             let f = dispatch::new_function(
                 heap,
                 state.top().code.shared(),
-                Box::new([]),
+                &[],
                 state.diag.task,
                 None,
             )?;
@@ -2297,7 +2298,7 @@ fn start_stack_method(
         which,
         this,
         args,
-        state.error_stack(state.top().pc.saturating_sub(1))?,
+        state.error_stack_accounted(heap, state.top().pc.saturating_sub(1))?,
     )?;
     state.truncate_operands(state.stack_len() - popped)?;
     push_native(state, NativeState::Disposal(Box::new(native)))?;
@@ -3314,7 +3315,7 @@ pub(crate) fn start(
                 resources,
                 error,
                 cancelling,
-                state.error_stack(state.top().pc.saturating_sub(1))?,
+                state.error_stack_accounted(heap, state.top().pc.saturating_sub(1))?,
             );
             (
                 popped,
@@ -3633,21 +3634,15 @@ fn apply_action(
         }
         Action::DynamicFunction(executable) => {
             state.natives.pop();
-            let function =
-                dispatch::new_function(heap, executable.0, Box::new([]), state.diag.task, None)?;
+            let function = dispatch::new_function(heap, executable.0, &[], state.diag.task, None)?;
             state.push(function);
             Ok(Flow::Next)
         }
         Action::Eval(executable, captures) => {
             state.natives.pop();
             let code = executable.0;
-            let function = dispatch::new_function(
-                heap,
-                code.clone(),
-                captures.into_boxed_slice(),
-                state.diag.task,
-                None,
-            )?;
+            let function =
+                dispatch::new_function(heap, code.clone(), &captures, state.diag.task, None)?;
             let Value::Object(id) = function else {
                 return Err(Fault::Internal("eval function is not an object"));
             };
@@ -4188,16 +4183,15 @@ impl NativeState {
             _ => JsString::from(*tag),
         };
         let len = text.len();
-        *self = NativeState::StringBuild(
-            crate::value::string::StringBuild::concatenation(vec![
-                (JsString::from("[object "), 0, 8),
-                (text, 0, len),
-                (JsString::from("]"), 0, 1),
-            ])
-            .ok_or(Fault::RangeError(
-                "object tag exceeds string length limit".into(),
-            ))?,
-        );
+        *self =
+            NativeState::StringBuild(crate::value::string::StringBuild::concatenation_accounted(
+                heap,
+                vec![
+                    (JsString::from("[object "), 0, 8),
+                    (text, 0, len),
+                    (JsString::from("]"), 0, 1),
+                ],
+            )?);
         Ok(Action::Continue)
     }
 
@@ -5075,7 +5069,7 @@ impl NativeState {
                         }
                         if let ConvertTarget::NumberParse { .. } = target {
                             operands[*next] = if *next == 0 {
-                                Value::String(dispatch::to_js_string(receiver)?)
+                                Value::String(dispatch::to_js_string_accounted(heap, receiver)?)
                             } else {
                                 Value::Number(dispatch::to_number(receiver)?)
                             };
@@ -5098,7 +5092,7 @@ impl NativeState {
                                 return Ok(Action::Continue);
                             }
                             operands[*next] =
-                                builtin::string_builtin_operand(which, *next, receiver)?;
+                                builtin::string_builtin_operand(heap, which, *next, receiver)?;
                             if codes {
                                 // Validate this point before later callbacks,
                                 // and bound even primitive-only argument loops.
@@ -5106,7 +5100,8 @@ impl NativeState {
                                 return Ok(Action::Continue);
                             }
                             if which == builtin::Builtin::StringPrototypeConcat {
-                                let text = dispatch::to_js_string(&operands[*next])?;
+                                let text =
+                                    dispatch::to_js_string_accounted(heap, &operands[*next])?;
                                 *concat_len = concat_len
                                     .checked_add(text.len())
                                     .filter(|n| *n <= crate::value::string::MAX_STRING_LEN)
@@ -5125,7 +5120,7 @@ impl NativeState {
                                 )
                             {
                                 let length = dispatch::to_number(&operands[1])?;
-                                let text = dispatch::to_js_string(&operands[0])?;
+                                let text = dispatch::to_js_string_accounted(heap, &operands[0])?;
                                 if length.is_nan() || length.trunc() <= text.len() as f64 {
                                     // A short target never observes the filler.
                                     *end = 2;
@@ -5266,7 +5261,7 @@ impl NativeState {
                         }
                     }
                     ConvertTarget::DateParse => {
-                        let text = dispatch::to_js_string(&operands[0])?;
+                        let text = dispatch::to_js_string_accounted(heap, &operands[0])?;
                         *self = NativeState::DateParse {
                             parser: Box::new(super::date::Parser::new(heap, text)?),
                             construct: false,
@@ -5291,14 +5286,19 @@ impl NativeState {
                     )
                     .map(Action::Return),
                     ConvertTarget::SymbolRegistryKey => {
-                        let key = dispatch::to_js_string(&operands[0])?;
-                        Ok(Action::Return(Value::Symbol(heap.symbols.symbol_for(key))))
+                        let key = dispatch::to_js_string_accounted(heap, &operands[0])?;
+                        Ok(Action::Return(Value::Symbol(
+                            heap.symbols.symbol_for_accounted(heap, key)?,
+                        )))
                     }
                     ConvertTarget::SymbolDescription => Ok(Action::Return(Value::Symbol(
-                        crate::value::JsSymbol::new(Some(dispatch::to_js_string(&operands[0])?)),
+                        crate::value::JsSymbol::new_accounted(
+                            heap,
+                            Some(dispatch::to_js_string_accounted(heap, &operands[0])?),
+                        )?,
                     ))),
                     ConvertTarget::NumberParse { integer } => {
-                        let text = dispatch::to_js_string(&operands[0])?;
+                        let text = dispatch::to_js_string_accounted(heap, &operands[0])?;
                         let radix = if integer {
                             let radix = dispatch::to_int32(dispatch::to_number(&operands[1])?);
                             if radix != 0 && !(2..=36).contains(&radix) {
@@ -5325,8 +5325,10 @@ impl NativeState {
                         dispatch::to_number(&operands[0]).map(|n| Action::Return(Value::Number(n)))
                     }
                     ConvertTarget::PrimitiveValue => Ok(Action::Return(operands[0].clone())),
-                    ConvertTarget::StringValue => dispatch::to_js_string(&operands[0])
-                        .map(|s| Action::Return(Value::String(s))),
+                    ConvertTarget::StringValue => {
+                        dispatch::to_js_string_accounted(heap, &operands[0])
+                            .map(|s| Action::Return(Value::String(s)))
+                    }
                     ConvertTarget::PropertyBuiltin { which } => Ok(Action::Builtin {
                         which,
                         args: operands.clone(),
@@ -5448,7 +5450,10 @@ impl NativeState {
                         // to an original symbol argument, never the result of
                         // an object's ToPrimitive.
                         if which == builtin::Builtin::String {
-                            operands[0] = Value::String(dispatch::to_js_string(&operands[0])?);
+                            operands[0] = Value::String(dispatch::to_js_string_accounted(
+                                heap,
+                                &operands[0],
+                            )?);
                         }
                         builtin::primitive_constructor(heap, task, which, operands, construct)
                             .map(Action::Return)
@@ -5460,16 +5465,22 @@ impl NativeState {
                         // An object whose primitive is undefined converts to
                         // NaN; only an originally undefined radix means 10.
                         let radix = Value::Number(dispatch::to_number(&operands[0])?);
-                        builtin::number_to_string(number, &radix).map(Action::Return)
+                        builtin::number_to_string(heap, number, &radix).map(Action::Return)
                     }
                     ConvertTarget::NumberToFixed { number } => {
-                        builtin::number_to_fixed(number, &operands[0]).map(Action::Return)
+                        builtin::number_to_fixed(heap, number, &operands[0]).map(Action::Return)
                     }
                     ConvertTarget::NumberToPrecisionFormat { number, which } => {
                         // Undefined returned by an object is converted to NaN;
                         // it does not mean the optional count was omitted.
-                        builtin::number_to_precision_format(which, number, &operands[0], false)
-                            .map(Action::Return)
+                        builtin::number_to_precision_format(
+                            heap,
+                            which,
+                            number,
+                            &operands[0],
+                            false,
+                        )
+                        .map(Action::Return)
                     }
                     ConvertTarget::BigIntAsN { signed } => {
                         let bits = dispatch::to_index(&operands[0])?;
@@ -5542,8 +5553,8 @@ impl NativeState {
             which,
             builtin::Builtin::StringPrototypeIndexOf | builtin::Builtin::StringPrototypeLastIndexOf
         ) {
-            let text = dispatch::to_js_string(&operands[0])?;
-            let search = dispatch::to_js_string(&operands[1])?;
+            let text = dispatch::to_js_string_accounted(heap, &operands[0])?;
+            let search = dispatch::to_js_string_accounted(heap, &operands[1])?;
             let last = which == builtin::Builtin::StringPrototypeLastIndexOf;
             let mut position = dispatch::to_number(&operands[2])?;
             if position.is_nan() {
@@ -5780,14 +5791,14 @@ fn start_error(
             state.diag.task,
             args,
             None,
-            state.error_stack(state.top().pc.saturating_sub(1))?,
+            state.error_stack_accounted(heap, state.top().pc.saturating_sub(1))?,
         )?),
         Builtin::NativeError(kind) => Some(error::ErrorState::constructor(
             heap,
             state.diag.task,
             args,
             Some(kind),
-            state.error_stack(state.top().pc.saturating_sub(1))?,
+            state.error_stack_accounted(heap, state.top().pc.saturating_sub(1))?,
         )?),
         Builtin::ErrorPrototypeToString => Some(error::ErrorState::to_string(this)?),
         _ => None,

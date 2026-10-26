@@ -527,6 +527,25 @@ impl<'s> Scope<'s> {
         self.new_local(p.into())
     }
 
+    /// Import a primitive into managed storage, checking byte admission before
+    /// copying string or BigInt backing storage. Same-runtime bodies are shared.
+    /// Symbols retain their external identity and host-owned descriptions.
+    /// Returns `None` when admission or the backing allocation fails.
+    pub fn try_primitive(&self, p: Primitive) -> Option<Local<'s>> {
+        let value = match p {
+            Primitive::String(text) => Value::String(text.import(self.heap)?),
+            Primitive::BigInt(number) => Value::BigInt(number.import(self.heap)?),
+            value => value.into(),
+        };
+        Some(self.new_local(value))
+    }
+
+    /// Copy UTF-16 units into managed storage after checked byte admission.
+    /// Returns `None` when admission, allocation, or the string length fails.
+    pub fn try_string_units(&self, units: &[u16]) -> Option<Local<'s>> {
+        Some(self.new_local(Value::String(JsString::copy_units(self.heap, units)?)))
+    }
+
     /// Access a persistent root's value within this scope.
     pub fn local(&self, rooted: &Rooted) -> Result<Local<'s>, HandleError> {
         let value = rooted.value_in(self.heap)?;

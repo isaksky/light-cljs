@@ -469,7 +469,7 @@ enum Children {
     /// one. Its code's constants are primitives by construction
     /// (`ExecutableSpec::constants`), so they add no edges.
     Function {
-        captures: Box<[Value]>,
+        captures: std::sync::Arc<[Value]>,
         properties: Option<ObjectId>,
         home_object: Option<ObjectId>,
     },

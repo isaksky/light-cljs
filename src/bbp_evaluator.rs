@@ -23,8 +23,9 @@ use std::{
 fn error(e: impl std::fmt::Display) -> EvalError {
     EvalError(format!("big-boy-pants-js: {e}"))
 }
-fn string(s: &[u16]) -> Result<JsString, EvalError> {
-    JsString::from_code_units(s.to_vec()).ok_or_else(|| error("string limit exceeded"))
+fn string(scope: &Scope<'_>, units: &[u16]) -> Result<JsString, EvalError> {
+    let local = scope.try_string_units(units).ok_or_else(|| error("heap byte or string limit exceeded"))?;
+    scope.string(local).ok_or_else(|| error("expected imported string"))
 }
 
 pub type BridgeStats = crate::compile_stats::NativeBridgeCall;
@@ -79,11 +80,11 @@ impl Bridge {
                 numerator,
                 denominator,
             } => s.primitive(Primitive::Number(*numerator as f64 / *denominator as f64)),
-            D::Character(v) => s.primitive(Primitive::String(string(&[*v])?)),
-            D::String(v) => s.primitive(Primitive::String(string(v)?)),
+            D::Character(v) => s.primitive(Primitive::String(string(s, &[*v])?)),
+            D::String(v) => s.primitive(Primitive::String(string(s, v)?)),
             D::Symbol(n) | D::Keyword(n) => {
-                let ns = n.namespace().map(string).transpose()?;
-                let name = string(n.name())?;
+                let ns = n.namespace().map(|units| string(s, units)).transpose()?;
+                let name = string(s, n.name())?;
                 if matches!(d.kind(), D::Symbol(_)) {
                     s.new_symbol(ns, name)
                 } else {
@@ -467,7 +468,7 @@ impl BbpEvaluator {
     }
     fn evaluate(&self, source: &str) -> Result<ValueId, EvalError> {
         let id = self.id();
-        self.request(0, id, self.runtime.root(Primitive::string(source)))?;
+        self.request(0, id, self.runtime.try_root(Primitive::string(source)).ok_or_else(|| error("heap byte limit exceeded"))?)?;
         Ok(id)
     }
     fn import(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {

@@ -252,6 +252,7 @@ pub(crate) struct DetachedActivation {
     stack: Vec<Value>,
     handlers: Vec<Handler>,
     natives: Vec<NativeFrame>,
+    _reservation: crate::heap::budget::ByteReservation,
 }
 
 impl Trace for DetachedActivation {
@@ -393,8 +394,34 @@ fn bind_args(stack: &mut Vec<Value>, base: usize, code: &Code, argc: usize) {
 }
 
 impl VmState {
-    pub(crate) fn detach_activation(&mut self) -> Result<DetachedActivation, Fault> {
+    pub(crate) fn detach_activation(
+        &mut self,
+        heap: &crate::heap::Heap,
+    ) -> Result<DetachedActivation, Fault> {
         let index = self.frame_index();
+        let top = self.top();
+        let values = self
+            .stack
+            .len()
+            .saturating_sub(top.base)
+            .saturating_add(top.arguments.as_ref().map_or(0, Vec::capacity));
+        let handlers = self.handlers.iter().filter(|h| h.frame >= index).count();
+        let natives = self
+            .natives
+            .iter()
+            .filter(|n| n.depth() >= index + 1)
+            .count();
+        let bytes = values
+            .checked_mul(std::mem::size_of::<Value>())
+            .and_then(|n| handlers.checked_mul(512).and_then(|h| n.checked_add(h)))
+            .and_then(|n| {
+                natives
+                    .checked_mul(std::mem::size_of::<NativeFrame>() + 4096)
+                    .and_then(|h| n.checked_add(h))
+            })
+            .and_then(|n| n.checked_add(std::mem::size_of::<Frame>()))
+            .ok_or(Fault::HeapLimit)?;
+        let reservation = heap.reserve_bytes(bytes).ok_or(Fault::HeapLimit)?;
         let mut frame = if let Some(frame) = self.calls.pop() {
             frame
         } else {
@@ -448,6 +475,7 @@ impl VmState {
             stack,
             handlers,
             natives,
+            _reservation: reservation,
         })
     }
 
@@ -1433,6 +1461,27 @@ impl VmState {
     /// their initiating JS instruction's saved position, just like diagnostics.
     /// This reads immutable code metadata only: no getters, heap edges, or
     /// worker/Rust-stack state. The resulting string survives frame teardown.
+    pub(crate) fn error_stack_accounted(
+        &self,
+        heap: &crate::heap::Heap,
+        pc: usize,
+    ) -> Result<JsString, Fault> {
+        self.error_stack_input_accounted(heap, pc, None)
+    }
+
+    pub(crate) fn error_stack_input_accounted(
+        &self,
+        heap: &crate::heap::Heap,
+        pc: usize,
+        input: Option<(&'static str, usize, usize)>,
+    ) -> Result<JsString, Fault> {
+        // Include bounded rope traversal scratch as well as UTF-16 output.
+        let ticket = JsString::reserve(heap, ERROR_STACK_UNITS * 16, 1)?;
+        self.error_stack_with_input(pc, input)
+            .map(|text| text.with_reservation(ticket))
+    }
+
+    #[cfg(test)]
     pub(crate) fn error_stack(&self, pc: usize) -> Result<JsString, Fault> {
         self.error_stack_with_input(pc, None)
     }
@@ -1719,7 +1768,10 @@ mod tests {
             },
             VmLimits::DEFAULT,
         );
-        let saved = state.detach_activation().ok().unwrap();
+        let saved = state
+            .detach_activation(&crate::heap::Heap::default())
+            .ok()
+            .unwrap();
         // More distinct code than the cache can retain, including the
         // detached frame's former entry. Eviction must not invalidate it.
         for _ in 0..256 {

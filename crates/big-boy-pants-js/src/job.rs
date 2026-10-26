@@ -11,6 +11,7 @@ use crate::value::{Value, share};
 pub(crate) struct Job {
     pub(crate) callable: Value,
     pub(crate) args: Vec<Value>,
+    pub(crate) reservation: crate::heap::budget::ByteReservation,
 }
 
 impl Trace for Job {
@@ -28,10 +29,12 @@ struct Inbox {
     rejections: VecDeque<(ObjectId, Value)>,
     dropped_rejections: usize,
     rejections_reported: bool,
+    reservation: crate::heap::budget::ByteReservation,
 }
 
 #[derive(Default)]
 pub(crate) struct JobInbox {
+    budget: Arc<crate::heap::budget::ByteBudget>,
     inbox: Mutex<Inbox>,
     #[cfg(test)]
     pub(crate) boundaries: Arc<std::sync::atomic::AtomicUsize>,
@@ -65,6 +68,12 @@ fn run_hook(slot: &TestHook) {
 }
 
 impl JobInbox {
+    pub(crate) fn new(heap: &Heap) -> Self {
+        Self {
+            budget: heap.byte_budget(),
+            ..Self::default()
+        }
+    }
     /// Called under the registry object's access word, like registry cell
     /// mutation.
     /// Never acquire heap access while holding the inbox lock.
@@ -136,12 +145,42 @@ impl JobInbox {
             .callable
             .clone()
     }
-    pub(crate) fn push(&self, job: Job) -> Result<(), JobError> {
+    pub(crate) fn push(&self, mut job: Job) -> Result<(), JobError> {
         #[cfg(test)]
         run_hook(&self.before_push);
         let mut inbox = self.inbox.lock().unwrap();
         if inbox.closed {
             return Err(JobError::Closed);
+        }
+        if !job.reservation.is_charged() {
+            job.reservation = self
+                .budget
+                .reserve(
+                    job.args
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<Value>())
+                        .ok_or(JobError::HeapLimit)?,
+                )
+                .ok_or_else(|| {
+                    self.budget.note_denial();
+                    JobError::HeapLimit
+                })?;
+        }
+        if inbox.queue.len() == inbox.queue.capacity() {
+            let capacity = inbox.queue.capacity().saturating_mul(2).max(4);
+            let bytes = (capacity - inbox.queue.capacity())
+                .checked_mul(std::mem::size_of::<Job>())
+                .ok_or(JobError::HeapLimit)?;
+            let ticket = self.budget.reserve(bytes).ok_or_else(|| {
+                self.budget.note_denial();
+                JobError::HeapLimit
+            })?;
+            let additional = capacity - inbox.queue.len();
+            inbox
+                .queue
+                .try_reserve_exact(additional)
+                .map_err(|_| JobError::OutOfMemory)?;
+            inbox.reservation.merge(ticket);
         }
         inbox.queue.push_back(job);
         Ok(())
@@ -168,7 +207,8 @@ impl JobInbox {
         let mut inbox = self.inbox.lock().unwrap();
         inbox.closed = true;
         inbox.registries.clear();
-        inbox.queue.clear();
+        inbox.queue = VecDeque::new();
+        inbox.reservation = Default::default();
         if !inbox.rejections_reported {
             inbox.rejections.clear();
             inbox.dropped_rejections = 0;
@@ -198,6 +238,8 @@ impl Trace for JobInbox {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum JobError {
+    HeapLimit,
+    OutOfMemory,
     Closed,
     ForeignRuntime,
     NotShareable,
@@ -241,6 +283,13 @@ impl JobSender {
         }
         let heap = self.heap.upgrade().ok_or(JobError::Closed)?;
         let _access = heap.enter_mutator(Access::Op);
+        let reservation = heap
+            .reserve_bytes(
+                args.len()
+                    .checked_mul(std::mem::size_of::<Value>())
+                    .ok_or(JobError::HeapLimit)?,
+            )
+            .ok_or(JobError::HeapLimit)?;
         let args = args
             .iter()
             .map(|v| {
@@ -252,6 +301,7 @@ impl JobSender {
         self.inbox.upgrade().ok_or(JobError::Closed)?.push(Job {
             callable: self.callable.clone(),
             args,
+            reservation,
         })
     }
 }

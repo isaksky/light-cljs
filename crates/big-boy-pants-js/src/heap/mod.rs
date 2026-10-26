@@ -632,7 +632,8 @@ impl Heap {
             threshold
         };
         if self.policy.allocation_threshold.is_none()
-            || self.allocations_since_collection.load(Ordering::Relaxed) < threshold
+            || (self.allocations_since_collection.load(Ordering::Relaxed) < threshold
+                && !self.byte_budget.collection_due())
         {
             return false;
         }

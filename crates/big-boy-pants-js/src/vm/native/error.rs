@@ -307,7 +307,7 @@ impl crate::vm::frames::VmState {
             self.diag.task,
             error,
             suppressed,
-            self.error_stack(self.top().pc.saturating_sub(1))?,
+            self.error_stack_accounted(heap, self.top().pc.saturating_sub(1))?,
         )
     }
 }

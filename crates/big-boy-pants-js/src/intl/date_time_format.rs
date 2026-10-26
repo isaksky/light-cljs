@@ -804,7 +804,8 @@ pub(crate) fn get_format(heap: &Heap, task: TaskId, this: &Value) -> Result<Valu
             crate::vm::function::BoundFunction {
                 target: Value::Object(realm.intl_date_time_format_bound),
                 this: this.clone(),
-                args: Box::new([]),
+                args: std::sync::Arc::from([]),
+                _reservation: None,
                 owner: task,
                 metadata,
                 properties: None,

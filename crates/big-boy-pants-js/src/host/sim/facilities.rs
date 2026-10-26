@@ -97,6 +97,7 @@ impl TaskHost {
         Some(Job {
             callable: timer.callback,
             args: vec![],
+            reservation: Default::default(),
         })
     }
 }

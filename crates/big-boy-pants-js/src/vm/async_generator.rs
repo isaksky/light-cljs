@@ -305,7 +305,7 @@ pub(crate) fn suspend(
     if awaiting_return {
         super::native::suspend_generator_return(vm)?;
     } else {
-        let activation = vm.detach_activation()?;
+        let activation = vm.detach_activation(heap)?;
         heap.with_object_mut(id, |o| {
             if let HeapObject::Generator(g) = o {
                 g.state = State::Awaiting(activation);
