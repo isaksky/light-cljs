@@ -708,6 +708,10 @@ Forced final collections, with the compiler host/session still alive:
 The additional four namespaces retain 6,398,928 bytes (about 1.53 MiB each),
 including their 200 distinct macro functions. Both builds run their emitted
 application in Node and print `5200` and `11200`, respectively.
+Fresh native-only release CLI runs also complete at the default limit: the
+400-call inline chain peaks at 28,933,816 managed bytes and 75,988,992 bytes
+RSS; the helper-calling variant peaks at 43,442,228 managed bytes and
+94,699,520 bytes RSS and also prints `11200`.
 
 Root-source isolation before the fix, collecting after each removal, showed
 that the bridge memo and command outcomes overlapped heavily. Clearing only
@@ -741,6 +745,28 @@ CARGO_BUILD_JOBS=3 cargo test --locked --no-default-features --features bbp-macr
 collection around retained occurrences and raw metadata, checks exact Datum
 and source reuse, enforces conversion budgets on memo hits and verifies dead
 provenance is pruned.
+
+Validation on the same toolchain: all 66 native `bbp_macros` tests pass, as
+does the pool stress with `LIGHT_CLJS_STRESS_SEEDS=12` (one, two, four and
+eight slots). The engine's `--all-targets` suite passes 2,102 tests and its
+seven doctests pass. With `bbp-macros,quickjs`, all 66 macro integration
+tests (including QuickJS comparisons) and the memory regressions pass; the available compiler targets run
+854 tests, with 852 passes and two environment failures: the playground's
+wasm crate discovers the enclosing main-checkout workspace, and
+`dev_watch::a_failed_restart_waits_for_work` cannot execute `ps` in the
+sandbox (the same permission failure when run alone). The `compiler`
+integration target cannot build its eight missing pinned research includes;
+`research/` was left untouched. The default V8 suite is reserved for the
+orchestrator.
+
+Compiler and engine format checks pass. Strict engine Clippy retains the
+nine existing `deprecated`, `chunks_exact_to_as_chunks` and
+`byte_char_slices` diagnostics; allowing only those categories passes for
+all engine targets and for the native/QuickJS compiler library, binaries
+and `bbp_macros` target. Plain engine-free compiler library/binary Clippy
+passes strictly. All-target compiler lint remains blocked by the missing
+research includes with QuickJS, and by existing tests calling unavailable
+legacy evaluator methods in the engine-free configuration.
 
 ## Seeded 200k namespace build (2026-10-26)
 
