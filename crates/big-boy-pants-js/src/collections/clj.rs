@@ -360,7 +360,7 @@ pub(crate) fn count(heap: &Heap, v: &Value) -> Result<Value> {
             FormBody::List(items) | FormBody::Vector(items) => items.len(),
             FormBody::Map(map) | FormBody::Set(map) => map.len(),
             FormBody::Struct(s) if s.info.record => {
-                s.info.fields.len() + s.ext.as_ref().map_or(0, |e| e.len())
+                s.info.fields.len() + s.ext_map(heap).map_or(0, |e| e.len())
             }
             FormBody::Keyword(_)
             | FormBody::Symbol(_)

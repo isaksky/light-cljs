@@ -497,7 +497,7 @@ enum Children {
 }
 
 impl Children {
-    fn for_each(&self, mut f: impl FnMut(Step, &Value)) {
+    fn for_each(&self, heap: &Heap, mut f: impl FnMut(Step, &Value)) {
         match self {
             Children::Vector(vec) => {
                 let mut index = 0;
@@ -539,11 +539,19 @@ impl Children {
                             f(Step::Index(index), v);
                             index += 1;
                         });
-                        if let Some(ext) = &s.ext {
+                        if let Some(ext) = s.ext_map(heap) {
                             ext.for_each(|k, v| {
                                 f(Step::MapKey(k.clone()), k);
                                 f(Step::MapValue(k.clone()), v);
                             });
+                            // The retained map identity also retains its
+                            // metadata, which must be publishable too.
+                            if let Some(ext) = &s.ext
+                                && let Some(map) = crate::collections::form::form_object(heap, ext)
+                                && let Some(meta) = map.meta()
+                            {
+                                f(Step::Metadata, meta);
+                            }
                         }
                     }
                     // Read through `Children::Lazy`.
@@ -731,7 +739,7 @@ fn walk(
                 if let Children::Lazy { cell, realized, .. } = &children {
                     lazies.push((cell.clone(), *realized));
                 }
-                children.for_each(|step, child| {
+                children.for_each(heap, |step, child| {
                     if let Value::Object(child) = *child
                         && let Entry::Vacant(slot) = parents.entry(child)
                     {

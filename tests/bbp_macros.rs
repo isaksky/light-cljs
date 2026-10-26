@@ -2174,6 +2174,18 @@ fn native_positional_literal_matrix_matches_legacy() {
             r#"(defrecord R [x]) (defmacro probe [] (let [r (map->R '{\a 1 :x 0 "a" 2 :z 3})] (list 'quote [(count r) (get r "a") (:x r) (vec (seq r))]))) (probe)"#,
         ),
         (
+            "record-extension-identity",
+            r#"(defrecord R [x]) (defmacro probe [] (let [m '{\a 1 "a" 2 :z 3} r (R. 0 nil m) n (with-meta r {:tag true})] [(= r n) (= n r) (= (hash r) (hash n)) (= r (R. 0 nil m)) (= r (R. 0 nil (with-meta m {:tag true}))) (= m (with-meta m {:tag true})) (= r (assoc (assoc r :x 9) :x 0)) (= (map->R m) (map->R m))])) (probe)"#,
+        ),
+        (
+            "record-extension-updates",
+            r#"(defrecord R [x]) (defmacro probe [] (let [r (map->R '{\a 1 :x 0 "a" 2 :z 3}) a (assoc r "a" 9) d (dissoc r "a")] [(= r (with-meta r {:tag true})) (= r (assoc r "a" 1)) (= r a) (= r (assoc a "a" 1)) (= r (dissoc (assoc r :new 4) :new)) (= r (dissoc r :missing)) (= a (with-meta a {:tag true})) (= d (with-meta d {:tag true})) (count d) (get a "a") (get d :z)])) (probe)"#,
+        ),
+        (
+            "full-hash-collision-first-match",
+            r#"(defmacro probe [] (let [a '#{0 0.0} b '#{0 2147483647} h (apply hash-map [a :first b :second]) p (array-map a :second b :second) q (apply hash-map [a :second b :second]) match (array-map a :first b :second)] [(= (hash a) (hash b)) (= a b) (= b a) (count h) (get h a) (get h b) (= p h) (= h p) (= q h) (= h q) (= match h) (= h match)])) (probe)"#,
+        ),
+        (
             "lazy-key-equality",
             r#"(defmacro probe [] (let [k (lazy-seq (throw (js/Error. "hashed lazy key"))) m (assoc '{\a 0 "a" 0} k 7) n (with-meta m {:tag true})] [(= m n) (= n m)])) (probe)"#,
         ),

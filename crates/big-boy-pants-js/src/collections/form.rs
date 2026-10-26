@@ -120,6 +120,8 @@
 //! task returns unchanged is the same object Rust gave it, and a no-op
 //! update (`assoc` of an identical value, `dissoc` of an absent key,
 //! `with_meta` of the same metadata) returns its input object itself.
+//! Record extension updates copy their map even for unchanged entries, as
+//! the legacy runtime does; metadata copies and field updates share it.
 //! Map seq entries have vector equality and hashing but exact 0/1 call
 //! indices; their `assoc`, `conj` and `with_meta` produce ordinary vectors,
 //! including when the element or metadata is unchanged.
@@ -229,7 +231,8 @@
 //! extension map (`cljGet`, `cljContains`, `cljAssoc`, `cljDissoc` — of a
 //! field: a form map of the other entries with the record's metadata —,
 //! `cljConj`, `cljCount`, `cljSeq`); two records are equal when they have
-//! the same type identity, equal fields and equal extension entries; the
+//! the same type identity, equal fields and equal extension maps (including
+//! the map identity shortcut for shared positional extensions); the
 //! hash is the sum of each entry's key hash xor value hash, xor the
 //! `stringHash` of the type name, cached like every form hash in an
 //! atomic, idempotent slot. A deftype instance is equal only to itself and
@@ -432,8 +435,17 @@ pub(crate) struct StructBody {
     pub(crate) ty: Value,
     pub(crate) info: Arc<TypeInfo>,
     pub(crate) fields: PVector,
-    /// A record's further entries, structural keys as in a form map.
-    pub(crate) ext: Option<FormMap>,
+    /// The extension map itself: metadata copies and field updates retain
+    /// its identity, even when duplicate keys make distinct copies unequal.
+    pub(crate) ext: Option<Value>,
+}
+
+impl StructBody {
+    pub(crate) fn ext_map(&self, heap: &Heap) -> Option<FormMap> {
+        self.ext
+            .as_ref()
+            .map(|ext| map_body(heap, ext).expect("record extension is a form map"))
+    }
 }
 
 /// Structural map storage. Literal entries retain every source position,
@@ -599,10 +611,7 @@ impl FormObject {
                 if s.info.record {
                     s.fields.for_each(&mut f);
                     if let Some(ext) = &s.ext {
-                        ext.for_each(|k, v| {
-                            f(k);
-                            f(v);
-                        });
+                        f(ext);
                     }
                 }
             }
@@ -1046,19 +1055,19 @@ pub(crate) fn new_struct(
     let mut meta = None;
     let mut ext = None;
     if info.record {
-        let map = |i: usize| -> Result<Option<(Value, FormMap)>, CollectionError> {
+        let map = |i: usize| -> Result<Option<Value>, CollectionError> {
             let Some(v) = values.get(i) else {
                 return Ok(None);
             };
             let v = unwrap(heap, v.clone());
             match form_object(heap, &v).as_deref().map(FormObject::body) {
-                Some(FormBody::Map(m)) => Ok(Some((v, m.clone()))),
+                Some(FormBody::Map(_)) => Ok(Some(v)),
                 None if matches!(v, Value::Null | Value::Undefined) => Ok(None),
                 _ => Err(wrong(heap, "form map or nil", &v)),
             }
         };
-        meta = map(n)?.map(|(v, _)| v);
-        ext = map(n + 1)?.map(|(_, m)| m).filter(|m| m.len() > 0);
+        meta = map(n)?;
+        ext = map(n + 1)?.filter(|m| count(heap, m).expect("validated map") > 0);
     }
     let parts: Vec<Value> = std::iter::once(ty.clone())
         .chain(values.iter().take(n + 2).cloned())
@@ -1138,7 +1147,7 @@ fn field_keyword(heap: &Heap, name: &JsString) -> Result<Value, CollectionError>
 }
 
 /// A record's entries: its fields under their keywords, then its
-/// extension entries (in trie order).
+/// extension entries (in the extension map's traversal order).
 pub(crate) fn record_entries(
     heap: &Heap,
     s: &StructBody,
@@ -1147,7 +1156,7 @@ pub(crate) fn record_entries(
     for (name, value) in s.info.fields.iter().zip(s.fields.to_vec()) {
         entries.push((field_keyword(heap, name)?, value));
     }
-    if let Some(ext) = &s.ext {
+    if let Some(ext) = s.ext_map(heap) {
         entries.extend(ext.to_vec());
     }
     Ok(entries)
@@ -1158,7 +1167,7 @@ pub(crate) fn record_entries(
 pub(crate) fn record_get(heap: &Heap, s: &StructBody, key: &Value) -> Option<Value> {
     match field_index(heap, &s.info, key) {
         Some(i) => s.fields.get(i),
-        None => s.ext.as_ref().and_then(|ext| map_get(heap, ext, key)),
+        None => s.ext_map(heap).and_then(|ext| map_get(heap, &ext, key)),
     }
 }
 
@@ -1169,10 +1178,9 @@ fn record_like(
     f: &FormObject,
     s: &StructBody,
     fields: PVector,
-    ext: Option<FormMap>,
+    ext: Option<Value>,
     parts: &[Value],
 ) -> Result<Value, CollectionError> {
-    let ext = ext.filter(|e| e.len() > 0);
     let body = StructBody {
         ty: s.ty.clone(),
         info: s.info.clone(),
@@ -1180,6 +1188,17 @@ fn record_like(
         ext,
     };
     alloc(heap, f.updated(FormBody::Struct(body)), parts)
+}
+
+/// Legacy record extension updates copy even an unchanged map. Its identity
+/// matters when positional duplicate keys make distinct copies unequal.
+fn copy_map(heap: &Heap, map: &Value) -> Result<Value, CollectionError> {
+    let f = form_object(heap, map).ok_or_else(|| wrong(heap, "form map", map))?;
+    alloc(
+        heap,
+        f.updated(FormBody::Map(map_body(heap, map)?)),
+        std::slice::from_ref(map),
+    )
 }
 
 /// `assoc` on a record: a field by its keyword (a new record with that
@@ -1204,18 +1223,21 @@ pub(crate) fn record_assoc(
             record_like(heap, &f, &s, fields, s.ext.clone(), &parts)
         }
         None => {
-            let ext = s.ext.clone().unwrap_or_default();
-            match map_assoc(heap, &ext, key, value)? {
-                Some(ext) => record_like(heap, &f, &s, s.fields.clone(), Some(ext), &parts),
-                None => Ok(record.clone()),
+            let mut ext = match &s.ext {
+                Some(ext) => assoc(heap, ext, key, value)?,
+                None => new_map(heap, &[(key, value)])?,
+            };
+            if s.ext.as_ref().is_some_and(|old| old.same_object(&ext)) {
+                ext = copy_map(heap, &ext)?;
             }
+            record_like(heap, &f, &s, s.fields.clone(), Some(ext), &parts)
         }
     }
 }
 
 /// `dissoc` on a record: a field key gives a form map of the other entries
 /// with the record's metadata (no longer a record); an extension key a
-/// record without it; any other key `record` itself.
+/// record without it; other keys copy the extension map when present.
 pub(crate) fn record_dissoc(
     heap: &Heap,
     record: &Value,
@@ -1236,17 +1258,19 @@ pub(crate) fn record_dissoc(
     let Some(ext) = &s.ext else {
         return Ok(record.clone());
     };
-    match map_dissoc(heap, ext, key)? {
-        Some(ext) => record_like(
-            heap,
-            &f,
-            &s,
-            s.fields.clone(),
-            Some(ext),
-            std::slice::from_ref(record),
-        ),
-        None => Ok(record.clone()),
+    let mut updated = dissoc(heap, ext, key)?;
+    if ext.same_object(&updated) {
+        updated = copy_map(heap, &updated)?;
     }
+    let ext = (count(heap, &updated)? > 0).then_some(updated);
+    record_like(
+        heap,
+        &f,
+        &s,
+        s.fields.clone(),
+        ext,
+        std::slice::from_ref(record),
+    )
 }
 
 /// `map->R`: a record of type `ty` whose fields are `map`'s values for the
@@ -1258,20 +1282,10 @@ pub(crate) fn record_from_map(
 ) -> Result<Value, CollectionError> {
     let info = type_info(heap, ty)?;
     let source = match resolve(heap, map.clone()) {
-        (_, None) if matches!(unwrap(heap, map.clone()), Value::Null | Value::Undefined) => {
-            FormMap::default()
-        }
-        (_, Some((_, f))) => match f.body() {
-            FormBody::Map(m) => m.clone(),
-            FormBody::Struct(s) if s.info.record => {
-                let mut source = FormMap::default();
-                for (k, v) in record_entries(heap, s)? {
-                    if let Some(updated) = map_assoc(heap, &source, k, v)? {
-                        source = updated;
-                    }
-                }
-                source
-            }
+        (Value::Null | Value::Undefined, None) => new_map(heap, &[])?,
+        (source, Some((_, f))) => match f.body() {
+            FormBody::Map(_) => source,
+            FormBody::Struct(s) if s.info.record => new_map(heap, &record_entries(heap, s)?)?,
             _ => return Err(wrong(heap, "form map or record", map)),
         },
         _ => return Err(wrong(heap, "form map or record", map)),
@@ -1280,16 +1294,19 @@ pub(crate) fn record_from_map(
     let mut ext = source.clone();
     for name in &info.fields {
         let key = field_keyword(heap, name)?;
-        fields.push(map_get(heap, &source, &key).unwrap_or(Value::Null));
-        if let Some(updated) = map_dissoc(heap, &ext, &key)? {
-            ext = updated;
-        }
+        fields.push(get(heap, &source, &key)?.unwrap_or(Value::Null));
+        let updated = dissoc(heap, &ext, &key)?;
+        ext = if ext.same_object(&updated) {
+            copy_map(heap, &updated)?
+        } else {
+            updated
+        };
     }
     let body = StructBody {
         ty: ty.clone(),
         info,
         fields: PVector::try_from_values(heap, &fields)?,
-        ext: (ext.len() > 0).then_some(ext),
+        ext: (count(heap, &ext)? > 0).then_some(ext),
     };
     alloc(
         heap,
@@ -1961,15 +1978,10 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                 if !(p.info.record && q.info.record && p.ty.same_object(&q.ty)) {
                     return Outcome::Decided(false);
                 }
-                let empty = FormMap::default();
-                let (pe, qe) = (
-                    p.ext.as_ref().unwrap_or(&empty),
-                    q.ext.as_ref().unwrap_or(&empty),
-                );
-                if pe.len() != qe.len() {
-                    return Outcome::Decided(false);
-                }
-                let mut steps = map_steps(pe, qe, true);
+                let mut steps = vec![Step::Pair(
+                    p.ext.clone().unwrap_or(Value::Null),
+                    q.ext.clone().unwrap_or(Value::Null),
+                )];
                 steps.extend(
                     p.fields
                         .to_vec()
@@ -2260,7 +2272,7 @@ fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
                 .wrapping_add(0x9e37_79b9_u32 as i32);
                 sum = sum.wrapping_add(key ^ child_hash(heap, &value));
             }
-            if let Some(ext) = &s.ext {
+            if let Some(ext) = s.ext_map(heap) {
                 ext.for_each(|k, v| {
                     sum = sum.wrapping_add(child_hash(heap, k) ^ child_hash(heap, v))
                 });

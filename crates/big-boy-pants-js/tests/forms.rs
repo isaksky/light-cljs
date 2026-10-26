@@ -277,11 +277,108 @@ fn map_to_record_preserves_positional_extensions() {
         const duplicate = __rt.recordFromMap(R, duplicateField);
         if (__rt.cljGet(duplicate, x, null) !== 4 || __rt.cljCount(duplicate) !== 3 ||
             !__rt.cljContains(duplicate, null)) throw 'first field and dissoc holes';
+        const meta = __rt.formMap('tag', true), copy = __rt.formWithMeta(r, meta);
+        if (!__rt.formEquals(r, copy) || !__rt.formEquals(copy, r) ||
+            __rt.formHash(r) !== __rt.formHash(copy)) throw 'record metadata identity';
+        const ext = __rt.formLiteralMap(__rt.formVector('a', 1, 'a', 2));
+        const direct = __rt.structNew(R, 0, null, ext);
+        if (!__rt.formEquals(direct, __rt.structNew(R, 0, null, ext)) ||
+            __rt.formEquals(direct, __rt.structNew(R, 0, null, __rt.formWithMeta(ext, meta)))) throw 'constructor extension identity';
+        if (!__rt.formEquals(r, __rt.cljAssoc(__rt.cljAssoc(r, x, 9), x, 0)) ||
+            __rt.formEquals(r, __rt.cljAssoc(r, 'a', 1)) ||
+            __rt.formEquals(r, __rt.cljDissoc(r, 'missing'))) throw 'extension update copies';
+        const updated = __rt.cljAssoc(r, 'a', 9), removed = __rt.cljDissoc(r, 'a');
+        if (__rt.formEquals(r, updated) || __rt.formEquals(r, __rt.cljAssoc(updated, 'a', 1)) ||
+            __rt.formEquals(r, __rt.cljDissoc(__rt.cljAssoc(r, 'new', 4), 'new')) ||
+            !__rt.formEquals(updated, __rt.formWithMeta(updated, meta)) ||
+            !__rt.formEquals(removed, __rt.formWithMeta(removed, meta))) throw 'updated extension identity';
         return true;
     }"#,
         &[],
     );
     assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
+fn positional_equality_stops_at_the_first_full_hash_collision_match() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function check() {
+        const a = __rt.formLiteralSet(__rt.formVector(0, 0));
+        const b = __rt.formLiteralSet(__rt.formVector(0, 2147483647));
+        if (__rt.formHash(a) !== __rt.formHash(b) || !__rt.formEquals(a, b) || __rt.formEquals(b, a)) throw 'fixture';
+        const h = __rt.formMap(a, 'first', b, 'second');
+        const p = __rt.formLiteralMap(__rt.formVector(a, 'second', b, 'second'));
+        const q = __rt.formMap(a, 'second', b, 'second');
+        const match = __rt.formLiteralMap(__rt.formVector(a, 'first', b, 'second'));
+        if (__rt.formCount(h) !== 2 || __rt.formGet(h, a, null) !== 'first' ||
+            __rt.formGet(h, b, null) !== 'second') throw 'collision entries';
+        return !__rt.formEquals(p, h) && !__rt.formEquals(h, p) &&
+            !__rt.formEquals(q, h) && !__rt.formEquals(h, q) &&
+            __rt.formEquals(match, h) && __rt.formEquals(h, match);
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
+fn record_extensions_publish_and_trace_map_identity_and_metadata() {
+    let rt = Runtime::new();
+    let made = call(
+        &rt,
+        r#"function make() {
+        const R = __rt.structType('example/R', __rt.formVector('x'), true);
+        const meta = __rt.formMap('tag', __rt.formVector('kept'));
+        const ext = __rt.formWithMeta(__rt.formLiteralMap(__rt.formVector('a', 1, 'a', 2)), meta);
+        const r = __rt.structNew(R, 0, null, ext);
+        return __rt.formVector(r, __rt.formWithMeta(r, meta), ext, meta);
+    }"#,
+        &[],
+    );
+    let (records, weak) = rt.scope(|s| {
+        let v = s.local(&made).unwrap();
+        (
+            [0, 1].map(|i| s.persist(s.form_nth(v, i).unwrap())),
+            [2, 3].map(|i| s.downgrade(s.form_nth(v, i).unwrap())),
+        )
+    });
+    for r in &records {
+        rt.publish(r).unwrap();
+    }
+    drop(made);
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| w.is_live()));
+    let result = call(
+        &rt,
+        r#"function read(r, copy) {
+        return __rt.formEquals(r, copy) && __rt.formEquals(copy, r) &&
+            __rt.formHash(r) === __rt.formHash(copy) && __rt.cljGet(r, 'a', null) === 1;
+    }"#,
+        &[&records[0], &records[1]],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+    drop(result);
+    drop(records);
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| !w.is_live()));
+
+    // Metadata on the retained extension map is also part of the record's
+    // reachable graph, even though record equality and hashing ignore it.
+    let bad = call(
+        &rt,
+        r#"function make() {
+        const R = __rt.structType('example/R', __rt.formVector('x'), true);
+        const ext = __rt.formWithMeta(__rt.formLiteralMap(__rt.formVector('a', 1, 'a', 2)), __rt.formMap('hidden', {}));
+        return __rt.structNew(R, 0, null, ext);
+    }"#,
+        &[],
+    );
+    assert!(matches!(
+        rt.publish(&bad),
+        Err(PublishError::NotShareable { .. })
+    ));
 }
 
 #[test]
