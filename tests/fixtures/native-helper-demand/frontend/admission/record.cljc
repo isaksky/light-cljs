@@ -66,4 +66,3 @@
                 (not-empty extmap#)
                 nil)))
        ~rsym)))
-
