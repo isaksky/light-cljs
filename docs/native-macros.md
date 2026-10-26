@@ -107,36 +107,69 @@ jobs 1/2/4, including seeded scheduling, a held earlier caller, nested helper
 compilation, nested initializers, metadata, exceptions and task reuse. Engine
 stack frames and the native error prefix are compared separately.
 
-On macOS arm64, Homebrew Rust/Cargo 1.99.1 and Node 26.12.1, the checkpoint's
-native-only `--test bbp_macros` passes 74 tests. With `bbp-macros,quickjs`, 75
-pass and the single printing differential test fails the ordering rows above.
-The native evaluator module passes 36 tests. The engine suite passes 2,103
-tests and seven doctests at `b355b8e2`; its engine sources are unchanged at
-`ddd609b9`, so those results are reused. QuickJS-only library and
-integration runs pass 819 tests, with two environment failures: the nested
-playground crate discovers the main checkout's workspace, and a watch CPU-time
-test cannot spawn sandbox-denied `ps`. The compiler integration binary cannot
-build without eight pinned `research/clojurescript` include files; `research/`
-was left untouched. Format checks pass. Strict engine Clippy retains its eight
-library/nine all-target diagnostics; allowing only `deprecated`,
-`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` passes engine
-all-target checks and compiler library/binary/native-macro checks. V8 validation
-remains with the orchestrator because its machine cache is inaccessible here.
+The next `app.main` run exposed `core.partitionAll` in the logging pipeline.
+Native `partition-all` now supports its lazy two/three-argument collection
+overloads and one-argument buffered transducer, including a final partial group,
+repeated use and reduced termination. One-argument `remove` also supplies the
+transducer that pipeline uses. Both inline factories lower to shareable
+closures; core-as-value adapters have equivalent behavior. The core-service
+table compares their results, errors and lazy effects against QuickJS. A real
+source fixture publishes the partition/removal composition and its downstream
+helper, then suspends and resumes buffered reductions at jobs 1/2/4.
 
-Using the Penpot reproduction above with five absolute source roots, jobs 1,
-no cache and the documented budgets, `app.render` at this checkpoint passes
-`core.prStr` and reaches this distinct next engine boundary, filed as
-light-cljs-514:
+Verification on macOS arm64, Homebrew Rust/Cargo 1.99.1 and Node 26.12.1:
+`cargo test --locked --no-default-features --features bbp-macros --test
+bbp_macros` passes all 75 tests, and the native `bbp_evaluator::` library
+module passes all 36. With `bbp-macros,quickjs`, the complete macro integration
+binary passes 77 tests and the library passes 332 (one ignored). The final
+source is `848be441`; subsequent changes only document these results.
+The engine's `--all-targets` run passes 2,113 tests and `--doc` passes seven;
+its code is unchanged after `1d6c19c8`, so those results cover the final tree.
+The small-set change preserves the embedding API's existing rejection of
+unrealized structural keys, checked by the unchanged lazy-sequence regression.
+
+The QuickJS-only library/binary and available integration targets run with
+`cargo nextest run --locked --no-default-features --features quickjs`, eight
+test workers and three Cargo build jobs: 822 pass, two fail and 52 remain
+normally ignored. The failures retain the established environment signatures:
+`cli::playground_crate_checks_for_wasm32` discovers the main checkout's
+workspace, and `dev_watch::a_failed_restart_waits_for_work` cannot spawn `ps`
+under this sandbox. The compiler integration target cannot build because eight
+pinned `research/clojurescript` includes are absent; `research/` was left
+untouched. The wider native-only library run has the same 27 unsupported
+legacy bootstrap/host-service failures reproduced on untouched `26512b2f`
+(257 passing here, 256 there).
+
+Direct JavaScript runtime checks and both formatter checks pass. QuickJS-only
+and engine-free library/binary Clippy pass strictly. Strict engine Clippy
+retains eight library/nine all-target diagnostics. Allowing only `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` passes engine
+all-target and native/native-plus-QuickJS library/binary/macro-test checks.
+Full compiler all-target lint remains subject to the missing includes (and
+QuickJS-specific tests in the native-only configuration). V8 validation is
+reserved for the orchestrator because its machine cache is inaccessible here.
+
+At `848be441`, on macOS arm64, Homebrew Rust/Cargo 1.99.1, using the Penpot
+reproduction below with five absolute source roots, jobs 1, no cache and the
+documented budgets, both entries pass the original printing/namespace errors
+and the additional logging transducer gap. Both exit 1 at the engine Proxy
+boundary already filed as light-cljs-514. The exact next errors are:
+
+`--entry app.render`:
 
 ```text
 light-cljs: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/geom/matrix.cljc:251:4: macro expansion: while expanding app.common.data.macros/assert!: /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/geom/matrix.cljc:251:4: macro app.common.data.macros/assert!: big-boy-pants-js: TypeError: /Users/admin/src/light-cljs/research/penpot-light/vendor/cognitect/transit.cljs:84:1: extension: unsupported Proxy trap: has; definition /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/data/macros.cljc:105:1 (bytes 6545..6573)
 ```
 
-An earlier, uncommitted implementation build completed `app.main` with the
-same command: 922 namespaces, 93,997 macro calls and 1,109 seconds wall time.
-That run predates the namespace snapshot refinements; a final-tree `app.main`
-rerun remains required after the ordering integration. The pellet is not closed
-by this checkpoint.
+`--entry app.main`:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/config.cljs:236:3: macro expansion: while expanding app.common.data.macros/assert!: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/config.cljs:236:3: macro app.common.data.macros/assert!: big-boy-pants-js: TypeError: /Users/admin/src/light-cljs/research/penpot-light/vendor/cognitect/transit.cljs:84:1: extension: unsupported Proxy trap: has; definition /Users/admin/src/light-cljs/research/penpot-light/common/src/app/common/data/macros.cljc:105:1 (bytes 8211..8260)
+```
+
+The final `app.main` failure supersedes the earlier uncommitted-build success;
+neither entry completes on this tree. No default backend, legacy runtime or
+read-only research file was changed.
 
 ### Bootstrap macro audit (light-cljs-509, 2026-10-26)
 
@@ -404,8 +437,9 @@ sequences").
 The backend selects a compile-time emission mode (part of its cache identity)
 in which macro units do not use the JavaScript collection implementations.
 Vector, list, map and set literals, quoted keywords and symbols, and empty
-collections are the engine's `__rt.formVector(…)`, `formList`, `formMap`,
-`formSet`, `formKeyword` and `formSymbol` constructors. Calls of `count`,
+collections are the engine's `__rt.formVector(…)`, `formList`, `formArrayMap`,
+`formLiteralMap`, `formLiteralSet`, `formMap`, `formSet`, `formKeyword` and
+`formSymbol` constructors. Calls of `count`,
 `seq`, `sequence`, `first`, `second`, `rest`, `next`, `cons`, `concat`, `nth`,
 `get` (and keyword invocation), `contains?`, `assoc`, `dissoc`, `conj` and
 `disj` with one key or value, `=` of two values, `hash`, `meta`, `with-meta`,
@@ -450,7 +484,8 @@ With no arguments, `(partial)` preserves the legacy deferred callable with an
 undefined target and three undefined prefix arguments.
 
 One-argument `map`, `filter`, `mapcat` and `partition-by` construct native
-transducers (light-cljs-507), and their collection overloads remain lazy.
+transducers (light-cljs-507), as do `partition-all` and `remove`
+(light-cljs-513), and their collection overloads remain lazy.
 `comp` combines them, `into` supports zero through three arguments, and
 `transduce` and `completing` supply initialization and completion. Three-argument
 `into` supplies `conj` to noneditable targets (including map entry, list and
