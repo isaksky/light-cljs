@@ -2051,6 +2051,21 @@ thread_local! {
     static FAIL_MESSAGE_RESERVATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// The thrown value of a heap-limit failure. The two limit messages share
+/// one process-wide body each, so handlers retaining any number of caught
+/// denials retain no unaccounted string storage beyond those two.
+fn heap_limit_value(message: &str) -> JsString {
+    static BYTES: std::sync::LazyLock<JsString> =
+        std::sync::LazyLock::new(|| JsString::from("heap byte limit exceeded"));
+    static OBJECTS: std::sync::LazyLock<JsString> =
+        std::sync::LazyLock::new(|| JsString::from("heap object limit exceeded"));
+    match message {
+        "heap byte limit exceeded" => BYTES.clone(),
+        "heap object limit exceeded" => OBJECTS.clone(),
+        other => JsString::from(other),
+    }
+}
+
 // Production uses MAX_STRING_LEN; a smaller limit tests error-message overflow
 // through the same raise path without constructing gigabyte property names.
 fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
@@ -2069,7 +2084,7 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
         return raise(
             state,
             Exception {
-                value: Value::String(JsString::from(error.message.as_str())),
+                value: Value::String(heap_limit_value(&error.message)),
                 error: Box::new(error),
             },
         );
@@ -3821,6 +3836,17 @@ mod tests {
     use crate::value::Primitive;
     use crate::vm::frames::{DiagnosticContext, VmLimits};
     use crate::vm::{Assembler, Executable};
+
+    #[test]
+    fn retained_heap_limit_exceptions_share_bounded_storage() {
+        for message in ["heap byte limit exceeded", "heap object limit exceeded"] {
+            let first = heap_limit_value(message);
+            assert_eq!(first.to_string_lossy(), message);
+            assert!(first.same_body(&heap_limit_value(message)), "{message}");
+        }
+        let other = heap_limit_value("another resource message");
+        assert_eq!(other.to_string_lossy(), "another resource message");
+    }
 
     #[test]
     fn string_overflow_fault_is_catchable() {
