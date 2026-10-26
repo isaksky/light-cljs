@@ -426,6 +426,14 @@ callbacks. The `apply` continuation reads the trap once, builds a fresh ordinary
 argument array in budgeted steps and calls the trap with its handler as `this`.
 Absent traps forward the original receiver and arguments. These operations
 follow [ECMA-262 10.5.8 and 10.5.12](https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html#sec-proxy-object-internal-methods-and-internal-slots-get-p-receiver).
+Transparent forwarding also retains conversion lookup mode, including the
+supported fallback past unavailable Function.prototype conversion methods.
+JSON array classification follows Proxy targets, then reads `length` on the
+original receiver and converts it with resumable ToLength. The Node-checked
+`tests/fixtures/js/proxy_builtin_reads.js` table verifies read order, virtual
+lengths and failures across JSON, array built-ins, spread, Object.assign and
+string conversion. `tests/proxy_get.rs` repeats it with 113 dependency waits,
+collection and worker migration.
 Other present traps retain their explicit unsupported errors; direct
 `Object.isExtensible`/`Reflect.isExtensible` traps remain outside the supported
 surface.
