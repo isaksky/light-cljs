@@ -89,8 +89,9 @@ struct State {
     cursor: usize,
     position_of: HashMap<usize, Position>,
     finished: HashSet<usize>,
-    /// The lowest position of a failed unit: lanes after it no longer
-    /// order anything, since the build reports an earlier error.
+    /// The lowest position of a failed unit: once every unit before it has
+    /// finished, lanes after it no longer order anything, since the build
+    /// reports that unit's error or an earlier one.
     failed: Option<Position>,
     abandoned: bool,
     tops: HashMap<u64, Top>,
@@ -139,10 +140,19 @@ impl State {
         let Some(position) = position else {
             return true;
         };
-        if self.abandoned || self.failed.is_some_and(|failed| position > failed) {
+        if self.abandoned {
             return true;
         }
-        self.frontier() >= position
+        let frontier = self.frontier();
+        // Units before the failure still run in order: one of them may
+        // fail first, as with one slot.
+        if self
+            .failed
+            .is_some_and(|failed| position > failed && frontier >= failed)
+        {
+            return true;
+        }
+        frontier >= position
     }
 }
 
@@ -781,6 +791,24 @@ mod tests {
         drop(pass);
         let _unit = lanes.enter_unit(1);
         assert_eq!(lanes.check(synced(&lanes, 4), 0), 0);
+    }
+
+    #[test]
+    fn later_failure_does_not_release_effects_before_unfinished_earlier_units() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        lanes.schedule([0, 1, 2], false);
+        let _unit = lanes.enter_unit(2);
+        let task = synced(&lanes, 5);
+        let cell = lanes.check(task, 0);
+        let (opened, wait) = mpsc::channel();
+        lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
+        // Unit 1 fails while unit 0 still runs: unit 0 may fail first.
+        lanes.finish(1, true);
+        assert!(wait.try_recv().is_err(), "unit 0 is still running");
+        lanes.finish(0, false);
+        wait.try_recv()
+            .expect("every unit before the failure finished");
     }
 
     #[test]

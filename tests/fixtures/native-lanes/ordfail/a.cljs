@@ -1,0 +1,5 @@
+(ns ordfail.a (:require [ordfail.macros :refer [check-zero boom bump]]))
+(def x (check-zero))
+(def y (boom))
+(def z (bump))
+(def w (bump))

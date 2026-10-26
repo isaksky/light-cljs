@@ -3139,8 +3139,10 @@ state and determinism"; this is what was delivered.
   in macro code are engine atoms (`__rt.atomNew`, `atomLoad`, `atomCas`,
   `cljIsAtom`; big-boy-pants-js `docs/grammar.md`). An atom is shareable
   without being immutable, so a Var whose initializer makes one publishes
-  it: one atom per Var, shared by every task. Updates are identity
-  compare-and-set loops (`src/bbp_runtime.js`). An atom holds shareable
+  it: one atom per Var, shared by every task. As in cljs.core, a swap's
+  function runs once and its result is stored whatever the atom then
+  holds (an identity compare-and-set that repeats only when another task
+  wrote in between, never running user code again; `src/bbp_runtime.js`). An atom holds shareable
   values only: making one with, or setting one to, a mutable JavaScript
   object fails the macro with the engine's `NotShareable` error, which no
   handler catches (engine atom errors are not JavaScript exceptions). Atom
@@ -3183,9 +3185,10 @@ state and determinism"; this is what was delivered.
   worker's own batch). After 30 ms a waiting lane has a thread of its own
   analyze that unit, as a demand claims a unit; the pool's job then reuses
   the analysis (`native.lanes.rescued`).
-- **Failures.** After a unit fails, lanes after its position stop ordering:
-  the build reports an earlier error. A cancelled build opens
-  every lane.
+- **Failures.** Once every unit before a failed unit has finished, lanes
+  after it stop ordering: the build reports that error or an earlier one.
+  Units before it still run in order, since one of them may fail first.
+  A cancelled build opens every lane.
 - **`--cache-blocker`.** It keeps its cache meaning and its affinity. On
   this backend a blocker's consumer's top-level pass and kept units also
   wait for their lane before they start, so all their effects, not only
@@ -3212,7 +3215,9 @@ state and determinism"; this is what was delivered.
   `--cache-blocker counter.macros`, sibling namespaces taking values,
   source-order macro generations appending to one log, `defonce` of an
   atom, a definition and a declaration, a cached failed initializer, a
-  failure at the fourth unit in source order, and a helper initializer
+  failure at the fourth unit in source order, a failure that later units
+  must not overtake, every atom operation with the legacy runtimes'
+  values (a swap whose function resets the same atom included), and a helper initializer
   touching the shared atom that an earlier unit demands, across
   namespaces and within one. The `macros.rs` fixtures themselves still
   need native support outside this work (`zero?`, `false?`, `exists?`,

@@ -1653,6 +1653,20 @@ const LANE_FIXTURES: &[(&str, bool, Result<&str, &str>)] = &[
     // The same within one namespace: a later unit may take the helper
     // first.
     ("inherit.main", false, Ok("[1 101 101 102 103]\n")),
+    // Every atom operation, with the legacy runtimes' values (checked
+    // against the V8 build at one slot), and a swap whose function resets
+    // the same atom.
+    (
+        "ops.main",
+        false,
+        Ok(
+            "[[1 2 true false 4 true 5 7] [1 1 [20 6]] [7 8 true false 10 true 11 13] \
+            [13 14 true false 16 true 17 19]]\n",
+        ),
+    ),
+    // A unit fails without touching an atom; the units after it must not
+    // touch the counter before the earlier unit has read it.
+    ("ordfail.main", false, Err("ordfail/a.cljs:3:8")),
 ];
 
 /// Compile-time atoms keep their `--jobs 1` order at one, two, four and

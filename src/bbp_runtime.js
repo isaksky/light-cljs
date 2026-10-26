@@ -346,25 +346,30 @@ const native = (() => {
     if (owner !== 0) atomOwners.set(a, owner);
     return a;
   };
-  // Install `f(current)` by identity compare-and-set; lanes leave one
-  // activity at a time past its lane, so the loop repeats only if another
-  // task wrote between the read and the set.
-  const update = (a, f) => {
+  // Store `v` whatever the atom holds, as the legacy runtimes' reset, and
+  // give the state it replaced: an identity compare-and-set that repeats
+  // only if another task wrote between the read and the set, never running
+  // user code again. A swap's function runs once, before the store, so one
+  // that changes the same atom behaves as in cljs.core.
+  const store = (a, v) => {
     for (;;) {
-      const current = __rt.atomLoad(a), next = f(current);
-      if (Object.is(__rt.atomCas(a, current, next), current)) return [current, next];
+      const current = __rt.atomLoad(a);
+      if (Object.is(__rt.atomCas(a, current, v), current)) return current;
     }
   };
   const deref = a => { lane(a); return __rt.atomLoad(a); };
-  const reset = (a, v) => { lane(a); update(a, () => v); return v; };
-  const swapPair = (a, f, args) => { lane(a); return update(a, x => invoke(f, x, ...args)); };
+  const reset = (a, v) => { lane(a); store(a, v); return v; };
+  const swapPair = (a, f, args) => {
+    lane(a);
+    const next = invoke(f, __rt.atomLoad(a), ...args);
+    return [store(a, next), next];
+  };
+  // By `=`, as both pinned cljs.core runtimes compare.
   const compareAndSet = (a, o, n) => {
     lane(a);
-    for (;;) {
-      const current = __rt.atomLoad(a);
-      if (!__rt.formEquals(current, o)) return false;
-      if (Object.is(__rt.atomCas(a, current, n), current)) return true;
-    }
+    if (!__rt.formEquals(__rt.atomLoad(a), o)) return false;
+    store(a, n);
+    return true;
   };
   const core = {
     assertions:true,
@@ -407,7 +412,7 @@ const native = (() => {
     atom, deref, reset, compareAndSet,
     swap:(a,f,...args)=>swapPair(a,f,args)[1],
     swapVals:(a,f,...args)=>{const [o,n]=swapPair(a,f,args);return __rt.formVector(o,n);},
-    resetVals:(a,v)=>{lane(a);return __rt.formVector(update(a,()=>v)[0],v);},
+    resetVals:(a,v)=>{lane(a);return __rt.formVector(store(a,v),v);},
     registerReaderNamespace:()=>null, addReaderDefinitions:()=>null, setReaderNamespace:()=>null,
     PersistentVector:{EMPTY:__rt.formVector()}, PersistentArrayMap:{EMPTY:__rt.formMap()}, List:{EMPTY:__rt.formList()},
     PersistentHashSet:{EMPTY:__rt.formSet()},
