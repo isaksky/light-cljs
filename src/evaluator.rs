@@ -1453,6 +1453,11 @@ pub trait MacroEvaluator {
         }
         Ok(())
     }
+    /// Whether this engine uses JavaScript reader namespace tables. Native
+    /// form engines receive reader context in the macro environment instead.
+    fn needs_reader_registration(&self) -> bool {
+        true
+    }
     /// Execute all namespace registrations in order. Engines may cache the
     /// compiled chunks, but must execute every registration on every call.
     fn evaluate_registration(

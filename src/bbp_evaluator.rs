@@ -1763,6 +1763,9 @@ impl MacroEvaluator for BbpEvaluator {
     fn native_bridge_stats(&self) -> Option<BridgeStats> {
         Some(self.bridge_stats())
     }
+    fn needs_reader_registration(&self) -> bool {
+        false
+    }
     fn catalog_cursor(&self) -> Option<usize> {
         self.context.borrow().as_ref()?.catalog.get()
     }

@@ -865,6 +865,36 @@ fn equal_scalar_occurrences_keep_their_distinct_source_identity() {
 mod temp_dir;
 
 #[test]
+fn many_namespace_reader_registrations_do_not_limit_native_macro_builds() {
+    let root = temp_dir::TempDir::new("native-many-reader-namespaces");
+    std::fs::create_dir(root.join("many")).unwrap();
+    let mut app = String::from("(ns app (:require");
+    for i in 0..256 {
+        let namespace = format!("many.namespace_{i}");
+        app.push_str(&format!(" [{namespace}]"));
+        std::fs::write(
+            root.join(format!("many/namespace_{i}.cljs")),
+            format!("(ns {namespace}) (def value {i})"),
+        )
+        .unwrap();
+    }
+    app.push_str(")) (defmacro same [x] x) (js/console.log (same 42))");
+    std::fs::write(root.join("app.cljs"), app).unwrap();
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let program = light_cljs::compiler::analyze_namespace_entry(
+        "app",
+        &[root.path().to_path_buf()],
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(program_output(&emit_js(&program)), "42\n");
+    assert_eq!(host.native_macro_calls().len(), 1);
+}
+
+#[test]
 fn reduced_project_namespaces_expand_variadic_macros() {
     use light_cljs::analyzer::ExprKind;
     let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

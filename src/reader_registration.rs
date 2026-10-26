@@ -1,7 +1,7 @@
 //! What a compile-time engine has of the program's namespaces.
 //!
 //! A macro declaration and every compile-time unit an engine evaluates first
-//! register the namespaces of their program with the engine's runtime: each
+//! register the namespaces of their program with a JavaScript reader runtime: each
 //! one's reader context and definition names (`registerReaderNamespace`).
 //! Registering every namespace each time made a declaration cost the
 //! program's size, so that a project's macros cost its macros times its
@@ -21,6 +21,10 @@
 //! and is no context to add definitions to. Such a registration names each
 //! namespace it registers fully, as every registration did before, and the
 //! next registration names those namespaces fully again.
+//!
+//! Native form engines use no JavaScript reader tables. They skip registration
+//! before planning or emitting source, so these unused tables cannot grow past
+//! the engine's dynamic compilation limit in large projects.
 
 use crate::analyzer::{GlobalBinding, GlobalId, Program, RuntimeReaderNamespace};
 use crate::arena::Arena;
@@ -340,6 +344,9 @@ pub(crate) fn register(
     engine: &dyn MacroEvaluator,
     tables: &ReaderTables,
 ) -> Result<(), EvalError> {
+    if !engine.needs_reader_registration() {
+        return Ok(());
+    }
     let Some(registered) = engine.reader_namespaces() else {
         let registration = emit_every_namespace(tables);
         return engine.evaluate_registration(&registration.source, &registration.chunks);
@@ -369,6 +376,29 @@ pub(crate) fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_reader_tables_larger_than_the_eval_limit_need_no_evaluation() {
+        let mut tables = ReaderTables::default();
+        for i in 0..256 {
+            let namespace = format!("many.namespaces.namespace_{i}");
+            tables.globals.push(global(&namespace, "value"));
+            tables
+                .reader_contexts
+                .insert(namespace.clone(), context(&[]));
+            tables.namespaces.push(namespace);
+        }
+        let registration = emit_every_namespace(&tables);
+        assert!(registration.source.encode_utf16().count() > 16_384);
+        let runtime = crate::bbp_evaluator::BbpRuntime::new(&Default::default()).unwrap();
+        let engine = runtime.evaluator().unwrap();
+        let before = runtime.helper_counts();
+        register(&engine, &tables).unwrap();
+        let after = runtime.helper_counts();
+        assert_eq!(after.units_evaluated, before.units_evaluated);
+        assert_eq!(after.units_shared, before.units_shared);
+    }
 
     fn global(namespace: &str, name: &str) -> GlobalBinding {
         GlobalBinding {

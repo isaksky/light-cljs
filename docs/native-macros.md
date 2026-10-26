@@ -169,6 +169,12 @@ JavaScript dynamic compilation currently limits each emitted unit to 16,384 UTF-
 code units. Engine syntax/operation errors are reported with the macro's call and
 definition locations.
 
+Native tasks skip JavaScript reader-namespace registrations before generating
+their source. These tables serve the legacy runtime's reader; native macros
+receive forms and reader context through the native bridge. The skipped source
+therefore cannot hit the eval limit as a project's namespace count grows.
+Macro cache identity and legacy reader registration behavior are unchanged.
+
 Ordinary source helpers are compiled on demand. A macro parks at a dependency
 read while the compiler analyzes the helper using separate task state on the
 same heap. Its factory is compiled once into shared executable code. Binding,

@@ -1307,22 +1307,22 @@ mod tests {
             let counts = runtime.helper_counts();
             counts.units_evaluated + counts.units_shared
         };
-        // Each fresh task must register the reader tables and materialize
-        // its own function once. Hits must do neither, including the VM work
-        // of a registration whose tables have not changed.
+        // Each fresh task materializes its own function once. Native tasks
+        // skip unused reader tables even on misses; hits also skip function
+        // construction and evaluation.
         for declaration in [declaration, &installed] {
             let mut functions = Vec::new();
             for _ in 0..2 {
                 let engine = runtime.evaluator().unwrap();
                 let before = evaluations();
                 let function = declaration.function(&engine, &host.engine).unwrap();
-                assert_eq!(evaluations(), before + 2);
+                assert_eq!(evaluations(), before + 1);
                 for _ in 0..4 {
                     assert_eq!(
                         declaration.function(&engine, &host.engine).unwrap(),
                         function
                     );
-                    assert_eq!(evaluations(), before + 2, "cache hit registered tables");
+                    assert_eq!(evaluations(), before + 1, "cache hit evaluated code");
                 }
                 functions.push(function);
             }
