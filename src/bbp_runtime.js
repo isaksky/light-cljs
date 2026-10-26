@@ -97,13 +97,13 @@ globalThis.__lightRegisterUnit=(name,unit)=>{
       globalThis.__lightInitializerUnit=unit;
       const producer=__rt.need(serial,beginKind);
       if(producer){
-        let failure=null;
-        try{slot.value=factory(native);}catch(e){failure=e;}
+        let failed=false,failure;
+        try{slot.value=factory(native);}catch(e){failed=true;failure=e;}
         globalThis.__lightInitializerUnit=unit;
         globalThis.__lightInitializerResult=slot.value;
-        globalThis.__lightInitializerFailure=failure===null?null:String(failure);
+        globalThis.__lightInitializerFailure=failed?String(failure):null;
         __rt.need(serial,finishKind);
-        if(failure!==null)throw failure;
+        if(failed)throw failure;
         __rt.need(unit,4);
       }else{
         const initialized=__rt.need(unit,4);

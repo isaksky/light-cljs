@@ -284,6 +284,73 @@ fn initializer_failure_wakes_later_consumers_without_repeating_effects() {
 }
 
 #[test]
+fn falsy_initializer_failures_are_shared_without_repeating_effects() {
+    for (thrown, expected) in [
+        ("nil", "null"),
+        ("(js* \"undefined\")", "undefined"),
+        ("false", "false"),
+        ("0", "0"),
+        ("\"\"", ""),
+    ] {
+        let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+        for index in 0..2 {
+            let evaluator = Rc::new(shared.evaluator().unwrap());
+            evaluator
+                .clone()
+                .install_compiler_service(
+                    "__lightCompileUnit",
+                    Rc::new(move |_, _| {
+                        Ok(native(&format!(
+                            "(do (js* \"globalThis.initialized = (globalThis.initialized || 0) + 1\") (throw {thrown}))"
+                        )))
+                    }),
+                )
+                .unwrap();
+            evaluator
+                .register_compiler_root("cljs.user/helper", Some(7), false, "fixture.cljs:1", None)
+                .unwrap();
+            for _ in 0..2 {
+                let failure = evaluator
+                    .evaluate_unit("rt => globalThis.__lightCompilerRoots['cljs.user/helper']")
+                    .unwrap_err();
+                if index == 0 {
+                    assert_eq!(failure.0, format!("big-boy-pants-js: {expected}"));
+                } else {
+                    assert!(
+                        failure
+                            .0
+                            .contains(&format!("failed with String({expected:?})")),
+                        "thrown {thrown}: {failure}"
+                    );
+                }
+            }
+            if index == 0 {
+                assert_eq!(numeric_global(&evaluator, "initialized"), 1.0);
+            } else {
+                assert!(
+                    evaluator
+                        .task
+                        .global_value("initialized")
+                        .unwrap()
+                        .is_none()
+                );
+            }
+        }
+        assert_eq!(shared.helper_counts().compiled, 1);
+        assert_eq!(shared.helper_counts().published, 0);
+        assert_eq!(shared.helper_counts().per_task, 0);
+        assert!(matches!(
+            shared.0.runtime.cell_status(DependencyKey::new(
+                shared.0.runtime.world(),
+                DependencyId::new(7),
+                INITIALIZER
+            )),
+            big_boy_pants_js::CellStatus::Failed(_)
+        ));
+    }
+}
+
+#[test]
 fn cancelling_one_parked_consumer_keeps_the_shared_producer_and_peer_alive() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let waiting = Arc::new((Mutex::new(Vec::<Task>::new()), Condvar::new()));
