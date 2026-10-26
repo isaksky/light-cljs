@@ -798,7 +798,12 @@ const native = (() => {
     prStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1]):arity(a.length),
     prnStrWithOpts:(...a)=>a.length===2?printValues(a[0],a[1])+'\n':arity(a.length),
     prWriter, prStrStar:x=>{const w=stringWriter();prWriter(x,w,null);flushWriter(w);return w.sb.text;},
-    printMetaQ:(...a)=>a.length!==2?arity(a.length):truth(printOption(a[0],'meta','printMeta'))&&__rt.cljMeta(a[1])!==null,
+    printMetaQ:(...a)=>{
+      if(a.length!==2)return arity(a.length);
+      if(!truth(printOption(a[0],'meta','printMeta')))return false;
+      const x=val(a[1]),m=decl.mutableRecord(x)===null?__rt.cljMeta(a[1]):x.__meta;
+      return m!=null;
+    },
     write, flushWriter, StringBufferWriter,
     writeAll:(w,...xs)=>{for(const x of xs)write(w,x);return null;},
     prSequentialWriter:(...a)=>a.length===7?printSequential(...a):arity(a.length),

@@ -81,6 +81,14 @@ readability, namespace maps, explicit options, custom printer/writer protocols,
 errors and restoration after a thrown lazy printer. Plain host objects, arrays
 and ordinary functions still fail explicitly. There is no legacy fallback.
 
+The review regressions compare `str`, `pr-str` and `print-str` on immutable
+and mutable records/types, both with and without `Object/toString`. Record
+`str` honors that method (or the default `[object Object]`), while readable
+printing uses record fields and extension maps. Mutable records also retain
+print limits, metadata and `print-meta?`. Custom printers receive a real
+`StringBufferWriter`; `-write` returns its appendable buffer, including when
+collection `str` invokes the printer.
+
 `formPrintItems` preserves positional traversal and restores legacy five-bit
 hash traversal, including nil-first traversal, independently of the native
 lookup trie's hash spreading. Array-map constructors, small sets, empty map
@@ -102,7 +110,12 @@ source-order lane and selects its earliest direct or inherited caller. Explicit
 bindings inside initializers take precedence along that ancestry. Snapshots
 also distinguish Namespace objects from explicitly bound nil or symbols. Task
 migration does not consult worker thread-local namespace state. The namespace
-fixture matches QuickJS's emitted program and diagnostic message/provenance at
+snapshot distinguishes registry entries from explicitly constructed Namespace
+values, retaining the latter's name occurrence and task-local identity without
+interning it. Differential coverage includes an existing registry name with
+different metadata and a non-symbol name slot, alongside `create-ns`/`find-ns`.
+The namespace fixture matches QuickJS's emitted program and diagnostic
+message/provenance at
 jobs 1/2/4, including seeded scheduling, a held earlier caller, nested helper
 compilation, nested initializers, metadata, exceptions and task reuse. Engine
 stack frames and the native error prefix are compared separately.
