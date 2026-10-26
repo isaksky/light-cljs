@@ -184,7 +184,7 @@ nesting256, the 64 KiB VM stack boundary, dynamic eval's 16,384 UTF-16-unit
 cap, cancellation and aggregate heap accounting are unchanged. Application
 and legacy macro emission keep their existing output.
 
-At `10c261f0` on macOS arm64, Homebrew Rust/Cargo 1.99.1, fresh native-only
+At `76eef6f9` on macOS arm64, Homebrew Rust/Cargo 1.99.1, fresh native-only
 builds with the same five absolute source roots and `--jobs 1 --no-cache`
 budgets above pass both former failure sites. Their next first errors are:
 
