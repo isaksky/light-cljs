@@ -245,6 +245,17 @@ impl Rooted {
         }
     }
 
+    /// Root a possibly reclaimed value, checking its allocation generation
+    /// atomically with respect to collection.
+    pub(crate) fn new_if_live(heap: &Arc<Heap>, value: Value) -> Option<Rooted> {
+        let slot = heap.root_if_live(value.clone())?;
+        Some(Rooted {
+            heap: Arc::clone(heap),
+            slot,
+            value,
+        })
+    }
+
     /// Root-free view of the value.
     pub fn view(&self) -> ValueView {
         self.value.view()
@@ -387,15 +398,7 @@ impl WeakHandle {
     /// Root the value again, or fail with [`HandleError::Reclaimed`]. The
     /// liveness check and the new root are atomic with respect to collection.
     pub fn upgrade(&self) -> Result<Rooted, HandleError> {
-        let slot = self
-            .heap
-            .root_if_live(self.value.clone())
-            .ok_or(HandleError::Reclaimed)?;
-        Ok(Rooted {
-            heap: Arc::clone(&self.heap),
-            slot,
-            value: self.value.clone(),
-        })
+        Rooted::new_if_live(&self.heap, self.value.clone()).ok_or(HandleError::Reclaimed)
     }
 }
 

@@ -1410,3 +1410,179 @@ fn replayed_registration_blocks_run_in_order_and_full_blocks_compile_once() {
     let counts = shared.helper_counts();
     assert_eq!((counts.units_compiled, counts.units_shared), (2, 4));
 }
+
+#[path = "../../tests/support/temp_dir.rs"]
+#[allow(dead_code)]
+mod temp_dir;
+
+#[test]
+fn weak_bridge_entries_preserve_live_occurrences_and_raw_metadata() {
+    let rt = Runtime::new();
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let form = host
+        .read_compiler_form(&crate::compiler_data::Source::new(
+            "weak-identity.cljs",
+            "^{:m [9007199254740993]} [1 2]",
+        ))
+        .unwrap()
+        .unwrap();
+    let data = form.data();
+    let meta = data.metadata().unwrap();
+    let mut bridge = Bridge::default();
+    let original = rt.scope(|s| {
+        bridge.remember(&form, 128, &mut 1000).unwrap();
+        let value = bridge.import(s, &data, 128, &mut 1000).unwrap();
+        s.persist(value)
+    });
+    rt.collect().unwrap();
+    bridge.prune(rt.heap_stats().collections);
+    let raw_meta = rt.scope(|s| {
+        let value = bridge.import(s, &data, 128, &mut 1000).unwrap();
+        assert!(s.same_object(value, s.local(&original).unwrap()));
+        let result = bridge.export(s, value, 128, &mut 1000).unwrap();
+        assert_eq!(result.identity(), data.identity());
+        let remembered = bridge.forms[&result.identity()].span();
+        assert_eq!(remembered.source().name(), form.span().source().name());
+        assert_eq!(remembered.bytes(), form.span().bytes());
+        s.persist(s.form_meta(s.form_value(value)).unwrap())
+    });
+    let weak = original.downgrade();
+    drop(original);
+    rt.collect().unwrap();
+    assert!(!weak.is_live());
+    bridge.prune(rt.heap_stats().collections);
+    rt.scope(|s| {
+        // The raw metadata outlives its occurrence. Reimporting must wrap
+        // that same map, preserving exact integer data and its old source.
+        let value = bridge.import(s, &meta, 128, &mut 1000).unwrap();
+        assert!(s.same_object(s.form_value(value), s.local(&raw_meta).unwrap()));
+        let exported = bridge
+            .export(s, s.local(&raw_meta).unwrap(), 128, &mut 1000)
+            .unwrap();
+        assert_eq!(exported.identity(), meta.identity());
+        assert!(
+            bridge.import(s, &meta, 128, &mut 1).is_err(),
+            "memo reuse still charges the whole subtree"
+        );
+        assert!(
+            bridge.import(s, &meta, 1, &mut 1000).is_err(),
+            "memo reuse still enforces depth"
+        );
+    });
+    drop(raw_meta);
+    rt.collect().unwrap();
+    bridge.prune(rt.heap_stats().collections);
+    assert!(bridge.imports.is_empty());
+    assert!(bridge.native_objects.is_empty());
+    assert!(bridge.forms.is_empty());
+    assert!(bridge.costs.is_empty());
+    // Reusing the compiler Datum after collection imports a fresh object
+    // with its original provenance; stale allocation slots cannot alias it.
+    rt.scope(|s| {
+        bridge.remember(&form, 128, &mut 1000).unwrap();
+        let value = bridge.import(s, &data, 128, &mut 1000).unwrap();
+        assert_eq!(
+            bridge.export(s, value, 128, &mut 1000).unwrap().identity(),
+            data.identity()
+        );
+    });
+}
+
+/// The original 400-call namespace chain exceeded 64 MiB after 224 calls.
+/// Collect while the compiler/session are still alive, so teardown cannot
+/// conceal command or bridge retention. All macro definitions remain usable.
+#[test]
+fn namespace_macro_chains_fit_the_default_heap_with_linear_live_bytes() {
+    let mut previous = None;
+    for nss in [4, 8] {
+        let root = temp_dir::TempDir::new("native-macro-memory");
+        std::fs::create_dir(root.join("scale")).unwrap();
+        for n in 0..nss {
+            let mut source = format!("(ns scale.n{n}");
+            if n > 0 {
+                source.push_str(&format!(" (:require [scale.n{} :as prev])", n - 1));
+            }
+            source.push_str(")\n");
+            for i in 0..50 {
+                source.push_str(&format!(
+                    "(defn h{i} [x] (list '+ x {i}))\n\
+                     (defmacro m{i} [x] (list (quote +) x {i}))\n\
+                     (defn f{i} [] (m{i} {n}))\n"
+                ));
+            }
+            source.push_str("(defn total [] (+");
+            for i in 0..50 {
+                source.push_str(&format!(" (f{i})"));
+            }
+            if n > 0 {
+                source.push_str(" (prev/total)");
+            }
+            source.push_str("))\n");
+            std::fs::write(root.join(format!("scale/n{n}.cljs")), source).unwrap();
+        }
+        std::fs::write(
+            root.join("scale/app.cljs"),
+            format!(
+                "(ns scale.app (:require [scale.n{} :as last]))\n(js/console.log (last/total))\n",
+                nss - 1,
+            ),
+        )
+        .unwrap();
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        assert_eq!(host.evaluator_options.memory_limit, 64 << 20);
+        host.evaluator_options.timeout = std::time::Duration::from_secs(600);
+        host.evaluator_options.poll_budget = 100_000_000_000;
+        host.limits.expansions = 10_000_000;
+        host.limits.generated_nodes = 1_000_000_000;
+        let mut stats = crate::CompileStats::default();
+        let (program, _) = crate::compiler::analyze_namespace_entry_with_stats(
+            "scale.app",
+            std::slice::from_ref(&root.to_path_buf()),
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            &mut stats,
+        )
+        .unwrap();
+        assert_eq!(stats.native_macro_calls.len(), nss * 50);
+        let output = std::process::Command::new("node")
+            .arg("-e")
+            .arg(crate::emit_js(&program))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            if nss == 4 { "5200\n" } else { "11200\n" }
+        );
+        let shared = host
+            .session_handle()
+            .unwrap()
+            .shared()
+            .native_runtime(&host.evaluator_options)
+            .unwrap();
+        let rt = &shared.0.runtime;
+        rt.collect().unwrap();
+        let heap = rt.heap_stats();
+        shared.0.bridge.lock().unwrap().prune(heap.collections);
+        eprintln!(
+            "{} calls: {heap:?}; objects {:?}",
+            nss * 50,
+            rt.heap_usage().objects
+        );
+        assert!(heap.peak_managed_bytes <= 64 << 20, "{heap:?}");
+        assert!(heap.last_live_bytes < 24 << 20, "{heap:?}");
+        if let Some(smaller) = previous {
+            // Four more namespaces add under 2 MiB each, rather than
+            // preserving an increasingly large environment at every call.
+            assert!(heap.last_live_bytes < smaller + (8 << 20), "{heap:?}");
+        }
+        previous = Some(heap.last_live_bytes);
+    }
+}

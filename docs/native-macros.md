@@ -43,13 +43,19 @@ task has private function handles and mutable JavaScript state. Native forms and
 publishable closures cross rooted dependency boundaries; mutable Maps remain
 task-owned. Commands do not serialize forms, invoke a reader, or replay effects.
 Input nodes are memoized across the runtime's tasks by compiler Datum
-identity, with the Datum retained to prevent address reuse. Each imported node
-has an occurrence token; export checks the exact occurrence object and returns
+identity through weak engine handles, with the Datum retained to prevent
+address reuse while its occurrence or raw native object is alive. Each imported node
+has an occurrence token; export checks the exact heap-and-generation object identity and returns
 its original Datum, including exact numeric/character representation and source
 provenance. Newly constructed native nodes alone allocate new Datum nodes.
 An opaque heap-and-generation identity table preserves the same reuse for raw
 native metadata maps, whose engine contract does not wrap metadata in occurrences.
 Scalar values still use distinct occurrence wrappers, even when their values agree.
+After a collection, the next import prunes dead memo entries and their compiler
+provenance. Reimporting a reclaimed occurrence creates a new wrapper; any
+occurrence still held by a macro, another task or a saved continuation keeps
+its identity and exact original Datum. A raw metadata map can outlive its
+wrapper: reimport wraps that same native map while it remains observable.
 
 The `&env` envelope remains a persistent native map. A changed slot is associated
 into its previous version; unchanged namespace/reader subtrees use their existing
@@ -482,9 +488,10 @@ producer or another consumer. Build cancellation stops the shared execution
 control. Both unwind saved frames, and a failed task's worker view is retired.
 
 Bridge depth/node limits and the evaluator's cancellation, poll budget and
-wall-clock deadline bound work. The session keeps imported nodes until teardown,
-so repeated imports trade memory retention for stable identity. The runtime
-automatically collects from allocation pressure.
+wall-clock deadline bound work. The bridge memo does not root imported nodes;
+the current incremental environment envelope alone has a bridge-owned strong
+root. Macros can retain earlier envelopes through ordinary engine references.
+The runtime automatically collects from allocation pressure.
 
 ### Protocols and types
 
@@ -661,6 +668,79 @@ task) and `byte-limit`, next to the existing collection, pause and live-object
 counters.
 Legacy-only unit tests still require the `quickjs` feature; the dedicated
 `bbp_macros` integration target above runs without it.
+
+### Consumed command payloads
+
+Native evaluator commands use `Completion::WeakReady`, an explicit transient
+dependency outcome with the same producer and publication checks as `Ready`.
+The producer keeps the command message strongly rooted throughout `request`,
+including helper waits and pool handoffs, until its task reaches the next
+command boundary. The task roots the message on its operand stack when it
+reads it. Completed command cells keep their single-assignment bookkeeping
+but do not retain consumed messages, evaluated source strings or historical
+`&env` snapshots. Reading a reclaimed weak outcome reports cancellation;
+the native command protocol never reads a consumed key again. Ordinary
+helper, initializer, binding and effect-lane outcomes keep their existing
+strong rooting and completion behavior.
+
+### Namespace-chain retention (light-cljs-499, 2026-10-26)
+
+Remeasured on macOS arm64, Homebrew Rust 1.99.1, from `aec0374b`, after
+task-context lending, task-local macro-function caching and the recent GC
+accounting fixes. The generated chain has four or eight namespaces requiring
+their predecessor, each with 50 helper/macro/caller triples; each inline macro
+expands `(list (quote +) x I)`, and each caller invokes its own macro once.
+All measurements use one compilation slot and no compiler cache.
+
+The original 400-call CLI workload still failed at the default 67,108,864-byte
+limit, at `scale.n4/m24` (call 225), with `heap byte or string limit exceeded`.
+At a 4 GB limit it completed, peaking at 173,656,974 managed bytes and
+204,226,560 bytes RSS, down from the original report's roughly 550 MB managed
+heap but still retaining historical snapshots.
+
+Forced final collections, with the compiler host/session still alive:
+
+| Calls / namespaces | Before, live bytes (4 GB limit) | After, live bytes (default 64 MiB) | After, peak managed bytes |
+|---|---:|---:|---:|
+| 200 / 4 | 55,954,438 | 11,332,192 | 21,293,600 |
+| 400 / 8 | 173,396,882 | 17,731,120 | 28,927,160 |
+
+The additional four namespaces retain 6,398,928 bytes (about 1.53 MiB each),
+including their 200 distinct macro functions. Both builds run their emitted
+application in Node and print `5200` and `11200`, respectively.
+
+Root-source isolation before the fix, collecting after each removal, showed
+that the bridge memo and command outcomes overlapped heavily. Clearing only
+the bridge left 54,571,560 / 170,623,188 live bytes at 200 / 400 calls. Clearing
+shared factory roots made no further difference; dropping the compiler host
+too left 50,736,320 / 164,236,140 bytes and **zero persistent handles**. The
+completed command cells still traced their messages through
+`DependencyOutcome`. These were the dominant holder, alongside the bridge's
+independent pins. This diagnostic deliberately removed roots in a throwaway
+probe; normal compilation preserves all observable values.
+
+The final heap inventory corroborates the source: command vectors fall from
+5,236 / 10,468 to one at either size, and occurrences fall from
+34,280 / 108,560 to 2,906 / 5,706. Persistent host handles fall from
+34,481 / 108,961 to 201 / 401 (the macro handles and current environment).
+Function counts stay at 1,374 / 1,978. The improvement releases consumed
+messages and unobserved forms, without removing definitions or rebuilding
+task state.
+
+The checked-in regression reproduces the generator, enforces the default
+heap cap, forces a final collection before teardown and limits the four-to-eight
+namespace increment to 8 MiB:
+
+```sh
+CARGO_BUILD_JOBS=3 cargo test --locked --no-default-features --features bbp-macros \
+  --lib bbp_evaluator::tests::namespace_macro_chains_fit_the_default_heap_with_linear_live_bytes \
+  -- --exact --nocapture
+```
+
+`weak_bridge_entries_preserve_live_occurrences_and_raw_metadata` also forces
+collection around retained occurrences and raw metadata, checks exact Datum
+and source reuse, enforces conversion budgets on memo hits and verifies dead
+provenance is pruned.
 
 ## Seeded 200k namespace build (2026-10-26)
 

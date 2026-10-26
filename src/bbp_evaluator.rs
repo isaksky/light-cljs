@@ -15,7 +15,7 @@ use crate::{
 use big_boy_pants_js::{
     Budget, Completion, DependencyId, DependencyKey, Executable, FormKind, JsString, Local,
     ObjectIdentity, Primitive, ProducerRequest, Provenance, ResultKind, Rooted, RunOutcome,
-    Runtime, Scope, Task, ValueView,
+    Runtime, Scope, Task, ValueView, WeakHandle,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -40,21 +40,55 @@ fn string(scope: &Scope<'_>, units: &[u16]) -> Result<JsString, EvalError> {
 }
 
 pub type BridgeStats = crate::compile_stats::NativeBridgeCall;
+struct Imported {
+    data: Datum,
+    occurrence: WeakHandle,
+    // A metadata map can escape without its occurrence. Reimport it with
+    // the same native identity while that raw object remains observable.
+    native: Option<WeakHandle>,
+}
 #[derive(Default)]
 struct Bridge {
     control: Option<ExecutionControl>,
     // Retaining the Datum prevents allocator address reuse from aliasing a key.
-    imports: HashMap<usize, (Datum, Rooted)>,
+    imports: HashMap<usize, Imported>,
     forms: HashMap<usize, Form>,
     stats: BridgeStats,
-    tokens: Vec<usize>,
+    next_token: u32,
+    collected: u64,
     environment: Option<(Datum, Rooted)>,
     costs: HashMap<usize, (usize, usize)>,
     // Native metadata is a raw immutable map, so it can emerge without its
     // occurrence wrapper. Map that exact object back without traversing it.
-    native_objects: HashMap<ObjectIdentity, usize>,
+    native_objects: HashMap<ObjectIdentity, (usize, WeakHandle)>,
 }
 impl Bridge {
+    /// Only observable native objects keep their compiler-side provenance.
+    /// Check after a collection, under the caller's no-GC host scope.
+    fn prune(&mut self, collected: u64) {
+        if self.collected == collected {
+            return;
+        }
+        self.collected = collected;
+        self.imports.retain(|_, imported| {
+            imported.occurrence.is_live()
+                || imported.native.as_ref().is_some_and(WeakHandle::is_live)
+        });
+        self.forms.retain(|key, _| self.imports.contains_key(key));
+        self.costs.retain(|key, _| self.imports.contains_key(key));
+        self.native_objects
+            .retain(|_, (key, value)| self.imports.contains_key(key) && value.is_live());
+    }
+    fn cached<'s>(&mut self, s: &Scope<'s>, data: &Datum) -> Result<Option<Local<'s>>, EvalError> {
+        let Some(imported) = self.imports.get(&data.identity()) else {
+            return Ok(None);
+        };
+        if let Ok(value) = s.upgrade(&imported.occurrence) {
+            return Ok(Some(value));
+        }
+        let native = imported.native.as_ref().and_then(|v| s.upgrade(v).ok());
+        native.map(|value| self.retain(s, data, value)).transpose()
+    }
     fn poll(&self) -> Result<(), EvalError> {
         self.control.as_ref().map_or(Ok(()), ExecutionControl::poll)
     }
@@ -74,9 +108,9 @@ impl Bridge {
         remaining: &mut usize,
     ) -> Result<Local<'s>, EvalError> {
         self.poll()?;
-        if let Some((_, value)) = self.imports.get(&d.identity()) {
+        if let Some(value) = self.cached(s, d)? {
             self.charge(d, depth, remaining)?;
-            return s.local(value).map_err(error);
+            return Ok(value);
         }
         if depth == 0 || *remaining == 0 {
             return Err(error("form conversion limit exceeded"));
@@ -143,11 +177,16 @@ impl Bridge {
         d: &Datum,
         value: Local<'s>,
     ) -> Result<Local<'s>, EvalError> {
-        if let Some(identity) = s.object_identity(value) {
-            self.native_objects.insert(identity, d.identity());
-        }
-        let token = u32::try_from(self.tokens.len()).map_err(error)?;
-        self.tokens.push(d.identity());
+        let native = s.object_identity(value).map(|identity| {
+            let weak = s.downgrade(value);
+            self.native_objects
+                .insert(identity, (d.identity(), weak.clone()));
+            weak
+        });
+        let token = self.next_token;
+        self.next_token = token
+            .checked_add(1)
+            .ok_or_else(|| error("too many imported occurrences"))?;
         let location = self
             .forms
             .get(&d.identity())
@@ -162,8 +201,20 @@ impl Bridge {
                 },
             )
             .map_err(error)?;
-        self.imports
-            .insert(d.identity(), (d.clone(), s.persist(value)));
+        let occurrence = s.downgrade(value);
+        self.native_objects.insert(
+            s.object_identity(value)
+                .expect("an occurrence is an object"),
+            (d.identity(), occurrence.clone()),
+        );
+        self.imports.insert(
+            d.identity(),
+            Imported {
+                data: d.clone(),
+                occurrence,
+                native,
+            },
+        );
         let mut cost = (1usize, 1usize);
         let children = match d.kind() {
             D::Collection { children, .. } => children.as_ref(),
@@ -186,9 +237,9 @@ impl Bridge {
         data: &Datum,
         limits: ConversionLimits,
     ) -> Result<Local<'s>, EvalError> {
-        if let Some((_, value)) = self.imports.get(&data.identity()) {
+        if let Some(value) = self.cached(s, data)? {
             self.charge(data, limits.depth, &mut limits.nodes.clone())?;
-            return s.local(value).map_err(error);
+            return Ok(value);
         }
         let mut remaining = limits.nodes;
         let Some((previous, root)) = self.environment.clone() else {
@@ -235,19 +286,8 @@ impl Bridge {
         if let Some(data) = s
             .object_identity(v)
             .and_then(|key| self.native_objects.get(&key))
-            .and_then(|key| self.imports.get(key))
-            .map(|(data, _)| data)
-        {
-            self.charge(data, depth, remaining)?;
-            self.stats.reused += 1;
-            return Ok(data.clone());
-        }
-        if let Ok(p) = s.provenance(v)
-            && let Some((data, root)) = self
-                .tokens
-                .get(p.source as usize)
-                .and_then(|key| self.imports.get(key))
-            && s.same_object(v, s.local(root).map_err(error)?)
+            .and_then(|(key, _)| self.imports.get(key))
+            .map(|imported| &imported.data)
         {
             self.charge(data, depth, remaining)?;
             self.stats.reused += 1;
@@ -1553,7 +1593,10 @@ impl BbpEvaluator {
             .complete(
                 request.key(),
                 request.producer(),
-                Completion::Ready(&message),
+                // This command is read once. Keep its payload rooted here
+                // through every helper wait until the task reaches its next
+                // command boundary; completed mailboxes need not retain it.
+                Completion::WeakReady(&message),
             )
             .map_err(error)?;
         self.run()?;
@@ -1585,12 +1628,23 @@ impl BbpEvaluator {
         self.request(0, id, source)?;
         Ok(id)
     }
-    fn import(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
+    fn import(
+        &self,
+        data: &Datum,
+        form: Option<&Form>,
+        limits: ConversionLimits,
+    ) -> Result<ValueId, EvalError> {
         self.control.poll()?;
         let started = std::time::Instant::now();
         let value = self.host_scope(|s| {
-            let v =
-                self.with_bridge(|b| b.import(s, data, limits.depth, &mut limits.nodes.clone()))?;
+            let collected = self.runtime.heap_stats().collections;
+            let v = self.with_bridge(|b| {
+                b.prune(collected);
+                if let Some(form) = form {
+                    b.remember(form, limits.depth, &mut limits.nodes.clone())?;
+                }
+                b.import(s, data, limits.depth, &mut limits.nodes.clone())
+            })?;
             Ok::<_, EvalError>(s.persist(v))
         })?;
         self.note(|s| s.nanos += started.elapsed().as_nanos());
@@ -1833,14 +1887,10 @@ impl MacroEvaluator for BbpEvaluator {
         Ok(id)
     }
     fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError> {
-        self.control.check()?;
-        let started = std::time::Instant::now();
-        self.with_bridge(|b| b.remember(form, limits.depth, &mut limits.nodes.clone()))?;
-        self.note(|s| s.nanos += started.elapsed().as_nanos());
-        self.import(&form.data(), limits)
+        self.import(&form.data(), Some(form), limits)
     }
     fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
-        self.import(data, limits)
+        self.import(data, None, limits)
     }
     fn import_environment(
         &self,
@@ -1850,7 +1900,11 @@ impl MacroEvaluator for BbpEvaluator {
         self.control.poll()?;
         let started = std::time::Instant::now();
         let value = self.host_scope(|s| {
-            let v = self.with_bridge(|b| b.environment(s, data, limits))?;
+            let collected = self.runtime.heap_stats().collections;
+            let v = self.with_bridge(|b| {
+                b.prune(collected);
+                b.environment(s, data, limits)
+            })?;
             Ok::<_, EvalError>(s.persist(v))
         })?;
         self.note(|s| s.nanos += started.elapsed().as_nanos());
@@ -1930,7 +1984,7 @@ impl CompilerEvaluator for BbpEvaluator {
         let held = self.context.borrow().as_ref().map_or(0, |cx| {
             cx.values.borrow().len() - usize::from(cx.native_runtime.get().is_some())
         });
-        Ok(held + self.bridge.lock().unwrap().imports.len())
+        Ok(held + usize::from(self.bridge.lock().unwrap().environment.is_some()))
     }
     fn collect_garbage(&self) {
         let _ = self.runtime.collect();

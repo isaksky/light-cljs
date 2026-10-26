@@ -290,6 +290,9 @@ impl Runtime {
     /// `producer`, and return the wake handles of every task waiting on it,
     /// in subscription order. The caller enqueues them; nothing is run
     /// inline (`docs/design.md` §8).
+    /// [`Completion::WeakReady`] instead transfers a transient payload
+    /// without retaining it in the cell: its producer must root it until
+    /// consumption, and reads after reclamation observe cancellation.
     ///
     /// A `Ready` value or `Failed` error must pass the publication check
     /// ([`Runtime::publish`]); it is not copied, so every reader sees the

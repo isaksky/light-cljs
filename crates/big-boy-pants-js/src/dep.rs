@@ -14,6 +14,11 @@
 //!   a second completion (of any outcome) is rejected with
 //!   [`CompleteError::AlreadyComplete`] and leaves the first in place. No
 //!   operation returns a cell to `Pending`.
+//!   `Completion::WeakReady` is an explicit transient-message exception to
+//!   payload retention: it installs the same single-assignment result but
+//!   does not root it. Its producer owns reachability until consumption;
+//!   after reclamation, a read observes cancellation. Ordinary `Ready` and
+//!   `Failed` outcomes retain their payloads for the cell's lifetime.
 //! * A cell has at most one **producer**. The first need of a pending,
 //!   unclaimed cell (or an explicit [`Runtime::claim`](crate::Runtime::claim))
 //!   claims it and returns a [`ProducerRequest`]: scheduler work for the
@@ -170,6 +175,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone, Debug)]
 pub(crate) enum Terminal {
     Ready(Value),
+    WeakReady(Value),
     Failed(Value),
     Cancelled,
 }
@@ -177,7 +183,7 @@ pub(crate) enum Terminal {
 impl Terminal {
     fn value(&self) -> Option<&Value> {
         match self {
-            Terminal::Ready(v) | Terminal::Failed(v) => Some(v),
+            Terminal::Ready(v) | Terminal::WeakReady(v) | Terminal::Failed(v) => Some(v),
             Terminal::Cancelled => None,
         }
     }
@@ -211,10 +217,14 @@ struct Cell {
     pending: Mutex<PendingState>,
 }
 
-/// A cell roots its terminal value or error while it exists. Reads the
-/// outcome without taking the cell lock.
+/// A cell roots its ordinary terminal value or error while it exists.
+/// Explicit weak completions are not roots. Reads the outcome without
+/// taking the cell lock.
 impl RootSource for Cell {
     fn trace_roots(&self, visit: &mut dyn FnMut(RootCategory, crate::heap::gc::TraceEdge)) {
+        if matches!(self.outcome.get(), Some(Terminal::WeakReady(_))) {
+            return;
+        }
         if let Some(value) = self.outcome.get().and_then(|t| t.value()) {
             value.trace(&mut |id| visit(RootCategory::DependencyOutcome, id));
         }
@@ -579,12 +589,13 @@ impl DependencyTable {
     }
 }
 
-/// Root a terminal outcome for the embedder. Safe without further
-/// precautions: the value is held by a cell that outlives this call and
-/// whose outcome never changes, so it is traced until the new root exists.
+/// Root a terminal outcome for the embedder. Ordinary outcomes stay traced
+/// by the cell until the new root exists; weak outcomes atomically check
+/// their allocation generation and root, or report cancellation.
 fn root_terminal(heap: &Arc<Heap>, terminal: Terminal) -> Need {
     match terminal {
         Terminal::Ready(v) => Need::Ready(Rooted::new(heap, v)),
+        Terminal::WeakReady(v) => Rooted::new_if_live(heap, v).map_or(Need::Cancelled, Need::Ready),
         Terminal::Failed(e) => Need::Failed(Rooted::new(heap, e)),
         Terminal::Cancelled => Need::Cancelled,
     }
@@ -649,6 +660,9 @@ pub(crate) fn complete(
     let heap = table.heap();
     let outcome = match completion {
         Completion::Ready(v) => Terminal::Ready(v.value_in(heap).map_err(CompleteError::Handle)?),
+        Completion::WeakReady(v) => {
+            Terminal::WeakReady(v.value_in(heap).map_err(CompleteError::Handle)?)
+        }
         Completion::Failed(e) => Terminal::Failed(e.value_in(heap).map_err(CompleteError::Handle)?),
         Completion::Cancelled => Terminal::Cancelled,
     };
@@ -799,6 +813,12 @@ impl std::error::Error for NeedError {}
 pub enum Completion<'a> {
     /// The result value. Must pass the publication check.
     Ready(&'a Rooted),
+    /// A transient result that the cell does not root. The producer must
+    /// keep it rooted until its consumers have read it; consumers then root
+    /// their own handles or VM operands. If reclaimed, later reads report
+    /// cancellation. The cell remains terminal and cannot be completed again.
+    /// Publication and producer checks are the same as for `Ready`.
+    WeakReady(&'a Rooted),
     /// The producer failed with this error value. Must pass the publication
     /// check; it wakes waiters exactly like success.
     Failed(&'a Rooted),

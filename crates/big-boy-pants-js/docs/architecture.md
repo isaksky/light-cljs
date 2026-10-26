@@ -675,6 +675,15 @@ also after its slot is reused). Tests are in `tests/gc_roots.rs` unless
 marked *(lib)*: those are in `src/heap/inventory.rs`, for holders the
 public API cannot reach.
 
+An explicitly weak dependency completion (`Completion::WeakReady`) is not a
+root source for its payload. Its producer roots the payload until consumption;
+the consumer's handle or VM operand then owns reachability. A reclaimed weak
+outcome reads as cancellation and its cell remains terminal. Ordinary `Ready`
+and `Failed` cells remain roots. `weak_completions_transfer_payload_reachability_to_the_consumer`
+in `tests/need.rs` forces collection before and after that transfer, and after
+release and slot reuse; `weak_completions_keep_publication_checks_and_ordinary_cells_keep_roots`
+checks the unchanged publication and ordinary outcome contracts.
+
 | Holder | Root category (via object kind) | Retention | Reclamation |
 |--------|---------------------------------|-----------|-------------|
 | `Rooted` host handle | `PersistentHandle` (plain object) | `persistent_handle_retains` | `persistent_handle_reclaims` |

@@ -1167,6 +1167,19 @@ impl RunGuard<'_> {
                 vm.push(value);
                 return VmNeed::Continue;
             }
+            Terminal::WeakReady(value) => {
+                if let Some(root) = Rooted::new_if_live(task.deps.heap(), value) {
+                    // The new operand owns reachability before this temporary
+                    // root drops; the run guard excludes collection here.
+                    vm.push(root.value_in(task.deps.heap()).expect("same heap"));
+                    return VmNeed::Continue;
+                }
+                (
+                    VmErrorKind::DependencyCancelled(key),
+                    format!("dependency {key} was cancelled"),
+                    Value::Undefined,
+                )
+            }
             Terminal::Failed(error) => (
                 VmErrorKind::DependencyFailed(key),
                 format!("dependency {key} failed with {}", describe(&error)),

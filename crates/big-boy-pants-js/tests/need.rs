@@ -30,6 +30,140 @@ const NUMBER: (DependencyId, ResultKind) = (DependencyId::new(5), ResultKind::ne
 /// `__rt.need(6, 2)`: a callable.
 const CALLABLE: (DependencyId, ResultKind) = (DependencyId::new(6), ResultKind::new(2));
 
+#[test]
+fn weak_completions_transfer_payload_reachability_to_the_consumer() {
+    let rt = Runtime::new();
+    let task = rt
+        .spawn(
+            &compile_script(
+                "weak-message",
+                "const message = __rt.need(5, 3); __rt.need(6, 2); message",
+            )
+            .unwrap(),
+            &[],
+        )
+        .unwrap();
+    assert_eq!(waiting(task.run().unwrap()), key(&rt, NUMBER));
+    let request = one_request(&task, key(&rt, NUMBER));
+    let payload = rt.scope(|s| {
+        let n = s.primitive(Primitive::Number(42.0));
+        s.persist(s.new_vector(&[n]).unwrap())
+    });
+    let weak = payload.downgrade();
+    let wakes = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            Completion::WeakReady(&payload),
+        )
+        .unwrap();
+    assert_eq!(wakes.task_ids(), [task.id()]);
+    match rt.cell_status(request.key()) {
+        CellStatus::Ready(value) => assert!(value.same_object(&payload)),
+        other => panic!("{other:?}"),
+    }
+    rt.collect().unwrap();
+    assert!(weak.is_live(), "the producer roots an unread message");
+    assert_eq!(waiting(task.run().unwrap()), key(&rt, CALLABLE));
+    drop(payload);
+    rt.collect().unwrap();
+    assert!(
+        weak.is_live(),
+        "the suspended consumer now roots its operand"
+    );
+    let next = one_request(&task, key(&rt, CALLABLE));
+    let null = rt.root(Primitive::Null);
+    let _wakes = rt
+        .complete(next.key(), next.producer(), Completion::Ready(&null))
+        .unwrap();
+    let RunOutcome::Complete(result) = task.run().unwrap() else {
+        panic!("consumer did not finish")
+    };
+    assert!(result.same_object(&weak.upgrade().unwrap()));
+    drop(result);
+    drop(task);
+    rt.collect().unwrap();
+    assert!(
+        !weak.is_live(),
+        "the completed command cell does not retain its payload"
+    );
+    assert!(matches!(
+        rt.cell_status(request.key()),
+        CellStatus::Cancelled
+    ));
+    assert!(matches!(
+        rt.complete(
+            request.key(),
+            request.producer(),
+            Completion::WeakReady(&null)
+        ),
+        Err(big_boy_pants_js::CompleteError::AlreadyComplete { .. })
+    ));
+    // A fresh reader of the consumed key sees cancellation, including after
+    // new allocations have reused the payload's object-table slots.
+    rt.scope(|s| {
+        for _ in 0..1024 {
+            s.new_vector(&[]).unwrap();
+        }
+    });
+    let late = rt
+        .spawn(
+            &compile_script(
+                "expired-message",
+                "try { __rt.need(5, 3); false } catch (e) { true }",
+            )
+            .unwrap(),
+            &[],
+        )
+        .unwrap();
+    assert!(
+        matches!(late.run().unwrap(), RunOutcome::Complete(v) if matches!(v.view(), ValueView::Bool(true)))
+    );
+}
+
+#[test]
+fn weak_completions_keep_publication_checks_and_ordinary_cells_keep_roots() {
+    let rt = Runtime::new();
+    let request = rt.claim(key(&rt, NUMBER)).unwrap();
+    let mutable = rt.scope(|s| s.persist(s.new_object()));
+    assert!(matches!(
+        rt.complete(
+            request.key(),
+            request.producer(),
+            Completion::WeakReady(&mutable)
+        ),
+        Err(big_boy_pants_js::CompleteError::NotShareable(_))
+    ));
+    assert!(matches!(
+        rt.cell_status(request.key()),
+        CellStatus::Pending { .. }
+    ));
+    let foreign = Runtime::new().root(Primitive::Null);
+    assert!(matches!(
+        rt.complete(
+            request.key(),
+            request.producer(),
+            Completion::WeakReady(&foreign)
+        ),
+        Err(big_boy_pants_js::CompleteError::Handle(_))
+    ));
+    let payload = rt.scope(|s| s.persist(s.new_vector(&[]).unwrap()));
+    let weak = payload.downgrade();
+    let _wakes = rt
+        .complete(
+            request.key(),
+            request.producer(),
+            Completion::Ready(&payload),
+        )
+        .unwrap();
+    drop(payload);
+    rt.collect().unwrap();
+    assert!(
+        weak.is_live(),
+        "ordinary completed dependency results remain roots"
+    );
+}
+
 /// Synthetic fixtures, not light-cljs output. Logical references survive
 /// waits in key conversion, getters, RHSs and setters, with GC at each yield
 /// and migration to a different thread after dependency publication.
