@@ -378,7 +378,27 @@ SipHash `Hasher::write` and `hash_one` and `HeapObject::trace`: collection
 is serial and stops every worker, and the live set grows with the contexts
 and producers alive at once. No helper waits on another task's result in
 this chain, so no task was woken from a wakeup (`native.tasks.woken` 0);
-the evaluator test and the stress fixtures exercise that path.
+the evaluator test and the stress fixtures (at four and eight jobs) exercise
+that path.
+
+Rebased again on light-cljs-495 (`2d5ba2d9`: marking without hashing,
+collection by budget headroom), same chain, commands and load:
+
+| Jobs | Wall | vs 1 | Peak RSS | vs 1 | Helper inits | Contexts booted / borrowed |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 3.17 s | 1.00 | 577 MB | 1.00 | 400 | 401 / 0 |
+| 2 | 3.54 s | 1.12 | 669 MB | 1.16 | 400 | 402 / 399 |
+| 4 | 2.56 s | 0.81 | 693 MB | 1.20 | 400 | 404 / 397 |
+| 8 | 3.38 s | 1.07 | 754 MB | 1.31 | 400 | 408 / 393 |
+
+Output is still identical at every N. At `--jobs 1` collections fell from 383
+(6.9 s of pauses) to 35 (0.3 s), and the heap now grows toward the budget
+before collecting, so RSS rose. Wall at eight jobs is near `--jobs 1` and four
+jobs is faster, which meets the wall target on this chain. Peak RSS at eight
+jobs is 1.31x (1.26x with `--macro-memory-limit 1073741824`): the seven worker
+contexts in use at once each hold every catalog registration, and producer
+tasks replay their parent's, so per-task registries grow with the macro units
+that run at once (light-cljs-503).
 
 ### Single-thread speed
 
