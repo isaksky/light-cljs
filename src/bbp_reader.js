@@ -20,6 +20,7 @@
     return null;
   };
   const coreCells=core;
+  coreCells.readerCurrentInputValue=null;
   // Runtime EDN readers expose the legacy hash traversal. Store that order
   // positionally so native seqs and the form bridge observe the same values.
   const readerMap=a=>{

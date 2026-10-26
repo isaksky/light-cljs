@@ -154,6 +154,10 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
             "streams",
             r###"(let [s (compiler-reader-string-reader "1\r\n2" "fixture.edn")] [(compiler-reader-read s) (compiler-reader-read s) (compiler-reader-read {:eof :done} s)])"###,
         ),
+        (
+            "input restoration",
+            r###"(let [before (compiler-reader-current-input) during (compiler-reader-with-input "1 2" (fn [] [(compiler-reader-read (compiler-reader-current-input)) (compiler-reader-read (compiler-reader-current-input))])) after (compiler-reader-current-input)] [(js* "(~{} === null)" before) during (js* "(~{} === null)" after)])"###,
+        ),
     ];
     let errors = [
         ("EOF collection", "[1"),
