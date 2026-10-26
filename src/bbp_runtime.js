@@ -320,7 +320,7 @@ const native = (() => {
   const seq = x => __rt.cljSeq(x);
   const get = (m,k,n=null) => __rt.cljGet(m,k,n);
   const invoke = (f,...args) => {
-    if(typeof f==='function')return f(...args);
+    if(typeof f==='function')return f.call(null,...args);
     if(__rt.formKind(val(f))!=='vector'&&(args.length<1||args.length>2))arity(args.length);
     return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null);
   };

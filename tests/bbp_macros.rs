@@ -2010,6 +2010,15 @@ const COMBINATOR_FIXTURES: &[(&str, &str)] = &[
         "[4 [4 4] [2 1 1 1]]\n",
     ),
     (
+        "(defmacro m [] (let [f (js* \"(function(){'use strict'; return this === null;})\") \
+         c comp p partial j juxt o complement n fnil] \
+         [(f) ((comp f)) ((comp identity f)) ((partial f)) ((partial f 1)) \
+          ((juxt f)) ((complement f)) ((fnil f :x) nil) \
+          ((c identity f)) ((p f 1)) ((j f)) ((o f)) ((n f :x) nil)])) \
+         (js/console.log (pr-str (m)))",
+        "[true true true true true [true] false true true true [true] false true]\n",
+    ),
+    (
         "(defmacro m [] [((juxt inc dec identity (constantly :four)) 2) \
          ((comp 'x identity) {'x 42}) ((partial 'x) {'x 43}) \
          ((fnil vector :a :b :c) js/undefined nil false 4)]) \

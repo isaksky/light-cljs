@@ -1367,7 +1367,7 @@ const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
 
 /// Native callable collections keep form identity; functions run on this task
 /// and can suspend. This expression captures no task-owned runtime object.
-const NATIVE_INVOKE: &str = "((f, ...a) => { if (typeof f === 'function') return f(...a); if (__rt.formKind(__rt.formValue(f)) !== 'vector' && (a.length < 1 || a.length > 2)) throw new Error('Invalid arity: ' + a.length); return __rt.cljInvoke(f, a[0], a.length > 1 ? a[1] : null); })";
+const NATIVE_INVOKE: &str = "((f, ...a) => { if (typeof f === 'function') return f.call(null, ...a); if (__rt.formKind(__rt.formValue(f)) !== 'vector' && (a.length < 1 || a.length > 2)) throw new Error('Invalid arity: ' + a.length); return __rt.cljInvoke(f, a[0], a.length > 1 ? a[1] : null); })";
 
 /// What the pool knows about an expression (indexed by `ExprId`).
 #[derive(Clone, Copy, PartialEq, Eq)]
