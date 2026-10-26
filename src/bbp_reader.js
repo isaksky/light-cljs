@@ -37,17 +37,16 @@
   const reader=createReader({keyword:core.keyword,symbol:core.symbol,vectorFromArray:vector,
     listFromArray:list,mapFromArray:literalMap,setFromArray:set,inspect,jsLiterals:readerJsLiterals,
     unwrap:val,hasOwn:(object,key)=>Object.getOwnPropertyDescriptor(object,key)!==undefined,
+    callable:handler=>['keyword','symbol','vector','map','set'].includes(kind(handler))||typeof val(handler).call==='function',
+    callReader:(handler,args)=>invoke(handler,...args),
     ednKind:x=>{const k=kind(x);return ['list','cons','lazy-seq'].includes(k)?'seq':k??(val(x) instanceof Date?'instant':null);},
     builtinTags:new Map([
-      ['inst',value=>globalThis.__lightNativeRuntime.core.nativeReaderInstant(value)],
+      ['inst',unsupported('reader inst literal')],
       ['uuid',unsupported('reader UUID literal')],
       ['queue',unsupported('reader queue literal')],
       ['js',unsupported('reader JS literal')]
-    ])});
-  core.nativeReaderInstant=value=>{
-    try{return reader.readerParseTimestamp(val(value));}
-    catch(_){const error=new Error('Invalid instant at <tag-parser>:1:1');error.source='<tag-parser>';error.line=1;error.column=1;error.offset=0;error.category='reader';throw error;}
-  };
+    ]),
+    readBuiltin:tag=>unsupported('reader '+(tag==='uuid'?'UUID':tag==='js'?'JS':tag)+' literal')()});
   // Code-profile read-string also needs the compiler's namespace resolution
   // view. Leave that existing unsupported boundary explicit.
   for(const name of ['ednReadString','ednRead','readerReadString','readerRead',

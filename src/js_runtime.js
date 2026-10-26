@@ -9841,6 +9841,8 @@
   const inspect = rt.inspect;
   const valueOf = rt.unwrap ?? (value => value);
   const hasOwn = rt.hasOwn ?? ((object, key) => Object.prototype.hasOwnProperty.call(object, key));
+  const callable = rt.callable ?? (value => typeof value.call === 'function');
+  const callReader = rt.callReader ?? ((handler, args) => handler.call(null, ...args));
   const streams = new WeakMap(), tags = new Map(), builtinTags = new Map(), readerMaps = new WeakMap();
   const absent = Object.freeze({}), discarded = Object.freeze({});
   const MAX_INPUT = 1048576, MAX_NODES = 100000, MAX_DEPTH = 32;
@@ -10024,7 +10026,7 @@
       if (k?.kind !== 'keyword' || k.namespace !== null) throw new TypeError('Invalid reader option');
       if (k.name === 'eof') result.eof = value;
       else if (profile !== 'code' && k.name === 'default') {
-        if (value != null && typeof value.call !== 'function') throw new TypeError('Expected default reader function');
+        if (value != null && !callable(value)) throw new TypeError('Expected default reader function');
         result.fallback = value;
       } else if (profile !== 'code' && k.name === 'readers') {
         if (value == null) continue;
@@ -10035,7 +10037,7 @@
           entries = readers.entries.map(([tag, handler]) => {
             const n = inspect(tag);
             if (n?.kind !== 'symbol') throw new TypeError('Expected symbol reader key');
-            if (handler != null && typeof handler.call !== 'function') throw new TypeError('Expected reader function');
+            if (handler != null && !callable(handler)) throw new TypeError('Expected reader function');
             return [n.spelling, handler];
           });
           // Only immutable privately branded maps have stable validated entries.
@@ -10192,18 +10194,19 @@
       let handler = opts.readers.get(tag), result;
       if (handler != null) {
         if (handler === builtinTags.get(tag)) {
+          if (rt.readBuiltin) return rt.readBuiltin(tag, value);
           if (tag === 'inst') result = instant(s, value);
           else if (tag === 'uuid') { if (typeof value !== 'string' || !/^[\da-fA-F]{8}-(?:[\da-fA-F]{4}-){3}[\da-fA-F]{12}$/.test(value)) fail(s,'Invalid UUID'); result = uuid(value); }
           else if (tag === 'js') return jsLiteral(s,value);
           else if (tag === 'queue') { if (inspect(value)?.kind !== 'vector') fail(s,'Queue literal requires a vector'); return into(PersistentQueueValue.EMPTY,value); }
-        } else result = handler.call(null, value);
+        } else result = callReader(handler, [value]);
       }
       else if (opts.profile === 'code' && tag === 'inst') {
         result = instant(s,value);
       } else if (opts.profile === 'code' && tag === 'uuid') {
         if (typeof value !== 'string' || !/^[\da-fA-F]{8}-(?:[\da-fA-F]{4}-){3}[\da-fA-F]{12}$/.test(value)) fail(s, 'Invalid UUID');
         result = uuid(value);
-      } else if (opts.fallback != null) result = opts.fallback.call(null, symbol, value);
+      } else if (opts.fallback != null) result = callReader(opts.fallback, [symbol, value]);
       else fail(s, 'No reader function for tag ' + tag);
       validate(s, result, depth + 1, opts.profile !== 'edn');
       return result;
@@ -10341,11 +10344,11 @@
   function tagName(tag) { const name = inspect(tag); if (name?.kind !== 'symbol') throw new TypeError('Expected data reader symbol'); return name.spelling; }
   function register(tag, handler) {
     if (arguments.length !== 2) arity(arguments.length);
-    if (handler != null && typeof handler.call !== 'function') throw new TypeError('Expected reader function');
+    if (handler != null && !callable(handler)) throw new TypeError('Expected reader function');
     const name = tagName(tag), previous = tags.get(name) ?? null; tags.set(name, handler); return previous;
   }
   function deregister(tag) { if (arguments.length !== 1) arity(arguments.length); const name = tagName(tag), previous = tags.get(name) ?? null; tags.delete(name); return previous; }
-  function registerDefault(handler) { if (arguments.length !== 1) arity(arguments.length); if (handler != null && typeof handler.call !== 'function') throw new TypeError('Expected reader function'); const previous = defaultTag; defaultTag = handler; return previous; }
+  function registerDefault(handler) { if (arguments.length !== 1) arity(arguments.length); if (handler != null && !callable(handler)) throw new TypeError('Expected reader function'); const previous = defaultTag; defaultTag = handler; return previous; }
   function deregisterDefault() { if (arguments.length !== 0) arity(arguments.length); const previous = defaultTag; defaultTag = null; return previous; }
   function withInput(text, thunk) {
     if (arguments.length !== 2) arity(arguments.length);

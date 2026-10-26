@@ -3,12 +3,15 @@
 use light_cljs::{MacroHost, analyze_with_macros, emit_js, parse};
 
 fn expand(source: &str, native: bool) -> Result<String, String> {
+    analyzed(source, native).map(|program| emit_js(&program))
+}
+
+fn analyzed(source: &str, native: bool) -> Result<light_cljs::Program, String> {
     let mut host = MacroHost::new();
     if native {
         host.use_native_macros();
     }
     analyze_with_macros(source, &parse(source).unwrap(), &mut host)
-        .map(|program| emit_js(&program))
         .map_err(|error| error.to_string())
 }
 
@@ -23,6 +26,34 @@ fn output(js: &str) -> String {
         String::from_utf8_lossy(&result.stderr)
     );
     String::from_utf8(result.stdout).unwrap()
+}
+
+fn namespace_js(entry: &str, native: bool, jobs: usize) -> String {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-reader");
+    let mut host = MacroHost::new();
+    if native {
+        host.use_native_macros();
+    }
+    let mut stats = light_cljs::CompileStats::default();
+    let (program, _) = analyze_namespace_entry_recorded(
+        entry,
+        &[root],
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+        EntryRecorders {
+            stats: Some(&mut stats),
+            slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    if native {
+        assert!(stats.native_helpers.waits > 0);
+    }
+    emit_js(&program)
 }
 
 #[test]
@@ -76,6 +107,30 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
             r###"(let [x (compiler-reader-read-string {:readers {'x (fn [x] (with-meta x {:from :reader}))}} "#x [1]")] [(meta x) x])"###,
         ),
         (
+            "callable tags",
+            r###"[(compiler-reader-read-string {:readers {'x :a}} "#x {:a 7}") (compiler-reader-read-string {:readers {'x [10 20]}} "#x 1") (compiler-reader-read-string {:readers {'inst identity}} "#inst [1]")]"###,
+        ),
+        (
+            "reader options errors",
+            r###"(mapv (fn [opts] (try (compiler-reader-read-string opts "1") (catch :default e (.-message e)))) [nil [] {:other true} {"eof" nil} {:readers []} {:readers {:x identity}} {:readers {'x 1}} {:default 1}])"###,
+        ),
+        (
+            "empty explicit options",
+            r###"(try (compiler-reader-read-string {} "") (catch :default e [(.-message e) (.-source e) (.-line e) (.-column e) (.-offset e) (.-category e)]))"###,
+        ),
+        (
+            "reader result validation",
+            r###"[(try (compiler-reader-read-string {:readers {'x (fn [_] (js/Object.))}} "#x 1") (catch :default e (.-message e))) (try (compiler-reader-read-string {:readers {'x (fn [_] (fn [] nil))}} "#x 1") (catch :default e (.-message e))) (compiler-reader-read-string {:readers {'x (fn [_] '(1 2))}} "#x 1")]"###,
+        ),
+        (
+            "depth limit",
+            r###"(try (compiler-reader-read-string (str (.repeat "[" 33) "0" (.repeat "]" 33))) (catch :default e [(.-message e) (.-offset e) (.-category e)]))"###,
+        ),
+        (
+            "input limit",
+            r###"(try (compiler-reader-read-string (.repeat " " 1048577)) (catch :default e [(.-message e) (.-offset e) (.-category e)]))"###,
+        ),
+        (
             "EDN",
             r###"[(compiler-edn-read-string "[1 :a]") (compiler-edn-read-string {:eof :end} "") (compiler-edn-read-string {:readers {'x identity}} "#x 4")]"###,
         ),
@@ -122,17 +177,34 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
         let source = format!(
             "(defmacro probe [] (list 'quote {body})) (js/console.log (binding [*print-meta* true] (pr-str (probe))))"
         );
-        match expand(&source, true) {
-            Ok(native) => {
+        match analyzed(&source, true) {
+            Ok(native_program) => {
+                let native = emit_js(&native_program);
                 assert!(!output(&native).is_empty(), "{label}");
                 #[cfg(feature = "quickjs")]
-                match expand(&source, false) {
-                    Ok(legacy) if native == legacy => {}
-                    Ok(legacy) => failures.push(format!(
-                        "{label}: native {}, QuickJS {}",
-                        output(&native),
-                        output(&legacy)
-                    )),
+                match analyzed(&source, false) {
+                    Ok(legacy_program) => {
+                        let legacy = emit_js(&legacy_program);
+                        let positions = |program: &light_cljs::Program| {
+                            program
+                                .exprs
+                                .iter()
+                                .map(|expr| (expr.span.clone(), expr.source_index))
+                                .collect::<Vec<_>>()
+                        };
+                        assert_eq!(
+                            positions(&native_program),
+                            positions(&legacy_program),
+                            "{label}: compiler source positions"
+                        );
+                        if native != legacy {
+                            failures.push(format!(
+                                "{label}: native {}, QuickJS {}",
+                                output(&native),
+                                output(&legacy)
+                            ));
+                        }
+                    }
                     Err(error) => failures.push(format!("{label}: QuickJS {error}")),
                 }
             }
@@ -143,45 +215,83 @@ fn native_reader_forms_metadata_positions_and_errors_match_quickjs() {
 }
 
 #[test]
-fn reader_facade_initializes_and_runs_in_a_source_macro() {
-    let root =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-reader");
-    let build = |native| {
-        let mut host = MacroHost::new();
-        if native {
-            host.use_native_macros();
-        }
-        light_cljs::compile_namespace_with_macros(
-            "reader-use",
-            std::slice::from_ref(&root),
-            &mut host,
-        )
-        .unwrap()
-    };
-    let native = build(true);
-    assert_eq!(output(&native), "[42 [1 2]]\n");
+fn native_reader_keeps_unrepresented_literals_explicitly_unsupported() {
+    for (tag, text) in [
+        ("inst", "#inst \"2020\""),
+        ("UUID", "#uuid \"550e8400-e29b-41d4-a716-446655440000\""),
+        ("queue", "#queue []"),
+        ("JS", "#js []"),
+    ] {
+        let source = format!("(defmacro probe [] (compiler-reader-read-string {text:?})) (probe)");
+        let error = expand(&source, true).unwrap_err();
+        assert!(
+            error.contains(&format!(
+                "unsupported operation: native macro runtime reader {tag} literal"
+            )),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn native_reader_unwraps_input_and_retains_eof_and_callback_occurrences() {
+    let source = r##"
+      (defmacro probe [text sentinel supplied]
+        (let [read compiler-reader-read-string
+              a (read {:eof sentinel} "")
+              b (read {:readers {'x (fn [_] supplied)}} "#x 0")]
+          (list 'quote [(read text) (identical? a sentinel) (meta a)
+                        (identical? b supplied) (meta b) b])))
+      (js/console.log (pr-str (probe "[1 2]" ^:sentinel [3] ^:supplied [4])))"##;
+    let native = expand(source, true).unwrap();
+    assert_eq!(
+        output(&native),
+        "[[1 2] true {:sentinel true} true {:supplied true} [4]]\n"
+    );
     #[cfg(feature = "quickjs")]
-    assert_eq!(native, build(false));
+    assert_eq!(native, expand(source, false).unwrap());
+}
+
+#[test]
+fn reader_facade_initializes_and_runs_in_a_source_macro() {
+    for jobs in [1, 2, 4] {
+        let native = namespace_js("reader-use", true, jobs);
+        assert_eq!(
+            output(&native),
+            "[42 [1 2]]\n[[7] {:tagged true} [\"before\" \"after\"]]\n"
+        );
+        #[cfg(feature = "quickjs")]
+        assert_eq!(native, namespace_js("reader-use", false, jobs));
+    }
 }
 
 #[test]
 fn reduced_cuerdas_ffmt_reads_placeholder_indices_natively() {
-    let root =
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-reader");
-    let build = |native| {
-        let mut host = MacroHost::new();
-        if native {
-            host.use_native_macros();
-        }
-        light_cljs::compile_namespace_with_macros(
-            "format-use",
-            std::slice::from_ref(&root),
-            &mut host,
-        )
-        .unwrap()
-    };
-    let native = build(true);
+    let native = namespace_js("format-use", true, 1);
     assert_eq!(output(&native), "url(A): B/A % B plain j/a\n");
     #[cfg(feature = "quickjs")]
-    assert_eq!(native, build(false));
+    assert_eq!(native, namespace_js("format-use", false, 1));
+}
+
+#[test]
+fn native_promise_printer_extension_matches_quickjs() {
+    // The promesa printer that app.main demands while initializing unrelated
+    // Transit declarations. Installing it must also change actual dispatch.
+    let source = r##"
+        (defprotocol P (show [x]))
+        (extend-protocol P default (show [x] :fallback))
+        (extend-type js/Promise
+          P (show [x] :promise)
+          IPrintWithWriter (-pr-writer [p writer opts] (-write writer "#<js/Promise[~]>")))
+        (defmacro probe []
+          (let [p (js/Promise.resolve 42)]
+            (list 'quote [(pr-str p) (show p) (show (js/Object.)) (satisfies? P p) (implements? P p)])))
+        (js/console.log (pr-str (probe)))"##;
+    let native = expand(source, true).unwrap();
+    assert_eq!(
+        output(&native),
+        "[\"#<js/Promise[~]>\" :promise :fallback true true]\n"
+    );
+    #[cfg(feature = "quickjs")]
+    assert_eq!(native, expand(source, false).unwrap());
 }

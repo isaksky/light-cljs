@@ -25,6 +25,7 @@ const decl = (() => {
     if (typeof target === 'function' && target.__lightNativeType !== undefined) return target.__lightNativeType;
     const core = coreKeys.get(target);
     if (core !== undefined) return core;
+    if (target === Promise) return 'js/Promise';
     throw new Error('unsupported operation: native protocol extension of ' + String(target));
   };
   // An extension a bundle installs has the bundle's order; one that macro
@@ -81,7 +82,7 @@ const decl = (() => {
     const visible = t.entries.filter(e => e.overlay > 0 || e.order <= frontier)
       .sort((a, b) => a.overlay - b.overlay || a.order - b.order);
     for (const e of visible) map = __rt.assoc(map, e.key, e.fn);
-    t.map = map; t.version = version; t.frontier = frontier;
+    t.map = map; t.promise=__rt.getOr(map,'js/Promise',undefined);t.version = version; t.frontier = frontier;
   };
   // A struct of a type this task has not declared yet (a published value
   // another task made): demand the type's declaration, its product of the
@@ -96,7 +97,10 @@ const decl = (() => {
   };
   const lookup = (t, x) => {
     if (t.version !== version || t.frontier !== frontier) build(t);
-    let m = __rt.cljDispatch(t.map, x);
+    const value=t.promise===undefined?null:__rt.formValue(x);
+    const promise=value!==null&&typeof value==='object'&&__rt.formKind(value)===null&&value instanceof Promise;
+    let m=promise?t.promise:undefined;
+    if(m===undefined)m = __rt.cljDispatch(t.map, x);
     if (m === undefined) {
       // A JavaScript object: a mutable type's instance, or a host object.
       const ty = __rt.cljIsAtom(x)?undefined:x.__lightNativeType;
@@ -157,6 +161,7 @@ const decl = (() => {
     const value = __rt.formValue(x), kind = __rt.formKind(value);
     if (kind === 'list') return __rt.formCount(value) === 0 ? 'empty-list' : 'list';
     if (kind !== null) return directKinds.has(kind) ? kind : null;
+    if (value instanceof Promise) return 'js/Promise';
     return value !== null && typeof value === 'object' ? value.__lightNativeType ?? null : null;
   };
   const implementsDirectly = (key, x) => {
