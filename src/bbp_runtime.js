@@ -298,7 +298,10 @@ const decl = (() => {
   return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, mutableRecord,
     printer:x=>resolve(methodTable('IPrintWithWriter/-pr-writer',3),x),
     writer:x=>resolve(methodTable('IWriter/-write',2),x),
-    flusher:x=>resolve(methodTable('IWriter/-flush',1),x)};
+    flusher:x=>resolve(methodTable('IWriter/-flush',1),x),
+    kvReducer:x=>resolve(methodTable('IKVReduce/-kv-reduce',3),x),
+    entryKey:x=>resolve(methodTable('IMapEntry/-key',1),x),
+    entryVal:x=>resolve(methodTable('IMapEntry/-val',1),x)};
 })();
 const native = (() => {
   let gensymScope = 0, gensymPrefix = '';
@@ -740,6 +743,41 @@ const native = (() => {
     }
     return acc;
   };
+  const entryPart = (x, value) => {
+    const method = value ? decl.entryVal(x) : decl.entryKey(x);
+    if (method !== null) return method.call(x, x);
+    // Map entries have vector storage, but are not editable vectors.
+    if (__rt.formKind(val(x)) === 'vector' && !__rt.cljIsEditable(x)) return __rt.cljNth(x, value ? 1 : 0);
+    throw new Error('No protocol method IMapEntry/-' + (value ? 'val' : 'key') + ' defined for this value');
+  };
+  const reduceKv = (f, init, c) => {
+    const method = decl.kvReducer(c);
+    if (method !== null) return method.call(c, c, f, init);
+    const value = val(c), kind = __rt.formKind(value);
+    if (value == null) return init;
+    const record = decl.mutableRecord(value);
+    let entries;
+    // The printer traversal already retains positional duplicates and key
+    // identity, and orders hash paths (including record extensions) as the
+    // legacy runtime does. No transient or callback runs while preparing it.
+    if (kind === 'map' || kind === 'record') entries = __rt.formPrintItems(value);
+    else if (record !== null) {
+      entries = vector(record.fields.map((name,i)=>__rt.formVector(__rt.cljKeyword(name),value[record.fieldMembers[i]])));
+      if (value.__extmap != null) for (const entry of arr(__rt.formPrintItems(value.__extmap))) entries = __rt.formConj(entries,entry);
+    } else if (kind === 'vector' && __rt.cljIsEditable(c)) {
+      for (let i = 0, n = __rt.cljCount(c); i < n; i++) {
+        init = prepareInvoke(f)(init, i, __rt.cljNth(c, i));
+        if (__rt.cljIsReduced(init)) return __rt.cljUnreduced(init);
+      }
+      return init;
+    } else return reduceSeq((result,entry)=>prepareInvoke(f)(result,entryPart(entry,false),entryPart(entry,true)),init,c);
+    for (let i = 0, n = __rt.formCount(entries); i < n; i++) {
+      const entry = __rt.formNth(entries,i);
+      init = prepareInvoke(f)(init,__rt.formNth(entry,0),__rt.formNth(entry,1));
+      if (__rt.cljIsReduced(init)) return __rt.cljUnreduced(init);
+    }
+    return init;
+  };
   const reducing = (rf, step, complete = result => invoke(rf, result)) => (...a) => {
     if (a.length === 0) return invoke(rf);
     if (a.length === 1) return complete(a[0]);
@@ -921,6 +959,8 @@ const native = (() => {
     partition:(...a)=>a.length===2?partitionFrom(partitionFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionFrom(partitionFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
     reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);const s=seqOf(a[0]);
       return s===null?invoke(f):reduceSeq(f,__rt.cljFirst(s),__rt.cljRest(s));},
+    reduceKv, kvReduceProtocol:(c,f,init)=>reduceKv(f,init,c),
+    keyProtocol:x=>entryPart(x,false), valProtocol:x=>entryPart(x,true),
     transduce,
     completing:(...a)=>a.length===1||a.length===2?reducing(a[0],(result,x)=>invoke(a[0],result,x),a.length===1?result=>result:result=>invoke(a[1],result)):arity(a.length),
     into:(...a)=>{

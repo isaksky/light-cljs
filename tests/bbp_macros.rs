@@ -150,6 +150,164 @@ fn native_core_services_match_quickjs() {
 }
 
 #[test]
+fn native_reduce_kv_matches_quickjs() {
+    // Each row expands a source macro, so the same table compares values,
+    // errors, effects, occurrences and callback ABI against the legacy host.
+    for (label, declarations, body, argument) in [
+        (
+            "nil and empty",
+            "",
+            r#"(let [seed (with-meta [] {:seed true}) f (fn [& _] (throw (js/Error. "called")))]
+            [(identical? seed (reduce-kv f seed nil)) (identical? seed (reduce-kv f seed {}))
+             (identical? seed (reduce-kv f seed [])) (meta (reduce-kv f seed nil))
+             (reduced? (reduce-kv f (reduced :seed) {}))])"#,
+            "nil",
+        ),
+        (
+            "vector indices",
+            "",
+            r#"(let [f reduce-kv v (vec (range 67))]
+            [(f (fn [a k v] (conj a [k v])) [] [:a nil false])
+             (f (fn [a k v] (+ a (* k v))) 0 v) (count v) (last v)])"#,
+            "nil",
+        ),
+        (
+            "array maps and positional duplicates",
+            "",
+            r#"(mapv (fn [m] (reduce-kv (fn [a k v] (conj a [k v])) [] m))
+            [(array-map :z 0 :a 1) '{1 :first 1.0 :second} '{\a 1 "a" 2}
+             (array-map \a 1 "a" 2) (assoc '{1 :first 1.0 :second} 2 :last)])"#,
+            "nil",
+        ),
+        (
+            "hash paths and nil key",
+            "",
+            r#"(let [m (apply hash-map (mapcat (fn [i] [(str "k" i) i]) (range 40)))
+            m (assoc m nil :nil :keyword :value)]
+            [(reduce-kv (fn [a k v] (conj a [k v])) [] m) (count m)])"#,
+            "nil",
+        ),
+        (
+            "reader map and metadata",
+            "",
+            r#"(let [k (with-meta 'k {:key true}) v (with-meta [1] {:value true})
+            m (with-meta (array-map k v) {:map true}) seed (with-meta [] {:seed true})
+            result (reduce-kv (fn [a key value] (conj a [(identical? k key) (identical? v value) (meta key) (meta value)])) seed m)]
+            [result (meta result) (meta m) (reduce-kv (fn [a k v] (conj a [k v])) [] input)])"#,
+            "^{:input true} {:z 1 :a 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8 :h 9}",
+        ),
+        (
+            "records and hashed extensions",
+            "(defrecord R [z a])",
+            r#"(let [r (with-meta (assoc (R. 1 2) :b 3 nil 4 :c 5 :d 6 :e 7 :f 8 :g 9 :h 10 :i 11) {:record true})]
+            [(reduce-kv (fn [a k v] (conj a [k v])) [] r) (meta r) (count r)])"#,
+            "nil",
+        ),
+        (
+            "records and positional extensions",
+            "(defrecord R [a])",
+            r#"(let [r (map->R '{:a 0 1 :first 1.0 :second})]
+            [(reduce-kv (fn [a k v] (conj a [k v])) [] r) (count r)])"#,
+            "nil",
+        ),
+        (
+            "mutable record",
+            "(defrecord R [^:mutable a])",
+            r#"(let [r (R. 1 nil {:z 2})]
+            (reduce-kv (fn [a k v] (conj a [k v])) [] r))"#,
+            "nil",
+        ),
+        (
+            "reduced and thrown callbacks",
+            "",
+            r#"(let [seen (js/Array.)
+            f (fn [a k v] (.push seen (str k ":" v)) (reduced (conj a v)))
+            result (mapv (fn [c] (reduce-kv f [] c)) [[1 2] (array-map :a 3 :b 4) (apply hash-map [nil 5 :a 6])])
+            nested (reduce-kv (fn [a k v] (reduced (reduced v))) nil [7 8])
+            error (try (reduce-kv (fn [a k v] (.push seen "throw") (throw (js/Error. "callback"))) nil [:x :y])
+                    (catch :default e (.-message e)))]
+            [result (vec seen) (reduced? nested) (unreduced nested) error])"#,
+            "nil",
+        ),
+        (
+            "callback receiver and getter",
+            "",
+            r#"(let [seen (js/Array.)
+            f (js* "({get call(){const target=this;~{}.push('get'); return function(receiver,a,k,v){~{}.push(this===target,receiver===null,v);return a+v;};}})" seen seen)
+            result (reduce-kv f 0 (array-map :a 1 :b 2))]
+            [result (vec seen)])"#,
+            "nil",
+        ),
+        (
+            "lazy map entries stop before tail",
+            "",
+            r#"(let [seen (js/Array.)
+            entries (map (fn [e] (.push seen (str (key e))) e) (seq (array-map :a 1 :b 2 :c 3)))
+            result (reduce-kv (fn [a k v] (reduced [k v])) nil entries)]
+            [result (vec seen)])"#,
+            "nil",
+        ),
+        (
+            "map entry and invalid entries",
+            "",
+            r#"(mapv (fn [c] (try (reduce-kv (fn [a k v] (conj a [k v])) [] c)
+            (catch :default e (.-message e))))
+            [(first (seq {:a 1})) (list [:a 1]) (list nil) (list 1) [] nil])"#,
+            "nil",
+        ),
+        (
+            "entry protocol fallback",
+            "(deftype E [k v] IMapEntry (-key [_] k) (-val [_] v))",
+            r#"(reduce-kv (fn [a k v] (conj a [k v])) [] (list (E. :a 1) (E. :b 2)))"#,
+            "nil",
+        ),
+        (
+            "kv protocol override",
+            "(deftype R [] IKVReduce (-kv-reduce [this f init] (f init :custom 42)))",
+            r#"[(reduce-kv (fn [a k v] [a k v]) :init (R.))
+            (reduced? (reduce-kv (fn [a k v] (reduced v)) nil (R.)))
+            (-kv-reduce (R.) (fn [a k v] [a k v]) :init)]"#,
+            "nil",
+        ),
+        (
+            "initial and source stay persistent",
+            "",
+            r#"(let [m (with-meta (array-map :a 1 :b 2) {:tag true}) original m
+            result (reduce-kv (fn [a k v] (dissoc a k)) m m)]
+            [(identical? m original) (count original) result (meta result) (meta original)])"#,
+            "nil",
+        ),
+    ] {
+        let source = format!(
+            "{declarations} (defmacro probe [input] (list 'quote {body})) (js/console.log (pr-str (probe {argument})))"
+        );
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        let native = emit_js(&program);
+        let legacy = light_cljs::compile(&source).unwrap_or_else(|e| panic!("{label}: {e}"));
+        if label == "reader map and metadata" {
+            // As in native_positional_literal_matrix_matches_legacy, imported
+            // reader maps retain source positions in the native bridge. The
+            // legacy bridge promotes this nine-entry input to a hash map.
+            assert_eq!(
+                program_output(&native),
+                "[[[true true {:key true} {:value true}]] {:seed true} {:map true} [[:z 1] [:a 2] [:b 3] [:c 4] [:d 5] [:e 6] [:f 7] [:g 8] [:h 9]]]\n"
+            );
+            #[cfg(feature = "quickjs")]
+            assert_eq!(
+                program_output(&legacy),
+                "[[[true true {:key true} {:value true}]] {:seed true} {:map true} [[:e 6] [:z 1] [:g 8] [:c 4] [:h 9] [:b 3] [:d 5] [:f 7] [:a 2]]]\n"
+            );
+            continue;
+        }
+        assert_eq!(program_output(&native), program_output(&legacy), "{label}");
+        assert_eq!(native, legacy, "{label}: expansion");
+    }
+}
+
+#[test]
 fn partition_all_helpers_publish_and_resume_with_buffered_values() {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
     let root = temp_dir::TempDir::new("native-partition-all");
