@@ -115,7 +115,10 @@ host.preload_native_helper("cljs.user/helper", "(fn [x] (list '+ x 2))")?;
 Preload configuration is installed anew in each session. Declaration-bundle
 products such as protocols still report unsupported demand. Namespace builds
 support `--jobs 1`, `2` and higher through the existing compiler pool. A waiting
-worker helps ready compiler jobs with fresh, bounded nested state. After a helper
+worker helps compiler jobs proven macro-free with fresh, bounded nested state.
+Jobs that may demand other analyses remain for ordinary worker claims, avoiding
+artificial waits on an analyzer frame suspended lower in the same Rust stack.
+After a helper
 wait, owned VM steps may resume on another worker; analyzer callbacks remain on
 their owning thread. The pool test forces two consumers to park, one helper to
 compile, unrelated analysis during the wait, and a continuation to migrate without

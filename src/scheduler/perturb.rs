@@ -238,7 +238,12 @@ impl<J: Job, O> State<J, O> {
         self.perturbed.as_ref().is_some_and(|p| p.config.fixed)
     }
 
-    fn start_logged(&mut self, w: usize, entry: Entry<J>, left: usize) -> super::Claim<J> {
+    pub(super) fn start_logged(
+        &mut self,
+        w: usize,
+        entry: Entry<J>,
+        left: usize,
+    ) -> super::Claim<J> {
         if let Some(p) = &self.perturbed {
             (p.config.log.lock().unwrap_or_else(|e| e.into_inner())).push((w, entry.key));
         }

@@ -5,4 +5,6 @@
     (finally (js* "globalThis.afterDemand = (globalThis.afterDemand || 0) + 1"))))
 (defn left [] (demand 40))
 (defn right [] (demand 40))
+(defmacro read-left [] (left))
+(defn blocked [] (read-left))
 (defn other [] (+ 1 2))

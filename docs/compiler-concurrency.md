@@ -3106,10 +3106,18 @@ for one compiler producer, and verify retained input identity and one execution
 of the code before the wait and in `finally`.
 
 The compiler's deferred-unit pool connects these mechanisms: native waits help
-ready analysis jobs with fresh worker views, and owned bounded VM steps go to
+analysis jobs proven safe by the existing snapshot-based macro-free classifier
+with fresh worker views, and owned bounded VM steps go to
 the urgent queue after the first helper wait. No thread-local analyzer callback
-crosses a worker boundary. A deterministic pool test holds two consumers on one
+crosses a worker boundary. Jobs that may demand another analysis remain for
+ordinary worker claims: nesting C below suspended A when C needs A would create
+an artificial Rust-stack wait. The classifier excludes nested definitions and
+deferred drains, lazy references, readers and engine services; ordinary Var reads
+resolve snapshot data without demanding initializers. Its existing runtime guard
+rejects engine entry. A deterministic pool test holds two consumers on one
 unprepared helper, requires unrelated analysis during their wait, and forces a
-saved continuation onto the other OS worker. Real namespace output agrees at
+saved continuation onto the other OS worker. A queued C that actually demands A
+runs only after an ordinary worker becomes available; the independent analysis
+still runs during the wait. Real namespace output agrees at
 one, two and four slots. Aggregate helper and task counters include all workers.
 The old per-isolate implementation above continues to describe legacy backends.

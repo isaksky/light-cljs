@@ -71,10 +71,17 @@ impl Default for Slots {
 
 /// What the pool needs to know about a unit of work. Running it is the
 /// caller's function, so a job is plain owned data that may cross threads;
-/// engine handles never enter a queue.
+/// a VM job must own its task and carry no borrowed analyzer state.
 pub trait Job: Send {
     /// The phase queue the job waits in, below [`Config::phases`].
     fn phase(&self) -> usize;
+
+    /// Whether this job can safely run inside a waiting job's Rust stack.
+    /// An analyzer that might depend on that suspended frame must opt out;
+    /// ordinary worker claims can still run it.
+    fn help_ready(&self) -> bool {
+        true
+    }
 
     /// Its estimated cost, in whatever unit the caller uses consistently;
     /// batch limits count it ([`Limits::batch_cost`]).
@@ -671,6 +678,87 @@ impl<J: Job, O> State<J, O> {
         })
     }
 
+    /// Helping cannot retain an analyzer frame whose dependency may be the
+    /// caller suspended below it. Leave those jobs runnable for ordinary claims.
+    fn claim_help(&mut self, w: usize, limits: &Limits) -> Option<Claim<J>> {
+        if self.shutdown || self.cancelled {
+            return None;
+        }
+        let blocked = self
+            .urgent
+            .iter()
+            .chain(self.ready.iter().flatten())
+            .chain(self.local.iter().flatten().flatten())
+            .any(|entry| !entry.job.help_ready());
+        if !blocked {
+            return self.claim(w, limits);
+        }
+        let eligible = |entry: &Entry<J>| entry.job.help_ready() && self.serves(w, entry.phase);
+        let entry = if let Some(at) = self.urgent.iter().position(eligible) {
+            self.runnable_total -= 1;
+            self.counts.urgent += 1;
+            self.urgent.remove(at).unwrap()
+        } else {
+            let eligible = |entry: &Entry<J>| {
+                if !eligible(entry) {
+                    return false;
+                }
+                #[cfg(debug_assertions)]
+                if let Some(p) = &self.perturbed
+                    && p.config.fixed
+                    && p.config.owner(entry.key, self.servers[entry.phase]) != w
+                {
+                    return false;
+                }
+                true
+            };
+            let mut selected = None;
+            for phase in 0..self.phases() {
+                if let Some(at) = self.local[w][phase].iter().rposition(&eligible) {
+                    selected = Some((Some(w), phase, at));
+                } else if let Some(at) = self.ready[phase].iter().position(&eligible) {
+                    selected = Some((None, phase, at));
+                } else {
+                    for peer in 0..self.local.len() {
+                        if let Some(at) = self.local[peer][phase].iter().position(&eligible) {
+                            selected = Some((Some(peer), phase, at));
+                            break;
+                        }
+                    }
+                }
+                if selected.is_some() {
+                    break;
+                }
+            }
+            let (owner, phase, at) = selected?;
+            self.take_runnable(phase);
+            match owner {
+                Some(owner) => {
+                    if owner == w {
+                        self.counts.local += 1;
+                    } else {
+                        self.counts.steals += 1;
+                        self.counts.stolen += 1;
+                    }
+                    self.local[owner][phase].remove(at).unwrap()
+                }
+                None => {
+                    self.counts.claims += 1;
+                    self.counts.claimed += 1;
+                    self.ready[phase].remove(at).unwrap()
+                }
+            }
+        };
+        #[cfg(debug_assertions)]
+        if self.perturbed.is_some() {
+            return Some(self.start_logged(w, entry, 0));
+        }
+        Some(Claim {
+            entry: self.start(entry),
+            left: 0,
+        })
+    }
+
     /// Move a bounded batch from the front of `phase`'s shared queue into
     /// worker `w`'s empty deque, the first job at the back where the owner
     /// pops it, so thieves take from the far end. Return the batch size.
@@ -937,7 +1025,7 @@ impl<J: Job, O> Worker<'_, J, O> {
         if let Some(panic) = &state.panic {
             return Err(panic.clone());
         }
-        let Some(Claim { entry, left }) = state.claim(self.index, &self.shared.limits) else {
+        let Some(Claim { entry, left }) = state.claim_help(self.index, &self.shared.limits) else {
             return Ok(Help::Idle);
         };
         let worker = Worker {

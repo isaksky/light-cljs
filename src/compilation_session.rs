@@ -636,17 +636,19 @@ impl SharedCatalog {
     /// past the first ones have no engine, a unit not found macro-free
     /// is for the ones with an engine only ([`ENGINE_PHASE`]).
     fn unit_jobs(&self, units: Vec<usize>, mixed: bool) -> Vec<UnitJob> {
-        if !mixed {
-            return units
-                .into_iter()
-                .map(|id| UnitJob::Analyze(id, 0))
-                .collect();
-        }
         let catalog = self.lock();
         (units.into_iter())
-            .map(|id| match catalog.units[id].macro_free {
-                true => UnitJob::Analyze(id, 0),
-                false => UnitJob::Analyze(id, ENGINE_PHASE),
+            .map(|id| {
+                let macro_free = catalog.units[id].macro_free;
+                UnitJob::Analyze(
+                    id,
+                    if mixed && !macro_free {
+                        ENGINE_PHASE
+                    } else {
+                        0
+                    },
+                    macro_free,
+                )
             })
             .collect()
     }
@@ -3041,7 +3043,7 @@ impl WorkerView {
 /// any worker takes, 1 for one only the workers with an engine take, in a
 /// pool that has workers of both kinds ([`ENGINE_PHASE`]).
 enum UnitJob {
-    Analyze(usize, usize),
+    Analyze(usize, usize, bool),
     #[cfg(feature = "bbp-macros")]
     Native(
         crate::bbp_evaluator::NativeStep,
@@ -3054,15 +3056,27 @@ const ENGINE_PHASE: usize = 1;
 impl crate::scheduler::Job for UnitJob {
     fn phase(&self) -> usize {
         match self {
-            Self::Analyze(_, phase) => *phase,
+            Self::Analyze(_, phase, _) => *phase,
             #[cfg(feature = "bbp-macros")]
             Self::Native(..) => 0,
+        }
+    }
+    fn help_ready(&self) -> bool {
+        match self {
+            // This is the snapshot-based eligibility proof used for engine-free
+            // workers, not a syntactic macro search. It excludes nested defs,
+            // deferred drains, lazy references, readers and engine services;
+            // MacroFreeUnit enforces it during analysis. Ordinary application
+            // Var reads resolve from the snapshot and never demand an initializer.
+            Self::Analyze(_, _, macro_free) => *macro_free,
+            #[cfg(feature = "bbp-macros")]
+            Self::Native(..) => true,
         }
     }
     #[cfg(debug_assertions)]
     fn key(&self) -> u64 {
         match self {
-            Self::Analyze(id, _) => *id as u64,
+            Self::Analyze(id, _, _) => *id as u64,
             #[cfg(feature = "bbp-macros")]
             Self::Native(..) => u64::MAX,
         }
@@ -3520,7 +3534,7 @@ fn execute_pool_job(
 ) {
     let _depth = HelpDepth(HELP_DEPTH.replace(worker.help_depth()));
     let id = match job {
-        UnitJob::Analyze(id, _) => id,
+        UnitJob::Analyze(id, _, _) => id,
         #[cfg(feature = "bbp-macros")]
         UnitJob::Native(step, reply) => {
             #[cfg(test)]
@@ -4358,6 +4372,7 @@ mod worker_tests {
         #[derive(Default)]
         struct Progress {
             started: usize,
+            backedge_reads: usize,
             tasks: HashMap<TaskId, Task>,
             useful: bool,
             held: Option<(TaskId, usize)>,
@@ -4378,9 +4393,16 @@ mod worker_tests {
         let left = units["cljs.user/left"];
         let right = units["cljs.user/right"];
         let other = units["cljs.user/other"];
+        let blocked = units["cljs.user/blocked"];
+        session.set_macro_free(other);
         let progress = Arc::new((Mutex::new(Progress::default()), Condvar::new()));
         let state = progress.clone();
         runtime.on_wait(Arc::new(move |task, key| {
+            if key.kind() == ResultKind::new(3)
+                && key.dependency() == DependencyId::new(left as u64)
+            {
+                state.0.lock().unwrap().backedge_reads += 1;
+            }
             if key.kind() == ResultKind::new(3)
                 && key.dependency() == DependencyId::new(helper as u64)
             {
@@ -4395,6 +4417,13 @@ mod worker_tests {
         }));
         let state = progress.clone();
         *shared.on_claim.lock().unwrap() = Some(Arc::new(move |unit| {
+            if unit == blocked {
+                assert_eq!(
+                    HELP_DEPTH.get(),
+                    0,
+                    "C may wait on outer A and must not be nested below it"
+                );
+            }
             if unit == left || unit == right {
                 let mut p = state.0.lock().unwrap();
                 p.started += 1;
@@ -4477,7 +4506,7 @@ mod worker_tests {
             },
             |slot, job, worker| execute_pool_job(slot, job, worker, &shared, &environment),
             |pool| {
-                pool.submit_batch([left, right, other].map(|id| UnitJob::Analyze(id, 0)));
+                pool.submit_batch(shared.unit_jobs(vec![left, right, blocked, other], false));
                 loop {
                     match pool.next_outcome().unwrap() {
                         crate::scheduler::Next::Outcome(()) => {}
@@ -4493,6 +4522,7 @@ mod worker_tests {
         let p = progress.0.lock().unwrap();
         assert!(p.useful && p.migrated);
         assert_eq!(p.tasks.len(), 2);
+        assert_eq!(p.backedge_reads, 1, "C really demands A after A can resume");
         for task in p.tasks.values() {
             for name in ["beforeDemand", "afterDemand"] {
                 assert_eq!(
@@ -4502,10 +4532,13 @@ mod worker_tests {
             }
         }
         let counters = runtime.helper_counts();
-        assert_eq!(counters.compiled, 1);
+        assert_eq!(
+            counters.compiled, 2,
+            "one helper plus C's later demand for A"
+        );
         assert!(counters.migrations > 0);
         let trace = crate::compile_trace::record();
-        for id in [left, right, other] {
+        for id in [left, right, blocked, other] {
             assert!(matches!(
                 shared.lock().units[id].state,
                 AnalysisState::Analyzed(..)
