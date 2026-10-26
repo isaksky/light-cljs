@@ -1204,30 +1204,14 @@ impl BbpEvaluator {
             .borrow()
             .clone()
             .ok_or_else(|| error("compiler helper service is not installed"))?;
-        // The requesting task is parked. Compiler registration and nested
-        // macro expansion use independent mutable state on the same heap.
-        let active = Self::in_runtime(self.shared.clone(), self.service_depth + 1)?;
-        let producer_cx = active.cx()?;
-        self.shared.0.graph.lock().unwrap().bind_producer(
-            key,
-            request.producer(),
-            producer_cx.task.id(),
-        );
-        *active.service.borrow_mut() = Some(callback.clone());
-        *active.help.borrow_mut() = self.help.borrow().clone();
-        *active.runner.borrow_mut() = self.runner.borrow().clone();
-        *active.submitter.borrow_mut() = self.submitter.borrow().clone();
-        let registrations = cx.registrations.borrow().clone();
-        // Replayed in fixed blocks from the first registration: a full
-        // block's text never changes, so every producer task calls the one
-        // factory compiled for it (`evaluate_unit`).
-        for block in registrations.chunks(REPLAY_BLOCK) {
-            let value = active.evaluate_unit(&replay_source(block))?;
-            active.release(value)?;
-        }
-        *producer_cx.registrations.borrow_mut() = registrations;
-        producer_cx.catalog.set(cx.catalog.get());
-        drop(producer_cx);
+        let active = self.spawn_producer(cx, Some(callback.clone()), |task| {
+            self.shared
+                .0
+                .graph
+                .lock()
+                .unwrap()
+                .bind_producer(key, request.producer(), task);
+        })?;
         let source = callback(&active, id).map_err(error)?;
         // Only the factory expression runs here. Its initializer runs in each
         // consumer's task, preserving task-owned mutable values.
@@ -1254,6 +1238,38 @@ impl BbpEvaluator {
                 }
             }
         }
+    }
+    /// A producer task for this task's helper demand, `bind` given its task
+    /// first: this evaluator's services and its task's registrations,
+    /// replayed, with its catalog cursor, so a nested producer starts where
+    /// its parent is (`WorkerView::install`).
+    fn spawn_producer(
+        &self,
+        cx: &TaskContext,
+        service: Option<UnitService>,
+        bind: impl FnOnce(big_boy_pants_js::TaskId),
+    ) -> Result<Self, EvalError> {
+        // The requesting task is parked. Compiler registration and nested
+        // macro expansion use independent mutable state on the same heap.
+        let active = Self::in_runtime(self.shared.clone(), self.service_depth + 1)?;
+        let producer_cx = active.cx()?;
+        bind(producer_cx.task.id());
+        *active.service.borrow_mut() = service;
+        *active.help.borrow_mut() = self.help.borrow().clone();
+        *active.runner.borrow_mut() = self.runner.borrow().clone();
+        *active.submitter.borrow_mut() = self.submitter.borrow().clone();
+        let registrations = cx.registrations.borrow().clone();
+        // Replayed in fixed blocks from the first registration: a full
+        // block's text never changes, so every producer task calls the one
+        // factory compiled for it (`evaluate_unit`).
+        for block in registrations.chunks(REPLAY_BLOCK) {
+            let value = active.evaluate_unit(&replay_source(block))?;
+            active.release(value)?;
+        }
+        *producer_cx.registrations.borrow_mut() = registrations;
+        producer_cx.catalog.set(cx.catalog.get());
+        drop(producer_cx);
+        Ok(active)
     }
     fn initialize(&self, cx: &TaskContext, begin: bool) -> Result<Rooted, EvalError> {
         let unit = cx

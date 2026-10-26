@@ -162,6 +162,27 @@ fn cancelling_a_consumer_whose_woken_step_is_queued_keeps_the_producer_and_peer(
 }
 
 #[test]
+fn nested_producers_inherit_their_parents_registrations_and_catalog_cursor() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let parent = shared.evaluator().unwrap();
+    parent
+        .register_compiler_root("cljs.user/helper", Some(7), false, "helper.cljs:1", None)
+        .unwrap();
+    // A worker's engine has no cursor: its view's count stands for it.
+    let child = parent
+        .spawn_producer(&parent.cx().unwrap(), None, |_| {})
+        .unwrap();
+    assert_eq!(child.catalog_cursor(), None);
+    assert_eq!(child.registration_count(), parent.registration_count());
+    child.set_catalog_cursor(3);
+    let grandchild = child
+        .spawn_producer(&child.cx().unwrap(), None, |_| {})
+        .unwrap();
+    assert_eq!(grandchild.catalog_cursor(), Some(3));
+    assert_eq!(grandchild.registration_count(), child.registration_count());
+}
+
+#[test]
 fn a_parked_context_is_borrowed_with_its_view_state_and_handles() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let (first, state) = shared.lent_evaluator().unwrap();
