@@ -136,6 +136,7 @@ fn native_printing_matches_quickjs_for_every_native_value_kind() {
         ("reader chars", "", "(pr-str x)", r#"[\a \newline \space \tab \backspace \formfeed \return \u0000 \u263a]"#),
         ("named", "", "(pr-str 'a 'a/b :a :a/b (symbol \"\") (keyword \"\"))", "nil"),
         ("empty", "", "(pr-str '() [] {} #{})", "nil"),
+        ("reduced and atoms", "", "(pr-str (reduced [1]) (pr-str* (reduced 2)) (str (reduced 3)) (atom [1 2]) (pr-str* (atom false)) (str (atom nil)))", "nil"),
         ("collections", "", "(pr-str '(1 [2] {:a 3} #{4}) [1 nil false] {:a 1 :b 2} #{:a :b})", "nil"),
         ("map ordering", "", "(pr-str (into {} (map (fn [i] [i (- i)]) (range 40))))", "nil"),
         ("set ordering", "", "(pr-str (into #{} (range 40)))", "nil"),
@@ -171,6 +172,7 @@ fn native_printing_matches_quickjs_for_every_native_value_kind() {
         ("writer errors", "", "(pr-str (try (-write (js/Object.) \"x\") (catch :default e (.-message e))) (try (-flush (js/Object.)) (catch :default e (.-message e))))", "nil"),
         ("regex", "", "(pr-str #\"a\\\\b\")", "nil"),
         ("namespace", "", "(pr-str (str *ns*) (ns-name *ns*) *ns*)", "nil"),
+        ("namespace constructor", "", "(let [s (with-meta 'printing.namespace {:doc \"fresh\"}) n (Namespace. nil s)] (pr-str (str n) (meta (ns-name n)) (identical? s (ns-name n)) (ns-name 'a/b) (Namespace. nil \"text\")))", "nil"),
     ].into_iter().chain(include_str!("fixtures/compiler-native-printing.tsv").lines().filter(|line|!line.starts_with('#')).map(|line| {
         let mut columns=line.split('\t');
         (columns.next().unwrap(),"(defn observe [x] x)",columns.next().unwrap(),"nil")
@@ -198,7 +200,7 @@ fn native_printer_rejects_unimplemented_host_values_explicitly() {
     use light_cljs::evaluator::MacroEvaluator;
     let evaluator = light_cljs::bbp_evaluator::BbpEvaluator::new(Default::default()).unwrap();
     let result=evaluator.evaluate_unit(r#"rt=>{
-        for(const [value,kind] of [[{},'object'],[[1,2],'object'],[()=>1,'function'],[__rt.cljReduced(1),'reduced']]){
+        for(const [value,kind] of [[{},'object'],[[1,2],'object'],[()=>1,'function']]){
             let message;
             try{rt.core.prStr(value);}catch(e){message=e.message;}
             if(message!=='unsupported operation: native macro runtime pr-str of '+kind)throw new Error('printer boundary: '+message);

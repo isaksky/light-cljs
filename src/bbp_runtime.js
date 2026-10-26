@@ -99,7 +99,7 @@ const decl = (() => {
     let m = __rt.cljDispatch(t.map, x);
     if (m === undefined) {
       // A JavaScript object: a mutable type's instance, or a host object.
-      const ty = x.__lightNativeType;
+      const ty = __rt.cljIsAtom(x)?undefined:x.__lightNativeType;
       if (ty !== undefined) m = __rt.getOr(t.map, ty, undefined);
       if (m === undefined) m = __rt.getOr(t.map, 'object', undefined);
       if (m === undefined) m = __rt.getOr(t.map, '_', null);
@@ -413,6 +413,8 @@ const native = (() => {
     const custom=decl.printer(x);
     if(custom!=null)return custom.call(x,x,writer,options);
     const kind=__rt.formKind(x);
+    if(__rt.cljIsAtom(x)){write(writer,'#object[cljs.core.Atom {:val ');printWriter(core.deref(x),writer,options);return write(writer,'}]');}
+    if(kind==='reduced')return write(writer,'#object[Reduced [object Object]]');
     if(kind==='keyword'||kind==='symbol')return write(writer,namedText(x));
     if(kind==='type')return write(writer,__rt.formName(x));
     if(typeof x==='string'){
@@ -445,7 +447,7 @@ const native = (() => {
       const ty=x.__lightNativeType;
       if(__rt.formKind(ty)==='type')return write(writer,typeof x==='function'?__rt.formName(ty):'#object['+__rt.formName(ty).replaceAll('/','.')+' '+String(x)+']');
     }
-    if(x instanceof Namespace)return write(writer,'#object[Namespace '+namedText(x.name)+']');
+    if(x instanceof Namespace)return write(writer,'#object[Namespace '+String(x)+']');
     if(x instanceof RegExp)return write(writer,'#"'+x.source+'"');
     // Host objects with a printer protocol work above. Other unimplemented
     // kinds fail explicitly rather than silently stringifying native data.
@@ -463,7 +465,7 @@ const native = (() => {
     const custom=decl.printer(val(x));
     if(custom!=null)return custom.call(val(x),x,w,o);
     const kind=__rt.formKind(val(x));
-    if(!['keyword','symbol','list','vector','map','set','lazy-seq','cons','record'].includes(kind))
+    if(!['keyword','symbol','list','vector','map','set','lazy-seq','cons','record','reduced'].includes(kind)&&!__rt.cljIsAtom(val(x)))
       throw new Error('No protocol method IPrintWithWriter/-pr-writer defined for this value');
     return printWriterImpl(x,w,o,true);
   };
@@ -471,13 +473,15 @@ const native = (() => {
   const namespaces=new Map();
   let currentNamespace;
   const namespaceFrames=[];
-  function Namespace(name){this.name=name;}
-  Namespace.prototype.toString=function(){return namedText(this.name);};
+  function Namespace(obj,name){if(!(this instanceof Namespace))return new Namespace(obj,name);this.obj=obj;this.name=name;}
+  Namespace.prototype.toString=function(){const value=val(this.name),kind=__rt.formKind(value);return kind==='symbol'||kind==='keyword'?namedText(value):String(value);};
   Namespace.prototype.getName=function(){return this.name;};
   const createNs = (...a) => {
     if(a.length!==1&&a.length!==2)return arity(a.length);
     const name=a[0];if(__rt.formKind(val(name))!=='symbol')throw new TypeError('create-ns requires a symbol');
-    const key=namedText(name);if(!namespaces.has(key))namespaces.set(key,new Namespace(name));return namespaces.get(key);
+    const key=namedText(name),obj=a.length===2?val(a[1]):null;
+    if(!namespaces.has(key))namespaces.set(key,new Namespace(obj,name));else if(obj!=null)namespaces.get(key).obj=obj;
+    return namespaces.get(key);
   };
   const findNs = (...a) => {
     if(a.length!==1)return arity(a.length);
@@ -808,6 +812,7 @@ const native = (() => {
     inc:x=>val(x)+1, dec:x=>val(x)-1, multiply:(...xs)=>xs.reduce((a,b)=>a*val(b),1),
     less:(...xs)=>chain(xs,(a,b)=>a<b), greater:(...xs)=>chain(xs,(a,b)=>a>b), lessEqual:(...xs)=>chain(xs,(a,b)=>a<=b), greaterEqual:(...xs)=>chain(xs,(a,b)=>a>=b),
     str:(...xs)=>xs.map(x=>{x=val(x);if(x==null)return '';const kind=__rt.formKind(x);
+      if(kind==='reduced'||__rt.cljIsAtom(x))return '[object Object]';
       if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}
       if(kind==='type')return __rt.formName(x);
       if(kind==='struct')return String(interop(x));
