@@ -1429,7 +1429,7 @@ impl Heap {
                 ClearedWeakSlot { root, token }
             })
             .collect();
-        let garbage: Vec<HeapObject> = objects.sweep();
+        let garbage: Vec<Box<HeapObject>> = objects.sweep();
         // No atom operation is in progress (the world is stopped), so every
         // retired atom box is unreachable: release them now rather than at
         // the atom's next write (`crate::atom`, reclamation).

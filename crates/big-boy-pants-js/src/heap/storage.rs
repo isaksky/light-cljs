@@ -594,7 +594,13 @@ impl ObjectTable {
         out
     }
 
-    pub(super) fn sweep(&mut self) -> Vec<HeapObject> {
+    /// Free every unmarked live slot and return the bodies, still boxed: a
+    /// body is not moved out of its box (a `HeapObject` is 304 bytes on
+    /// aarch64, and one collection's garbage can be thousands of them, which
+    /// moved into one growing `Vec` cost a fresh multi-MiB allocation and
+    /// copy per pause), so the pause copies one pointer per object and the
+    /// caller frees each box with its contents after the pause.
+    pub(super) fn sweep(&mut self) -> Vec<Box<HeapObject>> {
         let mut garbage = Vec::new();
         for (segment_index, segment) in self.segments.iter().enumerate() {
             let mut reclaimed = 0;
@@ -612,9 +618,9 @@ impl ObjectTable {
                 // allocator, table reader or body holder can touch this
                 // unreachable body, and no mutator can be reading it.
                 let object = unsafe { (*slot.object.get()).take().unwrap() };
-                garbage.push(*object);
+                garbage.push(object);
                 // SAFETY: the same stopped-world/access-word exclusion as
-                // the body above; its Box storage has now been released.
+                // the body above, which this slot no longer holds.
                 drop(unsafe { std::mem::take(&mut *slot.reservation.get()) });
                 reclaimed += 1;
                 let generation = state as u32;
