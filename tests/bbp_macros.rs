@@ -226,7 +226,30 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
       (js/console.log (pr-str values))"#,
     )
     .unwrap();
+    type CapturedNames = std::collections::BTreeMap<String, std::collections::BTreeSet<Vec<u16>>>;
+    fn assert_names(actual: &CapturedNames, expected: &CapturedNames) {
+        assert_eq!(
+            actual.keys().collect::<Vec<_>>(),
+            expected.keys().collect::<Vec<_>>()
+        );
+        for (ns, names) in actual {
+            let expected = &expected[ns];
+            let extra = names
+                .difference(expected)
+                .map(|name| String::from_utf16_lossy(name))
+                .collect::<Vec<_>>();
+            let missing = expected
+                .difference(names)
+                .map(|name| String::from_utf16_lossy(name))
+                .collect::<Vec<_>>();
+            assert!(
+                names == expected,
+                "{ns}: extra {extra:?}, missing {missing:?}"
+            );
+        }
+    }
     let mut reference = None;
+    let mut reference_names = None;
     for (jobs, fixed) in [
         (1, false),
         (2, false),
@@ -278,6 +301,15 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
             "{output}"
         );
         assert!(!artifacts["names.macros"].names.gensyms.is_empty());
+        let names: CapturedNames = artifacts
+            .iter()
+            .map(|(ns, artifact)| (ns.clone(), artifact.names.gensyms.iter().cloned().collect()))
+            .collect();
+        if let Some(reference) = &reference_names {
+            assert_names(&names, reference);
+        } else {
+            reference_names = Some(names);
+        }
         if let Some(reference) = &reference {
             assert_eq!(&cold, reference);
         } else {
@@ -323,15 +355,29 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
     }
     #[cfg(feature = "quickjs")]
     {
-        let program = light_cljs::compiler::analyze_namespace_entry(
+        let mut names = CapturedNames::new();
+        let mut capture = |captured: NamespaceCapture| {
+            if let Ok(artifact) = captured.artifact {
+                names.insert(
+                    captured.namespace,
+                    artifact.names.gensyms.into_iter().collect(),
+                );
+            }
+        };
+        let (program, _) = analyze_namespace_entry_recorded(
             "app",
             &[root.path().to_path_buf()],
             &mut MacroHost::new(),
             Default::default(),
             &mut Vec::new(),
+            EntryRecorders {
+                capture: Some(&mut capture),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(Some(emit_js(&program)), reference);
+        assert_names(&names, reference_names.as_ref().unwrap());
     }
     // Initializer effects run only on misses. As with QuickJS, a provider
     // whose macros require those allocations to repeat must opt out of cache.
@@ -353,6 +399,7 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
     )
     .unwrap();
     let mut initializer_reference: Option<String> = None;
+    let mut initializer_names = None;
     for (jobs, seed, held) in [
         (1, 1, false),
         (2, 1, false),
@@ -365,6 +412,15 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
     ] {
         let mut host = MacroHost::new();
         host.use_native_macros();
+        let mut names = CapturedNames::new();
+        let mut capture = |captured: NamespaceCapture| {
+            if let Ok(artifact) = captured.artifact {
+                names.insert(
+                    captured.namespace,
+                    artifact.names.gensyms.into_iter().collect(),
+                );
+            }
+        };
         let (program, _) = analyze_namespace_entry_recorded(
             "app",
             &[root.path().to_path_buf()],
@@ -372,6 +428,7 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
             Default::default(),
             &mut Vec::new(),
             EntryRecorders {
+                capture: Some(&mut capture),
                 slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
                 #[cfg(debug_assertions)]
                 perturbation: Some(light_cljs::scheduler::Perturbation {
@@ -393,6 +450,11 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
         .unwrap();
         let js = emit_js(&program);
         assert!(program_output(&js).contains("initializer"));
+        if let Some(reference) = &initializer_names {
+            assert_names(&names, reference);
+        } else {
+            initializer_names = Some(names);
+        }
         if let Some(reference) = &initializer_reference {
             let difference = js.lines().zip(reference.lines()).find(|(a, b)| a != b);
             assert!(
@@ -404,10 +466,31 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
         }
     }
     #[cfg(feature = "quickjs")]
-    assert_eq!(
-        Some(light_cljs::compile_namespace("app", &[root.path().to_path_buf()]).unwrap()),
-        initializer_reference
-    );
+    {
+        let mut names = CapturedNames::new();
+        let mut capture = |captured: NamespaceCapture| {
+            if let Ok(artifact) = captured.artifact {
+                names.insert(
+                    captured.namespace,
+                    artifact.names.gensyms.into_iter().collect(),
+                );
+            }
+        };
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut MacroHost::new(),
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                capture: Some(&mut capture),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(Some(emit_js(&program)), initializer_reference);
+        assert_names(&names, initializer_names.as_ref().unwrap());
+    }
 }
 
 #[test]

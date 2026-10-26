@@ -281,7 +281,7 @@ const decl = (() => {
   return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, isRecord};
 })();
 const native = (() => {
-  let gensymScope = 0, gensymPrefix = '', gensymLogging = false;
+  let gensymScope = 0, gensymPrefix = '';
   const val = x => __rt.formValue(x);
   const interop = x => {
     const value = val(x), kind = __rt.formKind(value);
@@ -330,7 +330,9 @@ const native = (() => {
     let name;
     if (scope !== 0) name = base + (scope===gensymScope?gensymPrefix:__rt.need(scope,6)) + __rt.effect(65531, 'g' + scope);
     else do { name = base + __rt.effect(65531, 'n'); } while (!__rt.effect(65531, 'a' + name));
-    if (gensymLogging) __rt.effect(65531, initializer===undefined?'L'+name:'C'+scope+':'+name);
+    // The compiler's captured log decides whether recording is enabled.
+    // A nested helper producer has a fresh task and no task-local log flag.
+    __rt.effect(65531, initializer===undefined?'L'+name:'C'+scope+':'+name);
     return __rt.cljSymbol(name);
   };
   const seq = x => __rt.cljSeq(x);
@@ -817,7 +819,7 @@ const native = (() => {
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f,
     compilerForms:{gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
-      takeGensyms:()=>{gensymLogging=true;return __rt.formVector(__rt.effect(65531,'t'));},
+      takeGensyms:()=>__rt.formVector(__rt.effect(65531,'t')),
       raiseGensyms:n=>{__rt.effect(65531,'r'+n);return null;}},
   };
   return rt;
