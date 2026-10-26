@@ -1494,9 +1494,25 @@ fn native_build(
     slots: usize,
     perturbation: Option<light_cljs::scheduler::Perturbation>,
 ) -> (NativeBuild, light_cljs::compile_stats::NativeHelperCounts) {
+    let (build, stats) =
+        native_build_in("native-helper-demand/pool", entry, slots, perturbation, &[]);
+    (build, stats.native_helpers)
+}
+
+/// [`native_build`] of `entry` under `tests/fixtures/{fixtures}`, with
+/// `--cache-blocker` namespaces, and all of its stats.
+#[cfg(debug_assertions)]
+fn native_build_in(
+    fixtures: &str,
+    entry: &str,
+    slots: usize,
+    perturbation: Option<light_cljs::scheduler::Perturbation>,
+    blockers: &[String],
+) -> (NativeBuild, light_cljs::CompileStats) {
     use light_cljs::application::{ApplicationOptions, OptimizationLevel};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/native-helper-demand/pool");
+        .join("tests/fixtures")
+        .join(fixtures);
     let mut host = MacroHost::new();
     host.use_native_macros();
     let mut stats = light_cljs::CompileStats::new();
@@ -1511,6 +1527,7 @@ fn native_build(
             slots: light_cljs::scheduler::Slots::new(slots).unwrap(),
             stats: Some(&mut stats),
             perturbation,
+            blockers,
             ..Default::default()
         },
     );
@@ -1543,7 +1560,7 @@ fn native_build(
             .collect(),
         compiled: stats.native_helpers.compiled,
     };
-    (build, stats.native_helpers)
+    (build, stats)
 }
 
 /// Native namespace builds at one, two, four and eight slots under the
@@ -1596,5 +1613,149 @@ fn native_pool_builds_match_one_slot_under_seeded_scheduling_stress() {
                 }
             }
         }
+    }
+}
+
+/// The effect-lane fixtures (`tests/fixtures/native-lanes`,
+/// docs/compiler-concurrency.md, "Effect lanes (light-cljs-480)"): each
+/// entry, whether it needs `--cache-blocker counter.macros`, and what its
+/// one-slot program prints, or `Err` with a part of its error.
+#[cfg(debug_assertions)]
+const LANE_FIXTURES: &[(&str, bool, Result<&str, &str>)] = &[
+    // Shared counter: `dep`'s unit and `main`'s top-level call.
+    ("counter.main", false, Ok("1 2\n")),
+    ("counter.main", true, Ok("1 2\n")),
+    // Sibling namespaces whose units all take the next value.
+    (
+        "siblings.main",
+        false,
+        Ok("[1 2 [3 4] 5 6 7 8 18 10 11 24]\n"),
+    ),
+    // Source-order macro generations appending to one log.
+    (
+        "generations.main",
+        false,
+        Ok("[:early [:v2 :late] [:v2 :a1] [:v2 :a2] [:v2 :b1] [:b :b2] [:v2 :main]]\n"),
+    ),
+    // `defonce` keeps an atom and a definition, and fills a declaration.
+    (
+        "once.main",
+        false,
+        Ok("[[:a1 0 42 7 1] [:a2 1 42 7 1] [:b1 2 42 7 1] [:b2 3 42 7 1] [:main 4 42 7 1]]\n"),
+    ),
+    // A failed initializer is cached: its effect counts once.
+    ("failure.main", false, Ok("11 21 31 41\n")),
+    // The fourth unit in source order fails, whichever runs first.
+    ("tickets.main", false, Err("tickets/b.cljs:3:8")),
+    // An earlier unit demands a helper whose initializer touches the
+    // shared atom.
+    ("nested.main", false, Ok("[1 101 101 102 103]\n")),
+    // The same within one namespace: a later unit may take the helper
+    // first.
+    ("inherit.main", false, Ok("[1 101 101 102 103]\n")),
+];
+
+/// Compile-time atoms keep their `--jobs 1` order at one, two, four and
+/// eight slots under the scheduler's seeded perturbation (light-cljs-480):
+/// each lane fixture's JavaScript or error, source maps, warnings and
+/// helper counts match the unperturbed one-slot build, without
+/// `--cache-blocker` and with it. Seed 1, or 1 to `LIGHT_CLJS_STRESS_SEEDS`.
+#[cfg(debug_assertions)]
+#[test]
+fn effect_lanes_keep_one_slot_atom_effects_under_seeded_scheduling_stress() {
+    use light_cljs::scheduler::{Limits, Perturbation};
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(1u64);
+    for &(entry, blocked, expected) in LANE_FIXTURES {
+        let blockers = if blocked {
+            vec!["counter.macros".to_owned()]
+        } else {
+            Vec::new()
+        };
+        let (reference, serial) = native_build_in("native-lanes", entry, 1, None, &blockers);
+        match (&reference.output, expected) {
+            (Ok(js), Ok(printed)) => assert_eq!(program_output(js), printed, "{entry}"),
+            (Err(error), Err(part)) => assert!(error.contains(part), "{entry}: {error}"),
+            (output, _) => panic!("{entry}: {output:?}"),
+        }
+        // One slot runs everything in lane order: atoms were checked, and
+        // nothing waited.
+        if reference.output.is_ok() {
+            assert!(serial.lanes.entered > 0, "{entry}");
+            assert_eq!(serial.lanes.waits, 0, "{entry}");
+        }
+        for seed in 1..=seeds {
+            for slots in [1, 2, 4, 8] {
+                for mode in 0..3 {
+                    let perturbation = Perturbation {
+                        seed,
+                        fixed: mode == 1,
+                        limits: (mode == 2).then(|| Limits {
+                            batch_jobs: 1,
+                            admitted_jobs: 1,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    };
+                    let (build, stats) = native_build_in(
+                        "native-lanes",
+                        entry,
+                        slots,
+                        Some(perturbation),
+                        &blockers,
+                    );
+                    let at = format!(
+                        "{entry} (blocked {blocked}): seed {seed}, {slots} slots, mode {mode}"
+                    );
+                    assert_eq!(build, reference, "{at}");
+                    let (counts, serial) = (stats.native_helpers, serial.native_helpers);
+                    assert_eq!(counts.compiled, serial.compiled, "{at}");
+                    assert_eq!(
+                        (counts.published, counts.per_task),
+                        (serial.published, serial.per_task),
+                        "{at}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A later unit, `inherit.app/t`, takes the helper `snapshot` first: its
+/// initializer parks for its lane on the shared counter, behind `x` and
+/// `s`, which the hook holds until it has (with one-job batches, eight
+/// slots give `t` a worker of its own). `s` then demands `snapshot`, so the
+/// initializer inherits `s`'s position and runs, instead of each waiting
+/// for the other; the output is the one-slot build's.
+#[cfg(debug_assertions)]
+#[test]
+fn an_earlier_unit_demanding_a_parked_initializer_lends_it_its_lane() {
+    let (reference, _) = native_build_in("native-lanes", "inherit.main", 1, None, &[]);
+    assert_eq!(
+        program_output(reference.output.as_ref().unwrap()),
+        "[1 101 101 102 103]\n"
+    );
+    for seed in 1..=3 {
+        let slots = 8;
+        let perturbation = light_cljs::scheduler::Perturbation {
+            seed,
+            lane_hold: vec!["inherit.app/x".into(), "inherit.app/s".into()],
+            limits: Some(light_cljs::scheduler::Limits {
+                batch_jobs: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (build, stats) = native_build_in(
+            "native-lanes",
+            "inherit.main",
+            slots,
+            Some(perturbation),
+            &[],
+        );
+        assert_eq!(build, reference, "seed {seed}");
+        assert!(stats.lanes.inherited >= 1, "seed {seed}: {:?}", stats.lanes);
     }
 }

@@ -148,6 +148,12 @@ and multi-arity source macros work, including syntax quote/unquote and splicing.
 Macros can emit protocol/type declarations for the application, and macro code
 can use the compilation's protocols, types and records (see "Protocols and
 types"); declaration registration keeps preloaded helpers.
+Compile-time atoms (`atom`, `deref`, `swap!`, `reset!`, `compare-and-set!`,
+`swap-vals!`, `reset-vals!`) are engine atoms, one per Var across tasks, whose
+effects keep their `--jobs 1` order at every `--jobs` (light-cljs-480;
+docs/compiler-concurrency.md, "Effect lanes (light-cljs-480)"). A `defonce`
+keeps an earlier definition of its Var and fills a declaration, as in the
+legacy runtimes.
 Lazy sequences, compiler literals, dynamic reader services, compiler build
 services and generated-symbol services are not implemented. Native
 symbol/keyword component spellings must

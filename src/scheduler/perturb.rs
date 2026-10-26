@@ -45,6 +45,12 @@ pub struct Perturbation {
     /// coordinator demands a pooled unit before any worker starts it, as on
     /// a loaded machine (light-cljs-442).
     pub start_delay: Option<Duration>,
+    /// A worker holds the pooled units of these Vars (`app.core/f`) until
+    /// some task of the build has parked for its effect lane inside an
+    /// initializer (or ten seconds pass), so that a later unit takes a
+    /// shared helper first and an earlier one then demands it
+    /// (light-cljs-480). Rescue threads are off meanwhile.
+    pub lane_hold: Vec<String>,
     /// Every job this pool started (the parse queue gets a log of its own),
     /// in start order: the deque index of the worker
     /// that ran it (0 on the inline path) and its key. A test prints it as

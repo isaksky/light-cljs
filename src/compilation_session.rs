@@ -501,6 +501,9 @@ pub(crate) struct SharedCatalog {
     /// What the build's isolates share when its pool runs engines: its
     /// deadline, cancellation and memory ([`crate::evaluator::BuildResources`]).
     resources: std::sync::OnceLock<crate::evaluator::BuildResources>,
+    /// Source-order effect lanes for compile-time atoms on the native
+    /// backend ([`crate::effect_lanes`], light-cljs-480).
+    lanes: Arc<crate::effect_lanes::Lanes>,
     #[cfg(feature = "bbp-macros")]
     native_units: std::sync::atomic::AtomicBool,
     #[cfg(feature = "bbp-macros")]
@@ -585,6 +588,31 @@ impl SharedCatalog {
             .and_then(|r| r.as_ref().ok())
             .map_or_default(|r| r.helper_counts())
     }
+    /// The compilation's effect lanes.
+    pub(crate) fn lanes(&self) -> &Arc<crate::effect_lanes::Lanes> {
+        &self.lanes
+    }
+    /// Give `units` their lane positions ([`crate::effect_lanes::Lanes::schedule`]);
+    /// with `forced` (a cache blocker's consumer), each waits for its lane
+    /// before it starts.
+    pub(crate) fn schedule_lanes(&self, units: &[usize], forced: bool) {
+        self.lanes.schedule(units.iter().copied(), forced);
+        let finished: Vec<(usize, bool)> = {
+            let c = self.lock();
+            (units.iter())
+                .filter_map(|&id| match c.units.get(id).map(|u| &u.state) {
+                    Some(AnalysisState::Failed(..)) => Some((id, true)),
+                    Some(AnalysisState::Analyzed(..) | AnalysisState::Prepared(..)) => {
+                        Some((id, false))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        for (id, failed) in finished {
+            self.lanes.finish(id, failed);
+        }
+    }
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn select_native(&self) {
         self.native_units
@@ -597,7 +625,11 @@ impl SharedCatalog {
     ) -> Result<crate::bbp_evaluator::BbpRuntime, crate::evaluator::EvalError> {
         let runtime = self
             .native_runtime
-            .get_or_init(|| crate::bbp_evaluator::BbpRuntime::new(options))
+            .get_or_init(|| {
+                let runtime = crate::bbp_evaluator::BbpRuntime::new(options)?;
+                runtime.set_lanes(self.lanes.clone());
+                Ok(runtime)
+            })
             .clone();
         // One runtime per compilation: a later demand cannot change or reset
         // the aggregate budget the first one built it with.
@@ -731,6 +763,8 @@ impl SharedCatalog {
         let mut _released = None;
         // The trace's frame for the time this thread blocks here.
         let mut _blocked = None;
+        // This thread's wait for the unit, which its analysis inherits.
+        let mut _lane_wait: Option<crate::effect_lanes::WaitGuard> = None;
         let mut guard = self.lock();
         loop {
             if let Some(serve) = server
@@ -766,6 +800,14 @@ impl SharedCatalog {
                     .unwrap_or_else(|| SKIPPED_AFTER_FAILURE.to_owned()));
             }
             if waits {
+                // The unit's analysis inherits this thread's lane position
+                // while it waits (light-cljs-480).
+                if _lane_wait.is_none() {
+                    drop(guard);
+                    _lane_wait = Some(self.lanes.wait_for(crate::effect_lanes::Target::Unit(id)));
+                    guard = self.lock();
+                    continue;
+                }
                 if c.threads[thread].waiting.is_none() {
                     if let Some(path) = c.wait_cycle(thread, id) {
                         return Err(format!("compile dependency cycle: {path}"));
@@ -796,6 +838,11 @@ impl SharedCatalog {
                     // may have settled while this worker ran another job.
                     if !matches!(guard.units[id].state, AnalysisState::Analyzing(_)) {
                         continue;
+                    }
+                    if let Some(wait) = &_lane_wait {
+                        drop(guard);
+                        wait.refresh();
+                        guard = self.lock();
                     }
                     guard = self
                         .settled
@@ -893,10 +940,15 @@ impl SharedCatalog {
             });
             (previous, c.waiting > 0)
         };
+        let failed = previous.is_some() && self.unit_failed_now(id);
         drop(previous);
+        self.lanes.finish(id, failed);
         if waiting {
             self.settled.notify_all();
         }
+    }
+    fn unit_failed_now(&self, id: usize) -> bool {
+        matches!(self.lock().units[id].state, AnalysisState::Failed(..))
     }
     /// Serve `light.build` request `text` of a worker whose analyses are
     /// of the sources `analysis` on the coordinator, which alone has the
@@ -941,6 +993,7 @@ impl SharedCatalog {
             unit.state = AnalysisState::Failed(message, None);
             c.waiting > 0
         };
+        self.lanes.finish(id, true);
         if waiting {
             self.settled.notify_all();
         }
@@ -950,6 +1003,7 @@ impl SharedCatalog {
     pub(crate) fn abandon(&self, message: String) {
         self.lock().abandoned.get_or_insert(message);
         self.settled.notify_all();
+        self.lanes.abandon();
     }
     /// How many extension bundles the compilation registered.
     pub(crate) fn extension_frontier(&self) -> usize {
@@ -1018,6 +1072,7 @@ impl SharedCatalog {
             AnalysisState::Failed(message, diagnostic),
         );
         drop(previous);
+        self.lanes.finish(id, true);
     }
     fn unit_name(&self, id: usize) -> String {
         self.lock().units[id].name.clone()
@@ -2154,6 +2209,8 @@ impl CompilationSession {
         if let Some(resources) = self.shared.resources() {
             resources.workers.cancel();
         }
+        // Nothing the pool still runs is ordered against an earlier unit.
+        self.shared.lanes.abandon();
         #[cfg(feature = "bbp-macros")]
         if let Some(Ok(runtime)) = self.shared.native_runtime.get() {
             runtime.cancel();
@@ -2165,6 +2222,8 @@ impl CompilationSession {
         if let Some(pool) = pool {
             pool.finish();
         }
+        self.shared.lanes.set_rescuer(None);
+        self.shared.lanes.join_rescues();
     }
     /// Whether unit `id`'s analysis failed.
     pub(crate) fn unit_failed(&self, id: usize) -> bool {
@@ -2255,6 +2314,8 @@ impl CompilationSession {
         id: usize,
         engine: Option<&dyn MacroEvaluator>,
     ) -> Result<(), String> {
+        // A kept unit's analysis starts its own activity at its lane.
+        let _root = self.shared.lanes.enter_root();
         let analysis = self.analyze_in(id, engine, false, Take::Hold).map(drop);
         // No pool job after it in unit order starts, as after a worker's.
         self.shared.note_job(id);
@@ -2290,14 +2351,28 @@ impl CompilationSession {
     /// Note that the dispatch of their namespace keeps `units` for its
     /// drain point, which charges them; until then a demand of one takes
     /// its analysis and leaves its charges (light-cljs-394).
-    pub(crate) fn hold_units(&self, units: impl Iterator<Item = usize>) {
-        let mut c = self.shared.lock();
-        for id in units {
-            if let Some(unit) = c.units.get_mut(id) {
-                unit.held = true;
-                unit.dispatched = true;
+    pub(crate) fn hold_units(&self, units: impl Iterator<Item = usize>, forced: bool) {
+        let units: Vec<usize> = units.collect();
+        {
+            let mut c = self.shared.lock();
+            for &id in &units {
+                if let Some(unit) = c.units.get_mut(id) {
+                    unit.held = true;
+                    unit.dispatched = true;
+                }
             }
         }
+        self.shared.schedule_lanes(&units, forced);
+    }
+    /// Give `units`, drained here in order, their lane positions
+    /// ([`SharedCatalog::schedule_lanes`]).
+    pub(crate) fn schedule_units(&self, units: &[usize], forced: bool) {
+        self.shared.schedule_lanes(units, forced);
+    }
+    /// Start a namespace's top-level pass segment on its lane
+    /// ([`crate::effect_lanes::Lanes::begin_pass`]).
+    pub(crate) fn begin_pass(&self, forced: bool) -> crate::effect_lanes::PassGuard {
+        self.shared.lanes.begin_pass(forced)
     }
     fn analyze_in(
         &self,
@@ -2538,6 +2613,7 @@ fn analyze_unit(
         match shared.claim_help(thread, id, queued, server, help)? {
             Claim::Reuse(program, warnings) => return Ok((program, warnings)),
             Claim::TooDeep(inputs, depth) => {
+                shared.lanes.finish(id, true);
                 let (binding, _) = binding();
                 crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
                 drop((inputs, binding));
@@ -2545,6 +2621,9 @@ fn analyze_unit(
             }
             Claim::Analyze(inputs, depth, name, macro_free) => (inputs, depth, name, macro_free),
         };
+    // Its atom effects keep its `--jobs 1` place (light-cljs-480); declared
+    // before the guard, so it ends after the unit settles.
+    let _lane = shared.lanes.enter_unit(id);
     // From here on, however the analysis ends, even by unwinding, the unit
     // settles and its waiters wake.
     let mut guard = AnalysisGuard {
@@ -3809,7 +3888,17 @@ fn execute_pool_job(
         }));
     }
     let started = std::time::Instant::now();
+    #[cfg(debug_assertions)]
+    if let Some(perturbation) = shared.perturbation.get()
+        && perturbation.lane_hold.contains(&shared.unit_name(id))
+    {
+        shared.lanes.wait_parked(std::time::Duration::from_secs(10));
+    }
+    // The job is an activity of its own at its lane, even helped inside
+    // another's wait.
+    let root = shared.lanes.enter_root();
     let analysis = view.analyze(id, None);
+    drop(root);
     // A task-local native failure can finish this VM without terminating
     // the shared control. Keep other consumers alive, but retire this view.
     let reusable = !view.host.native_macro_backend() || analysis.is_ok();
@@ -3837,6 +3926,67 @@ fn execute_pool_job(
     }
 }
 
+/// Whether the build's test perturbation holds units back for a lane
+/// ([`crate::scheduler::Perturbation::lane_hold`]); never in release builds.
+#[cfg(feature = "bbp-macros")]
+fn lane_hold(shared: &SharedCatalog) -> bool {
+    #[cfg(debug_assertions)]
+    {
+        (shared.perturbation.get()).is_some_and(|p| !p.lane_hold.is_empty())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = shared;
+        false
+    }
+}
+/// Analyze `unit`, the earliest unfinished one, on a thread of its own, if
+/// no thread has started it: every thread that could may be waiting for a
+/// lane behind it ([`crate::effect_lanes::Lanes::rescue`]). It runs as a
+/// pool job does, on a borrowed or new task context; the pool's job for it
+/// then reuses the analysis.
+#[cfg(feature = "bbp-macros")]
+fn rescue_unit(
+    shared: &std::sync::Weak<SharedCatalog>,
+    environment: &MacroEnvironment,
+    unit: usize,
+) -> Option<std::thread::JoinHandle<()>> {
+    let shared = shared.upgrade()?;
+    {
+        let c = shared.lock();
+        if c.abandoned.is_some() || !matches!(c.units.get(unit)?.state, AnalysisState::Unstarted) {
+            return None;
+        }
+    }
+    if !shared.admits(unit) {
+        return None;
+    }
+    let environment = environment.clone();
+    std::thread::Builder::new()
+        .name("light-cljs-lane-rescue".into())
+        .stack_size(8 << 20)
+        .spawn(move || {
+            let root = shared.lanes.enter_root();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let view = match worker_view(&shared, PoolEngines::Persistent, &environment) {
+                    Ok(view) => view,
+                    Err(error) => return shared.fail_unstarted(unit, error),
+                };
+                if let Err(error) = view.analyze(unit, None) {
+                    shared.fail_unstarted(unit, error);
+                }
+                if !view.terminal() {
+                    view.park_context();
+                }
+            }));
+            drop(root);
+            shared.note_job(unit);
+            if outcome.is_err() {
+                shared.abandon("a lane rescue thread panicked".into());
+            }
+        })
+        .ok()
+}
 fn serve_pool(
     inbox: &Inbox,
     shared: &Arc<SharedCatalog>,
@@ -3848,6 +3998,20 @@ fn serve_pool(
     use crate::scheduler::{Config, Next};
     let started = std::time::Instant::now();
     let counters = &shared.counters;
+    // A lane that waits for an earliest unit no free thread will start has
+    // it analyzed on a thread of its own (light-cljs-480).
+    // (A test's lane hold keeps units back on purpose, in debug builds.)
+    #[cfg(feature = "bbp-macros")]
+    if environment.native_macro_backend()
+        && engines == PoolEngines::Persistent
+        && !lane_hold(shared)
+    {
+        let weak = Arc::downgrade(shared);
+        let environment = environment.clone();
+        shared.lanes.set_rescuer(Some(Arc::new(move |unit| {
+            rescue_unit(&weak, &environment, unit)
+        })));
+    }
     let relaxed = std::sync::atomic::Ordering::Relaxed;
     (counters.workers).store(slots.workers(), relaxed);
     (counters.engine_workers).store(engine_workers, relaxed);

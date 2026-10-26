@@ -258,6 +258,12 @@ Two cases remain outside the guarantee:
 Both are documented and tested, not silently inherited. This proposal needs
 the user's agreement (see "Decisions").
 
+*Delivered (light-cljs-480):* lanes, priority inheritance through demands
+and the `--stats` counters are built as proposed; the contract, the rescue of
+an earliest unit no free thread starts, and which registries are
+compiler-owned are in [compiler-concurrency.md](compiler-concurrency.md),
+"Effect lanes (light-cljs-480)".
+
 Deterministic names stay as they are: `src/generated_names.rs` scopes are
 already per unit, and the engine's `gensym` counter is lowered to the same
 per-unit scheme.

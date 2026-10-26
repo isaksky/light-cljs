@@ -367,6 +367,9 @@ struct SharedRuntime {
     /// Tasks parked on a dependency whose next step a completion queues on
     /// their pool ([`BbpRuntime::wake`]), by task.
     parked: Mutex<HashMap<big_boy_pants_js::TaskId, Parked>>,
+    /// The compilation's effect lanes, which order shared atom accesses
+    /// (light-cljs-480); none outside a compilation's catalog.
+    lanes: std::sync::OnceLock<Arc<crate::effect_lanes::Lanes>>,
     #[cfg(test)]
     on_wait: Mutex<Option<WaitHook>>,
     #[cfg(test)]
@@ -432,6 +435,15 @@ fn replay_source(registrations: &[String]) -> String {
 const BINDING: ResultKind = ResultKind::new(2);
 const HELPER: ResultKind = ResultKind::new(3);
 const INITIALIZER: ResultKind = ResultKind::new(4);
+/// A lane cell: a task parks on one before it touches a shared atom, and
+/// the compilation's effect lanes complete it once its lane opens
+/// ([`crate::effect_lanes`], light-cljs-480).
+const LANE: ResultKind = ResultKind::new(5);
+/// The host effect that asks the effect lanes about an atom access: with a
+/// negative argument, the token of the task's current activity (which owns
+/// the atoms it makes); else, given the atom's owner token, 0 to go on or a
+/// lane cell to park on (`bbp_runtime.js`).
+const LANE_EFFECT: u16 = 65532;
 
 /// The runtime-wide collection and admission policy for `options`.
 ///
@@ -506,6 +518,7 @@ impl BbpRuntime {
             factories: Mutex::new(HashMap::new()),
             idle: Mutex::new(Vec::new()),
             parked: Mutex::new(HashMap::new()),
+            lanes: std::sync::OnceLock::new(),
             #[cfg(test)]
             on_wait: Mutex::new(None),
             #[cfg(test)]
@@ -513,6 +526,27 @@ impl BbpRuntime {
         })))
     }
 
+    /// Order this runtime's shared atom accesses by `lanes`, its
+    /// compilation's.
+    pub(crate) fn set_lanes(&self, lanes: Arc<crate::effect_lanes::Lanes>) {
+        let _ = self.0.lanes.set(lanes);
+    }
+    fn lanes(&self) -> Option<&Arc<crate::effect_lanes::Lanes>> {
+        self.0.lanes.get()
+    }
+    /// Complete lane cell `key` for its parked task, whose lane opened.
+    fn open_lane(&self, key: DependencyKey, producer: big_boy_pants_js::ProducerId) {
+        let value = self.0.runtime.root(Primitive::Null);
+        if let Ok(wakeups) = self
+            .0
+            .runtime
+            .complete(key, producer, Completion::Ready(&value))
+        {
+            self.wake(wakeups);
+        }
+        *self.0.generation.lock().unwrap() += 1;
+        self.0.changed.notify_all();
+    }
     /// The aggregate memory budget `new` received; spawned evaluators share it.
     pub fn memory_limit(&self) -> usize {
         self.0.memory_limit
@@ -691,6 +725,9 @@ pub(crate) struct TaskContext {
     begin_kind: ResultKind,
     finish_kind: ResultKind,
     initializers: RefCell<HashMap<DependencyKey, ProducerRequest>>,
+    /// The lane entry of each initializer it runs, which inherits the
+    /// position of what waits for it ([`crate::effect_lanes`]).
+    initializer_lanes: RefCell<HashMap<DependencyKey, crate::effect_lanes::EntryGuard>>,
     resumable: Cell<bool>,
     per_task: Arc<AtomicUsize>,
     last_thread: Arc<Mutex<std::thread::ThreadId>>,
@@ -790,6 +827,7 @@ impl BbpEvaluator {
             begin_kind: ResultKind::new(kind + 1),
             finish_kind: ResultKind::new(kind + 2),
             initializers: RefCell::new(HashMap::new()),
+            initializer_lanes: RefCell::new(HashMap::new()),
             resumable: Cell::new(false),
             per_task: Arc::new(AtomicUsize::new(0)),
             last_thread: Arc::new(Mutex::new(std::thread::current().id())),
@@ -954,7 +992,7 @@ impl BbpEvaluator {
             while matches!(
                 cx.task.run_with(
                     Budget::instructions(10_000),
-                    &mut NativeHost(&cx.per_task, &self.shared.0.counters)
+                    &mut NativeHost(&cx.per_task, &self.shared.0.counters, None)
                 ),
                 Ok(RunOutcome::Yielded)
             ) {}
@@ -966,6 +1004,7 @@ impl BbpEvaluator {
             task: cx.task.clone(),
             per_task: cx.per_task.clone(),
             counters: self.shared.0.counters.clone(),
+            lanes: self.shared.lanes().cloned(),
             last_thread: cx.last_thread.clone(),
             admitted: Arc::new(Mutex::new(true)),
         }
@@ -975,6 +1014,11 @@ impl BbpEvaluator {
         let mut woken = None;
         loop {
             self.control.poll()?;
+            // Its host effects see this thread's current activity, on
+            // whichever worker its steps run.
+            if let Some(lanes) = self.shared.lanes() {
+                lanes.sync_task(crate::effect_lanes::identity(cx.task.id()));
+            }
             let outcome = match woken.take() {
                 Some(outcome) => outcome,
                 None => {
@@ -1033,9 +1077,19 @@ impl BbpEvaluator {
         cx: &TaskContext,
         key: DependencyKey,
     ) -> Result<Option<RunOutcome>, EvalError> {
-        if [HELPER, INITIALIZER].contains(&key.kind()) {
+        if [HELPER, INITIALIZER, LANE].contains(&key.kind()) {
             cx.resumable.set(true);
         }
+        // What produces `key` inherits this task's lane position while it
+        // waits ([`crate::effect_lanes`]).
+        let lane_wait = (key.kind() == HELPER || key.kind() == INITIALIZER)
+            .then(|| self.shared.lanes())
+            .flatten()
+            .map(|lanes| {
+                lanes.wait_for(crate::effect_lanes::Target::Cell(
+                    crate::effect_lanes::identity(key),
+                ))
+            });
         #[cfg(test)]
         let hook = self.shared.0.on_wait.lock().unwrap().clone();
         #[cfg(test)]
@@ -1048,6 +1102,10 @@ impl BbpEvaluator {
         let shared = &self.shared.0;
         let requests = cx.task.take_producer_requests();
         for request in requests {
+            if request.key().kind() == LANE {
+                self.attach_lane(&request);
+                continue;
+            }
             let result = self.produce(cx, &request);
             if let Err(failure) = &result {
                 self.fail_initializers(cx, &failure.0);
@@ -1076,7 +1134,7 @@ impl BbpEvaluator {
             .flatten()
             .and_then(|submitter| submitter())
         {
-            return self.park_until_woken(cx, key, submit);
+            return self.park_until_woken(cx, key, submit, lane_wait.as_ref());
         }
         let mut generation = shared.generation.lock().unwrap();
         while matches!(
@@ -1087,6 +1145,9 @@ impl BbpEvaluator {
             if cx.task.cancel_requested() {
                 return Err(error("macro task cancelled"));
             }
+            drop(generation);
+            self.lane_waiting(key, lane_wait.as_ref());
+            generation = shared.generation.lock().unwrap();
             if let Some(help) = self.help.borrow().clone() {
                 drop(generation);
                 let helped = help().map_err(error)?;
@@ -1115,11 +1176,37 @@ impl BbpEvaluator {
     /// for any worker, this one included while it helps. If `key` completed
     /// before the task was parked, nothing was queued and this returns
     /// `None`: the caller runs the step.
+    /// While a task waits for `key`: refresh the position what produces it
+    /// inherits, and for a lane cell, have a starved earliest unit analyzed
+    /// ([`crate::effect_lanes::Lanes::rescue`]).
+    fn lane_waiting(&self, key: DependencyKey, wait: Option<&crate::effect_lanes::WaitGuard>) {
+        if let Some(wait) = wait {
+            wait.refresh();
+        }
+        if key.kind() == LANE
+            && let Some(lanes) = self.shared.lanes()
+        {
+            lanes.poll();
+            lanes.rescue();
+        }
+    }
+    /// Give the compilation's effect lanes the lane cell this task's need
+    /// claimed, which they complete once its lane opens.
+    fn attach_lane(&self, request: &ProducerRequest) {
+        let (key, producer) = (request.key(), request.producer());
+        let runtime = self.shared.clone();
+        let open = Box::new(move || runtime.open_lane(key, producer));
+        match self.shared.lanes() {
+            Some(lanes) => lanes.attach(key.dependency().get(), open),
+            None => open(),
+        }
+    }
     fn park_until_woken(
         &self,
         cx: &TaskContext,
         key: DependencyKey,
         submit: NativeSubmit,
+        lane_wait: Option<&crate::effect_lanes::WaitGuard>,
     ) -> Result<Option<RunOutcome>, EvalError> {
         let shared = &self.shared.0;
         let id = cx.task.id();
@@ -1163,6 +1250,7 @@ impl BbpEvaluator {
             if cx.task.cancel_requested() {
                 return Err(error("macro task cancelled"));
             }
+            self.lane_waiting(key, lane_wait);
             if let Some(help) = self.help.borrow().clone()
                 && help().map_err(error)?
             {
@@ -1204,6 +1292,12 @@ impl BbpEvaluator {
             .borrow()
             .clone()
             .ok_or_else(|| error("compiler helper service is not installed"))?;
+        // The helper's production inherits this task's lane position, and
+        // the position of whatever else waits for it.
+        let _lane = self
+            .shared
+            .lanes()
+            .map(|lanes| lanes.enter_cell(crate::effect_lanes::identity(key)));
         let active = self.spawn_producer(cx, Some(callback.clone()), |task| {
             self.shared
                 .0
@@ -1294,6 +1388,12 @@ impl BbpEvaluator {
                         cx.task.id(),
                     );
                     cx.initializers.borrow_mut().insert(key, request);
+                    // The initializer runs inside this task's activity and
+                    // inherits the position of what waits for it.
+                    if let Some(lanes) = self.shared.lanes() {
+                        let entry = lanes.enter_cell(crate::effect_lanes::identity(key));
+                        cx.initializer_lanes.borrow_mut().insert(key, entry);
+                    }
                     #[cfg(test)]
                     {
                         let hook = self.shared.0.on_initializer.lock().unwrap().clone();
@@ -1356,6 +1456,8 @@ impl BbpEvaluator {
             .map_err(error)?;
         self.shared.wake(wakeups);
         cx.initializers.borrow_mut().remove(&key);
+        let entry = cx.initializer_lanes.borrow_mut().remove(&key);
+        drop(entry);
         if !failure {
             self.note(|s| {
                 if shared_value {
@@ -1371,6 +1473,8 @@ impl BbpEvaluator {
     }
     fn fail_initializers(&self, cx: &TaskContext, message: &str) {
         let requests = std::mem::take(&mut *cx.initializers.borrow_mut());
+        let entries = std::mem::take(&mut *cx.initializer_lanes.borrow_mut());
+        drop(entries);
         if requests.is_empty() {
             return;
         }
@@ -1505,6 +1609,7 @@ pub(crate) struct NativeStep {
     task: Task,
     per_task: Arc<AtomicUsize>,
     counters: Arc<NativeCounters>,
+    lanes: Option<Arc<crate::effect_lanes::Lanes>>,
     last_thread: Arc<Mutex<std::thread::ThreadId>>,
     admitted: Arc<Mutex<bool>>,
 }
@@ -1536,7 +1641,7 @@ impl NativeStep {
         self.task
             .run_with(
                 Budget::instructions(10_000),
-                &mut NativeHost(&self.per_task, &self.counters),
+                &mut NativeHost(&self.per_task, &self.counters, self.lanes.as_deref()),
             )
             .map_err(|e| e.to_string())
     }
@@ -1561,9 +1666,26 @@ impl Drop for NativeHandoff {
         }
     }
 }
-struct NativeHost<'a>(&'a AtomicUsize, &'a NativeCounters);
+struct NativeHost<'a>(
+    &'a AtomicUsize,
+    &'a NativeCounters,
+    Option<&'a crate::effect_lanes::Lanes>,
+);
 impl big_boy_pants_js::Host for NativeHost<'_> {
     fn effect(&mut self, call: big_boy_pants_js::HostCall) -> Result<Primitive, String> {
+        if call.op == LANE_EFFECT {
+            let task = crate::effect_lanes::identity(call.task);
+            let argument = match call.arg {
+                Primitive::Number(n) => n,
+                _ => 0.0,
+            };
+            let answer = match self.2 {
+                None => 0,
+                Some(lanes) if argument < 0.0 => lanes.token(task),
+                Some(lanes) => lanes.check(task, argument as u64),
+            };
+            return Ok(Primitive::Number(answer as f64));
+        }
         #[cfg(test)]
         if call.op == 65534 {
             self.1.cleanups.fetch_add(1, Ordering::Relaxed);

@@ -44,6 +44,7 @@ pub mod dev_nrepl;
 pub mod dev_repl;
 pub mod dev_server;
 pub mod dev_session;
+pub mod effect_lanes;
 pub mod emitter;
 pub mod eval_session;
 pub mod evaluator;

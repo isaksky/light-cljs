@@ -326,6 +326,46 @@ const native = (() => {
   // A comparison of adjacent operands, true for one; as the legacy runtimes.
   const chain = (xs, test) => { if (xs.length === 0) arity(0); for (let i = 1; i < xs.length; i++) if (!test(val(xs[i - 1]), val(xs[i]))) return false; return true; };
   const each = (op, x, xs) => { for (const y of xs) x = op(x, y); return x; };
+  // Compile-time atoms are engine atoms (light-cljs-480): one shared atom
+  // per Var, since an initializer's atom publishes. Before a task touches an
+  // atom another activity made, it asks the compilation's effect lanes
+  // (host effect 65532), and parks on the lane cell (kind 5) they give
+  // until every earlier unit and pass has finished: atom effects keep their
+  // `--jobs 1` order. An atom holds shareable values only: one that would
+  // hold a mutable JavaScript object fails with the engine's NotShareable
+  // error, which no handler catches.
+  const atomOwners = new WeakMap();
+  const lane = a => {
+    if (!__rt.cljIsAtom(a)) throw new Error('unsupported operation: native macro runtime atom operation on ' + typeof val(a));
+    const cell = __rt.effect(65532, atomOwners.get(a) ?? 0);
+    if (cell !== 0) __rt.need(cell, 5);
+  };
+  const atom = (state, ...options) => {
+    if (options.length) throw new Error('unsupported operation: native macro runtime atom options');
+    const a = __rt.atomNew(state), owner = __rt.effect(65532, -1);
+    if (owner !== 0) atomOwners.set(a, owner);
+    return a;
+  };
+  // Install `f(current)` by identity compare-and-set; lanes leave one
+  // activity at a time past its lane, so the loop repeats only if another
+  // task wrote between the read and the set.
+  const update = (a, f) => {
+    for (;;) {
+      const current = __rt.atomLoad(a), next = f(current);
+      if (Object.is(__rt.atomCas(a, current, next), current)) return [current, next];
+    }
+  };
+  const deref = a => { lane(a); return __rt.atomLoad(a); };
+  const reset = (a, v) => { lane(a); update(a, () => v); return v; };
+  const swapPair = (a, f, args) => { lane(a); return update(a, x => invoke(f, x, ...args)); };
+  const compareAndSet = (a, o, n) => {
+    lane(a);
+    for (;;) {
+      const current = __rt.atomLoad(a);
+      if (!__rt.formEquals(current, o)) return false;
+      if (Object.is(__rt.atomCas(a, current, n), current)) return true;
+    }
+  };
   const core = {
     assertions:true,
     invoke, truth, get, identity:x=>x, macroReaderFunction:f=>f,
@@ -364,6 +404,10 @@ const native = (() => {
     identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     exInfo:(m,d)=>new Error(val(m)),
+    atom, deref, reset, compareAndSet,
+    swap:(a,f,...args)=>swapPair(a,f,args)[1],
+    swapVals:(a,f,...args)=>{const [o,n]=swapPair(a,f,args);return __rt.formVector(o,n);},
+    resetVals:(a,v)=>{lane(a);return __rt.formVector(update(a,()=>v)[0],v);},
     registerReaderNamespace:()=>null, addReaderDefinitions:()=>null, setReaderNamespace:()=>null,
     PersistentVector:{EMPTY:__rt.formVector()}, PersistentArrayMap:{EMPTY:__rt.formMap()}, List:{EMPTY:__rt.formList()},
     PersistentHashSet:{EMPTY:__rt.formSet()},
@@ -401,9 +445,12 @@ let initializerSerial=0;
 globalThis.__lightInitializerUnit=null;
 globalThis.__lightInitializerResult=null;
 globalThis.__lightInitializerFailure=null;
-globalThis.__lightRegisterUnit=(name,unit)=>{
+globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
   if(!roots.has(name)&&(name in globalThis.__lightCompilerRoots))return null;
   if(roots.has(name)&&roots.get(name).unit===unit)return null;
+  // A defonce keeps an earlier definition (not a declaration), as the
+  // legacy runtimes' registry does.
+  if(once&&roots.has(name)&&roots.get(name).unit!==null)return null;
   const slot={unit,state:0,value:null};roots.set(name,slot);
   Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:()=>{
     if(unit===null)throw new Error('unavailable definition: '+name);

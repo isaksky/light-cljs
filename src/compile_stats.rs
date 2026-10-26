@@ -169,6 +169,8 @@ pub struct DeferredUnitCounts {
 pub struct CompileStats {
     pub native_macro_calls: Vec<NativeBridgeCall>,
     pub native_helpers: NativeHelperCounts,
+    /// The native backend's effect lanes (light-cljs-480).
+    pub lanes: crate::effect_lanes::LaneCounts,
     pub phases: PhaseTimes,
     /// From the start of the compilation to the end of its last recorded
     /// phase.
@@ -633,6 +635,19 @@ impl CompileStats {
             line("native.tasks.lent", &helpers.contexts_lent);
             line("native.tasks.borrowed", &helpers.contexts_borrowed);
             line("native.tasks.woken", &helpers.woken);
+            let lanes = &self.lanes;
+            line("native.lanes.entered", &lanes.entered);
+            line("native.lanes.waits", &lanes.waits);
+            line("native.lanes.inherited", &lanes.inherited);
+            line(
+                "native.lanes.wait-ms",
+                &ms(Duration::from_nanos(lanes.wait_nanos)),
+            );
+            line(
+                "native.lanes.longest-wait-ms",
+                &ms(Duration::from_nanos(lanes.longest_wait_nanos)),
+            );
+            line("native.lanes.rescued", &lanes.rescued);
         }
         line("macro-nodes.peak", &self.peak_macro_nodes);
         line("deferred-units.registered", &self.deferred_units.registered);

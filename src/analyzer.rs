@@ -4726,6 +4726,12 @@ impl NamespaceAnalysis {
         let _names = crate::generated_names::enter_namespace(
             crate::generated_names::namespace_discriminator(input.name, input.source),
         );
+        // The pass is the next position of the compilation's effect lanes;
+        // a blocker's consumer starts after every earlier unit
+        // (light-cljs-480).
+        let _pass = macro_host
+            .session_handle()
+            .map(|session| session.begin_pass(self.main_isolate));
         let top_level = crate::compile_trace::enter(
             crate::compile_trace::Stage::TopLevel,
             source_index,
@@ -8030,7 +8036,9 @@ impl Analyzer<'_> {
             return;
         };
         let units = std::mem::take(&mut self.deferred);
-        session.hold_units(units.iter().map(|d| d.unit));
+        // Each unit's lane position follows the pass (light-cljs-480); a
+        // blocker's consumer's units wait for their lanes.
+        session.hold_units(units.iter().map(|d| d.unit), self.unit_slots.get() == 1);
         let charged = (
             self.macro_host.engine.expansions.get(),
             self.macro_host.engine.generated_nodes.get(),
@@ -8074,6 +8082,10 @@ impl Analyzer<'_> {
             return Ok(());
         };
         let units = std::mem::take(&mut self.deferred);
+        session.schedule_units(
+            &units.iter().map(|d| d.unit).collect::<Vec<_>>(),
+            self.unit_slots.get() == 1,
+        );
         // With `--jobs N`, the build pool analyzes the units given to it,
         // one batch in unit order, while this thread drains every unit in
         // order, as with one slot, waiting for those

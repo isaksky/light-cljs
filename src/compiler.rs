@@ -2709,6 +2709,13 @@ fn analyze_entry(
     analysis.begin_generated_names(names_start);
     // Each namespace's macro-free units may be analyzed on the pool.
     analysis.unit_slots = parse_slots(slots);
+    // On the native backend, compile-time atom effects keep their `--jobs
+    // 1` order at every `--jobs` (light-cljs-480).
+    if macros.native_macro_backend()
+        && let Some(session) = macros.session_handle()
+    {
+        session.shared().lanes().enable();
+    }
     #[cfg(debug_assertions)]
     let fresh_isolates = perturbation.as_ref().is_some_and(|p| p.fresh_isolates);
     #[cfg(not(debug_assertions))]
@@ -3267,6 +3274,7 @@ fn analyze_entry(
             {
                 stats.native_helpers = session.shared().native_counts();
             }
+            stats.lanes = session.shared().lanes().counts();
             stats.deferred_units = session.unit_counts();
             stats.memory.queued_ir = session.queued_ir();
         }

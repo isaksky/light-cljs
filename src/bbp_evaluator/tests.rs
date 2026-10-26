@@ -914,6 +914,7 @@ fn abandoned_handoff_invalidates_its_queued_step_before_task_cleanup() {
         task: evaluator.cx().unwrap().task.clone(),
         per_task: evaluator.cx().unwrap().per_task.clone(),
         counters: shared.0.counters.clone(),
+        lanes: None,
         last_thread: evaluator.cx().unwrap().last_thread.clone(),
         admitted: Arc::new(Mutex::new(true)),
     };

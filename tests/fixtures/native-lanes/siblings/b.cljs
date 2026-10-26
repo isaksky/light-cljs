@@ -1,0 +1,5 @@
+(ns siblings.b (:require [siblings.macros :refer [next-value double]]))
+(defn pure [] (double 4))
+(def v1 (next-value))
+(def v2 (next-value))
+(def v3 (next-value))

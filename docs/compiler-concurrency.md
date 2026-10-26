@@ -2173,6 +2173,10 @@ output changes once, when stage A lands.
     either. Stage C is designed on this contract (see "As built
     (light-cljs-429)" under "Stage C"), and the counter fixture keeps
     printing `1 1` without a blocker and `1 2` with one.
+  - *On the native backend (light-cljs-480)* one heap holds every task, and
+    compile-time atoms keep their `--jobs 1` order at every `--jobs`
+    without a declaration: the counter fixture prints `1 2` at every N.
+    See "Effect lanes (light-cljs-480)" at the end of this document.
   - **Why the cache blocker set is the right opt-out.** A cache hit skips a
     consumer namespace's macro expansion, so its effects never happen and a
     later fresh consumer sees state without them. A worker isolate produces
@@ -3121,3 +3125,96 @@ runs only after an ordinary worker becomes available; the independent analysis
 still runs during the wait. Real namespace output agrees at
 one, two and four slots. Aggregate helper and task counters include all workers.
 The old per-isolate implementation above continues to describe legacy backends.
+
+### Effect lanes (light-cljs-480)
+
+On the native backend (`bbp-macros`), compile-time atom effects happen in
+the order `--jobs 1` gives them, at every `--jobs`, with no
+`--cache-blocker` declaration. The strategy is
+[shared-heap-compilation.md](shared-heap-compilation.md), "Compile-time
+state and determinism"; this is what was delivered.
+
+- **Atoms.** `atom`, `deref` (`@`), `swap!`, `reset!`,
+  `compare-and-set!` (by `=`, as cljs.core), `swap-vals!` and `reset-vals!`
+  in macro code are engine atoms (`__rt.atomNew`, `atomLoad`, `atomCas`,
+  `cljIsAtom`; big-boy-pants-js `docs/grammar.md`). An atom is shareable
+  without being immutable, so a Var whose initializer makes one publishes
+  it: one atom per Var, shared by every task. Updates are identity
+  compare-and-set loops (`src/bbp_runtime.js`). An atom holds shareable
+  values only: making one with, or setting one to, a mutable JavaScript
+  object fails the macro with the engine's `NotShareable` error, which no
+  handler catches (engine atom errors are not JavaScript exceptions). Atom
+  options (`:meta`, `:validator`) and watches are unsupported operations.
+- **Positions.** The coordinator advances one counter (`src/effect_lanes.rs`)
+  in `--jobs 1` order: a namespace's top-level pass is a segment, the units
+  its dispatch schedules follow it in unit order, and a drain inside a pass
+  moves the pass's segment after the units it drained. Positions do not
+  depend on slots or scheduling.
+- **Activities and inheritance.** What runs at a position is an activity:
+  a pass, a unit a pool slot, a dispatch or a rescue thread analyzes, a unit
+  demanded inside another activity (at the lower of the two positions), a
+  Var initializer and a helper's production (at the position of the
+  activity they run in). Each thread keeps a stack of them; a pool job,
+  including one a waiting worker helps with, starts a new root. An activity
+  also inherits the lowest position of any activity waiting for something
+  it owns: a unit it analyzes (catalog waits) or a dependency cell it
+  produces (initializer and helper waits). Waiters refresh their position
+  while they wait, so chains of waits converge.
+- **The lane rule.** Before a task reads or writes an atom that another
+  activity made, it asks the lanes (host effect 65532 with the atom's owner
+  token). The lane is open when every scheduled unit and pass segment
+  before the task's effective position has finished. Otherwise the task
+  needs a fresh lane cell (result kind 5) and parks before the access; the
+  lanes complete the cell when the lane opens, and the task's step is
+  queued like any woken step. Nothing is replayed. An activity's own atoms
+  need no lane; an atom made inside an initializer belongs to the
+  initializer, so the unit that ran the initializer waits for its lane
+  like any other (in the counter fixture, `main`'s top-level call creates
+  `counter` when it runs first and still waits for `dep`'s unit). With one
+  slot every lane is open when asked.
+- **No deadlock by order.** An earlier activity never waits for a later
+  one parked on its lane: a demand lends the later one its position. The
+  test `an_earlier_unit_demanding_a_parked_initializer_lends_it_its_lane`
+  holds `inherit.app/x` and `s` until `t`, later, has parked inside the
+  shared `snapshot` initializer; `s` then demands it and the initializer
+  runs at `s`'s position (`native.lanes.inherited`).
+- **Rescue.** The pool's claim order can leave the earliest unfinished unit
+  queued behind workers that all wait for lanes (a fixed assignment, a
+  worker's own batch). After 30 ms a waiting lane has a thread of its own
+  analyze that unit, as a demand claims a unit; the pool's job then reuses
+  the analysis (`native.lanes.rescued`).
+- **Failures.** After a unit fails, lanes after its position stop ordering:
+  the build reports an earlier error. A cancelled build opens
+  every lane.
+- **`--cache-blocker`.** It keeps its cache meaning and its affinity. On
+  this backend a blocker's consumer's top-level pass and kept units also
+  wait for their lane before they start, so all their effects, not only
+  atom accesses, come after every earlier unit.
+- **Registries.** `gensym` names come from the compiler's per-unit scopes
+  (`src/generated_names.rs`); the native runtime has no generated-symbol
+  service. The namespace reader context is compiler-owned Rust state that
+  reaches macros through `&env`; the native runtime's reader-namespace
+  services keep no state. The protocol-extension journal is the catalog's
+  bundle registration order with the frontier the compiler selects per
+  expansion, so it does not depend on tasks. Extensions that macro code
+  runs outside a bundle and mutable JavaScript objects held in Vars are
+  per task, outside the guarantee, as host effects such as `println` are
+  outside lanes.
+- **Stats.** `--stats` prints `native.lanes.entered` (activities that
+  touched an atom another activity made), `waits` (accesses that parked),
+  `inherited`, `wait-ms` (total), `longest-wait-ms` and `rescued`.
+- **Tests.** `tests/bbp_macros.rs`
+  `effect_lanes_keep_one_slot_atom_effects_under_seeded_scheduling_stress`
+  builds `tests/fixtures/native-lanes` at one, two, four and eight slots in
+  free, fixed and one-job modes per seed (`LIGHT_CLJS_STRESS_SEEDS`) and
+  compares JavaScript or error, source maps, warnings and helper counts
+  with the one-slot build: the counter with and without
+  `--cache-blocker counter.macros`, sibling namespaces taking values,
+  source-order macro generations appending to one log, `defonce` of an
+  atom, a definition and a declaration, a cached failed initializer, a
+  failure at the fourth unit in source order, and a helper initializer
+  touching the shared atom that an earlier unit demands, across
+  namespaces and within one. The `macros.rs` fixtures themselves still
+  need native support outside this work (`zero?`, `false?`, `exists?`,
+  `resolve`, and macros expanded in a helper analyzed on demand,
+  light-cljs-500).

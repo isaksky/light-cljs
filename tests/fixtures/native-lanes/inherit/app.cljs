@@ -1,0 +1,5 @@
+(ns inherit.app (:require [inherit.helpers :refer [snap]] [inherit.macros :refer [next-value]]))
+(def x (next-value))
+(def s (snap))
+(def t (snap))
+(def y (next-value))

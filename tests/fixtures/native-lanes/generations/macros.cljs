@@ -1,0 +1,7 @@
+(ns generations.macros)
+(def log (atom []))
+(defmacro note [x] (swap! log conj x) nil)
+(defn early [] (note :early))
+(defmacro note [x] (swap! log conj [:v2 x]) nil)
+(defn late [] (note :late))
+(defmacro trace [] (list 'quote @log))
