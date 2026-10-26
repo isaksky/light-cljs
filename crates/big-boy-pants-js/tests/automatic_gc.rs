@@ -502,3 +502,44 @@ fn await_snapshot_denial_does_not_leave_a_reaction() {
         assert!(rt.heap_stats().peak_managed_bytes <= limit, "{kind}");
     }
 }
+
+/// Settling a promise at the byte limit delivers every registered reaction:
+/// each prepaid its job and queue slot when it registered, so the queue's
+/// growth cannot be denied after the promise is already settled.
+#[test]
+fn promise_settlement_preserves_reactions_at_the_byte_limit() {
+    let (rt, limit) = with_headroom(2 * 1024 * 1024);
+    let code = compile_function(
+        "function f() {
+           let res;
+           const p = new Promise(r => res = r);
+           const out = [];
+           for (let i = 0; i < 9; i++) p.then(v => { out.push(v + i); });
+           let kept = [], settled;
+           try { for (;;) kept.push({a: 1}); } catch (e) {}
+           try { res(1); settled = 'settled'; } catch (e) { settled = 'denied ' + e; }
+           kept = null;
+           for (let i = 0; i < 500; i++) {}
+           p.then(() => { globalThis.out = settled + ' ' + out.join(','); __rt.need(312, 1); });
+           return 0;
+         }",
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let outcome = loop {
+        match task
+            .run_with(Budget::instructions(97), &mut Effectless)
+            .unwrap()
+        {
+            RunOutcome::Yielded => {}
+            outcome => break outcome,
+        }
+    };
+    assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
+    let out = task.global_value("out").unwrap().expect("reactions ran");
+    assert_eq!(
+        out.string().map(|s| s.to_string_lossy()).as_deref(),
+        Some("settled 1,2,3,4,5,6,7,8,9")
+    );
+    assert!(rt.heap_stats().peak_managed_bytes <= limit);
+}

@@ -145,7 +145,20 @@ impl JobInbox {
             .callable
             .clone()
     }
-    pub(crate) fn push(&self, mut job: Job) -> Result<(), JobError> {
+    pub(crate) fn push(&self, job: Job) -> Result<(), JobError> {
+        self.push_job(job, false)
+    }
+
+    /// Push a promise reaction whose `reservation` was charged when it
+    /// registered (`vm::promise`, `Registration`) and covers at least one
+    /// queue slot: when queue growth is denied, the queue grows by that one
+    /// slot on the reaction's credit, so a settlement never loses a
+    /// registered reaction to the byte limit.
+    pub(crate) fn push_reaction(&self, job: Job) -> Result<(), JobError> {
+        self.push_job(job, true)
+    }
+
+    fn push_job(&self, mut job: Job, prepaid: bool) -> Result<(), JobError> {
         #[cfg(test)]
         run_hook(&self.before_push);
         let mut inbox = self.inbox.lock().unwrap();
@@ -171,11 +184,19 @@ impl JobInbox {
             let bytes = (capacity - inbox.queue.capacity())
                 .checked_mul(std::mem::size_of::<Job>())
                 .ok_or(JobError::HeapLimit)?;
-            let ticket = self.budget.reserve(bytes).ok_or_else(|| {
-                self.budget.note_denial();
-                JobError::HeapLimit
-            })?;
-            let additional = capacity - inbox.queue.len();
+            let (ticket, additional) = match self.budget.reserve(bytes) {
+                Some(ticket) => (ticket, capacity - inbox.queue.len()),
+                None => match prepaid
+                    .then(|| job.reservation.split(std::mem::size_of::<Job>()))
+                    .flatten()
+                {
+                    Some(ticket) => (ticket, 1),
+                    None => {
+                        self.budget.note_denial();
+                        return Err(JobError::HeapLimit);
+                    }
+                },
+            };
             inbox
                 .queue
                 .try_reserve_exact(additional)

@@ -57,24 +57,35 @@ struct Settlement {
     value: Value,
     owner: Option<TaskId>,
 }
+/// A registered reaction and the charge it took at registration, which
+/// pays for its job and, when the queue cannot otherwise grow, its queue
+/// slot ([`JobInbox::push_reaction`]): delivery at settlement cannot be
+/// denied by the byte limit.
 #[derive(Debug)]
 struct Registration {
     inbox: Weak<JobInbox>,
     callable: Value,
+    ticket: crate::heap::budget::ByteReservation,
 }
 impl Registration {
-    fn enqueue(&self) {
+    /// The bytes [`register`] charges per reaction, at least one queue slot.
+    const TICKET: usize = 512;
+    fn enqueue(self) {
         if let Some(inbox) = self.inbox.upgrade() {
             // Zero arguments: the reaction obtains its result through the
             // promise's checked read, never through unchecked publication.
-            let _ = inbox.push(Job {
-                callable: self.callable.clone(),
+            // Only a closed inbox (its task ended) or the process allocator
+            // refuses a prepaid reaction; the reaction is then moot or the
+            // allocation would have aborted.
+            let _ = inbox.push_reaction(Job {
+                callable: self.callable,
                 args: vec![],
-                reservation: Default::default(),
+                reservation: self.ticket,
             });
         }
     }
 }
+const _: () = assert!(Registration::TICKET >= std::mem::size_of::<Job>());
 impl Trace for Promise {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         if let Some(properties) = &self.properties {
@@ -332,7 +343,7 @@ fn settle(
                 }
                 // Keep the enqueue sequence within the settlement/registration
                 // linearization point. Inbox push is a leaf metadata operation.
-                for r in p.reactions.drain(..) {
+                for r in std::mem::take(&mut p.reactions) {
                     r.enqueue();
                 }
             }
@@ -1065,11 +1076,11 @@ fn register(
         let HeapObject::Promise(p) = o else {
             unreachable!()
         };
-        let ticket = if p.result.is_none() {
-            Some(heap.reserve_bytes(512).ok_or(Fault::HeapLimit)?)
-        } else {
-            None
-        };
+        // Charged before any state changes, for settled promises too: the
+        // reaction's delivery must not fail after registration succeeds.
+        let ticket = heap
+            .reserve_bytes(Registration::TICKET)
+            .ok_or(Fault::HeapLimit)?;
         if p.result.as_ref().is_some_and(|r| r.rejected)
             && !p.is_handled
             && let Some((owner, stored)) = p.rejection.take()
@@ -1081,13 +1092,12 @@ fn register(
         let registration = Registration {
             inbox: inbox.clone(),
             callable,
+            ticket,
         };
         if p.result.is_some() {
             registration.enqueue();
         } else {
             p.reactions.push(registration);
-            p.reservation
-                .merge(ticket.expect("pending promise reserved"));
         }
         Ok::<(), Fault>(())
     })

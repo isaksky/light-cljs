@@ -193,6 +193,16 @@ impl ByteReservation {
             .as_ref()
             .is_some_and(|owner| Arc::ptr_eq(owner, budget))
     }
+    /// Move `bytes` of this charge to a new owner, or `None` when it holds
+    /// fewer (or is unaccounted). The total charge is unchanged.
+    pub(crate) fn split(&mut self, bytes: usize) -> Option<Self> {
+        let budget = self.budget.clone()?;
+        self.bytes = self.bytes.checked_sub(bytes)?;
+        Some(Self {
+            budget: Some(budget),
+            bytes,
+        })
+    }
     pub(crate) fn refund(&mut self, bytes: usize) {
         if let Some(budget) = &self.budget {
             self.bytes = self.bytes.checked_sub(bytes).expect("owned byte refund");
