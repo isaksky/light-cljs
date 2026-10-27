@@ -2438,6 +2438,128 @@ fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slo
 }
 
 #[test]
+fn inherited_initializers_use_the_earlier_callers_bindings_under_seeded_scheduling() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-inherited-bindings");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+            (def events (atom []))
+            (def ^:dynamic *x* "root")
+            (def ^:dynamic *y* :root)
+            (def scalar (binding [*y* :inside]
+                          (swap! events conj :scalar) [*x* *y*]))
+            (def object (binding [*y* false]
+                          (swap! events conj :object) [(aget *x* 0) *y*]))
+            (defmacro earlier []
+              (let [a (binding [*x* :earlier *y* :outside] scalar)
+                    value (js/Array. "earlier-object")
+                    b (binding [*x* value *y* nil] [object (identical? *x* value)])]
+                (list 'quote [a b *x* *y*])))
+            (defmacro later []
+              (let [a scalar b object]
+                (list 'quote [a b (binding [*x* :later *y* :later] [scalar object *x* *y*]) *x* *y*])))
+            (defmacro log [] (list 'quote @events))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [helpers :refer [earlier]])) (def value (earlier))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [helpers :refer [later]])) (def value (later))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b] [helpers :refer [log]]))
+             (js/console.log (pr-str [a/value b/value (log)]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed, held| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                stats: Some(&mut stats),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(debug_assertions)]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    lane_hold: if held {
+                        vec!["a/value".into()]
+                    } else {
+                        Vec::new()
+                    },
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}, held {held}: {e}"));
+        #[cfg(debug_assertions)]
+        if native && held {
+            assert!(
+                stats.lanes.inherited > 0,
+                "no inherited initializer: {:?}",
+                stats.lanes
+            );
+        }
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0, false);
+    assert_eq!(
+        program_output(&reference),
+        "[[[:earlier :inside] [[\"earlier-object\" false] true] \"root\" :root] \
+         [[:earlier :inside] [\"earlier-object\" false] \
+         [[:earlier :inside] [\"earlier-object\" false] :later :later] \"root\" :root] [:scalar :object]]\n"
+    );
+    #[cfg(feature = "quickjs")]
+    for jobs in [1, 2, 4, 8] {
+        assert!(
+            build(false, jobs, 0, false) == reference,
+            "QuickJS jobs {jobs}"
+        );
+    }
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(1u64);
+    for seed in 1..=seeds {
+        for jobs in [2, 4, 8] {
+            for held in [false, true] {
+                // Eight slots leave workers for the later caller while the
+                // hook holds the earlier unit and its helper productions.
+                if held && jobs < 8 {
+                    continue;
+                }
+                let built = build(true, jobs, seed, held);
+                assert_eq!(
+                    program_output(&built),
+                    program_output(&reference),
+                    "jobs {jobs}, seed {seed}, held {held}"
+                );
+                assert!(built == reference, "jobs {jobs}, seed {seed}, held {held}");
+            }
+        }
+    }
+}
+
+#[test]
 fn source_macros_expand_inside_on_demand_helpers() {
     for source in [
         "(defmacro one [] 1) (def v (one)) (defmacro read-v [] v) (js/console.log (read-v))",

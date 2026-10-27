@@ -945,6 +945,41 @@ fn helper_waits_do_not_reset_aggregate_fuel_or_deadline() {
 }
 
 #[test]
+fn cancelling_a_reserved_initializer_fails_its_claim_before_factory_effects() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    *shared.0.on_initializer.lock().unwrap() = Some(Arc::new(|task, _| {
+        let _cancel = task.cancel();
+    }));
+    let evaluator = Rc::new(shared.evaluator().unwrap());
+    evaluator
+        .clone()
+        .install_compiler_service(
+            "__lightCompileUnit",
+            Rc::new(|_, _| Ok("rt => { __rt.effect(65534, 0); return 42; }".into())),
+        )
+        .unwrap();
+    evaluator
+        .register_compiler_root("fixture/value", Some(7), false, "fixture.cljs:1", None)
+        .unwrap();
+    let failure = evaluator
+        .evaluate_unit("rt => globalThis.__lightCompilerRoots['fixture/value']")
+        .unwrap_err();
+    assert!(failure.0.contains("cancelled"), "{failure}");
+    assert_eq!(
+        shared.0.counters.cleanups.load(Ordering::Relaxed),
+        0,
+        "a reserved initializer must not run before task selection"
+    );
+    let key = DependencyKey::new(shared.0.runtime.world(), DependencyId::new(7), INITIALIZER);
+    assert!(matches!(
+        shared.0.runtime.cell_status(key),
+        big_boy_pants_js::CellStatus::Failed(_)
+    ));
+    assert!(shared.0.pending_initializers.lock().unwrap().is_empty());
+    assert!(shared.0.control.poll().is_ok());
+}
+
+#[test]
 fn concurrent_initializer_cycle_is_diagnosed_and_wakes_both_consumers() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let initialized = Arc::new((Mutex::new(0usize), Condvar::new()));

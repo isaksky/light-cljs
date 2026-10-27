@@ -1033,9 +1033,19 @@ and saved VM frames retain them across helper waits and task migration. Bound
 `set!` uses a native compiler service rather than an engine Proxy `set` trap.
 Installation joins the existing source-order effect lane before changing an
 overlay: a pending shared root can capture a binding without touching an atom,
-so later callers must not initialize it first. The pool regression forces a
-later initializer to park, checks inherited lane progress, and verifies that
-subsequent roots capture the first caller's binding at every slot count.
+so later callers must not initialize it first. A shared initializer reserves
+its dependency before waiting for the lane, allowing earlier callers to lend
+their position. Once the lane opens, the earliest caller's task executes the
+factory, even if a later task reserved it first. This retains the caller's
+overlays and mutable binding values by identity, with no factory effects to
+replay or task-owned objects to publish. Bindings installed inside that
+initializer still override its caller's bindings. Cancellation before task
+selection fails the reserved claim and wakes its consumers.
+The pool regressions force a later initializer to park, check inherited lane
+progress, and verify scalar and mutable bindings, nested overrides,
+restoration and once-only effects. The scheduling regression uses
+`LIGHT_CLJS_STRESS_SEEDS` at two/four/eight slots and holds the earlier caller
+at eight slots; emitted output matches the one-slot build and QuickJS.
 Source regressions compare values, failures, restoration and once-only effects
 against QuickJS, with identical emitted programs at one, two, four and eight
 slots. A shared-runtime regression separately checks task isolation and that

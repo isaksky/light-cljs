@@ -498,6 +498,10 @@ struct SharedRuntime {
     generation: Mutex<u64>,
     changed: Condvar,
     graph: Mutex<big_boy_pants_js::DependencyGraph>,
+    /// Reserved initializer claims, before any factory code runs. A later
+    /// task can reserve a root first, but the earliest caller must execute
+    /// it with its own bindings (including task-owned mutable values).
+    pending_initializers: Mutex<HashMap<DependencyKey, PendingInitializer>>,
     /// Compiled unit factories by source ([`SHARED_UNIT_BYTES`]): each
     /// distinct source is compiled once for the whole runtime and every
     /// task calls the one published function. `None` records a source
@@ -523,6 +527,10 @@ struct Parked {
     step: NativeStep,
     reply: std::sync::mpsc::SyncSender<Result<RunOutcome, String>>,
     submit: NativeSubmit,
+}
+struct PendingInitializer {
+    request: ProducerRequest,
+    caller: (u64, big_boy_pants_js::TaskId),
 }
 /// Removes a parked task's entry when its owner stops waiting, so that a
 /// later wakeup queues nothing for it.
@@ -768,6 +776,7 @@ impl BbpRuntime {
             generation: Mutex::new(0),
             changed: Condvar::new(),
             graph: Mutex::new(big_boy_pants_js::DependencyGraph::new()),
+            pending_initializers: Mutex::new(HashMap::new()),
             factories: Mutex::new(HashMap::new()),
             idle: Mutex::new(Vec::new()),
             parked: Mutex::new(HashMap::new()),
@@ -981,6 +990,9 @@ pub(crate) struct TaskContext {
     /// The lane entry of each initializer it runs, which inherits the
     /// position of what waits for it ([`crate::effect_lanes`]).
     initializer_lanes: RefCell<HashMap<DependencyKey, crate::effect_lanes::EntryGuard>>,
+    /// Candidate callers lend their position to a reserved initializer
+    /// until its source-order lane selects the task that will execute it.
+    initializer_waits: RefCell<HashMap<DependencyKey, Option<crate::effect_lanes::WaitGuard>>>,
     resumable: Cell<bool>,
     per_task: Arc<AtomicUsize>,
     last_thread: Arc<Mutex<std::thread::ThreadId>>,
@@ -1084,6 +1096,7 @@ impl BbpEvaluator {
             begin_kind: ResultKind::new(kind + 1),
             finish_kind: ResultKind::new(kind + 2),
             initializers: RefCell::new(HashMap::new()),
+            initializer_waits: RefCell::new(HashMap::new()),
             initializer_lanes: RefCell::new(HashMap::new()),
             resumable: Cell::new(false),
             per_task: Arc::new(AtomicUsize::new(0)),
@@ -1646,6 +1659,37 @@ impl BbpEvaluator {
             DependencyId::new(unit as u64),
             INITIALIZER,
         );
+        if begin
+            && cx
+                .task
+                .global_value("__lightInitializerSelect")
+                .map_err(error)?
+                .is_some_and(|v| matches!(v.view(), ValueView::Bool(true)))
+        {
+            let request = {
+                let mut pending = self.shared.0.pending_initializers.lock().unwrap();
+                if pending
+                    .get(&key)
+                    .is_some_and(|p| p.caller.1 == cx.task.id())
+                {
+                    pending.remove(&key).map(|p| p.request)
+                } else {
+                    None
+                }
+            };
+            cx.initializer_waits.borrow_mut().remove(&key);
+            if let Some(request) = request {
+                self.shared.0.graph.lock().unwrap().bind_producer(
+                    key,
+                    request.producer(),
+                    cx.task.id(),
+                );
+                cx.initializers.borrow_mut().insert(key, request);
+                return Ok(self.runtime.root(Primitive::Bool(true)));
+            }
+            cx.initializer_lanes.borrow_mut().remove(&key);
+            return Ok(self.runtime.root(Primitive::Bool(false)));
+        }
         if begin {
             let parent = cx
                 .task
@@ -1721,32 +1765,46 @@ impl BbpEvaluator {
                     .map_err(error)?;
                 self.shared.wake(wakeups);
             }
-            let claimed = match self.runtime.claim(key) {
-                Ok(request) => {
-                    self.shared.0.graph.lock().unwrap().bind_producer(
+            let (candidate, reserved) = {
+                let mut pending = self.shared.0.pending_initializers.lock().unwrap();
+                if let Some(initializer) = pending.get_mut(&key) {
+                    if position < initializer.caller.0 {
+                        initializer.caller = (position, cx.task.id());
+                    }
+                    (true, false)
+                } else if let Ok(request) = self.runtime.claim(key) {
+                    pending.insert(
                         key,
-                        request.producer(),
-                        cx.task.id(),
+                        PendingInitializer {
+                            request,
+                            caller: (position, cx.task.id()),
+                        },
                     );
-                    cx.initializers.borrow_mut().insert(key, request);
-                    // The initializer runs inside this task's activity and
-                    // inherits the position of what waits for it.
-                    if let Some(lanes) = self.shared.lanes() {
-                        let entry = lanes.enter_cell(crate::effect_lanes::identity(key));
-                        cx.initializer_lanes.borrow_mut().insert(key, entry);
-                    }
-                    #[cfg(test)]
-                    {
-                        let hook = self.shared.0.on_initializer.lock().unwrap().clone();
-                        if let Some(hook) = hook {
-                            hook(&cx.task, key);
-                        }
-                    }
-                    true
+                    (true, true)
+                } else {
+                    (false, false)
                 }
-                Err(_) => false,
             };
-            return Ok(self.runtime.root(Primitive::Bool(claimed)));
+            if candidate {
+                let wait = self.shared.lanes().map(|lanes| {
+                    let target = crate::effect_lanes::identity(key);
+                    let wait = lanes.wait_for(crate::effect_lanes::Target::Cell(target));
+                    let entry = lanes.enter_cell(target);
+                    cx.initializer_lanes.borrow_mut().insert(key, entry);
+                    wait
+                });
+                cx.initializer_waits.borrow_mut().insert(key, wait);
+            }
+            #[cfg(test)]
+            if reserved {
+                let hook = self.shared.0.on_initializer.lock().unwrap().clone();
+                if let Some(hook) = hook {
+                    hook(&cx.task, key);
+                }
+            }
+            #[cfg(not(test))]
+            let _ = reserved;
+            return Ok(self.runtime.root(Primitive::Bool(candidate)));
         }
         let producer = cx
             .initializers
@@ -1813,7 +1871,17 @@ impl BbpEvaluator {
         Ok(self.runtime.root(Primitive::Null))
     }
     fn fail_initializers(&self, cx: &TaskContext, message: &str) {
-        let requests = std::mem::take(&mut *cx.initializers.borrow_mut());
+        let mut requests = std::mem::take(&mut *cx.initializers.borrow_mut());
+        let waits = std::mem::take(&mut *cx.initializer_waits.borrow_mut());
+        {
+            let mut pending = self.shared.0.pending_initializers.lock().unwrap();
+            for key in waits.keys() {
+                if pending.get(key).is_some_and(|p| p.caller.1 == cx.task.id()) {
+                    requests.insert(*key, pending.remove(key).unwrap().request);
+                }
+            }
+        }
+        drop(waits);
         let entries = std::mem::take(&mut *cx.initializer_lanes.borrow_mut());
         drop(entries);
         if requests.is_empty() {

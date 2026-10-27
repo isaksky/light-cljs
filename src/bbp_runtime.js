@@ -1207,6 +1207,7 @@ globalThis.__lightInitializerUnit=null;
 globalThis.__lightInitializerParent=null;
 globalThis.__lightInitializerResult=null;
 globalThis.__lightInitializerFailure=null;
+globalThis.__lightInitializerSelect=false;
 globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
   if(!roots.has(name)&&(name in globalThis.__lightCompilerRoots))return null;
   if(roots.has(name)&&roots.get(name).unit===unit)return null;
@@ -1230,7 +1231,18 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
       // observes *ns* needs its lane. Inherited callers are selected in Rust.
       globalThis.__lightInitializerNamespace=native.compilerForms.namespaceContext();
       globalThis.__lightInitializerNamespaceBound=native.compilerForms.namespaceBound();
-      const producer=__rt.need(serial,beginKind);
+      // Reserve before waiting so earlier callers can lend their lane.
+      // No factory code runs until the lane selects the earliest caller's
+      // task, retaining its overlays without sharing task-owned objects.
+      const candidate=__rt.need(serial,beginKind);
+      let producer=false;
+      if(candidate){
+        const cell=__rt.effect(65532,0);if(cell!==0)__rt.need(cell,5);
+        globalThis.__lightInitializerUnit=unit;
+        globalThis.__lightInitializerSelect=true;
+        try{producer=__rt.need(++initializerSerial,beginKind);}
+        finally{globalThis.__lightInitializerSelect=false;}
+      }
       if(producer){
         let failed=false,failure;
         initializerStack.push(unit);
