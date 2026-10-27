@@ -3156,10 +3156,19 @@ fn compiler_literal_payloads_keep_identity_provenance_and_cached_limits_after_gc
         ]
         .into(),
     });
+    let metadata = Datum::new(D::Collection {
+        kind: C::Map,
+        children: vec![
+            Datum::new(D::Keyword(Name::new(None, "tag"))),
+            payload.clone(),
+        ]
+        .into(),
+    });
     let data = Datum::new(D::CompilerLiteral {
         kind: L::JsArray,
         payload: payload.clone(),
-    });
+    })
+    .with_metadata(metadata.clone());
     let form = Form::from_data(
         data.clone(),
         crate::compiler_data::Source::new("literal.cljs", "#js [x]")
@@ -3190,6 +3199,18 @@ fn compiler_literal_payloads_keep_identity_provenance_and_cached_limits_after_gc
             bridge.forms[&payload.identity()].span().source().name(),
             "literal.cljs"
         );
+        let fresh = s
+            .new_compiler_literal(JsString::from("js-array"), imported_payload)
+            .unwrap();
+        let fresh = s
+            .form_with_meta(fresh, s.form_meta(s.form_value(value)))
+            .unwrap();
+        let exported = bridge.export(s, fresh, 64, &mut 100).unwrap();
+        assert_eq!(
+            exported.compiler_literal_data().unwrap().identity(),
+            payload.identity()
+        );
+        assert_eq!(exported.metadata().unwrap().identity(), metadata.identity());
         for cached in [true, false] {
             if !cached {
                 bridge.imports.clear();

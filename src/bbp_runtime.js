@@ -565,6 +565,16 @@ const native = (() => {
     }
     return printWriterImpl(value,writer,options);
   };
+  // Explicit object constructors keep JS own-property order and last writes.
+  // The temporary host container never crosses the form bridge.
+  const literalObjectPairs = pairs => {
+    const object={};
+    for(let i=0;i<pairs.length;i+=2){
+      const key=val(pairs[i]),name=__rt.formKind(key)==='keyword'?__rt.formName(key):key;
+      if(name!=='__proto__')Object.defineProperty(object,name,{value:pairs[i+1],enumerable:true,configurable:true});
+    }
+    return Object.keys(object).flatMap(key=>[key,object[key]]);
+  };
   const printWriterImpl = (value,writer,options,skipMetadata=false) => {
     const x=val(value);
     if(x==null)return write(writer,'nil');
@@ -583,10 +593,19 @@ const native = (() => {
     if(kind==='compiler-literal'){
       const tag=__rt.formName(x),payload=__rt.formLiteralPayload(x);
       if(tag==='regex')return write(writer,'#\"'+regexValue(x).source+'\"');
-      if(tag==='js-array'||tag==='js-object'){write(writer,'#js ');return printWriter(payload,writer,options);}
+      if(tag==='js-array'){write(writer,'#js ');return printWriter(payload,writer,options);}
+      if(tag==='js-object'){
+        write(writer,'#js ');
+        const pairs=literalObjectPairs(arr(__rt.formPrintItems(val(payload))).flatMap(arr));
+        return printSequential(writer,(entry,w,o)=>{
+          const key=val(__rt.cljNth(entry,0));
+          printWriter(/^[A-Za-z_*+?!\-'][\w*+?!\-']*$/.test(key)?__rt.cljKeyword(key):key,w,o);
+          write(w,' ');return printWriter(__rt.cljNth(entry,1),w,o);
+        },'{',', ','}',options,__rt.formPrintItems(literalMap(pairs)));
+      }
       if(tag==='queue'){write(writer,'#queue ');return printWriter(payload,writer,options);}
       if(tag==='uuid'){write(writer,'#uuid ');return printWriter(payload,writer,options);}
-      if(tag==='instant'){write(writer,'#inst ');return printWriter(new Date(val(payload)).toISOString(),writer,options);}
+      if(tag==='instant'){write(writer,'#inst ');return printWriter(new Date(val(payload)).toISOString().replace(/Z$/,'-00:00'),writer,options);}
     }
     if(typeof x==='string'){
       const escapes={'"':'\\"','\\':'\\\\','\b':'\\b','\f':'\\f','\n':'\\n','\r':'\\r','\t':'\\t'};
@@ -1300,7 +1319,7 @@ const native = (() => {
     gensym, rePattern, reSeq:(re,text)=>reSeq(reSeq,re,text),
     reFind:(re,text)=>reMatch(re,text,false), reMatches:(re,text)=>reMatch(re,text,true),
     isRegex:x=>regexValue(x) instanceof RegExp,
-    uuid:x=>__rt.formCompilerLiteral('uuid',val(x)),
+    uuid:x=>{x=val(x);if(typeof x!=='string')throw new Error('UUID expects a string');return __rt.formCompilerLiteral('uuid',x.toLowerCase());},
     isUuid:x=>__rt.formKind(val(x))==='compiler-literal'&&__rt.formName(val(x))==='uuid',
     invoke, truth, get, identity:x=>x, macroReaderFunction,
     printReadably:true, printLength:null, printLevel:null, printNamespaceMaps:false,
@@ -1364,7 +1383,7 @@ const native = (() => {
     ensureReduced:x=>__rt.cljIsReduced(x)?x:__rt.cljReduced(x),
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
     notEqual:(...xs)=>!core.equal(...xs),
-    name:x=>{if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
+    name:x=>{if(typeof val(x)==='string')return x;if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
     namespace:x=>{if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support namespace: '+__rt.formName(val(x)));return __rt.formNamespace(val(x));},
     inc:x=>val(x)+1, dec:x=>val(x)-1, multiply:(...xs)=>xs.reduce((a,b)=>a*val(b),1),
     less:(...xs)=>chain(xs,(a,b)=>a<b), greater:(...xs)=>chain(xs,(a,b)=>a>b), lessEqual:(...xs)=>chain(xs,(a,b)=>a<=b), greaterEqual:(...xs)=>chain(xs,(a,b)=>a>=b),
@@ -1381,6 +1400,8 @@ const native = (() => {
     quot:(n,d)=>quot(val(n),val(d)), rem:(n,d)=>{n=val(n);d=val(d);return n-d*quot(n,d);},
     mod:(n,d)=>{n=val(n);d=val(d);return ((n%d)+d)%d;},
     numericEqual:(...xs)=>xs.length!==0&&core.equal(...xs),
+    isArray:x=>{x=val(x);return __rt.formKind(x)==='compiler-literal'?__rt.formName(x)==='js-array':Array.isArray(x);},
+    isObject:x=>{x=val(x);const kind=__rt.formKind(x);return kind==='compiler-literal'?__rt.formName(x)==='js-object':kind===null&&!__rt.cljIsAtom(x)&&x!=null&&x.constructor===Object;},
     isNumber:x=>typeof val(x)==='number', isFloat:x=>typeof val(x)==='number', isDouble:x=>typeof val(x)==='number',
     isInfinite:x=>val(x)===Infinity||val(x)===-Infinity,
     exInfo:(m,d)=>new Error(val(m)),
@@ -1561,9 +1582,8 @@ const native = (() => {
     makeIFn:f=>f,
     compilerForms:{
       jsArray:items=>__rt.formCompilerLiteral('js-array',vector(items)),
-      jsObject:pairs=>__rt.formCompilerLiteral('js-object',literalMap(pairs)),
+      jsObject:pairs=>__rt.formCompilerLiteral('js-object',literalMap(literalObjectPairs(pairs))),
       withMeta:(value,meta)=>__rt.cljWithMeta(value,meta),
-      literal:(tag,payload)=>__rt.formCompilerLiteral(tag,payload),
       gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
       namespaceContext:()=>{
         if(!(currentNamespace instanceof Namespace))return __rt.formVector(0,currentNamespace);

@@ -7131,6 +7131,7 @@ fn explicit_compiler_literals_match_quickjs() {
             r#"#js {:a #js [1 #js {:b 2}]}"#,
             "#js {:a #js [1 #js {:b 2}]}",
         ),
+        ("object property order", r#"#js {"10" 10 "2" 2 :z 1 "z" 3}"#, "#js {\"2\" 2, \"10\" 10, :z 3}"),
         ("regex", r##"#"a+""##, "#\"a+\""),
         (
             "instant",
@@ -7173,6 +7174,12 @@ fn explicit_compiler_literals_match_quickjs() {
                 light_cljs::compile(&source).unwrap(),
                 "{label}, constructed={constructed}"
             );
+            let printed = if constructed {
+                format!("(defmacro m [] (pr-str '{literal})) (js/console.log (m))")
+            } else {
+                format!("(defmacro m [x] (pr-str x)) (js/console.log (m {literal}))")
+            };
+            assert_native_matches_legacy(&printed, &format!("{expected}\n"));
         }
     }
     assert_native_matches_legacy(
@@ -7256,4 +7263,36 @@ fn demanded_compiler_literals_publish_and_keep_source_order_at_all_jobs() {
             "jobs={jobs}"
         );
     }
+}
+
+#[test]
+fn compiler_literal_array_and_object_predicates_match_quickjs() {
+    assert_native_matches_legacy(
+        r##"(defmacro m [array object]
+               (let [a array? o object?]
+                 (list 'quote
+                   [(mapv a [array object '#js [] '#js {} (js/Array.) (js* "({})") nil [] {} 'x :x #"x"])
+                    (mapv o [array object '#js [] '#js {} (js/Array.) (js* "({})") nil [] {} 'x :x #"x"])
+                    (o (js* "Object.create(null)")) (o (js/Object.freeze (js* "({})")))
+                    (o (atom 1)) (o (reduced 1)) (o (fn [] 1))])))
+             (js/console.log (pr-str (m #js [] #js {})))"##,
+        "[[true false true false true false false false false false false false] [false true false true false true false false false false false false] false true false false false]\n",
+    );
+}
+
+#[test]
+fn compiler_literal_queue_result_matches_quickjs() {
+    assert_native_matches_legacy(
+        "(defmacro m [] cljs.core.PersistentQueue.EMPTY) (js/console.log (pr-str (m)))",
+        "#queue []\n",
+    );
+}
+
+#[test]
+fn compiler_literal_string_keys_keep_exact_names() {
+    assert_native_matches_legacy(
+        r#"(defmacro m [s] (let [n name] (list 'quote [(name s) (n s) (identical? s (n s)) (n :ns/key) (n 'ns/key)])))
+           (js/console.log (js/JSON.stringify (js/Array.from (m "a\uD800"))))"#,
+        "[\"a\\ud800\",\"a\\ud800\",true,\"key\",\"key\"]\n",
+    );
 }
