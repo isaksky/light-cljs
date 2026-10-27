@@ -81,7 +81,9 @@ intact. Explicit type implementations precede built-in `IKVReduce` and
 seqable inputs use the public `IMapEntry` key/value methods, with their
 missing-method errors and callback getter/receiver evaluation order preserved.
 Reduction traverses custom `ISeqable`/`ISeq` values through their protocols,
-using `INext` when present and `ISeq/-rest` otherwise. Direct `-kv-reduce`
+using a direct `INext` implementation when present and `ISeq/-rest` otherwise,
+including the first advance of a two-argument `reduce`. Object/default
+`INext` extensions do not participate in that advance. Direct `-kv-reduce`
 calls require an `IKVReduce` implementation and reject nil, lists, arrays and
 map entries unless an extension supplies one.
 
@@ -102,6 +104,14 @@ unsupported. Incomparable keys raise catchable `Error`s with the legacy
 operand-specific messages, including during construction, lookup, updates
 and equality; catch and finally both run. Map equality uses the destination
 map's comparator and preserves the source map's value-comparison direction.
+Comparison messages format native collection operands in rooted, bounded VM
+steps. Traversal storage, ordered map snapshots, exact UTF-16 output and
+complete UTF-8 host diagnostics are admitted against the aggregate byte
+budget before allocation; string length is checked before output growth.
+Lone surrogates and readable control-character escapes survive in the
+JavaScript message. Host diagnostic copies and rethrows share their buffer
+and its charge. A small shared collection graph cannot bypass the budget by
+expanding into an exponentially larger diagnostic.
 Full result realization rebuilds sorted maps containing lazy values or
 metadata while preserving sorted updates, key identity and noneditability.
 The source macro table compares these collection kinds, callback
@@ -111,7 +121,7 @@ slots, retaining every callback effect exactly once. Penpot's next small
 service gaps, `qualified-keyword?`, `true?` and `vary-meta`, are also provided
 natively.
 
-At `bef2fb01`, based on `d469a30b`, the native-only debug compiler was rebuilt
+At `076a1c21`, based on `d469a30b`, the native-only debug compiler was rebuilt
 on macOS arm64 with Homebrew Rust/Cargo 1.99.1. Both Penpot entries were rerun
 with the five absolute read-only roots, `--jobs 1 --no-cache` and every budget
 from the reproduction below. Both pass the former `core.reduceKv` boundary
@@ -132,10 +142,9 @@ compiles it and Node prints `{:bound true}`. Neither entry completes, and
 `research/` was left untouched.
 
 The native integration suites pass 77 macro, ten reader and two Proxy tests;
-37 native evaluator unit tests also pass. The full engine run at `03472e41`
-passes 2,125 tests and seven doctests. After the final sorted-value replacement
-fix, all 31 engine form tests and the expanded reduction table pass; the
-unaffected full-suite results are reused. The final `bbp-macros,quickjs` run
+37 native evaluator unit tests also pass. The full engine run at `076a1c21`
+passes 2,129 tests and seven doctests, including the byte-limit, string-limit,
+yield/GC and retained-host-diagnostic regressions. The final `bbp-macros,quickjs` run
 passes all 333 compiler unit, 79 macro, ten reader and two Proxy tests (one
 unrelated unit test is ignored).
 Strict engine Clippy retains the nine documented baseline diagnostics;
@@ -148,6 +157,10 @@ bootstrap, compiler services or QuickJS readers. Restoring the original
 `a8edeeb5` production sources temporarily reproduces all 27 failure signatures
 under the same toolchain and feature flags (ignoring only thread/source IDs).
 Those sources were restored to the implementation before further validation.
+The final `native_` unit filter reports 12 passes and 12 bootstrap-macro
+failures. All 12 test names and exact `unsupported operation: bootstrap macro`
+messages match that recorded baseline; the bootstrap, macro-host, evaluator
+and test sources on those failure paths remain unchanged from `a8edeeb5`.
 The QuickJS compiler integration target cannot build in this worktree: eight
 `include_str!` inputs require the absent `research/clojurescript` checkout.
 No research symlink was created, and the unavailable default V8 suite remains
