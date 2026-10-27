@@ -753,18 +753,34 @@ three existing engine-category allowances. The preceding full-suite results
 cover unchanged lowering paths; the property-assignment eligibility change
 was verified by these focused cases.
 
-The final same-commit release pair is native-only SHA-256
-`1d1497870e996938…`, default V8 `3f88717fd0bb87a0…`, both at `05d0e954`.
-The required post-review `n=400` timing was **not collected**: every launch
-check after the binaries were ready still found active peer builds/tests or
-standalone compiler runs. To preserve the requested measurement serialization,
-no fresh timed run was started within the worker's time budget. No final-revision
-k value or CPU profile is claimed. The four-size results and before/after
-profiles at `47cb9998` above remain the original optimization evidence;
-light-cljs-515 remains the existing focused numerical-target follow-up.
-Rerun `bb benchmarks/native-macros-k.bb OUTPUT --workload protocol --runs 5
---n 0,400 v8=V8_BINARY native=NATIVE_BINARY` in a clear host window to finish
-the review-fix performance check.
+The review-fix same-commit release pair is native-only SHA-256
+`33099d5061186bc0…`, default V8 `74cb5234505da259…`, both at `701a763f`.
+Both variants were freshly built with the commands above, with
+`cargo clean --release -p big-boy-pants-js` before the native build.
+The unchanged five-round harness verifies identical Node output:
+
+```sh
+bb benchmarks/native-macros-k.bb target/fix4-protocol-701a763f \
+  --workload protocol --runs 5 --n 0,100,400,1600,6400 \
+  v8=target/fix4-v8 native=target/fix4-native
+```
+
+All own builds/tests had finished. After waiting for load to fall, the host's
+one-minute load was 3.05 at launch and 3.27 afterward; one peer's single-thread
+effect-lane stress test still overlapped. This is not an idle-host result.
+Analysis time, median [min–max] of five, ms:
+
+| `n` | fresh V8 | native | k |
+| ---: | --- | --- | ---: |
+| 0 | 25.1 [24.5–26.9] | 42.2 [41.2–44.2] | – |
+| 100 | 33.0 [28.7–34.4] | 69.5 [64.3–73.5] | 3.5 |
+| 400 | 33.8 [32.4–37.7] | 93.2 [90.3–100.7] | 5.9 |
+| 1,600 | 44.2 [40.6–46.9] | 211.4 [202.3–216.1] | 8.9 |
+| 6,400 | 68.6 [66.0–74.6] | 645.6 [642.7–661.3] | 13.9 |
+
+The target remains missed through n=1,600. The before/after optimization
+comparison at `47cb9998` above remains the baseline evidence; the residual
+costs remain assigned to light-cljs-515, without another follow-up.
 
 ### Dynamic bindings and JavaScript holes (final review fix)
 
@@ -809,7 +825,18 @@ test threads. The pinned ClojureScript source link and
   proxy and compiler-cache targets pass with those same allowances.
   No source suppressions were added.
 
-Fresh native `/usr/bin/sample PID 3 1 -file ...` profiles use the same
+After rebasing onto native reduction fixes at `ae4373fd`, checkpoint
+`79973136` passes the same 104 native-only integration tests and the new
+compiler-cache regression, plus 346 library and 106 native/QuickJS integration
+tests (one existing library test ignored). Default V8 and QuickJS-only cache
+suites each pass all 24 tests, with one existing test skipped; these reruns
+verify the compiler identity that also hashes native sources. Strict default
+all-target Clippy, native/QuickJS Clippy with the same baseline allowances,
+and formatting pass. The base delta touches only `bbp_runtime.js` and its
+feature-gated fixtures: broader default/QuickJS-only and engine suite results
+above are reused for their unchanged execution paths.
+
+Fresh native `/usr/bin/sample PID 3 1 -file ...` profiles at `701a763f` use the same
 256-call n=1,600 and 64-call n=6,400 inputs as above. Node output matches
 the earlier profiles. Peer suites were active (host load approximately
 8.5–9.2); these are CPU sample distributions, separate from latency timing.
