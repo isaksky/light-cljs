@@ -2195,7 +2195,7 @@ fn seq_split(heap: &Heap, mut c: SeqCursor) -> Split {
 /// an entry whose full hash `c` keys of the other map share contributes up
 /// to `c` candidate key/value pairs instead of one.
 pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
-    // The embedding/key-comparison API is boolean; language equality uses
+    // The embedding API is boolean; language equality and key operations use
     // the fallible variant so an incompatible sorted lookup raises an Error.
     try_equals(heap, a, b).unwrap_or(false)
 }

@@ -44,7 +44,6 @@ pub(crate) fn key_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
-#[allow(clippy::unnecessary_wraps)] // Adapter to the fallible structural-key API.
 fn infallible_key_eq(a: &Value, b: &Value) -> Result<bool, CollectionError> {
     Ok(key_eq(a, b))
 }

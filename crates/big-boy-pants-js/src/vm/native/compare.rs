@@ -38,21 +38,11 @@ impl Context {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Options {
     length: Option<f64>,
     level: Option<f64>,
     namespace_maps: bool,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            length: None,
-            level: None,
-            namespace_maps: false,
-        }
-    }
 }
 
 impl Options {
