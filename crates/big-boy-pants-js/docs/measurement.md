@@ -30,7 +30,7 @@ The full invocation runs every row group; quick uses smaller sizes. The
 uses four executor workers and nine measured rounds; tests still use three
 test threads. The benchmark owns its default target output only.
 
-## Static engine names (2026-10-26)
+## Static engine names (2026-10-27)
 
 Engine baseline `5dfeade5`, changed source `3917552b`, macOS 15.7.3 ARM64,
 Apple M3 Ultra / 24 CPUs, Homebrew Rust/Cargo 1.99.1, Babashka 1.12.218 and
@@ -75,6 +75,13 @@ At `3917552b`, with `CARGO_BUILD_JOBS=3` throughout:
   retains the nine Rust 1.99.1 baseline diagnostics. The same command with
   `-D warnings -A deprecated -A clippy::chunks_exact_to_as_chunks
   -A clippy::byte_char_slices` passes; no source suppression was added.
+
+Rebased onto `ae4373fd`, which changes only `src/bbp_runtime.js` reductions
+and their compiler regression cases. A Git content comparison confirmed the
+engine source/tests, manifests and lockfile still match `3917552b`, so the
+engine suite, doctests and lint results above are reused. Both native compiler
+configurations were rerun at `2c7b6ba1`: **144 passed** and **443 passed**
+respectively, with the same normal filter/skip counts.
 
 ## Native array callback entry (2026-10-26)
 
