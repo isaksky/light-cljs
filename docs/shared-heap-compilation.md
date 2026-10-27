@@ -437,7 +437,8 @@ work or its transient allocations. Measurements below separate this remaining
 cost from in-task source evaluations. light-cljs-508 owns the residual
 concurrent-task memory premium.
 
-Measured at `5b8f73b0`, based on master `b3b655cc`, on macOS 15.7.3,
+Initial measurements before the historical-frontier lifetime fix, at
+`5b8f73b0`, based on master `b3b655cc`, on macOS 15.7.3,
 Apple M3 Ultra (Virtual), 24 vCPUs and 32 GiB RAM, Homebrew Rust/Cargo 1.99.1
 and Node 26.12.1. Build with
 `CARGO_BUILD_JOBS=3 cargo build --locked --release --no-default-features --features bbp-macros --bin light-cljs`.

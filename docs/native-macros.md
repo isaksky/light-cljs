@@ -1094,7 +1094,10 @@ path parses or evaluates catalog registration source. Every descriptor runs
 in source order through the existing root or declaration registration function;
 there is no coalescing, virtual property backing, or special redefinition path.
 The task owns its getters, initializer slots, declaration products and protocol
-tables. Data snapshots contain none of those mutable values. A producer task
+tables. Data snapshots contain none of those mutable values. Tasks root only
+their current snapshot; the shared cache is weak, so unused historical
+frontiers are collectable. A cache miss extends the task's own rooted prefix.
+A producer task
 is not its worker's engine: registrations it takes
 while compiling a helper stay pending for the worker's engine, which installs
 them at its next analysis. On this backend a pool slot analyzes a unit proven
