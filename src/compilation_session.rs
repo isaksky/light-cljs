@@ -632,12 +632,18 @@ impl SharedCatalog {
             .collect()
     }
     #[cfg(feature = "bbp-macros")]
-    pub(crate) fn has_native_core_writes(&self) -> bool {
-        !self
+    pub(crate) fn has_native_core_function_writes(&self) -> bool {
+        let replaced = self
             .native_replaced_core
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_empty()
+            .unwrap_or_else(PoisonError::into_inner);
+        // Match native emission's cache eligibility. Dynamic Vars have value
+        // type `any` and are always read at their use sites, so rebinding them
+        // cannot invalidate a prepared factory's cached core functions.
+        crate::CoreFnId::ALL.into_iter().any(|core| {
+            replaced.contains(core.runtime_name())
+                && core.operation().value == crate::core_operations::Type::FN
+        })
     }
 
     /// Conservatively recognize core targets by spelling, including those in

@@ -4272,6 +4272,29 @@ fn native_core_property_writes_preserve_call_overrides() {
 }
 
 #[test]
+fn native_core_writes_through_javascript_holes_observe_replacements() {
+    for (source, expected) in [
+        (
+            r#"(defmacro m [] (let [before (even? 2)]
+                 (js* "(~{} = function (_) { return false; })" cljs.core/even?)
+                 [before (even? 2)]))
+               (js/console.log (pr-str (m)))"#,
+            "[true false]\n",
+        ),
+        (
+            r#"(declare install)
+               (defmacro m [] (let [before (+ 1 2)] (install) [before (+ 1 2)]))
+               (defn install []
+                 (js* "(~{}.call = function (_, a, b) { return 42; })" cljs.core/+))
+               (js/console.log (pr-str (m)))"#,
+            "[3 42]\n",
+        ),
+    ] {
+        assert_native_matches_legacy(source, expected);
+    }
+}
+
+#[test]
 fn native_core_reads_observe_replacements_in_demanded_helpers() {
     for (source, expected) in [
         (

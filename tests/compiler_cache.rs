@@ -174,6 +174,33 @@ fn warm_fresh_process_build() {
     );
 }
 
+#[test]
+fn dynamic_core_bindings_reuse_cached_artifacts() {
+    let project = Project::new(&[
+        (
+            "macros.cljs",
+            "(ns macros) (defmacro setting [] (binding [*print-length* 3] *print-length*))",
+        ),
+        (
+            "main.cljs",
+            "(ns main (:require [macros :refer [setting]])) (js/console.log (setting) (binding [*print-length* 3] *print-length*))",
+        ),
+    ]);
+    let oracle = project.uncached("main");
+    assert_eq!(oracle.run(), "3 3\n");
+    let populated = project.cached("main", &[]);
+    assert_eq!(populated.js, oracle.js);
+    assert_eq!(populated.stat("cache.published"), 2, "{}", populated.stats);
+    let warm = project.cached("main", &[]);
+    assert_eq!(warm.stat("cache.hits"), 2, "{}", warm.stats);
+    assert_eq!(warm.stat("cache.misses"), 0, "{}", warm.stats);
+    assert_eq!(warm.stat("cache.published"), 0, "{}", warm.stats);
+    assert_eq!(warm.stat("macro-calls"), 0, "{}", warm.stats);
+    assert!(warm.rows().is_empty(), "{:?}", warm.rows());
+    assert_eq!(warm.js, oracle.js);
+    assert_eq!(warm.run(), "3 3\n");
+}
+
 const COUNTER: &[(&str, &str)] = &[
     (
         "macros.cljs",

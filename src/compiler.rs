@@ -2988,13 +2988,13 @@ fn analyze_entry(
             let started = compile_stats::start(timed);
             // Prepared native factories can have cached core functions under
             // an earlier compilation's replacement set. Reanalyze their source
-            // when this compilation writes core, rather than installing code
-            // specialized for that earlier context.
+            // when this compilation writes a cacheable core function, rather
+            // than installing code specialized for that earlier context.
             #[cfg(feature = "bbp-macros")]
             let native_core_writes = macros.native_macro_backend()
                 && macros
                     .session_handle()
-                    .is_some_and(|session| session.shared().has_native_core_writes());
+                    .is_some_and(|session| session.shared().has_native_core_function_writes());
             #[cfg(not(feature = "bbp-macros"))]
             let native_core_writes = false;
             let cached = match (cache.as_deref_mut(), &loader.record) {
