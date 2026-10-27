@@ -2140,7 +2140,7 @@ fn shared_lazy_records_check_retained_receivers_during_realization() {
         // Publish before the thunk constructs its record. Its metadata is
         // absent from the cached structural sequence, but retained for dispatch.
         rt.publish(&lazy).unwrap();
-        let mut producer = rt.spawn(&read, &[&lazy]).unwrap();
+        let producer = rt.spawn(&read, &[&lazy]).unwrap();
         assert!(matches!(producer.run().unwrap(), RunOutcome::Waiting(_)));
         let waiter = rt.spawn(&read, &[&lazy]).unwrap();
         assert!(matches!(waiter.run().unwrap(), RunOutcome::Waiting(_)));
