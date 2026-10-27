@@ -156,6 +156,15 @@ workspace. Their library, source and execution checks pass. These complete runs
 are reused: later emitter changes run only in native mode, and the final reader
 fix and engine-only rebase do not affect their default/legacy paths.
 
+The default-feature V8 compiler was rebuilt with `LIGHT_CLJS_V8_CACHE=require`.
+For the seed-42, 200k-line project generated with
+`bb benchmarks/generated-project/generate.bb target/g200k --seed 42 --lines 200k`,
+ten quiet, interleaved pairs timed `release bench --no-cache` using the original
+`ed4504ed` release binary and the final implementation. Median wall time was
+7.055 s before and 7.085 s after (1.0043x, +0.43%); ranges were 7.00–7.25 s and
+7.03–7.26 s. The difference is within run-to-run variation, with no material V8
+slowdown. A pair interrupted by peer work was discarded before this comparison.
+
 Root default/QuickJS Clippy passes strictly. Native and engine strict Clippy
 retain the nine established engine diagnostics; allowing only `deprecated`,
 `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` passes the engine
