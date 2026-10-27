@@ -7315,3 +7315,16 @@ fn compiler_literal_string_slices_and_runtime_literals_match_quickjs() {
         "[\"bc\",\"bc\",\"a\",\"cd\",\"\\ud800\",\"Invalid arity: 1\",true,0,\"Doesn't support name on this type\",\"Doesn't support namespace on this type\"]\n",
     );
 }
+
+#[test]
+fn compiler_literal_sequential_classification_does_not_realize_values() {
+    assert_native_matches_legacy(
+        r#"(deftype S [] ISequential)
+           (defmacro m [input]
+             (let [p sequential? calls (atom 0) s (lazy-seq (swap! calls inc) (list 1))]
+               (list 'quote [(mapv p [nil [] () s (seq [1 2]) {} #{} 1 "x" (js/Array.) '#js [] input
+                                     cljs.core.PersistentQueue.EMPTY (S.)]) @calls])))
+           (js/console.log (pr-str (m #js {})))"#,
+        "[[false true true true true false false false false false false false true true] 0]\n",
+    );
+}
