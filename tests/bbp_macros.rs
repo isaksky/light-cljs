@@ -4294,6 +4294,15 @@ fn native_core_reads_observe_replacements_in_demanded_helpers() {
                (js/console.log (pr-str (m)))"#,
             "[true false]\n",
         ),
+        (
+            r#"(declare install)
+               (defmacro m [] (let [before (even? 2)] (install) [before (even? 2)]))
+               (defmacro installer []
+                 (list 'defn 'install [] (list 'set! 'cljs.core/even? '(fn [_] false))))
+               (installer)
+               (js/console.log (pr-str (m)))"#,
+            "[true false]\n",
+        ),
     ] {
         assert_native_matches_legacy(source, expected);
     }

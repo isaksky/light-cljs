@@ -670,6 +670,26 @@ impl SharedCatalog {
             .native_replaced_core
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        // A first-class mutation operator can assemble a helper's write with
+        // a computed target. Its eventual IR does not exist when earlier
+        // macro factories are emitted, so no core binding is proven stable.
+        if syntax.nodes.iter().any(|node| {
+            let NodeKind::Prefix { form, .. } = node.kind else {
+                return false;
+            };
+            matches!(syntax.nodes[form.0].kind, NodeKind::Symbol)
+                && matches!(
+                    spelling(form).rsplit('/').next(),
+                    Some("set!" | "binding" | "with-redefs")
+                )
+        }) {
+            replaced.extend(
+                crate::CoreFnId::ALL
+                    .into_iter()
+                    .map(crate::CoreFnId::runtime_name),
+            );
+            return;
+        }
         let mut target = |mut id: NodeId| {
             while let NodeKind::Metadata { target, .. } | NodeKind::Prefix { form: target, .. } =
                 syntax.nodes[id.0].kind
