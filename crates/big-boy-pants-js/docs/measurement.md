@@ -53,17 +53,17 @@ before and after. Their final managed-byte counts also agree exactly:
 heap-object layouts nor the set of interned property names, and static name
 bindings do not become collector roots.
 
-At `3917552b`, with `CARGO_BUILD_JOBS=3` throughout:
+At `25c90c7e`, rebased onto `54bd1144`, with `CARGO_BUILD_JOBS=3` throughout:
 
 - `cargo test --locked -p big-boy-pants-js --all-targets -- --test-threads=3`:
-  **2,146 passed**, zero failures or ignored tests.
+  **2,148 passed**, zero failures or ignored tests.
 - `cargo test --locked -p big-boy-pants-js --doc -- --test-threads=3`:
   **seven passed**.
 - Native `cargo nextest run --locked --no-default-features --features
   bbp-macros --lib --test bbp_macros --test bbp_reader --test bbp_proxy_has -j 8`,
   filtered to those integration binaries and `bbp_evaluator::tests::`:
-  **144 passed**. The same targets plus `--bins`, with `bbp-macros,quickjs`
-  and no filter: **443 passed**, one normally skipped test.
+  **154 passed**. The same targets plus `--bins`, with `bbp-macros,quickjs`
+  and no filter: **453 passed**, one normally skipped test.
 - New regressions check non-interning missing-name reads, ownership, unchanged
   byte usage, no fresh string bodies during warmed reads, key-slot reuse after
   sweep, cross-heap rebinding and shared form-kind result bodies.
@@ -76,12 +76,9 @@ At `3917552b`, with `CARGO_BUILD_JOBS=3` throughout:
   `-D warnings -A deprecated -A clippy::chunks_exact_to_as_chunks
   -A clippy::byte_char_slices` passes; no source suppression was added.
 
-Rebased onto `ae4373fd`, which changes only `src/bbp_runtime.js` reductions
-and their compiler regression cases. A Git content comparison confirmed the
-engine source/tests, manifests and lockfile still match `3917552b`, so the
-engine suite, doctests and lint results above are reused. Both native compiler
-configurations were rerun at `2c7b6ba1`: **144 passed** and **443 passed**
-respectively, with the same normal filter/skip counts.
+The final integration includes the reduction fixes and native frontend/call
+lowering changes. All engine and native compiler checks above were rerun
+after that integration; the strict Clippy baseline remains unchanged.
 
 ## Native array callback entry (2026-10-26)
 
