@@ -530,7 +530,11 @@ pub(crate) struct SharedCatalog {
     perturbation: std::sync::OnceLock<crate::scheduler::Perturbation>,
     #[cfg(test)]
     on_claim: Mutex<Option<ClaimHook>>,
-    /// Runs on a waiting thread each time its wait ends, without the lock.
+    /// Runs once a thread registers its wait, without the catalog lock.
+    #[cfg(test)]
+    on_wait: Mutex<Option<ClaimHook>>,
+    /// Runs on a waiting thread each time its wait ends, without either
+    /// the catalog lock or the hook's mutex.
     #[cfg(test)]
     on_wake: Mutex<Option<ClaimHook>>,
 }
@@ -997,6 +1001,18 @@ impl SharedCatalog {
                     c.threads[thread].waiting = Some(id);
                     c.waiting += 1;
                     c.units[id].waiters += 1;
+                    #[cfg(test)]
+                    {
+                        let hook = self.on_wait.lock().unwrap().clone();
+                        if let Some(hook) = hook {
+                            drop(guard);
+                            hook(id);
+                            guard = self.lock();
+                            // The producer may have settled before the hook
+                            // returned. Recheck before entering the wait.
+                            continue;
+                        }
+                    }
                 }
                 if _blocked.is_none() {
                     _blocked = Some(crate::compile_trace::wait(id));
@@ -1038,9 +1054,15 @@ impl SharedCatalog {
                     .wait(guard)
                     .unwrap_or_else(PoisonError::into_inner);
                 #[cfg(test)]
-                if let Some(hook) = &*self.on_wake.lock().unwrap() {
+                {
                     drop(guard);
-                    hook(id);
+                    // A hook may block another waiter until this thread
+                    // makes progress. Never serialize their callbacks or
+                    // reacquire the catalog while holding the hook's mutex.
+                    let hook = self.on_wake.lock().unwrap().clone();
+                    if let Some(hook) = hook {
+                        hook(id);
+                    }
                     guard = self.lock();
                 }
                 continue;
@@ -5493,39 +5515,118 @@ mod worker_tests {
 
     #[test]
     fn a_waiter_gets_the_analysis_after_the_application_took_the_program() {
+        waiter_after_application_transfer(false);
+    }
+
+    #[test]
+    fn a_waiter_gets_the_analysis_after_a_worker_claimed_first() {
+        waiter_after_application_transfer(true);
+    }
+
+    fn waiter_after_application_transfer(worker_first: bool) {
+        use std::sync::{Barrier, atomic::AtomicBool, atomic::Ordering::Relaxed, mpsc};
+        use std::time::Duration;
+
         let source = (0..3)
             .map(|i| format!("(defn u{i} [x] (+ x {i}))"))
             .collect::<String>();
         let (session, units, environment) = registered(&source);
         let shared = session.shared().clone();
-        hold_claims(&shared, 1);
-        // A waiter wakes only once the application has taken the program.
+        let claimed = Arc::new(Barrier::new(2));
+        let (waiting, registrations) = mpsc::channel();
+        let registrations = Mutex::new(registrations);
+        *shared.on_wait.lock().unwrap() = Some(Arc::new(move |id| {
+            waiting.send(id).unwrap();
+        }));
+        let start = claimed.clone();
+        *shared.on_claim.lock().unwrap() = Some(Arc::new(move |id| {
+            start.wait();
+            // A worker producer has both the application coordinator and
+            // another worker waiting; a coordinator producer has one waiter.
+            for _ in 0..if worker_first { 2 } else { 1 } {
+                assert_eq!(
+                    registrations
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap(),
+                    id
+                );
+            }
+        }));
+        let transferred = Arc::new((Mutex::new(None), Condvar::new()));
+        let released = transferred.clone();
+        let hook_timed_out = Arc::new(AtomicBool::new(false));
+        let timed_out = hook_timed_out.clone();
+        let coordinator = std::thread::current().id();
         let catalog = Arc::downgrade(&shared);
         *shared.on_wake.lock().unwrap() = Some(Arc::new(move |id| {
             let catalog = catalog.upgrade().unwrap();
-            while !matches!(catalog.lock().units[id].state, AnalysisState::Prepared(..)) {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+            // Reenter the hook registry: another callback may briefly be
+            // cloning it, but this invocation must not hold its mutex.
+            drop(catalog.on_wake.lock().unwrap());
+            // When a worker produces the analysis the coordinator also
+            // waits. It must return so it can transfer the application IR.
+            if std::thread::current().id() == coordinator {
+                return;
+            }
+            let (done, _) = released
+                .1
+                .wait_timeout_while(released.0.lock().unwrap(), Duration::from_secs(5), |done| {
+                    *done != Some(id)
+                })
+                .unwrap();
+            if *done != Some(id) {
+                timed_out.store(true, Relaxed);
             }
         }));
         for i in 0..3 {
             let id = units[&format!("cljs.user/u{i}")];
             let waited = std::thread::scope(|scope| {
+                let producer = worker_first.then(|| {
+                    scope.spawn(|| {
+                        let host = MacroHost::bind(environment.clone(), None).unwrap();
+                        let view = WorkerView::new(shared.clone(), host).unwrap();
+                        view.analyze(id, None).map(drop).unwrap();
+                    })
+                });
+                if worker_first {
+                    claimed.wait();
+                }
                 let waiter = scope.spawn(|| {
+                    if !worker_first {
+                        claimed.wait();
+                    }
                     let host = MacroHost::bind(environment.clone(), None).unwrap();
                     let view = WorkerView::new(shared.clone(), host).unwrap();
                     view.analyze(id, None).map(|(program, _)| program)
                 });
-                // The coordinator analyzes the unit while the worker waits,
-                // then its application takes the program and drops it
-                // before the worker wakes.
+                // Both producer orders leave a worker waiting while the
+                // application takes the program and drops its own copy.
                 let (program, _) = session.analyze(id, None).unwrap();
                 let code = crate::emitter::DeferredUnit::prepare(&program)
                     .code()
                     .to_owned();
                 session.release_application_ir(id);
                 drop(program);
+                if let Some(producer) = producer {
+                    producer.join().unwrap();
+                }
+                {
+                    let c = shared.lock();
+                    let unit = &c.units[id];
+                    assert!(matches!(unit.state, AnalysisState::Prepared(..)));
+                    assert_eq!(unit.waiters, 1);
+                    assert_eq!(Arc::strong_count(unit.retained.as_ref().unwrap()), 1);
+                }
+                *transferred.0.lock().unwrap() = Some(id);
+                transferred.1.notify_all();
                 (waiter.join().unwrap(), code)
             });
+            assert!(
+                !hook_timed_out.load(Relaxed),
+                "wake hook blocked the application transfer"
+            );
             let (Ok(program), code) = waited else {
                 panic!("u{i}: {:?}", waited.0);
             };
