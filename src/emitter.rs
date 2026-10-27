@@ -297,6 +297,7 @@ mod deferred_storage_tests {
     fn native_preparation_reads_only_the_unit_and_its_definition_time_metadata() {
         for source in [
             "(var marker)",
+            "(even? 2)",
             "(-add-method nil :default (fn [x] (even? x)))",
             "(let [saved even?] (set! (.-call cljs.core/even?) saved)
                (binding [cljs.core/even? saved] (even? 2)))",

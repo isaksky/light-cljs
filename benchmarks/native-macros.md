@@ -1178,3 +1178,239 @@ pass with default features; the vendored V8 dependency emits its existing
 `Atomic::fetch_update` deprecation warning. The full compiler/engine test suites
 were not run for this documentation/measurement-only change. These results use
 the measured compiler tree above; subsequent commits change only this document.
+
+## Deferred native unit preparation (2026-10-27, light-cljs-542)
+
+The baseline production sources are `d92276a7`, including light-cljs-534's live
+catalog-prefix reuse and light-cljs-543's V8 repair. The latter moved the native
+multimethod scan out of ordinary emission, so the preceding section's roughly
+100-second V8 reference does not describe this baseline. Native emission still
+scanned the complete expression arena twice per prepared unit.
+
+`1e9a69d1` replaces those scans with one traversal from the unit's root. Explicit
+Var metadata and other expression children are included; a global read keeps
+its separate lazy demand. The traversal records multimethod function operands,
+local core writes and type method owners. Cross-unit and later core writes keep
+using the session's conservative source index. Preparation retains source and
+reader tables, runs no initializers, and retains no old program.
+
+The regression in `src/emitter.rs` counts actual indexed and iterator arena
+reads. Adding frozen prefixes of 512 and 4,096 unrelated expressions and global
+bindings leaves the read count unchanged. Its unit follows the frozen prefix
+and can reference metadata within it. The cases cover explicit Var metadata,
+multimethod operands, core property writes/bindings, type fields and local
+scope; mutating the live program afterward preserves the snapshot's metadata,
+reader tables and emitted source. The initial test failed against the old
+scans, before applying the traversal change.
+
+A separate reduced fixture constructs `set!` and `cljs.core/even?` with
+`(symbol "...")` inside a macro, then calls that generated installer from a
+demanded value initializer. Both baseline and optimized native binaries print
+`[true true]`; the same-base V8 reference prints the expected `[true false]`.
+The lexical core-write index misses this generated mutation. **light-cljs-544**
+contains the reproduction and tracks that pre-existing correctness gap.
+
+### Generated 200k measurement method
+
+The same macOS arm64 VM has 24 logical CPUs, an Apple M3 Ultra (Virtual),
+32 GiB RAM and macOS 15.7.3. Both revisions were rebuilt with locked release
+settings, thin LTO and one codegen unit, without allocation instrumentation.
+The default V8 binary was built from each native binary's production sources.
+`LIGHT_CLJS_V8_CACHE=require` reused the read-only machine cache. Build jobs
+were capped at three. Binary SHA-256 values:
+
+| Production sources | Backend | SHA-256 |
+| --- | --- | --- |
+| `d92276a7` | native-only | `8fbbf4c83c91bc2829dcd737875d3ffbd4625868a09d7b97490db6c7114bc3b4` |
+| `d92276a7` | default V8 | `4abb5da3738a91a1d2f1eb2c075899e5999f05e45f22e1da032d4f4ca2362cab` |
+| `e0f4a2c1` | native-only | `3d1387f2debc54a45dbef5ac675fc183f7bad2180cb1ddb1107f1f7006c5201f` |
+| `e0f4a2c1` | default V8 | `a20c3662590e5c16eb22bc660f1639d84b0faa36595be5f22fa8dfb7e3b34696` |
+
+```sh
+CARGO_BUILD_JOBS=3 cargo build --locked --release \
+  --no-default-features --features bbp-macros --bin light-cljs
+LIGHT_CLJS_V8_CACHE=require CARGO_BUILD_JOBS=3 cargo build --locked --release \
+  --bin light-cljs
+bb benchmarks/generated-project/generate.bb \
+  target/preparation-542/generated-200k --seed 42 --lines 200k
+# In the generated project, using each saved absolute binary path:
+/usr/bin/time -l BINARY release bench --no-cache --jobs N --stats
+node run-light.mjs 42 3
+bb oracle.bb 42 3
+```
+
+The fixture has 199,129 nonblank lines, 213,984 physical lines, 9,966,430 source
+bytes, 15,450 top-level forms and 450 worker namespaces. The generated release
+configuration uses advanced ESM output, disables persistent caching and sets
+macro budgets of 10,000,000 expansions, 1,000,000,000 nodes, 2,147,483,648 heap
+bytes, 100,000,000,000 polls and 3,600,000 ms. Each compiler process also has a
+one-hour external timeout enforced by a Babashka process supervisor. The measured
+process includes statistics/output writing; generation, hashing, Node and the
+oracle are outside timing. OS file caches were retained, with no discarded
+warmups or per-process engine reuse.
+
+Three rounds visit jobs 1/2/4/8, 8/4/2/1 and 1/2/4/8. At alternating job cells,
+binary order is before-V8/after-V8/before-native/after-native or its reverse.
+Every application is executed against the oracle (`484264`), and all generated
+JavaScript files are compared byte-for-byte within each backend across revisions,
+rounds and job counts.
+
+The host was shared with other implementation/review workers. Initial launches
+waited for peer Cargo/test/compiler processes; repeated restarts of their checks
+made that wait lengthy. Remaining launches waited for aggregate background CPU
+below 350% (3.5 of 24 logical CPUs). Load averages and process snapshots were
+recorded before/after each run. Peer work could start during a process, so exact
+wall-time ratios retain that interference limitation; independent user CPU,
+flat arena-read counts and sampled call paths provide additional evidence.
+No compiler builds or feature suites from this worker overlapped its timings.
+
+### Generated 200k results
+
+Each entry is the independent median of three fresh processes; brackets show
+minimum–maximum wall time. Wall/user CPU are seconds; peak RSS is GiB (2^30
+bytes). Loads are the three pre-run 1/5/15-minute averages, in round order.
+Two initial jobs-1 native processes overlapped peer work and were repeated:
+their excluded wall times were 234.58 s before and 38.77 s after. The retained
+replacement processes took 222.16 s and 36.22 s. No other samples were discarded.
+
+| Backend | Change | Jobs | Wall [min–max], s | User CPU, s | Peak RSS, GiB | Loads (1/5/15 min) |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| native | before | 1 | 226.49 [222.16–231.51] | 224.10 | 1.273 | 2.33/2.52/2.88; 2.38/3.22/4.41; 2.23/2.75/3.89 |
+| native | after | 1 | 35.14 [34.69–36.22] | 33.27 | 1.257 | 2.82/2.58/2.81; 2.77/3.40/4.53; 2.35/2.55/3.53 |
+| native | before | 2 | 215.37 [211.28–232.51] | 217.79 | 1.393 | 11.09/10.83/9.71; 3.29/4.56/5.24; 2.26/2.49/3.44 |
+| native | after | 2 | 23.67 [23.18–23.80] | 26.46 | 1.383 | 4.70/4.69/7.46; 2.41/3.37/4.55; 2.30/2.51/3.47 |
+| native | before | 4 | 199.68 [198.72–218.95] | 207.59 | 1.497 | 3.00/6.27/7.94; 2.88/3.17/5.02; 2.58/2.52/3.21 |
+| native | after | 4 | 18.48 [18.44–18.51] | 24.60 | 1.528 | 2.74/4.46/6.80; 3.26/3.25/5.09; 2.40/2.45/3.03 |
+| native | before | 8 | 198.60 [196.93–198.80] | 216.28 | 1.728 | 2.65/4.22/6.60; 2.99/3.52/5.73; 2.61/2.48/3.01 |
+| native | after | 8 | 21.43 [20.82–22.74] | 33.89 | 1.702 | 2.58/4.32/6.70; 2.89/3.17/5.12; 2.30/2.42/3.01 |
+| v8 | before | 1 | 7.26 [7.14–7.34] | 7.40 | 1.017 | 2.10/6.23/9.65; 2.32/2.81/3.94; 2.20/2.77/3.92 |
+| v8 | after | 1 | 7.17 [7.11–7.23] | 7.32 | 1.021 | 2.39/6.16/9.58; 2.35/2.83/3.96; 2.25/2.76/3.90 |
+| v8 | before | 2 | 6.14 [5.95–6.15] | 8.45 | 1.125 | 2.87/6.42/8.02; 3.76/4.71/5.31; 2.53/2.50/3.22 |
+| v8 | after | 2 | 5.96 [5.93–6.64] | 8.31 | 1.103 | 2.74/6.58/8.10; 3.49/4.62/5.27; 2.49/2.49/3.22 |
+| v8 | before | 4 | 5.07 [5.07–5.18] | 9.87 | 1.320 | 2.80/6.35/7.98; 3.65/4.70/5.31; 2.41/2.48/3.21 |
+| v8 | after | 4 | 4.99 [4.98–5.33] | 9.72 | 1.314 | 2.74/6.28/7.95; 3.28/4.64/5.29; 2.78/2.55/3.23 |
+| v8 | before | 8 | 5.11 [5.05–5.19] | 13.26 | 1.511 | 2.68/3.49/5.77; 3.27/3.60/5.80; 3.01/2.64/2.96 |
+| v8 | after | 8 | 5.12 [5.11–5.18] | 13.31 | 1.503 | 2.48/3.46/5.78; 3.07/3.54/5.75; 2.85/2.60/2.94 |
+
+| Jobs | Native speedup, before/after | Native wall reduction | Before native/V8 | After native/V8 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 6.45x | 84.5% | 31.20x | 4.90x |
+| 2 | 9.10x | 89.0% | 35.08x | 3.97x |
+| 4 | 10.81x | 90.7% | 39.38x | 3.70x |
+| 8 | 9.27x | 89.2% | 38.86x | 4.19x |
+
+The removed preparation work cuts whole-build wall time by 84.5–90.7%.
+Native user CPU falls from 224.10/217.79/207.59/216.28 s to
+33.27/26.46/24.60/33.89 s. Peak RSS stays close to the baseline. The repaired
+default V8 reference remains essentially unchanged: its before/after medians
+are 7.26/7.17, 6.14/5.96, 5.07/4.99 and 5.11/5.12 s; all wall ranges overlap.
+There is no material default-engine regression.
+
+Native remains slower than the same-commit V8 reference at every job count.
+The optimized build is fastest at four jobs (18.48 s), 3.70x V8 at four jobs;
+eight jobs take 21.43 s, 4.19x V8. These are whole-build ratios, not the
+per-thread macro-engine factor k. Removing prefix scans does not close the
+remaining native engine/bridge gap.
+
+| Jobs | Native analysis before/after, s | Native deferred phase before/after, s |
+| ---: | ---: | ---: |
+| 1 | 26.611 / 16.145 | 197.389 / 16.485 |
+| 2 | 25.093 / 14.639 | 187.611 / 6.386 |
+| 4 | 23.299 / 15.325 | 173.959 / 0.711 |
+| 8 | 23.798 / 18.229 | 172.428 / 0.721 |
+
+These are coordinator phase counters, including preparation and overlap with
+worker analysis; deferred time is not pure VM execution. Every retained native
+run publishes exactly 57 helpers, has zero per-task helper copies and compiles
+742 native units. All 48 retained builds pass the Node/oracle check and the
+within-backend generated-JavaScript identity checks.
+
+### Fresh jobs-8 profiles and source maps
+
+Separate fresh native processes used the same source roots, advanced ESM mode,
+budgets and `--no-cache --jobs 8`, with direct `--compile --entry workload.main`
+output and `--source-map generated.map --source-map-include-sources`. This
+produces maps that chunked `release bench` cannot emit. Each process was sampled
+from launch through exit with:
+
+```sh
+/usr/bin/sample PID 600 1 -mayDie -file SAMPLE.txt
+```
+
+Both compiler/sampler pairs exit zero. Instrumented wall times are 224.141 s
+before and 26.583 s after; neither is included in the timing matrix. Recorded
+load before/after is 3.36/2.72/2.85 → 2.47/2.65/2.79 for the baseline and
+2.47/2.65/2.79 → 2.71/2.69/2.80 for the optimized build. LLVM `llvm-cxxfilt`
+demangled the sampled symbols.
+
+The baseline main thread has 161,278 samples. Across its disjoint call paths,
+139,580 (86.5%) are inside `SharedCatalog::release_application_ir`; the largest
+single path, through `merge_namespace → NamespaceAnalysis::merge_front`, has
+138,059. The optimized main thread has 18,350 samples, of which only 506 (2.8%)
+are inside `release_application_ir`. Absolute samples in that preparation
+hotspot fall by 99.6%. The remaining main-thread work primarily follows macro
+expansion and native catalog application, with VM, GC and contention visible.
+
+Reported collapsed leaf samples across **all threads**, including waiting
+threads, are counts rather than CPU percentages:
+
+| Frame | Before | After |
+| --- | ---: | ---: |
+| `Iter<GlobalBinding>::next` | 76,069 | 131 |
+| `Arena<GlobalBinding>::index` | 33,015 | 154 |
+| `emit_js_mode` body closure | 23,783 | 9 |
+| Native replacement flatten/filter iterator | 9,714 | below reporting cutoff (5) |
+| VM `execute_budgeted` | 2,358 | 2,319 |
+| `_platform_memmove` | 2,198 | 2,198 |
+| `Heap::mark_and_sweep` | 1,347 | 1,508 |
+| Condition-variable waits | 1,250,101 | 106,512 |
+| Mutex waits | 7,955 | 12,552 |
+
+Arena names are the symbols emitted by the optimized binary; the source scans
+removed by this change traversed expressions. The previous prefix traversal
+dominates the baseline and disappears from the optimized profile. Similar
+absolute VM/copying counts and unchanged helper/unit counts are consistent with
+removing compiler bookkeeping while retaining the macro work.
+
+Both profiled applications print `484264`. Direct native JavaScript and maps
+match byte-for-byte across revisions, using one fixed map path:
+
+- JS SHA-256: `d260017e883e3ec20d63eb933bb14deac41664920b5e59e81e7b5c6276ebc0d1`.
+- Map SHA-256: `03350e1b7536eec8c4acb71cba49722f975b2097faf7b2a6418fc332ca511e7e`.
+
+No expected source-map data was changed. The earlier native-versus-V8 map
+identity finding is separate from this native before/after identity check.
+
+### Compiler verification
+
+Production sources at `1e9a69d1`, also used by documentation-only `e0f4a2c1`,
+were checked with Homebrew Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218
+on macOS 15.7.3 arm64. All feature variants ran sequentially, with
+`CARGO_BUILD_JOBS=3` and nextest `-j 8`. The pinned ClojureScript research checkout
+was linked read-only; default builds used `LIGHT_CLJS_V8_CACHE=require`.
+
+- Default `cargo nextest run --locked -j 8 --no-fail-fast`: 2,131 passed,
+  one failed. QuickJS-only, adding `--no-default-features --features quickjs`:
+  2,054 passed, one failed. Both failures are
+  `cli::playground_crate_checks_for_wasm32`: Cargo discovers the enclosing
+  main-checkout workspace instead of treating this nested worktree's excluded
+  playground crate as standalone. No tests or assertions were disabled.
+- Native-only `--lib --test bbp_macros`, with `LIGHT_CLJS_STRESS_SEEDS=12`:
+  370 passed, 27 failed. All 96 macro tests pass, including pool and effect-lane
+  stress at one/two/four/eight slots. The library contributes 274 passes and
+  27 failures. Rebuilding the unchanged `d92276a7` library gives 273 passes and
+  the same 27 failed tests, with identical error signatures. These tests assume
+  legacy bootstrap macros, readers or host services unavailable in native-only
+  mode. The additional passing test is the preparation regression.
+- Native plus QuickJS `--lib --test bbp_macros`: all 447 tests pass, with one
+  normally ignored test. This includes native/QuickJS comparisons, session and
+  retention checks, shared multimethods, native call/protocol lowering, dynamic
+  core replacement, cache/artifact behavior, binding and once-only effects.
+- `cargo fmt --check`, `git diff --check` and default all-target strict Clippy
+  pass. Native strict Clippy retains eight existing engine library diagnostics
+  in `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+  `clippy::byte_char_slices`; allowing only those categories passes all targets
+  with native plus QuickJS. Engine-free library/binary strict Clippy passes.
+  Its all-target check finds missing legacy evaluator methods and an unused
+  enumeration index in untouched tests/benches; focused checks on the unchanged
+  base reproduce every diagnostic from the final-content run.
