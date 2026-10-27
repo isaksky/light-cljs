@@ -2795,6 +2795,78 @@ fn catalog_producers_share_data_without_evaluating_registration_sources() {
 }
 
 #[test]
+fn catalog_catchup_reuses_live_prefix_descriptors() {
+    use crate::compilation_session::Registration;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let registrations = (0..1004)
+        .map(|unit| {
+            Registration::Root(
+                format!("helper{unit:04}"),
+                None,
+                None,
+                false,
+                "fixture:1".into(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let lagging = shared.evaluator().unwrap();
+    lagging.install_catalog(0, &registrations[..17]).unwrap();
+    let prefix = shared.evaluator().unwrap();
+    prefix.install_catalog(0, &registrations[..1000]).unwrap();
+    // A later live frontier must not be used to satisfy an earlier one.
+    let ahead = shared.evaluator().unwrap();
+    ahead.install_catalog(0, &registrations).unwrap();
+    let fresh = shared.evaluator().unwrap();
+    fresh.install_catalog(0, &registrations[..1001]).unwrap();
+    // Catch-up must prefer the greatest live prefix over this task's own
+    // frontier, including the descriptor just added by the fresh task.
+    lagging
+        .install_catalog(17, &registrations[17..1003])
+        .unwrap();
+    shared.0.runtime.collect().unwrap();
+    let snapshots = [&prefix, &fresh, &lagging, &ahead].map(|task| {
+        task.cx()
+            .unwrap()
+            .catalog_snapshot
+            .borrow()
+            .clone()
+            .unwrap()
+    });
+    drop((prefix, fresh, lagging, ahead));
+    shared.0.runtime.collect().unwrap();
+    let retained = shared.0.runtime.heap_stats().last_live_bytes;
+    let duplicated = shared.0.runtime.scope(|s| {
+        let snapshots = snapshots
+            .each_ref()
+            .map(|snapshot| s.local(snapshot).unwrap());
+        for (snapshot, count) in snapshots.iter().zip([1000, 1001, 1003, 1004]) {
+            assert_eq!(s.count(*snapshot).unwrap(), count);
+        }
+        for (earlier, later, count) in [(0, 1, 1000), (1, 2, 1001), (0, 3, 1000)] {
+            for index in 0..count {
+                if !s.same_object(
+                    s.nth(snapshots[earlier], index).unwrap(),
+                    s.nth(snapshots[later], index).unwrap(),
+                ) {
+                    return Some((earlier, later, index));
+                }
+            }
+        }
+        None
+    });
+    drop(snapshots);
+    shared.0.runtime.collect().unwrap();
+    println!(
+        "retained catalog bytes at staggered 1000/1001/1003/1004 frontiers: {}",
+        retained - shared.0.runtime.heap_stats().last_live_bytes
+    );
+    assert!(
+        duplicated.is_none(),
+        "duplicated descriptor: {duplicated:?}"
+    );
+}
+
+#[test]
 fn catalog_snapshots_live_only_as_long_as_the_tasks_using_them() {
     use crate::compilation_session::Registration;
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();

@@ -42,16 +42,30 @@ impl BbpEvaluator {
             if let Some(snapshot) = registry.versions.get(&end).and_then(|s| s.upgrade().ok()) {
                 snapshot
             } else {
-                // A task already roots the prefix it has installed. It can
-                // extend that data even after the cache's other versions die.
-                let previous = if first == 0 {
-                    None
-                } else {
-                    self.cx()?.catalog_snapshot.borrow().clone()
+                // Reuse the greatest live prefix, even when another task
+                // installed it. Weak cache entries must not retain history.
+                let cached = registry
+                    .versions
+                    .range(first..end)
+                    .rev()
+                    .find_map(|(&cursor, weak)| Some((cursor, weak.upgrade().ok()?)));
+                let (cursor, previous) = match cached {
+                    Some((cursor, snapshot)) => (cursor, Some(snapshot)),
+                    None => {
+                        // A task still owns its installed prefix after the
+                        // cache's other versions have been collected.
+                        let previous = if first == 0 {
+                            None
+                        } else {
+                            self.cx()?.catalog_snapshot.borrow().clone()
+                        };
+                        if first != 0 && previous.is_none() {
+                            return Err(error("missing native catalog frontier"));
+                        }
+                        (first, previous)
+                    }
                 };
-                if first != 0 && previous.is_none() {
-                    return Err(error("missing native catalog frontier"));
-                }
+                let registrations = &registrations[cursor - first..];
                 for registration in registrations {
                     self.control.poll()?;
                     self.define_root(match registration {
