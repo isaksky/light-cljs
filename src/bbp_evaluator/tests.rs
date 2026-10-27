@@ -1510,30 +1510,27 @@ fn failure_roots_survive_an_exhausted_heap() {
     assert!(runtime.heap_stats().peak_managed_bytes <= options.memory_limit);
 }
 
-/// A function built from lowered core operations and literals
-/// (light-cljs-477) reads no task-owned runtime object, so it publishes.
-/// Cached pure core functions also publish (light-cljs-501); a dynamic print
-/// setting still captures the task-owned runtime.
+/// Function roots publish with either lowered operations or consuming-task
+/// runtime reads (light-cljs-521). Mutable user captures remain task-owned.
 #[test]
-fn functions_over_lowered_core_operations_publish() {
+fn native_function_roots_publish_without_capturing_the_runtime() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let evaluator = shared.evaluator().unwrap();
     let lowered = "(fn [x] (if (seq x) (count x) (list 'let ['value x] {:a (:k x)} #{1} \
                    (get x 1) (second x) (keyword? x) `(f ~x ~@x) [] #{x 2} (contains? x 0) \
                    (conj (disj #{x} 1) 2) (assoc {} :k (dissoc {} :k)) (with-meta [] (meta x)))))";
-    for (source, no_runtime_reads, publishes) in [
-        (lowered, true, true),
-        ("(fn [x] (map first x))", false, true),
-        ("(fn [x] *print-length*)", false, false),
+    for (source, publishes) in [
+        (lowered, true),
+        ("(fn [x] (map first x))", true),
+        ("(fn [x] *print-length*)", true),
+        (
+            "(let [state (js/Array.)] (fn [x] (.push state x) x))",
+            false,
+        ),
     ] {
         let code = native(source);
-        // Intrinsic-only code avoids `rt`; cached core values read it once
-        // at factory initialization, outside the returned function.
-        assert_eq!(
-            !code.replace("__rt.", "").contains("rt."),
-            no_runtime_reads,
-            "{code}"
-        );
+        // Intrinsics or task-global runtime reads never close over `rt`.
+        assert!(!code.replace("__rt.", "").contains("rt."), "{code}");
         let f = evaluator
             .evaluate_unit(&format!("rt => ({code})(rt)"))
             .unwrap();
