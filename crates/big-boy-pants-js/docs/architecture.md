@@ -438,6 +438,29 @@ Other present traps retain their explicit unsupported errors; direct
 `Object.isExtensible`/`Reflect.isExtensible` traps remain outside the supported
 surface.
 
+### Static engine-name conversion audit
+
+The static-name audit distinguishes repeated execution from installation and
+data-dependent text. The categories below cover the Rust-to-JS string/key
+construction sites in the engine; error-message construction is unchanged.
+Only sites observed in the array/object/string/Map microbenchmarks or native
+protocol macro workload are candidates for a hot-path change.
+
+| Names and construction sites | Handling |
+| --- | --- |
+| Source property constants (`vm::executable`, `vm::property::NamedProperty`) | Classified once on executable load; runtime/collection-stamped bindings and live intrinsic/ordinary slot caches avoid repeated encoding and hashing. |
+| Builtin method/global tables, prototype installation, builtin `name`/`length` (`realm`) | Constructed during realm installation, or task-global initialization. Existing keys are interned; no changes to these cold setup conversions. |
+| Builtin dispatch and equality (`vm::builtin::Builtin`) | Enum discriminants and scalar payloads, including object identities; no string names, UTF-16 encoding or string hashing in equality. Rust `name()` results serve installation and diagnostics. |
+| Function metadata and constructor prototype helpers (`vm::function`, `vm::native::construct`, `instanceof`) | Runtime helpers still convert `length`, `name`, `prototype` and related names, independently of the source-property constant path. |
+| Protocol dispatch (`collections::clj`) | The common primitive/form kind names share an existing `OnceLock` table; the default `_` key and less common kind names still construct strings when used. |
+| Well-known symbols (`value::symbol::well_known`) | Rust-name match selects a `OnceLock`; each symbol and its formatted description are made once process-wide. Comparisons use symbol identity. |
+| Fixed leaf results (`value::string::FixedText`, `JsString::fixed`) | Existing shared bodies for typeof, boolean text, typed-array tags, conversion hints, error defaults, regexp defaults and Intl option/part spellings. Empty strings already share a body. |
+| Intl field names, option readers, resolved-options objects and bound formatter metadata (`intl::service`, `vm::native::intl*`, formatter modules) | Option values already use fixed bodies. Field keys and option names still encode when constructing or reading a service result; these paths are outside the measured workloads. Data-dependent locales, currencies and formatted output remain byte-accounted text. |
+| Date and JSON (`vm::date`, `vm::json`) | Date output and JSON input/output remain data-dependent, byte-accounted text. Static JSON `toJSON`/`length`, punctuation and fixed output words are outside the measured hot paths; unchanged. The unsupported Date `toJSON` probe also remains unchanged. |
+| Proxy trap names and descriptor fields (`vm::proxy`, `vm::descriptor`) | Fresh name conversion remains on the generic, resumable trap/descriptor paths; cold in these workloads. No cached trap value or descriptor bypasses user mutation. |
+| Iterator records, generator/promise metadata, regexp fields, reflection, disposal and other native readers (`vm::native/*`, `vm::keys`, `vm::promise`, `regexp::object`) | Initialization and generic fallback names remain as written unless identified separately by a profile. Index spellings are data-dependent and stay on the existing charged/interned path. |
+| Compiler-runtime bridge and module names (`host::sim::facilities`, `module`, scope APIs) | Simulated namespaces install once; module/export names and embedder strings are data-dependent. The compiler's JS bridge names enter as source property constants and use the executable mechanism above. |
+
 ## Publication and native values
 
 `Runtime::publish` walks the transitive graph and reports a path on rejection;
