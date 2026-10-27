@@ -2777,9 +2777,13 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
           (defmulti m identity)
           (defmulti m (throw (js/Error. "declared defonce replay")))
           (defmethod m :x [_] :declared)
-          (defmethod m :default [_] :fallback)"#,
-            "[(m :x) (m :other)]",
-            "[:declared :fallback]",
+          (defmethod m :default [_] :fallback)
+          (declare replacement)
+          (defmulti replacement identity)
+          (defmethod replacement :x [_] :old)
+          (def replacement (fn [_] :replacement))"#,
+            "[(m :x) (m :other) (replacement :x)]",
+            "[:declared :fallback :replacement]",
         ),
         (
             "defonce and binding restoration",

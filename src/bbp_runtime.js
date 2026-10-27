@@ -1393,11 +1393,10 @@ const native = (() => {
 })();
 globalThis.__lightNativeRuntime=native;
 const roots=new Map();
-// Replacing an ordinary declaration with a bundle must also retire its
-// unavailable unit slot. A later defonce then sees the bundle's definition,
-// rather than the stale declaration that preceded it.
+// A bundle replaces an unavailable declaration's getter. Remember that it
+// defines the name, retaining the unit record for later ordinary registrations.
 globalThis.__lightInstallCompilerProduct=(name,read)=>{
-  roots.delete(name);
+  const previous=roots.get(name);if(previous!==undefined)previous.defined=true;
   Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:read});
 };
 // Each invocation of this runtime belongs to one VM task. Overlay snapshots
@@ -1426,7 +1425,7 @@ globalThis.__lightSetCompilerRoot=(name,value)=>{
 globalThis.__lightCompilerRootKept=name=>{
   const bound=bindingOverlays.has(name)&&bindingOverlays.get(name)!==undefined;
   if(decl.productOwner(name)!==null)return decl.keptProduct(name)||bound;
-  if(roots.has(name))return roots.get(name).unit!==null||bound;
+  if(roots.has(name)){const root=roots.get(name);return root.unit!==null||root.defined===true||bound;}
   return Object.getOwnPropertyDescriptor(globalThis.__lightCompilerRoots,name)!==undefined||bound;
 };
 globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
@@ -1435,7 +1434,7 @@ globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
   if(initialize===null)return undefined;
   const value=initialize();
   if(bindingOverlays.has(name))bindingOverlays.set(name,value);
-  else {roots.delete(name);Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,writable:true,value});}
+  else {const previous=roots.get(name);if(previous!==undefined)previous.defined=true;Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,writable:true,value});}
   return value;
 };
 let initializerSerial=0;
@@ -1451,7 +1450,7 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
   if(roots.has(name)&&roots.get(name).unit===unit)return null;
   // A defonce keeps an earlier definition (not a declaration), as the
   // legacy runtimes' registry does.
-  if(once&&roots.has(name)&&roots.get(name).unit!==null)return null;
+  if(once&&roots.has(name)&&(roots.get(name).unit!==null||roots.get(name).defined===true))return null;
   const slot={unit,name,state:0,value:null};roots.set(name,slot);
   Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:()=>{
     if(unit===null)throw new Error('unavailable definition: '+name);
