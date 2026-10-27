@@ -631,17 +631,31 @@ impl SharedCatalog {
             .copied()
             .collect()
     }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn has_native_core_writes(&self) -> bool {
+        !self
+            .native_replaced_core
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    }
 
     /// Conservatively recognize core targets by spelling, including those in
     /// quoted/generated forms and bodies whose analysis is still deferred.
     /// A shadowed bare name may disable an optimization, never enable one.
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn index_native_core_writes(&self, source: &str, syntax: &crate::SyntaxTree) {
-        use crate::parser::{CollectionKind, NodeId, NodeKind};
+        use crate::parser::{CollectionKind, NodeId, NodeKind, PrefixKind};
         if !self.native_units.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
         let spelling = |id: NodeId| &source[syntax.nodes[id.0].span.clone()];
+        let mutator = |name: &str| {
+            matches!(
+                name.rsplit('/').next(),
+                Some("set!" | "binding" | "with-redefs")
+            )
+        };
         // Qualified aliases and bare renamed refers can name a core target.
         // Reading symbol pairs conservatively also accepts ordinary data maps;
         // a false positive merely keeps another core read dynamic.
@@ -673,15 +687,28 @@ impl SharedCatalog {
         // A first-class mutation operator can assemble a helper's write with
         // a computed target. Its eventual IR does not exist when earlier
         // macro factories are emitted, so no core binding is proven stable.
-        if syntax.nodes.iter().any(|node| {
-            let NodeKind::Prefix { form, .. } = node.kind else {
-                return false;
-            };
-            matches!(syntax.nodes[form.0].kind, NodeKind::Symbol)
-                && matches!(
-                    spelling(form).rsplit('/').next(),
-                    Some("set!" | "binding" | "with-redefs")
-                )
+        let mutation_heads: std::collections::HashSet<usize> = syntax
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                if let NodeKind::Collection {
+                    kind: CollectionKind::List,
+                    children,
+                } = &node.kind
+                {
+                    children
+                        .first()
+                        .filter(|&&head| mutator(spelling(head)))
+                        .map(|head| head.0)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if syntax.nodes.iter().enumerate().any(|(index, node)| {
+            matches!(node.kind, NodeKind::Symbol)
+                && mutator(spelling(NodeId(index)))
+                && !mutation_heads.contains(&index)
         }) {
             replaced.extend(
                 crate::CoreFnId::ALL
@@ -691,10 +718,24 @@ impl SharedCatalog {
             return;
         }
         let mut target = |mut id: NodeId| {
-            while let NodeKind::Metadata { target, .. } | NodeKind::Prefix { form: target, .. } =
-                syntax.nodes[id.0].kind
-            {
-                id = target;
+            loop {
+                match syntax.nodes[id.0].kind {
+                    NodeKind::Prefix {
+                        kind: PrefixKind::Unquote | PrefixKind::UnquoteSplicing,
+                        ..
+                    } => {
+                        replaced.extend(
+                            crate::CoreFnId::ALL
+                                .into_iter()
+                                .map(crate::CoreFnId::runtime_name),
+                        );
+                        return;
+                    }
+                    NodeKind::Metadata { target, .. } | NodeKind::Prefix { form: target, .. } => {
+                        id = target
+                    }
+                    _ => break,
+                }
             }
             let name = spelling(id);
             let name = name

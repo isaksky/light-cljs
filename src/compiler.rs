@@ -2986,8 +2986,19 @@ fn analyze_entry(
             }
             // An artifact installs at the frontier its analysis would have run.
             let started = compile_stats::start(timed);
+            // Prepared native factories can have cached core functions under
+            // an earlier compilation's replacement set. Reanalyze their source
+            // when this compilation writes core, rather than installing code
+            // specialized for that earlier context.
+            #[cfg(feature = "bbp-macros")]
+            let native_core_writes = macros.native_macro_backend()
+                && macros
+                    .session_handle()
+                    .is_some_and(|session| session.shared().has_native_core_writes());
+            #[cfg(not(feature = "bbp-macros"))]
+            let native_core_writes = false;
             let cached = match (cache.as_deref_mut(), &loader.record) {
-                (Some(cache), Some(record)) => {
+                (Some(cache), Some(record)) if !native_core_writes => {
                     let cancelled = || macros.halted(control).is_some();
                     cache
                         .lookup(record, &file.source, sources, &cancelled)
@@ -3001,6 +3012,7 @@ fn analyze_entry(
             let installed = match cached
                 .as_ref()
                 .or_else(|| install.and_then(|lookup| lookup(&file.name)))
+                .filter(|_| !native_core_writes)
             {
                 Some(artifact) => {
                     let started = compile_stats::start(timed);

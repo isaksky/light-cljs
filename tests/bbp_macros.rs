@@ -4303,6 +4303,23 @@ fn native_core_reads_observe_replacements_in_demanded_helpers() {
                (js/console.log (pr-str (m)))"#,
             "[true false]\n",
         ),
+        (
+            r#"(declare install)
+               (defmacro m [] (let [before (even? 2)] (install) [before (even? 2)]))
+               (defmacro installer [op]
+                 (list 'defn 'install [] (list op 'cljs.core/even? '(fn [_] false))))
+               (installer set!)
+               (js/console.log (pr-str (m)))"#,
+            "[true false]\n",
+        ),
+        (
+            r#"(declare install)
+               (defmacro m [] (let [before (even? 2)] (install) [before (even? 2)]))
+               (defmacro installer [target] `(defn ~'install [] (set! ~target (fn [~'_] false))))
+               (installer cljs.core/even?)
+               (js/console.log (pr-str (m)))"#,
+            "[true false]\n",
+        ),
     ] {
         assert_native_matches_legacy(source, expected);
     }
@@ -4380,6 +4397,76 @@ fn native_core_reads_observe_replacements_in_demanded_helpers() {
     assert_eq!(native, "[true false]\n");
     let legacy = light_cljs::compile(&format!("(def install {helper}) {source}")).unwrap();
     assert_eq!(native, program_output(&legacy));
+}
+
+#[test]
+fn native_core_replacements_reanalyze_helpers_from_earlier_artifacts() {
+    use light_cljs::{compiler::EntryRecorders, namespace_artifact::NamespaceCapture};
+    let root = temp_dir::TempDir::new("native-core-artifact");
+    std::fs::write(
+        root.join("helper.cljs"),
+        "(ns helper) (defn probe [] (even? 2))",
+    )
+    .unwrap();
+    let cold = r#"(ns app (:require [helper :as h]))
+        (defmacro m [] (h/probe)) (js/console.log (m))"#;
+    let changed = r#"(ns app (:require [helper :as h]))
+        (defmacro m [] (let [before (h/probe)]
+          (set! cljs.core/even? (fn [_] false)) [before (h/probe)]))
+        (js/console.log (pr-str (m)))"#;
+    for jobs in [1, 2] {
+        std::fs::write(root.join("app.cljs"), cold).unwrap();
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let mut artifact = None;
+        let mut capture = |captured: NamespaceCapture| {
+            if captured.namespace == "helper" {
+                artifact = Some(captured.artifact.unwrap());
+            }
+        };
+        light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                capture: Some(&mut capture),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let artifact = artifact.unwrap();
+        let lookup = |name: &str| (name == "helper").then_some(&artifact);
+        let reservation = light_cljs::generated_names::Reservation::of([&artifact.names]);
+        std::fs::write(root.join("app.cljs"), changed).unwrap();
+        let compile = |native: bool, installed: bool| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+                "app",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                EntryRecorders {
+                    install: installed.then_some(&lookup),
+                    reserve: installed.then_some(&reservation),
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            emit_js(&program)
+        };
+        let native = compile(true, true);
+        assert_eq!(program_output(&native), "[true false]\n", "jobs {jobs}");
+        assert_eq!(native, compile(true, false), "cold, jobs {jobs}");
+        assert_eq!(native, compile(false, false), "legacy, jobs {jobs}");
+    }
 }
 
 #[test]
