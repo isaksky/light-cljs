@@ -6,7 +6,8 @@
 //! and calls its thunk as an ordinary callback in this task, or parks the
 //! task while another task realizes it ([`Action::WaitLazy`]), then
 //! executes the original instruction again with the same operands
-//! ([`Action::Resume`]). The claim is given up if the frame is dropped
+//! ([`Action::Resume`], or [`Action::FormFallback`] if its struct protocol
+//! already resolved, so that resolution is not replayed). The claim is given up if the frame is dropped
 //! unfinished (a cancellation unwinding through it, or the task's state
 //! being dropped), so the cell's other readers are never left waiting.
 

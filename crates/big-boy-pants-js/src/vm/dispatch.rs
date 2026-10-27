@@ -2508,8 +2508,27 @@ pub(crate) fn step(
         Instr::CallMethod(argc) => call(state, heap, argc, true),
         Instr::Construct(argc) => construct(state, heap, argc),
         Instr::GetField(_) | Instr::GetElem => property_read_step(state, code, heap, host, instr),
+        Instr::NewFormList(_)
+        | Instr::NewFormVector(_)
+        | Instr::NewFormSet(_)
+        | Instr::NewStruct(_)
+        | Instr::NewFormMap(_)
+        | Instr::FormOp(_) => form_step(state, heap, instr),
         _ => step_instruction(state, code, heap, host, instr),
     }
+}
+
+// Core-protocol methods execute on 64 KiB workers. Keep form construction,
+// comparison and callbacks outside the general opcode dispatcher's temporaries.
+#[inline(never)]
+fn form_step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<Flow, Fault> {
+    if let Instr::FormOp(op) = instr
+        && native::start_core_protocol(state, heap, op)?
+    {
+        return Ok(Flow::Next);
+    }
+    intrinsics::step(state, heap, instr)?;
+    Ok(Flow::Next)
 }
 
 fn step_instruction(
@@ -3005,17 +3024,13 @@ fn step_instruction(
         | Instr::Freeze
         | Instr::AtomNew
         | Instr::AtomLoad
-        | Instr::AtomCas
-        | Instr::NewFormList(_)
+        | Instr::AtomCas => intrinsics::step(state, heap, instr)?,
+        Instr::NewFormList(_)
         | Instr::NewFormVector(_)
         | Instr::NewFormSet(_)
         | Instr::NewStruct(_)
-        | Instr::NewFormMap(_) => intrinsics::step(state, heap, instr)?,
-        Instr::FormOp(op) => {
-            if !native::start_core_protocol(state, heap, op)? {
-                intrinsics::step(state, heap, instr)?;
-            }
-        }
+        | Instr::NewFormMap(_)
+        | Instr::FormOp(_) => return form_step(state, heap, instr),
         Instr::DefineClassMethod | Instr::DefineClassGetter | Instr::DefineClassSetter => {
             return define_class_element(state, heap, instr);
         }

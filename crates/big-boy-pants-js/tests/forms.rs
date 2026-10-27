@@ -2013,12 +2013,15 @@ fn core_protocol_callbacks_resume_across_collection_without_entering_key_compari
             .into_runnable()
             .pop()
             .unwrap();
-        (task, outcome) = thread::spawn(move || {
-            let outcome = resumed.run().unwrap();
-            (resumed, outcome)
-        })
-        .join()
-        .unwrap();
+        (task, outcome) = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = resumed.run().unwrap();
+                (resumed, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
     assert_eq!(complete(outcome).view(), ValueView::Number(3.0));
 }
