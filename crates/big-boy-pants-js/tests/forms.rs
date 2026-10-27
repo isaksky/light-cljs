@@ -2255,3 +2255,73 @@ fn shared_seq_views_publish_only_their_own_elements() {
     };
     assert_eq!((path.to_string().as_str(), found), ("value[2]", "object"));
 }
+
+#[test]
+fn compiler_literals_trace_publish_and_realize_only_explicit_payloads() {
+    let rt = Runtime::new();
+    let literal = call(
+        &rt,
+        r#"function make() {
+      const leaf=__rt.formVector('\ud800', 1);
+      const lazy=__rt.lazySeq(() => __rt.formList(leaf));
+      const payload=__rt.formVector(lazy);
+      const literal=__rt.formCompilerLiteral('js-array',payload);
+      const meta=__rt.formMap(__rt.formKeyword(null,'tag'),leaf);
+      return __rt.formWithMeta(literal,meta);
+    }"#,
+        &[],
+    );
+    rt.publish(&literal).unwrap();
+    let weak = rt.scope(|s| {
+        let (_, payload) = s.form_compiler_literal(s.local(&literal).unwrap()).unwrap();
+        s.downgrade(payload)
+    });
+    rt.collect().unwrap();
+    assert!(weak.is_live());
+    let result = call(
+        &rt,
+        r#"function check(x) {
+      if(__rt.formKind(x)!=='compiler-literal'||__rt.formName(x)!=='js-array')throw new Error('kind');
+      const result=__rt.cljRealizeAll(x), payload=__rt.formLiteralPayload(result);
+      if(__rt.formKind(__rt.formNth(payload,0))!=='list')throw new Error('realization');
+      if(__rt.formMeta(result)!==__rt.formMeta(x))throw new Error('metadata identity');
+      if(__rt.formEquals(x,__rt.formCompilerLiteral('js-array',__rt.formLiteralPayload(x))))throw new Error('identity');
+      return result;
+    }"#,
+        &[&literal],
+    );
+    rt.publish(&result).unwrap();
+    rt.scope(|s| {
+        let (_, payload) = s.form_compiler_literal(s.local(&result).unwrap()).unwrap();
+        let list = s.form_nth(payload, 0).unwrap();
+        let leaf = s.form_nth(list, 0).unwrap();
+        assert_eq!(
+            s.string(s.form_nth(leaf, 0).unwrap()).unwrap().code_units(),
+            &[0xd800]
+        );
+    });
+    drop(literal);
+    drop(result);
+    rt.collect().unwrap();
+    assert!(!weak.is_live());
+    for expression in ["{}", "[]", "Object.freeze({})"] {
+        let result = call(
+            &rt,
+            &format!(
+                "function f() {{ return __rt.formCompilerLiteral('js-array',__rt.formVector({expression})); }}"
+            ),
+            &[],
+        );
+        let PublishError::NotShareable { path, .. } = rt.publish(&result).unwrap_err() else {
+            panic!("published {expression}");
+        };
+        assert_eq!(path.steps()[0], PathStep::NativeEdge(0));
+    }
+    for (tag, payload) in [("js-array", "[]"), ("js-object", "{}"), ("unknown", "null")] {
+        let error = failure(
+            &rt,
+            &format!("function f() {{ return __rt.formCompilerLiteral('{tag}',{payload}); }}"),
+        );
+        assert!(error.to_string().contains("valid compiler literal payload"));
+    }
+}

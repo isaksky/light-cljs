@@ -3218,7 +3218,7 @@ impl<'a> Emitter<'a> {
                 Composite::LiteralMap => Some("formLiteralMap"),
                 Composite::LiteralSet => Some("formLiteralSet"),
                 Composite::WithMeta => Some("cljWithMeta"),
-                Composite::Uuid => None,
+                Composite::Uuid => Some("formCompilerLiteral"),
             }
         {
             // A native unit's literal is the engine's form constructor
@@ -3248,6 +3248,9 @@ impl<'a> Emitter<'a> {
                 .unwrap();
             }
             write!(self.output, "__rt.{intrinsic}(").unwrap();
+            if constructor == Composite::Uuid {
+                self.output.push_str("\"uuid\", ");
+            }
             let positional = matches!(
                 constructor,
                 Composite::ArrayMap | Composite::LiteralMap | Composite::LiteralSet
@@ -8408,6 +8411,25 @@ impl<'a> Emitter<'a> {
                 quoted,
             } => {
                 use crate::compiler_data::CompilerLiteralKind as K;
+                if self.native_forms && matches!(kind, K::Regex | K::Instant | K::Uuid | K::Queue) {
+                    let tag = match kind {
+                        K::Regex => "regex",
+                        K::Instant => "instant",
+                        K::Uuid => "uuid",
+                        K::Queue => "queue",
+                        _ => unreachable!(),
+                    };
+                    write!(self.output, "__rt.formCompilerLiteral({tag:?}, ").unwrap();
+                    if *kind == K::Queue {
+                        self.output.push_str("__rt.formVector(");
+                    }
+                    self.arguments(items);
+                    if *kind == K::Queue {
+                        self.output.push(')');
+                    }
+                    self.output.push(')');
+                    return;
+                }
                 let (constructor, open) = match (kind, quoted) {
                     (K::JsArray, true) => (Some(RuntimeName::compiler_forms("jsArray")), "(["),
                     (K::JsObject, true) => (Some(RuntimeName::compiler_forms("jsObject")), "(["),

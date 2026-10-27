@@ -263,7 +263,7 @@ pub fn compiler_identity(host: &MacroHost) -> Digest {
         // the engine's `__rt` intrinsics.
         fingerprint
             .text("big-boy-pants-js")
-            .text("native-forms-3")
+            .text("native-forms-4")
             .text("native-core-intrinsics-2");
         for (name, source) in host.tables.native_helpers.iter() {
             fingerprint.text(name).text(source);

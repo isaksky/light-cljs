@@ -222,6 +222,8 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::Disj),
     form_op(FormOp::LiteralMap),
     form_op(FormOp::LiteralSet),
+    form_op(FormOp::CompilerLiteral),
+    form_op(FormOp::LiteralPayload),
     form_op(FormOp::ArrayMap),
     form_op(FormOp::CljTruth),
     form_op(FormOp::CljCount),

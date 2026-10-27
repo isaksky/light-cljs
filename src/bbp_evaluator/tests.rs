@@ -3144,3 +3144,64 @@ fn catalog_mutable_initializers_run_once_per_task_after_frontier_changes() {
     }
     assert_eq!(shared.helper_counts().per_task, 2);
 }
+
+#[test]
+fn compiler_literal_payloads_keep_identity_provenance_and_cached_limits_after_gc() {
+    let rt = Runtime::new();
+    let payload = Datum::new(D::Collection {
+        kind: C::Vector,
+        children: vec![
+            Datum::new(D::String(vec![0xd800, 0, 0xdc00].into())),
+            Datum::new(D::Integer(9_007_199_254_740_993)),
+        ]
+        .into(),
+    });
+    let data = Datum::new(D::CompilerLiteral {
+        kind: L::JsArray,
+        payload: payload.clone(),
+    });
+    let form = Form::from_data(
+        data.clone(),
+        crate::compiler_data::Source::new("literal.cljs", "#js [x]")
+            .span(0..7)
+            .unwrap(),
+        crate::compiler_data::Origin::Source,
+    );
+    let mut bridge = Bridge::default();
+    let root = rt.scope(|s| {
+        bridge.remember(&form, 64, &mut 100).unwrap();
+        let value = bridge.import(s, &data, 64, &mut 100).unwrap();
+        s.persist(value)
+    });
+    rt.publish(&root).unwrap();
+    rt.collect().unwrap();
+    bridge.prune(rt.heap_stats().collections);
+    rt.scope(|s| {
+        let value = bridge.import(s, &data, 64, &mut 100).unwrap();
+        assert!(s.same_object(value, s.local(&root).unwrap()));
+        assert_eq!(
+            bridge.export(s, value, 64, &mut 100).unwrap().identity(),
+            data.identity()
+        );
+        let (_, imported_payload) = s.form_compiler_literal(s.form_value(value)).unwrap();
+        let exported_payload = bridge.export(s, imported_payload, 64, &mut 100).unwrap();
+        assert_eq!(exported_payload.identity(), payload.identity());
+        assert_eq!(
+            bridge.forms[&payload.identity()].span().source().name(),
+            "literal.cljs"
+        );
+        for cached in [true, false] {
+            if !cached {
+                bridge.imports.clear();
+            }
+            assert!(bridge.import(s, &data, 64, &mut 3).is_err());
+            assert!(bridge.import(s, &data, 2, &mut 100).is_err());
+        }
+    });
+    drop(root);
+    rt.collect().unwrap();
+    bridge.prune(rt.heap_stats().collections);
+    assert!(bridge.imports.is_empty());
+    assert!(bridge.forms.is_empty());
+    assert!(bridge.costs.is_empty());
+}

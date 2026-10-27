@@ -2,7 +2,7 @@
 //! task; compiler helper factories cross explicit dependency boundaries.
 use crate::{
     CollectionKind as C,
-    compiler_data::{Datum, DatumKind as D, ExpansionOrigin, Form, Name},
+    compiler_data::{CompilerLiteralKind as L, Datum, DatumKind as D, ExpansionOrigin, Form, Name},
     compiler_evaluator::{
         CompilerEvaluator, NativeRunner, NativeSubmit, NativeSubmitter, StringService, UnitService,
         WaitService,
@@ -39,6 +39,18 @@ fn string(scope: &Scope<'_>, units: &[u16]) -> Result<JsString, EvalError> {
     scope
         .string(local)
         .ok_or_else(|| error("expected imported string"))
+}
+
+fn literal_tag(kind: L) -> &'static str {
+    match kind {
+        L::BigInteger => "number",
+        L::Regex => "regex",
+        L::Instant => "instant",
+        L::Uuid => "uuid",
+        L::JsArray => "js-array",
+        L::JsObject => "js-object",
+        L::Queue => "queue",
+    }
 }
 
 pub type BridgeStats = crate::compile_stats::NativeBridgeCall;
@@ -99,6 +111,7 @@ impl Bridge {
             if let D::Collection { children, .. } = data.kind() {
                 pending.extend(children.iter().cloned());
             }
+            pending.extend(data.compiler_literal_data());
             pending.extend(data.metadata());
         }
         self.forms.retain(|key, _| reachable.contains(key));
@@ -256,8 +269,24 @@ impl Bridge {
                 }
                 .map_err(error)?
             }
-            D::CompilerLiteral { .. } => {
-                return Err(error("unsupported operation: compiler literal"));
+            D::CompilerLiteral { kind, payload } => {
+                let value = self.import(s, payload, depth - 1, remaining)?;
+                if *kind == L::BigInteger {
+                    let D::String(text) = payload.kind() else {
+                        return Err(error("invalid Number payload"));
+                    };
+                    let number = String::from_utf16(text)
+                        .ok()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .ok_or_else(|| error("invalid Number payload"))?;
+                    s.primitive(Primitive::Number(number))
+                } else {
+                    s.new_compiler_literal(
+                        string(s, &literal_tag(*kind).encode_utf16().collect::<Vec<_>>())?,
+                        value,
+                    )
+                    .map_err(error)?
+                }
             }
         };
         if let Some(meta) = d.metadata() {
@@ -317,6 +346,7 @@ impl Bridge {
         let mut cost = (1usize, 1usize);
         let children = match d.kind() {
             D::Collection { children, .. } => children.as_ref(),
+            D::CompilerLiteral { payload, .. } => std::slice::from_ref(payload),
             _ => &[],
         };
         for child in children.iter().cloned().chain(d.metadata()) {
@@ -410,6 +440,24 @@ impl Bridge {
                     D::Symbol(n)
                 }
             }
+            Some(FormKind::CompilerLiteral) => {
+                let (tag, payload) = s.form_compiler_literal(v).map_err(error)?;
+                let kind = [
+                    L::Regex,
+                    L::Instant,
+                    L::Uuid,
+                    L::JsArray,
+                    L::JsObject,
+                    L::Queue,
+                ]
+                .into_iter()
+                .find(|kind| tag == literal_tag(*kind))
+                .ok_or_else(|| error("invalid compiler literal tag"))?;
+                D::CompilerLiteral {
+                    kind,
+                    payload: self.export(s, payload, depth - 1, remaining)?,
+                }
+            }
             Some(k) => {
                 let values = if k == FormKind::Map {
                     s.form_print_items(v)
@@ -473,6 +521,9 @@ impl Bridge {
         }
         *remaining -= 1;
         for f in form.children() {
+            self.remember(&f, depth - 1, remaining)?;
+        }
+        if let Some(f) = form.node().compiler_payload.and_then(|id| form.at(id)) {
             self.remember(&f, depth - 1, remaining)?;
         }
         if let Some(f) = form.metadata() {

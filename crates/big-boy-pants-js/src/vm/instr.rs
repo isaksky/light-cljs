@@ -1520,11 +1520,15 @@ pub enum FormOp {
     CljGet2 = 72,
     /// atom → stable auxiliary atom, initially null (`atomAux`).
     AtomAux = 73,
+    /// tag payload → explicit immutable compiler descriptor.
+    CompilerLiteral = 74,
+    /// descriptor → payload.
+    LiteralPayload = 75,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 74] = [
+    pub const ALL: [FormOp; 76] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1599,6 +1603,8 @@ impl FormOp {
         FormOp::CljCoreResolver,
         FormOp::CljGet2,
         FormOp::AtomAux,
+        FormOp::CompilerLiteral,
+        FormOp::LiteralPayload,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1612,6 +1618,7 @@ impl FormOp {
             FormOp::Kind
             | FormOp::AtomAux
             | FormOp::CljCoreResolver
+            | FormOp::LiteralPayload
             | FormOp::LiteralMap
             | FormOp::LiteralSet
             | FormOp::ArrayMap
@@ -1653,6 +1660,7 @@ impl FormOp {
             | FormOp::CljSymbol => 1,
             FormOp::Keyword
             | FormOp::CljGet2
+            | FormOp::CompilerLiteral
             | FormOp::Symbol
             | FormOp::Nth
             | FormOp::Dissoc
@@ -1711,6 +1719,8 @@ impl FormOp {
             FormOp::PrintItems => "formPrintItems",
             FormOp::ReaderCollection => "formReaderCollection",
             FormOp::SortedMap => "formSortedMap",
+            FormOp::CompilerLiteral => "formCompilerLiteral",
+            FormOp::LiteralPayload => "formLiteralPayload",
             FormOp::Disj => "formDisj",
             FormOp::CljTruth => "cljTruth",
             FormOp::CljCount => "cljCount",

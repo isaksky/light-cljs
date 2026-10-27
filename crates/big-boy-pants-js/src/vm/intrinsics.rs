@@ -128,6 +128,8 @@
 //!
 //! | `formSet(x1, …, xn)` | `new_form_set n` | new set of the values; of equal members the first is kept (light-cljs-477) | – |
 //! | `formLiteralMap(pairs)` | `form_op LiteralMap` | positional map from alternating operands in a form list/vector; retains equal keys, first-match lookup | wrong type; odd operand count |
+//! | `formCompilerLiteral(tag, payload)` | `form_op CompilerLiteral` | explicit immutable compiler descriptor; payload and metadata traced and checked for publication | invalid tag or payload |
+//! | `formLiteralPayload(value)` | `form_op LiteralPayload` | descriptor payload, preserving its identity | wrong type |
 //! | `formLiteralSet(items)` | `form_op LiteralSet` | positional set from a form list/vector; retains equal members and source order | wrong type |
 //! | `formArrayMap(pairs)` | `form_op ArrayMap` | insertion-ordered map from alternating operands; equal keys keep the first key and last value | wrong type; odd operand count |
 //! | `formDisj(s, x)` | `form_op` | new set without the member equal to `x` (absent: `s`) | `WrongType` |
@@ -547,6 +549,8 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
     Ok(match op {
         FormOp::Keyword => form::new_named_from_values(heap, FormKind::Keyword, arg(), arg())?,
         FormOp::Symbol => form::new_named_from_values(heap, FormKind::Symbol, arg(), arg())?,
+        FormOp::CompilerLiteral => form::new_compiler_literal(heap, &arg(), &arg())?,
+        FormOp::LiteralPayload => form::compiler_literal(heap, &arg())?.1,
         FormOp::LiteralMap => form::literal_from_sequence(heap, &arg(), false)?,
         FormOp::LiteralSet => form::literal_from_sequence(heap, &arg(), true)?,
         FormOp::ArrayMap => form::array_map_from_sequence(heap, &arg())?,

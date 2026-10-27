@@ -22,6 +22,7 @@
 //! | lazy-seq | a once-realized cell: a thunk, then what it realized (light-cljs-479, `crate::collections::lazy`) | yes |
 //! | cons | realized elements followed by an unrealized tail (light-cljs-479) | yes |
 //! | reduced | opaque early-termination marker with a traced payload (light-cljs-507) | no |
+//! | compiler-literal | explicit tag and a traced native payload | yes |
 //!
 //! Elements, keys, values and metadata may be any value: `nil`
 //! (`null`/`undefined`), booleans, numbers, strings, other forms, and
@@ -29,6 +30,20 @@
 //! location. Children are held by identity, never copied, so an update
 //! returns a new object whose untouched children (and trie nodes) are the
 //! same ones as before. Metadata must be `nil` or a form map.
+//!
+//! Compiler literals are explicit immutable descriptors, created with
+//! `formCompilerLiteral(tag, payload)` or [`Scope::new_compiler_literal`].
+//! Tags are `js-array`, `js-object`, `regex`, `instant`, `uuid` and `queue`.
+//! Arrays and queues require a form-vector payload, objects a form map,
+//! regexes and UUIDs a string, and instants a string or Number. Payloads may
+//! retain occurrences; construction validates their underlying form kind.
+//! `formName` reads the tag and `formLiteralPayload` reads the payload.
+//! Descriptors compare and hash by identity and are opaque to collection
+//! operations. Publication checks the payload and metadata, so wrapping a
+//! mutable host value cannot make it shareable. GC traces both.
+//! `cljRealizeAll` realizes lazy values inside the payload and metadata,
+//! retaining every unchanged subtree and the whole descriptor when unchanged.
+//! Arbitrary host arrays and objects are never inferred to be descriptors.
 //!
 //! # Names
 //!
@@ -308,6 +323,8 @@ pub enum FormKind {
     Cons,
     /// An immutable early-termination marker, with identity equality.
     Reduced,
+    /// Explicit immutable compiler descriptor; never an arbitrary host object.
+    CompilerLiteral,
 }
 
 impl FormKind {
@@ -333,6 +350,7 @@ impl FormKind {
         static TYPE: FixedText = FixedText::new("type");
         static LAZY: FixedText = FixedText::new("lazy-seq");
         static CONS: FixedText = FixedText::new("cons");
+        static LITERAL: FixedText = FixedText::new("compiler-literal");
         static REDUCED: FixedText = FixedText::new("reduced");
         match self {
             FormKind::Keyword => &KEYWORD,
@@ -346,6 +364,7 @@ impl FormKind {
             FormKind::Lazy => &LAZY,
             FormKind::Cons => &CONS,
             FormKind::Reduced => &REDUCED,
+            FormKind::CompilerLiteral => &LITERAL,
         }
     }
 
@@ -441,6 +460,10 @@ pub(crate) enum FormBody {
     Cons(ConsBody),
     /// `reduced`: opaque to sequence operations; its value is traced.
     Reduced(Value),
+    CompilerLiteral {
+        tag: JsString,
+        payload: Value,
+    },
 }
 
 /// What a struct type is: its name, its field names in order and whether
@@ -607,6 +630,7 @@ impl FormObject {
             FormBody::Lazy(_) => FormKind::Lazy,
             FormBody::Cons(_) => FormKind::Cons,
             FormBody::Reduced(_) => FormKind::Reduced,
+            FormBody::CompilerLiteral { .. } => FormKind::CompilerLiteral,
         }
     }
 
@@ -651,7 +675,7 @@ impl FormObject {
             FormBody::Set(set) => set.for_each(|k, _| f(k)),
             // A deftype's hash is its identity's; a record's reads its
             // field values and extension entries.
-            FormBody::Type(_) | FormBody::Reduced(_) => {}
+            FormBody::Type(_) | FormBody::Reduced(_) | FormBody::CompilerLiteral { .. } => {}
             FormBody::Struct(s) => {
                 if s.info.record {
                     s.fields.for_each(&mut f);
@@ -682,6 +706,7 @@ impl Trace for FormObject {
             FormBody::Lazy(cell) => cell.trace(visit),
             FormBody::Cons(c) => c.trace(visit),
             FormBody::Reduced(value) => value.trace(visit),
+            FormBody::CompilerLiteral { payload, .. } => payload.trace(visit),
         }
         if let Some(meta) = &self.meta {
             meta.trace(visit);
@@ -1270,6 +1295,56 @@ pub(crate) fn literal_from_sequence(
     }
 }
 
+/// Construct only known explicit descriptors with a correctly shaped payload.
+pub(crate) fn new_compiler_literal(
+    heap: &Heap,
+    tag: &Value,
+    payload: &Value,
+) -> Result<Value, CollectionError> {
+    let Value::String(tag) = tag else {
+        return Err(wrong(heap, "compiler literal tag", tag));
+    };
+    let valid = if tag == "js-array" || tag == "queue" {
+        kind(heap, &unwrap(heap, payload.clone())) == Some(FormKind::Vector)
+    } else if tag == "js-object" {
+        kind(heap, &unwrap(heap, payload.clone())) == Some(FormKind::Map)
+    } else if tag == "regex" || tag == "uuid" {
+        matches!(unwrap(heap, payload.clone()), Value::String(_))
+    } else if tag == "instant" {
+        matches!(
+            unwrap(heap, payload.clone()),
+            Value::String(_) | Value::Number(_)
+        )
+    } else {
+        false
+    };
+    if !valid {
+        return Err(wrong(heap, "valid compiler literal payload", payload));
+    }
+    let tag = tag.clone().import(heap).ok_or(CollectionError::HeapLimit)?;
+    alloc(
+        heap,
+        FormObject::new(
+            FormBody::CompilerLiteral {
+                tag,
+                payload: payload.clone(),
+            },
+            None,
+        ),
+        std::slice::from_ref(payload),
+    )
+}
+
+pub(crate) fn compiler_literal(
+    heap: &Heap,
+    value: &Value,
+) -> Result<(JsString, Value), CollectionError> {
+    match form_object(heap, value).as_deref().map(FormObject::body) {
+        Some(FormBody::CompilerLiteral { tag, payload }) => Ok((tag.clone(), payload.clone())),
+        _ => Err(wrong(heap, "compiler literal", value)),
+    }
+}
+
 // ---- Structs (light-cljs-478) ----
 
 /// A new struct type named `name` (a string) with the field names of the
@@ -1784,6 +1859,10 @@ pub(crate) fn kind(heap: &Heap, v: &Value) -> Option<FormKind> {
 pub(crate) fn name(heap: &Heap, v: &Value) -> Result<FormName, CollectionError> {
     match form_object(heap, v).as_deref().map(FormObject::body) {
         Some(FormBody::Keyword(n) | FormBody::Symbol(n)) => Ok(n.clone()),
+        Some(FormBody::CompilerLiteral { tag, .. }) => Ok(FormName {
+            namespace: None,
+            name: tag.clone(),
+        }),
         // A struct type's qualified name, as one unqualified name.
         Some(FormBody::Type(info)) => Ok(FormName {
             namespace: None,
@@ -2725,7 +2804,10 @@ fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
         }
         // Identity-hashed: set where the object identity is known
         // ([`identity_hash`]); never reached through it.
-        FormBody::Struct(_) | FormBody::Type(_) | FormBody::Reduced(_) => 0,
+        FormBody::Struct(_)
+        | FormBody::Type(_)
+        | FormBody::Reduced(_)
+        | FormBody::CompilerLiteral { .. } => 0,
     }
 }
 
@@ -2734,7 +2816,10 @@ fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
 fn identity_hash(f: &FormObject, id: ObjectId) -> Option<i32> {
     match &f.body {
         FormBody::Struct(s) if s.info.record => None,
-        FormBody::Struct(_) | FormBody::Type(_) | FormBody::Reduced(_) => {
+        FormBody::Struct(_)
+        | FormBody::Type(_)
+        | FormBody::Reduced(_)
+        | FormBody::CompilerLiteral { .. } => {
             Some(*f.hash.get_or_init(|| scalar_hash(&Value::Object(id))))
         }
         _ => None,
@@ -2818,6 +2903,28 @@ fn realized_keys<T>(op: impl FnOnce() -> Result<T, CollectionError>) -> Result<T
 
 /// The embedder API. See the module docs.
 impl<'s> Scope<'s> {
+    /// A new explicit compiler literal. The payload stays rooted and traced.
+    pub fn new_compiler_literal(
+        &self,
+        tag: JsString,
+        payload: Local<'s>,
+    ) -> Result<Local<'s>, CollectionError> {
+        self.result(new_compiler_literal(
+            self.heap(),
+            &Value::String(tag),
+            &self.local_value(payload),
+        ))
+    }
+
+    /// The descriptor tag and payload, without invoking JavaScript or user hooks.
+    pub fn form_compiler_literal(
+        &self,
+        value: Local<'s>,
+    ) -> Result<(JsString, Local<'s>), CollectionError> {
+        let (tag, payload) = compiler_literal(self.heap(), &self.local_value(value))?;
+        Ok((tag, self.result(Ok(payload))?))
+    }
+
     /// A new keyword `:namespace/name` (exact code units);
     /// [`CollectionError::AmbiguousName`] unless the spelling splits back
     /// into `namespace` and `name` (module docs, "Names").

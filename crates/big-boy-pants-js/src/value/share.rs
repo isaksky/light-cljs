@@ -533,6 +533,7 @@ impl Children {
                     // `{key}`.
                     FormBody::Type(_) => {}
                     FormBody::Reduced(value) => f(Step::NativeEdge(0), value),
+                    FormBody::CompilerLiteral { payload, .. } => f(Step::NativeEdge(0), payload),
                     FormBody::Struct(s) => {
                         f(Step::NativeEdge(0), &s.ty);
                         let mut index = 0;

@@ -580,6 +580,14 @@ const native = (() => {
     if(kind==='reduced')return write(writer,'#object[Reduced [object Object]]');
     if(kind==='keyword'||kind==='symbol')return write(writer,namedText(x));
     if(kind==='type')return write(writer,__rt.formName(x));
+    if(kind==='compiler-literal'){
+      const tag=__rt.formName(x),payload=__rt.formLiteralPayload(x);
+      if(tag==='regex')return write(writer,'#\"'+regexValue(x).source+'\"');
+      if(tag==='js-array'||tag==='js-object'){write(writer,'#js ');return printWriter(payload,writer,options);}
+      if(tag==='queue'){write(writer,'#queue ');return printWriter(payload,writer,options);}
+      if(tag==='uuid'){write(writer,'#uuid ');return printWriter(payload,writer,options);}
+      if(tag==='instant'){write(writer,'#inst ');return printWriter(new Date(val(payload)).toISOString(),writer,options);}
+    }
     if(typeof x==='string'){
       const escapes={'"':'\\"','\\':'\\\\','\b':'\\b','\f':'\\f','\n':'\\n','\r':'\\r','\t':'\\t'};
       return write(writer,truth(printOption(options,'readably','printReadably'))?'"'+x.replace(/[\\"\b\f\n\r\t]/g,ch=>escapes[ch])+'"':x);
@@ -908,6 +916,7 @@ const native = (() => {
   const reSeq = (self, re, text) => {
     text = val(text);
     if (typeof text !== 'string') throw new TypeError('regex matching requires a string');
+    re=regexValue(re);
     const match = re.exec(text);
     if (match === null) return null;
     const value = match.length === 1 ? match[0] : vector(Array.from(match));
@@ -916,8 +925,16 @@ const native = (() => {
       return offset <= text.length ? self(self, re, text.slice(offset)) : null;
     }));
   };
+  const literalViews=new WeakMap();
+  const regexValue = value => {
+    const x=val(value);
+    if(__rt.formKind(x)!=='compiler-literal'||__rt.formName(x)!=='regex')return x;
+    let re=literalViews.get(x);
+    if(re===undefined){re=rePattern(__rt.formLiteralPayload(x));literalViews.set(x,re);}
+    return re;
+  };
   const rePattern = pattern => {
-    pattern = val(pattern);
+    pattern = regexValue(pattern);
     if (pattern instanceof RegExp) return pattern;
     if (typeof pattern !== 'string') throw new TypeError('regex pattern requires a string');
     const prefix = /^\(\?([dgimsuxy]*)\)/.exec(pattern);
@@ -926,7 +943,7 @@ const native = (() => {
   const reMatch = (re, text, full) => {
     text = val(text);
     if (typeof text !== 'string') throw new TypeError('regex matching requires a string');
-    const result = re.exec(text);
+    const result = regexValue(re).exec(text);
     if (result === null || (full && result[0] !== text)) return null;
     return result.length === 1 ? result[0] : vector(Array.from(result));
   };
@@ -1282,7 +1299,9 @@ const native = (() => {
     assertions:true,
     gensym, rePattern, reSeq:(re,text)=>reSeq(reSeq,re,text),
     reFind:(re,text)=>reMatch(re,text,false), reMatches:(re,text)=>reMatch(re,text,true),
-    isRegex:x=>val(x) instanceof RegExp,
+    isRegex:x=>regexValue(x) instanceof RegExp,
+    uuid:x=>__rt.formCompilerLiteral('uuid',val(x)),
+    isUuid:x=>__rt.formKind(val(x))==='compiler-literal'&&__rt.formName(val(x))==='uuid',
     invoke, truth, get, identity:x=>x, macroReaderFunction,
     printReadably:true, printLength:null, printLevel:null, printNamespaceMaps:false,
     printMeta:false, printDup:false, printFnBodies:false, printNewline:true, flushOnNewline:true,
@@ -1540,7 +1559,12 @@ const native = (() => {
     setFromArray:set,arraySetFromArray:set,constantSetFromArray:constantSet,literalSetFromArray:literalSet,
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f,
-    compilerForms:{gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
+    compilerForms:{
+      jsArray:items=>__rt.formCompilerLiteral('js-array',vector(items)),
+      jsObject:pairs=>__rt.formCompilerLiteral('js-object',literalMap(pairs)),
+      withMeta:(value,meta)=>__rt.cljWithMeta(value,meta),
+      literal:(tag,payload)=>__rt.formCompilerLiteral(tag,payload),
+      gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
       namespaceContext:()=>{
         if(!(currentNamespace instanceof Namespace))return __rt.formVector(0,currentNamespace);
         const name=currentNamespace.name,kind=__rt.formKind(val(name));

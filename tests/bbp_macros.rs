@@ -7115,3 +7115,145 @@ fn for_and_doseq_over_lazy_helpers_match_the_legacy_compiler_at_one_two_and_four
         assert_eq!(stats.native_helpers.per_task, 0, "jobs {jobs}");
     }
 }
+
+#[test]
+fn explicit_compiler_literals_match_quickjs() {
+    // Every compiler-owned kind, as both an incoming occurrence and a newly
+    // constructed result. Returning through a fresh outer form exercises export.
+    for (label, literal, expected) in [
+        (
+            "array",
+            r#"#js [1 #js {:a #js ["😀" 2]}]"#,
+            "#js [1 #js {:a #js [\"😀\" 2]}]",
+        ),
+        (
+            "object",
+            r#"#js {:a #js [1 #js {:b 2}]}"#,
+            "#js {:a #js [1 #js {:b 2}]}",
+        ),
+        ("regex", r##"#"a+""##, "#\"a+\""),
+        (
+            "instant",
+            r#"#inst "2024-01-02T03:04:05.000Z""#,
+            "#inst \"2024-01-02T03:04:05.000-00:00\"",
+        ),
+        (
+            "uuid",
+            r#"#uuid "123e4567-e89b-12d3-a456-426614174000""#,
+            "#uuid \"123e4567-e89b-12d3-a456-426614174000\"",
+        ),
+        (
+            "queue",
+            "#queue [1 2]",
+            "(cljs.core/into cljs.core.PersistentQueue.EMPTY [1 2])",
+        ),
+        ("big integer", "9007199254740993N", "9007199254740992"),
+    ] {
+        for constructed in [false, true] {
+            let source = if constructed {
+                format!("(defmacro m [] (list 'quote '{literal})) (js/console.log (pr-str (m)))")
+            } else {
+                format!(
+                    "(defmacro m [x] (list 'quote (nth [x] 0))) (js/console.log (pr-str (m {literal})))"
+                )
+            };
+            let mut host = MacroHost::new();
+            host.use_native_macros();
+            let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+                .unwrap_or_else(|e| panic!("{label}, constructed={constructed}: {e}"));
+            let native = emit_js(&program);
+            assert_eq!(
+                program_output(&native),
+                format!("{expected}\n"),
+                "{label}, constructed={constructed}"
+            );
+            #[cfg(feature = "quickjs")]
+            assert_eq!(
+                native,
+                light_cljs::compile(&source).unwrap(),
+                "{label}, constructed={constructed}"
+            );
+        }
+    }
+    assert_native_matches_legacy(
+        r#"(defmacro m [x] (list 'quote [(meta x) x]))
+           (js/console.log (pr-str (m ^{:tag :literal} [#js [#js {:a 1}]])) )"#,
+        "[{:tag :literal} [#js [#js {:a 1}]]]\n",
+    );
+}
+
+#[test]
+fn arbitrary_host_values_remain_located_macro_errors() {
+    for value in [
+        "(js/Array. 1 2)",
+        r#"(js* "({x:1})")"#,
+        r#"(js/Object.freeze (js* "({})"))"#,
+    ] {
+        let source = format!("(defmacro bad [] {value})\n(bad)");
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let message = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("2:1")
+                && message.contains("macro cljs.user/bad")
+                && message.contains("non-form value"),
+            "{message}"
+        );
+        #[cfg(feature = "quickjs")]
+        {
+            let message = light_cljs::compile(&source).unwrap_err().to_string();
+            assert!(
+                message.contains("2:1")
+                    && message.contains("macro cljs.user/bad")
+                    && message.contains("Unsupported macro result"),
+                "{message}"
+            );
+        }
+    }
+}
+
+#[test]
+fn demanded_compiler_literals_publish_and_keep_source_order_at_all_jobs() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/native-helper-demand/literals");
+    let build = |native: bool, jobs| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "literals.app",
+            std::slice::from_ref(&root),
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native={native}, jobs={jobs}: {e}"));
+        if native {
+            assert!(stats.native_helpers.published > 0, "{stats:?}");
+        }
+        emit_js(&program)
+    };
+    let reference = build(false, 1);
+    assert_eq!(
+        program_output(&reference),
+        "[[:a] {:tag :a} [#js [#js {:value 1}]]] [[:a :b] {:tag :b} [#js {:value #js [2]}]] [[:a :b :app] nil #js []] 55296\n"
+    );
+    for jobs in [1, 2, 4, 8] {
+        let js = build(true, jobs);
+        assert_eq!(js, reference, "jobs={jobs}");
+        assert_eq!(
+            program_output(&js),
+            program_output(&reference),
+            "jobs={jobs}"
+        );
+    }
+}

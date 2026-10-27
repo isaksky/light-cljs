@@ -230,7 +230,8 @@ fn collection_items(heap: &Heap, op: &'static str, v: &Value) -> Result<Option<V
             }
             // Read by `seq_items`, never here.
             FormBody::Lazy(_) | FormBody::Cons(_) => return Err(unsupported(op, &shape)),
-            FormBody::Keyword(_)
+            FormBody::CompilerLiteral { .. }
+            | FormBody::Keyword(_)
             | FormBody::Symbol(_)
             | FormBody::Struct(_)
             | FormBody::Type(_)
@@ -358,7 +359,8 @@ pub(crate) fn count(heap: &Heap, v: &Value) -> Result<Value> {
             FormBody::Struct(s) if s.info.record => {
                 s.info.fields.len() + s.ext_map(heap).map_or(0, |e| e.len())
             }
-            FormBody::Keyword(_)
+            FormBody::CompilerLiteral { .. }
+            | FormBody::Keyword(_)
             | FormBody::Symbol(_)
             | FormBody::Struct(_)
             | FormBody::Type(_)
@@ -449,7 +451,8 @@ pub(crate) fn first(heap: &Heap, v: &Value) -> Result<Value> {
             }
             FormBody::Cons(c) => return Ok(c.first()),
             FormBody::Set(_) | FormBody::Map(_) | FormBody::Struct(_) => {}
-            FormBody::Keyword(_)
+            FormBody::CompilerLiteral { .. }
+            | FormBody::Keyword(_)
             | FormBody::Symbol(_)
             | FormBody::Type(_)
             | FormBody::Lazy(_)
@@ -1138,6 +1141,7 @@ pub(crate) fn dispatch_key(heap: &Heap, v: &Value) -> Option<Value> {
                     FormBody::Lazy(_) => Value::String(JsString::from("lazy-seq")),
                     FormBody::Cons(_) => Value::String(JsString::from("cons")),
                     FormBody::Reduced(_) => Value::String(JsString::from("reduced")),
+                    FormBody::CompilerLiteral { .. } => return None,
                 });
             }
             return heap
@@ -1334,7 +1338,7 @@ pub(crate) fn chunk_cons(heap: &Heap, chunk: &Value, rest: &Value, range: bool) 
 /// macro's result is converted so before the bridge exports it, which
 /// reads finite forms only. An explicit stack: no native recursion.
 pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     enum Rebuild {
         /// A lazy or cons sequence; whether it exports with metadata
         /// (`nil` when none was given), as the light-cljs runtime's
@@ -1347,6 +1351,7 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
         Set(bool),
         Map(bool),
         SortedMap,
+        CompilerLiteral(JsString),
     }
     enum Work {
         Enter(Value),
@@ -1394,6 +1399,9 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                     ),
                     FormBody::List(items) => (Rebuild::List, items.to_vec()),
                     FormBody::Vector(items) => (Rebuild::Vector, items.to_vec()),
+                    FormBody::CompilerLiteral { tag, payload } => {
+                        (Rebuild::CompilerLiteral(tag.clone()), vec![payload.clone()])
+                    }
                     FormBody::Set(set) => {
                         let mut members = Vec::with_capacity(set.len());
                         set.for_each(|k, _| members.push(k.clone()));
@@ -1458,6 +1466,11 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                         Rebuild::Meta => original.clone(),
                         Rebuild::Seq(_) | Rebuild::List => form::new_list(heap, &new_children)?,
                         Rebuild::Vector => form::new_vector(heap, &new_children)?,
+                        Rebuild::CompilerLiteral(ref tag) => form::new_compiler_literal(
+                            heap,
+                            &Value::String(tag.clone()),
+                            &new_children[0],
+                        )?,
                         Rebuild::Set(true) => form::new_literal_set(heap, &new_children)?,
                         Rebuild::Set(false) => form::new_set(heap, &new_children)?,
                         Rebuild::Map(true) => form::new_literal_map(heap, &new_children)?,

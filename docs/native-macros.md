@@ -69,6 +69,35 @@ engine source, and includes preloaded helper source.
 
 ## Supported boundary
 
+### Explicit compiler literal forms (light-cljs-535)
+
+The native bridge imports and exports explicit `#js` array/object descriptors
+with immutable native payloads. Regex, instant, UUID and queue descriptors use
+the same boundary; exact big integers retain their original occurrence until
+Number emission. Payloads and metadata participate in conversion node/depth
+limits on both fresh and memoized paths, provenance retention after GC,
+publication checks and rooting. Returning an unchanged descriptor or payload
+returns its original compiler Datum. Constructed quoted `#js` data uses the
+native descriptor constructors; ordinary JavaScript arrays and objects,
+including frozen objects, still produce located non-form result errors.
+No legacy evaluator or native-only code in `src/js_runtime.js` is involved.
+
+Descriptors are opaque compiler values, rather than mutable JavaScript
+containers or an implementation of all Date/UUID/queue operations. Regex core
+matching obtains a task-owned RegExp view. The existing compiler reader still
+rejects metadata directly on a `#js` source literal; metadata on surrounding
+forms, payloads and API-created descriptors is retained. The EDN reader's
+previous explicit literal-tag boundary remains unchanged for now. `#queue`
+source syntax expands to an `into` form before macro input; the explicit queue
+kind can also originate from `PersistentQueue.EMPTY` in a macro unit.
+
+The literal table in `tests/bbp_macros.rs` checks every compiler literal kind
+against QuickJS as incoming syntax and newly constructed results. The demanded
+helper fixture compares exact emitted output at jobs 1/2/4/8, source-ordered
+atom effects, metadata and a lone UTF-16 surrogate. Bridge and engine tests
+exercise unchanged-subtree identity, provenance, memoized limits, publication,
+lazy payload realization and GC. Ordinary host values remain rejected.
+
 ### Key-value reduction (light-cljs-518)
 
 Native `reduce-kv` invokes `(rf accumulator key value)` on the resumable task
