@@ -7696,7 +7696,9 @@ impl<'a> Emitter<'a> {
         }
         write!(
             self.output,
-            "), operand{} = operand{} ? null : operand{}.call, ",
+            ") ? 1 : (operand{} === 'struct' && __rt.formName(__rt.structTypeOf(operand{})) === 'cljs.core/MultiFn' ? 2 : 0), operand{} = operand{} ? null : operand{}.call, ",
+            base + 2,
+            base + 1,
             base + 3,
             base + 2,
             base + 1,
@@ -7707,6 +7709,22 @@ impl<'a> Emitter<'a> {
             self.value(arg);
             self.output.push_str(", ");
         }
+        // Native multimethods are shareable structs with no JavaScript
+        // `.call` property. Keep the fixed-call path's callee/argument order
+        // and dispatch through the consuming task, as the generic adapter does.
+        write!(
+            self.output,
+            "operand{} === 2 ? globalThis.__lightNativeRuntime.core.invokeMulti(operand{base}, [",
+            base + 2,
+        )
+        .unwrap();
+        for index in 0..args.len() {
+            if index > 0 {
+                self.output.push_str(", ");
+            }
+            write!(self.output, "operand{}", base + 4 + index).unwrap();
+        }
+        self.output.push_str("]) : ");
         write!(
             self.output,
             "operand{} ? __rt.cljInvoke(operand{base}, operand{}, ",
