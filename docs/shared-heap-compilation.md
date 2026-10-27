@@ -576,6 +576,42 @@ lint pass allowing only the three documented engine lint categories.
 Engine-free library/binary strict lint passes, while engine-free all-target
 lint still cannot compile the existing ungated legacy examples/tests.
 
+#### Live cached prefix reuse (October 27, 2026)
+
+light-cljs-534 fixes duplication on an exact-frontier cache miss. Construction
+now upgrades the greatest live weakly cached frontier in `first..end` and
+allocates descriptors only for the suffix after that prefix. It falls back
+to the task-owned prefix when no suitable cached snapshot survives. Applying
+the catalog still starts at `first`, so every requested ordinary registration
+runs in order. The cache still owns no strong snapshot roots.
+
+The new regression keeps tasks at staggered frontiers: an older task starts
+at 17 registrations, another reaches 1,000, and another reaches 1,004. A fresh
+task requests 1,001 and the older task catches up to 1,003. After collection,
+overlapping descriptors must share object identity; the ahead frontier must
+not leak later registrations into an earlier request. Keeping just these four
+catalog snapshots after dropping ordinary task state retains 2,635,652 bytes
+before the fix and 457,376 after it (82.6% less). The original 200/400-entry
+linear-retention check remains 145,272/290,104 bytes, including on the rebased
+tree. Existing frontier lifetime, object-semantics and once-per-task initializer
+tests remain intact.
+
+Verification on master `7c7a8ed2` plus the prefix-reuse change passes all 156
+native evaluator/macro/reader/proxy tests with `LIGHT_CLJS_STRESS_SEEDS=12`;
+the pool stress takes 304 s and the effect-lane stress 425 s. Full default V8
+(`LIGHT_CLJS_V8_CACHE=require`) passes 2,131/2,132 tests; full QuickJS/native
+passes 2,219/2,220. Each full suite has only the documented nested-worktree
+`playground_crate_checks_for_wasm32` workspace-discovery failure. Default
+all-target and engine-free library/binary strict Clippy pass. Combined
+QuickJS/native strict lint reaches the same eight existing engine diagnostics;
+all-target lint passes allowing only `deprecated`, `chunks_exact_to_as_chunks`
+and `byte_char_slices`. Engine-free/native-only all-target lint also reaches
+the existing ungated legacy examples/tests. The three generic worker service
+tests selected accidentally by a broad native-only `catalog` filter reproduce
+the same unsupported `__lightCompileUnit`/`__lightBuildService` failures with
+the original catalog implementation; they pass with QuickJS available.
+Formatter checks pass.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
