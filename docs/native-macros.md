@@ -879,6 +879,15 @@ An unsupported core getter is retained separately and still throws at its
 original read, before call operands run. Operations assigned with `set!` in
 the unit retain their dynamic reads.
 
+One- and two-argument dynamic calls inside native functions retain the callee,
+its `.call` method and the operands in frame locals (light-cljs-501). They
+avoid allocating an adapter closure and rest/spread arrays for each call.
+The method is still read before the operands, including a failing getter;
+custom callables keep their receiver and functions receive `null`. Native
+callable collections preserve their original occurrence and optional default.
+Suspended operand evaluation retains these locals in the VM frame. Wider and
+top-level calls use the existing generic adapter.
+
 `comp`, `partial`, `juxt`, `complement`, `constantly`, `identity` and `fnil`
 also have native compile-time lowering (light-cljs-506). Their returned
 functions run on the task VM, including suspension on a demanded helper;
