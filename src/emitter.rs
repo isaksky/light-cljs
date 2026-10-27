@@ -493,6 +493,9 @@ fn emit_js_mode(
                 .native_replaced_core
                 .extend(native_replacements.iter().copied());
         }
+        // A deferred definition's program contains its initializer alone,
+        // usually wrapped in a Do; no Def node reaches the emitter there.
+        emitter.native_multimethod_function = native_forms && emitter.function_value(root);
         emitter.record_kits = record_kits;
         emitter.output.push_str(PRELUDE_OPEN);
         if native_forms {
@@ -1702,7 +1705,7 @@ struct Emitter<'a> {
     /// A protocol entry that receives its hidden receiver explicitly. Object,
     /// IFn and scope-sensitive methods retain the JavaScript receiver ABI.
     native_protocol_target: Option<RecurTargetId>,
-    /// A multimethod's dispatch/method function must publish with its native
+    /// A function root or inline multimethod function may publish with native
     /// tables. Its runtime reads resolve in the calling task, like root reads.
     native_multimethod_function: bool,
     /// Direct operands already evaluated by `native_form_statements`, in
@@ -5757,17 +5760,33 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn function(&mut self, name: Option<LocalId>, methods: &[FnMethod], macro_function: bool) {
+    fn function_value(&self, mut id: ExprId) -> bool {
+        loop {
+            match &self.program.exprs[id.0].kind {
+                ExprKind::Do(items) if !items.is_empty() => id = *items.last().unwrap(),
+                ExprKind::WithMeta { value, .. } => id = *value,
+                ExprKind::Let { body, .. } | ExprKind::LetFn { body, .. } => id = *body,
+                ExprKind::Fn { .. } => return !self.program.macro_functions.contains(&id),
+                _ => return false,
+            }
+        }
+    }
+
+    fn definition_value(&mut self, id: ExprId) {
         // A referenced dispatcher can be compiled in another namespace before
-        // its MultiFn consumer is analyzed. Every ordinary native function
-        // resolves runtime services in its calling task and keeps a shareable
-        // arity dispatcher; actual user captures still undergo publication.
+        // its MultiFn consumer is analyzed. Function roots use consuming-task
+        // runtime reads and shareable arity dispatchers, just like inline
+        // methods. Actual user captures still undergo publication.
         let previous = self.native_multimethod_function;
-        if self.native_forms && !macro_function {
+        if self.native_forms && self.function_value(id) {
             self.native_multimethod_function = true;
         }
-        self.function_with_ifn_captures(name, methods, macro_function, false);
+        self.value(id);
         self.native_multimethod_function = previous;
+    }
+
+    fn function(&mut self, name: Option<LocalId>, methods: &[FnMethod], macro_function: bool) {
+        self.function_with_ifn_captures(name, methods, macro_function, false);
     }
 
     fn function_with_ifn_captures(
@@ -8504,7 +8523,7 @@ impl<'a> Emitter<'a> {
                             self.output.push_str("value.cljs$lang$test = test, ");
                         }
                         self.output.push_str("value))(");
-                        self.value(*init);
+                        self.definition_value(*init);
                         if let Some(test) = test {
                             self.output.push_str(", ");
                             self.value(*test);
@@ -8515,13 +8534,13 @@ impl<'a> Emitter<'a> {
                         self.without_operands(|emitter| {
                             if let Some(test) = test {
                                 emitter.output.push_str("{ const value = ");
-                                emitter.value(*init);
+                                emitter.definition_value(*init);
                                 emitter.output.push_str("; value.cljs$lang$test = ");
                                 emitter.value(*test);
                                 emitter.output.push_str("; return value; }");
                             } else {
                                 emitter.output.push('(');
-                                emitter.value(*init);
+                                emitter.definition_value(*init);
                                 emitter.output.push(')');
                             }
                         });
@@ -8554,7 +8573,7 @@ impl<'a> Emitter<'a> {
                     self.output.push('(');
                     self.global(*global);
                     self.output.push_str(" = ");
-                    self.value(*init);
+                    self.definition_value(*init);
                     if let Some(test) = test
                         && self.returned_definition != Some(id)
                     {

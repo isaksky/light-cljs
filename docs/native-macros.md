@@ -1624,21 +1624,30 @@ count as a definition for `defonce`.
 Method declarations use the same source frontier as protocols. Each method
 bundle initializes once; its computed dispatch key and other effects are not
 replayed in another task or when an earlier frontier is selected. Persistent
-maps record declaration operations and subsequent runtime mutations. The visible
-dispatch/preference maps are materialized in source order, cached by history
+maps in a private shared journal record declaration operations and subsequent
+runtime mutations. Constructor-supplied method and preference maps seed each view;
+the supplied atoms continue to contain language-level tables after additions,
+removals, preferences and resets. The visible dispatch/preference maps are
+materialized in source order, cached by history
 identity and frontier, and searched using native value equality and `isa?`.
 Dispatch supports exact keys, nested vector keys, explicit or global hierarchies,
-default methods, direct preferences, removal and reset. Hierarchy mutations are
+default methods, direct preferences, removal and reset. Immutable native
+`deftype`/`defrecord` constructor tags participate in both local and global
+hierarchies, including constructor prototype relations. Hierarchy mutations are
 observed on every lookup. Exact table entries win before hierarchy/preference
 search, including a preference for an ancestor. The preference behavior matches
 the pinned CLJS/legacy runtime, whose recursive preference walks do not return inherited matches.
 
-A native multimethod's dispatch and method functions resolve runtime services
-through the consuming task's global runtime. Multi-arity and variadic methods
-route through their dispatcher without attaching the legacy arity acceleration
+A native function root resolves runtime services through the consuming task's
+global runtime, including named dispatch helpers compiled in another namespace
+before their multimethod consumer is analyzed. Multi-arity and variadic function
+roots and methods route through their dispatcher without attaching the legacy arity acceleration
 properties; their rest argument is a native list. This keeps method functions
 shareable without publishing a mutable JavaScript runtime or replaying their
-declarations. Ordinary native helper functions retain their existing behavior.
+declarations. Macro entry functions keep their host arity metadata. Native
+multimethods pass direct and first-class `instance? MultiFn`/`ifn?` checks and,
+as in the legacy runtime, fail `fn?`. Bundle products record root ownership even
+without a preceding `declare`, so a later ordinary definition can replace them.
 No native-only code was added to the emitted runtime in `src/js_runtime.js`.
 A dispatch function that captures task-owned JavaScript state fails publication
 explicitly; the constructor failure is shared, so later demands cannot replay
@@ -1646,12 +1655,14 @@ its effects. `demanded_multimethods_reject_task_owned_dispatch_without_replaying
 checks this boundary at all four pool sizes.
 
 `demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size` is one
-12-row native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
+18-row native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
 JavaScript as well as literal results. It covers scalar and structural keys,
 constructor/function keys, keyword/variadic dispatch, nested hierarchy dispatch,
 global hierarchy changes,
 preferences and ambiguity/missing-method errors, mutations, explicit construction,
-source-frontier replacement, defonce, and binding restoration.
+source-frontier replacement with and without a prior declaration, defonce,
+binding restoration, referenced fixed/variadic dispatch functions, retained
+constructor table atoms, native type tags and multimethod predicates.
 `demanded_multimethod_effects_run_once_across_suspension_and_lending` checks shared
 constructor, method-key and helper effects under seeded scheduling and a held
 earlier lane at four/eight slots; unheld scheduling runs at all four pool sizes.
