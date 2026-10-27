@@ -989,10 +989,12 @@ there is no native Penpot speed or output-identity comparison.
 
 ### Correctness checks
 
-The first generated jobs-1 pair emits byte-identical JavaScript, SHA-256
+All 24 generated builds (three repeats at each job count for both backends)
+emit byte-identical JavaScript, SHA-256
 `02e9caa87ea83816ed71f2427162fabcf97bd7e2a534831691b3045fab7f4ff2`,
-and both applications print the independent Babashka oracle's `484264` for
-input 42, three iterations. Their source maps differ: V8
+and all 24 applications print the independent Babashka oracle's `484264` for
+input 42, three iterations. Each backend's maps are byte-identical across
+repeats and job counts, but the backends differ: V8
 `42fb37caabe52643291c4b864d52242a2321923bf32bb2853817ae8ec991140c`,
 native `7fab5fe22ba4771ce98aa15269b54d8bd8f95dfabf3b4d6d671bc1dd31e3b683`.
 The parsed maps have identical `version`, `file`, `sources` (570), `names`
@@ -1006,43 +1008,80 @@ V8 segment `CAS+D` maps generated line 677, column 553 to
 column 3. Lines here are one-based and columns zero-based. The surrounding
 JavaScript is the same `klekkloul` expansion of `buvaiskum`.
 
+Each Penpot V8 entry also emits byte-identical JS and maps across its 12 builds
+(three repeats at jobs 1/2/4/8):
+
+| Entry | JS SHA-256 | Source-map SHA-256 |
+| --- | --- | --- |
+| `app.render` | `72868c0c8c996750e2009792858084c234e5e947389a7c9d89cfeb24da4275b5` | `bd1794adfbb3a647309e1658a4302a9168469f7443ab23932ca85b2c9d077b49` |
+| `app.main` | `ab66dc52e2046310f3c3b694afb9f25531ab2bd4fe89780bbea9b81ff024027a` | `3ea65b5a278d4e7119c211860af6850bb0e45263add890d7736fadd50321ba5c` |
+
+Penpot validation covers compilation and emitted-byte identity; the application
+was not run in a browser. The generated oracle/Node check is a separate execution
+check and does not establish source-map correctness.
+
 ### Build timings
 
-First complete round, one cold process per cell; repeated medians follow after
-all three rounds. Wall/user CPU are seconds; RSS is GiB (2^30 bytes). Analysis
-and deferred-unit analysis are the separate `--stats` phase counters, in seconds.
-The V8 engine counter includes traced engine work, rather than only macro execution;
-native does not populate it, so its reported zero is shown as unavailable.
-Load is the pre-run 1/5/15-minute average. Successful emission timings do not
+Three cold processes per cell, 48 successful builds in total. Each entry is an
+independent median; brackets show minimum–maximum wall time. Wall/user CPU are
+seconds; RSS is GiB (2^30 bytes). Analysis and deferred-unit analysis are separate
+`--stats` phase counters, in seconds. The V8 engine counter includes traced engine
+work, rather than only macro execution; native does not populate it, so its
+reported zero is shown as unavailable. Each load cell contains the three pre-run
+1/5/15-minute averages, in round order. Successful emission timings do not
 establish source-map equivalence; the correctness finding above still applies.
 
 #### Generated 200k, advanced
 
-| Backend | Jobs | Wall [min–max], s | User CPU, s | Peak RSS, GiB | Analysis, s | Deferred, s | Traced engine, s | Load (1/5/15 min) |
+| Backend | Jobs | Wall [min–max], s | User CPU, s | Peak RSS, GiB | Analysis, s | Deferred, s | Traced engine, s | Loads (1/5/15 min) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| native | 1 | 221.66 [221.66–221.66] | 219.41 | 1.383 | 30.794 | 188.306 | n/a | 2.54 2.45 2.13 |
-| native | 2 | 207.43 [207.43–207.43] | 209.94 | 1.456 | 28.795 | 175.989 | n/a | 2.60 2.45 2.19 |
-| native | 4 | 196.78 [196.78–196.78] | 204.48 | 1.557 | 27.587 | 166.701 | n/a | 2.46 2.40 2.26 |
-| native | 8 | 196.57 [196.57–196.57] | 209.70 | 1.771 | 28.602 | 165.396 | n/a | 2.62 2.45 2.30 |
-| v8 | 1 | 106.96 [106.96–106.96] | 106.96 | 1.088 | 8.157 | 96.224 | 1.478 | 2.37 2.42 2.08 |
-| v8 | 2 | 103.81 [103.81–103.81] | 106.27 | 1.139 | 8.177 | 93.142 | 1.195 | 2.61 2.45 2.24 |
-| v8 | 4 | 99.92 [99.92–99.92] | 105.06 | 1.333 | 7.964 | 89.513 | 1.007 | 2.50 2.43 2.25 |
-| v8 | 8 | 100.57 [100.57–100.57] | 109.11 | 1.546 | 8.050 | 90.051 | 1.018 | 2.75 2.54 2.36 |
+| native | 1 | 221.66 [221.32–222.09] | 219.41 | 1.368 | 30.794 | 188.306 | n/a | 2.54/2.45/2.13; 2.30/2.44/2.51; 2.81/2.68/2.60 |
+| native | 2 | 207.43 [206.89–208.17] | 209.94 | 1.439 | 28.795 | 175.989 | n/a | 2.60/2.45/2.19; 2.31/2.61/2.59; 2.56/2.64/2.59 |
+| native | 4 | 196.78 [196.50–201.11] | 204.48 | 1.571 | 27.587 | 166.701 | n/a | 2.46/2.40/2.26; 2.64/2.84/2.65; 2.67/2.60/2.58 |
+| native | 8 | 198.45 [196.57–201.72] | 214.14 | 1.776 | 29.422 | 166.443 | n/a | 2.62/2.45/2.30; 3.46/2.85/2.52; 2.38/2.55/2.56 |
+| v8 | 1 | 106.22 [105.30–106.96] | 106.28 | 1.093 | 8.077 | 95.654 | 1.467 | 2.37/2.42/2.08; 2.25/2.50/2.54; 2.49/2.61/2.57 |
+| v8 | 2 | 103.81 [102.78–104.85] | 106.27 | 1.139 | 8.177 | 93.142 | 1.194 | 2.61/2.45/2.24; 2.79/2.65/2.60; 2.51/2.58/2.57 |
+| v8 | 4 | 99.92 [99.80–101.58] | 105.06 | 1.333 | 7.964 | 89.513 | 1.007 | 2.50/2.43/2.25; 2.79/2.92/2.66; 2.38/2.52/2.55 |
+| v8 | 8 | 100.57 [99.57–101.46] | 109.11 | 1.533 | 8.050 | 90.051 | 1.025 | 2.75/2.54/2.36; 2.80/2.91/2.62; 2.47/2.54/2.56 |
 
 #### Penpot app.render, none
 
-| Backend | Jobs | Wall [min–max], s | User CPU, s | Peak RSS, GiB | Analysis, s | Deferred, s | Traced engine, s | Load (1/5/15 min) |
+| Backend | Jobs | Wall [min–max], s | User CPU, s | Peak RSS, GiB | Analysis, s | Deferred, s | Traced engine, s | Loads (1/5/15 min) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| v8 | 1 | 12.27 [12.27–12.27] | 12.62 | 0.470 | 0.941 | 10.862 | 0.701 | 2.55 2.51 2.36 |
-| v8 | 2 | 11.75 [11.75–11.75] | 13.45 | 0.556 | 1.133 | 10.143 | 0.408 | 2.44 2.49 2.35 |
-| v8 | 4 | 11.54 [11.54–11.54] | 14.00 | 0.649 | 1.131 | 9.956 | 0.391 | 2.37 2.47 2.35 |
-| v8 | 8 | 11.60 [11.60–11.60] | 15.37 | 0.795 | 1.165 | 9.984 | 0.393 | 2.39 2.47 2.35 |
+| v8 | 1 | 12.35 [12.27–12.45] | 12.69 | 0.470 | 0.955 | 10.926 | 0.699 | 2.55/2.51/2.36; 2.69/2.57/2.54; 2.40/2.49/2.53 |
+| v8 | 2 | 11.79 [11.75–11.86] | 13.50 | 0.549 | 1.133 | 10.183 | 0.408 | 2.44/2.49/2.35; 2.54/2.54/2.53; 2.26/2.46/2.52 |
+| v8 | 4 | 11.64 [11.54–11.80] | 14.15 | 0.649 | 1.131 | 10.056 | 0.390 | 2.37/2.47/2.35; 2.48/2.53/2.53; 2.15/2.43/2.51 |
+| v8 | 8 | 11.64 [11.60–11.66] | 15.37 | 0.802 | 1.167 | 10.019 | 0.393 | 2.39/2.47/2.35; 2.57/2.55/2.54; 2.27/2.44/2.51 |
 
 #### Penpot app.main, none
 
-| Backend | Jobs | Wall [min–max], s | User CPU, s | Peak RSS, GiB | Analysis, s | Deferred, s | Traced engine, s | Load (1/5/15 min) |
+| Backend | Jobs | Wall [min–max], s | User CPU, s | Peak RSS, GiB | Analysis, s | Deferred, s | Traced engine, s | Loads (1/5/15 min) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| v8 | 1 | 72.10 [72.10–72.10] | 74.17 | 1.009 | 4.955 | 65.740 | 6.748 | 2.31 2.45 2.34 |
-| v8 | 2 | 66.13 [66.13–66.13] | 76.37 | 1.093 | 5.144 | 59.619 | 3.327 | 2.47 2.47 2.35 |
-| v8 | 4 | 65.47 [65.47–65.47] | 78.39 | 1.255 | 5.159 | 58.997 | 2.848 | 2.38 2.42 2.34 |
-| v8 | 8 | 64.68 [64.68–64.68] | 81.15 | 1.688 | 5.182 | 58.158 | 2.833 | 3.05 2.60 2.41 |
+| v8 | 1 | 72.10 [72.09–72.81] | 74.21 | 1.009 | 4.953 | 65.756 | 6.751 | 2.31/2.45/2.34; 2.41/2.57/2.55; 2.31/2.44/2.51 |
+| v8 | 2 | 66.13 [66.11–67.11] | 76.37 | 1.104 | 5.144 | 59.619 | 3.318 | 2.47/2.47/2.35; 2.40/2.61/2.57; 2.28/2.40/2.48 |
+| v8 | 4 | 65.47 [65.33–65.93] | 78.39 | 1.255 | 5.159 | 58.997 | 2.848 | 2.38/2.42/2.34; 2.91/2.73/2.60; 2.44/2.42/2.49 |
+| v8 | 8 | 65.65 [64.68–65.79] | 82.04 | 1.683 | 5.196 | 59.106 | 2.834 | 3.05/2.60/2.41; 2.75/2.59/2.55; 2.67/2.52/2.52 |
+
+### Ratios and scaling
+
+Native/V8 is median native wall time divided by median V8 wall time; above 1
+means native is slower. Speedup is each backend's jobs-1 median divided by its
+median at the named job count. These whole-build ratios are not the per-thread
+macro-engine factor k.
+
+| Jobs | Generated native/V8 wall | Native speedup from jobs 1 | V8 speedup from jobs 1 |
+| ---: | ---: | ---: | ---: |
+| 1 | 2.09x | 1.00x | 1.00x |
+| 2 | 2.00x | 1.07x | 1.02x |
+| 4 | 1.97x | 1.13x | 1.06x |
+| 8 | 1.97x | 1.12x | 1.06x |
+
+Penpot `app.render` V8 jobs 1 → 8: 12.35 → 11.64 seconds, 1.06x speedup. Native/V8 is unavailable because native fails before emission.
+
+Penpot `app.main` V8 jobs 1 → 8: 72.10 → 65.65 seconds, 1.10x speedup. Native/V8 is unavailable because native fails before emission.
+
+Native is slower at every measured job count on the generated project: 2.09x
+at jobs 1 and about 1.97x at jobs 4 and 8. Native jobs 8 (198.45 s) is still
+1.87x V8 jobs 1 (106.22 s). Shared runtime/helper publication has not made this
+workload faster than V8. Penpot supplies V8 scaling evidence and a native
+coverage blocker, not evidence of native performance on that application.
