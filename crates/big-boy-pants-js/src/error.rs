@@ -15,7 +15,7 @@ use crate::ids::{DependencyKey, TaskId, WorldId};
 use crate::vm::Opcode;
 
 /// Category of a runtime failure.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VmErrorKind {
     /// An instruction received operand types this slice does not support
     /// (for example `add` on an object). Rejected explicitly instead of
@@ -181,7 +181,7 @@ pub struct VmError {
 
 impl VmError {
     pub fn kind(&self) -> VmErrorKind {
-        self.kind
+        self.kind.clone()
     }
 
     pub fn message(&self) -> &str {

@@ -133,6 +133,37 @@ fn default_sorted_maps_keep_order_identity_and_metadata_across_tasks_and_gc() {
     assert!(weak.iter().all(|w| !w.is_live()));
 }
 
+#[test]
+fn default_sorted_maps_preserve_semantics_when_realized() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function f(){
+        const key=__rt.formWithMeta(__rt.formVector(2),__rt.formMap('key',true));
+        const lazy=__rt.lazySeq(()=>__rt.formList('a','b'));
+        const lazyMeta=__rt.lazySeq(()=>__rt.formList('meta'));
+        const meta=__rt.formMap('tag',lazyMeta);
+        const original=__rt.formWithMeta(__rt.formSortedMap(__rt.formVector(key,lazy,__rt.formVector(1),'first')),meta);
+        const m=__rt.cljRealizeAll(original);
+        if(m===original||__rt.formMeta(m)===meta)throw new Error('map and metadata must rebuild');
+        if(!__rt.cljRealized(lazy)||!__rt.cljRealized(lazyMeta))throw new Error('lazy children unrealized');
+        if(__rt.cljIsEditable(m))throw new Error('rebuilt sorted map is editable');
+        const entries=__rt.formPrintItems(m);
+        if(__rt.formNth(__rt.formNth(entries,0),1)!=='first'||__rt.formNth(__rt.formNth(entries,1),0)!==key)throw new Error('order and key identity');
+        const v=__rt.cljGet(m,__rt.formVector(2),null), tag=__rt.cljGet(__rt.formMeta(m),'tag',null);
+        if(__rt.formKind(v)!=='list'||__rt.formCount(v)!==2||__rt.formNth(v,1)!=='b'||__rt.formKind(tag)!=='list'||__rt.formNth(tag,0)!=='meta')throw new Error('realized contents');
+        const updated=__rt.cljAssoc(m,__rt.formVector(0),'new');
+        const removed=__rt.cljDissoc(updated,__rt.formVector(1));
+        const keys=__rt.formKeys(removed);
+        if(__rt.formNth(__rt.formNth(keys,0),0)!==0||__rt.formNth(keys,1)!==key||__rt.cljIsEditable(removed))throw new Error('sorted updates');
+        if(__rt.formMeta(removed)!==__rt.formMeta(m)||__rt.formCount(m)!==2||__rt.formCount(original)!==2)throw new Error('persistent metadata');
+        return true;
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
 fn at(line: u32, column: u32) -> Provenance {
     Provenance {
         source: 1,

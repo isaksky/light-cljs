@@ -175,6 +175,16 @@ const decl = (() => {
     const direct = directKey(x);
     return direct !== null && __rt.getOr(t.map, direct, null) !== null;
   };
+  // Owned core implementations precede object/default extensions. Explicit
+  // extensions of the receiver's native type still replace that implementation.
+  const resolveCore = (name, arity, x, builtin) => {
+    const t = methodTable(name, arity);
+    declare(x);
+    if (!builtin) return lookup(t, x);
+    if (t.version !== version || t.frontier !== frontier) build(t);
+    const key = directKey(x);
+    return key === null ? null : __rt.getOr(t.map, key, null);
+  };
   // The implementation for the type `ty` (a struct type, or a mutable
   // type's key) in the table of method `name` and arity `n`, at the current
   // frontier. An `Object` method selects by its declaring type, so the
@@ -299,10 +309,13 @@ const decl = (() => {
     printer:x=>resolve(methodTable('IPrintWithWriter/-pr-writer',3),x),
     writer:x=>resolve(methodTable('IWriter/-write',2),x),
     flusher:x=>resolve(methodTable('IWriter/-flush',1),x),
-    kvReducer:x=>resolve(methodTable('IKVReduce/-kv-reduce',3),x),
-    entryKey:x=>resolve(methodTable('IMapEntry/-key',1),x),
-    entryVal:x=>resolve(methodTable('IMapEntry/-val',1),x),
-    seq:x=>resolve(methodTable('ISeqable/-seq',1),x)};
+    kvReducer:(x,builtin)=>resolveCore('IKVReduce/-kv-reduce',3,x,builtin),
+    entryKey:(x,builtin)=>resolveCore('IMapEntry/-key',1,x,builtin),
+    entryVal:(x,builtin)=>resolveCore('IMapEntry/-val',1,x,builtin),
+    seq:(x,builtin)=>resolveCore('ISeqable/-seq',1,x,builtin),
+    first:(x,builtin)=>resolveCore('ISeq/-first',1,x,builtin),
+    rest:(x,builtin)=>resolveCore('ISeq/-rest',1,x,builtin),
+    next:(x,builtin)=>resolveCore('INext/-next',1,x,builtin)};
 })();
 const native = (() => {
   let gensymScope = 0, gensymPrefix = '';
@@ -617,7 +630,43 @@ const native = (() => {
     if (result === null || (full && result[0] !== text)) return null;
     return result.length === 1 ? result[0] : vector(Array.from(result));
   };
-  const seqOf = x => __rt.cljSeq(x);
+  const nativeSeq = x => {
+    const kind = __rt.formKind(val(x));
+    return kind === 'list' || kind === 'cons' || kind === 'lazy-seq';
+  };
+  const seqOf = x => {
+    const value = val(x), kind = __rt.formKind(value);
+    const builtin = value == null || typeof value === 'string' || Array.isArray(value) || nativeSeq(x)
+      || kind === 'vector' || kind === 'map' || kind === 'record' || kind === 'set';
+    const method = decl.seq(x,builtin);
+    if (method !== null) return method.call(x,x);
+    if (!builtin) throw new Error(core.str(x) + ' is not ISeqable');
+    return __rt.cljSeq(Array.isArray(value) ? vector(value) : x);
+  };
+  const firstOf = x => {
+    const method = decl.first(x,nativeSeq(x) || val(x) == null);
+    if (method !== null) return method.call(x,x);
+    if (nativeSeq(x) || val(x) == null) return __rt.cljFirst(x);
+    const s = seqOf(x);
+    if (s === null) return null;
+    const first = decl.first(s,nativeSeq(s));
+    return first === null ? __rt.cljFirst(s) : first.call(s,s);
+  };
+  const restOf = x => {
+    const method = decl.rest(x,nativeSeq(x) || val(x) == null);
+    if (method !== null) return method.call(x,x);
+    if (nativeSeq(x) || val(x) == null) return __rt.cljRest(x);
+    const s = seqOf(x);
+    if (s === null) return __rt.formList();
+    const rest = decl.rest(s,nativeSeq(s));
+    return rest === null ? __rt.cljRest(s) : rest.call(s,s);
+  };
+  const nextOf = x => {
+    const builtin = nativeSeq(x) || val(x) == null;
+    const method = decl.next(x,builtin);
+    if (method !== null) return method.call(x,x);
+    return builtin ? __rt.cljNext(x) : seqOf(restOf(x));
+  };
   const chunked = (s, step) => {
     const ch = __rt.cljChunkFirst(s), b = __rt.vectorBuilder();
     for (let i = 0, n = __rt.cljCount(ch); i < n; i++) step(b, __rt.cljNth(ch, i));
@@ -738,21 +787,27 @@ const native = (() => {
   // nested markers let a flattening reducer propagate termination outward.
   const reduceSeq = (f, init, c) => {
     let acc = init;
-    for (let s = seqOf(c); s !== null; s = __rt.cljNext(s)) {
-      acc = invoke(f, acc, __rt.cljFirst(s));
+    for (let s = seqOf(c); s !== null; s = nextOf(s)) {
+      acc = invoke(f, acc, firstOf(s));
       if (__rt.cljIsReduced(acc)) return __rt.cljUnreduced(acc);
     }
     return acc;
   };
   const entryPart = (x, value) => {
-    const method = value ? decl.entryVal(x) : decl.entryKey(x);
+    const builtin = __rt.formKind(val(x)) === 'vector' && !__rt.cljIsEditable(x);
+    const method = value ? decl.entryVal(x,builtin) : decl.entryKey(x,builtin);
     if (method !== null) return method.call(x, x);
     // Map entries have vector storage, but are not editable vectors.
-    if (__rt.formKind(val(x)) === 'vector' && !__rt.cljIsEditable(x)) return __rt.cljNth(x, value ? 1 : 0);
+    if (builtin) return __rt.cljNth(x, value ? 1 : 0);
     throw new Error('No protocol method IMapEntry/-' + (value ? 'val' : 'key') + ' defined for this value');
   };
+  const kvBuiltin = c => {
+    const value = val(c), kind = __rt.formKind(value);
+    return kind === 'map' || kind === 'record' || decl.mutableRecord(value) !== null
+      || kind === 'vector' && __rt.cljIsEditable(c);
+  };
   const reduceKv = (f, init, c) => {
-    const method = decl.kvReducer(c);
+    const method = decl.kvReducer(c,kvBuiltin(c));
     if (method !== null) return method.call(c, c, f, init);
     const value = val(c), kind = __rt.formKind(value);
     if (value == null) return init;
@@ -772,13 +827,7 @@ const native = (() => {
       }
       return init;
     } else {
-      const method = decl.seq(c);
-      let source = c;
-      if (method !== null) source = method.call(c,c);
-      else if (Array.isArray(value)) source = vector(value);
-      else if (typeof value !== 'string' && kind !== 'list' && kind !== 'cons' && kind !== 'lazy-seq' && kind !== 'set' && kind !== 'vector')
-        throw new Error(core.str(c) + ' is not ISeqable');
-      return reduceSeq((result,entry)=>prepareInvoke(f)(result,entryPart(entry,false),entryPart(entry,true)),init,source);
+      return reduceSeq((result,entry)=>prepareInvoke(f)(result,entryPart(entry,false),entryPart(entry,true)),init,c);
     }
     for (let i = 0, n = __rt.formCount(entries); i < n; i++) {
       const entry = __rt.formNth(entries,i);
@@ -786,6 +835,12 @@ const native = (() => {
       if (__rt.cljIsReduced(init)) return __rt.cljUnreduced(init);
     }
     return init;
+  };
+  const kvReduceProtocol = (c,f,init) => {
+    const builtin = kvBuiltin(c), method = decl.kvReducer(c,builtin);
+    if (method !== null) return method.call(c,c,f,init);
+    if (builtin) return reduceKv(f,init,c);
+    throw new Error('No protocol method IKVReduce/-kv-reduce defined for this value');
   };
   const reducing = (rf, step, complete = result => invoke(rf, result)) => (...a) => {
     if (a.length === 0) return invoke(rf);
@@ -971,8 +1026,8 @@ const native = (() => {
       :a.length<=3?rangeFrom(rangeFrom,val(a[0]),val(a[1]),a.length===3?val(a[2]):1):arity(a.length),
     partition:(...a)=>a.length===2?partitionFrom(partitionFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionFrom(partitionFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
     reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);const s=seqOf(a[0]);
-      return s===null?invoke(f):reduceSeq(f,__rt.cljFirst(s),__rt.cljRest(s));},
-    reduceKv, kvReduceProtocol:(c,f,init)=>reduceKv(f,init,c),
+      return s===null?invoke(f):reduceSeq(f,firstOf(s),restOf(s));},
+    reduceKv, kvReduceProtocol,
     keyProtocol:x=>entryPart(x,false), valProtocol:x=>entryPart(x,true),
     transduce,
     completing:(...a)=>a.length===1||a.length===2?reducing(a[0],(result,x)=>invoke(a[0],result,x),a.length===1?result=>result:result=>invoke(a[1],result)):arity(a.length),

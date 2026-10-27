@@ -320,6 +320,96 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "sorted comparison errors are catchable and run finally",
+            "",
+            r#"(let [seen (js/Array.)
+                probe (fn [f] (try (f) (catch :default e [(.push seen "catch") (.-name e) (.-message e)])
+                                   (finally (.push seen "finally"))))]
+              [(mapv probe [(fn [] (sorted-map 1 :a "x" :b))
+                            (fn [] (sorted-map :a 1 'b 2))
+                            (fn [] (sorted-map [1] :a ["x"] :b))
+                            (fn [] (get (sorted-map 1 :a) "x"))
+                            (fn [] (assoc (sorted-map "x" :a) 1 :b))
+                            (fn [] (dissoc (sorted-map 1 :a) "x"))])
+               (vec seen)])"#,
+            "nil",
+        ),
+        (
+            "sorted equality uses destination comparison and source value direction",
+            "",
+            r#"(let [s (sorted-map 1 :v) n (sorted-map ##NaN :v) h (apply hash-map [##NaN :v])
+                     p (apply hash-map [1 :v]) left #{1 1.0} right #{1 2}
+                     check (fn [a b] (try (= a b) (catch :default e [(.-name e) (.-message e)])))]
+              [(check s n) (check n s) (check s h) (check h s) (check s p) (check p s)
+               (check (sorted-map 1 left) (array-map 1 right))
+               (check (array-map 1 left) (sorted-map 1 right))
+               (check (sorted-map 1 :v) (apply hash-map ["x" :v]))
+               (check (apply hash-map ["x" :v]) (sorted-map 1 :v))
+               (check [(apply hash-map ["x" :v])] [(sorted-map 1 :v)])])"#,
+            "nil",
+        ),
+        (
+            "default extensions remain below owned core implementations",
+            r#"(deftype R [] IKVReduce (-kv-reduce [_ f init] (f init :own 7)))
+               (defrecord D [x])
+               (defrecord M [^:mutable x])
+               (deftype E [] IMapEntry (-key [_] :own) (-val [_] 8))
+               (extend-protocol IKVReduce default (-kv-reduce [_ f init] (f init :default 9)))
+               (extend-protocol IMapEntry default (-key [_] :default) (-val [_] 10))"#,
+            r#"[(mapv (fn [c] (reduce-kv (fn [a k v] (conj a [k v])) [] c))
+                   [[1] (array-map :a 2) (apply hash-map [:b 3]) (sorted-map :c 4) (R.) (D. 5) (M. 6) (js/Object.)])
+                (mapv (fn [e] [(key e) (val e)]) [(first (seq {:a 1})) (E.) (js/Object.)])
+                (-kv-reduce [2] (fn [a k v] (+ a v)) 0)]"#,
+            "nil",
+        ),
+        (
+            "object extensions remain below owned core implementations",
+            r#"(extend-protocol IKVReduce object (-kv-reduce [_ f init] (f init :object 9)))
+               (extend-protocol IMapEntry object (-key [_] :object) (-val [_] 10))"#,
+            r#"[(mapv (fn [c] (reduce-kv (fn [a k v] (conj a [k v])) [] c))
+                   [[1] (array-map :a 2) (apply hash-map [:b 3]) (sorted-map :c 4) (js/Object.)])
+                (mapv (fn [e] [(key e) (val e)]) [(first (seq {:a 1})) (js/Object.)]) ]"#,
+            "nil",
+        ),
+        (
+            "explicit native type extension precedes owned reducer",
+            "(extend-type PersistentVector IKVReduce (-kv-reduce [_ f init] (f init :vector 11)))",
+            "[(reduce-kv (fn [a k v] [a k v]) :seed [1]) (-kv-reduce [1] (fn [a k v] [a k v]) :seed)]",
+            "nil",
+        ),
+        (
+            "self returning custom sequences reduce with rest and next effects",
+            r#"(deftype S [entries seen]
+                 ISeqable (-seq [this] (.push seen "seq") this)
+                 ISeq (-first [_] (.push seen "first") (first entries))
+                      (-rest [_] (.push seen "rest") (rest entries)))
+               (deftype N [entries seen]
+                 ISeqable (-seq [this] (.push seen "seq") this)
+                 ISeq (-first [_] (.push seen "first") (first entries))
+                      (-rest [_] (throw (js/Error. "rest called")))
+                 INext (-next [_] (.push seen "next") (next entries)))
+               (deftype Q [source seen] ISeqable (-seq [_] (.push seen "outer") source))"#,
+            r#"(let [seen (js/Array.) entries (seq (array-map :a 1 :b 2))
+                     s (S. entries seen) n (N. entries seen)
+                     result [(reduce-kv (fn [a k v] (.push seen "kv") (conj a [k v])) [] (Q. s seen))
+                             (reduce-kv (fn [a k v] (.push seen "stop") (reduced [k v])) nil s)
+                             (reduce (fn [a e] (.push seen "reduce") (conj a [(key e) (val e)])) [] n)
+                             (reduce (fn [a e] (.push seen "two") [a (val e)]) s)
+                             (reduce-kv (fn [a k v] (conj a [k v])) [] n)]]
+               [result (vec seen)])"#,
+            "nil",
+        ),
+        (
+            "direct kv protocol rejects non implementations",
+            "(defrecord R [x])",
+            r#"[(mapv (fn [c] (try (-kv-reduce c (fn [a k v] (conj a [k v])) [])
+                                   (catch :default e [(.-name e) (.-message e)])))
+                     [nil () (list (first (seq {:a 1}))) (js/Array.) (first (seq {:a 1}))
+                      42 "abc" #{1} [2] {:a 1} (R. 3)])
+                (reduce-kv (fn [a k v] (conj a [k v])) [] nil)]"#,
+            "nil",
+        ),
+        (
             "initial and source stay persistent",
             "",
             r#"(let [m (with-meta (array-map :a 1 :b 2) {:tag true}) original m

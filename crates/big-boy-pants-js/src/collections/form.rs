@@ -827,6 +827,95 @@ fn map_dissoc(heap: &Heap, map: &FormMap, key: &Value) -> Result<Option<FormMap>
 
 /// The default ClojureScript comparator over native immutable keys. Use an
 /// explicit stack for nested vectors; no JavaScript, hashing or equality runs.
+// Comparator diagnostics use String(value), with readable collection members.
+// Keep deeply nested vector keys off the Rust stack, just as comparison does.
+fn compare_display(heap: &Heap, value: &Value) -> String {
+    enum Part {
+        Value(Value, bool),
+        Text(&'static str),
+    }
+    let mut pending = vec![Part::Value(value.clone(), false)];
+    let mut text = String::new();
+    while let Some(part) = pending.pop() {
+        let (value, nested) = match part {
+            Part::Text(s) => {
+                text.push_str(s);
+                continue;
+            }
+            Part::Value(v, nested) => (unwrap(heap, v), nested),
+        };
+        match value {
+            Value::Null | Value::Undefined => text.push_str(if nested { "nil" } else { "" }),
+            Value::Bool(v) => text.push_str(if v { "true" } else { "false" }),
+            Value::Number(v) => text.push_str(&crate::value::string::number_to_string(v)),
+            Value::String(v) => {
+                if nested {
+                    text.push('"');
+                }
+                for c in v.to_string_lossy().chars() {
+                    match c {
+                        '"' if nested => text.push_str("\\\""),
+                        '\\' if nested => text.push_str("\\\\"),
+                        '\n' if nested => text.push_str("\\n"),
+                        '\r' if nested => text.push_str("\\r"),
+                        '\t' if nested => text.push_str("\\t"),
+                        c => text.push(c),
+                    }
+                }
+                if nested {
+                    text.push('"');
+                }
+            }
+            v => match form_object(heap, &v).as_deref().map(FormObject::body) {
+                Some(FormBody::Keyword(n) | FormBody::Symbol(n)) => {
+                    if matches!(form_object(heap, &v).unwrap().body(), FormBody::Keyword(_)) {
+                        text.push(':');
+                    }
+                    if let Some(ns) = &n.namespace {
+                        text.push_str(&ns.to_string_lossy());
+                        text.push('/');
+                    }
+                    text.push_str(&n.name.to_string_lossy());
+                }
+                Some(FormBody::Vector(items) | FormBody::List(items)) => {
+                    let vector =
+                        matches!(form_object(heap, &v).unwrap().body(), FormBody::Vector(_));
+                    text.push(if vector { '[' } else { '(' });
+                    pending.push(Part::Text(if vector { "]" } else { ")" }));
+                    for i in (0..items.len()).rev() {
+                        pending.push(Part::Value(items.get(i).unwrap(), true));
+                        if i > 0 {
+                            pending.push(Part::Text(" "));
+                        }
+                    }
+                }
+                _ => text.push_str("[object Object]"),
+            },
+        }
+    }
+    text
+}
+
+fn compare_error(heap: &Heap, a: &Value, b: &Value) -> CollectionError {
+    let named = |v| {
+        matches!(
+            form_object(heap, v).as_deref().map(FormObject::body),
+            Some(FormBody::Keyword(_) | FormBody::Symbol(_))
+        )
+    };
+    CollectionError::CannotCompare(
+        if !matches!(a, Value::Number(_)) && (named(a) || named(b)) {
+            "Cannot compare different types".into()
+        } else {
+            format!(
+                "Cannot compare {} to {}",
+                compare_display(heap, a),
+                compare_display(heap, b)
+            )
+        },
+    )
+}
+
 fn compare_keys(heap: &Heap, a: &Value, b: &Value) -> Result<std::cmp::Ordering, CollectionError> {
     use std::cmp::Ordering;
     let mut pending = vec![(a.clone(), b.clone())];
@@ -865,9 +954,9 @@ fn compare_keys(heap: &Heap, a: &Value, b: &Value) -> Result<std::cmp::Ordering,
                     }
                     (Some(FormBody::Keyword(_) | FormBody::Symbol(_)), _)
                     | (_, Some(FormBody::Keyword(_) | FormBody::Symbol(_))) => {
-                        return Err(CollectionError::CannotCompare);
+                        return Err(compare_error(heap, &a, &b));
                     }
-                    _ => return Err(CollectionError::CannotCompare),
+                    _ => return Err(compare_error(heap, &a, &b)),
                 }
             }
         };
@@ -2107,13 +2196,18 @@ fn seq_split(heap: &Heap, mut c: SeqCursor) -> Split {
 /// an entry whose full hash `c` keys of the other map share contributes up
 /// to `c` candidate key/value pairs instead of one.
 pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
+    try_equals(heap, a, b).unwrap_or(false)
+}
+
+/// Equality for language operations, preserving sorted lookup failures.
+pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, CollectionError> {
     /// One thing to establish inside an all-of goal.
     enum Step {
         Pair(Value, Value),
         /// Lookup stops at the first equal key, even when its value differs.
         /// A source trie already knows the query's hash; a positional source
         /// computes it only when this step runs and the destination needs it.
-        Lookup(Value, Option<Value>, bool, FormMap, Option<u64>),
+        Lookup(Value, Option<Value>, bool, FormMap, Option<u64>, bool),
         /// The rest of two sequences, compared element by element so that
         /// an unequal element ends the comparison before a tail is
         /// realized (light-cljs-479).
@@ -2160,26 +2254,28 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
         Decided(bool),
         Expand((ObjectId, ObjectId), Vec<Step>),
     }
-    let map_steps = |p: &FormMap, q: &FormMap, values: bool| {
-        let mut steps = Vec::with_capacity(p.len());
-        let mut entry = |h, k: &Value, v: &Value| {
-            steps.push(Step::Lookup(
-                k.clone(),
-                values.then(|| v.clone()),
-                !p.positional(),
-                q.clone(),
-                h,
-            ));
+    let map_steps =
+        |p: &FormMap, q: &FormMap, values: bool, source_sorted: bool, target_sorted: bool| {
+            let mut steps = Vec::with_capacity(p.len());
+            let mut entry = |h, k: &Value, v: &Value| {
+                steps.push(Step::Lookup(
+                    k.clone(),
+                    values.then(|| v.clone()),
+                    source_sorted || !p.positional(),
+                    q.clone(),
+                    h,
+                    target_sorted,
+                ));
+            };
+            match p {
+                FormMap::Hashed(map) => map.for_each_hashed(|h, k, v| entry(Some(h), k, v)),
+                FormMap::Positional(_) => p.for_each(|k, v| entry(None, k, v)),
+            }
+            // All-of goals pop last-first; lookup and value comparison must
+            // short-circuit in the source's traversal order.
+            steps.reverse();
+            steps
         };
-        match p {
-            FormMap::Hashed(map) => map.for_each_hashed(|h, k, v| entry(Some(h), k, v)),
-            FormMap::Positional(_) => p.for_each(|k, v| entry(None, k, v)),
-        }
-        // All-of goals pop last-first; lookup and value comparison must
-        // short-circuit in the source's traversal order.
-        steps.reverse();
-        steps
-    };
     let mut equal: HashSet<(ObjectId, ObjectId)> = HashSet::new();
     let mut unequal: HashSet<(ObjectId, ObjectId)> = HashSet::new();
     // Pairs being expanded: met again inside their own expansion (only
@@ -2246,13 +2342,13 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                 if p.len() != q.len() {
                     return Outcome::Decided(false);
                 }
-                Outcome::Expand((ia, ib), map_steps(p, q, false))
+                Outcome::Expand((ia, ib), map_steps(p, q, false, false, false))
             }
             (FormBody::Map(p), FormBody::Map(q)) => {
                 if p.len() != q.len() {
                     return Outcome::Decided(false);
                 }
-                Outcome::Expand((ia, ib), map_steps(p, q, true))
+                Outcome::Expand((ia, ib), map_steps(p, q, true, x.sorted, y.sorted))
             }
             // Records of the same type with equal fields and extension
             // entries; a deftype only to itself (decided above).
@@ -2310,7 +2406,24 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
                             });
                         }
                     },
-                    Some(Step::Lookup(key, value, reverse_value, target, h)) => {
+                    Some(Step::Lookup(key, value, reverse_value, target, h, sorted)) => {
+                        if sorted {
+                            let FormMap::Positional(pairs) = target else {
+                                unreachable!("sorted map storage")
+                            };
+                            let (i, exists) = sorted_position(heap, &pairs, &key)?;
+                            if !exists {
+                                returned = Some(false);
+                            } else if let Some(value) = value {
+                                let other = pairs.get(i + 1).unwrap();
+                                pending.push(if reverse_value {
+                                    Step::Pair(other, value)
+                                } else {
+                                    Step::Pair(value, other)
+                                });
+                            }
+                            continue;
+                        }
                         let candidates = match target {
                             FormMap::Positional(pairs) => Candidates::Positional(pairs, 0),
                             FormMap::Hashed(map) => Candidates::Hashed(
@@ -2385,7 +2498,7 @@ pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
             }
         }
     }
-    returned.unwrap_or(true)
+    Ok(returned.unwrap_or(true))
 }
 
 // ---- Hashing (the light-cljs runtime's Murmur3 profile) ----

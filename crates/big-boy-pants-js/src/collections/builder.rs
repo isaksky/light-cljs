@@ -108,7 +108,7 @@ impl std::error::Error for BuilderError {}
 
 /// A builder operation failure: a type/index error by the collection
 /// contract, or a lifecycle/ownership rejection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BuildFault {
     Collection(CollectionError),
     Builder(BuilderError),

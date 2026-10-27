@@ -422,7 +422,11 @@ fn intrinsic_errors_fail_the_task_without_panicking() {
             )
             .unwrap();
         let err = failed(task.run().unwrap());
-        assert_eq!(err.kind(), VmErrorKind::Collection(expected), "case {i}");
+        assert_eq!(
+            err.kind(),
+            VmErrorKind::Collection(expected.clone()),
+            "case {i}"
+        );
         assert_eq!(err.message(), expected.to_string(), "case {i}");
         assert_eq!(err.diagnostic().opcode, Some(opcode), "case {i}");
         assert_eq!(err.diagnostic().task, task.id());

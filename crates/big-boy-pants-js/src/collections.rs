@@ -192,7 +192,7 @@ impl PersistentKind {
 
 /// Why a collection operation failed. See the contract in
 /// [`crate::collections`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CollectionError {
     /// The operand has the wrong kind (`found` uses the names `vector`,
     /// `map`, `occurrence`, `object`, `number`, ...).
@@ -217,7 +217,7 @@ pub enum CollectionError {
     /// "Names").
     AmbiguousName,
     /// Default sorted-map comparison rejected these operands.
-    CannotCompare,
+    CannotCompare(String),
 }
 
 impl fmt::Display for CollectionError {
@@ -238,7 +238,7 @@ impl fmt::Display for CollectionError {
             CollectionError::AmbiguousName => f.write_str(
                 "a keyword or symbol spelling must split back into its namespace and name at its first '/'",
             ),
-            CollectionError::CannotCompare => f.write_str("Cannot compare different types"),
+            CollectionError::CannotCompare(message) => f.write_str(message),
         }
     }
 }

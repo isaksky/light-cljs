@@ -1979,7 +1979,10 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
         Fault::Collection(CollectionError::HeapLimit) => {
             (VmErrorKind::HeapLimit, "heap byte limit exceeded".into())
         }
-        Fault::Collection(e) => (VmErrorKind::Collection(e), e.to_string()),
+        Fault::Collection(e) => {
+            let message = e.to_string();
+            (VmErrorKind::Collection(e), message)
+        }
         Fault::Builder(e) => (VmErrorKind::Builder(e), e.to_string()),
         Fault::NotCallable(what) => (VmErrorKind::TypeError, format!("{what} is not a function")),
         Fault::StackOverflow(m) => (VmErrorKind::StackOverflow, m),
@@ -2027,7 +2030,7 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
 
 /// Run-time failures that are JavaScript errors, raised as catchable
 /// exceptions (`crate::vm::exception`). Exhaustive, so a new kind must decide.
-fn catchable(kind: VmErrorKind) -> bool {
+fn catchable(kind: &VmErrorKind) -> bool {
     match kind {
         VmErrorKind::ReferenceError
         | VmErrorKind::SyntaxError
@@ -2138,7 +2141,7 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
     js_message: Option<&str>,
 ) -> Option<Exit> {
     let error = classify_heap_failure(heap, error);
-    if !catchable(error.kind) || !state.has_handlers() {
+    if !catchable(&error.kind) || !state.has_handlers() {
         return Some(Exit::Fail(error));
     }
     if error.kind == VmErrorKind::HeapLimit {
@@ -3931,8 +3934,8 @@ mod tests {
         let (kind, message) = fault_error(fault, &code.0, 0);
         assert_eq!(kind, VmErrorKind::StringTooLong);
         assert_eq!(message, "string too long");
-        assert!(catchable(kind));
-        assert!(!catchable(VmErrorKind::OutOfMemory));
+        assert!(catchable(&kind));
+        assert!(!catchable(&VmErrorKind::OutOfMemory));
     }
     fn state(code: &Executable, task: u64) -> VmState {
         let diag = DiagnosticContext {

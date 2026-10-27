@@ -212,6 +212,7 @@ impl From<CollectionError> for Fault {
     fn from(e: CollectionError) -> Self {
         match e {
             CollectionError::OutOfMemory => Fault::OutOfMemory("heap object table exhausted"),
+            CollectionError::CannotCompare(message) => Fault::Error(message),
             other => Fault::Collection(other),
         }
     }
@@ -571,7 +572,7 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         }
         FormOp::Equals => {
             let (a, b) = (arg(), arg());
-            Value::Bool(form::equals(heap, &a, &b))
+            Value::Bool(form::try_equals(heap, &a, &b)?)
         }
         FormOp::Hash => Value::Number(f64::from(form::hash(heap, &arg()))),
         FormOp::Meta => form::meta(heap, &arg()).unwrap_or(Value::Null),
