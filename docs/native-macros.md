@@ -126,7 +126,8 @@ doctests pass. The final `bbp-macros,quickjs` run passes all 333 compiler unit,
 79 macro, ten reader and two Proxy tests (one unrelated unit test is ignored).
 Strict engine Clippy retains the nine documented baseline diagnostics;
 allowing only those categories passes for the engine and the native compiler,
-CLI and integration-test targets. Both format checks and the Node runtime
+CLI and integration-test targets. Strict Clippy passes for the available
+QuickJS-only targets and the engine-free compiler library/CLI. Both format checks and the Node runtime
 suite pass. A broader native-only
 compiler unit run passes 258 tests and fails 27 tests requiring legacy
 bootstrap, compiler services or QuickJS readers. Restoring the original
@@ -137,6 +138,15 @@ The QuickJS compiler integration target cannot build in this worktree: eight
 `include_str!` inputs require the absent `research/clojurescript` checkout.
 No research symlink was created, and the unavailable default V8 suite remains
 the orchestrator's check.
+
+The other QuickJS-only compiler, CLI and integration targets report 820 passed,
+52 ignored and two environment failures. `playground_crate_checks_for_wasm32`
+fails before compilation because Cargo assigns the excluded playground crate
+to the ancestor main checkout's workspace. The watch test
+`a_failed_restart_waits_for_work` cannot execute `ps` in this sandbox
+(`PermissionDenied: Operation not permitted`). Their test sources, build
+script and manifests are unchanged from `a8edeeb5`; neither failure reaches
+the native services changed here.
 
 ### Printing and namespace services (light-cljs-513)
 
