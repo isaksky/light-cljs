@@ -740,6 +740,30 @@ commands as above: native-only SHA-256 `d1d0bcb81eb5fe13…` and default V8
 (`LIGHT_CLJS_V8_CACHE=require`) `4660879ae14e81c6…`. These are built from
 one commit, rather than using a historical V8 timing reference.
 
+A final guard at `05d0e954` also treats property/index writes on core functions
+as replacements, including source field/index forms and dotted references.
+Overriding addition's `.call` returned `42` on V8 but `3` with the native
+operator lowering before this correction. Direct and demanded-helper property
+write cases now pass against QuickJS. All six focused core-service, rebinding,
+artifact and property-write tests pass in both native-only and native/QuickJS
+builds. Formatting and the affected native Clippy targets pass with the same
+three existing engine-category allowances. The preceding full-suite results
+cover unchanged lowering paths; the property-assignment eligibility change
+was verified by these focused cases.
+
+The final same-commit release pair is native-only SHA-256
+`1d1497870e996938…`, default V8 `3f88717fd0bb87a0…`, both at `05d0e954`.
+The required post-review `n=400` timing was **not collected**: every launch
+check after the binaries were ready still found active peer builds/tests or
+standalone compiler runs. To preserve the requested measurement serialization,
+no fresh timed run was started within the worker's time budget. No final-revision
+k value or CPU profile is claimed. The four-size results and before/after
+profiles at `47cb9998` above remain the original optimization evidence;
+light-cljs-515 remains the existing focused numerical-target follow-up.
+Rerun `bb benchmarks/native-macros-k.bb OUTPUT --workload protocol --runs 5
+--n 0,400 v8=V8_BINARY native=NATIVE_BINARY` in a clear host window to finish
+the review-fix performance check.
+
 ## Lazy sequences (light-cljs-479), October 26, 2026
 
 `bb benchmarks/native-macros-k.bb OUTPUT --workload lazy v8=BIN NAME=BIN`
