@@ -1497,3 +1497,24 @@ the QuickJS-only CLI compiles it and Node prints `:bound`. The innermost missing
 service still needs diagnosis in light-cljs-521. Neither Penpot entry completes.
 The temporary merge was aborted afterward; no light-cljs-518 commits or research
 changes are included in this branch.
+
+The review fix at `13ac8b52` also handles an initializer reserved by a later
+task before an earlier bound caller demands it. The reduced regression first
+captured `"root"` instead of `:earlier` at two slots. Reserving before the lane
+and selecting the earliest caller's task before factory execution fixes that
+case, including mutable binding values, inner overrides and once-only effects.
+All 128 selected native tests pass with `LIGHT_CLJS_STRESS_SEEDS=12`; the new
+reservation-cancellation test passes separately. All 428 native-plus-QuickJS
+tests pass, with one normally ignored test. QuickJS-only compatibility again
+passes 822 tests with the same two environment failures described above.
+Formatting, direct runtime checks and baseline-isolated native/combined Clippy
+pass; QuickJS library/binary Clippy passes strictly, while its all-target check
+still finds the same eight missing research includes. Engine sources and inputs
+are unchanged, so the prior 2,123 tests and seven doctests remain applicable.
+
+Both Penpot commands were repeated with the same five roots and all budgets
+using a temporary merge of `13ac8b52` and unlanded light-cljs-518 at
+`076a1c213e804b348605482c144a36b528d4716b` (tree
+`1387195c50ce89d16a11ac8b8318ff56a9d8cae9`). Both pass binding services and
+report the identical `compile-form` diagnostic above. That merge was aborted,
+and the native-only CLI was rebuilt from this branch; research was untouched.

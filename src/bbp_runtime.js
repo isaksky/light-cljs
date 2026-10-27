@@ -1227,8 +1227,8 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
       const serial=++initializerSerial;
       globalThis.__lightInitializerUnit=unit;
       globalThis.__lightInitializerParent=initializerStack[initializerStack.length-1]??null;
-      // Capture without reading the dynamic Var: only an initializer that
-      // observes *ns* needs its lane. Inherited callers are selected in Rust.
+      // Capture without reading the dynamic Var. Rust retains snapshots for
+      // direct callers and nested initializer ancestry.
       globalThis.__lightInitializerNamespace=native.compilerForms.namespaceContext();
       globalThis.__lightInitializerNamespaceBound=native.compilerForms.namespaceBound();
       // Reserve before waiting so earlier callers can lend their lane.
