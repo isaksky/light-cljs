@@ -2216,8 +2216,8 @@ fn demanded_helper_bindings_preserve_overlays_and_restore_after_errors() {
             "(declare ^:dynamic *x*)",
             "[(binding [*x* nil] [(exists? *x*) *x*])
               (binding [*x* false] [(exists? *x*) *x*])
-              (binding [*x* js/undefined] [(exists? *x*) *x*]) (exists? *x*)]",
-            "[[true nil] [true false] [false nil] false]\n",
+              (binding [*x* js/undefined] [(exists? *x*) (nil? *x*)]) (exists? *x*)]",
+            "[[true nil] [true false] [false true] false]\n",
         ),
         (
             "(def ^:dynamic *x* 1) (def ^:dynamic *y* 2)",
@@ -2229,12 +2229,18 @@ fn demanded_helper_bindings_preserve_overlays_and_restore_after_errors() {
         (
             // The root fails in the macro host; Node can execute the emitted
             // program to check the captured compile-time result too.
-            "(def ^:dynamic *x* (if (exists? js/process) :application
-                                  (throw (js/Error. \"root failure\"))))",
-            r#"[(try *x* (catch :default e (.-message e)))
-                (binding [*x* nil] *x*)
-                (try *x* (catch :default e (.-message e)))]"#,
-            "[\"root failure\" nil \"root failure\"]\n",
+            "(def effects (atom []))
+             (def ^:dynamic *x* (if (exists? js/process) :application
+                 (do (swap! effects conj :failed) (throw (js/Error. \"root failure\")))))",
+            // Legacy root errors add source context. Compare the failure,
+            // cached error identity and once-only effects within each host.
+            r#"(let [first (try *x* (catch :default e e))
+                     bound (binding [*x* nil] *x*)
+                     second (try *x* (catch :default e e))]
+                 [(.endsWith (.-message first) "root failure") bound
+                  (.endsWith (.-message second) "root failure")
+                  (identical? first second) @effects])"#,
+            "[true nil true true [:failed]]\n",
         ),
     ] {
         let source = format!(

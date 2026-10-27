@@ -1024,6 +1024,18 @@ compiled factories, published values, per-task initializations and waits.
 Namespace builds also report aggregate `native.helpers.*`, `native.tasks.steps`
 and `native.tasks.migrations` counts, including worker activity.
 
+Demanded source helpers support compiler binding save/install/restore services.
+Each VM task owns its binding overlays; snapshots record overlay presence and
+value without reading the underlying root. Nested `binding` and `with-redefs`
+therefore preserve pending, initialized and failed slots, including nil, false
+and undefined overlays. Emitted `finally` blocks restore overlays after throws,
+and saved VM frames retain them across helper waits and task migration. Bound
+`set!` uses a native compiler service rather than an engine Proxy `set` trap.
+Source regressions compare values, failures, restoration and once-only effects
+against QuickJS, with identical emitted programs at one, two, four and eight
+slots. A shared-runtime regression separately checks task isolation and that
+saving a pending or failed getter does not force or replace it.
+
 Embedders can also explicitly preload a self-contained helper expression:
 
 ```rust
