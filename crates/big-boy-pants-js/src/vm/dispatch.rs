@@ -621,24 +621,38 @@ pub(crate) fn cached_callee(
 fn callee_code<C>(
     heap: &Heap,
     callee: &Value,
-    code: impl FnOnce(&Arc<Code>) -> C,
+    mut code: impl FnMut(&Arc<Code>) -> C,
 ) -> Result<Callee<C>, Fault> {
     let Value::Object(id) = *callee else {
         return Err(Fault::NotCallable(callee.type_name()));
     };
+    if let Some(callee) = direct_callee(heap, id, &mut code)? {
+        return Ok(callee);
+    }
     let id = super::proxy::unwrapped(heap, id)?;
+    direct_callee(heap, id, code)?.ok_or(Fault::Internal("unresolved Proxy callee"))
+}
+
+/// Classify once without forwarding a Proxy. Direct calls must preserve its
+/// apply trap, even when its target happens to be a builtin leaf.
+fn direct_callee<C>(
+    heap: &Heap,
+    id: ObjectId,
+    mut code: impl FnMut(&Arc<Code>) -> C,
+) -> Result<Option<Callee<C>>, Fault> {
     heap.read(id, |object| match object {
-        HeapObject::Function(f) => Ok(Callee::Code(id, code(&f.code))),
-        HeapObject::Builtin(f) => Ok(Callee::Builtin(f.which)),
-        HeapObject::BoundFunction(f) => Ok(Callee::Bound(builtin::Forward {
+        HeapObject::Function(f) => Ok(Some(Callee::Code(id, code(&f.code)))),
+        HeapObject::Builtin(f) => Ok(Some(Callee::Builtin(f.which))),
+        HeapObject::BoundFunction(f) => Ok(Some(Callee::Bound(builtin::Forward {
             callee: f.target.clone(),
             this: f.this.clone(),
             args: f.args.to_vec(),
-        })),
+        }))),
+        HeapObject::Proxy(_) => Ok(None),
         other => Err(Fault::NotCallable(object_name(other))),
     })
     // A frame keeps its operands alive; a stale id is reported, not trusted.
-    .unwrap_or(Err(Fault::Internal("callee was reclaimed")))
+    .unwrap_or_else(|| Err(Fault::Internal("callee was reclaimed")))
 }
 
 /// `Call argc` (`method`: false) or `CallMethod argc` (true): the receiver
@@ -653,17 +667,29 @@ fn call(state: &mut VmState, heap: &Heap, argc: u16, method: bool) -> Result<Flo
         Some((this, rest)) if method => (this.clone(), rest),
         _ => (Value::Undefined, operands),
     };
-    let [f, ..] = rest else {
+    let [f, args @ ..] = rest else {
         return Err(Fault::Internal("operand stack underflow"));
     };
-    if let Callee::Code(id, code) = cached_callee(heap, f, &state.code_cache)?
-        && !matches!(f, Value::Object(object) if super::proxy::inspect(heap, state.diag.task, *object)?.is_some())
-    {
-        if method {
-            state.remove_operand(argc + 1)?;
+    let Value::Object(id) = f else {
+        return Err(Fault::NotCallable(f.type_name()));
+    };
+    match direct_callee(heap, *id, |code| state.code_cache.get(code))? {
+        Some(Callee::Code(id, code)) => {
+            if method {
+                state.remove_operand(argc + 1)?;
+            }
+            state.enter(code, id, this, argc)?;
+            return Ok(Flow::FrameChanged);
         }
-        state.enter(code, id, this, argc)?;
-        return Ok(Flow::FrameChanged);
+        Some(Callee::Builtin(which)) => {
+            if let Some(result) =
+                native::try_builtin_leaf(heap, state.diag.task, which, &this, args)?
+            {
+                state.replace(argc + 1 + usize::from(method), result)?;
+                return Ok(Flow::Next);
+            }
+        }
+        _ => {}
     }
     call_slow(state, heap, argc, method)
 }
@@ -717,6 +743,12 @@ fn call_slow(state: &mut VmState, heap: &Heap, argc: usize, method: bool) -> Res
             Ok(Flow::FrameChanged)
         }
         Resolved::Direct(Callee::Builtin(which), forward) => {
+            if let Some(result) =
+                native::try_builtin_leaf(heap, task, which, &forward.this, &forward.args)?
+            {
+                state.replace(popped, result)?;
+                return Ok(Flow::Next);
+            }
             if super::native::start_builtin(
                 heap,
                 state,

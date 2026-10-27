@@ -493,9 +493,28 @@ pub(crate) struct IntrinsicView {
     pub(crate) builtin: bool,
     pub(crate) prototype: Option<ObjectId>,
     properties: Vec<(PropertyKey, Property)>,
+    shape: u32,
 }
 
 impl IntrinsicView {
+    /// Recheck the live key as ordinary stores do: executable caches can be
+    /// shared by runtimes whose key tables assigned different IDs.
+    pub(crate) fn get_own_cached(
+        &self,
+        key: PropertyKey,
+        cache: &crate::object::InlineCache,
+    ) -> Option<&Property> {
+        if let Some(slot) = cache.slot(self.shape)
+            && let Some((k, property)) = self.properties.get(slot)
+            && *k == key
+        {
+            return Some(property);
+        }
+        let slot = self.properties.iter().position(|(k, _)| *k == key)?;
+        cache.remember(self.shape, slot);
+        Some(&self.properties[slot].1)
+    }
+
     /// The own property `key`, if any.
     pub(crate) fn get_own(&self, key: PropertyKey) -> Option<&Property> {
         self.properties
@@ -1478,6 +1497,7 @@ fn build(heap: &Heap) -> Option<Box<Intrinsics>> {
                     function_prototype: id == function_prototype,
                     builtin,
                     prototype: store.prototype(),
+                    shape: store.shape_id(),
                     properties: store.properties().map(|(k, p)| (k, p.clone())).collect(),
                 })
             })

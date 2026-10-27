@@ -915,7 +915,10 @@ fn lookup_cursor(
                 interned = Some(key.lookup(heap));
                 continue;
             };
-            match k.and_then(|k| view.get_own(k)) {
+            match k.and_then(|k| match cache {
+                Some((_, cache)) => view.get_own_cached(k, cache),
+                None => view.get_own(k),
+            }) {
                 Some(property) => return Ok(Found(Some(Read::property(property, has)))),
                 None if realm.is_some_and(|r| id == r.date_prototype)
                     && matches!(key, Key::Name(name)

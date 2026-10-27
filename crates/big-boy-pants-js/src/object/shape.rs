@@ -128,12 +128,12 @@ impl Shape {
 pub(crate) struct InlineCache(AtomicU64);
 
 impl InlineCache {
-    pub(super) fn slot(&self, shape: u32) -> Option<usize> {
+    pub(crate) fn slot(&self, shape: u32) -> Option<usize> {
         let word = self.0.load(Ordering::Relaxed);
         (shape != 0 && word >> 32 == u64::from(shape)).then_some(word as u32 as usize)
     }
 
-    pub(super) fn remember(&self, shape: u32, slot: usize) {
+    pub(crate) fn remember(&self, shape: u32, slot: usize) {
         let word = (u64::from(shape) << 32) | slot as u64;
         if self.0.load(Ordering::Relaxed) != word {
             self.0.store(word, Ordering::Relaxed);

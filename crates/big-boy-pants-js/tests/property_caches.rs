@@ -31,6 +31,20 @@ fn named_cache_tracks_prototypes_and_method_replacement() {
 }
 
 #[test]
+fn builtin_methods_preserve_lookup_and_observable_slow_paths() {
+    check(include_str!("fixtures/js/builtin_cache.js"));
+}
+
+#[test]
+fn cached_intrinsic_methods_preserve_the_shared_realm_write_policy() {
+    // Realm intrinsics are intentionally immutable in this engine. Ordinary
+    // receiver/prototype overrides are covered by the Node-compatible fixture.
+    check(
+        "function call(a) { return a.push(1); } let a = []; call(a); let caught = 0; try { Array.prototype.push = function() {return 99;}; } catch(e) {caught += e instanceof TypeError;} try { Object.defineProperty(Array.prototype, 'push', {value: function() {return 99;}}); } catch(e) {caught += e instanceof TypeError;} caught === 2 && call(a) === 2 && a[1] === 1",
+    );
+}
+
+#[test]
 fn named_cache_reads_current_descriptors_and_setters() {
     check(
         "function read(o) { return o.x; } function write(o,v) { o.x=v; } let o={x:1}, n=0; let ok=read(o)===1; Object.defineProperty(o,'x',{get(){return this.y;},set(v){n++;this.y=v;},configurable:true}); write(o,7); ok=ok && read(o)===7 && n===1; Object.defineProperty(o,'x',{value:8,writable:true}); write(o,9); ok=ok && read(o)===9; Object.freeze(o); try {write(o,10);} catch(e) {ok=ok && e instanceof TypeError;} ok && read(o)===9",
@@ -102,6 +116,34 @@ struct NoEffects;
 impl Host for NoEffects {
     fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
         panic!("no effects")
+    }
+}
+
+#[test]
+fn builtin_caches_rebind_across_collection_and_runtimes() {
+    let code = compile_function("function run() { let a=[], m=new Map(); for(let i=0;i<8;i++) {a.push(i); m.set(i,a.pop());} let b=[1,,3].slice(); return m.get(7)===7 && b.length===3 && !(1 in b) && b.indexOf(3)===2 && b.at(-1)===3; }").unwrap();
+    for _ in 0..3 {
+        let runtime = Runtime::new();
+        for _ in 0..2 {
+            let task = runtime.spawn(&code, &[]).unwrap();
+            loop {
+                match task
+                    .run_with(Budget::instructions(7), &mut NoEffects)
+                    .unwrap()
+                {
+                    RunOutcome::Yielded => {
+                        runtime.collect().unwrap();
+                    }
+                    RunOutcome::Complete(value) => {
+                        assert_eq!(value.view(), ValueView::Bool(true));
+                        break;
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            drop(task);
+            runtime.collect().unwrap();
+        }
     }
 }
 

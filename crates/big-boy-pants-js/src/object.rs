@@ -1014,6 +1014,11 @@ impl OrdinaryObject {
         Some(slot)
     }
 
+    /// Immutable realm views retain the same layout hint as their store.
+    pub(crate) fn shape_id(&self) -> u32 {
+        self.shape.as_ref().map_or(0, |shape| shape.id)
+    }
+
     pub(crate) fn get_own_cached(
         &self,
         key: PropertyKey,

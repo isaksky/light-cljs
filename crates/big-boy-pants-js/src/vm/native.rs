@@ -227,6 +227,9 @@ mod array_from;
 mod array_mutate;
 mod array_search;
 mod array_sort;
+mod builtin_leaf;
+
+pub(crate) use builtin_leaf::try_builtin_leaf;
 mod collator;
 mod construct;
 mod date_time_format;
