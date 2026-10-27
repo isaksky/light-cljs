@@ -4927,6 +4927,98 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
             "[3 3 6 [1 2 3]]",
         ),
         (
+            "direct-sequence-precedence",
+            r#"(defrecord R [n])
+               (deftype T [] ISeqable (-seq [_] (seq [7 8])))
+               (deftype Direct [] ISeqable (-seq [this] this)
+                 ISeq (-first [_] 9) (-rest [_] (list 10)) INext (-next [_] (list 11)))
+               (extend-type default ISeq (-first [_] :wrong) (-rest [_] nil) INext (-next [_] nil))"#,
+            r#"(let [r (R. 7) t (T.) d (Direct.) f first rs rest n next]
+              [(first r) (f r) (apply first [r]) (vec (rest r)) (vec (rs r)) (vec (apply rest [r]))
+               (vec (next r)) (vec (n r)) (vec (apply next [r]))
+               (first t) (f t) (apply first [t]) (vec (rest t)) (vec (rs t)) (vec (apply rest [t]))
+               (vec (next t)) (vec (n t)) (vec (apply next [t]))
+               (first d) (f d) (apply first [d]) (vec (rest d)) (vec (rs d)) (vec (apply rest [d]))
+               (vec (next d)) (vec (n d)) (vec (apply next [d]))])"#,
+            "[[:n 7] [:n 7] [:n 7] [] [] [] [] [] [] 7 7 7 [8] [8] [8] [8] [8] [8] 9 9 9 [10] [10] [10] [11] [11] [11]]",
+        ),
+        (
+            "missing-protocol-arities",
+            r#"(deftype Lookup [] ILookup (-lookup [_ k] 7))
+               (deftype Indexed [] IIndexed (-nth [_ i] 8) ISeqable (-seq [_] (seq [1 2])) ISequential)
+               (deftype Counted [] ICounted ISeqable (-seq [_] (seq [1 2])))
+               (defrecord R [n]) (extend-type R ILookup (-lookup [_ k] 9))"#,
+            r#"(let [l (Lookup.) i (Indexed.) c (Counted.) r (R. 3) g get n nth ct count
+                    run (fn [f] (try (f) (catch :default e (.-message e))))]
+              [(get l :x) (run #(get l :x :nf)) (run #(g l :x :nf)) (run #(apply get [l :x :nf]))
+               (run #(:x l :nf)) (nth i 0) (run #(nth i 0 :nf)) (run #(n i 0 :nf))
+               (run #(apply nth [i 0 :nf])) (run #(count c)) (run #(ct c)) (run #(apply count [c]))
+               (get r :n) (get r :n :nf)])"#,
+            r#"[7 "No protocol method ILookup/-lookup defined for this value" "No protocol method ILookup/-lookup defined for this value" "No protocol method ILookup/-lookup defined for this value" "No protocol method ILookup/-lookup defined for this value" 8 "No protocol method IIndexed/-nth defined for this value" "No protocol method IIndexed/-nth defined for this value" "No protocol method IIndexed/-nth defined for this value" "No protocol method ICounted/-count defined for this value" "No protocol method ICounted/-count defined for this value" "No protocol method ICounted/-count defined for this value" 9 3]"#,
+        ),
+        (
+            "undefined-sequence-termination",
+            r#"(deftype Empty [] ISeqable (-seq [_] js/undefined))
+               (deftype One [] ISeqable (-seq [this] this) ISeq (-first [_] 7) (-rest [_] nil)
+                 INext (-next [_] js/undefined))"#,
+            r#"(let [e (Empty.) o (One.) c count v vec r reduce]
+              [(count e) (c e) (apply count [e]) (vec e) (v e) (apply vec [e])
+               (reduce + 0 e) (r + 0 e) (apply reduce [+ 0 e])
+               (count o) (c o) (apply count [o]) (vec o) (v o) (apply vec [o])
+               (reduce + 0 o) (r + 0 o) (apply reduce [+ 0 o])])"#,
+            "[0 0 0 [] [] [] 0 0 0 1 1 1 [7] [7] [7] 7 7 7]",
+        ),
+        (
+            "indexed-sequence-tail",
+            r#"(deftype Tail [] ISeqable (-seq [this] this) ISeq (-first [_] 8) (-rest [_] nil)
+                 IIndexed (-nth [_ i] (+ 40 i)) (-nth [_ i d] [i d]))
+               (deftype T [] ISeqable (-seq [this] this) ISeq (-first [_] 7) (-rest [_] (Tail.)))"#,
+            r#"(let [x (T.) n nth]
+              [(nth x 0) (nth x 1) (nth x 2) (n x 3) (apply nth [x 4])
+               (nth x 1 :nf) (nth x 2 :nf) (n x 3 :nf) (apply nth [x 4 :nf])])"#,
+            "[7 8 41 42 43 8 [1 :nf] [2 :nf] [3 :nf]]",
+        ),
+        (
+            "lazy-user-sequence",
+            r#"(defn demanded [x] (inc x))
+               (deftype T [seen] ISeqable (-seq [_] (.push seen "seq") (seq [(demanded 6) 8])))"#,
+            r#"(let [seen (js/Array.) make (fn [] (lazy-seq (T. seen))) f first s seq c count v vec r reduce n next rs rest]
+              [(first (make)) (f (make)) (apply first [(make)])
+               (vec (seq (make))) (vec (s (make))) (vec (apply seq [(make)]))
+               (count (make)) (c (make)) (apply count [(make)])
+               (vec (make)) (v (make)) (apply vec [(make)])
+               (reduce + (make)) (r + 10 (make)) (apply reduce [+ 0 (make)])
+               (vec (next (make))) (vec (n (make))) (vec (apply next [(make)]))
+               (vec (rest (make))) (vec (rs (make))) (vec (apply rest [(make)]))])"#,
+            "[7 7 7 [7 8] [7 8] [7 8] 2 2 2 [7 8] [7 8] [7 8] 15 25 15 [8] [8] [8] [8] [8] [8]]",
+        ),
+        (
+            "lazy-user-iseq",
+            r#"(defn demanded [x] (inc x))
+               (deftype T [n] ISeqable (-seq [this] (when (< n 3) this))
+                 ISeq (-first [_] (demanded n)) (-rest [_] (T. (inc n))))"#,
+            r#"(let [make (fn [] (lazy-seq (T. 0))) f first s seq c count n nth]
+              [(first (make)) (f (make)) (apply first [(make)])
+               (vec (seq (make))) (vec (s (make))) (vec (apply seq [(make)]))
+               (count (make)) (c (make)) (apply count [(make)]) (vec (make))
+               (reduce + (make)) (reduce + 10 (make))
+               (nth (make) 1) (n (make) 2) (apply nth [(make) 3 :nf])
+               (first (next (make))) (first (rest (make)))])"#,
+            "[1 1 1 [1 2 3] [1 2 3] [1 2 3] 3 3 3 [1 2 3] 6 16 2 3 :nf 2 2]",
+        ),
+        (
+            "lazy-user-sequence-order-and-throws",
+            r#"(defn demanded [x] (inc x))
+               (deftype T [seen] ISeqable (-seq [this] (.push seen "seq") this)
+                 ISeq (-first [_] (.push seen "first") (demanded 6)) (-rest [_] nil))
+               (deftype Broken [] ISeqable (-seq [_] (throw (js/Error. "lazy seq"))))"#,
+            r#"(let [seen (js/Array.) x (lazy-seq (T. seen)) b (lazy-seq (Broken.))
+                    run (fn [f] (try (f) (catch :default e (.-message e))))]
+              [(first x) (vec seen) (run #(first b)) (run #(seq b))
+               (run #(count b)) (run #(vec b)) (run #(reduce + b))])"#,
+            r#"[7 ["seq" "first"] "lazy seq" "lazy seq" "lazy seq" "lazy seq" "lazy seq"]"#,
+        ),
+        (
             "custom-seq",
             r#"(deftype T [n] ISeqable (-seq [this] (when (< n 3) this))
                   ISeq (-first [_] n) (-rest [_] (T. (inc n))))"#,
@@ -5053,7 +5145,7 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
             } else {
                 reference = Some(native.clone());
             }
-            if label == "resumption" {
+            if label == "resumption" || label.starts_with("lazy-user-") {
                 assert!(stats.native_helpers.waits > 0, "{stats:?}");
             }
             #[cfg(feature = "quickjs")]

@@ -1250,6 +1250,12 @@ and resume after GC or migration without replaying effects. Equality keeps its
 identity shortcut and returns a boolean; user hashes are coerced to signed
 32-bit integers, as in the legacy compiler.
 
+`first`, `rest` and `next` select direct protocol implementations before their
+sequence fallbacks; default extensions do not intercept that traversal. A
+declared protocol missing the requested method arity throws a missing-method
+error. Traversal accepts both nil and JavaScript undefined as exhaustion, honors
+indexed user sequence tails, and resolves user methods exposed by lazy wrappers.
+
 Persistent native collections keep structural equality and hashing recursively,
 including their keys, members and stored values. They never invoke user
 `IEquiv`/`IHash`: two separate deftype instances remain distinct keys or set

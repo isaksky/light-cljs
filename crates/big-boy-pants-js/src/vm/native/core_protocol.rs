@@ -15,6 +15,8 @@ pub(super) struct State {
     op: FormOp,
     operands: Vec<Value>,
     resolver: Value,
+    receiver: Value,
+    through_lazy: bool,
     called: bool,
 }
 
@@ -54,7 +56,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
         .checked_sub(n)
         .ok_or(Fault::Internal("core protocol operand underflow"))?;
     let args = &state.operands()[start..];
-    let mut receiver = &args[0];
+    let mut receiver = args[0].clone();
     if op == FormOp::CljInvoke {
         if !matches!(
             form::kind(heap, &form::unwrap(heap, args[0].clone())),
@@ -63,7 +65,33 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
         {
             return Ok(false);
         }
-        receiver = &args[1];
+        receiver = args[1].clone();
+    }
+    // A realized lazy wrapper can expose a user sequence. Keep the original
+    // operands and let its task-local adapter perform the sequence operation;
+    // unresolved cells still enter the ordinary realization frame first.
+    let through_lazy = matches!(
+        op,
+        FormOp::CljSeq
+            | FormOp::CljFirst
+            | FormOp::CljRest
+            | FormOp::CljNext
+            | FormOp::CljCount
+            | FormOp::CljList
+            | FormOp::CljNth
+            | FormOp::CljNthOr
+    ) && form::kind(heap, &form::unwrap(heap, receiver.clone()))
+        == Some(FormKind::Lazy);
+    if through_lazy {
+        receiver = match form::realized_head(
+            heap,
+            receiver,
+            &mut crate::collections::lazy::Visited::default(),
+        ) {
+            Ok(head) => head,
+            // The leaf preserves pending-cell and cycle diagnostics.
+            Err(_) => return Ok(false),
+        };
     }
     if form::kind(heap, &form::unwrap(heap, receiver.clone())) != Some(FormKind::Struct) {
         return Ok(false);
@@ -94,6 +122,8 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
             op,
             operands,
             resolver,
+            receiver,
+            through_lazy,
             called: false,
         }),
     )?;
@@ -103,6 +133,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
 impl State {
     pub(super) fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
         self.resolver.trace(visit);
+        self.receiver.trace(visit);
         self.operands.iter().for_each(|value| value.trace(visit));
     }
 
@@ -113,11 +144,11 @@ impl State {
                 this: Value::Undefined,
                 args: [
                     Value::String(self.op.intrinsic().into()),
-                    self.operands[0].clone(),
-                    Value::Undefined,
+                    self.receiver.clone(),
+                    Value::Bool(self.through_lazy),
                     Value::Undefined,
                 ],
-                argc: 2,
+                argc: 3,
             }),
             Input::CallResult(value) if self.called => Ok(Action::Return(value)),
             Input::CallResult(Value::Null | Value::Undefined) => Ok(Action::FormFallback {

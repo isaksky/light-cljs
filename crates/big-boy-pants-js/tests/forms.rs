@@ -2027,6 +2027,55 @@ fn core_protocol_callbacks_resume_across_collection_without_entering_key_compari
 }
 
 #[test]
+fn lazy_struct_sequence_callbacks_survive_collection_and_small_stack_resumption() {
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function f() {
+      const T=__rt.structType('T',__rt.formVector(),false);
+      let calls=0;
+      __rt.cljCoreResolver((op,x,lazy)=>{
+        __rt.need(90,1);
+        if(op==='cljSeq')return lazy?()=>__rt.cljSeq(x):()=>{
+          calls++; __rt.need(92,1); return __rt.formList(7,8);
+        };
+        if(op==='cljFirst')return ()=>__rt.cljFirst(__rt.cljSeq(x));
+        return null;
+      });
+      const s=__rt.lazySeq(()=>{__rt.need(91,1);return __rt.structNew(T);});
+      if(__rt.cljFirst(s)!==7)throw new Error('lazy first');
+      if(__rt.cljCount(__rt.cljSeq(s))!==2)throw new Error('lazy seq');
+      return calls;
+    }"#,
+    )
+    .unwrap();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    let mut outcome = task.run().unwrap();
+    for dependency in [91, 90, 92] {
+        assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
+        rt.collect().unwrap();
+        let request = task.take_producer_requests().pop().unwrap();
+        assert_eq!(request.key().dependency(), DependencyId::new(dependency));
+        let ready = rt.root(Primitive::Null);
+        let resumed = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+            .unwrap()
+            .into_runnable()
+            .pop()
+            .unwrap();
+        (task, outcome) = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let outcome = resumed.run().unwrap();
+                (resumed, outcome)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+    assert_eq!(complete(outcome).view(), ValueView::Number(2.0));
+}
+
+#[test]
 fn missing_core_protocol_resolves_once_when_record_comparison_realizes_fields() {
     let rt = Runtime::new();
     let code = compile_function(

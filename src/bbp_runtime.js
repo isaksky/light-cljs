@@ -180,13 +180,21 @@ const decl = (() => {
   };
   // Owned core implementations precede object/default extensions. Explicit
   // extensions of the receiver's native type still replace that implementation.
-  const resolveCore = (name, arity, x, builtin) => {
+  const resolveCore = (name, arity, x, builtin, directOnly = false) => {
     const t = methodTable(name, arity);
-    if (!builtin) return resolve(t, x);
-    declare(x);
-    if (t.version !== version || t.frontier !== frontier) build(t);
-    const key = directKey(x);
-    return key === null ? null : __rt.getOr(t.map, key, null);
+    if (directOnly && !builtin && !implementsDirectly(t.protocol, x)) return null;
+    let m;
+    if (builtin) {
+      declare(x);
+      if (t.version !== version || t.frontier !== frontier) build(t);
+      const key = directKey(x);
+      m = key === null ? null : __rt.getOr(t.map, key, null);
+    } else m = resolve(t, x);
+    // Membership without this arity is an error, unless the engine owns
+    // the implementation (notably the built-in methods of records).
+    if (m === null && !builtin && satisfies(t.protocol, x))
+      throw new Error('No protocol method ' + name + ' defined for this value');
+    return m;
   };
   // The implementation for the type `ty` (a struct type, or a mutable
   // type's key) in the table of method `name` and arity `n`, at the current
@@ -348,9 +356,9 @@ const decl = (() => {
     entryKey:(x,builtin)=>resolveCore('IMapEntry/-key',1,x,builtin),
     entryVal:(x,builtin)=>resolveCore('IMapEntry/-val',1,x,builtin),
     seq:(x,builtin)=>resolveCore('ISeqable/-seq',1,x,builtin),
-    first:(x,builtin)=>resolveCore('ISeq/-first',1,x,builtin),
-    rest:(x,builtin)=>resolveCore('ISeq/-rest',1,x,builtin),
-    next:x=>resolveCore('INext/-next',1,x,true)};
+    first:(x,builtin)=>resolveCore('ISeq/-first',1,x,builtin,true),
+    rest:(x,builtin)=>resolveCore('ISeq/-rest',1,x,builtin,true),
+    next:x=>resolveCore('INext/-next',1,x,false,true)};
 })();
 const native = (() => {
   let gensymScope = 0, gensymPrefix = '';
@@ -413,9 +421,9 @@ const native = (() => {
   // The engine calls this task-local resolver only for native structs. The
   // selected entry runs through a rooted native callback frame, so declaration
   // demand and user methods can yield/park without replaying effects.
-  __rt.cljCoreResolver((op, x) => {
+  __rt.cljCoreResolver((op, x, throughLazy) => {
     const record = __rt.formKind(x) === 'record';
-    const method = (name, n, builtin = record) => decl.coreMethod(name, n, x, builtin);
+    const method = (name, n, builtin = record, directOnly = false) => decl.coreMethod(name, n, x, builtin, directOnly);
     switch (op) {
       case 'formEquals': {
         const equiv = method('IEquiv/-equiv', 2);
@@ -439,19 +447,21 @@ const native = (() => {
       case 'cljDisj': return method('ISet/-disjoin', 2);
       case 'cljMeta': return method('IMeta/-meta', 1);
       case 'cljWithMeta': return method('IWithMeta/-with-meta', 2);
-      case 'cljSeq': return method('ISeqable/-seq', 1);
+      case 'cljSeq': return throughLazy ? () => __rt.cljSeq(x) : method('ISeqable/-seq', 1);
       case 'cljList': return x => {
         const out = [];
-        for (let s = reduceSeqOf(x); s !== null; s = nextOf(s)) out.push(firstOf(s));
+        for (let s = reduceSeqOf(x); s != null; s = nextOf(s)) out.push(firstOf(s));
         return list(out);
       };
       case 'cljCount': {
-        const count = method('ICounted/-count', 1);
-        if (count !== null || record) return count;
-        const seq = method('ISeqable/-seq', 1);
-        return seq === null ? null : x => {
+        if (!throughLazy) {
+          const count = method('ICounted/-count', 1);
+          if (count !== null || record) return count;
+          if (method('ISeqable/-seq', 1) === null) return null;
+        }
+        return x => {
           let n = 0;
-          for (let s = reduceSeqOf(x); s !== null; s = nextOf(s)) {
+          for (let s = reduceSeqOf(x); s != null; s = nextOf(s)) {
             const kind = __rt.formKind(val(s));
             const builtin = nativeSeq(s) && kind !== 'lazy-seq' && kind !== 'cons'
               || kind === 'vector' || kind === 'map' || kind === 'record' || kind === 'set'
@@ -464,11 +474,16 @@ const native = (() => {
           return n;
         };
       }
-      case 'cljFirst': return method('ISeq/-first', 1, false) ?? (x => __rt.cljFirst(__rt.cljSeq(x)));
-      case 'cljRest': return method('ISeq/-rest', 1, false) ?? (x => __rt.cljRest(__rt.cljSeq(x)));
-      case 'cljNext': return method('INext/-next', 1, false) ?? (x => __rt.cljSeq(__rt.cljRest(x)));
-      case 'cljNth': return (x,i) => nthOf(x,i,null,false);
-      case 'cljNthOr': return (x,i,d) => nthOf(x,i,d,true);
+      // LazySeq first/rest/next first take the seq of the realized value,
+      // then perform the operation on that value, matching the legacy order.
+      case 'cljFirst': return throughLazy ? () => { __rt.cljSeq(x); return __rt.cljFirst(x); }
+        : method('ISeq/-first', 1, false, true) ?? (x => __rt.cljFirst(__rt.cljSeq(x)));
+      case 'cljRest': return throughLazy ? () => { __rt.cljSeq(x); return __rt.cljRest(x); }
+        : method('ISeq/-rest', 1, false, true) ?? (x => __rt.cljRest(__rt.cljSeq(x)));
+      case 'cljNext': return throughLazy ? () => { __rt.cljSeq(x); return __rt.cljNext(x); }
+        : method('INext/-next', 1, false, true) ?? (x => __rt.cljSeq(__rt.cljRest(x)));
+      case 'cljNth': return (x,i) => nthOf(x,i,null,false,throughLazy);
+      case 'cljNthOr': return (x,i,d) => nthOf(x,i,d,true,throughLazy);
     }
     return null;
   });
@@ -964,19 +979,23 @@ const native = (() => {
     if (method !== null) return method.call(x,x);
     return builtin ? __rt.cljNext(x) : reduceSeqOf(restOf(x));
   };
-  const nthOf = (x, i, fallback, supplied) => {
+  const nthOf = (x, i, fallback, supplied, throughLazy = false) => {
     if (typeof val(i) !== 'number') throw new Error('Index argument to nth must be a number');
     const indexed = decl.coreMethod('IIndexed/-nth', supplied ? 3 : 2, x, false);
     if (indexed !== null) return supplied ? indexed(x,i,fallback) : indexed(x,i);
-    if (!decl.implementsDirectly('ISeq', x) && !decl.implementsDirectly('ISequential', x))
+    if (!throughLazy && !decl.implementsDirectly('ISeq', x) && !decl.implementsDirectly('ISequential', x))
       throw new Error('nth not supported on this type');
     let remaining = val(i);
-    for (let s = x; s !== null && remaining >= 0; s = nextOf(s), remaining--) {
+    for (let s = x; s != null && remaining >= 0; s = nextOf(s), remaining--) {
       if (remaining === 0) {
-        if (reduceSeqOf(s) !== null) return firstOf(s);
+        if (reduceSeqOf(s) != null) return firstOf(s);
         break;
       }
-      if (reduceSeqOf(s) === null) break;
+      // A heterogeneous sequence can end in an indexed collection. Keep
+      // nth's original arity and pass the remaining index to that tail.
+      const indexed = decl.coreMethod('IIndexed/-nth', supplied ? 3 : 2, s, false);
+      if (indexed !== null) return supplied ? indexed(s,remaining,fallback) : indexed(s,remaining);
+      if (reduceSeqOf(s) == null) break;
     }
     if (supplied) return fallback;
     throw new Error('Index out of bounds');
