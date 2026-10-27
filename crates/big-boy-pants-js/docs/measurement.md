@@ -30,6 +30,162 @@ The full invocation runs every row group; quick uses smaller sizes. The
 uses four executor workers and nine measured rounds; tests still use three
 test threads. The benchmark owns its default target output only.
 
+## Builtin lookup and call path (2026-10-26)
+
+Compared `b3b655cc` with engine change `3b8685b0`, on macOS 15.7.3 ARM64,
+VirtualMac2,1 / Apple M3 Ultra, 24 CPUs, Homebrew Rust/Cargo 1.99.1,
+Babashka 1.12.218 and Node 26.12.1. Both engine CLIs use the workspace release
+profile (thin LTO, one codegen unit):
+
+```sh
+CARGO_BUILD_JOBS=3 cargo build --release -p big-boy-pants-js --bin big-boy-pants-js
+```
+
+Preserved each binary under the worktree's ignored `target/jsbench/`. SHA-256
+prefixes: engine before `432ff3b8`, after `76b4ee5c`; native compiler before
+`efa88cb4`, after `0edaa58c`; V8 compiler `6b7df12b`. The native compilers use
+`cargo build --locked --release --no-default-features --features bbp-macros
+--bin light-cljs`; the V8 reference uses the default-feature release build with
+`LIGHT_CLJS_V8_CACHE=require`. Compiler source is identical in all three.
+
+Early measurements reproduced the reported roughly 500 ns extra per push,
+but peer feature-matrix builds/tests were active. The tables below use the
+later quiet rerun, with no peer builds or test runners in the process snapshots.
+Microbenchmark load averages before/after were **3.78/6.95/7.73** and
+**3.15/6.50/7.54**, with **95.51%/95.67% CPU idle**. Protocol measurement
+load was **2.70/6.12/7.37** to **2.64/6.05/7.34**, over 95% idle at both ends.
+
+### One million operations inside a function
+
+Copied the supplied `jsbench/{p_push,p_index,p_calls,p_reduce}.js`, `empty.js`
+and `run.bb` into `target/jsbench/`; changed only the runner's engine path
+and sample count from three to seven. Each sample is a fresh process. Values
+are median wall time minus the corresponding empty-process median; no warmup
+sample is discarded. Engine startup medians were 2–3 ms. Run each saved engine
+with `bb run.bb p_push p_index p_calls p_reduce` from that directory. All
+results matched both Node and `node --jitless`.
+
+Each source is an immediately invoked function. Push/index start with `a=[]`,
+loop `i=0` through `999999`, and return `a.length`. Calls define
+`f=(x,y)=>x+y`, start `s=0`, loop `s=f(s,i)`, and return `s`. Reduce first
+index-fills the array, then returns `a.reduce((x,y)=>x+y,0)`.
+
+| Workload | Before ms | After ms | Node jitless after ms | Result |
+| --- | ---: | ---: | ---: | --- |
+| `a.push(i)` | 724 | 143 | 18 | 1000000 |
+| `a[i] = i` | 236 | 226 | 16 | 1000000 |
+| plain JS calls | 147 | 132 | 20 | 499999500000 |
+| index fill + JS `reduce` | 585 | 583 | 28 | 499999500000 |
+
+Push is **5.06× faster**, an 80% reduction, and takes **0.63×** the index-store
+loop time, meeting the within-2× target. The whole-loop push-minus-index
+difference changes from **+488 ns/operation** to **−83 ns/operation**; the
+loops execute different bytecode/property checks. Callback re-entry is
+unchanged, and the reduce difference is within measurement noise. These
+process-based measurements do not establish an overall compiler speedup.
+
+### Fresh push profiles and allocation audit
+
+For each saved engine, ran the push source with 12 million iterations and
+sampled its live process using `/usr/bin/sample PID 2 1 -file FILE`, then waited
+for the benchmark to finish. Both returned 12000000. Load averages during the
+quiet profiles fell from **2.59/5.98/7.31** to **2.42/5.83/7.24**; the ending
+CPU snapshot was 95.57% idle. There were 1,522 before and 1,277 after main-thread
+samples. Selected self samples from the tool's collapsed top-of-stack table:
+
+| Frame/category | Before samples | After samples |
+| --- | ---: | ---: |
+| `dispatch::execute_budgeted` | 244 | 619 |
+| allocator frames combined | 367 | 0 |
+| `Fault` drop glue | 77 | 68 |
+| SipHash `Hasher::write` | 51 | below 5 |
+| UTF-16 comparison iterator | 49 | below 5 |
+| UTF-16 vector extension | 37 | below 5 |
+| `PropertyKeys::lookup` | 30 | below 5 |
+| `property::lookup_cursor` | 27 | 76 |
+| `builtin_leaf::try_builtin_leaf` | absent | 74 |
+| `dispatch::call` | below 5 | 67 |
+| object-table `Directory::slot` | 32 | 65 |
+
+The collapsed table includes only frames with at least five self samples;
+zero in the allocator row means none met that threshold. Allocator frames
+accounted for at least **24%** of before samples. The remaining allocation
+work on plain push is geometric array-buffer growth, with normal byte-budget
+admission. Slice and iterator leaves allocate their result storage. No
+alternative global allocator was warranted by the after profile.
+
+The fresh before call graph attributes repeated string creation/hashing to
+generic push element/length operations: in particular an integer index was
+converted to a named key while checking the prototype chain. Source-named
+method keys were already bound/interned. Intrinsic property views did still
+scan their property lists instead of using the ordinary slot cache. The new
+path reuses those interned keys, caches intrinsic slots, borrows the caller's
+rooted argument slice and appends directly after checking receiver ownership,
+prototype, extensibility and length. It creates no argument/forwarding/native
+buffer for a successful plain push/pop. `Fault` is an unboxed error enum;
+remaining drop-glue samples include stack-only fallback values and do not
+demonstrate a heap-allocated error on each call.
+
+Push arguments and search/copy work are limited to 64 items per leaf. Longer
+operations, coercing indices, accessors, proxies, custom prototypes and species
+overrides retain the existing budgeted native path. Array length reads retain
+their existing direct property path. Each lookup still visits the current
+receiver/prototype stores and validates the cached slot's live key, rather
+than caching a method value across mutations or runtimes.
+
+### Protocol workload against V8
+
+Ran the existing harness with all three saved compiler binaries in one run:
+
+```sh
+bb benchmarks/native-macros-k.bb target/jsbench/k-quiet --workload protocol \
+  --runs 5 v8=target/jsbench/light-cljs-v8 \
+  before=target/jsbench/light-cljs-before after=target/jsbench/light-cljs-after
+```
+
+One discarded warmup per backend/size, five measured rounds with alternating
+backend order, `--jobs 1 --no-cache`; all emitted programs agreed in Node.
+Analysis milliseconds are medians [min–max]. The harness subtracts each
+backend's `n=0` time before dividing by V8's corresponding difference.
+
+| Backend | n=0 ms | n=100 ms | n=400 ms | k at 100 | k at 400 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| V8 | 24.4 [23.9–24.8] | 28.8 [28.2–31.0] | 31.9 [31.6–32.9] | 1.0 | 1.0 |
+| Before | 40.3 [39.0–41.2] | 81.0 [80.1–82.9] | 158.3 [157.1–163.9] | 9.2 | 15.7 |
+| After | 40.7 [39.1–41.7] | 80.5 [79.8–82.8] | 161.8 [154.7–166.4] | 9.0 | 16.1 |
+
+There is no demonstrated protocol-workload improvement: the before/after
+ranges overlap, and `n=400` adjusted analysis is 118.0 versus 121.1 ms. Faster
+plain builtin calls alone do not meet the compiler's k target.
+
+### Semantic and command verification
+
+At `3b8685b0`, `CARGO_BUILD_JOBS=3` throughout:
+
+- `cargo check --locked -p big-boy-pants-js --all-targets`: passed.
+- `cargo test --locked -p big-boy-pants-js --all-targets -- --test-threads=3`:
+  **2,132 passed, zero failed/ignored**, including the existing 64 KiB stack,
+  automatic-GC, cancellation and native-wait coverage.
+- `cargo test --locked -p big-boy-pants-js --doc -- --test-threads=3`:
+  **seven passed**.
+- `cargo fmt -p big-boy-pants-js -- --check` and `git diff --check`: passed.
+- Strict engine Clippy retained the nine documented Rust 1.99.1 baseline
+  diagnostics. `cargo clippy --locked -p big-boy-pants-js --all-targets --
+  -D warnings -A deprecated -A clippy::chunks_exact_to_as_chunks
+  -A clippy::byte_char_slices` passed; no source lint suppression was added.
+- `tests/fixtures/js/builtin_cache.js` returned true unchanged in Node and
+  both saved engine CLIs. It covers warmed method replacement/deletion,
+  getters, callable/receiver proxies, prototype mutation, descriptor failures,
+  overflow, sparse arrays, numeric-index edge cases and species constructors.
+  Property-cache tests also collect/yield and reuse code across runtimes.
+
+The existing shared-realm policy rejects intrinsic mutations, including writes
+or definitions of `Array.prototype.push`, with TypeError; this optimization
+preserves that policy and tests it separately. Mutable receiver/prototype
+overrides are Node-checked. Enabling mutable shared intrinsics would change
+the engine contract and is outside this change. The final measurement record
+is documentation-only; it reuses the verified engine tree above.
+
 ## Automatic collection pauses (2026-10-25)
 
 Measured engine commit `84ac7c0e`, macOS aarch64, virtual Apple M3 Ultra
