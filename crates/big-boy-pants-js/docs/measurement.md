@@ -30,6 +30,124 @@ The full invocation runs every row group; quick uses smaller sizes. The
 uses four executor workers and nine measured rounds; tests still use three
 test threads. The benchmark owns its default target output only.
 
+## Native array callback entry (2026-10-26)
+
+Compared baseline `52a1aa9f` (including intrinsic lookup caching and direct
+builtin leaves) with callback change `2fe9ca90`. Both CLIs use macOS 15.7.3
+ARM64, virtual Apple M3 Ultra / 24 CPUs, Homebrew Rust/Cargo 1.99.1, Babashka
+1.12.218 and the workspace release profile (thin LTO, one codegen unit):
+
+```sh
+CARGO_BUILD_JOBS=3 cargo build --locked --release -p big-boy-pants-js --bin big-boy-pants-js
+```
+
+Saved binaries in ignored `target/jsbench/` have SHA-256 prefixes `f30eef5b`
+(before) and `926bc526` (after). The supplied microbenchmarks were copied there;
+the callback measurements extend their index-fill/reduce/call setup to reuse
+one array for five passes. Every source is an immediately invoked function
+starting with `const a=[]; for(let i=0;i<1000000;i++) a[i]=i;`. The measured
+bodies, repeated five times, are:
+
+| Workload | Body |
+| --- | --- |
+| reduce | `s=a.reduce((x,y)=>x+y,0)` |
+| map | `s=a.map(x=>x+1)` |
+| filter | `s=a.filter(x=>false)` |
+| forEach | `a.forEach(x=>{s=x;})` |
+| JS calls | `for(let i=0;i<a.length;i++) s=f(s,i)`, with `f=(x,y)=>x+y` |
+| inline loop | `for(let i=0;i<a.length;i++) s=s+i` |
+
+The build-only source returns `a.length`; other sources return the last result
+(map/filter return its length). Calls/inline loop start with `s=0` and retain
+the running sum across passes. Five fresh-process samples per workload and
+binary alternate before/after order on successive rounds. Inclusive native
+nanoseconds per visit are `(median workload ns - median build-only ns) / 5000000`;
+the JS call increment subtracts the matched inline loop instead. These are
+wall times, including callback instructions and, for map, result creation;
+forEach includes its captured-cell assignment. Filter deliberately rejects
+every item to isolate callback iteration from output writes.
+
+Each recorded process starts after peer builds/tests and saved compiler CLIs
+exit. A process monitor polls every 250 ms; seven attempts that overlapped
+new peer activity were discarded and repeated. Batch-boundary load averages,
+including waits between quiet samples, were **3.44/3.70/4.48** and
+**2.96/3.28/4.11**; CPU idle was **90.99%/92.89%**. Build-only medians were
+245.7 ms before and 240.2 ms after.
+
+| Workload | Before total ms | After total ms | Before ns/visit | After ns/visit | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| reduce | 2099.2 | 822.3 | 370.7 | 116.4 | 3.18× |
+| map | 2505.3 | 1367.5 | 451.9 | 225.5 | 2.00× |
+| filter | 1950.5 | 826.1 | 341.0 | 117.2 | 2.91× |
+| forEach | 2338.1 | 1247.6 | 418.5 | 201.5 | 2.08× |
+
+The JS call/inline-loop medians were 1226.7/691.8 ms before and
+1210.9/678.9 ms after, giving call increments of **107.0/106.4 ns**.
+Reduce changes from **3.47×** to **1.09×** that increment, meeting the
+within-1.5× target. Map retains its result-property creation cost; the captured
+assignment remains part of forEach's callback body. These measurements
+describe the array kernels above.
+
+For profiles, increased five passes to 50, ran each saved CLI directly and
+used `/usr/bin/sample PID 5 1 -file FILE`, waiting for each process to finish.
+Each native step reads at most one next element. Present own array data
+answers HasProperty/Get together; holes, accessors and Proxy traps retain
+resumable property access. Fixed callback arguments enter ordinary functions
+through the existing VM frame checks, while bound, builtin and Proxy callees
+use the forwarding path. Callback completion advances to the next element
+in the same bounded step. Polls and budgets still separate callbacks; actual
+arguments, call limits and output byte admission use their existing paths.
+
+The same monitor rejects overlapping profile attempts. The accepted profiles
+ran from load **3.61/3.43/4.06** to **2.73/3.11/3.80**, with every sample
+command and benchmark process completing successfully. Selected leading
+self frames from the collapsed top-of-stack table (counts, not inclusive
+call-graph totals):
+
+| Workload | Before main-thread samples | Leading self frames before | After main-thread samples | Leading self frames after |
+| --- | ---: | --- | ---: | --- |
+| reduce | 4065 | `execute_budgeted` 758; `Fault` drop 343; `apply_action` 197; `_nanov2_free` 175; argument-vector copy 169 | 4107 | `execute_budgeted` 998; `enter_constructor` 526; `call_array` 354 |
+| map | 4078 | `execute_budgeted` 746; `Fault` drop 395; `apply_action` 212; `iterate` 160; `Directory::slot` 155 | 4112 | `execute_budgeted` 791; `Fault` drop 366; `Directory::slot` 260; `enter_constructor` 253 |
+| filter | 4086 | `execute_budgeted` 794; `Fault` drop 380; `apply_action` 217; argument-vector copy 206 | 4114 | `execute_budgeted` 966; `enter_constructor` 448; `call_array` 336 |
+| forEach | 4108 | `execute_budgeted` 1025; `Fault` drop 354; `apply_action` 203; `step_instruction` 173; argument-vector copy 150 | 4086 | `execute_budgeted` 1399; `Fault` drop 304; `enter_constructor` 300; `call_array` 179 |
+
+Argument-vector copy names the `Vec::IntoIter::for_each` closure in
+`native::apply_action`. `enter_constructor` is the VM's shared frame-entry
+implementation for ordinary calls and construction. `Fault` drop glue also
+covers stack-only fallback values. For ordinary-function callbacks over own
+array data, the new path removes the callback argument vector, reduce's
+prepend/reallocation, forwarding resolution and repeated native
+HasProperty/Get dispatch. The remaining
+reduce/filter profile emphasizes frame setup and bytecode; map still writes
+result properties, and forEach accesses its captured binding cell.
+
+At `2fe9ca90`, `CARGO_BUILD_JOBS=3` throughout:
+
+- `cargo test --locked -p big-boy-pants-js --all-targets -- --test-threads=3`:
+  **2,133 passed, zero failed/ignored**; seven doctests also passed.
+- The expanded `tests/fixtures/js/array_callbacks.js` returns true unchanged
+  in Node 26.12.1 and both saved CLIs. It checks throwing callbacks/finally,
+  some/every early exit, deletions, appended indices, mutation from own data
+  to accessors/inherited elements, bound arguments, changing Proxy apply
+  traps, builtin callbacks and class-call rejection.
+- Existing callback tests yield with one-instruction budgets, collect while
+  waiting, resume on 64 KiB workers, and check dependency failure/cancellation
+  without replay. New coverage checks direct callback call-depth/stack limits
+  with actual-argument snapshots.
+- Formatter and whitespace checks passed. Strict engine Clippy retains the
+  same nine Rust 1.99.1 baseline diagnostics; allowing only `deprecated`,
+  `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` after
+  `-D warnings` passes, with no source suppressions.
+
+The engine integration rebase onto `529e2db6` changes only `native/compare.rs` in the
+engine. Its three unit tests and three sorted-comparison diagnostic tests
+pass, as do the four callback source tests and two callback dependency tests.
+The strengthened early-exit accessor fixture also passes unchanged in Node
+and both saved CLIs. The full-suite/doctest results above are reused: callback
+source, call-limit tests, lockfile and build profiles are unchanged. The
+measurement tables retain their named revisions. The subsequent rebase onto
+`058404c6` changes no engine source, lockfile or build profiles.
+
 ## Builtin lookup and call path (2026-10-26)
 
 Compared `b3b655cc` with engine change `3b8685b0`, on macOS 15.7.3 ARM64,
