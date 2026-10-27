@@ -999,3 +999,50 @@ The parsed maps have identical `version`, `file`, `sources` (570), `names`
 (41,923) and `sourcesContent`; only `mappings` differs (3,418,912 V8 characters,
 3,417,969 native characters). This is an output-identity finding, separate
 from successful application execution and from elapsed build time.
+The first unequal mapping string character is at offset 147,619 (zero-based):
+V8 segment `CAS+D` maps generated line 677, column 553 to
+`generated-200k/src/workload/skeidren.cljs`, line 204, column 65; native segment
+`IACC` instead maps generated line 677, column 556 to the same file, line 196,
+column 3. Lines here are one-based and columns zero-based. The surrounding
+JavaScript is the same `klekkloul` expansion of `buvaiskum`.
+
+### Build timings
+
+First complete round, one cold process per cell; repeated medians follow after
+all three rounds. Wall/user CPU are seconds; RSS is GiB (2^30 bytes). Analysis
+and deferred-unit analysis are the separate `--stats` phase counters, in seconds.
+The V8 engine counter includes traced engine work, rather than only macro execution;
+native does not populate it, so its reported zero is shown as unavailable.
+Load is the pre-run 1/5/15-minute average. Successful emission timings do not
+establish source-map equivalence; the correctness finding above still applies.
+
+#### Generated 200k, advanced
+
+| Backend | Jobs | Wall [min–max], s | User CPU, s | Peak RSS, GiB | Analysis, s | Deferred, s | Traced engine, s | Load (1/5/15 min) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| native | 1 | 221.66 [221.66–221.66] | 219.41 | 1.383 | 30.794 | 188.306 | n/a | 2.54 2.45 2.13 |
+| native | 2 | 207.43 [207.43–207.43] | 209.94 | 1.456 | 28.795 | 175.989 | n/a | 2.60 2.45 2.19 |
+| native | 4 | 196.78 [196.78–196.78] | 204.48 | 1.557 | 27.587 | 166.701 | n/a | 2.46 2.40 2.26 |
+| native | 8 | 196.57 [196.57–196.57] | 209.70 | 1.771 | 28.602 | 165.396 | n/a | 2.62 2.45 2.30 |
+| v8 | 1 | 106.96 [106.96–106.96] | 106.96 | 1.088 | 8.157 | 96.224 | 1.478 | 2.37 2.42 2.08 |
+| v8 | 2 | 103.81 [103.81–103.81] | 106.27 | 1.139 | 8.177 | 93.142 | 1.195 | 2.61 2.45 2.24 |
+| v8 | 4 | 99.92 [99.92–99.92] | 105.06 | 1.333 | 7.964 | 89.513 | 1.007 | 2.50 2.43 2.25 |
+| v8 | 8 | 100.57 [100.57–100.57] | 109.11 | 1.546 | 8.050 | 90.051 | 1.018 | 2.75 2.54 2.36 |
+
+#### Penpot app.render, none
+
+| Backend | Jobs | Wall [min–max], s | User CPU, s | Peak RSS, GiB | Analysis, s | Deferred, s | Traced engine, s | Load (1/5/15 min) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| v8 | 1 | 12.27 [12.27–12.27] | 12.62 | 0.470 | 0.941 | 10.862 | 0.701 | 2.55 2.51 2.36 |
+| v8 | 2 | 11.75 [11.75–11.75] | 13.45 | 0.556 | 1.133 | 10.143 | 0.408 | 2.44 2.49 2.35 |
+| v8 | 4 | 11.54 [11.54–11.54] | 14.00 | 0.649 | 1.131 | 9.956 | 0.391 | 2.37 2.47 2.35 |
+| v8 | 8 | 11.60 [11.60–11.60] | 15.37 | 0.795 | 1.165 | 9.984 | 0.393 | 2.39 2.47 2.35 |
+
+#### Penpot app.main, none
+
+| Backend | Jobs | Wall [min–max], s | User CPU, s | Peak RSS, GiB | Analysis, s | Deferred, s | Traced engine, s | Load (1/5/15 min) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| v8 | 1 | 72.10 [72.10–72.10] | 74.17 | 1.009 | 4.955 | 65.740 | 6.748 | 2.31 2.45 2.34 |
+| v8 | 2 | 66.13 [66.13–66.13] | 76.37 | 1.093 | 5.144 | 59.619 | 3.327 | 2.47 2.47 2.35 |
+| v8 | 4 | 65.47 [65.47–65.47] | 78.39 | 1.255 | 5.159 | 58.997 | 2.848 | 2.38 2.42 2.34 |
+| v8 | 8 | 64.68 [64.68–64.68] | 81.15 | 1.688 | 5.182 | 58.158 | 2.833 | 3.05 2.60 2.41 |
