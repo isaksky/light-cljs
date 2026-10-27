@@ -1295,8 +1295,8 @@ for(let serial=1;;serial++){
   try {
     let result=null;
     if(op===4){
-      const payload=__rt.atomLoad(input), catalog=__rt.nth(payload,0);
-      for(let at=__rt.nth(payload,1);at<__rt.count(catalog);at++){
+      const catalog=__rt.nth(input,0);
+      for(let at=__rt.nth(input,1);at<__rt.count(catalog);at++){
         const entry=__rt.nth(catalog,at);
         if(__rt.nth(entry,0)===0){
           globalThis.__lightRegisterUnit(__rt.nth(entry,1),__rt.nth(entry,2),__rt.nth(entry,3));

@@ -116,31 +116,10 @@ impl BbpEvaluator {
             let first = s.primitive(Primitive::Number(first as f64));
             Ok::<_, EvalError>(s.persist(s.new_vector(&[snapshot, first]).map_err(error)?))
         })?;
-        let input = {
-            let mut input = cx.catalog_input.borrow_mut();
-            if let Some(publisher) = input.as_mut() {
-                publisher.publish(&payload).map_err(error)?;
-            } else {
-                *input = Some(
-                    self.runtime
-                        .new_single_writer_atom(&payload)
-                        .map_err(error)?,
-                );
-            }
-            input.as_ref().unwrap().atom().clone()
-        };
-        let result = self.request(4, self.id()?, input);
-        // Command cells outlive their task. Empty the mailbox so a completed
-        // producer does not retain the catalog payload through a command cell.
-        let cleared = cx
-            .catalog_input
-            .borrow_mut()
-            .as_mut()
-            .unwrap()
-            .publish(&self.runtime.root(Primitive::Null))
-            .map_err(error);
-        result?;
-        cleared?;
+        // request roots its message until the next command boundary and
+        // completes the command cell weakly. It cannot retain this snapshot
+        // after the producer task and its context have been dropped.
+        self.request(4, self.id()?, payload)?;
         *cx.catalog_snapshot.borrow_mut() = Some(snapshot);
         Ok(())
     }
