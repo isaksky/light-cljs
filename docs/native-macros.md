@@ -1085,9 +1085,17 @@ helper's code, is compiled once per runtime into a published factory; every
 task that evaluates it calls that factory with its own native runtime, so its
 per-task state still lands in that task's globals. A source that fails to
 compile, or whose factory does not publish, is evaluated by the task as
-before, with the same diagnostic. A helper's producer task replays its
-parent's registrations in fixed blocks of 64, so full blocks also compile
-once. A producer task is not its worker's engine: registrations it takes
+before, with the same diagnostic. Catalog registrations are immutable native
+data shared by every task of the compilation (light-cljs-503). Each frontier
+is a persistent vector prefix of root and bundle descriptors. A worker applies
+only its newly registered suffix; a helper producer imports its parent's same
+rooted vector and populates a fresh ordinary JavaScript root object. Neither
+path parses or evaluates catalog registration source. Every descriptor runs
+in source order through the existing root or declaration registration function;
+there is no coalescing, virtual property backing, or special redefinition path.
+The task owns its getters, initializer slots, declaration products and protocol
+tables. Data snapshots contain none of those mutable values. A producer task
+is not its worker's engine: registrations it takes
 while compiling a helper stay pending for the worker's engine, which installs
 them at its next analysis. On this backend a pool slot analyzes a unit proven
 macro-free on a view without an engine task, including the fresh slot a
@@ -1106,10 +1114,11 @@ in it and the reader declarations it sent), and its next macro unit, on any
 slot, borrows the idle context with the most registrations installed; a slot
 boots a new one only when every context is in use. A pool therefore runs as
 many worker tasks as it analyzes macro units at once, and each installs a
-registration and evaluates a source macro once, not once per slot. A worker
-catching up on the catalog installs consecutive root registrations in blocks
-of 64 aligned to the catalog, one evaluation per block, so a full block's
-factory compiles once for the runtime. `--stats` reports
+registration and evaluates a source macro once, not once per slot. Catalog
+imports use a native command and leave no exported value handle behind. A
+producer still populates all of its ordinary properties; sharing immutable
+data removes source replay rather than sharing task-owned JavaScript objects.
+`--stats` reports
 `native.tasks.lent` (parked) and `native.tasks.borrowed`. Helper values that
 do not publish still initialize once in each task that consumes them. Every
 helper value in the pool fixtures publishes, so their helper initializations
