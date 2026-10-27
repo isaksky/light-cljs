@@ -7131,7 +7131,11 @@ fn explicit_compiler_literals_match_quickjs() {
             r#"#js {:a #js [1 #js {:b 2}]}"#,
             "#js {:a #js [1 #js {:b 2}]}",
         ),
-        ("object property order", r#"#js {"10" 10 "2" 2 :z 1 "z" 3}"#, "#js {\"2\" 2, \"10\" 10, :z 3}"),
+        (
+            "object property order",
+            r#"#js {"10" 10 "2" 2 :z 1 "z" 3}"#,
+            "#js {\"2\" 2, \"10\" 10, :z 3}",
+        ),
         ("regex", r##"#"a+""##, "#\"a+\""),
         (
             "instant",
@@ -7294,5 +7298,20 @@ fn compiler_literal_string_keys_keep_exact_names() {
         r#"(defmacro m [s] (let [n name] (list 'quote [(name s) (n s) (identical? s (n s)) (n :ns/key) (n 'ns/key)])))
            (js/console.log (js/JSON.stringify (js/Array.from (m "a\uD800"))))"#,
         "[\"a\\ud800\",\"a\\ud800\",true,\"key\",\"key\"]\n",
+    );
+}
+
+#[test]
+fn compiler_literal_string_slices_and_runtime_literals_match_quickjs() {
+    assert_native_matches_legacy(
+        r##"(defmacro m [s]
+               (let [f subs]
+                 (list 'quote [(subs "abcd" 1 3) (f "abcd" 3 1) (f "abcd" -1 1) (f "abcd" "2")
+                               (f s 0 1) (try (f "a") (catch :default e (.-message e)))
+                               (.test #"a" "a") (.getTime #inst "1970-01-01T00:00:00.000Z")
+                               (try (name '#js []) (catch :default e (.-message e)))
+                               (try (namespace '#js {}) (catch :default e (.-message e)))])))
+             (js/console.log (js/JSON.stringify (js/Array.from (m "\uD800a"))))"##,
+        "[\"bc\",\"bc\",\"a\",\"cd\",\"\\ud800\",\"Invalid arity: 1\",true,0,\"Doesn't support name on this type\",\"Doesn't support namespace on this type\"]\n",
     );
 }

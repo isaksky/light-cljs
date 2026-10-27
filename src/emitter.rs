@@ -8411,7 +8411,10 @@ impl<'a> Emitter<'a> {
                 quoted,
             } => {
                 use crate::compiler_data::CompilerLiteralKind as K;
-                if self.native_forms && matches!(kind, K::Regex | K::Instant | K::Uuid | K::Queue) {
+                if self.native_forms
+                    && (matches!(kind, K::Uuid | K::Queue)
+                        || *quoted && matches!(kind, K::Regex | K::Instant))
+                {
                     let tag = match kind {
                         K::Regex => "regex",
                         K::Instant => "instant",
