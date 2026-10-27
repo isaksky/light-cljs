@@ -1362,6 +1362,7 @@ const native = (() => {
     cons:(x,xs)=>__rt.cljCons(x,xs), concat:(...xs)=>__rt.cljConcatAll(list(xs)),
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),
     apply:(f,...xs)=>invoke(f,...xs.slice(0,-1),...arr(xs[xs.length-1])),
+    update:(value,key,f,...args)=>{const old=core.get(value,key);return core.assoc(value,key,invoke(f,old,...args));},
     assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
     dissoc:(m,...ks)=>each((m,k)=>__rt.cljDissoc(m,k),m,ks),
     conj:(...a)=>a.length===0?__rt.formVector():each((m,x)=>__rt.cljConj(m,x),a[0],a.slice(1)),

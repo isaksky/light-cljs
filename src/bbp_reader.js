@@ -33,9 +33,13 @@
   };
   const merge=core.merge;
   const isRecord=core.isRecord, into=core.into, str=core.str, nsName=core.nsName, toArray=arr;
-  // Compiler literals and queues have no native form representation yet.
+  // JS reader literals use the same explicit descriptors as source forms.
+  // The other EDN value constructors retain their separate service boundary.
   const uuid=unsupported('reader UUID literal'), PersistentQueueValue={get EMPTY(){return unsupported('reader queue literal')();}};
-  const readerJsLiterals={array:unsupported('reader JS literal'),object:unsupported('reader JS literal')};
+  const readerJsLiterals={
+    array:items=>__rt.formCompilerLiteral('js-array',vector(items)),
+    object:pairs=>__rt.formCompilerLiteral('js-object',literalMap(literalObjectPairs(pairs)))
+  };
   const readerCoreNames=new Set();
   /* READER */
   const reader=createReader({keyword:core.keyword,symbol:core.symbol,vectorFromArray:vector,
@@ -47,8 +51,7 @@
     builtinTags:new Map([
       ['inst',unsupported('reader inst literal')],
       ['uuid',unsupported('reader UUID literal')],
-      ['queue',unsupported('reader queue literal')],
-      ['js',unsupported('reader JS literal')]
+      ['queue',unsupported('reader queue literal')]
     ]),
     readBuiltin:tag=>unsupported('reader '+(tag==='uuid'?'UUID':tag==='js'?'JS':tag)+' literal')()});
   // Code-profile read-string also needs the compiler's namespace resolution

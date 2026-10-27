@@ -326,7 +326,6 @@ fn native_reader_keeps_unrepresented_literals_explicitly_unsupported() {
         ("inst", "#inst \"2020\""),
         ("UUID", "#uuid \"550e8400-e29b-41d4-a716-446655440000\""),
         ("queue", "#queue []"),
-        ("JS", "#js []"),
     ] {
         let source = format!("(defmacro probe [] (compiler-reader-read-string {text:?})) (probe)");
         let error = expand(&source, true).unwrap_err();
@@ -492,4 +491,49 @@ fn native_promise_printer_extension_matches_quickjs() {
     );
     #[cfg(feature = "quickjs")]
     assert_eq!(native, expand(source, false).unwrap());
+}
+
+#[test]
+fn native_reader_js_descriptors_match_quickjs() {
+    for (label, body) in [
+        (
+            "array",
+            r##"(compiler-reader-read-string "#js [1 #js {:a #js [\"\\uD800\" 2]}]")"##,
+        ),
+        (
+            "object order",
+            r##"(compiler-reader-read-string "#js {\"10\" 10 \"2\" 2 :z 3}")"##,
+        ),
+        (
+            "metadata payload",
+            r##"(compiler-reader-read-string "#js [^{:tag :source} [#js {:a 1}]]")"##,
+        ),
+        (
+            "tag-table handler",
+            r##"((get (compiler-reader-initial-tag-table) 'js) [1 2])"##,
+        ),
+        (
+            "invalid value",
+            r##"(try (compiler-reader-read-string "#js nil") (catch :default e [(.-message e) (.-source e) (.-line e) (.-column e) (.-offset e) (.-category e)]))"##,
+        ),
+        (
+            "invalid key",
+            r##"(try (compiler-reader-read-string "#js {1 :value}") (catch :default e [(.-message e) (.-source e) (.-line e) (.-column e) (.-offset e) (.-category e)]))"##,
+        ),
+        (
+            "qualified key",
+            r##"(try (compiler-reader-read-string "#js {:ns/key :value}") (catch :default e [(.-message e) (.-source e) (.-line e) (.-column e) (.-offset e) (.-category e)]))"##,
+        ),
+    ] {
+        let source = format!("(defmacro m [] (list 'quote {body})) (js/console.log (pr-str (m)))");
+        let native = expand(&source, true).unwrap_or_else(|e| panic!("{label}: {e}"));
+        #[cfg(feature = "quickjs")]
+        {
+            let legacy = expand(&source, false).unwrap_or_else(|e| panic!("{label}: {e}"));
+            assert_eq!(native, legacy, "{label}");
+            assert_eq!(output(&native), output(&legacy), "{label}");
+        }
+        #[cfg(not(feature = "quickjs"))]
+        assert!(!output(&native).is_empty(), "{label}");
+    }
 }

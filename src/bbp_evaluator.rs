@@ -715,6 +715,18 @@ fn native_reader_source(manifest: &crate::runtime_manifest::RuntimeManifest<'_>)
         ),
         ("s.provider()", "valueOf(s.provider())"),
         (
+            "function jsLiteral(s, value) {",
+            "function jsLiteral(s, value) { value = valueOf(value);",
+        ),
+        (
+            "if (typeof key !== 'string'",
+            "if (typeof valueOf(key) !== 'string'",
+        ),
+        (
+            "pairs.push(typeof key === 'string' ? key : name.name, value);",
+            "pairs.push(typeof valueOf(key) === 'string' ? key : name.name, value);",
+        ),
+        (
             "Object.prototype.hasOwnProperty.call(escapes, escaped)",
             "rt.hasOwn(escapes, escaped)",
         ),
@@ -749,7 +761,7 @@ fn native_reader_source(manifest: &crate::runtime_manifest::RuntimeManifest<'_>)
         ("if (handler != null) {", "if (valueOf(handler) != null) {"),
         (
             "if (handler === builtinTags.get(tag)) {",
-            "if (handler === builtinTags.get(tag)) { return rt.readBuiltin(tag, value);",
+            "if (handler === builtinTags.get(tag)) { if (tag !== 'js') return rt.readBuiltin(tag, value);",
         ),
         (
             "handler.call(null, value)",

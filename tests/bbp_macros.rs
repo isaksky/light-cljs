@@ -7375,3 +7375,17 @@ fn compiler_literal_constructors_keep_depth_and_operand_bounds() {
         "2050 2049\n",
     );
 }
+
+#[test]
+fn compiler_literal_property_updates_keep_callbacks_and_metadata() {
+    assert_native_matches_legacy(
+        r#"(defmacro m [x]
+             (let [u update calls (atom 0) changed (u x :a (fn [old n] (swap! calls inc) (+ old n)) 2)]
+               (list 'quote [changed (meta changed) x @calls
+                             (u nil :n (fnil + 0) 1 2 3 4)
+                             (u [0 1] 1 inc)
+                             (u {:k :x} :k {:x :value})])))
+           (js/console.log (pr-str (m ^{:tag :source} {:a 1})))"#,
+        "[{:a 3} {:tag :source} {:a 1} 1 {:n 10} [0 2] {:k :value}]\n",
+    );
+}
