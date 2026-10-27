@@ -366,6 +366,27 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "sorted comparison messages honor collection printing bindings",
+            "",
+            r#"(let [message (fn [k] (try (get (sorted-map 1 :v) k)
+                                         (catch :default e [(.-name e) (.-message e)])))
+                     values [[1 2 3] (list 1 2 3) #{1 2 3}
+                             (array-map :ns/a [1 2] :ns/b [[3]])
+                             (apply hash-map [:ns/a [1 2] :ns/b [[3]]])
+                             (array-map 'ns/a 1 :ns/b 2)
+                             (array-map :ns/a 1 :other/b 2) [] {}]]
+              [(binding [*print-length* 1] (mapv message values))
+               (binding [*print-length* 0] (mapv message values))
+               (binding [*print-level* 1] (mapv message values))
+               (binding [*print-level* 0] (mapv message values))
+               (binding [*print-namespace-maps* true] (mapv message values))
+               (binding [*print-length* 1 *print-level* 2 *print-namespace-maps* true]
+                 (mapv message values))
+               (binding [*print-readably* false] (message ["quoted" "\n"]))
+               (message [1 2 3])])"#,
+            "nil",
+        ),
+        (
             "sorted comparison messages retain exact UTF16 units",
             "",
             r#"(let [units (fn [k] (try (get (sorted-map 1 :v) k)

@@ -10,12 +10,131 @@ use crate::heap::budget::{ByteReservation, GrowthCharge, reserve_elements};
 use crate::heap::gc::{Trace, TraceEdge};
 use crate::value::string::{MAX_STRING_LEN, StringFlatten};
 use crate::value::{JsString, Value};
+use crate::vm::{frames::VmState, property};
 use std::collections::{BTreeMap, btree_map};
 
 type Order = (bool, [u8; 7], usize);
 type Entries = BTreeMap<Order, (Value, Value)>;
 
 const STRING_HASH_STEP_UNITS: usize = 128;
+
+#[derive(Clone, Copy, Debug)]
+struct Context {
+    nested: bool,
+    level: Option<f64>,
+}
+
+impl Context {
+    fn collection(self) -> Option<Self> {
+        let level = self.level.map(|level| level - 1.0);
+        if level.is_some_and(|level| level < 0.0) {
+            None
+        } else {
+            Some(Self {
+                nested: true,
+                level,
+            })
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Options {
+    length: Option<f64>,
+    level: Option<f64>,
+    namespace_maps: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            length: None,
+            level: None,
+            namespace_maps: false,
+        }
+    }
+}
+
+impl Options {
+    fn for_task(heap: &Heap, state: &VmState) -> Result<Self, Fault> {
+        let Some(global) = state.global_object else {
+            return Ok(Self::default());
+        };
+        let get = |object: &Value, name: &str| {
+            property::get(
+                heap,
+                state.diag.task,
+                object,
+                &property::Key::Name(JsString::from(name)),
+            )
+            .map(|value| form::unwrap(heap, value))
+        };
+        // The compiler's runtime and its dynamic printing bindings belong to
+        // this task. Engine-only callers keep the ordinary printer defaults.
+        let runtime = get(&Value::Object(global), "__lightNativeRuntime")?;
+        if !matches!(runtime, Value::Object(_)) {
+            return Ok(Self::default());
+        }
+        let core = get(&runtime, "core")?;
+        if !matches!(core, Value::Object(_)) {
+            return Ok(Self::default());
+        }
+        let number = |value| {
+            if let Value::Number(n) = value {
+                Some(n)
+            } else {
+                None
+            }
+        };
+        let truth = |value| !matches!(value, Value::Null | Value::Undefined | Value::Bool(false));
+        Ok(Self {
+            length: number(get(&core, "printLength")?),
+            level: number(get(&core, "printLevel")?),
+            namespace_maps: truth(get(&core, "printNamespaceMaps")?),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct Namespace {
+    valid: bool,
+    first: bool,
+    name: Option<JsString>,
+}
+
+impl Namespace {
+    fn new(enabled: bool) -> Self {
+        Self {
+            valid: enabled,
+            first: true,
+            name: None,
+        }
+    }
+
+    fn observe(&mut self, heap: &Heap, key: &Value) {
+        if !self.valid {
+            return;
+        }
+        let key = form::unwrap(heap, key.clone());
+        let object = form::form_object(heap, &key);
+        let Some(FormBody::Keyword(name) | FormBody::Symbol(name)) =
+            object.as_deref().map(|f| f.body())
+        else {
+            self.valid = false;
+            return;
+        };
+        if self.first {
+            self.name = name.namespace.clone();
+            self.first = false;
+        } else if self.name != name.namespace {
+            self.valid = false;
+        }
+    }
+
+    fn finish(self) -> Option<JsString> {
+        self.name.filter(|name| self.valid && !name.is_empty())
+    }
+}
 
 #[cfg(test)]
 thread_local! {
@@ -109,7 +228,7 @@ impl Items {
 
 #[derive(Debug)]
 enum Part {
-    Value(Value, bool),
+    Value(Value, Context),
     Text(&'static str),
     String {
         flatten: Option<StringFlatten>,
@@ -117,20 +236,29 @@ enum Part {
         index: usize,
         readable: bool,
     },
-    Sequence(PVector, usize, &'static str),
+    Sequence(PVector, usize, &'static str, Context),
+    Namespace {
+        pairs: PVector,
+        index: usize,
+        namespace: Namespace,
+        context: Context,
+    },
     Scan {
         cursor: crate::collections::map::Cursor,
         entries: Entries,
         charge: ByteReservation,
         set: bool,
         hashing: Option<Box<StringKey>>,
+        namespace: Namespace,
+        context: Context,
     },
-    Map(Items, bool, bool),
+    Map(Items, bool, usize, Context, bool),
 }
 
 #[derive(Debug)]
 pub(super) struct Diagnostic {
     roots: ComparisonOperands,
+    options: Options,
     pending: Vec<Part>,
     pending_charge: GrowthCharge,
     units: Vec<u16>,
@@ -151,9 +279,31 @@ impl Trace for Diagnostic {
 }
 
 impl Diagnostic {
+    #[cfg(test)]
     pub(super) fn new(heap: &Heap, roots: ComparisonOperands) -> Result<Self, Fault> {
+        Self::with_options(heap, roots, Options::default())
+    }
+
+    pub(super) fn for_task(
+        heap: &Heap,
+        state: &VmState,
+        roots: ComparisonOperands,
+    ) -> Result<Self, Fault> {
+        Self::with_options(heap, roots, Options::for_task(heap, state)?)
+    }
+
+    fn with_options(
+        heap: &Heap,
+        roots: ComparisonOperands,
+        options: Options,
+    ) -> Result<Self, Fault> {
+        let context = Context {
+            nested: false,
+            level: options.level,
+        };
         let mut out = Self {
             roots,
+            options,
             pending: Vec::new(),
             pending_charge: GrowthCharge::default(),
             units: Vec::new(),
@@ -164,9 +314,9 @@ impl Diagnostic {
             host_charge: GrowthCharge::default(),
             host_header: reserve_elements(heap, 1, 256)?,
         };
-        out.push(heap, Part::Value(out.roots.1.clone(), false))?;
+        out.push(heap, Part::Value(out.roots.1.clone(), context))?;
         out.push(heap, Part::Text(" to "))?;
-        out.push(heap, Part::Value(out.roots.0.clone(), false))?;
+        out.push(heap, Part::Value(out.roots.0.clone(), context))?;
         out.push(heap, Part::Text("Cannot compare "))?;
         Ok(out)
     }
@@ -233,6 +383,42 @@ impl Diagnostic {
                 readable,
             },
         )
+    }
+
+    fn named(&mut self, heap: &Heap, value: &Value, strip_namespace: bool) -> Result<(), Fault> {
+        let value = form::unwrap(heap, value.clone());
+        let object = form::form_object(heap, &value).unwrap();
+        let (FormBody::Keyword(name) | FormBody::Symbol(name)) = object.body() else {
+            unreachable!("namespace scanning validates named keys");
+        };
+        if matches!(object.body(), FormBody::Keyword(_)) {
+            self.text(heap, ":")?;
+        }
+        self.string(heap, name.name.clone(), false)?;
+        if !strip_namespace && let Some(ns) = &name.namespace {
+            self.push(heap, Part::Text("/"))?;
+            self.string(heap, ns.clone(), false)?;
+        }
+        Ok(())
+    }
+
+    fn begin_map(
+        &mut self,
+        heap: &Heap,
+        items: Items,
+        set: bool,
+        context: Context,
+        namespace: Option<JsString>,
+    ) -> Result<(), Fault> {
+        self.push(heap, Part::Map(items, set, 0, context, namespace.is_some()))?;
+        if let Some(namespace) = namespace {
+            self.text(heap, "#:")?;
+            self.push(heap, Part::Text("{"))?;
+            self.string(heap, namespace, false)?;
+        } else {
+            self.text(heap, if set { "#{" } else { "{" })?;
+        }
+        Ok(())
     }
 
     pub(super) fn step(&mut self, heap: &Heap) -> Result<Action, Fault> {
@@ -338,13 +524,18 @@ impl Diagnostic {
                     },
                 )?;
             }
-            Part::Sequence(items, index, end) => {
+            Part::Sequence(items, index, end, context) => {
                 if let Some(value) = items.get(index) {
                     if index > 0 {
                         self.text(heap, " ")?;
                     }
-                    self.push(heap, Part::Sequence(items, index + 1, end))?;
-                    self.push(heap, Part::Value(value, true))?;
+                    if self.options.length == Some(index as f64) {
+                        self.text(heap, "...")?;
+                        self.text(heap, end)?;
+                    } else {
+                        self.push(heap, Part::Sequence(items, index + 1, end, context))?;
+                        self.push(heap, Part::Value(value, context))?;
+                    }
                 } else {
                     self.text(heap, end)?;
                 }
@@ -355,6 +546,8 @@ impl Diagnostic {
                 charge,
                 set,
                 mut hashing,
+                mut namespace,
+                context,
             } => {
                 let ready = if let Some(mut string) = hashing.take() {
                     if let Some(hash) = string.advance() {
@@ -376,13 +569,17 @@ impl Diagnostic {
                         }
                     }
                 } else {
-                    self.push(
+                    self.begin_map(
                         heap,
-                        Part::Map(Items::Ordered(entries.into_iter(), charge), set, false),
+                        Items::Ordered(entries.into_iter(), charge),
+                        set,
+                        context,
+                        namespace.finish(),
                     )?;
                     return Ok(Action::Continue);
                 };
                 if let Some((pair, hash, nil)) = ready {
+                    namespace.observe(heap, &pair.0);
                     entries.insert(
                         (
                             !nil,
@@ -400,39 +597,81 @@ impl Diagnostic {
                         charge,
                         set,
                         hashing,
+                        namespace,
+                        context,
                     },
                 )?;
             }
-            Part::Map(mut items, set, printed) => {
+            Part::Namespace {
+                pairs,
+                index,
+                mut namespace,
+                context,
+            } => {
+                if let Some(key) = pairs.get(index) {
+                    namespace.observe(heap, &key);
+                    self.push(
+                        heap,
+                        Part::Namespace {
+                            pairs,
+                            index: index + 2,
+                            namespace,
+                            context,
+                        },
+                    )?;
+                } else {
+                    self.begin_map(
+                        heap,
+                        Items::Positional(pairs, 0),
+                        false,
+                        context,
+                        namespace.finish(),
+                    )?;
+                }
+            }
+            Part::Map(mut items, set, printed, context, strip_namespace) => {
                 if let Some((key, value)) = items.next() {
-                    if printed {
+                    if printed > 0 {
                         self.text(heap, if set { " " } else { ", " })?;
                     }
-                    self.push(heap, Part::Map(items, set, true))?;
-                    if !set {
-                        self.push(heap, Part::Value(value, true))?;
-                        self.push(heap, Part::Text(" "))?;
+                    if self.options.length == Some(printed as f64) {
+                        self.text(heap, "...}")?;
+                    } else {
+                        self.push(
+                            heap,
+                            Part::Map(items, set, printed + 1, context, strip_namespace),
+                        )?;
+                        if !set {
+                            self.push(heap, Part::Value(value, context))?;
+                            self.push(heap, Part::Text(" "))?;
+                        }
+                        if strip_namespace {
+                            self.named(heap, &key, true)?;
+                        } else {
+                            self.push(heap, Part::Value(key, context))?;
+                        }
                     }
-                    self.push(heap, Part::Value(key, true))?;
                 } else {
                     self.text(heap, "}")?;
                 }
             }
-            Part::Value(value, nested) => match form::unwrap(heap, value) {
+            Part::Value(value, context) => match form::unwrap(heap, value) {
                 Value::Null | Value::Undefined => {
-                    self.text(heap, if nested { "nil" } else { "" })?
+                    self.text(heap, if context.nested { "nil" } else { "" })?
                 }
                 Value::Bool(value) => self.text(heap, if value { "true" } else { "false" })?,
-                Value::String(value) => self.string(heap, value, nested)?,
+                // Collection toString uses readable strings even when the
+                // enclosing task binds *print-readably* to false.
+                Value::String(value) => self.string(heap, value, context.nested)?,
                 Value::Number(value) => self.text(
                     heap,
-                    &if nested && value.is_nan() {
+                    &if context.nested && value.is_nan() {
                         "##NaN".into()
-                    } else if nested && value == f64::INFINITY {
+                    } else if context.nested && value == f64::INFINITY {
                         "##Inf".into()
-                    } else if nested && value == f64::NEG_INFINITY {
+                    } else if context.nested && value == f64::NEG_INFINITY {
                         "##-Inf".into()
-                    } else if nested && value == 0.0 && value.is_sign_negative() {
+                    } else if context.nested && value == 0.0 && value.is_sign_negative() {
                         "-0.0".into()
                     } else {
                         crate::value::string::number_to_string(value)
@@ -441,33 +680,56 @@ impl Diagnostic {
                 value => {
                     let object = form::form_object(heap, &value);
                     match object.as_deref().map(|f| f.body()) {
-                        Some(FormBody::Keyword(name) | FormBody::Symbol(name)) => {
-                            if matches!(object.as_ref().unwrap().body(), FormBody::Keyword(_)) {
-                                self.text(heap, ":")?;
-                            }
-                            self.push(heap, Part::Value(Value::String(name.name.clone()), false))?;
-                            if let Some(ns) = &name.namespace {
-                                self.push(heap, Part::Text("/"))?;
-                                self.push(heap, Part::Value(Value::String(ns.clone()), false))?;
-                            }
+                        Some(FormBody::Keyword(_) | FormBody::Symbol(_)) => {
+                            self.named(heap, &value, false)?;
                         }
                         Some(FormBody::Vector(items) | FormBody::List(items)) => {
                             let vector =
                                 matches!(object.as_ref().unwrap().body(), FormBody::Vector(_));
+                            let Some(context) = context.collection() else {
+                                self.text(heap, "#")?;
+                                return Ok(Action::Continue);
+                            };
                             self.text(heap, if vector { "[" } else { "(" })?;
                             self.push(
                                 heap,
-                                Part::Sequence(items.clone(), 0, if vector { "]" } else { ")" }),
+                                Part::Sequence(
+                                    items.clone(),
+                                    0,
+                                    if vector { "]" } else { ")" },
+                                    context,
+                                ),
                             )?;
                         }
                         Some(FormBody::Map(map) | FormBody::Set(map)) => {
                             let set = matches!(object.as_ref().unwrap().body(), FormBody::Set(_));
-                            self.text(heap, if set { "#{" } else { "{" })?;
+                            let Some(context) = context.collection() else {
+                                self.text(heap, "#")?;
+                                return Ok(Action::Continue);
+                            };
+                            let namespace = Namespace::new(self.options.namespace_maps && !set);
                             match map {
-                                FormMap::Positional(pairs) => self.push(
-                                    heap,
-                                    Part::Map(Items::Positional(pairs.clone(), 0), set, false),
-                                )?,
+                                FormMap::Positional(pairs) => {
+                                    if self.options.namespace_maps && !set {
+                                        self.push(
+                                            heap,
+                                            Part::Namespace {
+                                                pairs: pairs.clone(),
+                                                index: 0,
+                                                namespace,
+                                                context,
+                                            },
+                                        )?;
+                                    } else {
+                                        self.begin_map(
+                                            heap,
+                                            Items::Positional(pairs.clone(), 0),
+                                            set,
+                                            context,
+                                            None,
+                                        )?;
+                                    }
+                                }
                                 FormMap::Hashed(map) => {
                                     // A one-entry tree already allocates a full node.
                                     // Admit a complete twelve-slot node (including
@@ -485,6 +747,8 @@ impl Diagnostic {
                                             charge,
                                             set,
                                             hashing: None,
+                                            namespace,
+                                            context,
                                         },
                                     )?;
                                 }

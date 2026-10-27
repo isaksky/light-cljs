@@ -4035,7 +4035,9 @@ pub(crate) fn start_comparison(
 ) -> Result<(), Fault> {
     push_native(
         state,
-        NativeState::Comparison(Box::new(compare::Diagnostic::new(heap, values)?)),
+        NativeState::Comparison(Box::new(compare::Diagnostic::for_task(
+            heap, state, values,
+        )?)),
     )
 }
 
