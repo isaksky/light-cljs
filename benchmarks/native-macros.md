@@ -678,8 +678,10 @@ source-wide core-write information across macro, helper and prepared-unit
 emission. The source index conservatively handles qualified aliases, renamed
 refers, preloaded helpers, mutation operators used as macro data and unquoted
 targets. Such computed writes keep all core reads dynamic. Native artifacts
-are reanalyzed when the current compilation may replace core, because their
-prepared factories can reflect an earlier compilation's caching assumptions.
+are reanalyzed when the current compilation may replace a cacheable core
+function, because their prepared factories can reflect an earlier
+compilation's caching assumptions. Dynamic core Vars are read at each use
+and their bindings do not invalidate those factories.
 The new generated core, getter and numbered receiver names participate in
 the existing raw-JavaScript hygiene pass.
 
@@ -763,6 +765,74 @@ light-cljs-515 remains the existing focused numerical-target follow-up.
 Rerun `bb benchmarks/native-macros-k.bb OUTPUT --workload protocol --runs 5
 --n 0,400 v8=V8_BINARY native=NATIVE_BINARY` in a clear host window to finish
 the review-fix performance check.
+
+### Dynamic bindings and JavaScript holes (final review fix)
+
+At `701a763f`, artifact invalidation uses the same `value == fn` eligibility
+rule as native function caching. Dynamic Vars such as `*print-length*` have
+value type `any` and keep their reads at each use. A new fresh-process cache
+test binds `*print-length*` in both a macro and the application: before this
+fix its warm native build had zero hits; afterward both namespaces hit,
+no macros rerun, and cached/uncached JavaScript and Node output agree. The
+test passes in default V8, native-only and QuickJS-only configurations.
+The new JavaScript-hole differential cases replace `even?` directly and
+override addition's `.call` from a demanded helper, yielding `[true false]`
+and `[3 42]` on both native and legacy QuickJS. Existing protocol fixtures
+and output expectations are unchanged.
+
+Validation at `701a763f`, rebased without changes onto `5dfeade5`, uses the
+same macOS aarch64, 24-CPU host, Rust/Cargo 1.99.1 and Node 26.12.1. Builds
+use three jobs; compiler nextest uses eight slots; cargo tests use three
+test threads. The pinned ClojureScript source link and
+`LIGHT_CLJS_V8_CACHE=require` are used for default tests.
+
+- Full default `cargo nextest run --locked --no-fail-fast -j 8`: 2,130
+  passes, one known failure. Full QuickJS-only nextest with
+  `--no-default-features --features quickjs`: 2,053 passes, the same failure.
+  Both failures are `playground_crate_checks_for_wasm32`: Cargo rejects
+  this nested worktree's playground manifest as belonging to the main
+  checkout's workspace. The test, build script and manifests are unchanged.
+- Native-only `cargo test --locked --no-default-features --features
+  bbp-macros --test bbp_macros --test bbp_reader --test bbp_proxy_has`:
+  92 + 10 + 2 passes; the new `compiler_cache` test passes separately.
+  Adding `quickjs` and `--lib` gives 346 library and 94 + 10 + 2 integration
+  passes, with one existing library test ignored.
+- Engine `--all-targets`: 2,145 passes across 64 binaries; engine doctests:
+  seven passes. Compiler and engine formatting pass.
+- Strict default all-target Clippy and engine-free `--lib --bins` Clippy
+  pass. Engine-free all-target Clippy stops at the unchanged unused index
+  in `tests/execution.rs:1772`. Strict native/engine Clippy still reports
+  the existing eight library/nine engine-test diagnostics. Native plus
+  QuickJS and engine all-target Clippy pass when only `deprecated`,
+  `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` are
+  allowed after `-D warnings`. Native-only library, binary, macro, reader,
+  proxy and compiler-cache targets pass with those same allowances.
+  No source suppressions were added.
+
+Fresh native `/usr/bin/sample PID 3 1 -file ...` profiles use the same
+256-call n=1,600 and 64-call n=6,400 inputs as above. Node output matches
+the earlier profiles. Peer suites were active (host load approximately
+8.5–9.2); these are CPU sample distributions, separate from latency timing.
+There are 1,879/2,115 main-thread samples. Top-of-stack counts collapsed by
+symbol:
+
+| Frame | n=1,600 | n=6,400 |
+| --- | ---: | ---: |
+| `execute_budgeted` | 511 | 567 |
+| `Fault` drop glue | 93 | 120 |
+| `step_instruction` | 59 | 82 |
+| SipHash `write` | 65 | 80 |
+| `Value` drop glue | 34 | 51 |
+| heap `Directory::slot` | 36 | 56 |
+| `lookup_cursor` | 45 | 54 |
+| `start_conversion` | 50 | 42 |
+| `enter_constructor` | 40 | 41 |
+| Proxy `Operations::step` | 41 | 42 |
+| `property_read_step` | 21 | 23 |
+| VM callable `resolve` | 23 | 22 |
+
+The residual interpreter, value/drop, hashing and property-resolution work
+remains the scope of the existing focused follow-up light-cljs-515.
 
 ## Lazy sequences (light-cljs-479), October 26, 2026
 
