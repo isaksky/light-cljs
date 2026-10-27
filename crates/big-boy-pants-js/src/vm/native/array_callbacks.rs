@@ -186,6 +186,43 @@ impl State {
         Action::Continue
     }
 
+    fn call(&mut self, element: Value) -> Action {
+        self.element = element;
+        if self.reduce() && !self.has_accumulator {
+            self.accumulator = self.element.clone();
+            self.has_accumulator = true;
+            return self.advance();
+        }
+        let (args, argc) = if self.reduce() {
+            (
+                [
+                    self.accumulator.clone(),
+                    self.element.clone(),
+                    Value::Number(self.index as f64),
+                    self.this.clone(),
+                ],
+                4,
+            )
+        } else {
+            (
+                [
+                    self.element.clone(),
+                    Value::Number(self.index as f64),
+                    self.this.clone(),
+                    Value::Undefined,
+                ],
+                3,
+            )
+        };
+        self.stage = Stage::Callback;
+        Action::CallArray {
+            callee: self.callback.clone(),
+            this: self.this_arg.clone(),
+            args,
+            argc,
+        }
+    }
+
     pub(super) fn step(
         &mut self,
         heap: &Heap,
@@ -327,11 +364,40 @@ impl State {
                         _ => self.result.clone(),
                     }));
                 }
+                // A present own data element answers both HasProperty and Get
+                // without user code. Re-read on every visit: callbacks may
+                // delete elements, install accessors or truncate the array.
+                // This step visits at most one element, retaining a poll and
+                // budget boundary between callbacks, including skipped holes.
+                if let Value::Object(id) = self.this
+                    && self.index < i64::from(u32::MAX)
+                    && let Some(value) = heap
+                        .read(id, |object| match object {
+                            HeapObject::Array(array)
+                                if array.object().owner().is_none_or(|owner| owner == task) =>
+                            {
+                                array
+                                    .element(self.index as u32)
+                                    .filter(|property| property.accessor.is_none())
+                                    .map(|property| property.value)
+                            }
+                            _ => None,
+                        })
+                        .flatten()
+                {
+                    return Ok(self.call(value));
+                }
                 self.stage = Stage::Present;
-                Ok(has_property(
-                    self.this.clone(),
-                    index_key(self.index as u64),
-                ))
+                let key = index_key(self.index as u64);
+                match property::probe(heap, task, &self.this, &key)? {
+                    property::Presence::Value(present) => {
+                        self.read_value = Some(Value::Bool(present));
+                        Ok(Action::Continue)
+                    }
+                    // HasProperty must still call traps on either the receiver
+                    // or its prototype chain, through the resumable In path.
+                    property::Presence::Proxy(_) => Ok(has_property(self.this.clone(), key)),
+                }
             }
             Stage::Present => {
                 if !self.value(input)?.truthy() {
@@ -346,26 +412,8 @@ impl State {
                 )
             }
             Stage::Element => {
-                self.element = self.value(input)?;
-                if self.reduce() && !self.has_accumulator {
-                    self.accumulator = self.element.clone();
-                    self.has_accumulator = true;
-                    return Ok(self.advance());
-                }
-                let mut args = vec![
-                    self.element.clone(),
-                    Value::Number(self.index as f64),
-                    self.this.clone(),
-                ];
-                if self.reduce() {
-                    args.insert(0, self.accumulator.clone());
-                }
-                self.stage = Stage::Callback;
-                Ok(Action::Call {
-                    callee: self.callback.clone(),
-                    this: self.this_arg.clone(),
-                    args,
-                })
+                let element = self.value(input)?;
+                Ok(self.call(element))
             }
             Stage::Callback => {
                 let value = self.value(input)?;

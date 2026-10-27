@@ -42,4 +42,48 @@ assert(flat.length === 2 && flat[0] === nested && flat[0][1][0] === 5 && flat[1]
 assert([1,2].flatMap(v => v).join() === '1,2');
 let keep = [{x:1}]; let filtered = keep.filter((v,i,o) => { delete o[i]; return true; });
 assert(filtered[0].x === 1);
+// Re-check own data after every callback: later visits can become holes,
+// accessors or inherited properties, while appended indices stay unvisited.
+for (let method of ['forEach','map','filter','reduce']) {
+    let values = [1,2,3,4], log = '', getters = 0;
+    let parent = Object.create(Array.prototype);
+    Object.defineProperty(parent,3,{get() { getters++; return 40; }});
+    Object.setPrototypeOf(values,parent);
+    function visit(v,i,o) {
+        assert(o === values);
+        log += v + ':' + i + ';';
+        if (i === 0) {
+            delete o[1];
+            Object.defineProperty(o,2,{get() { getters++; return 30; },configurable:true});
+            delete o[3];
+            o.push(99);
+        }
+        return v;
+    }
+    if (method === 'reduce') values.reduce((acc,v,i,o) => acc+visit(v,i,o),0);
+    else values[method](visit);
+    assert(log === '1:0;30:2;40:3;' && getters === 2);
+    let calls = 0, cleaned = 0, thrown;
+    function fail() { calls++; try { if (calls === 2) throw 42; } finally { cleaned++; } }
+    try { [1,2,3][method](fail,0); } catch(e) { thrown = e; }
+    assert(thrown === 42 && calls === 2 && cleaned === 2);
+}
+// Ordinary closure entry and the forwarding/Proxy fallback share the same
+// argument and exception behavior, including changing traps between visits.
+assert([2,3].map(function(prefix,v,i,o) {
+    assert(arguments.length === 4 && o[i] === v);
+    return prefix+v+i;
+}.bind(null,10)).join() === '12,14');
+assert(['2','3'].map(Number).join() === '2,3');
+let proxyCalls = 0, handler = {apply(target,receiver,args) {
+    proxyCalls++;
+    handler.apply = () => { proxyCalls++; throw 42; };
+    return Reflect.apply(target,receiver,args);
+}};
+let proxyError;
+try { [1,2,3].map(new Proxy(v => v,handler)); } catch(e) { proxyError = e; }
+assert(proxyError === 42 && proxyCalls === 2);
+let classCalls = 0;
+try { [1].forEach(class C {}); } catch(e) { if (e instanceof TypeError) classCalls++; }
+assert(classCalls === 1);
 true;

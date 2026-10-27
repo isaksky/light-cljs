@@ -315,6 +315,14 @@ pub(crate) enum Action {
         instr: Instr,
         operands: Vec<Value>,
     },
+    /// Array iteration's bounded argument list stays on the stack. Ordinary
+    /// closures enter directly; exotic/forwarding callees use `Call` below.
+    CallArray {
+        callee: Value,
+        this: Value,
+        args: [Value; 4],
+        argc: usize,
+    },
     /// Enter newly compiled eval code after releasing the native borrow.
     Eval(super::executable::Executable, Vec<Value>),
     DynamicFunction(super::executable::Executable),
@@ -3450,6 +3458,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::DefineProperty(_)
             | Action::Instruction { .. }
             | Action::Call { .. }
+            | Action::CallArray { .. }
             | Action::Construct { .. }
             | Action::InitializeBuiltin { .. }
             | Action::EnterConstructor(_)
@@ -3593,7 +3602,58 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, host: &mut dyn Host) -> Res
     if let Action::EnterConstructor(call) = action {
         return enter_ordinary_constructor(state, heap, *call);
     }
+    if let Action::CallArray {
+        callee,
+        this,
+        args,
+        argc,
+    } = action
+    {
+        return call_array(state, heap, host, callee, this, args, argc);
+    }
     apply_action(state, heap, host, action)
+}
+
+#[inline(never)]
+fn call_array(
+    state: &mut VmState,
+    heap: &Heap,
+    host: &mut dyn Host,
+    callee: Value,
+    this: Value,
+    args: [Value; 4],
+    argc: usize,
+) -> Result<Flow, Fault> {
+    let code = match &callee {
+        Value::Object(id) => heap
+            .read(*id, |object| match object {
+                HeapObject::Function(function) => Some((*id, state.code_cache.get(&function.code))),
+                _ => None,
+            })
+            .flatten(),
+        _ => None,
+    };
+    if let Some((id, code)) = code {
+        // The function's immutable code cannot change during iteration. Only
+        // actual function objects qualify: Proxy revocation and forwarding
+        // remain on the ordinary resumable path. `enter` retains all argument,
+        // constructor, depth and stack-limit checks and arguments snapshots.
+        set_awaiting(state, Awaiting::CallResult)?;
+        state.push(callee);
+        args.into_iter().take(argc).for_each(|arg| state.push(arg));
+        state.enter(code, id, this, argc)?;
+        return Ok(Flow::FrameChanged);
+    }
+    apply_action(
+        state,
+        heap,
+        host,
+        Action::Call {
+            callee,
+            this,
+            args: args.into_iter().take(argc).collect(),
+        },
+    )
 }
 
 #[inline(never)]
@@ -3870,6 +3930,7 @@ fn apply_action(
         Action::InitializeBuiltin { .. } => {
             unreachable!("constructor entered before action dispatch")
         }
+        Action::CallArray { .. } => unreachable!("array call dispatched before general actions"),
         Action::EnterConstructor(_) => unreachable!("constructor entered before action dispatch"),
         Action::Continue => Ok(Flow::Next),
         Action::Need { dependency, kind } => {
