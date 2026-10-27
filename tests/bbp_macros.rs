@@ -2661,6 +2661,16 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             "[:keyword :symbol :string :nil :false :number :vector :map :set [:default :other]]",
         ),
         (
+            "constructor and function dispatch",
+            r#"
+          (defmulti m identity)
+          (defmethod m js/Function [_] :function)
+          (defmethod m js/Array [_] :array)
+          (defmethod m :default [_] :fallback)"#,
+            "[(m js/Array) (m (fn [])) (m js/Object) (m :other)]",
+            "[:array :function :function :fallback]",
+        ),
+        (
             "keyword dispatch and custom default",
             r#"
           (defmulti m :kind :default :fallback)
@@ -2725,6 +2735,16 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             "[true :pet true true :animal :fallback :animal true true true true]",
         ),
         (
+            "exact method precedes preferred ancestor",
+            r#"
+          (def h (atom (derive (make-hierarchy) :dog :animal)))
+          (defmulti m identity :hierarchy h)
+          (defmethod m :dog [_] :dog)
+          (defmethod m :animal [_] :animal)"#,
+            "(do (prefer-method m :animal :dog) [(m :dog) ((get-method m :dog) :dog)])",
+            "[:dog :dog]",
+        ),
+        (
             "explicit construction and protocol operations",
             "",
             r#"(let [m (MultiFn. 'custom identity :fallback (atom (make-hierarchy))
@@ -2749,6 +2769,16 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
           (defmethod m :x [_] :second)"#,
             "[(m :x) (early) (m :x)]",
             "[:second :first :second]",
+        ),
+        (
+            "declaration is not an initialized defonce",
+            r#"
+          (declare m)
+          (defmulti m identity)
+          (defmethod m :x [_] :declared)
+          (defmethod m :default [_] :fallback)"#,
+            "[(m :x) (m :other)]",
+            "[:declared :fallback]",
         ),
         (
             "defonce and binding restoration",

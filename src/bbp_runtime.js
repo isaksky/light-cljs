@@ -287,7 +287,7 @@ const decl = (() => {
     const b = {order: bundles.length + 1, names, unit, location, state: 0, error: null, products: null,
       multi: indices.length > 0 && indices.every(index => index[0].startsWith('multifn:'))};
     bundles.push(b);
-    if (once && names.length && names.every(name => name in globalThis.__lightCompilerRoots)) return null;
+    if (once && names.length && names.every(name => globalThis.__lightCompilerRootKept(name))) return null;
     for (const name of names) {
       // A preloaded root (a data property) stays; a product replaces an
       // earlier definition's.
@@ -736,6 +736,10 @@ const native = (() => {
     };
     const getMethod=(m,dispatch)=>{
       const {methods,prefs}=tables(m),h=deref(field(m,'hierarchy'));
+      // CLJS seeds its method cache with the table itself: an exact method
+      // wins before preference/hierarchy search, even over a preferred parent.
+      const exact=get(methods,dispatch);
+      if(truth(exact))return exact;
       const dominates=(x,y)=>truth(get(get(prefs,x),y))||isaIn(h,x,y);
       let best=null;
       for(const entry of arr(methods)){
@@ -1413,9 +1417,10 @@ globalThis.__lightSetCompilerRoot=(name,value)=>{
   return value;
 };
 globalThis.__lightCompilerRootKept=name=>{
-  if(decl.productOwner(name)!==null)return decl.keptProduct(name);
-  if(roots.has(name))return roots.get(name).unit!==null;
-  return bindingOverlays.has(name)?bindingOverlays.get(name)!==undefined:name in globalThis.__lightCompilerRoots;
+  const bound=bindingOverlays.has(name)&&bindingOverlays.get(name)!==undefined;
+  if(decl.productOwner(name)!==null)return decl.keptProduct(name)||bound;
+  if(roots.has(name))return roots.get(name).unit!==null||bound;
+  return Object.getOwnPropertyDescriptor(globalThis.__lightCompilerRoots,name)!==undefined||bound;
 };
 globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
   if(once&&globalThis.__lightCompilerRootKept(name))return null;
