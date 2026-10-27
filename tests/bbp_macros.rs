@@ -502,6 +502,50 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "nullish seq protocol results terminate both reduce arities and kv fallback",
+            r#"(deftype S [end seen]
+                 ISeqable (-seq [_] (.push seen "seq") end))"#,
+            r#"(mapv (fn [end]
+                (let [seen (js/Array.) s (S. end seen)
+                      f (fn ([] (.push seen "empty") :empty)
+                            ([a x] (.push seen "step") (conj a x)))
+                      result [(reduce f s) (reduce f [] s)
+                              (reduce-kv (fn [a k v] (.push seen "kv") (conj a [k v])) [] s)]]
+                  [result (vec seen)])) [nil js/undefined])"#,
+            "nil",
+        ),
+        (
+            "nullish next protocol results terminate both reduce arities and kv fallback",
+            r#"(deftype S [value end seen]
+                 ISeqable (-seq [this] (.push seen "seq") this)
+                 ISeq (-first [_] (.push seen "first") value)
+                      (-rest [_] (throw (js/Error. "rest called")))
+                 INext (-next [_] (.push seen "next") end))"#,
+            r#"(mapv (fn [end]
+                (let [seen (js/Array.) s (S. 1 end seen)
+                      f (fn ([] (.push seen "empty") :empty)
+                            ([a x] (.push seen "step") (conj a x)))
+                      result [(reduce f s) (reduce f [] s)
+                              (reduce-kv (fn [a k v] (.push seen "kv") (conj a [k v])) []
+                                         (S. (first (seq {:a 1})) end seen))]]
+                  [result (vec seen)])) [nil js/undefined])"#,
+            "nil",
+        ),
+        (
+            "nullish rest protocol results terminate without INext",
+            r#"(deftype S [value end seen]
+                 ISeqable (-seq [this] (.push seen "seq") this)
+                 ISeq (-first [_] (.push seen "first") value)
+                      (-rest [_] (.push seen "rest") end))"#,
+            r#"(mapv (fn [end]
+                (let [seen (js/Array.) s (S. 1 end seen)
+                      result [(reduce + s) (reduce conj [] s)
+                              (reduce-kv (fn [a k v] (conj a [k v])) []
+                                         (S. (first (seq {:a 1})) end seen))]]
+                  [result (vec seen)])) [nil js/undefined])"#,
+            "nil",
+        ),
+        (
             "direct kv protocol rejects non implementations",
             "(defrecord R [x])",
             r#"[(mapv (fn [c] (try (-kv-reduce c (fn [a k v] (conj a [k v])) [])

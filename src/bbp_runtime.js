@@ -651,7 +651,7 @@ const native = (() => {
     if (method !== null) return method.call(x,x);
     if (nativeSeq(x) || val(x) == null) return __rt.cljFirst(x);
     const s = reduceSeqOf(x);
-    if (s === null) return null;
+    if (s == null) return null;
     const first = decl.first(s,nativeSeq(s));
     return first === null ? __rt.cljFirst(s) : first.call(s,s);
   };
@@ -660,7 +660,7 @@ const native = (() => {
     if (method !== null) return method.call(x,x);
     if (nativeSeq(x) || val(x) == null) return __rt.cljRest(x);
     const s = reduceSeqOf(x);
-    if (s === null) return __rt.formList();
+    if (s == null) return __rt.formList();
     const rest = decl.rest(s,nativeSeq(s));
     return rest === null ? __rt.cljRest(s) : rest.call(s,s);
   };
@@ -790,7 +790,7 @@ const native = (() => {
   // nested markers let a flattening reducer propagate termination outward.
   const reduceSeq = (f, init, c) => {
     let acc = init;
-    for (let s = reduceSeqOf(c); s !== null; s = nextOf(s)) {
+    for (let s = reduceSeqOf(c); s != null; s = nextOf(s)) {
       acc = invoke(f, acc, firstOf(s));
       if (__rt.cljIsReduced(acc)) return __rt.cljUnreduced(acc);
     }
@@ -1029,7 +1029,7 @@ const native = (() => {
       :a.length<=3?rangeFrom(rangeFrom,val(a[0]),val(a[1]),a.length===3?val(a[2]):1):arity(a.length),
     partition:(...a)=>a.length===2?partitionFrom(partitionFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionFrom(partitionFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
     reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);const s=reduceSeqOf(a[0]);
-      return s===null?invoke(f):reduceSeq(f,firstOf(s),nextOf(s));},
+      return s==null?invoke(f):reduceSeq(f,firstOf(s),nextOf(s));},
     reduceKv, kvReduceProtocol,
     keyProtocol:x=>entryPart(x,false), valProtocol:x=>entryPart(x,true),
     transduce,
