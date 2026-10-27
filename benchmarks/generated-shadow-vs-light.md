@@ -757,3 +757,36 @@ non-timing `--stats` counters, `trace.reads` (73,777) among them, equal
 `ff491d9`'s. The extension report reuses the `light.build` service, since a
 service of its own adds an engine entry to every compilation.
 `bb benchmarks/generated-project/test.bb --light` passes.
+
+## Default V8 regression check (October 27, 2026)
+
+The October 27 slowdown reproduces with the original uncached command, without
+statistics or source maps. First quiet-machine pair (one run, not a median):
+
+| Revision | `release bench --no-cache`, wall | Peak RSS, GB | Load before, 1/5/15 min |
+| --- | ---: | ---: | --- |
+| `ac88cb2237732ffdf6588fb0418ce5c7f86fe956` | 23.39 s | 1.180 | 2.34/2.25/2.24 |
+| `045c592656afc9d623ff73530847c782f6905099` | 106.03 s | 1.087 | 2.12/2.20/2.22 |
+
+Both release compilers were freshly built in an isolated worker worktree with
+Homebrew Rust/Cargo 1.99.1, default features, thin LTO and one codegen unit.
+macOS 15.7.3, Apple M3 Ultra (Virtual), 24 logical CPUs, 32 GiB RAM;
+Babashka 1.12.218, Node 26.12.1. Builds and timing processes were sequential,
+with no peer builders. `/usr/bin/time -l` includes process startup and writing;
+OS file caches were retained. GB means 1e9 bytes. The generator is unchanged
+since its original commit (`5ed076d3`), seed 42, requested 200k lines, producing
+199,129 nonblank lines and 450 workers. Generated files stayed under the
+worker's ignored `target/`; both outputs printed the oracle checksum `484264`.
+
+```sh
+LIGHT_CLJS_V8_CACHE=require CARGO_BUILD_JOBS=3 cargo build --locked --release
+bb benchmarks/generated-project/generate.bb target/v8-regression-543/generated-200k --seed 42 --lines 200k
+# In the generated project, with each revision's absolute binary path:
+/usr/bin/time -l "$BIN" release bench --no-cache
+```
+
+Historical builds used detached worktrees under the worker's `target/`, each
+with its own Cargo target directory. An empty workspace with exclusions for
+`vendor/v8`, `vendor/rquickjs-sys` and `playground/crate` was appended to each
+historical manifest solely to isolate it from the enclosing modern workspace;
+source, lockfile, features and release profile were unchanged.

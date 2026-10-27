@@ -1717,3 +1717,29 @@ Instaparse's grammar macro takes 16.57 seconds; 1,033 rumext defc calls take
 20.54 seconds. Deduplicated AST table storage is 284.16 MB, down from phase7's
 470.47 MB, excluding payload allocations. Evidence and profiling limitations
 are in `results/compiler-2026-10-16/penpot-phase13/`.
+
+## Default V8 regression check (October 27, 2026)
+
+The slowdown reproduces without statistics or source maps. First quiet-machine
+pair (one run, not a median), original `benchmarks/penpot.bb` main-none command:
+
+| Revision | Wall | Peak RSS, GB | Load before, 1/5/15 min |
+| --- | ---: | ---: | --- |
+| `b51af6a656c31554ca80a823f0922054355b0a18` (October 17 promotion) | 21.40 s | 0.999 | 2.37/2.29/2.25 |
+| `045c592656afc9d623ff73530847c782f6905099` | 72.52 s | 0.843 | 2.11/2.24/2.23 |
+
+The compiler binaries were rebuilt at both revisions with default release
+features. [The generated-project check](generated-shadow-vs-light.md#default-v8-regression-check-october-27-2026)
+records the shared machine, toolchain and build isolation. The five read-only
+Penpot roots still match the October 17 fingerprint: 996 files,
+`b36daf80aa370322598f53f5bf776391036ab70cf993835793daa1285015ba48`.
+No research files were changed. `/usr/bin/time -l` measures cold compiler
+processes, retaining OS file caches. Emitted modules pass Node syntax checks;
+Penpot was not bundled or run in a browser.
+
+The October 17 revision predates `--no-cache` and `--stats`: its original direct
+compile has no persistent compiler cache, and a `--stats` probe exits with usage.
+Current runs add `--no-cache`; other command arguments are identical. The
+historical V8 build accepts an explicit patched archive/bindings pair from the
+machine's release cache (its patch and bindings are unchanged), because its
+build script predates automatic machine-cache lookup. No engine was rebuilt.
