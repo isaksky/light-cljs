@@ -637,16 +637,28 @@ const native = (() => {
   };
   // Reduction's protocol tables are task-owned. Keep this adapter out of the
   // lazy sequence constructors, whose intrinsic-only closures can publish.
+  // Array cursors retain the original storage and check its current length
+  // on advancement. Reducers can replace, append or remove unvisited items.
+  const arraySeqs = new WeakMap();
+  const arraySeq = (array, index) => {
+    if (index >= array.length) return null;
+    const cursor = {};
+    arraySeqs.set(cursor, {array, index});
+    return cursor;
+  };
   const reduceSeqOf = x => {
+    if (arraySeqs.has(x)) return x;
     const value = val(x), kind = __rt.formKind(value);
     const builtin = value == null || typeof value === 'string' || Array.isArray(value) || nativeSeq(x)
       || kind === 'vector' || kind === 'map' || kind === 'record' || kind === 'set';
     const method = decl.seq(x,builtin);
     if (method !== null) return method.call(x,x);
     if (!builtin) throw new Error(core.str(x) + ' is not ISeqable');
-    return __rt.cljSeq(Array.isArray(value) ? vector(value) : x);
+    return Array.isArray(value) ? arraySeq(value, 0) : __rt.cljSeq(x);
   };
   const firstOf = x => {
+    const cursor = arraySeqs.get(x);
+    if (cursor !== undefined) return cursor.array[cursor.index];
     const method = decl.first(x,nativeSeq(x) || val(x) == null);
     if (method !== null) return method.call(x,x);
     if (nativeSeq(x) || val(x) == null) return __rt.cljFirst(x);
@@ -656,6 +668,8 @@ const native = (() => {
     return first === null ? __rt.cljFirst(s) : first.call(s,s);
   };
   const restOf = x => {
+    const cursor = arraySeqs.get(x);
+    if (cursor !== undefined) return arraySeq(cursor.array, cursor.index + 1) ?? __rt.formList();
     const method = decl.rest(x,nativeSeq(x) || val(x) == null);
     if (method !== null) return method.call(x,x);
     if (nativeSeq(x) || val(x) == null) return __rt.cljRest(x);
@@ -665,6 +679,8 @@ const native = (() => {
     return rest === null ? __rt.cljRest(s) : rest.call(s,s);
   };
   const nextOf = x => {
+    const cursor = arraySeqs.get(x);
+    if (cursor !== undefined) return arraySeq(cursor.array, cursor.index + 1);
     const builtin = nativeSeq(x) || val(x) == null;
     const method = decl.next(x);
     if (method !== null) return method.call(x,x);

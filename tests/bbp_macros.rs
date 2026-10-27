@@ -546,6 +546,60 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "arrays read replacement elements and current length during reduction",
+            "",
+            r#"(let [run (fn [mutate]
+                          (let [xs (js/Array. 1 2 3)
+                                result (reduce (fn [a x] (mutate xs x) (conj a (if (nil? x) :hole x))) [] xs)]
+                            [result (.-length xs)]))]
+              (mapv run [(fn [xs x] (aset xs 1 9))
+                         (fn [xs x] (if (= x 1) (.push xs 4) nil))
+                         (fn [xs x] (if (= x 1) (.pop xs) nil))
+                         (fn [xs x] (if (= x 1) (set! (.-length xs) 1) nil))
+                         (fn [xs x] (if (= x 1) (set! (.-length xs) 5) nil))]))"#,
+            "nil",
+        ),
+        (
+            "two argument reduce reads arrays incrementally",
+            "",
+            r#"(let [run (fn [mutate]
+                          (let [xs (js/Array. 1 2 3) seen (js/Array.)
+                                result (reduce (fn [a x] (.push seen (if (nil? x) "hole" x)) (mutate xs x)
+                                                 (+ a (if (nil? x) 0 x))) xs)]
+                            [result (vec seen) (.-length xs)]))]
+              (mapv run [(fn [xs x] (aset xs 2 9))
+                         (fn [xs x] (if (= x 2) (.push xs 4) nil))
+                         (fn [xs x] (if (= x 2) (.pop xs) nil))
+                         (fn [xs x] (if (= x 2) (set! (.-length xs) 1) nil))
+                         (fn [xs x] (if (= x 2) (set! (.-length xs) 5) nil))]))"#,
+            "nil",
+        ),
+        (
+            "kv fallback reads mutated array entries and length",
+            "",
+            r#"(let [entries (vec (seq (array-map :a 1 :b 2 :c 3 :d 9)))
+                     run (fn [mutate]
+                           (let [xs (js* "[~{},~{},~{}]" (nth entries 0) (nth entries 1) (nth entries 2))
+                                 result (reduce-kv (fn [a k v] (if (= k :a) (mutate xs (nth entries 3)) nil)
+                                                    (conj a [k v])) [] xs)]
+                             [result (.-length xs)]))]
+              (mapv run [(fn [xs entry] (js* "(~{}[1]=~{})" xs entry))
+                         (fn [xs entry] (js* "~{}.push(~{})" xs entry))
+                         (fn [xs entry] (.pop xs))
+                         (fn [xs entry] (set! (.-length xs) 1))]))"#,
+            "nil",
+        ),
+        (
+            "array element getters stay incremental and stop at reduced",
+            "",
+            r#"(let [seen (js/Array.) xs (js* "Object.defineProperty([1,2],1,{get(){~{}.push('read');throw new Error('tail');}})" seen)
+                     stopped (reduce (fn [a x] (.push seen "step") (reduced x)) nil xs)
+                     error (try (reduce (fn [a x] (.push seen "step") x) nil xs)
+                                (catch :default e (.-message e)))]
+              [stopped error (vec seen)])"#,
+            "nil",
+        ),
+        (
             "direct kv protocol rejects non implementations",
             "(defrecord R [x])",
             r#"[(mapv (fn [c] (try (-kv-reduce c (fn [a k v] (conj a [k v])) [])
