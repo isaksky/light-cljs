@@ -1097,6 +1097,7 @@ const native = (() => {
     // whether its binding was registered (a declaration counts).
     nativeRootExists:(name,binding)=>{
       const bindings=globalThis.__lightCompilerRoots;
+      if(bindingOverlays.has(name))return binding||bindingOverlays.get(name)!==undefined;
       if(!(name in bindings))return false;
       if(binding)return true;
       if(roots.has(name)&&roots.get(name).unit===null)return false;
@@ -1177,6 +1178,23 @@ const native = (() => {
 })();
 globalThis.__lightNativeRuntime=native;
 const roots=new Map();
+// Each invocation of this runtime belongs to one VM task. Overlay snapshots
+// stay in its saved frames across need/producer waits and context lending;
+// saving a binding must never force, replace, or reset a root's slot.
+const bindingOverlays=new Map();
+globalThis.__lightSaveCompilerBinding=name=>[bindingOverlays.has(name),bindingOverlays.get(name)];
+globalThis.__lightBindCompilerRoot=(name,value)=>{bindingOverlays.set(name,value);};
+globalThis.__lightRestoreCompilerBinding=(name,saved)=>{
+  if(saved[0])bindingOverlays.set(name,saved[1]);else bindingOverlays.delete(name);
+};
+// Bound set! writes the overlay, including when its saved value is nil or
+// false. Keep ordinary writes on the existing property path; the engine's
+// Proxy set trap is not needed for compiler-owned bindings.
+globalThis.__lightSetCompilerRoot=(name,value)=>{
+  if(bindingOverlays.has(name))bindingOverlays.set(name,value);
+  else globalThis.__lightCompilerRoots[name]=value;
+  return value;
+};
 let initializerSerial=0;
 const initializerStack=[];
 globalThis.__lightInitializerUnit=null;
@@ -1238,7 +1256,10 @@ globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,g
 };
 globalThis.__lightEnterCompilerFrontier=next=>decl.enter(next);
 globalThis.__lightLeaveCompilerFrontier=()=>decl.leave();
-globalThis.__lightCompilerRoots={};
+globalThis.__lightCompilerRoots=new Proxy({}, {
+  get:(target,name,receiver)=>bindingOverlays.has(name)?bindingOverlays.get(name):Reflect.get(target,name,receiver),
+  has:(target,name)=>bindingOverlays.has(name)||Reflect.has(target,name),
+});
 const values=new Map();
 globalThis.__lightResult=null;
 globalThis.__lightFailure=null;

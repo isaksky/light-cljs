@@ -2187,6 +2187,177 @@ fn demands_a_real_helper_without_replaying_the_macro() {
 }
 
 #[test]
+fn demanded_helper_bindings_preserve_overlays_and_restore_after_errors() {
+    for (definitions, body, expected) in [
+        (
+            "(def ^:dynamic *x* :root) (def ^:dynamic *y* :other)",
+            "[(binding [*x* nil] [*x* (binding [*x* false] *x*) *x*])
+              (binding [*x* :outer] (binding [*x* *y* *y* *x*] [*x* *y*]))
+              *x* *y*]",
+            "[[nil false nil] [:other :outer] :root :other]\n",
+        ),
+        (
+            "(def ^:dynamic *x* :root) (defn value [] *x*)",
+            r#"[(try (binding [*x* false] (throw (js/Error. (str (value)))))
+                    (catch :default e (.-message e)))
+                (with-redefs [value (fn [] nil)] (value)) (value) *x*]"#,
+            "[\"false\" nil :root :root]\n",
+        ),
+        (
+            "(def effects (atom []))
+             (def ^:dynamic *x* (do (swap! effects conj :root) :root))
+             (defn value [] (swap! effects conj :value) *x*)",
+            "(let [a (binding [*x* false] (value))
+                   before @effects root *x*]
+               [a before root (value) @effects])",
+            "[false [:value] :root :root [:value :root :value]]\n",
+        ),
+        (
+            "(declare ^:dynamic *x*)",
+            "[(binding [*x* nil] [(exists? *x*) *x*])
+              (binding [*x* false] [(exists? *x*) *x*])
+              (binding [*x* js/undefined] [(exists? *x*) *x*]) (exists? *x*)]",
+            "[[true nil] [true false] [false nil] false]\n",
+        ),
+        (
+            "(def ^:dynamic *x* 1) (def ^:dynamic *y* 2)",
+            r#"[(binding [*x* 3] (set! *x* 4) *x*)
+                (try (binding [*x* 10 *y* (throw (js/Error. "entry"))] nil)
+                     (catch :default e (.-message e))) *x* *y*]"#,
+            "[4 \"entry\" 1 2]\n",
+        ),
+        (
+            // The root fails in the macro host; Node can execute the emitted
+            // program to check the captured compile-time result too.
+            "(def ^:dynamic *x* (if (exists? js/process) :application
+                                  (throw (js/Error. \"root failure\"))))",
+            r#"[(try *x* (catch :default e (.-message e)))
+                (binding [*x* nil] *x*)
+                (try *x* (catch :default e (.-message e)))]"#,
+            "[\"root failure\" nil \"root failure\"]\n",
+        ),
+    ] {
+        let source = format!(
+            "{definitions} (defn helper [] {body})
+             (defmacro probe [] (list 'quote (helper)))
+             (js/console.log (pr-str (probe)))"
+        );
+        assert_native_matches_legacy(&source, expected);
+    }
+}
+
+#[test]
+fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slots() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-helper-bindings");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+            (def events (atom []))
+            (def ^:dynamic *x* :root)
+            (defn leaf [tag] (swap! events conj [tag *x*]) *x*)
+            (defn helper [tag]
+              (binding [*x* tag]
+                (let [outer (leaf :outer)
+                      inner (with-redefs [leaf (fn [_] *x*)]
+                              (binding [*x* false] (leaf :inner)))
+                      thrown (try (binding [*x* nil]
+                                    (leaf :throw)
+                                    (throw (js/Error. "bound")))
+                                  (catch :default e (.-message e)))]
+                  [outer inner thrown (leaf :after) *x*])))
+            (defn fail [] (binding [*x* :failed] (throw (js/Error. "binding failure"))))
+            (defmacro probe [tag] (list 'quote [(helper tag) *x*]))
+            (defmacro log [] (list 'quote @events))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [helpers :refer [probe]])) (def value (probe :a))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [helpers :refer [probe]])) (def value (probe :b))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b] [helpers :refer [probe log]]))
+             (js/console.log (pr-str [a/value b/value (probe :app) (log)]))",
+        ),
+        (
+            "error.cljs",
+            "(ns error (:require [helpers :as h]))
+             (defmacro probe [] (h/fail)) (probe)",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let mut reference = None;
+    for jobs in [1, 2, 4, 8] {
+        let build = |entry, native| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            let mut stats = light_cljs::CompileStats::default();
+            let result = analyze_namespace_entry_recorded(
+                entry,
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                EntryRecorders {
+                    stats: Some(&mut stats),
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    #[cfg(debug_assertions)]
+                    perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                        seed: 520,
+                        limits: Some(light_cljs::scheduler::Limits {
+                            batch_jobs: 1,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+            if native && result.is_ok() {
+                assert!(stats.native_helpers.units_evaluated > 0);
+                assert!(stats.lanes.entered > 0);
+            }
+            result.map(|(program, _)| emit_js(&program))
+        };
+        let native = build("app", true).unwrap_or_else(|e| panic!("jobs {jobs}: {e}"));
+        assert_eq!(
+            program_output(&native),
+            "[[[:a false \"bound\" :a :a] :root] [[:b false \"bound\" :b :b] :root] \
+             [[:app false \"bound\" :app :app] :root] \
+             [[:outer :a] [:throw nil] [:after :a] [:outer :b] [:throw nil] [:after :b] \
+             [:outer :app] [:throw nil] [:after :app]]]\n",
+            "jobs {jobs}"
+        );
+        if let Some(previous) = &reference {
+            assert_eq!(&native, previous, "jobs {jobs}");
+        }
+        reference = Some(native.clone());
+        let error = build("error", true).unwrap_err().to_string();
+        assert!(
+            error.contains("binding failure") && error.contains("macro error/probe"),
+            "{error}"
+        );
+        #[cfg(feature = "quickjs")]
+        {
+            assert_eq!(native, build("app", false).unwrap(), "jobs {jobs}");
+            let legacy = build("error", false).unwrap_err().to_string();
+            assert!(
+                legacy.contains("binding failure") && legacy.contains("macro error/probe"),
+                "{legacy}"
+            );
+        }
+    }
+}
+
+#[test]
 fn source_macros_expand_inside_on_demand_helpers() {
     for source in [
         "(defmacro one [] 1) (def v (one)) (defmacro read-v [] v) (js/console.log (read-v))",

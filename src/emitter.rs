@@ -8096,6 +8096,14 @@ impl<'a> Emitter<'a> {
                 self.output.push(')');
             }
             ExprKind::SetGlobal { target, value } => {
+                if self.native_forms && self.compiler_binding(*target) {
+                    self.output.push_str("globalThis.__lightSetCompilerRoot(");
+                    self.binding_name(*target);
+                    self.output.push_str(", ");
+                    self.value(*value);
+                    self.output.push(')');
+                    return;
+                }
                 let interop = matches!(
                     self.program.exprs[target.0].kind,
                     ExprKind::JsGlobal(_) | ExprKind::Property { .. } | ExprKind::JsIndex { .. }
