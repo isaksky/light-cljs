@@ -1434,3 +1434,56 @@ Both executions print `484264`. This was checked on macOS aarch64 with Homebrew
 Rust/Cargo 1.99.1 and Babashka 1.12.218. It demonstrates this seeded build and
 application result; the unsupported operations listed above remain boundaries
 for other macro workloads.
+
+## Native helper bindings and Penpot (light-cljs-520, 2026-10-27)
+
+At `10c883cc`, demanded source helpers have task-owned binding overlays and
+source-order installation as described above. The cold-root regression first
+reproduced a two-slot result capturing `:app` instead of the one-slot `:a`;
+joining the existing effect lane before installation fixes that difference.
+The held-unit case also verifies inherited lane progress without replay.
+
+Validation on macOS arm64, Homebrew Rust/Cargo 1.99.1 and Node 26.12.1:
+
+- Native evaluator, macro, reader and Proxy targets pass 127 tests. With
+  `bbp-macros,quickjs`, the library, binaries and those targets pass all 426
+  tests, with one normally ignored test. Both runs use three build jobs and
+  eight test workers. The binding regressions cover nested overlays, bound
+  `set!`, simultaneous initializers, throws, pending/initialized/failed roots,
+  nil/false/undefined, task isolation and one/two/four/eight-slot output equality.
+- QuickJS-only library, binaries and available integration targets other than
+  `compiler` run 824 tests: 822 pass and two retain the documented environment
+  failures. The playground wasm crate discovers the enclosing main-checkout
+  workspace; `a_failed_restart_waits_for_work` cannot execute `ps` in the sandbox.
+  The full `compiler` target and its all-target lint still cannot build eight
+  absent pinned research includes. Engine-free all-target checking also finds
+  existing unguarded legacy-engine test references. Research was left untouched.
+- All 2,123 engine tests and seven doctests pass. These results are reused
+  after the binding-lane change because engine sources and inputs are unchanged.
+  Compiler/engine formatting and direct JavaScript runtime checks pass. Strict
+  engine Clippy retains nine diagnostics in `deprecated`,
+  `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`. Allowing
+  only those categories passes all engine targets and the native/native-plus-
+  QuickJS compiler library, binaries and macro/reader/Proxy targets. Engine-free
+  library/binary Clippy passes strictly. The default V8 suite is reserved for
+  the orchestrator because its machine cache is inaccessible to this worker.
+
+For Penpot only, `10c883cc` was temporarily merged with unlanded light-cljs-518
+at `bef2fb01099bdcf0bd32bdb7ab7223eb38b0d411`, producing tree
+`2eba74106282c24e3ea8de4a0cb1c2adcd83af1c`. The native-only debug CLI was rebuilt.
+Both documented entries were run with five absolute read-only roots,
+`--jobs 1 --no-cache --optimize none --esm --stats`, 100,000,000 macro expansions,
+4,000,000,000 nodes, 3,600,000 ms, 4,000,000,000 heap bytes and a
+1,000,000,000,000 poll budget. Both pass the missing binding-service call and
+exit 1 at this next distinct boundary, tracked by light-cljs-521:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:893:4: macro expansion: while expanding fnc: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:893:4: macro rumext.v2/fnc: big-boy-pants-js: TypeError: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2/compiler.cljc:171:1: rumext.v2.compiler/compile-form: undefined is not a function; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:320:1 (bytes 27920..28218)
+```
+
+Line 171 declares `compile-form` with `defmulti`. A reduced two-namespace fixture
+with a demanded defmulti inside a binding reproduces the initializer failure;
+the QuickJS-only CLI compiles it and Node prints `:bound`. The innermost missing
+service still needs diagnosis in light-cljs-521. Neither Penpot entry completes.
+The temporary merge was aborted afterward; no light-cljs-518 commits or research
+changes are included in this branch.
