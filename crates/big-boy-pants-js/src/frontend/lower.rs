@@ -6864,6 +6864,9 @@ impl<'s> Lowerer<'s> {
                 "`{RESERVED_BINDING}.{name}` takes {k} argument{}, got {n}",
                 if k == 1 { "" } else { "s" }
             )),
+            Arity::AtLeast(k) if n < k => Some(format!(
+                "`{RESERVED_BINDING}.{name}` takes at least {k} arguments, got {n}"
+            )),
             Arity::Pairs if !n.is_multiple_of(2) => Some(format!(
                 "`{RESERVED_BINDING}.{name}` takes key/value pairs (an even number of arguments), got {n}"
             )),
@@ -6880,6 +6883,12 @@ impl<'s> Lowerer<'s> {
             ));
         }
         match intrinsic.lowering {
+            Lowering::Call => {
+                for arg in args {
+                    self.expr(arg)?;
+                }
+                self.out().op_u16(Opcode::CallMethod, (n - 2) as u16, at);
+            }
             Lowering::Op(op) => {
                 for arg in args {
                     self.expr(arg)?;

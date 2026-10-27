@@ -285,6 +285,7 @@ instruction (operands, results and run-time errors: `crate::vm::intrinsics`,
 |------|-------------|--------|
 | `__rt.vector(x1, …, xn)` | `new_vector n` | new persistent vector |
 | `__rt.map(k1, v1, …, kn, vn)` | `new_map n` | new persistent map (even argument count) |
+| `__rt.call(receiver, callee, arg…)` | `call_method n` | call the evaluated callable with this receiver and operands, without an argument array or public property lookup; at least two arguments, ordinary call errors and suspension |
 | `__rt.count(c)` | `count` | element or entry count |
 | `__rt.nth(v, i)` | `nth` | vector element |
 | `__rt.get(c, k)`, `__rt.getOr(c, k, d)` | `get`, `get_or` | lookup (fails if absent / `d` if absent) |

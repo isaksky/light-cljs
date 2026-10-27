@@ -73,6 +73,7 @@ pub(crate) const RESERVED_BINDING: &str = "__rt";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Arity {
     Exactly(usize),
+    AtLeast(usize),
     /// Any number (up to the instruction's u16 count operand).
     Any,
     /// An even number: key/value pairs.
@@ -87,6 +88,9 @@ pub(crate) enum Lowering {
     /// The arguments, then this instruction with the element count (vector)
     /// or entry count (map) as its operand.
     Counted(Opcode),
+    /// `__rt.call(receiver, callee, ...args)`: evaluate the receiver and
+    /// callable before the operands, then use the ordinary VM method call.
+    Call,
     /// `__rt.effect(op, arg)`: `op` must be an integer literal in
     /// `0..=65535` (the `host_effect` operand); `arg` is evaluated, then
     /// `host_effect op`.
@@ -122,6 +126,11 @@ const fn op(name: &'static str, n: usize, opcode: Opcode) -> Intrinsic {
 
 /// The intrinsic table: `__rt.<name>(…)` lowers as listed.
 pub(crate) const INTRINSICS: &[Intrinsic] = &[
+    Intrinsic {
+        name: "call",
+        arity: Arity::AtLeast(2),
+        lowering: Lowering::Call,
+    },
     Intrinsic {
         name: "vector",
         arity: Arity::Any,

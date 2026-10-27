@@ -1191,7 +1191,7 @@ fn intrinsic_fixture_runs_collection_and_effect_intrinsics() {
             Opcode::HostEffect,
         ],
     );
-    // No intrinsic is a call: `__rt` is never loaded as a value.
+    // Collection/effect intrinsics never load `__rt` as a value.
     let ops = all_opcodes(&exe);
     let calls = ops.iter().filter(|&&op| op == Opcode::Call).count();
     assert_eq!(calls, 3, "only the three user-function calls: {ops:?}");
@@ -1974,6 +1974,69 @@ fn intrinsic_arguments_evaluate_left_to_right() {
              log"),
         123.0
     );
+}
+
+#[test]
+fn compiler_call_intrinsic_preserves_receivers_order_and_errors() {
+    for src in [
+        "__rt.call(null, function() { 'use strict'; return this; }) === null",
+        "const o = {x: 7}; function f(a, b) { return this.x + a + b; } f.call = () => 99; __rt.call(o, f, 2, 3) === 12",
+        "const f = function(x) { return this.x + x; }.bind({x: 7}, 2); __rt.call(null, f) === 9",
+        "let log = ''; function note(n, v) { log += n; return v; } const f = function(x) { log += '4'; return this.x + x; }; __rt.call(note(1, {x: 7}), note(2, f), note(3, 2)) === 9 && log === '1234'",
+        "let log = ''; let caught = false; try { __rt.call(null, 7, log += 'a'); } catch(e) { caught = e instanceof TypeError; } caught && log === 'a'",
+        "let caught = false; try { __rt.call(null, function() { throw 42; }); } catch(e) { caught = e === 42; } caught",
+    ] {
+        assert_eq!(eval(src), ValueView::Bool(true), "{src}");
+    }
+    for src in ["__rt.call()", "__rt.call(null)"] {
+        let error = compile_script("call", src).unwrap_err();
+        assert_eq!(error.kind, SyntaxErrorKind::Invalid);
+        assert!(error.message.contains("takes at least 2 arguments"));
+    }
+    uses(
+        &exe("__rt.call(null, function(x) { return x; }, 7)"),
+        &[Opcode::CallMethod],
+    );
+}
+
+#[test]
+fn compiler_call_intrinsic_waits_collects_and_migrates() {
+    let rt = Runtime::new();
+    let mut task = rt
+        .spawn(
+            &exe("let log = ''; const receiver = {x: 7};
+         const f = function(a, b) { log += 'c'; return this.x + a + b + __rt.need(112, 2); };
+         const result = __rt.call(receiver, f, (log += 'a', __rt.need(112, 1)), (log += 'b', 3));
+         result === 18 && log === 'abc'"),
+            &[],
+        )
+        .unwrap();
+    for _ in 0..2 {
+        let (next, outcome) = std::thread::spawn(move || {
+            let outcome = task.run().unwrap();
+            (task, outcome)
+        })
+        .join()
+        .unwrap();
+        task = next;
+        assert!(matches!(outcome, RunOutcome::Waiting(_)));
+        let request = task.take_producer_requests().pop().unwrap();
+        rt.collect().unwrap();
+        let value = rt.root(Primitive::Number(4.0));
+        task = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&value))
+            .unwrap()
+            .into_runnable()
+            .pop()
+            .unwrap();
+    }
+    let RunOutcome::Complete(value) = std::thread::spawn(move || task.run().unwrap())
+        .join()
+        .unwrap()
+    else {
+        panic!("call intrinsic did not complete")
+    };
+    assert_eq!(value.view(), ValueView::Bool(true));
 }
 
 /// Arrow functions (clj-quickjs-53) are closures with lexical arguments
