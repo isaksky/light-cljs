@@ -1630,8 +1630,8 @@ identity and frontier, and searched using native value equality and `isa?`.
 Dispatch supports exact keys, nested vector keys, explicit or global hierarchies,
 default methods, direct preferences, removal and reset. Hierarchy mutations are
 observed on every lookup. Exact table entries win before hierarchy/preference
-search, including a preference for an ancestor. The preference behavior matches the pinned CLJS/legacy
-runtime, whose recursive preference walks do not return inherited matches.
+search, including a preference for an ancestor. The preference behavior matches
+the pinned CLJS/legacy runtime, whose recursive preference walks do not return inherited matches.
 
 A native multimethod's dispatch and method functions resolve runtime services
 through the consuming task's global runtime. Multi-arity and variadic methods
@@ -1648,7 +1648,8 @@ checks this boundary at all four pool sizes.
 `demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size` is one
 12-row native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
 JavaScript as well as literal results. It covers scalar and structural keys,
-constructor/function keys, keyword/variadic dispatch, nested hierarchy dispatch, global hierarchy changes,
+constructor/function keys, keyword/variadic dispatch, nested hierarchy dispatch,
+global hierarchy changes,
 preferences and ambiguity/missing-method errors, mutations, explicit construction,
 source-frontier replacement, defonce, and binding restoration.
 `demanded_multimethod_effects_run_once_across_suspension_and_lending` checks shared
@@ -1676,3 +1677,60 @@ This call contains `#js` arrays. The native input bridge rejects every
 is tested with `js/Array.isArray`, and Node prints `true`. This different bridge
 gap is tracked by light-cljs-535. Neither Penpot entry completes; research was
 left unchanged.
+
+Compatibility verification used macOS arm64, Homebrew Rust/Cargo 1.99.1 and
+Node v26.12.1, `CARGO_BUILD_JOBS=3`, three native/engine test threads and eight
+nextest slots. On the implementation rebased onto `79f30c85`, the engine's
+all-target suite passes 2,135 tests and all seven doctests. The combined
+`bbp-macros,quickjs` library suite passes 346 tests (one ignored), and the
+multimethod comparisons/effect tests pass with 12 stress seeds.
+
+The complete legacy suite attempts retain their limitations explicitly:
+`LIGHT_CLJS_V8_CACHE=require cargo nextest run --locked -j 8 --no-fail-fast`
+runs 2,130 tests, with 2,129 passing and 109 skipped. QuickJS-only nextest
+(`--no-default-features --features quickjs -j 8 --no-fail-fast`) runs 2,053
+tests, with 2,051 passing and 108 skipped. Both fail the unchanged
+`playground_crate_checks_for_wasm32`: dedicated Cargo 1.99.0 resolves this
+nested worktree's `playground/crate` to the outer main checkout's workspace
+and rejects it before compiling Rust. The manifests, playground script and
+CLI test are byte-identical to master; `bb playground/build.bb lint`
+reproduces the same failure directly.
+
+The other QuickJS outcome is an explicitly terminated waiter test,
+`compilation_session::worker_tests::a_waiter_gets_the_analysis_after_the_application_took_the_program`,
+which remained in its wake hook for more than eight minutes. Its normal
+isolated retry on the implementation passes. Unchanged master `79f30c85`
+passes 200 ordinary isolated trials, but constraining only the test's
+scheduling with a barrier so the worker claims first reproduces the deadlock:
+the coordinator waits in the wake hook for `Prepared`, a state it can create
+only after returning from that hook. A process sample confirms that loop.
+The barrier experiment was temporary and all source files were restored;
+no assertions, skips, or production code were changed for these limitations.
+The default V8 run passes this waiter test.
+
+Compiler default-feature strict Clippy passes. Strict engine Clippy retains
+the nine documented baseline diagnostics (`deprecated`,
+`clippy::chunks_exact_to_as_chunks`, `clippy::byte_char_slices`); allowing only
+those categories on the command line passes engine and combined compiler
+all-target checks. Engine-free all-target Clippy reaches unchanged benchmark
+tests that call unavailable `Evaluator::{evaluate_js,string,number}` methods;
+engine-free library/binary strict Clippy passes. Native-only all-target lint
+similarly encounters legacy tests requiring QuickJS; native production lint
+passes with only the three engine baseline categories allowed. Rust formatting
+passes for compiler and engine. Legacy results are retained across the final
+native-only runtime/test-string changes: legacy runtime and lowering behavior
+are unchanged. No emitted-runtime manifest regeneration is needed because
+`src/js_runtime.js` is unchanged.
+
+On frozen code `048ad87d` over `79f30c85`, the full native-only `bbp_macros`
+suite passes all 85 tests with `LIGHT_CLJS_STRESS_SEEDS=12` and three test
+threads. This includes declared/repeated defmulti state and a later ordinary
+replacement definition. The native-only CLI was rebuilt and both Penpot
+commands were repeated on that code with all five read-only roots and every
+budget above; both retain exactly the compiler-literal diagnostic at line 906.
+The refreshed combined library suite and all three multimethod tests also pass
+on this frozen code (346 plus three tests, one ignored library test, 12 stress
+seeds). Combined all-target Clippy passes with only the three known engine
+baseline categories allowed on the command line. The final subsequent commit
+changes these verification notes only; its check results are reused because
+code, dependencies and relevant test inputs are unchanged.
