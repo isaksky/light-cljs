@@ -633,6 +633,28 @@ fn positional_storage_obeys_the_aggregate_byte_limit() {
 }
 
 #[test]
+fn structural_key_operations_propagate_sorted_comparison_errors() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function f() {
+        const stored = __rt.formSortedMap(__rt.formVector(1, "v"));
+        const query = __rt.formLiteralMap(__rt.formVector("x", "v"));
+        const map = __rt.formLiteralMap(__rt.formVector(stored, "stored"));
+        const operations = [() => __rt.formGet(map, query, "missing"),
+            () => __rt.formAssoc(map, query, "new"), () => __rt.formDissoc(map, query)];
+        for (const op of operations) {
+            try { op(); return false; }
+            catch(e) { if (e.message !== "Cannot compare 1 to x") return false; }
+        }
+        return true;
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
 fn sorted_comparison_diagnostics_obey_heap_budget() {
     use big_boy_pants_js::{HeapPolicy, VmLimits};
     let policy = |bytes| HeapPolicy {

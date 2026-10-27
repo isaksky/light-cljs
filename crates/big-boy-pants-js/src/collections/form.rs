@@ -751,7 +751,7 @@ fn map_assoc(
 ) -> Result<Option<FormMap>, CollectionError> {
     if let FormMap::Positional(pairs) = map {
         for i in (0..pairs.len()).step_by(2) {
-            if equals(heap, &key, &pairs.get(i).unwrap()) {
+            if try_equals(heap, &key, &pairs.get(i).unwrap())? {
                 return if identical(&value, &pairs.get(i + 1).unwrap()) {
                     Ok(None)
                 } else {
@@ -783,21 +783,25 @@ fn map_assoc(
     };
     let h = trie_hash(hash(heap, &key));
     map.try_assoc_with(heap, h, key, value, &|stored, query| {
-        equals(heap, query, stored)
+        try_equals(heap, query, stored)
     })
     .map(|m| m.map(FormMap::Hashed))
 }
 
-fn map_get(heap: &Heap, map: &FormMap, key: &Value) -> Option<Value> {
+fn map_get(heap: &Heap, map: &FormMap, key: &Value) -> Result<Option<Value>, CollectionError> {
     match map {
         FormMap::Hashed(map) => {
             let h = trie_hash(hash(heap, key));
-            map.get_with(h, key, &|stored, query| equals(heap, query, stored))
+            map.get_with(h, key, &|stored, query| try_equals(heap, query, stored))
         }
-        FormMap::Positional(pairs) => (0..pairs.len())
-            .step_by(2)
-            .find(|&i| equals(heap, key, &pairs.get(i).unwrap()))
-            .and_then(|i| pairs.get(i + 1)),
+        FormMap::Positional(pairs) => {
+            for i in (0..pairs.len()).step_by(2) {
+                if try_equals(heap, key, &pairs.get(i).unwrap())? {
+                    return Ok(pairs.get(i + 1));
+                }
+            }
+            Ok(None)
+        }
     }
 }
 
@@ -805,19 +809,19 @@ fn map_dissoc(heap: &Heap, map: &FormMap, key: &Value) -> Result<Option<FormMap>
     match map {
         FormMap::Hashed(map) => map
             .try_dissoc_with(heap, trie_hash(hash(heap, key)), key, &|stored, query| {
-                equals(heap, query, stored)
+                try_equals(heap, query, stored)
             })
             .map(|m| m.map(FormMap::Hashed)),
         FormMap::Positional(_) => {
-            if map_get(heap, map, key).is_none() {
+            if map_get(heap, map, key)?.is_none() {
                 return Ok(None);
             }
-            let mut retained: Vec<Value> = map
-                .to_vec()
-                .into_iter()
-                .filter(|(k, _)| !equals(heap, key, k))
-                .flat_map(|(k, v)| [k, v])
-                .collect();
+            let mut retained = Vec::new();
+            for (k, v) in map.to_vec() {
+                if !try_equals(heap, key, &k)? {
+                    retained.extend([k, v]);
+                }
+            }
             // CLJS reserves space for exactly one removed entry but copies
             // every unequal key. Equal lowered keys therefore leave holes.
             retained.resize((map.len() - 1) * 2, Value::Undefined);
@@ -1080,7 +1084,7 @@ pub(crate) fn new_map(heap: &Heap, entries: &[(Value, Value)]) -> Result<Value, 
 /// `set` with `member` added, or `None` when an equal member is present
 /// (the stored member is kept, as `conj` of a present member does).
 fn set_add(heap: &Heap, set: &FormMap, member: Value) -> Result<Option<FormMap>, CollectionError> {
-    if map_get(heap, set, &member).is_some() {
+    if map_get(heap, set, &member)?.is_some() {
         return Ok(None);
     }
     if set.positional() && set.len() >= 8 {
@@ -1138,9 +1142,13 @@ pub(crate) fn array_map_from_sequence(
     }
     let mut pairs = PVector::default();
     for [key, value] in values.as_chunks::<2>().0 {
-        let index = (0..pairs.len())
-            .step_by(2)
-            .find(|&i| equals(heap, key, &pairs.get(i).unwrap()));
+        let mut index = None;
+        for i in (0..pairs.len()).step_by(2) {
+            if try_equals(heap, key, &pairs.get(i).unwrap())? {
+                index = Some(i);
+                break;
+            }
+        }
         pairs = if let Some(i) = index {
             pairs.try_set(heap, i + 1, value.clone())?
         } else {
@@ -1351,10 +1359,17 @@ pub(crate) fn record_entries(
 
 /// A record's value for `key`: a field by its keyword, else an extension
 /// entry by an equal key.
-pub(crate) fn record_get(heap: &Heap, s: &StructBody, key: &Value) -> Option<Value> {
+pub(crate) fn record_get(
+    heap: &Heap,
+    s: &StructBody,
+    key: &Value,
+) -> Result<Option<Value>, CollectionError> {
     match field_index(heap, &s.info, key) {
-        Some(i) => s.fields.get(i),
-        None => s.ext_map(heap).and_then(|ext| map_get(heap, &ext, key)),
+        Some(i) => Ok(s.fields.get(i)),
+        None => match s.ext_map(heap) {
+            Some(ext) => map_get(heap, &ext, key),
+            None => Ok(None),
+        },
     }
 }
 
@@ -1829,7 +1844,7 @@ pub(crate) fn get(
         return Ok(exists.then(|| pairs.get(i + 1).unwrap()));
     }
     match form_object(heap, coll).as_deref().map(FormObject::body) {
-        Some(FormBody::Map(map) | FormBody::Set(map)) => Ok(map_get(heap, map, key)),
+        Some(FormBody::Map(map) | FormBody::Set(map)) => map_get(heap, map, key),
         Some(FormBody::Vector(items)) => Ok(index_from_value(key).ok().and_then(|i| items.get(i))),
         _ => Err(wrong(heap, "form vector, form map or form set", coll)),
     }

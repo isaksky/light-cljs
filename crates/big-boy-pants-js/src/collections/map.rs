@@ -34,7 +34,7 @@ const BITS: u32 = 5;
 const MASK: u64 = (1 << BITS) - 1;
 
 /// A key equality `eq(stored, probe)` for the generic trie operations.
-pub(crate) type KeyEq<'a> = &'a dyn Fn(&Value, &Value) -> bool;
+pub(crate) type KeyEq<'a> = &'a dyn Fn(&Value, &Value) -> Result<bool, CollectionError>;
 
 /// SameValueZero key equality. See the module docs.
 pub(crate) fn key_eq(a: &Value, b: &Value) -> bool {
@@ -42,6 +42,11 @@ pub(crate) fn key_eq(a: &Value, b: &Value) -> bool {
         (Value::Number(x), Value::Number(y)) => x == y || (x.is_nan() && y.is_nan()),
         _ => a.strict_equals(b),
     }
+}
+
+#[allow(clippy::unnecessary_wraps)] // Adapter to the fallible structural-key API.
+fn infallible_key_eq(a: &Value, b: &Value) -> Result<bool, CollectionError> {
+    Ok(key_eq(a, b))
 }
 
 /// The stored form of a key: `-0` is stored as `+0` (as JavaScript `Map`
@@ -263,7 +268,13 @@ impl PMap {
         key: Value,
         value: Value,
     ) -> Result<Option<PMap>, CollectionError> {
-        self.try_assoc_with(heap, key_hash(&key), canonical_key(key), value, &key_eq)
+        self.try_assoc_with(
+            heap,
+            key_hash(&key),
+            canonical_key(key),
+            value,
+            &infallible_key_eq,
+        )
     }
 
     /// A new version mapping `key` to `value` (stored as given) under a
@@ -287,7 +298,7 @@ impl PMap {
         heap: &crate::heap::Heap,
         key: &Value,
     ) -> Result<Option<PMap>, CollectionError> {
-        self.try_dissoc_with(heap, key_hash(key), key, &key_eq)
+        self.try_dissoc_with(heap, key_hash(key), key, &infallible_key_eq)
     }
 
     /// A new version without `key`, or `None` when the key is absent;
@@ -324,30 +335,38 @@ impl PMap {
     }
 
     fn get_hashed(&self, hash: u64, key: &Value) -> Option<Value> {
-        self.get_with(hash, key, &key_eq)
+        self.get_with(hash, key, &infallible_key_eq)
+            .expect("SameValueZero equality cannot fail")
     }
 
     /// Lookup with a caller-supplied key equality: `eq(stored, probe)`
     /// must be consistent with `hash` (equal keys have equal hashes). The
     /// structural form maps of `crate::collections::form` use this with
     /// their own equality; the SameValueZero API above passes [`key_eq`].
-    pub(crate) fn get_with(&self, hash: u64, key: &Value, eq: KeyEq<'_>) -> Option<Value> {
-        let mut node = self.root.as_deref()?;
+    pub(crate) fn get_with(
+        &self,
+        hash: u64,
+        key: &Value,
+        eq: KeyEq<'_>,
+    ) -> Result<Option<Value>, CollectionError> {
+        let Some(mut node) = self.root.as_deref() else {
+            return Ok(None);
+        };
         let mut shift = 0;
         loop {
             match &node.kind {
                 Kind::Bitmap { bitmap, entries } => {
                     let bit = bit_for(hash, shift);
                     if bitmap & bit == 0 {
-                        return None;
+                        return Ok(None);
                     }
-                    match entries.get(position(*bitmap, bit))? {
+                    match &entries[position(*bitmap, bit)] {
                         Entry::Pair {
                             hash: h,
                             key: k,
                             value,
                         } => {
-                            return (*h == hash && eq(k, key)).then(|| value.clone());
+                            return Ok((*h == hash && eq(k, key)?).then(|| value.clone()));
                         }
                         Entry::Child(child) => {
                             node = child;
@@ -356,7 +375,12 @@ impl PMap {
                     }
                 }
                 Kind::Collision { pairs, .. } => {
-                    return pairs.iter().find(|(k, _)| eq(k, key)).map(|p| p.1.clone());
+                    for (k, value) in pairs {
+                        if eq(k, key)? {
+                            return Ok(Some(value.clone()));
+                        }
+                    }
+                    return Ok(None);
                 }
             }
         }
@@ -364,7 +388,13 @@ impl PMap {
 
     #[cfg(test)]
     fn assoc_hashed(&self, hash: u64, key: Value, value: Value) -> Option<PMap> {
-        uncharged(self.assoc_charged(NodeCharge::NONE, hash, canonical_key(key), value, &key_eq))
+        uncharged(self.assoc_charged(
+            NodeCharge::NONE,
+            hash,
+            canonical_key(key),
+            value,
+            &infallible_key_eq,
+        ))
     }
 
     /// [`PMap::try_assoc_with`] with new nodes charged by `charge`.
@@ -398,7 +428,7 @@ impl PMap {
 
     #[cfg(test)]
     fn dissoc_hashed(&self, hash: u64, key: &Value) -> Option<PMap> {
-        uncharged(self.dissoc_charged(NodeCharge::NONE, hash, key, &key_eq))
+        uncharged(self.dissoc_charged(NodeCharge::NONE, hash, key, &infallible_key_eq))
     }
 
     /// [`PMap::try_dissoc_with`] with new nodes charged by `charge`.
@@ -592,7 +622,7 @@ fn assoc_in(
                     key: k,
                     value: v,
                 } => {
-                    if *h == hash && eq(k, &key) {
+                    if *h == hash && eq(k, &key)? {
                         if identical(v, &value) {
                             return Ok(Assoc::Unchanged);
                         }
@@ -635,7 +665,14 @@ fn assoc_in(
             // Collision nodes sit below every hash digit, so every key that
             // reaches one has the node's full hash.
             debug_assert_eq!(*h, hash);
-            match pairs.iter().position(|(k, _)| eq(k, &key)) {
+            let mut index = None;
+            for (i, (k, _)) in pairs.iter().enumerate() {
+                if eq(k, &key)? {
+                    index = Some(i);
+                    break;
+                }
+            }
+            match index {
                 Some(i) if identical(&pairs[i].1, &value) => Ok(Assoc::Unchanged),
                 Some(i) => Ok(Assoc::Replaced(Node::collision(
                     charge,
@@ -678,7 +715,7 @@ fn dissoc_in(
             let replacement = match &entries[pos] {
                 Entry::Pair {
                     hash: h, key: k, ..
-                } if *h == hash && eq(k, key) => None,
+                } if *h == hash && eq(k, key)? => None,
                 Entry::Pair { .. } => return Ok(Dissoc::Absent),
                 Entry::Child(child) => match dissoc_in(charge, child, shift + BITS, hash, key, eq)?
                 {
@@ -716,7 +753,14 @@ fn dissoc_in(
             Ok(Dissoc::Node(node))
         }
         Kind::Collision { hash: h, pairs } => {
-            let Some(i) = pairs.iter().position(|(k, _)| eq(k, key)) else {
+            let mut index = None;
+            for (i, (k, _)) in pairs.iter().enumerate() {
+                if eq(k, key)? {
+                    index = Some(i);
+                    break;
+                }
+            }
+            let Some(i) = index else {
                 return Ok(Dissoc::Absent);
             };
             match pairs.len() {
@@ -760,6 +804,33 @@ mod tests {
 
     fn num(n: f64) -> Value {
         Value::Number(n)
+    }
+
+    #[test]
+    fn structural_key_errors_propagate_from_pairs_and_collisions() {
+        let heap = crate::heap::Heap::default();
+        let mut map = PMap::default();
+        for key in [num(1.0), num(2.0)] {
+            map = map
+                .try_assoc_with(&heap, 0, key, num(0.0), &infallible_key_eq)
+                .unwrap()
+                .unwrap();
+            let fail =
+                |_: &Value, _: &Value| Err(CollectionError::CannotCompare("key failure".into()));
+            assert!(matches!(
+                map.get_with(0, &num(3.0), &fail),
+                Err(CollectionError::CannotCompare(_))
+            ));
+            assert!(matches!(
+                map.try_assoc_with(&heap, 0, num(3.0), num(0.0), &fail),
+                Err(CollectionError::CannotCompare(_))
+            ));
+            assert!(matches!(
+                map.try_dissoc_with(&heap, 0, &num(3.0), &fail),
+                Err(CollectionError::CannotCompare(_))
+            ));
+        }
+        assert_eq!(map.len(), 2);
     }
 
     /// Assert `map` holds exactly `model` (an association list).
@@ -965,9 +1036,9 @@ mod tests {
                 let map = live[next() % live.len()].clone();
                 let key = num((next() % 700) as f64);
                 let updated = if next() % 4 == 0 {
-                    map.try_dissoc_with(&heap, hash(&key), &key, &key_eq)
+                    map.try_dissoc_with(&heap, hash(&key), &key, &infallible_key_eq)
                 } else {
-                    map.try_assoc_with(&heap, hash(&key), key, num(step as f64), &key_eq)
+                    map.try_assoc_with(&heap, hash(&key), key, num(step as f64), &infallible_key_eq)
                 };
                 drop(map);
                 if let Some(updated) = updated.unwrap() {
@@ -1004,11 +1075,11 @@ mod tests {
         // Every key hashes to 0: the second key merges 13 levels down to a
         // collision node.
         let one = PMap::default()
-            .try_assoc_with(&heap, 0, num(0.0), num(0.0), &key_eq)
+            .try_assoc_with(&heap, 0, num(0.0), num(0.0), &infallible_key_eq)
             .unwrap()
             .unwrap();
         let two = one
-            .try_assoc_with(&heap, 0, num(1.0), num(1.0), &key_eq)
+            .try_assoc_with(&heap, 0, num(1.0), num(1.0), &infallible_key_eq)
             .unwrap()
             .unwrap();
         type Op<'a> = &'a dyn Fn() -> Result<Option<PMap>, CollectionError>;
@@ -1017,13 +1088,13 @@ mod tests {
             ("replace", &|| wide.try_assoc(&heap, num(17.0), Value::Null)),
             ("remove", &|| wide.try_dissoc(&heap, &num(17.0))),
             ("merge", &|| {
-                one.try_assoc_with(&heap, 0, num(1.0), num(1.0), &key_eq)
+                one.try_assoc_with(&heap, 0, num(1.0), num(1.0), &infallible_key_eq)
             }),
             ("collide", &|| {
-                two.try_assoc_with(&heap, 0, num(2.0), num(2.0), &key_eq)
+                two.try_assoc_with(&heap, 0, num(2.0), num(2.0), &infallible_key_eq)
             }),
             ("collapse", &|| {
-                two.try_dissoc_with(&heap, 0, &num(1.0), &key_eq)
+                two.try_dissoc_with(&heap, 0, &num(1.0), &infallible_key_eq)
             }),
         ];
         for (name, op) in ops {
@@ -1046,7 +1117,10 @@ mod tests {
         let model: Vec<(Value, Value)> =
             (0..5000).map(|i| (num(i as f64), num(i as f64))).collect();
         check(&wide, &model);
-        assert_eq!(two.get_with(0, &num(1.0), &key_eq), Some(num(1.0)));
+        assert_eq!(
+            two.get_with(0, &num(1.0), &infallible_key_eq).unwrap(),
+            Some(num(1.0))
+        );
         assert_eq!(two.len(), 2);
     }
 

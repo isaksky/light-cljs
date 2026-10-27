@@ -337,6 +337,21 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "structural key operations propagate nested sorted comparison errors",
+            "(defrecord KeyRecord [])",
+            r#"(let [stored (sorted-map 1 :v) query (array-map "x" :v)
+                     m (array-map stored :stored)
+                     probe (fn [f] (try (f) (catch :default e [(.-name e) (.-message e)])))]
+              (mapv probe [(fn [] (get m query :missing))
+                           (fn [] (contains? m query))
+                           (fn [] (assoc m query :new))
+                           (fn [] (dissoc m query))
+                           (fn [] (array-map stored :stored query :new))
+                           (fn [] (contains? #{stored} query))
+                           (fn [] (get (assoc (KeyRecord.) stored :stored) query :missing))]))"#,
+            "nil",
+        ),
+        (
             "sorted comparison messages preserve readable collection operands",
             "",
             r#"(let [message (fn [k] (try (get (sorted-map 1 :v) k)

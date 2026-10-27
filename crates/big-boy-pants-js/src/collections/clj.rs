@@ -872,7 +872,7 @@ fn nth_of_sequence(heap: &Heap, coll: &Value, index: usize) -> Result<Option<Val
 pub(crate) fn get(heap: &Heap, coll: &Value, key: &Value, default: &Value) -> Result<Value> {
     Ok(match shape(heap, coll) {
         Shape::Form(_, f) => match f.body() {
-            FormBody::Struct(s) if s.info.record => form::record_get(heap, s, key),
+            FormBody::Struct(s) if s.info.record => form::record_get(heap, s, key)?,
             FormBody::Map(_) | FormBody::Set(_) => {
                 let coll = form::unwrap(heap, coll.clone());
                 form::get(heap, &coll, key)?
@@ -946,7 +946,7 @@ pub(crate) fn invoke(
 pub(crate) fn contains(heap: &Heap, coll: &Value, key: &Value) -> Result<bool> {
     Ok(match shape(heap, coll) {
         Shape::Form(_, f) => match f.body() {
-            FormBody::Struct(s) if s.info.record => form::record_get(heap, s, key).is_some(),
+            FormBody::Struct(s) if s.info.record => form::record_get(heap, s, key)?.is_some(),
             FormBody::Map(_) | FormBody::Set(_) => {
                 let coll = form::unwrap(heap, coll.clone());
                 form::get(heap, &coll, key)?.is_some()
