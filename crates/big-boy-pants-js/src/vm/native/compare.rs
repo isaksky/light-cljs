@@ -17,6 +17,7 @@ type Order = (bool, [u8; 7], usize);
 type Entries = BTreeMap<Order, (Value, Value)>;
 
 const STRING_HASH_STEP_UNITS: usize = 128;
+const NAMESPACE_STEP_UNITS: usize = 128;
 
 #[derive(Clone, Copy, Debug)]
 struct Context {
@@ -90,6 +91,7 @@ struct Namespace {
     valid: bool,
     first: bool,
     name: Option<JsString>,
+    comparing: Option<Box<NamespaceComparison>>,
 }
 
 impl Namespace {
@@ -98,12 +100,13 @@ impl Namespace {
             valid: enabled,
             first: true,
             name: None,
+            comparing: None,
         }
     }
 
-    fn observe(&mut self, heap: &Heap, key: &Value) {
+    fn observe(&mut self, heap: &Heap, key: &Value) -> Result<(), Fault> {
         if !self.valid {
-            return;
+            return Ok(());
         }
         let key = form::unwrap(heap, key.clone());
         let object = form::form_object(heap, &key);
@@ -111,13 +114,28 @@ impl Namespace {
             object.as_deref().map(|f| f.body())
         else {
             self.valid = false;
-            return;
+            return Ok(());
         };
         if self.first {
             self.name = name.namespace.clone();
             self.first = false;
-        } else if self.name != name.namespace {
-            self.valid = false;
+        } else {
+            match (&self.name, &name.namespace) {
+                (Some(left), Some(right)) if left.same_body(right) => (),
+                (Some(left), Some(right)) if left.len() == right.len() => {
+                    self.comparing = Some(NamespaceComparison::new(heap, left, right)?);
+                }
+                (None, None) => (),
+                _ => self.valid = false,
+            }
+        }
+        Ok(())
+    }
+
+    fn advance(&mut self) {
+        if let Some(equal) = self.comparing.as_mut().unwrap().advance() {
+            self.valid = equal;
+            self.comparing = None;
         }
     }
 
@@ -129,6 +147,56 @@ impl Namespace {
 #[cfg(test)]
 thread_local! {
     static HASHED_STRING_UNITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static COMPARED_NAMESPACE_UNITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[derive(Debug)]
+struct NamespaceComparison {
+    flatten: [Option<StringFlatten>; 2],
+    text: [Option<JsString>; 2],
+    index: usize,
+    _charge: ByteReservation,
+}
+
+impl NamespaceComparison {
+    fn new(heap: &Heap, left: &JsString, right: &JsString) -> Result<Box<Self>, Fault> {
+        let charge = reserve_elements(heap, 1, std::mem::size_of::<Self>())?;
+        Ok(Box::new(Self {
+            flatten: [
+                Some(StringFlatten::new_accounted(heap, left.clone())?),
+                Some(StringFlatten::new_accounted(heap, right.clone())?),
+            ],
+            text: [None, None],
+            index: 0,
+            _charge: charge,
+        }))
+    }
+
+    fn advance(&mut self) -> Option<bool> {
+        for side in 0..2 {
+            if let Some(flatten) = &mut self.flatten[side] {
+                self.text[side] = flatten.advance(NAMESPACE_STEP_UNITS);
+                if self.text[side].is_some() {
+                    self.flatten[side] = None;
+                }
+                // Flatten each operand and compare in separate VM steps.
+                return None;
+            }
+        }
+        let [Some(left), Some(right)] = &self.text else {
+            unreachable!("namespace operands have been flattened");
+        };
+        let end = (self.index + NAMESPACE_STEP_UNITS).min(left.len());
+        for index in self.index..end {
+            #[cfg(test)]
+            COMPARED_NAMESPACE_UNITS.with(|count| count.set(count.get() + 1));
+            if left.code_units()[index] != right.code_units()[index] {
+                return Some(false);
+            }
+        }
+        self.index = end;
+        (end == left.len()).then_some(true)
+    }
 }
 
 #[derive(Debug)]
@@ -539,7 +607,10 @@ impl Diagnostic {
                 mut namespace,
                 context,
             } => {
-                let ready = if let Some(mut string) = hashing.take() {
+                let ready = if namespace.comparing.is_some() {
+                    namespace.advance();
+                    None
+                } else if let Some(mut string) = hashing.take() {
                     if let Some(hash) = string.advance() {
                         Some((string.pair, hash, false))
                     } else {
@@ -569,7 +640,7 @@ impl Diagnostic {
                     return Ok(Action::Continue);
                 };
                 if let Some((pair, hash, nil)) = ready {
-                    namespace.observe(heap, &pair.0);
+                    namespace.observe(heap, &pair.0)?;
                     entries.insert(
                         (
                             !nil,
@@ -594,21 +665,15 @@ impl Diagnostic {
             }
             Part::Namespace {
                 pairs,
-                index,
+                mut index,
                 mut namespace,
                 context,
             } => {
-                if let Some(key) = pairs.get(index) {
-                    namespace.observe(heap, &key);
-                    self.push(
-                        heap,
-                        Part::Namespace {
-                            pairs,
-                            index: index + 2,
-                            namespace,
-                            context,
-                        },
-                    )?;
+                if namespace.comparing.is_some() {
+                    namespace.advance();
+                } else if let Some(key) = pairs.get(index) {
+                    namespace.observe(heap, &key)?;
+                    index += 2;
                 } else {
                     self.begin_map(
                         heap,
@@ -617,7 +682,17 @@ impl Diagnostic {
                         context,
                         namespace.finish(),
                     )?;
+                    return Ok(Action::Continue);
                 }
+                self.push(
+                    heap,
+                    Part::Namespace {
+                        pairs,
+                        index,
+                        namespace,
+                        context,
+                    },
+                )?;
             }
             Part::Map(mut items, set, printed, context, strip_namespace) => {
                 if let Some((key, value)) = items.next() {
@@ -1011,6 +1086,210 @@ mod tests {
                         result.string(),
                         Some(JsString::from(
                             format!("Cannot compare 1 to {{\"{text}\" 42}}").as_str()
+                        ))
+                    );
+                    rt.collect().unwrap();
+                    assert!(!weak.is_live(), "completion releases the map operand");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn namespace_comparison_charge_is_admitted_and_released() {
+        let heap = Heap::with_test_byte_headroom(1 << 20, false);
+        let left = JsString::copy_units(&heap, &vec![97; NAMESPACE_STEP_UNITS * 4]).unwrap();
+        let right = JsString::copy_units(&heap, left.code_units()).unwrap();
+        let budget = heap.byte_budget();
+        let occupied = budget.used();
+        let bytes = std::mem::size_of::<NamespaceComparison>();
+        budget.set_limit(occupied + bytes - 1);
+        assert!(matches!(
+            NamespaceComparison::new(&heap, &left, &right),
+            Err(Fault::HeapLimit)
+        ));
+        assert_eq!(budget.used(), occupied);
+        budget.set_limit(usize::MAX);
+        for cancel in [false, true] {
+            let mut comparing = NamespaceComparison::new(&heap, &left, &right)
+                .unwrap_or_else(|_| panic!("namespace continuation must fit"));
+            for _ in 0..3 {
+                assert!(comparing.advance().is_none());
+            }
+            assert_eq!(budget.used(), occupied + bytes);
+            if !cancel {
+                while comparing.advance().is_none() {}
+            }
+            drop(comparing);
+            assert_eq!(
+                budget.used(),
+                occupied,
+                "continuation admission is released"
+            );
+        }
+    }
+
+    #[test]
+    fn namespace_comparison_preserves_exact_units_and_bounds_rope_work() {
+        let heap = Heap::default();
+        for len in [0, 1, 127, 128, 129, 257] {
+            let units: Vec<u16> = [0, 97, 0xffff, 0xd800, 0xdc00, 0xdc01]
+                .into_iter()
+                .cycle()
+                .take(len)
+                .collect();
+            for equal in [false, true] {
+                let left = JsString::from_code_units(units.clone()).unwrap();
+                let mut other = units.clone();
+                if !equal && let Some(last) = other.last_mut() {
+                    *last ^= 1;
+                }
+                for rope in [false, true] {
+                    let right = if rope && len > 32 {
+                        JsString::from_code_units(other[..len / 2].to_vec())
+                            .unwrap()
+                            .concat(&JsString::from_code_units(other[len / 2..].to_vec()).unwrap())
+                            .unwrap()
+                    } else {
+                        JsString::from_code_units(other.clone()).unwrap()
+                    };
+                    assert!(len == 0 || !left.same_body(&right));
+                    let mut comparing = NamespaceComparison::new(&heap, &left, &right)
+                        .unwrap_or_else(|_| panic!("namespace setup must fit"));
+                    let before = COMPARED_NAMESPACE_UNITS.get();
+                    let result = loop {
+                        let compared = COMPARED_NAMESPACE_UNITS.get();
+                        let copied = JsString::copied_code_units();
+                        let result = comparing.advance();
+                        let work = COMPARED_NAMESPACE_UNITS.get() - compared;
+                        let copies = JsString::copied_code_units() - copied;
+                        assert!(work + copies as usize <= NAMESPACE_STEP_UNITS);
+                        if let Some(result) = result {
+                            break result;
+                        }
+                    };
+                    assert_eq!(result, equal || len == 0);
+                    assert_eq!(COMPARED_NAMESPACE_UNITS.get() - before, len);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sorted_comparison_namespace_scanning_is_budgeted() {
+        let text = "a".repeat(NAMESPACE_STEP_UNITS * 256 + 17);
+        let code = compile_function(
+            "function f(key) {globalThis.__lightNativeRuntime={core:{printNamespaceMaps:true}};try {return __rt.formGet(__rt.formSortedMap(__rt.formVector(1,0)),key,null);} catch(e) {return e.message;}}",
+        ).unwrap();
+        for hashed in [false, true] {
+            for cancel in [false, true] {
+                let rt = Runtime::try_with_heap_policy(
+                    Default::default(),
+                    crate::HeapPolicy {
+                        hard_limit_bytes: Some(16 << 20),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let (key, weak, a_first) = rt.scope(|s| {
+                    let left = JsString::from(text.as_str());
+                    let right = JsString::from(text.as_str());
+                    assert!(
+                        !left.same_body(&right),
+                        "equal namespaces need distinct bodies"
+                    );
+                    let a = s.new_keyword(Some(left), JsString::from("a")).unwrap();
+                    let b = s.new_keyword(Some(right), JsString::from("b")).unwrap();
+                    let one = s.primitive(Primitive::Number(1.0));
+                    let pairs = [(a, one), (b, one)];
+                    let map = if hashed {
+                        s.new_form_map(&pairs).unwrap()
+                    } else {
+                        s.new_literal_map(&pairs).unwrap()
+                    };
+                    let order = |key| {
+                        let hash = s.form_hash(key) as u32;
+                        std::array::from_fn::<_, 7, _>(|i| ((hash >> (i * 5)) & 31) as u8)
+                    };
+                    (
+                        s.persist(map),
+                        s.downgrade(map),
+                        !hashed || order(a) < order(b),
+                    )
+                });
+                let task = rt.spawn(&code, &[&key]).unwrap();
+                drop(key);
+                let before = COMPARED_NAMESPACE_UNITS.get();
+                let mut comparing_steps = 0;
+                let result = 'run: {
+                    for _ in 0..10_000 {
+                        let compared = COMPARED_NAMESPACE_UNITS.get();
+                        let copied = JsString::copied_code_units();
+                        let occupied = rt.heap_stats().managed_bytes;
+                        let outcome = task.run_with(Budget::instructions(1), &mut NoHost).unwrap();
+                        let work = COMPARED_NAMESPACE_UNITS.get() - compared;
+                        assert!(
+                            work + (JsString::copied_code_units() - copied) as usize
+                                <= NAMESPACE_STEP_UNITS,
+                            "one run exceeded the namespace work budget"
+                        );
+                        if work > 0 {
+                            comparing_steps += 1;
+                            assert!(matches!(outcome, RunOutcome::Yielded));
+                            let total = COMPARED_NAMESPACE_UNITS.get() - before;
+                            if total == text.len() {
+                                assert_eq!(
+                                    occupied - rt.heap_stats().managed_bytes,
+                                    std::mem::size_of::<NamespaceComparison>(),
+                                    "completion releases the namespace continuation charge"
+                                );
+                            }
+                            if comparing_steps == 2 {
+                                assert_eq!(total, 2 * NAMESPACE_STEP_UNITS);
+                                assert!(total < text.len(), "must yield during namespace equality");
+                                rt.collect().unwrap();
+                                assert!(weak.is_live(), "pending namespaces must stay rooted");
+                                if cancel {
+                                    let occupied = rt.heap_stats().managed_bytes;
+                                    let _ = task.cancel();
+                                    assert!(matches!(
+                                        task.run_with(Budget::instructions(1), &mut NoHost)
+                                            .unwrap(),
+                                        RunOutcome::Cancelled
+                                    ));
+                                    assert_eq!(COMPARED_NAMESPACE_UNITS.get() - before, total);
+                                    assert!(
+                                        occupied - rt.heap_stats().managed_bytes
+                                            >= std::mem::size_of::<NamespaceComparison>()
+                                    );
+                                    rt.collect().unwrap();
+                                    assert!(
+                                        !weak.is_live(),
+                                        "cancellation releases the map operand"
+                                    );
+                                    break 'run None;
+                                }
+                            }
+                        }
+                        match outcome {
+                            RunOutcome::Yielded => (),
+                            RunOutcome::Complete(value) => break 'run Some(value),
+                            other => {
+                                panic!("expected yield or caught comparison error, got {other:?}")
+                            }
+                        }
+                    }
+                    panic!("comparison failed to finish or scan namespaces");
+                };
+                if let Some(result) = result {
+                    assert!(!cancel);
+                    assert_eq!(COMPARED_NAMESPACE_UNITS.get() - before, text.len());
+                    assert_eq!(comparing_steps, text.len().div_ceil(NAMESPACE_STEP_UNITS));
+                    let pairs = if a_first { ":a 1, :b 1" } else { ":b 1, :a 1" };
+                    assert_eq!(
+                        result.string(),
+                        Some(JsString::from(
+                            format!("Cannot compare 1 to #:{text}{{{pairs}}}").as_str()
                         ))
                     );
                     rt.collect().unwrap();
