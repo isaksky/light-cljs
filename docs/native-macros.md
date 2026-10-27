@@ -1608,3 +1608,69 @@ and nine library-test diagnostics in the three established categories above;
 allowing only those categories passes all engine targets, all combined
 native/QuickJS compiler targets, and the selected native-only library, binary
 and macro/reader/Proxy targets. No source lint suppressions were added.
+
+## Demanded native multimethods (light-cljs-521, 2026-10-27)
+
+The first missing call in the reduced demanded `defmulti` fixture was
+`__lightDefineCompilerRoot`, emitted by its `defonce` expansion. Native tasks
+now implement that root-definition service and construct `MultiFn` values as
+native structs containing immutable fields and engine atom handles. The
+single-product declaration uses the existing task-owned initializer protocol:
+constructor/dispatch-expression effects run once in the earliest caller's
+binding context, retaining suspended frames and lane inheritance. A repeated
+`defmulti` preserves the original definition.
+
+Method declarations use the same source frontier as protocols. Each method
+bundle initializes once; its computed dispatch key and other effects are not
+replayed in another task or when an earlier frontier is selected. Persistent
+maps record declaration operations and subsequent runtime mutations. The visible
+dispatch/preference maps are materialized in source order, cached by history
+identity and frontier, and searched using native value equality and `isa?`.
+Dispatch supports exact keys, nested vector keys, explicit or global hierarchies,
+default methods, direct preferences, removal and reset. Hierarchy mutations are
+observed on every lookup. The preference behavior matches the pinned CLJS/legacy
+runtime, whose recursive preference walks do not return inherited matches.
+
+A native multimethod's dispatch and method functions resolve runtime services
+through the consuming task's global runtime. Multi-arity and variadic methods
+route through their dispatcher without attaching the legacy arity acceleration
+properties; their rest argument is a native list. This keeps method functions
+shareable without publishing a mutable JavaScript runtime or replaying their
+declarations. Ordinary native helper functions retain their existing behavior.
+No native-only code was added to the emitted runtime in `src/js_runtime.js`.
+A dispatch function that captures task-owned JavaScript state fails publication
+explicitly; the constructor failure is shared, so later demands cannot replay
+its effects. `demanded_multimethods_reject_task_owned_dispatch_without_replaying_effects`
+checks this boundary at all four pool sizes.
+
+`demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size` is one
+table-driven native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
+JavaScript as well as literal results. It covers scalar and structural keys,
+keyword/variadic dispatch, nested hierarchy dispatch, global hierarchy changes,
+preferences and ambiguity/missing-method errors, mutations, explicit construction,
+source-frontier replacement, defonce, and binding restoration.
+`demanded_multimethod_effects_run_once_across_suspension_and_lending` checks shared
+constructor, method-key and helper effects under seeded scheduling and a held
+earlier lane at four/eight slots; unheld scheduling runs at all four pool sizes.
+The held case asserts that a lane was actually inherited. With two later
+callers it needs a third worker to start the deliberately held earlier job;
+this test perturbation disables starvation rescue.
+
+Both Penpot entries (`app.main`, `app.render`) were rebuilt natively and run with
+all budgets from the reproduction above, jobs 1, no cache, and five absolute
+read-only roots under `/Users/admin/src/light-cljs/research/penpot-light`.
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1, the original implementation
+`2c3e04bf` (rebased to `68540526` over `058404c6`) passes the demanded
+`rumext.v2.compiler/compile-form` boundary. Both commands exit 1 with this exact
+next distinct error:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:906:3: macro expansion: while expanding fnc: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:906:3: macro rumext.v2/fnc: big-boy-pants-js: unsupported operation: compiler literal; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:320:1 (bytes 28314..28909)
+```
+
+This call contains `#js` arrays. The native input bridge rejects every
+`DatumKind::CompilerLiteral`; even `(defmacro echo [x] (list 'quote x))
+(echo #js [])` reproduces it. QuickJS compiles an equivalent macro whose result
+is tested with `js/Array.isArray`, and Node prints `true`. This different bridge
+gap is tracked by light-cljs-535. Neither Penpot entry completes; research was
+left unchanged.

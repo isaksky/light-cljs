@@ -1858,7 +1858,22 @@ impl BbpEvaluator {
         } else {
             let published = match self.runtime.publish(&value) {
                 Ok(()) => true,
-                Err(big_boy_pants_js::PublishError::NotShareable { .. }) => false,
+                Err(e @ big_boy_pants_js::PublishError::NotShareable { .. }) => {
+                    // A multimethod's constructor and registration effects
+                    // must never take the per-task initializer replay path.
+                    // Its immutable native state must publish as one value.
+                    if cx
+                        .task
+                        .global_value("__lightInitializerRequireShared")
+                        .map_err(error)?
+                        .is_some_and(|v| matches!(v.view(), ValueView::Bool(true)))
+                    {
+                        return Err(error(format!(
+                            "unsupported operation: native multimethod captures task-owned state: {e}"
+                        )));
+                    }
+                    false
+                }
                 Err(e) => return Err(error(e)),
             };
             shared_value = published;

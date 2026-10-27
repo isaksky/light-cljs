@@ -2725,6 +2725,21 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             "[true :pet true true :animal :fallback :animal true true true true]",
         ),
         (
+            "explicit construction and protocol operations",
+            "",
+            r#"(let [m (MultiFn. 'custom identity :fallback (atom (make-hierarchy))
+                                 (atom {}) (atom {}) (atom {}) (atom nil))]
+                 (-add-method m :x (fn [x] [:x x]))
+                 (-add-method m :fallback (fn [_] :fallback))
+                 (let [a (m :x) b ((-get-method m :x) :x) c (apply m [:other])
+                       d (= (methods m) (-methods m)) e ((-dispatch-fn m) :dispatch)
+                       f (-default-dispatch-val m)]
+                   (-remove-method m :x)
+                   (-prefer-method m :a :b)
+                   [a b c d e f (-prefers m) (identical? m (-reset m)) (empty? (-methods m))]))"#,
+            "[[:x :x] [:x :x] :fallback true :dispatch :fallback {:a #{:b}} true true]",
+        ),
+        (
             "declaration frontier and replacement",
             r#"
           (defmulti m identity)
@@ -2794,6 +2809,61 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             #[cfg(feature = "quickjs")]
             assert_eq!(native, build(false, jobs), "{label}, jobs {jobs}");
         }
+    }
+}
+
+#[test]
+fn demanded_multimethods_reject_task_owned_dispatch_without_replaying_effects() {
+    let root = temp_dir::TempDir::new("native-multimethod-task-owned");
+    std::fs::write(root.join("helpers.cljs"), r#"(ns helpers)
+      (def effects (atom 0))
+      (def dispatch (let [state (js/Array.)] (fn [x] (.push state x) x)))
+      (defmulti m (do (swap! effects inc) dispatch))
+      (defmethod m :x [_] :x)
+      (defmacro probe [] (list 'quote
+        [(try (m :x) (catch :default e (.includes (.-message e) "native multimethod captures task-owned state"))) @effects]))"#).unwrap();
+    for (file, source) in [
+        (
+            "a.cljs",
+            "(ns a (:require [helpers :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [helpers :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b] [helpers :refer [probe]])) (js/console.log (pr-str [a/value b/value (probe)]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let mut reference = None;
+    for jobs in [1, 2, 4, 8] {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("jobs {jobs}: {e}"));
+        let js = emit_js(&program);
+        assert_eq!(
+            program_output(&js),
+            "[[true 1] [true 1] [true 1]]\n",
+            "jobs {jobs}"
+        );
+        if let Some(previous) = &reference {
+            assert_eq!(&js, previous, "jobs {jobs}");
+        }
+        reference = Some(js);
     }
 }
 
@@ -2874,6 +2944,9 @@ fn demanded_multimethod_effects_run_once_across_suspension_and_lending() {
         .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}, held {held}: {e}"));
         if native {
             assert!(stats.lanes.entered > 0);
+            if held {
+                assert!(stats.lanes.inherited > 0, "no inherited multimethod lane");
+            }
         }
         emit_js(&program)
     };
@@ -2891,7 +2964,18 @@ fn demanded_multimethod_effects_run_once_across_suspension_and_lending() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
-    for jobs in [1, 2, 4, 8] {
+    // With two later callers (b and app), holding a requires at least one
+    // more worker to start a. The hold deliberately disables starvation
+    // rescue; exercise that barrier at four/eight slots, as in the binding
+    // regressions, and the ordinary scheduler at all four pool sizes.
+    for (jobs, held) in [
+        (1, false),
+        (2, false),
+        (4, false),
+        (8, false),
+        (4, true),
+        (8, true),
+    ] {
         #[cfg(feature = "quickjs")]
         assert_eq!(
             reference,
@@ -2899,13 +2983,11 @@ fn demanded_multimethod_effects_run_once_across_suspension_and_lending() {
             "legacy, jobs {jobs}"
         );
         for seed in 1..=seeds {
-            for held in [false, true] {
-                assert_eq!(
-                    reference,
-                    build(true, jobs, seed, held),
-                    "jobs {jobs}, seed {seed}, held {held}"
-                );
-            }
+            assert_eq!(
+                reference,
+                build(true, jobs, seed, held),
+                "jobs {jobs}, seed {seed}, held {held}"
+            );
         }
     }
 }

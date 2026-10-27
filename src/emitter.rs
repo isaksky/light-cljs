@@ -1416,7 +1416,7 @@ const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
 const NATIVE_PREPARE_INVOKE: &str = r#"(f => {
     const value = __rt.formValue(f), kind = __rt.formKind(value);
     if (kind === 'struct' && __rt.formName(__rt.structTypeOf(value)) === 'cljs.core/MultiFn') {
-        return (...a) => globalThis.__lightNativeRuntime.core.invokeMulti(value, a);
+        return (m => (...a) => globalThis.__lightNativeRuntime.core.invokeMulti(m, a))(value);
     }
     if (kind === 'vector' || kind === 'map' || kind === 'set' || kind === 'keyword' || kind === 'symbol') {
         return (...a) => {

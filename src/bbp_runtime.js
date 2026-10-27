@@ -413,7 +413,11 @@ const native = (() => {
   // callable's getter and receiver have the same order as `rf.call(null, ...)`.
   const prepareInvoke = f => {
     const value = val(f), kind = __rt.formKind(value);
-    if(multi.is(value))return (...args)=>multi.dispatch(value,args);
+    // Resolve through the task global rather than capturing `multi` before
+    // its initialization: that forward capture would box ordinary lazy
+    // callbacks in a task-owned binding cell and prevent their publication.
+    if(kind==='struct'&&__rt.formName(__rt.structTypeOf(value))==='cljs.core/MultiFn')
+      return (...args)=>globalThis.__lightNativeRuntime.core.invokeMulti(value,args);
     if (kind === 'vector' || kind === 'map' || kind === 'set' || kind === 'keyword' || kind === 'symbol') return (...args) => {
       if (kind !== 'vector' && (args.length < 1 || args.length > 2)) arity(args.length);
       return __rt.cljInvoke(f, args[0], args.length > 1 ? args[1] : null, args.length);
@@ -423,7 +427,8 @@ const native = (() => {
   };
   const invoke = (f,...args) => {
     const value=val(f),kind=__rt.formKind(value);
-    if(multi.is(value))return multi.dispatch(value,args);
+    if(kind==='struct'&&__rt.formName(__rt.structTypeOf(value))==='cljs.core/MultiFn')
+      return globalThis.__lightNativeRuntime.core.invokeMulti(value,args);
     if(kind!=='vector'&&kind!=='map'&&kind!=='set'&&kind!=='keyword'&&kind!=='symbol')return value.call(null,...args);
     if(kind!=='vector'&&(args.length<1||args.length>2))arity(args.length);
     return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null,args.length);
@@ -1427,6 +1432,7 @@ globalThis.__lightInitializerUnit=null;
 globalThis.__lightInitializerParent=null;
 globalThis.__lightInitializerResult=null;
 globalThis.__lightInitializerFailure=null;
+globalThis.__lightInitializerRequireShared=false;
 globalThis.__lightInitializerSelect=false;
 globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
   if(!roots.has(name)&&(name in globalThis.__lightCompilerRoots))return null;
@@ -1476,6 +1482,8 @@ const initializeValue=(slot,factory)=>{
         globalThis.__lightInitializerUnit=unit;
         globalThis.__lightInitializerResult=slot.value;
         globalThis.__lightInitializerFailure=failed?String(failure):null;
+        const type=__rt.structTypeOf(slot.value);
+        globalThis.__lightInitializerRequireShared=type!==null&&__rt.formName(type)==='cljs.core/MultiFn';
         __rt.need(serial,finishKind);
         if(failed)throw failure;
         __rt.need(unit,4);
