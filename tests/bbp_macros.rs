@@ -681,6 +681,58 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "stored collection seq overrides read heads before reducer call lookup",
+            r#"(deftype S [n seen fail]
+                 ISeqable (-seq [this] this)
+                 ISeq (-first [_] (.push seen "first")
+                                 (if fail (throw (js/Error. "first failed")) n))
+                      (-rest [_] (throw (js/Error. "rest called")))
+                 INext (-next [_] (.push seen "next") (if (= n 1) (S. 2 seen fail) nil)))"#,
+            r#"(let [run (fn [c two mode]
+                          (let [seen (js/Array.) fail (contains? #{"first-throws" "both-throw"} mode)
+                                f (js* "({get call(){~{}.push('get');if(~{})throw new Error('get failed');return function(_,a,x){~{}.push('step');return a+x;};}})" seen (contains? #{"get-throws" "both-throw"} mode) seen)]
+                            (extend-type PersistentVector ISeqable (-seq [_] (.push seen "seq") (S. 1 seen fail)))
+                            (extend-type PersistentArrayMap ISeqable (-seq [_] (.push seen "seq") (S. 1 seen fail)))
+                            (extend-type PersistentHashMap ISeqable (-seq [_] (.push seen "seq") (S. 1 seen fail)))
+                            (let [result (try (if two (reduce f c) (reduce f 0 c))
+                                              (catch :default e (.-message e)))]
+                              [result (vec seen)])))]
+              (mapv (fn [c]
+                      (mapv (fn [[two mode]] (run c two mode))
+                            (list [false "success"] [true "success"]
+                                  [false "get-throws"] [true "get-throws"]
+                                  [false "first-throws"] [true "first-throws"]
+                                  [false "both-throw"] [true "both-throw"])))
+                    (list [1 2] (vec (range 34))
+                          (array-map :a 1 :b 2) (apply hash-map (range 20)))))"#,
+            "nil",
+        ),
+        (
+            "list and set seq overrides preserve legacy reducer lookup order",
+            r#"(deftype S [n seen fail]
+                 ISeqable (-seq [this] this)
+                 ISeq (-first [_] (.push seen "first")
+                                 (if fail (throw (js/Error. "first failed")) n))
+                      (-rest [_] (throw (js/Error. "rest called")))
+                 INext (-next [_] (.push seen "next") (if (= n 1) (S. 2 seen fail) nil)))"#,
+            r#"(let [run (fn [c two mode]
+                          (let [seen (js/Array.) fail (contains? #{"first-throws" "both-throw"} mode)
+                                f (js* "({get call(){~{}.push('get');if(~{})throw new Error('get failed');return function(_,a,x){~{}.push('step');return a+x;};}})" seen (contains? #{"get-throws" "both-throw"} mode) seen)]
+                            (extend-type List ISeqable (-seq [_] (.push seen "seq") (S. 1 seen fail)))
+                            (extend-type PersistentHashSet ISeqable (-seq [_] (.push seen "seq") (S. 1 seen fail)))
+                            (let [result (try (if two (reduce f c) (reduce f 0 c))
+                                              (catch :default e (.-message e)))]
+                              [result (vec seen)])))]
+              (mapv (fn [c]
+                      (mapv (fn [[two mode]] (run c two mode))
+                            [[false "success"] [true "success"]
+                             [false "get-throws"] [true "get-throws"]
+                             [false "first-throws"] [true "first-throws"]
+                             [false "both-throw"] [true "both-throw"]]))
+                    [(list 1 2) #{1 2}]))"#,
+            "nil",
+        ),
+        (
             "direct kv protocol rejects non implementations",
             "(defrecord R [x])",
             r#"[(mapv (fn [c] (try (-kv-reduce c (fn [a k v] (conj a [k v])) [])

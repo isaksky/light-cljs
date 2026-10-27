@@ -806,13 +806,17 @@ const native = (() => {
   // Reducer callbacks run on the task VM and can suspend without replay.
   // Stop before reading the next source element and unwrap one marker only;
   // nested markers let a flattening reducer propagate termination outward.
-  const reduceSeq = (f, init, c) => {
+  const storedReduction = c => {
+    const value = val(c), kind = __rt.formKind(value);
+    return arraySeqs.has(c) || Array.isArray(value) || typeof value === 'string'
+      || kind === 'vector' || kind === 'map';
+  };
+  const reduceSeq = (f, init, c, headBeforeCall = storedReduction(c)) => {
     let acc = init;
-    const indexedArray = arraySeqs.has(c) || Array.isArray(val(c));
     for (let s = reduceSeqOf(c); s != null; s = nextOf(s)) {
-      // Legacy array traversal reads the item before `.call`; sequence
-      // reduction looks up `.call` before invoking a user-defined -first.
-      acc = indexedArray ? invoke(f, acc, firstOf(s)) : prepareInvoke(f)(acc, firstOf(s));
+      // Legacy stored collections read the item before `.call`, even with
+      // a custom -seq. Sequence traversal reads `.call` before -first.
+      acc = headBeforeCall ? invoke(f, acc, firstOf(s)) : prepareInvoke(f)(acc, firstOf(s));
       if (__rt.cljIsReduced(acc)) return __rt.cljUnreduced(acc);
     }
     return acc;
@@ -1050,7 +1054,7 @@ const native = (() => {
       :a.length<=3?rangeFrom(rangeFrom,val(a[0]),val(a[1]),a.length===3?val(a[2]):1):arity(a.length),
     partition:(...a)=>a.length===2?partitionFrom(partitionFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionFrom(partitionFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
     reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);const s=reduceSeqOf(a[0]);
-      return s==null?invoke(f):reduceSeq(f,firstOf(s),nextOf(s));},
+      return s==null?invoke(f):reduceSeq(f,firstOf(s),nextOf(s),storedReduction(a[0])?true:undefined);},
     reduceKv, kvReduceProtocol,
     keyProtocol:x=>entryPart(x,false), valProtocol:x=>entryPart(x,true),
     transduce,
