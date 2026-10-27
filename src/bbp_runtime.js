@@ -1183,7 +1183,13 @@ const roots=new Map();
 // saving a binding must never force, replace, or reset a root's slot.
 const bindingOverlays=new Map();
 globalThis.__lightSaveCompilerBinding=name=>[bindingOverlays.has(name),bindingOverlays.get(name)];
-globalThis.__lightBindCompilerRoot=(name,value)=>{bindingOverlays.set(name,value);};
+globalThis.__lightBindCompilerRoot=(name,value)=>{
+  // A bound read can initialize a shared root without touching an atom.
+  // Enter the caller's existing effect lane before installing its context,
+  // so the first source-order demand determines that root's value too.
+  const cell=__rt.effect(65532,0);if(cell!==0)__rt.need(cell,5);
+  bindingOverlays.set(name,value);
+};
 globalThis.__lightRestoreCompilerBinding=(name,saved)=>{
   if(saved[0])bindingOverlays.set(name,saved[1]);else bindingOverlays.delete(name);
 };

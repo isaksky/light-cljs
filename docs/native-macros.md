@@ -1031,6 +1031,11 @@ therefore preserve pending, initialized and failed slots, including nil, false
 and undefined overlays. Emitted `finally` blocks restore overlays after throws,
 and saved VM frames retain them across helper waits and task migration. Bound
 `set!` uses a native compiler service rather than an engine Proxy `set` trap.
+Installation joins the existing source-order effect lane before changing an
+overlay: a pending shared root can capture a binding without touching an atom,
+so later callers must not initialize it first. The pool regression forces a
+later initializer to park, checks inherited lane progress, and verifies that
+subsequent roots capture the first caller's binding at every slot count.
 Source regressions compare values, failures, restoration and once-only effects
 against QuickJS, with identical emitted programs at one, two, four and eight
 slots. A shared-runtime regression separately checks task isolation and that

@@ -2323,17 +2323,21 @@ fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slo
             r#"(ns helpers)
             (def events (atom []))
             (def ^:dynamic *x* :root)
+            (def captured *x*)
+            (def prepared (binding [*x* :setup] :ready))
             (defn leaf [tag] (swap! events conj [tag *x*]) *x*)
             (defn helper [tag]
-              (binding [*x* tag]
-                (let [outer (leaf :outer)
+              (let [ready prepared]
+               (binding [*x* tag]
+                (let [first captured
+                      outer (leaf :outer)
                       inner (with-redefs [leaf (fn [_] *x*)]
                               (binding [*x* false] (leaf :inner)))
                       thrown (try (binding [*x* nil]
                                     (leaf :throw)
                                     (throw (js/Error. "bound")))
                                   (catch :default e (.-message e)))]
-                  [outer inner thrown (leaf :after) *x*])))
+                  [first outer inner thrown (leaf :after) *x* ready]))))
             (defn fail [] (binding [*x* :failed] (throw (js/Error. "binding failure"))))
             (defmacro probe [tag] (list 'quote [(helper tag) *x*]))
             (defmacro log [] (list 'quote @events))"#,
@@ -2360,7 +2364,7 @@ fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slo
         std::fs::write(root.join(file), source).unwrap();
     }
     let mut reference = None;
-    for jobs in [1, 2, 4, 8] {
+    for (jobs, held) in [(1, false), (2, false), (4, false), (8, false), (4, true)] {
         let build = |entry, native| {
             let mut host = MacroHost::new();
             if native {
@@ -2379,6 +2383,11 @@ fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slo
                     #[cfg(debug_assertions)]
                     perturbation: native.then_some(light_cljs::scheduler::Perturbation {
                         seed: 520,
+                        lane_hold: if held {
+                            vec!["a/value".into()]
+                        } else {
+                            Vec::new()
+                        },
                         limits: Some(light_cljs::scheduler::Limits {
                             batch_jobs: 1,
                             ..Default::default()
@@ -2391,14 +2400,18 @@ fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slo
             if native && result.is_ok() {
                 assert!(stats.native_helpers.units_evaluated > 0);
                 assert!(stats.lanes.entered > 0);
+                #[cfg(debug_assertions)]
+                if held {
+                    assert!(stats.lanes.inherited > 0, "no inherited binding lane");
+                }
             }
             result.map(|(program, _)| emit_js(&program))
         };
-        let native = build("app", true).unwrap_or_else(|e| panic!("jobs {jobs}: {e}"));
+        let native = build("app", true).unwrap_or_else(|e| panic!("jobs {jobs}, held {held}: {e}"));
         assert_eq!(
             program_output(&native),
-            "[[[:a false \"bound\" :a :a] :root] [[:b false \"bound\" :b :b] :root] \
-             [[:app false \"bound\" :app :app] :root] \
+            "[[[:a :a false \"bound\" :a :a :ready] :root] [[:a :b false \"bound\" :b :b :ready] :root] \
+             [[:a :app false \"bound\" :app :app :ready] :root] \
              [[:outer :a] [:throw nil] [:after :a] [:outer :b] [:throw nil] [:after :b] \
              [:outer :app] [:throw nil] [:after :app]]]\n",
             "jobs {jobs}"
