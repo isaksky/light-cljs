@@ -104,6 +104,52 @@
     check(search(values, 4, {valueOf() { return 2; }}) === 4);
     check(many.indexOf(64) === 64 && many.lastIndexOf(64) === 64);
 
+    // Expected rows are shared unchanged with Node. Object.is and reciprocals
+    // distinguish a returned +0 index from the -0 allowed in fromIndex.
+    let arrayLike = {
+        0: -0, 1: NaN, 2: +0, 3: 3, length: 4,
+        indexOf: Array.prototype.indexOf,
+        lastIndexOf: Array.prototype.lastIndexOf,
+        includes: Array.prototype.includes,
+        findIndex: Array.prototype.findIndex
+    };
+    // fromIndex, first zero, last zero, includes NaN
+    let indexRows = [
+        [-0, 0, 0, true], [+0, 0, 0, true], [NaN, 0, 0, true],
+        [undefined, 0, 0, true], [-Infinity, 0, -1, true],
+        [-5, 0, -1, true], [-4, 0, 0, true], [-3, 2, 0, true],
+        [-2, 2, 2, false], [-1, -1, 2, false],
+        [-0.5, 0, 0, true], [0.5, 0, 0, true],
+        [-1.8, -1, 2, false], [1.8, 2, 0, true], [2.8, 2, 2, false],
+        [4, -1, 2, false], [Infinity, -1, 2, false]
+    ];
+    for (let receiver of [[-0, NaN, +0, 3], arrayLike]) {
+        check(Object.is(receiver.indexOf(0), 0) && receiver.lastIndexOf(0) === 2);
+        for (let row of indexRows) {
+            for (let needle of [-0, +0]) {
+                let first = receiver.indexOf(needle, row[0]);
+                let last = receiver.lastIndexOf(needle, row[0]);
+                check(Object.is(first, row[1]) && Object.is(last, row[2]));
+                check((first !== 0 || 1 / first === Infinity) &&
+                      (last !== 0 || 1 / last === Infinity));
+                check(receiver.includes(needle, row[0]) === (row[1] !== -1));
+            }
+            check(receiver.indexOf(NaN, row[0]) === -1 &&
+                  receiver.lastIndexOf(NaN, row[0]) === -1 &&
+                  receiver.includes(NaN, row[0]) === row[3]);
+            // findIndex's second argument is thisArg, never a starting index.
+            let found = receiver.findIndex(value => value === 0, row[0]);
+            check(Object.is(found, 0) && 1 / found === Infinity);
+        }
+        for (let row of [[-0, 0], [+0, 2], [NaN, 1], [-1, -1], [0.5, -1], [3, 3]]) {
+            check(Object.is(receiver.findIndex((value, index, object) => {
+                check(object === receiver && (index !== 0 ||
+                      (Object.is(index, 0) && 1 / index === Infinity)));
+                return Object.is(value, row[0]);
+            }), row[1]));
+        }
+    }
+
     let source = [1, , 3], result = copy(source, 0, 3);
     check(result.length === 3 && result[0] === 1 && !(1 in result) && result[2] === 3);
     check(copy(source, -2).length === 2 && copy(source, Infinity).length === 0);

@@ -217,7 +217,9 @@ fn search(
                 && (value.strict_equals(needle)
                     || (includes && matches!((&value, needle), (Value::Number(a), Value::Number(b)) if a.is_nan() && b.is_nan())))
             {
-                return Some(if includes { Value::Bool(true) } else { Value::Number(index) });
+                // Return the integral array offset, canonicalizing -0 from
+                // fromIndex (including negative fractions) to a +0 result.
+                return Some(if includes { Value::Bool(true) } else { Value::Number(f64::from(index as u32)) });
             }
             index += if backward { -1.0 } else { 1.0 };
         }
