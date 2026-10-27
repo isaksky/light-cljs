@@ -2815,6 +2815,15 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             "[:keyword :symbol :string :nil :false :number :vector :map :set [:default :other]]",
         ),
         (
+            "replaceable registration still publishes method functions",
+            r#"
+          (defn touch [] (set! cljs.core/-add-method cljs.core/-add-method))
+          (defmulti m identity)
+          (defmethod m :x [_] (if PersistentVector :x :missing))"#,
+            "(m :x)",
+            ":x",
+        ),
+        (
             "replaced constructor calls retain preparation order",
             "",
             r#"(let [seen (js/Array.) saved list

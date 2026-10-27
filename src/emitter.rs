@@ -1721,6 +1721,7 @@ struct Emitter<'a> {
     /// A function root or inline multimethod function may publish with native
     /// tables. Its runtime reads resolve in the calling task, like root reads.
     native_multimethod_function: bool,
+    native_multimethod_arguments: HashSet<ExprId>,
     /// Direct operands already evaluated by `native_form_statements`, in
     /// occurrence order (the same ExprId can occur more than once), with
     /// the operand array's temporary name and slot index.
@@ -1954,6 +1955,21 @@ impl<'a> Emitter<'a> {
             native_replaced_core: HashSet::new(),
             native_protocol_target: None,
             native_multimethod_function: false,
+            native_multimethod_arguments: program
+                .exprs
+                .iter()
+                .filter_map(|expr| match &expr.kind {
+                    ExprKind::Call { callee, args }
+                        if matches!(
+                            program.exprs[callee.0].kind,
+                            ExprKind::CoreFn(crate::CoreFnId::AddMethod)
+                        ) && args.len() == 3 =>
+                    {
+                        Some(args[2])
+                    }
+                    _ => None,
+                })
+                .collect(),
             native_arguments: Default::default(),
             native_temporary: 0,
             native_invoke_temporary: None,
@@ -7534,6 +7550,10 @@ impl<'a> Emitter<'a> {
     }
 
     fn value(&mut self, id: ExprId) {
+        let previous_multimethod = self.native_multimethod_function;
+        if self.native_forms && self.native_multimethod_arguments.contains(&id) {
+            self.native_multimethod_function = true;
+        }
         let site = self.site.replace(id);
         self.mark(Some(id));
         if self
@@ -7561,6 +7581,7 @@ impl<'a> Emitter<'a> {
         }
         self.site = site;
         self.mark(site);
+        self.native_multimethod_function = previous_multimethod;
     }
 
     /// The eagerly evaluated operands of native syntax-quote constructors.
@@ -7576,6 +7597,9 @@ impl<'a> Emitter<'a> {
         let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind else {
             return None;
         };
+        if self.replaced(core.runtime_name()) {
+            return (args.len() <= NATIVE_CONSTRUCTOR_LIMIT).then_some(args);
+        }
         match (core, args.len()) {
             (C::Seq | C::Sequence, 1) | (C::WithMeta | C::Cons, 2) => Some(args),
             (C::List | C::Vector | C::Concat, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => Some(args),
