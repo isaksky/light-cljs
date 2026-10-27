@@ -509,6 +509,59 @@ pass allowing only `deprecated`, `chunks_exact_to_as_chunks` and
 also limited by existing ungated legacy-engine tests; focused engine-free
 library/binary strict lint passes. Both formatter checks pass.
 
+#### Historical frontier lifetime fix (October 26, 2026)
+
+The shared registry no longer roots all historical vector prefixes. Live
+tasks own their current immutable snapshot and the registry caches it weakly.
+The GC regression checks that a lagging task preserves its older frontier,
+can rebuild a newer frontier after its sole owner drops, and releases each
+snapshot when the last task advances or drops.
+
+For 200/400 root registrations added one at a time, with collection every
+32 registrations, the retained catalog data is 145,272/290,104 accounted
+bytes (1.997x). The test isolates catalog data by dropping the ordinary task
+object and frames, then measures the bytes released by collecting the final
+snapshot. That final snapshot is also asserted to die: the cache cannot keep
+historical prefixes alive or mask their retained bytes after task teardown.
+The existing ordinary-object differential table, saved-getter, mixed
+redefinition, preload and once-per-task initializer regressions are retained.
+
+Fresh measurements use native-only release `9a828324` on master `529e2db6`,
+the same machine, fixture, build command and CLI flags above. Three runs per
+job count were admitted with no competing Cargo/rustc/nextest/compiler process
+before and after each run; none needed discarding. Load averages declined
+from 2.69/7.06/9.73 to 2.35/6.41/9.36. These are fresh-base figures, not an
+isolated before/after comparison with the earlier implementation.
+
+| Jobs | Median wall | Median peak RSS | RSS vs 1 | Contexts | Median evaluations | Median task steps |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 2.91 s | 97.7 MB | 1.000 | 401 | 2,810 | 16,779 |
+| 2 | 3.52 s | 109.0 MB | 1.115 | 402 | 2,004 | 18,348 |
+| 4 | 3.08 s | 146.9 MB | 1.503 | 404 | 2,008 | 18,493 |
+| 8 | 3.07 s | 203.7 MB | 2.084 | 408 | 2,016 | 18,604 |
+
+Peak RSS ranges are 97.3–99.0 / 108.8–109.7 / 144.7–154.8 / 195.6–204.8 MB.
+Paired eight/one ratios are 2.106/2.002/2.057, so the 1.15 gate is missed.
+All twelve JavaScript outputs and inline source maps are byte-identical;
+every run compiles and publishes 400 helpers with zero per-task fallbacks.
+The 200-helper serial run takes 1.04 s and 68.3 MB, with 1,410 evaluations
+and 7,754 task steps versus 2,810 and 16,779 for 400 helpers. Catalog source
+evaluations remain linear; ordinary per-producer property population remains.
+
+On master `529e2db6`, the combined QuickJS/native library, macro, reader and
+proxy selection passes all 442 tests, and the native-only 12-seed pool stress
+passes in 306 s. On the preceding `52a1aa9f` base the native selection passed
+158 tests, full default V8 passed 2,129/2,130 and full QuickJS/native passed
+2,206/2,207. Both full-suite failures are the unchanged nested-worktree
+`playground_crate_checks_for_wasm32` workspace-discovery failure; the only
+subsequent base changes are native comparison-diagnostic hashing, so the
+unaffected legacy coverage is reused and affected native coverage rerun.
+Default strict all-target Clippy passes. Native strict lint reports eight
+existing engine diagnostics; focused native and final combined all-target
+lint pass allowing only the three documented engine lint categories.
+Engine-free library/binary strict lint passes, while engine-free all-target
+lint still cannot compile the existing ungated legacy examples/tests.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
