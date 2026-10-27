@@ -1414,3 +1414,44 @@ was linked read-only; default builds used `LIGHT_CLJS_V8_CACHE=require`.
   Its all-target check finds missing legacy evaluator methods and an unused
   enumeration index in untouched tests/benches; focused checks on the unchanged
   base reproduce every diagnostic from the final-content run.
+
+### Final rebase verification
+
+The final tested production tree is `7cd02298`, rebased onto `1888f327`.
+The base delta from `d92276a7` is confined to native comparison implementation,
+its form tests and additional `native_reduce_kv_matches_quickjs` table cases;
+it changes no compiler emission, scheduler, effect-lane or legacy-engine code.
+The timing/profile matrix above retains its original source pair to isolate
+the preparation change from these independent comparison fixes.
+
+On the rebased tree, all eight engine comparison tests and all 38 form tests
+pass. Native-only library/macro coverage was rerun with twelve stress seeds:
+370 pass and the same 27 native-only library failures remain, matching the
+unchanged baseline's failed names and error signatures. Both pool/effect-lane
+stress tests pass again. Native plus QuickJS again passes all 447 tests, with
+one normally ignored test. The added standalone core-read counter case passes,
+so supplied cross-unit replacement metadata is exercised outside a local write
+or multimethod function. Default/QuickJS full-suite results above are reused:
+their production source paths and inputs are unchanged and they do not build
+the native comparison code.
+
+Final formatting and default all-target strict Clippy pass. Native strict
+Clippy still reports the same eight engine diagnostics; the all-target combined
+check passes with only the three documented baseline categories allowed.
+Engine-free library/binary strict Clippy passes. Its unsupported engine-dependent
+tests/benches still prevent an all-target pass: every one of the 112 surfaced
+diagnostic/location pairs reproduces on the unchanged rebased base with
+`--keep-going` (which additionally reaches other pre-existing failures).
+No source suppressions or skipped assertions were added.
+
+Fresh release binaries from this rebased tree were checked once more at jobs 8:
+native 22.42 s wall / 34.77 s user / 1.681 GiB peak RSS, default V8
+5.26 s / 13.44 s / 1.486 GiB. These single-process checks are separate from the
+three-run matrix. Loads before/after were 3.35/3.58/3.21 → 3.21/3.54/3.20 for
+native and 3.21/3.54/3.20 → 3.60/3.61/3.23 for V8. Both print `484264` and
+their release JavaScript matches the earlier output. A fresh mapped native
+build also matches both original native JS and map hashes byte-for-byte.
+Rebased binary SHA-256 values are native
+`2c6ea7b40427a0f66196e20f1e7a8732d40b8dfaf92be5e22fc59ea5f7fd0119`
+and default V8
+`252204e2a389fdc26388d09813632da382a664c7943f4af212cad1dc6ca20b5e`.
