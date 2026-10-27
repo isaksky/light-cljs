@@ -198,6 +198,14 @@ The final integration includes the reduction fixes and native frontend/call
 lowering changes. All engine and native compiler checks above were rerun
 after that integration; the strict Clippy baseline remains unchanged.
 
+Final rebase onto `ba7def01` adds only compilation-session waiter scheduling
+changes. A Git comparison confirms unchanged engine source/tests, manifests
+and lockfile, so the engine, doctest, formatter and lint results are reused.
+Both native configurations were rerun at `aa083d59`: **154 passed** and
+**454 passed**, respectively (248/249 excluded by the native-only filter
+before/after integration; one normal skip with QuickJS). The performance
+comparison retains its explicitly pinned common base `54bd1144`.
+
 ## Native array callback entry (2026-10-26)
 
 Compared baseline `52a1aa9f` (including intrinsic lookup caching and direct
