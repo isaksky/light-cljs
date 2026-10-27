@@ -1251,7 +1251,10 @@ identity shortcut and returns a boolean; user hashes are coerced to signed
 32-bit integers, as in the legacy compiler.
 
 `first`, `rest` and `next` select direct protocol implementations before their
-sequence fallbacks; default extensions do not intercept that traversal. A
+sequence fallbacks. After taking `seq`, `first` and `rest` resolve the resulting
+value's `ISeq` method, including Object/default extensions; native sequences
+keep their own implementations. Object extensions precede default extensions
+on user structs. A
 declared protocol missing the requested method arity throws a missing-method
 error. The count, vector conversion and nth fallbacks accept both nil and
 JavaScript undefined as exhaustion. Traversal honors indexed user sequence tails

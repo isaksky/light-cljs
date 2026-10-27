@@ -114,10 +114,14 @@ const decl = (() => {
     const value=t.promise===undefined?null:__rt.formValue(x);
     const promise=value!==null&&typeof value==='object'&&__rt.formKind(value)===null&&value instanceof Promise;
     let m=promise?t.promise:undefined;
-    if(m===undefined)m = __rt.cljDispatch(t.map, x);
+    // Native structs represent JavaScript objects in the legacy runtime:
+    // their type entry precedes Object, which precedes default. The engine's
+    // dispatch intrinsic deliberately knows only the type and default keys.
+    const struct = __rt.structTypeOf(x);
+    if(m===undefined)m = struct === null ? __rt.cljDispatch(t.map, x) : __rt.getOr(t.map, struct, undefined);
     if (m === undefined) {
       // A JavaScript object: a mutable type's instance, or a host object.
-      const ty = __rt.cljIsAtom(x)?undefined:x.__lightNativeType;
+      const ty = struct ?? (__rt.cljIsAtom(x)?undefined:x.__lightNativeType);
       if (ty !== undefined) m = __rt.getOr(t.map, ty, undefined);
       if (m === undefined) m = __rt.getOr(t.map, 'object', undefined);
       if (m === undefined) m = __rt.getOr(t.map, '_', null);
@@ -477,9 +481,9 @@ const native = (() => {
       // LazySeq first/rest/next first take the seq of the realized value,
       // then perform the operation on that value, matching the legacy order.
       case 'cljFirst': return throughLazy ? () => { __rt.cljSeq(x); return __rt.cljFirst(x); }
-        : method('ISeq/-first', 1, false, true) ?? (x => __rt.cljFirst(__rt.cljSeq(x)));
+        : firstOf;
       case 'cljRest': return throughLazy ? () => { __rt.cljSeq(x); return __rt.cljRest(x); }
-        : method('ISeq/-rest', 1, false, true) ?? (x => __rt.cljRest(__rt.cljSeq(x)));
+        : restOf;
       case 'cljNext': return throughLazy ? () => { __rt.cljSeq(x); return __rt.cljNext(x); }
         : method('INext/-next', 1, false, true) ?? (x => __rt.cljSeq(__rt.cljRest(x)));
       case 'cljNth': return (x,i) => nthOf(x,i,null,false,throughLazy);
@@ -955,8 +959,12 @@ const native = (() => {
     const s = reduceSeqOf(x);
     if (s == null) return null;
     if (arraySeqs.has(s)) return firstOf(s);
-    const first = decl.first(s,nativeSeq(s));
-    return first === null ? __rt.cljFirst(s) : first.call(s,s);
+    // Once seq has selected the receiver, ISeq dispatch also accepts an
+    // Object/default extension. Taking seq again can return this same value.
+    const first = decl.coreMethod('ISeq/-first',1,s,nativeSeq(s));
+    if (first !== null) return first.call(s,s);
+    if (nativeSeq(s)) return __rt.cljFirst(s);
+    throw new Error('ISeq.-first not supported on this type');
   };
   const restOf = x => {
     const cursor = arraySeqs.get(x);
@@ -968,8 +976,10 @@ const native = (() => {
     const s = reduceSeqOf(x);
     if (s == null) return __rt.formList();
     if (arraySeqs.has(s)) return restOf(s);
-    const rest = decl.rest(s,nativeSeq(s));
-    return rest === null ? __rt.cljRest(s) : rest.call(s,s);
+    const rest = decl.coreMethod('ISeq/-rest',1,s,nativeSeq(s));
+    if (rest !== null) return rest.call(s,s);
+    if (nativeSeq(s)) return __rt.cljRest(s);
+    throw new Error('ISeq.-rest not supported on this type');
   };
   const nextOf = x => {
     const cursor = arraySeqs.get(x);

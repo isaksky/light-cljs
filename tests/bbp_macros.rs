@@ -4943,6 +4943,62 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
             "[[:n 7] [:n 7] [:n 7] [] [] [] [] [] [] 7 7 7 [8] [8] [8] [8] [8] [8] 9 9 9 [10] [10] [10] [11] [11] [11]]",
         ),
         (
+            "default-sequence-methods",
+            r#"(defn demanded [n] (inc n))
+               (deftype T [fail] ISeqable (-seq [this] this))
+               (extend-type default
+                 ISeq (-first [x] (if (.-fail x) (throw (js/Error. "first")) (demanded 6)))
+                      (-rest [x] (if (.-fail x) (throw (js/Error. "rest")) (list (demanded 7))))
+                 INext (-next [_] (list :wrong)))"#,
+            r#"(let [x (T. false) b (T. true) f first rs rest n next c count v vec r reduce
+                    run (fn [f] (try (f) (catch :default e (.-message e))))]
+              [(first x) (f x) (apply first [x]) (vec (rest x)) (vec (rs x)) (vec (apply rest [x]))
+               (vec (next x)) (vec (n x)) (vec (apply next [x]))
+               (count x) (c x) (apply count [x]) (vec x) (v x) (apply vec [x])
+               (reduce + x) (r + 10 x) (apply reduce [+ x])
+               (run #(first b)) (run #(f b)) (run #(apply first [b]))
+               (run #(rest b)) (run #(rs b)) (run #(apply rest [b]))
+               (run #(next b)) (run #(count b)) (run #(vec b)) (run #(reduce + b))])"#,
+            r#"[7 7 7 [8] [8] [8] [8] [8] [8] 2 2 2 [7 8] [7 8] [7 8] 15 25 15 "first" "first" "first" "rest" "rest" "rest" "rest" "rest" "first" "first"]"#,
+        ),
+        (
+            "object-sequence-methods",
+            r#"(deftype T [] ISeqable (-seq [this] this))
+               (extend-type default ISeq (-first [_] :wrong) (-rest [_] nil))
+               (extend-type object ISeq (-first [_] 7) (-rest [_] (list 8))
+                 INext (-next [_] (list :wrong)))"#,
+            r#"(let [x (T.) f first rs rest n next c count v vec r reduce]
+              [(first x) (f x) (apply first [x]) (vec (rest x)) (vec (rs x)) (vec (apply rest [x]))
+               (vec (next x)) (vec (n x)) (vec (apply next [x]))
+               (count x) (c x) (apply count [x]) (vec x) (v x) (apply vec [x])
+               (reduce + x) (r + 10 x) (apply reduce [+ x])])"#,
+            "[7 7 7 [8] [8] [8] [8] [8] [8] 2 2 2 [7 8] [7 8] [7 8] 15 25 15]",
+        ),
+        (
+            "mixed-direct-default-sequence-methods",
+            r#"(deftype Head [] ISeqable (-seq [_] (throw (js/Error. "unexpected seq")))
+                 ISeq (-first [_] 7))
+               (deftype Tail [] ISeqable (-seq [_] (throw (js/Error. "unexpected seq")))
+                 ISeq (-rest [_] (list 9)))
+               (extend-type default ISeq (-first [_] 8) (-rest [_] (list 10)))"#,
+            r#"(let [h (Head.) t (Tail.) f first rs rest n next]
+              [(first h) (f h) (apply first [h]) (vec (rest h)) (vec (rs h)) (vec (apply rest [h]))
+               (vec (next h)) (vec (n h)) (vec (apply next [h]))
+               (first t) (f t) (apply first [t]) (vec (rest t)) (vec (rs t)) (vec (apply rest [t]))
+               (vec (next t)) (vec (n t)) (vec (apply next [t]))])"#,
+            "[7 7 7 [10] [10] [10] [10] [10] [10] 8 8 8 [9] [9] [9] [9] [9] [9]]",
+        ),
+        (
+            "missing-sequence-methods",
+            r#"(deftype T [] ISeqable (-seq [this] this))"#,
+            r#"(let [x (T.) f first rs rest n next
+                    run (fn [f] (try (f) (catch :default e (.-message e))))]
+              [(run #(first x)) (run #(f x)) (run #(apply first [x]))
+               (run #(rest x)) (run #(rs x)) (run #(apply rest [x]))
+               (run #(next x)) (run #(n x)) (run #(apply next [x]))])"#,
+            r#"["ISeq.-first not supported on this type" "ISeq.-first not supported on this type" "ISeq.-first not supported on this type" "ISeq.-rest not supported on this type" "ISeq.-rest not supported on this type" "ISeq.-rest not supported on this type" "ISeq.-rest not supported on this type" "ISeq.-rest not supported on this type" "ISeq.-rest not supported on this type"]"#,
+        ),
+        (
             "missing-protocol-arities",
             r#"(deftype Lookup [] ILookup (-lookup [_ k] 7))
                (deftype Indexed [] IIndexed (-nth [_ i] 8) ISeqable (-seq [_] (seq [1 2])) ISequential)
@@ -5164,7 +5220,10 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
             } else {
                 reference = Some(native.clone());
             }
-            if label == "resumption" || label.starts_with("lazy-user-") {
+            if label == "resumption"
+                || label == "default-sequence-methods"
+                || label.starts_with("lazy-user-")
+            {
                 assert!(stats.native_helpers.waits > 0, "{stats:?}");
             }
             #[cfg(feature = "quickjs")]
