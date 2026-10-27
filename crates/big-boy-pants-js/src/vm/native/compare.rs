@@ -381,9 +381,13 @@ impl Diagnostic {
                                     Part::Map(Items::Positional(pairs.clone(), 0), set, false),
                                 )?,
                                 FormMap::Hashed(map) => {
-                                    // Conservative B-tree node/entry admission, before
-                                    // the first insertion. One entry is visited per step.
-                                    let charge = reserve_elements(heap, map.len(), 512)?;
+                                    // A one-entry tree already allocates a full node.
+                                    // Admit a complete twelve-slot node (including
+                                    // edges/header) per entry, before any insertion.
+                                    // One source entry is visited per VM step.
+                                    let node_bytes =
+                                        12 * std::mem::size_of::<(Order, (Value, Value))>() + 256;
+                                    let charge = reserve_elements(heap, map.len(), node_bytes)?;
                                     self.push(
                                         heap,
                                         Part::Scan {
