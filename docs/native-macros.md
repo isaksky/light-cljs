@@ -1625,7 +1625,11 @@ Method declarations use the same source frontier as protocols. Each method
 bundle initializes once; its computed dispatch key and other effects are not
 replayed in another task or when an earlier frontier is selected. Persistent
 maps in a private shared journal record declaration operations and subsequent
-runtime mutations. Constructor-supplied method and preference maps seed each view;
+runtime mutations. Each supplied method/preference atom identity owns its history,
+shared by every `MultiFn` constructed with that atom, including in another task.
+The histories are independent when only one table is shared. An initializer-owned
+private registry uses persistent identity maps and CAS bookkeeping without user
+equality or effect replay. Constructor-supplied method and preference maps seed each view;
 the supplied atoms continue to contain language-level tables after additions,
 removals, preferences and resets. The visible dispatch/preference maps are
 materialized in source order, cached by history
@@ -1646,7 +1650,9 @@ properties; their rest argument is a native list. This keeps method functions
 shareable without publishing a mutable JavaScript runtime or replaying their
 declarations. Macro entry functions keep their host arity metadata. Native
 multimethods pass direct and first-class `instance? MultiFn`/`ifn?` checks and,
-as in the legacy runtime, fail `fn?`. Bundle products record root ownership even
+as in the legacy runtime, fail `fn?`. Native immutable type and record
+constructors pass both `fn?` and `ifn?`, matching their JavaScript function
+representation in the legacy runtime. Bundle products record root ownership even
 without a preceding `declare`, so a later ordinary definition can replace them.
 No native-only code was added to the emitted runtime in `src/js_runtime.js`.
 A dispatch function that captures task-owned JavaScript state fails publication
@@ -1655,14 +1661,20 @@ its effects. `demanded_multimethods_reject_task_owned_dispatch_without_replaying
 checks this boundary at all four pool sizes.
 
 `demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size` is one
-18-row native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
+21-row native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
 JavaScript as well as literal results. It covers scalar and structural keys,
 constructor/function keys, keyword/variadic dispatch, nested hierarchy dispatch,
 global hierarchy changes,
 preferences and ambiguity/missing-method errors, mutations, explicit construction,
 source-frontier replacement with and without a prior declaration, defonce,
 binding restoration, referenced fixed/variadic dispatch functions, retained
-constructor table atoms, native type tags and multimethod predicates.
+constructor table atoms, native type tags, shared and independently shared
+constructor tables, and direct/first-class predicates on functions, constructors,
+protocol callables, multimethods, callable collections and noncallable values.
+`multifns_sharing_constructor_tables_observe_each_others_mutations` checks
+addition, removal, preferences and reset across separate namespace macro callers
+and a later constructor sharing the same atoms, with seeded scheduling at all
+four pool sizes.
 `demanded_multimethod_effects_run_once_across_suspension_and_lending` checks shared
 constructor, method-key and helper effects under seeded scheduling and a held
 earlier lane at four/eight slots; unheld scheduling runs at all four pool sizes.

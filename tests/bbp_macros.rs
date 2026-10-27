@@ -3007,6 +3007,106 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
 }
 
 #[test]
+fn multifns_sharing_constructor_tables_observe_each_others_mutations() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-shared-multimethod-tables");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+          (def h (atom (-> (make-hierarchy) (derive :dog :pet) (derive :dog :animal))))
+          (def method-state (atom {}))
+          (def prefer-state (atom {}))
+          (defn new-multi [name]
+            (MultiFn. name identity :default h method-state prefer-state (atom {}) (atom nil)))
+          (def a (new-multi 'a))
+          (def b (new-multi 'b))
+          (defmacro install []
+            (-add-method a :x (fn [_] :x))
+            (-add-method a :pet (fn [_] :pet))
+            (-add-method a :animal (fn [_] :animal))
+            (prefer-method a :pet :animal)
+            (list 'quote :installed))
+          (defmacro probe []
+            (let [x (b :x) dog (b :dog)]
+              (remove-method b :x)
+              (prefer-method b :p :q)
+              (list 'quote [x dog (contains? (methods a) :x) (= (prefers a) (prefers b))])))
+          (defmacro finish []
+            (let [c (new-multi 'c)
+                  before [(contains? (methods c) :x) (= (methods a) (methods c))
+                          (= #{:q} (get (prefers c) :p))]]
+              (remove-all-methods c)
+              (-add-method a :y (fn [_] :y))
+              (list 'quote (into before [(c :y) (= (methods b) @method-state) (empty? (prefers b))]))))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [helpers :refer [install]])) (def value (install))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [helpers :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b] [helpers :refer [finish]]))
+          (js/console.log (pr-str [a/value b/value (finish)]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(debug_assertions)]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0);
+    assert_eq!(
+        program_output(&reference),
+        "[:installed [:x :pet false true] [false true true :y true true]]\n"
+    );
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(reference, build(false, jobs, 0), "legacy, jobs {jobs}");
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed),
+                "jobs {jobs}, seed {seed}"
+            );
+        }
+    }
+}
+
+#[test]
 fn demanded_multimethods_reject_task_owned_dispatch_without_replaying_effects() {
     let root = temp_dir::TempDir::new("native-multimethod-task-owned");
     std::fs::write(root.join("helpers.cljs"), r#"(ns helpers)
