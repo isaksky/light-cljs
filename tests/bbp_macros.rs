@@ -2815,6 +2815,16 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             "[:keyword :symbol :string :nil :false :number :vector :map :set [:default :other]]",
         ),
         (
+            "large generated helper keeps multimethod calls compact",
+            r#"
+          (def calls (atom 0))
+          (defmulti m identity)
+          (defmethod m :x [_] (swap! calls inc))
+          (defmethod m :done [_] (swap! calls inc) :done)"#,
+            "[(dispatch/large m) @calls]",
+            "[:done 81]",
+        ),
+        (
             "constructor and function dispatch",
             r#"
           (defmulti m identity)
@@ -2956,7 +2966,10 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
         let root = temp_dir::TempDir::new("native-multimethod-shapes");
         std::fs::write(
             root.join("dispatch.cljs"),
-            "(ns dispatch) (defn key-of [x] (name x)) (defn arities ([x] (name x)) ([x & _] (name x)))",
+            format!(
+                "(ns dispatch) (defn key-of [x] (name x)) (defn arities ([x] (name x)) ([x & _] (name x))) (defn large [f] {} (f :done))",
+                "(f :x) ".repeat(80)
+            ),
         )
         .unwrap();
         std::fs::write(

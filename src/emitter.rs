@@ -450,7 +450,10 @@ fn emit_js_mode(
         )
     });
     // The prelude, the `let g<n>;` declarations and the program body.
-    let body = |register_namespaces: bool, brand_types: TypeBrands, record_kits: [bool; 2]| {
+    let body = |register_namespaces: bool,
+                brand_types: TypeBrands,
+                record_kits: [bool; 2],
+                fixed_native_calls: bool| {
         let mut emitter = Emitter::new(
             program,
             Setup {
@@ -466,6 +469,7 @@ fn emit_js_mode(
         );
         emitter.brand_types = brand_types;
         emitter.native_forms = native_forms;
+        emitter.native_fixed_calls = fixed_native_calls;
         if native_forms {
             emitter.native_replaced_core = program
                 .exprs
@@ -561,9 +565,18 @@ fn emit_js_mode(
     // (`RuntimeRoots::reach_reflection`): the body is emitted without the
     // registration, and again with it when those roots reach reflection.
     let slice = direct.is_some();
-    let (mut emitter, mut prelude_end) = body(!slice, TypeBrands::Shared, [false; 2]);
+    let mut fixed_native_calls = true;
+    let (mut emitter, mut prelude_end) =
+        body(!slice, TypeBrands::Shared, [false; 2], fixed_native_calls);
+    // Fixed-call preparation expands each call site. Large generated macro
+    // helpers use the shared adapter instead, leaving 4 KiB for its prelude
+    // and factory wrapper below the engine's 16 KiB eval-source ceiling.
+    if native_forms && emitter.output.encode_utf16().take(12 * 1024 + 1).count() > 12 * 1024 {
+        fixed_native_calls = false;
+        (emitter, prelude_end) = body(!slice, TypeBrands::Shared, [false; 2], fixed_native_calls);
+    }
     if slice && emitter.runtime.reach_reflection() {
-        (emitter, prelude_end) = body(true, TypeBrands::Shared, [false; 2]);
+        (emitter, prelude_end) = body(true, TypeBrands::Shared, [false; 2], fixed_native_calls);
     }
     // A record type has its own `-equiv` and `-hash`, which read its fields
     // directly, where the slice installs the shared ones
@@ -575,7 +588,12 @@ fn emit_js_mode(
         [false; 2]
     };
     if record_kits.contains(&true) {
-        (emitter, prelude_end) = body(emitter.register_namespaces, TypeBrands::Shared, record_kits);
+        (emitter, prelude_end) = body(
+            emitter.register_namespaces,
+            TypeBrands::Shared,
+            record_kits,
+            fixed_native_calls,
+        );
     }
     // A type's own constructor brands its instance only where a brand may be
     // observed (`Emitter::unobserved_brands`): the body is emitted again
@@ -584,9 +602,19 @@ fn emit_js_mode(
     // through `new`, it is emitted again with each type a class branded by a
     // private field of its own (`Emitter::own_brands`, light-cljs-346).
     if slice && emitter.unobserved_brands() {
-        (emitter, prelude_end) = body(emitter.register_namespaces, TypeBrands::Unread, record_kits);
+        (emitter, prelude_end) = body(
+            emitter.register_namespaces,
+            TypeBrands::Unread,
+            record_kits,
+            fixed_native_calls,
+        );
     } else if slice && emitter.own_brands() {
-        (emitter, prelude_end) = body(emitter.register_namespaces, TypeBrands::Own, record_kits);
+        (emitter, prelude_end) = body(
+            emitter.register_namespaces,
+            TypeBrands::Own,
+            record_kits,
+            fixed_native_calls,
+        );
     }
     if let Some(temporary) = emitter.native_invoke_temporary {
         let declaration = format!("  const temporary{temporary}_0 = {NATIVE_PREPARE_INVOKE};\n");
@@ -1699,6 +1727,7 @@ enum TypeBrands {
 
 struct Emitter<'a> {
     native_forms: bool,
+    native_fixed_calls: bool,
     /// Native units bind their immutable core functions once per factory call.
     native_core_bindings: Vec<&'static str>,
     native_replaced_core: HashSet<&'static str>,
@@ -1936,6 +1965,7 @@ impl<'a> Emitter<'a> {
             .filter(|_| direct.is_some());
         Emitter {
             native_forms: false,
+            native_fixed_calls: true,
             native_core_bindings: Vec::new(),
             native_replaced_core: HashSet::new(),
             native_protocol_target: None,
@@ -7665,7 +7695,7 @@ impl<'a> Emitter<'a> {
     /// suspension without allocating a closure, a rest array and a spread
     /// array on every call. Wider calls retain the bounded generic adapter.
     fn native_fixed_invoke(&mut self, callee: ExprId, args: &[ExprId]) -> bool {
-        if !(1..=2).contains(&args.len()) {
+        if !self.native_fixed_calls || !(1..=2).contains(&args.len()) {
             return false;
         }
         let Some(operands) = self.operands.as_mut() else {
