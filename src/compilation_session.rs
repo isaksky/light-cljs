@@ -651,6 +651,29 @@ impl SharedCatalog {
         })
     }
 
+    /// Keep resolved writes after their owning IR is released. This augments
+    /// the lexical index with generated targets, once per analyzed mutation;
+    /// later native factories need no scan through their frozen IR prefix.
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn index_native_core_target(&self, program: &Program, mut target: crate::ExprId) {
+        use crate::ExprKind;
+
+        if !self.native_units.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        while let ExprKind::Property { receiver, .. } | ExprKind::JsIndex { receiver, .. } =
+            program.exprs[target.0].kind
+        {
+            target = receiver;
+        }
+        if let ExprKind::CoreFn(core) = program.exprs[target.0].kind {
+            self.native_replaced_core
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(core.runtime_name());
+        }
+    }
+
     /// Conservatively recognize core targets by spelling, including those in
     /// quoted/generated forms and bodies whose analysis is still deferred.
     /// A shadowed bare name may disable an optimization, never enable one.

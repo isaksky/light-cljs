@@ -295,6 +295,12 @@ mod deferred_storage_tests {
     #[cfg(feature = "bbp-macros")]
     #[test]
     fn native_preparation_reads_only_the_unit_and_its_definition_time_metadata() {
+        let reify_heavy = format!(
+            "(let [x 41] [{}])",
+            std::iter::repeat_n("(reify Object (toString [this] (str x)))", 32)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
         for source in [
             "(var marker)",
             "(even? 2)",
@@ -303,6 +309,8 @@ mod deferred_storage_tests {
                (binding [cljs.core/even? saved] (even? 2)))",
             "(deftype T [x] Object (toString [this] (str x)))",
             "(let [x 41] (do x (+ x 1)))",
+            "(let [x 41] (reify Object (toString [this] (str x))))",
+            &reify_heavy,
         ] {
             let source = format!("(def ^{{:doc \"definition-time\"}} marker 1) {source}");
             let mut program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
@@ -2011,6 +2019,12 @@ impl<'a> Emitter<'a> {
                     let mut targets = self.struct_targets.borrow_mut();
                     for (_, method) in methods {
                         targets.insert(method.target, native);
+                    }
+                }
+                ExprKind::Reify { methods, .. } => {
+                    let mut targets = self.struct_targets.borrow_mut();
+                    for (_, method) in methods {
+                        targets.insert(method.target, false);
                     }
                 }
                 _ => (),

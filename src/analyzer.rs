@@ -5489,6 +5489,27 @@ impl Analyzer<'_> {
         });
     }
     fn push(&mut self, kind: ExprKind, span: Span, context: ExprContext) -> ExprId {
+        // A macro may construct mutation operators and core names without
+        // spelling either in source. Publish each resolved write as it is
+        // analyzed, before later factories lose access to this unit's IR.
+        #[cfg(feature = "bbp-macros")]
+        if matches!(kind, ExprKind::SetGlobal { .. } | ExprKind::Binding { .. })
+            && let Some(session) = self.macro_host.session_handle()
+        {
+            match &kind {
+                ExprKind::SetGlobal { target, .. } => session
+                    .shared()
+                    .index_native_core_target(&self.program, *target),
+                ExprKind::Binding { bindings, .. } => {
+                    for &(target, _) in bindings {
+                        session
+                            .shared()
+                            .index_native_core_target(&self.program, target);
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
         let id = ExprId(self.program.exprs.len());
         if !self.unchecked_arrays
             && (self.options.checked_arrays || self.options.array_checks != CheckedArrays::Off)

@@ -5490,6 +5490,26 @@ fn native_core_writes_through_javascript_holes_observe_replacements() {
 #[test]
 fn native_core_reads_observe_replacements_in_demanded_helpers() {
     for (source, expected) in [
+        // Computed symbols hide the write from the lexical source index.
+        // The nested definition analyzes its generated IR before m's factory
+        // is prepared, so that resolved write must survive in the index.
+        (
+            r#"(defmacro write-inc []
+                 (list (symbol "set!") (symbol "cljs.core/inc") '(fn [_] 42)))
+               (if true (def install (fn [] (write-inc))) nil)
+               (defmacro m [] (let [before (inc 2)] (install) [before (inc 2)]))
+               (js/console.log (pr-str (m)))"#,
+            "[3 42]\n",
+        ),
+        (
+            r#"(defmacro bind-inc []
+                 (list (symbol "binding")
+                       [(symbol "cljs.core/inc") '(fn [_] 42)] '(inc 2)))
+               (if true (def install (fn [] (bind-inc))) nil)
+               (defmacro m [] [(inc 2) (install) (inc 2)])
+               (js/console.log (pr-str (m)))"#,
+            "[3 42 3]\n",
+        ),
         (
             r#"(declare install)
                (defmacro m [] (let [before (even? 2)] (install) [before (even? 2)]))
