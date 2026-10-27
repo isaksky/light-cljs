@@ -433,6 +433,77 @@ work or its transient allocations. Measurements below separate this remaining
 cost from in-task source evaluations. light-cljs-508 owns the residual
 concurrent-task memory premium.
 
+Measured at `5b8f73b0`, based on master `b3b655cc`, on macOS 15.7.3,
+Apple M3 Ultra (Virtual), 24 vCPUs and 32 GiB RAM, Homebrew Rust/Cargo 1.99.1
+and Node 26.12.1. Build with
+`CARGO_BUILD_JOBS=3 cargo build --locked --release --no-default-features --features bbp-macros --bin light-cljs`.
+Use the eight-namespace chain above, with `h0` through `h49` in each namespace:
+`(defn hi [x] (list (quote +) x i))`, `(defmacro mi [x] (hi x))`,
+`(defn fi [] (mi 0))`, substituting each index for `i`. Namespace `n0` has no
+require; each later namespace requires its predecessor. Run each job count with:
+
+```sh
+/usr/bin/time -lp target/release/light-cljs --compile --entry chain.n7 \
+  --source-root target/catalog-chain-400 --jobs N --no-cache --stats \
+  --source-map-inline --macro-timeout-ms 600000 \
+  --macro-memory-limit 4294967296 --macro-expansions 1000000 \
+  --macro-nodes 100000000 > target/chain.js 2> target/chain.stats
+```
+
+Three runs per cell, cycling 1/2/4/8 jobs. The table gives medians; RSS is
+`time -l`'s maximum resident set size in decimal MB. Runs were admitted only
+with no competing Cargo, rustc, nextest or compiler process before and after
+each run; an earlier batch during which peer tests restarted was excluded.
+The one-minute load average declined from 9.18 to 7.53 after those suites
+finished (five-minute 8.39 to 8.06, fifteen-minute 8.26 to 8.15).
+
+| Jobs | Wall | Peak RSS | RSS vs 1 | Contexts | In-task evaluations | Task steps |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 2.64 s | 100.2 MB | 1.00 | 401 | 2,810 | 15,879 |
+| 2 | 3.14 s | 109.1 MB | 1.09 | 402 | 2,004 | 17,194 |
+| 4 | 2.39 s | 128.5 MB | 1.28 | 404 | 2,218 | 17,642 |
+| 8 | 3.01 s | 181.2 MB | 1.81 | 408 | 2,154 | 17,684 |
+
+RSS ranges were 100.1–101.0 / 108.6–109.5 / 127.7–135.2 / 179.2–185.7 MB.
+Paired eight/one ratios were 1.810 / 1.789 / 1.839: the 1.15 target is missed.
+Every run compiled and initialized exactly 400 helpers, all published, with
+zero per-task fallbacks. All twelve JavaScript outputs, including inline
+source maps, were byte-identical. With 25 triples per namespace (200 helpers),
+one serial run took 0.95 s and 69.1 MB, with 1,410 evaluations and 7,429 task
+steps. Doubling helpers gives 2,810 evaluations and 15,879 steps: source
+evaluations are linear, while ordinary catalog property population remains
+and increases instruction work. These figures are from the simplified data
+snapshot design on its stated base, not a before/after comparison with the
+older registry designs or bases.
+
+A separate three-second `/usr/bin/sample PID 3` at eight jobs, with no competing
+build/test process, showed these collapsed top-of-stack counts:
+`__psynch_cvwait` 7,759, VM `execute_budgeted` 1,408,
+`OrdinaryObject::push` 1,080, `__psynch_mutexwait` 1,015,
+`Heap::allocate_accounted` 624, `Heap::mark_and_sweep` 252, and VM
+`new_function` 249. These are sampled thread stacks, not retained-byte
+attribution. Concurrent tasks still retain their ordinary registries and
+initializer slots, and producers still allocate their inherited properties;
+the profile includes property insertion, function allocation and collection
+alongside waits. Live task state, transient allocation and allocator residency
+have not been separated. The residual ratio and this evidence were appended
+to light-cljs-508 rather than creating a duplicate follow-up.
+
+On the rebased tree, the focused native selection passes 143 tests;
+`LIGHT_CLJS_STRESS_SEEDS=12` `native_pool_builds` passes in 249 s;
+QuickJS plus native library/macro/reader/proxy coverage passes 431 tests,
+including the ordinary-object differential table. Before this native-only
+base update, full default V8 and QuickJS/native suites passed 2,129/2,130 and
+2,193/2,194 tests respectively: both have only the documented playground
+workspace-discovery failure in nested worktrees. Their unchanged legacy
+compiler paths reuse those results; affected native coverage was rerun.
+Default strict all-target Clippy passes. Native strict lint reaches the
+existing engine diagnostics. Focused native lint and combined all-target lint
+pass allowing only `deprecated`, `chunks_exact_to_as_chunks` and
+`byte_char_slices`. Native-only/engine-free full test-target compilation is
+also limited by existing ungated legacy-engine tests; focused engine-free
+library/binary strict lint passes. Both formatter checks pass.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
