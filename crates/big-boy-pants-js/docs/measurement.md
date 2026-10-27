@@ -32,23 +32,141 @@ test threads. The benchmark owns its default target output only.
 
 ## Static engine names (2026-10-27)
 
-Engine baseline `5dfeade5`, changed source `3917552b`, macOS 15.7.3 ARM64,
+Final common baseline `54bd1144`, changed source `d04ca37d`, macOS 15.7.3 ARM64,
 Apple M3 Ultra / 24 CPUs, Homebrew Rust/Cargo 1.99.1, Babashka 1.12.218 and
 Node 26.12.1. Both saved engine CLIs and native compilers use the workspace
 release profile (thin LTO, one codegen unit). Native compilers use
 `--no-default-features --features bbp-macros`; the V8 reference uses default
 features and `LIGHT_CLJS_V8_CACHE=require`. Compiler source is identical.
-Saved binary SHA-256 prefixes: engine before `11e7ff35`, after `24ef6f0c`;
-native compiler before `2948f9ce`, after `ca5be720`; V8 `b6f10550`.
+Built the baseline by restoring only engine source to `54bd1144` in this
+worktree, then restored HEAD exactly and rebuilt the after binaries. No
+compiler feature variants ran concurrently. Saved binary SHA-256 prefixes:
+engine before `4e7d7626`, after `60a07e39`; native compiler before `4d1bdc4f`,
+after `b21cc46f`; fresh V8 `7aa71814`.
 The [static-name audit](architecture.md#static-engine-name-conversion-audit)
 lists changed conversions and the cold sites deliberately left in place.
+
+### Quiet profiles
+
+The admission audit first sampled the task's original common base,
+`5dfeade5`, before the concurrent native call-lowering changes landed.
+Those changes reduce the prominence of iterator result/record creation on
+the final protocol workload. Both comparisons retain exactly the same VM
+name-handling changes; final integrated measurements use the common base
+above.
+
+Copied the supplied microbenchmarks into ignored `target/jsbench/`. Profile
+inputs are the existing immediately invoked functions, enlarged to 12 million
+push/index/call iterations, six million reduce elements, three million object
+iterations and 600,000 Map entries. String profiling uses three million
+`parts.push('k' + i)` iterations followed by `parts.join(',').length`; the
+original shorter string input finished before a useful sample was captured.
+The protocol profile uses the existing harness's source at `n=20000`, four
+macro expansions, `--jobs 1 --no-cache --optimize none --stats
+--macro-timeout-ms 60000 --macro-poll-budget 100000000`.
+
+For each saved binary, launched the input, sampled its live PID with
+`/usr/bin/sample PID 2 1 -file FILE` (three seconds for protocol), and waited
+for completion. Collected individual samples only without peer build/test
+processes before and during sampling; overlapped attempts were discarded.
+The original protocol profiles had load **3.80/6.84/6.75** before and
+**2.53/6.04/6.46** after, with **95.82%/95.58% CPU idle**. The integrated
+protocol/index/string profiles had **97.44–98.27% CPU idle**, with load
+falling from **6.40/8.35/8.12** to **5.15/7.94/7.98**. Load averages retain
+earlier peer activity; the instantaneous CPU and process checks identify the
+actual measurement windows.
+
+Counts below are inclusive samples at the outermost UTF-16 encoder/comparison
+frame, grouped by its engine caller; nested encoder frames are counted once.
+They describe conversion work, including allocation below that frame, rather
+than independent self-time percentages.
+
+| Original protocol conversion site | Before samples | After samples |
+| --- | ---: | ---: |
+| Iterator result/record field construction | 47 | 0 |
+| Iterator `next`/`length` reads | 20 | 0 |
+| Array/string `length` classification | 12 | 0 |
+| Function special-name comparisons | 10 | 0 |
+| Native apply/instanceof helpers | 5 | 0 |
+| Array callback preparation | 3 | 0 |
+| Native form-kind result | 1 | 0 |
+| **All encoding frames** | **98** | **0** |
+
+The original protocol profiles contain 2,018/1,961 VM samples. String-name
+SipHash below iterator field construction and iterator reads falls from
+**16 + 14 samples to zero**. The final integrated protocol profiles contain
+1,359/1,337 VM samples: function-name and Proxy-trap encoding falls from
+**8 + 4 samples to zero**, with **no encoding frames anywhere in the after
+profile**. Initial binding, heap changes and GC can still hash a fixed name
+once while refreshing its stamped key; successful repeated accesses reuse
+that key. Remaining string hashing comes through generic bytecode/global,
+reflection and Proxy-key paths; numeric-key hashing is also unchanged.
+
+The push control loses its eight sampled static-name comparisons. Calls and
+object literals show no such conversions. Integrated index profiles retain
+**178/212** encoding samples for data-dependent numeric property names, and
+the longer string profiles retain **56/61** for number-to-string output.
+Their three sampled static `length` comparisons disappear. These dynamic
+conversions are required by the input and were left in place.
+
+### Timing on the final common base
+
+Ran the supplied `run.bb`, changing only its engine path, with
+`p_push p_index p_calls p_reduce fn_objects fn_strings fn_map`. Each cell is
+the median of three fresh processes minus the corresponding empty-process
+median (engine startup 3 ms). All results agree with Node and Node jitless.
+These are the original microbenchmark sizes: one million push/index/call/
+reduce/object iterations, 200,000 strings and 300,000 Map entries.
+
+| Workload | Before ms | After ms |
+| --- | ---: | ---: |
+| push | 137 | 140 |
+| index store | 229 | 227 |
+| ordinary calls | 132 | 132 |
+| index fill + reduce | 341 | 335 |
+| object literals/properties | 401 | 405 |
+| strings + join | 114 | 114 |
+| Map set/get | 409 | 405 |
+
+For protocol, ran the existing harness with all three saved compiler binaries:
+
+```sh
+bb benchmarks/native-macros-k.bb target/jsbench/integrated-k-quiet \
+  --workload protocol --runs 5 \
+  v8=target/jsbench/integrated-light-cljs-v8 \
+  before=target/jsbench/integrated-light-cljs-before \
+  after=target/jsbench/integrated-light-cljs-after
+```
+
+One discarded warmup per backend/size, five alternating rounds; all emitted
+programs agree in Node. Analysis milliseconds are medians [min–max].
+
+| Backend | n=0 ms | n=100 ms | n=400 ms | k at 100 | k at 400 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| V8 | 24.4 [24.1–25.7] | 29.1 [28.6–30.2] | 32.7 [32.4–32.8] | 1.0 | 1.0 |
+| Before | 40.7 [40.5–41.7] | 62.7 [62.2–63.2] | 89.1 [88.7–91.8] | 4.7 | 5.8 |
+| After | 41.1 [40.7–42.9] | 62.1 [61.1–63.2] | 88.2 [87.8–89.0] | 4.5 | 5.7 |
+
+The n=400 adjusted analysis times are 48.4/47.1 ms. Their ranges overlap,
+and the microbenchmark differences are small: these runs establish removal
+of the repeated conversions without demonstrating a material throughput
+improvement. The overall k target of approximately four remains unmet.
+Dispatch, property walking and heap access remain prominent in the profiles.
+No allocator or unrelated dispatch change was added here.
+
+Timing runs monitored peer build/test processes throughout and discarded
+overlapped attempts. The accepted protocol window began at load
+**4.97/7.85/7.95**, **98.19% idle**; before/after microbenchmark windows began
+at **3.59/6.91/7.59**, **98.14% idle**, and **3.35/6.75/7.52**,
+**97.33% idle**. An earlier harness invocation under renewed peer load was
+used only to check output agreement; its timings are not reported here.
 
 ### Byte accounting and semantic verification
 
 For the protocol workload at `n=20000`, all four macro expansions report
-**91 collections** and the same **23,916,826-byte peak managed footprint**
+**4/3/3/3 collections** and the same **23,190,494-byte peak managed footprint**
 before and after. Their final managed-byte counts also agree exactly:
-19,548,864; 18,668,444; 17,771,046; and 16,863,886. Both emitted programs print
+5,376,748; 6,079,758; 6,784,894; and 7,490,022. Both emitted programs print
 `7999099985000` four times under Node. The optimization changes neither
 heap-object layouts nor the set of interned property names, and static name
 bindings do not become collector roots.
