@@ -912,3 +912,77 @@ start).
 
 The 20k and 200k generated projects (seed 42) now stop natively at `--jobs 1`
 at `workload/trildorplus.cljc:6:1` (light-cljs-505), above.
+
+## Generated 200k and Penpot backend comparison, October 27, 2026
+
+Both release compilers use the unchanged tree at
+`d9b1b5f9e5bcee19c7366caa71091c53d221f8f7`, including builtin/callback/name
+lowering, protocol lowering, the shared catalog and shared multimethods.
+macOS 15.7.3 (24G419), aarch64, Apple M3 Ultra (Virtual), 24 logical CPUs,
+32 GiB RAM; Homebrew Rust/Cargo 1.99.1, Babashka 1.12.218 and Node 26.12.1.
+No other implementation workers or heavy builds/tests ran during measurement.
+Builds and measurements ran sequentially; each sample starts a fresh process
+with `--no-cache`. OS file caches were retained, with no discarded warmups.
+Release compilation, generation, hashing and Node validation are outside timing.
+
+```sh
+# From the isolated worktree; no source changes between builds.
+mkdir -p target/native-project-522
+LIGHT_CLJS_V8_CACHE=require CARGO_BUILD_JOBS=3 cargo build --locked --release \
+  --no-default-features --features bbp-macros
+cp target/release/light-cljs target/native-project-522/light-cljs-native
+LIGHT_CLJS_V8_CACHE=require CARGO_BUILD_JOBS=3 cargo build --locked --release
+cp target/release/light-cljs target/native-project-522/light-cljs-v8
+bb benchmarks/generated-project/generate.bb \
+  target/native-project-522/generated-200k --seed 42 --lines 200k
+```
+
+Binary SHA-256: native
+`2988f73ae93d0423d8678d9a6e59a78162e341f2dd9ed5b403aefebb2f133711`;
+default V8
+`afadc511abc87cf084e5089cba27d3eb162aaf052b791a2d4b8a5250a54b90a8`.
+The default build used the existing V8 machine cache with
+`LIGHT_CLJS_V8_CACHE=require`. Neither compiler has allocation instrumentation.
+
+The seed-42 fixture has 199,129 nonblank lines, 213,984 physical lines,
+9,966,430 source bytes, 15,450 top-level forms and 450 worker namespaces.
+Generated builds use `--compile --esm --entry workload.main --optimize advanced`
+with both generated `src` and `macros` roots. This matches the generated
+`release bench` optimization and budgets, using the direct CLI to obtain a
+source map (chunked `release` output does not support maps). Penpot builds use
+`--compile --esm --entry app.render|app.main --optimize none` and the five
+absolute read-only roots under `/Users/admin/src/light-cljs/research/penpot-light`:
+`frontend/src`, `common/src`, `vendor`, `generated`, `shims`. No port regeneration
+or research writes were performed.
+
+All commands add `--jobs N --no-cache --stats --source-map MAP
+--source-map-include-sources`, using one fixed absolute `MAP` path for all runs.
+Macro budgets (generated / Penpot) are expansions 10,000,000 / 100,000,000;
+nodes 1,000,000,000 / 4,000,000,000; memory 2,147,483,648 / 4,000,000,000 bytes;
+polls 100,000,000,000 / 1,000,000,000,000; timeout 3,600,000 ms for both.
+`/usr/bin/time -l` measures process wall, user CPU and peak resident bytes,
+including statistics and map writing. An external one-hour timeout bounds
+each process. Three rounds visit generated, render, then main; jobs run
+1/2/4/8 in rounds 1 and 3 and 8/4/2/1 in round 2. Generated backend order
+alternates at each job count and between rounds. The tables report independent
+medians, wall min–max, and the three pre-run load averages in round order
+(1/5/15 minutes). Full logs, per-run statistics, emitted JS/maps and the
+separate profile stay under the worktree's ignored `target/native-project-522/`;
+the results below are the committed measurement record.
+
+### Native Penpot coverage
+
+Both native entry builds at jobs 1 exit 1 with exactly this first error:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:906:3: macro expansion: while expanding fnc: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:906:3: macro rumext.v2/fnc: big-boy-pants-js: unsupported operation: compiler literal; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:320:1 (bytes 28314..28909)
+```
+
+| Entry | Wall to failure, s | User CPU, s | Peak RSS, bytes | Load before → after (1/5/15 min) |
+| --- | ---: | ---: | ---: | --- |
+| `app.render` | 13.44 | 13.10 | 267,288,576 | 2.38/2.35/2.01 → 2.37/2.34/2.02 |
+| `app.main` | 13.18 | 12.83 | 303,415,296 | 2.37/2.34/2.02 → 2.30/2.33/2.02 |
+
+These are failed-build coverage probes, excluded from successful build timing.
+The gap is already tracked by light-cljs-535. Only V8 is measured for Penpot;
+there is no native Penpot speed or output-identity comparison.
