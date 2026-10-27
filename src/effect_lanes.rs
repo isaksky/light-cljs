@@ -70,6 +70,14 @@ struct Top {
     position: Option<Position>,
 }
 
+/// A caller's activity before entering the initializer it demands. Retain
+/// its ancestry so owner selection sees waiters that arrive after reservation.
+#[derive(Default)]
+pub(crate) struct Caller {
+    position: Option<Position>,
+    targets: Vec<Target>,
+}
+
 /// A task parked for its lane: where it is, what its activity chain owns,
 /// and how to complete its lane cell.
 struct Parked {
@@ -483,6 +491,33 @@ impl Lanes {
     /// The caller's source position, before an initializer inherits a waiter.
     pub(crate) fn caller_position(&self, task: u64) -> Option<Position> {
         self.lock().tops.get(&task).and_then(|top| top.position)
+    }
+    pub(crate) fn caller(&self) -> Caller {
+        let (position, targets) = chain(self.key());
+        Caller { position, targets }
+    }
+    /// Select at the callers' current inherited positions, under one lane
+    /// snapshot. The initializer being elected cannot lend one candidate's
+    /// priority to its competitors; only their caller ancestry counts.
+    pub(crate) fn earliest_caller<'a>(
+        &self,
+        callers: impl Iterator<Item = &'a Caller>,
+        initializer: Target,
+    ) -> usize {
+        let s = self.lock();
+        callers
+            .enumerate()
+            .min_by_key(|(_, caller)| {
+                let inherited = s
+                    .waits
+                    .values()
+                    .filter(|(target, _)| *target != initializer && caller.targets.contains(target))
+                    .filter_map(|&(_, position)| position)
+                    .min();
+                min(caller.position, inherited).unwrap_or(0)
+            })
+            .expect("an initializer has at least one caller")
+            .0
     }
     /// The token of `task`'s current activity, which owns the atoms it
     /// makes; 0 outside any.

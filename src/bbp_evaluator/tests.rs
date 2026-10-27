@@ -945,6 +945,252 @@ fn helper_waits_do_not_reset_aggregate_fuel_or_deadline() {
 }
 
 #[test]
+fn inherited_helper_callers_select_their_own_binding_context() {
+    use crate::effect_lanes::{Lanes, Target, identity};
+    use std::{sync::mpsc, time::Duration};
+
+    // Also lend the earlier position after both candidates have registered:
+    // choosing once at reservation would still select the wrong bindings.
+    for inherit_before_reservation in [true, false] {
+        let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        lanes.schedule([0, 1, 2], false);
+        shared.set_lanes(lanes.clone());
+        let key = DependencyKey::new(shared.0.runtime.world(), DependencyId::new(7), INITIALIZER);
+        let helper = DependencyKey::new(shared.0.runtime.world(), DependencyId::new(8), HELPER);
+        let gates = Arc::new([
+            (Mutex::new(false), Condvar::new()),
+            (Mutex::new(false), Condvar::new()),
+        ]);
+        let (arrived, arrivals) = mpsc::channel();
+        let observed = gates.clone();
+        *shared.0.on_initializer.lock().unwrap() = Some(Arc::new(move |task, dependency| {
+            assert_eq!(dependency, key);
+            let ValueView::Number(caller) = task.global_value("caller").unwrap().unwrap().view()
+            else {
+                panic!("missing caller");
+            };
+            arrived.send(caller as usize).unwrap();
+            let gate = &observed[caller as usize];
+            let (_released, timeout) = gate
+                .1
+                .wait_timeout_while(gate.0.lock().unwrap(), Duration::from_secs(5), |released| {
+                    !*released
+                })
+                .unwrap();
+            assert!(!timeout.timed_out(), "candidate was not released");
+        }));
+        std::thread::scope(|scope| {
+            let _root = lanes.enter_root();
+            let _earliest = lanes.enter_unit(0);
+            let mut waiting =
+                inherit_before_reservation.then(|| lanes.wait_for(Target::Cell(identity(helper))));
+            let run = |caller, unit, produces_helper: bool| {
+                let evaluator = Rc::new(shared.evaluator().unwrap());
+                evaluator.clone().install_compiler_service("__lightCompileUnit", Rc::new(|_, _| {
+                    Ok("rt => { __rt.effect(65534, 0); return globalThis.__lightCompilerRoots['fixture/*x*']; }".into())
+                })).unwrap();
+                evaluator.preload("fixture/*x*", "rt => 'root'").unwrap();
+                evaluator
+                    .register_compiler_root("fixture/value", Some(7), false, "fixture.cljs:1", None)
+                    .unwrap();
+                // Install the overlay before entering the held activity, so
+                // the late-inheritance case reaches reservation first.
+                evaluator
+                    .evaluate_unit(&format!(
+                        "rt => {{
+                        globalThis.fixtureSaved = __lightSaveCompilerBinding('fixture/*x*');
+                        if ({produces_helper}) __lightBindCompilerRoot('fixture/*x*', 'helper');
+                        return null;
+                    }}"
+                    ))
+                    .unwrap();
+                let _root = lanes.enter_root();
+                let _unit = lanes.enter_unit(unit);
+                let _helper = produces_helper.then(|| lanes.enter_cell(identity(helper)));
+                let result = evaluator
+                    .evaluate_unit(&format!(
+                        "rt => {{
+                        globalThis.caller = {caller};
+                        try {{
+                            return globalThis.__lightCompilerRoots['fixture/value'];
+                        }} finally {{ __lightRestoreCompilerBinding('fixture/*x*', globalThis.fixtureSaved); }}
+                    }}"
+                    ))
+                    .unwrap();
+                let cx = evaluator.cx().unwrap();
+                let values = cx.values.borrow();
+                assert_eq!(
+                    values[&result.index].string().unwrap().to_string_lossy(),
+                    "helper"
+                );
+                assert!(cx.initializers.borrow().is_empty());
+                assert!(cx.initializer_waits.borrow().is_empty());
+                assert!(cx.initializer_lanes.borrow().is_empty());
+            };
+            let indirect = scope.spawn(move || run(0, 2, true));
+            assert_eq!(arrivals.recv_timeout(Duration::from_secs(5)).unwrap(), 0);
+            let direct = scope.spawn(move || run(1, 1, false));
+            assert_eq!(arrivals.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
+            if waiting.is_none() {
+                waiting = Some(lanes.wait_for(Target::Cell(identity(helper))));
+            }
+            for gate in gates.iter() {
+                *gate.0.lock().unwrap() = true;
+                gate.1.notify_all();
+            }
+            indirect.join().unwrap();
+            drop(waiting);
+            lanes.finish(0, false);
+            direct.join().unwrap();
+        });
+        assert_eq!(shared.0.counters.cleanups.load(Ordering::Relaxed), 1);
+        assert!(shared.0.pending_initializers.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn cancelling_a_superseded_initializer_reserver_keeps_its_owner_and_peer_alive() {
+    cancel_transferred_initializer(false);
+}
+
+#[test]
+fn cancelling_a_transferred_initializer_owner_fails_waiting_peers_before_effects() {
+    cancel_transferred_initializer(true);
+}
+
+fn cancel_transferred_initializer(cancel_owner: bool) {
+    use crate::effect_lanes::Lanes;
+    use std::{sync::mpsc, time::Duration};
+
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let lanes = Arc::new(Lanes::default());
+    lanes.enable();
+    lanes.schedule([0, 1, 2], false);
+    shared.set_lanes(lanes.clone());
+    let key = DependencyKey::new(shared.0.runtime.world(), DependencyId::new(7), INITIALIZER);
+    let gates = Arc::new([
+        (Mutex::new(false), Condvar::new()),
+        (Mutex::new(false), Condvar::new()),
+        (Mutex::new(false), Condvar::new()),
+    ]);
+    let (arrived, arrivals) = mpsc::channel();
+    let observed = gates.clone();
+    *shared.0.on_initializer.lock().unwrap() = Some(Arc::new(move |task, dependency| {
+        assert_eq!(dependency, key);
+        let ValueView::Number(caller) = task.global_value("caller").unwrap().unwrap().view() else {
+            panic!("missing caller");
+        };
+        arrived.send((caller as usize, task.clone())).unwrap();
+        let gate = &observed[caller as usize];
+        let (_released, timeout) = gate
+            .1
+            .wait_timeout_while(gate.0.lock().unwrap(), Duration::from_secs(5), |released| {
+                !*released
+            })
+            .unwrap();
+        assert!(!timeout.timed_out(), "candidate was not released");
+    }));
+    let (parked, parking) = mpsc::channel();
+    shared.on_wait(Arc::new(move |task, dependency| {
+        if dependency == key {
+            parked.send(task.id()).unwrap();
+        }
+    }));
+    let release = |caller: usize| {
+        *gates[caller].0.lock().unwrap() = true;
+        gates[caller].1.notify_all();
+    };
+    std::thread::scope(|scope| {
+        let run = |caller| {
+            let evaluator = Rc::new(shared.evaluator().unwrap());
+            evaluator
+                .clone()
+                .install_compiler_service(
+                    "__lightCompileUnit",
+                    Rc::new(|_, _| Ok("rt => { __rt.effect(65534, 0); return 42; }".into())),
+                )
+                .unwrap();
+            evaluator
+                .register_compiler_root("fixture/value", Some(7), false, "fixture.cljs:1", None)
+                .unwrap();
+            let _root = lanes.enter_root();
+            let _unit = lanes.enter_unit(caller);
+            let result = evaluator.evaluate_unit(&format!(
+                "rt => {{ globalThis.caller = {caller}; return globalThis.__lightCompilerRoots['fixture/value']; }}"
+            ));
+            let cx = evaluator.cx().unwrap();
+            assert!(cx.initializers.borrow().is_empty());
+            assert!(cx.initializer_waits.borrow().is_empty());
+            assert!(cx.initializer_lanes.borrow().is_empty());
+            lanes.finish(caller, result.is_err());
+            result
+                .map(|value| {
+                    assert_eq!(
+                        cx.values.borrow()[&value.index].view(),
+                        ValueView::Number(42.0)
+                    );
+                })
+                .map_err(|e| e.to_string())
+        };
+        // The later task reserves first; the earlier caller takes ownership
+        // while the original reserver is still held before factory execution.
+        let original = scope.spawn(move || run(2));
+        let (caller, original_task) = arrivals.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(caller, 2);
+        let owner = scope.spawn(move || run(0));
+        let (caller, owner_task) = arrivals.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(caller, 0);
+        let peer = scope.spawn(move || run(1));
+        let (caller, peer_task) = arrivals.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(caller, 1);
+        assert_eq!(
+            shared.0.pending_initializers.lock().unwrap()[&key].owner(Some(&lanes), key),
+            owner_task.id()
+        );
+
+        release(1);
+        assert_eq!(
+            parking.recv_timeout(Duration::from_secs(5)).unwrap(),
+            peer_task.id()
+        );
+        if cancel_owner {
+            let _cancel = owner_task.cancel();
+            release(0);
+            assert!(owner.join().unwrap().unwrap_err().contains("cancelled"));
+            release(2);
+            let failure = original.join().unwrap().unwrap_err();
+            assert!(failure.contains("cancelled"), "{failure}");
+            let failure = peer.join().unwrap().unwrap_err();
+            assert!(failure.contains("cancelled"), "{failure}");
+        } else {
+            let _cancel = original_task.cancel();
+            release(2);
+            assert!(original.join().unwrap().unwrap_err().contains("cancelled"));
+            assert_eq!(
+                shared.0.pending_initializers.lock().unwrap()[&key].owner(Some(&lanes), key),
+                owner_task.id()
+            );
+            release(0);
+            owner.join().unwrap().unwrap();
+            peer.join().unwrap().unwrap();
+        }
+    });
+    assert_eq!(
+        shared.0.counters.cleanups.load(Ordering::Relaxed),
+        usize::from(!cancel_owner)
+    );
+    assert!(shared.0.pending_initializers.lock().unwrap().is_empty());
+    assert!(shared.0.control.poll().is_ok());
+    match shared.0.runtime.cell_status(key) {
+        big_boy_pants_js::CellStatus::Failed(_) if cancel_owner => {}
+        big_boy_pants_js::CellStatus::Ready(_) if !cancel_owner => {}
+        status => panic!("unexpected initializer outcome: {status:?}"),
+    }
+}
+
+#[test]
 fn cancelling_a_reserved_initializer_fails_its_claim_before_factory_effects() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     *shared.0.on_initializer.lock().unwrap() = Some(Arc::new(|task, _| {

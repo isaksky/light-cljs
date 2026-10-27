@@ -2439,6 +2439,15 @@ fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slo
 
 #[test]
 fn inherited_initializers_use_the_earlier_callers_bindings_under_seeded_scheduling() {
+    inherited_initializer_bindings(false);
+}
+
+#[test]
+fn indirect_initializers_use_the_earlier_callers_bindings_under_seeded_scheduling() {
+    inherited_initializer_bindings(true);
+}
+
+fn inherited_initializer_bindings(indirect: bool) {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
     let root = temp_dir::TempDir::new("native-inherited-bindings");
     for (file, source) in [
@@ -2452,10 +2461,12 @@ fn inherited_initializers_use_the_earlier_callers_bindings_under_seeded_scheduli
                           (swap! events conj :scalar) [*x* *y*]))
             (def object (binding [*y* false]
                           (swap! events conj :object) [(aget *x* 0) *y*]))
+            (def via-scalar (binding [*x* :helper] scalar))
+            (def via-object (binding [*x* (js/Array. "helper-object")] object))
             (defmacro earlier []
-              (let [a (binding [*x* :earlier *y* :outside] scalar)
+              (let [a (binding [*x* :earlier *y* :outside] SCALAR)
                     value (js/Array. "earlier-object")
-                    b (binding [*x* value *y* nil] [object (identical? *x* value)])]
+                    b (binding [*x* value *y* nil] [OBJECT (identical? *x* value)])]
                 (list 'quote [a b *x* *y*])))
             (defmacro later []
               (let [a scalar b object]
@@ -2476,6 +2487,9 @@ fn inherited_initializers_use_the_earlier_callers_bindings_under_seeded_scheduli
              (js/console.log (pr-str [a/value b/value (log)]))",
         ),
     ] {
+        let source = source
+            .replace("SCALAR", if indirect { "via-scalar" } else { "scalar" })
+            .replace("OBJECT", if indirect { "via-object" } else { "object" });
         std::fs::write(root.join(file), source).unwrap();
     }
     let build = |native, jobs, seed, held| {
@@ -2522,12 +2536,17 @@ fn inherited_initializers_use_the_earlier_callers_bindings_under_seeded_scheduli
         emit_js(&program)
     };
     let reference = build(true, 1, 0, false);
-    assert_eq!(
-        program_output(&reference),
-        "[[[:earlier :inside] [[\"earlier-object\" false] true] \"root\" :root] \
+    let expected = "[[[:earlier :inside] [[\"earlier-object\" false] true] \"root\" :root] \
          [[:earlier :inside] [\"earlier-object\" false] \
-         [[:earlier :inside] [\"earlier-object\" false] :later :later] \"root\" :root] [:scalar :object]]\n"
-    );
+         [[:earlier :inside] [\"earlier-object\" false] :later :later] \"root\" :root] [:scalar :object]]\n";
+    let expected = if indirect {
+        expected
+            .replace(":earlier", ":helper")
+            .replace("earlier-object", "helper-object")
+    } else {
+        expected.into()
+    };
+    assert_eq!(program_output(&reference), expected);
     #[cfg(feature = "quickjs")]
     for jobs in [1, 2, 4, 8] {
         assert!(

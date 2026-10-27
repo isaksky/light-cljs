@@ -530,7 +530,22 @@ struct Parked {
 }
 struct PendingInitializer {
     request: ProducerRequest,
-    caller: (u64, big_boy_pants_js::TaskId),
+    callers: Vec<(big_boy_pants_js::TaskId, crate::effect_lanes::Caller)>,
+}
+impl PendingInitializer {
+    fn owner(
+        &self,
+        lanes: Option<&Arc<crate::effect_lanes::Lanes>>,
+        key: DependencyKey,
+    ) -> big_boy_pants_js::TaskId {
+        let index = lanes.map_or(0, |lanes| {
+            lanes.earliest_caller(
+                self.callers.iter().map(|(_, caller)| caller),
+                crate::effect_lanes::Target::Cell(crate::effect_lanes::identity(key)),
+            )
+        });
+        self.callers[index].0
+    }
 }
 /// Removes a parked task's entry when its owner stops waiting, so that a
 /// later wakeup queues nothing for it.
@@ -1670,10 +1685,17 @@ impl BbpEvaluator {
                 let mut pending = self.shared.0.pending_initializers.lock().unwrap();
                 if pending
                     .get(&key)
-                    .is_some_and(|p| p.caller.1 == cx.task.id())
+                    .is_some_and(|p| p.owner(self.shared.lanes(), key) == cx.task.id())
                 {
                     pending.remove(&key).map(|p| p.request)
                 } else {
+                    // This task will consume the result instead of trying
+                    // selection again. It is no longer an eligible owner.
+                    if let Some(initializer) = pending.get_mut(&key) {
+                        initializer
+                            .callers
+                            .retain(|(task, _)| *task != cx.task.id());
+                    }
                     None
                 }
             };
@@ -1765,24 +1787,27 @@ impl BbpEvaluator {
                     .map_err(error)?;
                 self.shared.wake(wakeups);
             }
-            let (candidate, reserved) = {
+            let caller = self
+                .shared
+                .lanes()
+                .map(|lanes| lanes.caller())
+                .unwrap_or_default();
+            let candidate = {
                 let mut pending = self.shared.0.pending_initializers.lock().unwrap();
                 if let Some(initializer) = pending.get_mut(&key) {
-                    if position < initializer.caller.0 {
-                        initializer.caller = (position, cx.task.id());
-                    }
-                    (true, false)
+                    initializer.callers.push((cx.task.id(), caller));
+                    true
                 } else if let Ok(request) = self.runtime.claim(key) {
                     pending.insert(
                         key,
                         PendingInitializer {
                             request,
-                            caller: (position, cx.task.id()),
+                            callers: vec![(cx.task.id(), caller)],
                         },
                     );
-                    (true, true)
+                    true
                 } else {
-                    (false, false)
+                    false
                 }
             };
             if candidate {
@@ -1796,14 +1821,12 @@ impl BbpEvaluator {
                 cx.initializer_waits.borrow_mut().insert(key, wait);
             }
             #[cfg(test)]
-            if reserved {
+            if candidate {
                 let hook = self.shared.0.on_initializer.lock().unwrap().clone();
                 if let Some(hook) = hook {
                     hook(&cx.task, key);
                 }
             }
-            #[cfg(not(test))]
-            let _ = reserved;
             return Ok(self.runtime.root(Primitive::Bool(candidate)));
         }
         let producer = cx
@@ -1876,8 +1899,15 @@ impl BbpEvaluator {
         {
             let mut pending = self.shared.0.pending_initializers.lock().unwrap();
             for key in waits.keys() {
-                if pending.get(key).is_some_and(|p| p.caller.1 == cx.task.id()) {
+                if pending
+                    .get(key)
+                    .is_some_and(|p| p.owner(self.shared.lanes(), *key) == cx.task.id())
+                {
                     requests.insert(*key, pending.remove(key).unwrap().request);
+                } else if let Some(initializer) = pending.get_mut(key) {
+                    initializer
+                        .callers
+                        .retain(|(task, _)| *task != cx.task.id());
                 }
             }
         }
