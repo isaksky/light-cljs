@@ -1,0 +1,147 @@
+//! Shared catalog data, with ordinary task-owned JavaScript registrations.
+//!
+//! Versions are persistent vectors of registration descriptors. They contain
+//! only immutable data, never task objects, initialized values or getters.
+//! Tasks apply descriptors in source order through the same registration
+//! functions as individual registrations; nothing is coalesced or inferred
+//! from a property descriptor. Producers import data rather than compile and
+//! evaluate their parent's registration sources.
+use super::*;
+use crate::compilation_session::Registration;
+
+#[derive(Default)]
+pub(super) struct Registry {
+    // Persistent vector prefixes share their storage. Keeping versions makes
+    // an earlier frontier available without rebuilding or caching JS objects.
+    versions: BTreeMap<usize, Rooted>,
+}
+
+fn text<'s>(s: &Scope<'s>, value: &str) -> Result<Local<'s>, EvalError> {
+    s.try_primitive(Primitive::string(value))
+        .ok_or_else(|| error("heap byte or string limit exceeded"))
+}
+
+impl BbpEvaluator {
+    pub(crate) fn install_catalog(
+        &self,
+        first: usize,
+        registrations: &[Registration],
+    ) -> Result<(), EvalError> {
+        if registrations.is_empty() {
+            return Ok(());
+        }
+        let end = first + registrations.len();
+        let snapshot = {
+            let mut registry = self.shared.0.catalog.lock().unwrap();
+            if let Some(snapshot) = registry.versions.get(&end) {
+                snapshot.clone()
+            } else {
+                let previous = registry.versions.range(..end).next_back();
+                let start = previous.map_or(0, |(cursor, _)| *cursor);
+                if start < first {
+                    return Err(error("missing native catalog frontier"));
+                }
+                let pending = &registrations[start - first..];
+                for registration in pending {
+                    self.control.poll()?;
+                    self.define_root(match registration {
+                        Registration::Root(_, unit, ..) => *unit,
+                        Registration::Bundle(bundle) => Some(bundle.unit),
+                    })?;
+                }
+                let snapshot = self.host_scope(|s| {
+                    let mut entries = match previous {
+                        Some((_, previous)) => s.local(previous).map_err(error)?,
+                        None => s.new_vector(&[]).map_err(error)?,
+                    };
+                    for registration in pending {
+                        self.control.poll()?;
+                        let number = |n: usize| s.primitive(Primitive::Number(n as f64));
+                        let boolean = |b| s.primitive(Primitive::Bool(b));
+                        let descriptor = match registration {
+                            Registration::Root(name, unit, _, once, _) => s
+                                .new_vector(&[
+                                    number(0),
+                                    text(s, name)?,
+                                    unit.map_or_else(|| s.primitive(Primitive::Null), number),
+                                    boolean(*once),
+                                ])
+                                .map_err(error)?,
+                            Registration::Bundle(bundle) => {
+                                let names = bundle
+                                    .products
+                                    .iter()
+                                    .map(|name| text(s, name))
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                // Native declaration dispatch uses only the protocol
+                                // from each extension index, just like decl.register.
+                                let indices = bundle
+                                    .extensions
+                                    .iter()
+                                    .map(|(protocol, _, _)| {
+                                        s.new_vector(&[text(s, protocol)?]).map_err(error)
+                                    })
+                                    .collect::<Result<Vec<_>, EvalError>>()?;
+                                s.new_vector(&[
+                                    number(1),
+                                    s.new_vector(&names).map_err(error)?,
+                                    s.new_vector(&indices).map_err(error)?,
+                                    text(s, &bundle.location)?,
+                                    boolean(bundle.once),
+                                    number(bundle.unit),
+                                ])
+                                .map_err(error)?
+                            }
+                        };
+                        entries = s.conj(entries, descriptor).map_err(error)?;
+                    }
+                    Ok::<_, EvalError>(s.persist(entries))
+                })?;
+                self.runtime.publish(&snapshot).map_err(error)?;
+                registry.versions.insert(end, snapshot.clone());
+                snapshot
+            }
+        };
+        self.use_catalog(snapshot, first)?;
+        self.cx()?.catalog.set(Some(end));
+        Ok(())
+    }
+
+    /// Apply exactly the newly registered suffix. A producer starts at zero
+    /// with a fresh ordinary object and the very same immutable data root.
+    pub(super) fn use_catalog(&self, snapshot: Rooted, first: usize) -> Result<(), EvalError> {
+        let cx = self.cx()?;
+        let payload = self.host_scope(|s| {
+            let snapshot = s.local(&snapshot).map_err(error)?;
+            let first = s.primitive(Primitive::Number(first as f64));
+            Ok::<_, EvalError>(s.persist(s.new_vector(&[snapshot, first]).map_err(error)?))
+        })?;
+        let input = {
+            let mut input = cx.catalog_input.borrow_mut();
+            if let Some(publisher) = input.as_mut() {
+                publisher.publish(&payload).map_err(error)?;
+            } else {
+                *input = Some(
+                    self.runtime
+                        .new_single_writer_atom(&payload)
+                        .map_err(error)?,
+                );
+            }
+            input.as_ref().unwrap().atom().clone()
+        };
+        let result = self.request(4, self.id()?, input);
+        // Command cells outlive their task. Empty the mailbox so a completed
+        // producer does not retain the catalog payload through a command cell.
+        let cleared = cx
+            .catalog_input
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .publish(&self.runtime.root(Primitive::Null))
+            .map_err(error);
+        result?;
+        cleared?;
+        *cx.catalog_snapshot.borrow_mut() = Some(snapshot);
+        Ok(())
+    }
+}

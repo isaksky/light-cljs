@@ -1399,6 +1399,11 @@ pub enum EnvironmentExtensions {
 pub type EnvironmentTracking = std::rc::Rc<std::cell::Cell<EnvironmentExtensions>>;
 /// Common macro operations at either an outer boundary or an active callback.
 pub trait MacroEvaluator {
+    /// The native evaluator, including an active helper producer.
+    #[cfg(feature = "bbp-macros")]
+    fn native_shell(&self) -> Option<&crate::bbp_evaluator::BbpEvaluator> {
+        None
+    }
     /// Cumulative native bridge work; absent for descriptor-based engines.
     fn native_bridge_stats(&self) -> Option<crate::compile_stats::NativeBridgeCall> {
         None

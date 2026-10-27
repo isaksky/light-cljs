@@ -34,12 +34,6 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
     fn native_forms(&self) -> bool {
         false
     }
-    /// The native evaluator, whose task context a pool slot's view parks
-    /// between jobs and borrows ([`crate::bbp_evaluator::BbpEvaluator::park`]).
-    #[cfg(feature = "bbp-macros")]
-    fn native_shell(&self) -> Option<&crate::bbp_evaluator::BbpEvaluator> {
-        None
-    }
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError>;
     fn install_compiler_service(
         self: Rc<Self>,

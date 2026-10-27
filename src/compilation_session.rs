@@ -260,7 +260,7 @@ enum AnalysisState {
     Failed(String, Option<crate::AnalysisError>),
 }
 #[derive(Clone)]
-enum Registration {
+pub(crate) enum Registration {
     Root(String, Option<usize>, Option<usize>, bool, String),
     Bundle(Arc<BundleRecord>),
 }
@@ -2832,6 +2832,19 @@ fn install_registrations(
     registrations: &[Registration],
     before_last: impl FnOnce(&dyn MacroEvaluator) -> Result<(), String>,
 ) -> Result<(), String> {
+    #[cfg(feature = "bbp-macros")]
+    if let Some(native) = engine.native_shell() {
+        if let Some((last, preceding)) = registrations.split_last() {
+            native
+                .install_catalog(first, preceding)
+                .map_err(|e| e.to_string())?;
+            before_last(engine)?;
+            native
+                .install_catalog(first + preceding.len(), std::slice::from_ref(last))
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
     let mut before_last = Some(before_last);
     let mut roots = Vec::new();
     for (index, registration) in registrations.iter().enumerate() {
@@ -3110,7 +3123,7 @@ impl WorkerView {
             active.native_bridge_stats().is_some() && active.heap() != bootstrap.evaluator.heap()
         });
         let engine = active.unwrap_or(bootstrap.evaluator.as_ref());
-        // A producer replayed its parent's registrations, which are the
+        // A producer imported its parent's catalog frontier, which is the
         // engine's (`installed`), and keeps its own cursor from there: a
         // registration is installed in it once, however often it demands.
         let first = match producer {
@@ -5182,10 +5195,9 @@ mod worker_tests {
         assert_eq!(shared.lock().units[id].analyses, analyses);
     }
 
-    /// A native producer task replays its parent's registrations and then
-    /// takes the rest of the catalog once, however often its helper's
-    /// compilation and analysis ask the view to install
-    /// (`WorkerView::install`); the worker's own cursor stays put.
+    /// A native producer imports catalog data without evaluating registration
+    /// source, however often its helper asks the view to install. The worker's
+    /// own cursor stays put.
     #[cfg(feature = "bbp-macros")]
     #[test]
     fn a_native_producer_takes_each_catalog_registration_once() {
@@ -5215,10 +5227,10 @@ mod worker_tests {
                     let held = || producer.registration_count();
                     let before = held();
                     view.install(Some(&producer)).unwrap();
-                    assert_eq!(held(), before + total);
+                    assert_eq!(held(), before, "catalog source was retained for replay");
                     assert_eq!(producer.catalog_cursor(), Some(total));
                     view.install(Some(&producer)).unwrap();
-                    assert_eq!(held(), before + total, "installed twice");
+                    assert_eq!(held(), before, "catalog source was retained for replay");
                     assert_eq!(
                         view.installed.get(),
                         0,

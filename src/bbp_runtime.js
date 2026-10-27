@@ -1294,7 +1294,21 @@ for(let serial=1;;serial++){
   globalThis.__lightFailure=null;
   try {
     let result=null;
-    if(op===3){if(held&&heldId===id){held=false;heldValue=null;}else values.delete(id);}
+    if(op===4){
+      const payload=__rt.atomLoad(input), catalog=__rt.nth(payload,0);
+      for(let at=__rt.nth(payload,1);at<__rt.count(catalog);at++){
+        const entry=__rt.nth(catalog,at);
+        if(__rt.nth(entry,0)===0){
+          globalThis.__lightRegisterUnit(__rt.nth(entry,1),__rt.nth(entry,2),__rt.nth(entry,3));
+        }else{
+          const products=__rt.nth(entry,1), extensions=__rt.nth(entry,2), names=[], indices=[];
+          for(let i=0;i<__rt.count(products);i++)names.push(__rt.nth(products,i));
+          for(let i=0;i<__rt.count(extensions);i++)indices.push([__rt.nth(__rt.nth(extensions,i),0)]);
+          decl.register(names,indices,__rt.nth(entry,3),__rt.nth(entry,4),__rt.nth(entry,5));
+        }
+      }
+    }
+    else if(op===3){if(held&&heldId===id){held=false;heldValue=null;}else values.delete(id);}
     else {
       if(held){values.set(heldId,heldValue);held=false;heldValue=null;}
       if(op===0) result=(0,eval)(input);

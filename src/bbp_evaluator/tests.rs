@@ -2223,3 +2223,568 @@ fn namespace_macro_chains_fit_the_default_heap_with_linear_live_bytes() {
         previous = Some(heap.last_live_bytes);
     }
 }
+
+#[test]
+fn catalog_objects_match_plain_objects_before_and_after_demand() {
+    use crate::compilation_session::Registration;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let parent = Rc::new(shared.evaluator().unwrap());
+    parent
+        .clone()
+        .install_compiler_service(
+            "__lightCompileUnit",
+            Rc::new(|_, id| Ok(format!("rt => {id}"))),
+        )
+        .unwrap();
+    let names = ["alpha", "10", "2", "01", "4294967295", "omega"];
+    let registrations = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            Registration::Root(
+                (*name).into(),
+                Some(i + 1),
+                None,
+                false,
+                "fixture.cljs:1".into(),
+            )
+        })
+        .collect::<Vec<_>>();
+    parent.install_catalog(0, &registrations).unwrap();
+    // Each row gets a fresh object, also after demanding its initial getters.
+    // Compare observable values, attributes and key order; getter identity is
+    // tested within each object rather than between unrelated closures.
+    let cases = [
+        (
+            "get/has",
+            "return [o.alpha, 'alpha' in o, 'missing' in o, 'toString' in o];",
+        ),
+        (
+            "assignment",
+            "o.alpha = 80; o.extra = 81; return [o.alpha, o.extra];",
+        ),
+        ("delete", "return [delete o.alpha, 'alpha' in o, o.alpha];"),
+        (
+            "delete/recreate",
+            "delete o.alpha; Object.defineProperty(o, 'alpha', {value: 80, configurable: true, enumerable: true, writable: true});",
+        ),
+        ("direct delete/recreate", "delete o.direct; o.direct = 80;"),
+        (
+            "full data descriptor",
+            "Object.defineProperty(o, 'alpha', {value: 80, configurable: true, enumerable: true, writable: true}); return o.alpha;",
+        ),
+        (
+            "full accessor descriptor",
+            "Object.defineProperty(o, 'alpha', {get: () => 80, set: v => {o.extra = v;}, configurable: true, enumerable: true}); o.alpha = 81; return [o.alpha, o.extra];",
+        ),
+        (
+            "enumerable only",
+            "Object.defineProperty(o, 'alpha', {enumerable: true}); return o.alpha;",
+        ),
+        (
+            "configurable only",
+            "Object.defineProperty(o, 'alpha', {configurable: false}); return o.alpha;",
+        ),
+        (
+            "empty descriptor",
+            "Object.defineProperty(o, 'alpha', {}); return o.alpha;",
+        ),
+        (
+            "writable conversion",
+            "Object.defineProperty(o, 'alpha', {writable: true}); o.alpha = 80; return o.alpha;",
+        ),
+        (
+            "descriptor identity",
+            "const a = Object.getOwnPropertyDescriptor(o, 'alpha'); o.alpha; const b = Object.getOwnPropertyDescriptor(o, 'alpha'); return a.get === b.get;",
+        ),
+        (
+            "saved getter after replacement",
+            "const get = Object.getOwnPropertyDescriptor(o, 'alpha').get; Object.defineProperty(o, 'alpha', {value: 80}); return [o.alpha, get.call(o)];",
+        ),
+        (
+            "copied getter after replacement",
+            "const copy = Object.defineProperty({}, 'alpha', Object.getOwnPropertyDescriptor(o, 'alpha')); Object.defineProperty(o, 'alpha', {value: 80}); return [o.alpha, copy.alpha, copy.alpha];",
+        ),
+        (
+            "setter only",
+            "Object.defineProperty(o, 'alpha', {set: v => {o.extra = v;}}); o.alpha = 80; return [o.alpha, o.extra];",
+        ),
+        (
+            "strict assignment",
+            "try { (() => { 'use strict'; o.alpha = 80; })(); return 'accepted'; } catch (e) { return e.name; }",
+        ),
+        (
+            "strict inherited assignment",
+            "const child = Object.create(o); let error; try { (() => { 'use strict'; child.alpha = 80; })(); } catch (e) { error = e.name; } return [error, child.alpha, Object.getOwnPropertyDescriptor(child, 'alpha') !== undefined];",
+        ),
+        (
+            "mixed ordering",
+            "delete o['2']; o['2'] = 80; delete o['01']; o['01'] = 81; o[Symbol.for('last')] = 82; o['0'] = 83;",
+        ),
+        (
+            "inherited assignment",
+            "const child = Object.create(o); child.alpha = 80; child.direct = 81; return [child.alpha, child.direct, Object.getOwnPropertyDescriptor(child, 'alpha') !== undefined, Object.getOwnPropertyDescriptor(child, 'direct') !== undefined, o.direct];",
+        ),
+        (
+            "preventExtensions",
+            "Object.preventExtensions(o); o.extra = 80; return [Reflect.defineProperty(o, 'extra', {value: 81}), delete o.alpha, o.alpha];",
+        ),
+        (
+            "seal",
+            "Object.seal(o); o.direct = 80; return [delete o.alpha, o.alpha, Reflect.defineProperty(o, 'alpha', {enumerable: true})];",
+        ),
+        (
+            "freeze",
+            "Object.freeze(o); o.direct = 80; return [delete o.alpha, o.alpha, o.direct, Reflect.defineProperty(o, 'alpha', {value: 81})];",
+        ),
+    ];
+    let mut failures = Vec::new();
+    #[cfg(light_quickjs)]
+    let legacy = crate::evaluator::Evaluator::new(EvaluatorOptions::default()).unwrap();
+    for (demanded, overlaid) in [(false, false), (true, false), (false, true), (true, true)] {
+        for (label, action) in cases {
+            let child = parent
+                .spawn_producer(
+                    &parent.cx().unwrap(),
+                    parent.service.borrow().clone(),
+                    |_| {},
+                )
+                .unwrap();
+            let source = format!(
+                r#"rt => {{
+                const names = ['alpha', '10', '2', '01', '4294967295', 'omega'];
+                const makePlain = () => {{
+                    const o = {{}};
+                    names.forEach((name, i) => Object.defineProperty(o, name, {{get: () => i + 1, configurable: true}}));
+                    return o;
+                }};
+                const observe = o => {{
+                    if ({overlaid}) {{ o.direct = 70; o[Symbol.for('first')] = 71; o.tail = 72; }}
+                    if ({demanded}) for (const name of names) o[name];
+                    let result, failure = null;
+                    try {{ result = (() => {{ {action} }})(); }} catch (e) {{ failure = String(e); }}
+                    const descriptor = key => {{
+                        const d = Object.getOwnPropertyDescriptor(o, key);
+                        return 'value' in d ? ['data', d.value, d.writable, d.enumerable, d.configurable]
+                            : ['accessor', typeof d.get, typeof d.set, d.enumerable, d.configurable];
+                    }};
+                    const keys = Reflect.ownKeys(o), enumerated = [];
+                    for (const key in o) enumerated.push(key);
+                    return JSON.stringify([result, failure, keys.map(String), Object.keys(o), enumerated,
+                        keys.map(descriptor), Object.isExtensible(o), Object.isSealed(o), Object.isFrozen(o)]);
+                }};
+                const expected = observe(makePlain()), actual = observe(globalThis.__lightCompilerRoots);
+                return actual === expected ? expected : 'difference: expected ' + expected + '\nactual   ' + actual;
+            }}"#
+            );
+            let result = match child.evaluate_unit(&source) {
+                Ok(result) => result,
+                Err(error) => {
+                    failures.push(format!(
+                        "{label} (demanded={demanded}, overlaid={overlaid}): {error}"
+                    ));
+                    continue;
+                }
+            };
+            let difference = child.cx().unwrap().values.borrow()[&result.index]
+                .string()
+                .unwrap()
+                .to_string_lossy();
+            child.release(result).unwrap();
+            if difference.starts_with("difference:") {
+                failures.push(format!(
+                    "{label} (demanded={demanded}, overlaid={overlaid}): {difference}"
+                ));
+            }
+            #[cfg(light_quickjs)]
+            {
+                let oracle = source.replace(
+                    "observe(globalThis.__lightCompilerRoots)",
+                    "observe(makePlain())",
+                );
+                let result = legacy.evaluate_unit(&oracle).unwrap();
+                let expected = legacy.string(result).unwrap();
+                legacy.release(result).unwrap();
+                if difference != expected {
+                    failures.push(format!("QuickJS {label} (demanded={demanded}, overlaid={overlaid}): expected {expected}; actual {difference}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn catalog_saved_getters_preserve_mutable_initializer_state() {
+    use crate::compilation_session::Registration;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let parent = Rc::new(shared.evaluator().unwrap());
+    parent.clone().install_compiler_service("__lightCompileUnit", Rc::new(|_, id| {
+        Ok(format!("rt => {{ globalThis.initializations = (globalThis.initializations ?? 0) + 1; return {{unit: {id}, count: 0}}; }}"))
+    })).unwrap();
+    let registration = |unit| {
+        Registration::Root(
+            "alpha".into(),
+            Some(unit),
+            None,
+            false,
+            "fixture.cljs:1".into(),
+        )
+    };
+    parent.install_catalog(0, &[registration(1)]).unwrap();
+    // A second task exercises the completed unpublishable initializer fallback.
+    let child = parent
+        .spawn_producer(
+            &parent.cx().unwrap(),
+            parent.service.borrow().clone(),
+            |_| {},
+        )
+        .unwrap();
+    let before = r#"rt => {
+        const o = globalThis.__lightCompilerRoots;
+        globalThis.oldGetter = Object.getOwnPropertyDescriptor(o, 'alpha').get;
+        globalThis.oldCopy = Object.defineProperty({}, 'alpha', {get: oldGetter});
+        globalThis.oldValue = o.alpha;
+        oldValue.count = 7;
+        if (initializations !== 1 || oldCopy.alpha !== oldValue) throw 'first initialization';
+    }"#;
+    for task in [&*parent, &child] {
+        let value = task.evaluate_unit(before).unwrap();
+        task.release(value).unwrap();
+    }
+    parent.install_catalog(1, &[registration(2)]).unwrap();
+    child.install_catalog(1, &[registration(2)]).unwrap();
+    // Compare saved/copied getters across generations to ordinary lazy getters.
+    let cases = [
+        (
+            "return [oldGetter.call(o) === oldValue, oldGetter.call(o).count];",
+            "[true,7]",
+        ),
+        (
+            "return [oldCopy.alpha === oldValue, oldCopy.alpha.count];",
+            "[true,7]",
+        ),
+        (
+            "oldCopy.alpha.count++; return [oldGetter.call({}) === oldValue, oldValue.count];",
+            "[true,8]",
+        ),
+        (
+            "return [newGetter.call({}) === newValue, o.alpha === newValue, o.alpha.count];",
+            "[true,true,9]",
+        ),
+    ];
+    for task in [&*parent, &child] {
+        let value = task
+            .evaluate_unit(
+                r#"rt => {
+            const o = globalThis.__lightCompilerRoots;
+            globalThis.newGetter = Object.getOwnPropertyDescriptor(o, 'alpha').get;
+            globalThis.newValue = o.alpha;
+            newValue.count = 9;
+        }"#,
+            )
+            .unwrap();
+        task.release(value).unwrap();
+        #[cfg(light_quickjs)]
+        let legacy = crate::evaluator::Evaluator::new(EvaluatorOptions::default()).unwrap();
+        #[cfg(light_quickjs)]
+        {
+            let value = legacy.evaluate_unit(r#"rt => {
+                globalThis.initializations = 0;
+                const getter = unit => { let value; return () => value ?? (initializations++, value = {unit, count: 0}); };
+                globalThis.__lightCompilerRoots = Object.defineProperty({}, 'alpha', {get: getter(1), configurable: true});
+                const o = globalThis.__lightCompilerRoots;
+                globalThis.oldGetter = Object.getOwnPropertyDescriptor(o, 'alpha').get;
+                globalThis.oldCopy = Object.defineProperty({}, 'alpha', {get: oldGetter});
+                globalThis.oldValue = o.alpha; oldValue.count = 7;
+                Object.defineProperty(o, 'alpha', {get: getter(2)});
+                globalThis.newGetter = Object.getOwnPropertyDescriptor(o, 'alpha').get;
+                globalThis.newValue = o.alpha; newValue.count = 9;
+            }"#).unwrap();
+            legacy.release(value).unwrap();
+        }
+        for (action, expected) in cases {
+            let source = format!(
+                "rt => {{ const o = globalThis.__lightCompilerRoots; const result = (() => {{ {action} }})(); if (initializations !== 2) throw 'initializer effect replayed: ' + initializations; return JSON.stringify(result); }}"
+            );
+            let value = task.evaluate_unit(&source).unwrap();
+            let actual = task.cx().unwrap().values.borrow()[&value.index]
+                .string()
+                .unwrap()
+                .to_string_lossy();
+            task.release(value).unwrap();
+            assert_eq!(actual, expected, "{action}");
+            #[cfg(light_quickjs)]
+            {
+                let value = legacy.evaluate_unit(&source).unwrap();
+                assert_eq!(actual, legacy.string(value).unwrap(), "QuickJS {action}");
+                legacy.release(value).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn catalog_frontiers_preserve_mutations_and_unchanged_getter_identity() {
+    use crate::compilation_session::Registration;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = Rc::new(shared.evaluator().unwrap());
+    evaluator
+        .clone()
+        .install_compiler_service(
+            "__lightCompileUnit",
+            Rc::new(|_, id| Ok(format!("rt => {id}"))),
+        )
+        .unwrap();
+    let registration = |name: &str, unit| {
+        Registration::Root(
+            name.into(),
+            Some(unit),
+            None,
+            false,
+            "fixture.cljs:1".into(),
+        )
+    };
+    let run = |source| {
+        let value = evaluator.evaluate_unit(source).unwrap();
+        evaluator.release(value).unwrap();
+    };
+    evaluator
+        .install_catalog(0, &[registration("alpha", 1), registration("beta", 2)])
+        .unwrap();
+    run(r#"rt => {
+        const o = globalThis.__lightCompilerRoots;
+        globalThis.registry = o;
+        globalThis.savedGetter = Object.getOwnPropertyDescriptor(o, 'alpha').get;
+        Object.defineProperty(o, 'alpha', {enumerable: true});
+        delete o.beta;
+        o.first = 7; o.last = 8; delete o.first; o.first = 9;
+    }"#);
+    evaluator
+        .install_catalog(2, &[registration("gamma", 3)])
+        .unwrap();
+    run(r#"rt => {
+        const o = globalThis.__lightCompilerRoots;
+        if (o !== globalThis.registry) throw 'registry identity';
+        if (Object.getOwnPropertyDescriptor(o, 'alpha').get !== globalThis.savedGetter) throw 'unchanged getter replaced';
+        if (Object.keys(o).join(',') !== 'alpha,last,first') throw 'partial descriptor lost';
+        if ('beta' in o || Reflect.ownKeys(o).join(',') !== 'alpha,last,first,gamma') throw 'mutation lost';
+    }"#);
+    evaluator
+        .install_catalog(3, &[registration("alpha", 4), registration("beta", 5)])
+        .unwrap();
+    run(r#"rt => {
+        const o = globalThis.__lightCompilerRoots;
+        if (Object.getOwnPropertyDescriptor(o, 'alpha').get === globalThis.savedGetter) throw 'redefinition lost';
+        if (o.alpha !== 4 || o.beta !== 5 || globalThis.savedGetter.call(o) !== 1 || o.alpha !== 4) throw 'getter frontier';
+        if (Object.keys(o).join(',') !== 'alpha,last,first') throw 'redefinition lost attributes';
+        if (Reflect.ownKeys(o).join(',') !== 'alpha,last,first,gamma,beta') throw 'recreation order';
+    }"#);
+    run(r#"rt => {
+        Object.defineProperty(globalThis.__lightCompilerRoots, 'alpha', {value: 80, configurable: true});
+        globalThis.__lightCompilerRoots.preloaded = 81;
+    }"#);
+    evaluator
+        .install_catalog(5, &[registration("alpha", 6), registration("preloaded", 7)])
+        .unwrap();
+    run(r#"rt => {
+        const o = globalThis.__lightCompilerRoots;
+        if (o.alpha !== 6 || o.preloaded !== 81) throw 'preload confused with override';
+    }"#);
+    evaluator
+        .install_catalog(7, &[registration("preloaded", 8)])
+        .unwrap();
+    run(r#"rt => {
+        if (globalThis.__lightCompilerRoots.preloaded !== 81) throw 'preload lost at redefinition';
+    }"#);
+}
+
+#[test]
+fn catalog_redefinitions_match_plain_data_and_preload_descriptors() {
+    use crate::compilation_session::{BundleRecord, Registration};
+    // Extend the object differential cases across catalog command boundaries.
+    for (label, preload, bundle, expected) in [
+        ("root override", false, false, 2),
+        ("root preload", true, false, 80),
+        ("bundle override", false, true, 80),
+        ("bundle preload", true, true, 80),
+    ] {
+        let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+        let task = Rc::new(shared.evaluator().unwrap());
+        task.clone().install_compiler_service("__lightCompileUnit", Rc::new(|_, id| {
+            Ok(format!("rt => {{ if (globalThis.__lightCompilerBundleProducts !== undefined) globalThis.__lightCompilerBundleProducts.alpha = {id}; return {id}; }}"))
+        })).unwrap();
+        let registration = |unit| {
+            if bundle {
+                Registration::Bundle(Arc::new(BundleRecord {
+                    products: vec!["alpha".into()],
+                    unit,
+                    extensions: vec![],
+                    location: "fixture.cljs:1".into(),
+                    once: false,
+                    group: false,
+                }))
+            } else {
+                Registration::Root(
+                    "alpha".into(),
+                    Some(unit),
+                    None,
+                    false,
+                    "fixture.cljs:1".into(),
+                )
+            }
+        };
+        let run = |source: &str| {
+            let value = task.evaluate_unit(source).unwrap();
+            let result = task.cx().unwrap().values.borrow()[&value.index]
+                .string()
+                .map(|s| s.to_string_lossy());
+            task.release(value).unwrap();
+            result
+        };
+        if preload {
+            run(
+                "rt => Object.defineProperty(globalThis.__lightCompilerRoots, 'alpha', {value: 80, writable: true, configurable: true, enumerable: true})",
+            );
+        }
+        task.install_catalog(0, &[registration(1)]).unwrap();
+        run(
+            "rt => Object.defineProperty(globalThis.__lightCompilerRoots, 'alpha', {value: 80, writable: true, configurable: true, enumerable: true})",
+        );
+        task.install_catalog(1, &[registration(2)]).unwrap();
+        let source = format!(
+            r#"rt => {{
+            const o = globalThis.__lightCompilerRoots;
+            const expected = {{}};
+            Object.defineProperty(expected, 'alpha', {{value: 80, writable: true, configurable: true, enumerable: true}});
+            if ({expected} === 2) Object.defineProperty(expected, 'alpha', {{get: () => 2, configurable: true}});
+            const trace = object => {{ const d = Object.getOwnPropertyDescriptor(object, 'alpha'); return JSON.stringify([object.alpha, 'value' in d, d.writable, typeof d.get, d.enumerable, d.configurable, Reflect.ownKeys(object)]); }};
+            const actual = trace(o), reference = trace(expected);
+            return actual === reference ? reference : 'difference: ' + actual + ' != ' + reference;
+        }}"#
+        );
+        let actual = run(&source).unwrap();
+        assert!(!actual.starts_with("difference:"), "{label}: {actual}");
+        #[cfg(light_quickjs)]
+        {
+            let legacy = crate::evaluator::Evaluator::new(EvaluatorOptions::default()).unwrap();
+            let oracle =
+                source.replace("const actual = trace(o)", "const actual = trace(expected)");
+            let value = legacy.evaluate_unit(&oracle).unwrap();
+            assert_eq!(actual, legacy.string(value).unwrap(), "QuickJS {label}");
+            legacy.release(value).unwrap();
+        }
+    }
+}
+
+#[test]
+fn catalog_mixed_redefinitions_and_inherited_preloads_follow_registration_order() {
+    use crate::compilation_session::{BundleRecord, Registration};
+    let root =
+        |unit| Registration::Root("alpha".into(), Some(unit), None, false, "fixture:1".into());
+    let bundle = |unit| {
+        Registration::Bundle(Arc::new(BundleRecord {
+            products: vec!["alpha".into()],
+            unit,
+            extensions: vec![],
+            location: "fixture:1".into(),
+            once: false,
+            group: false,
+        }))
+    };
+    for preload in [
+        "",
+        "Object.defineProperty(o, 'alpha', {value: 80, configurable: true});",
+        "Object.defineProperty(o, 'alpha', {get: () => 81, configurable: true});",
+        "Object.setPrototypeOf(o, {alpha: 82});",
+        "Object.setPrototypeOf(o, Object.defineProperty({}, 'alpha', {get: () => 83}));",
+    ] {
+        for registrations in [
+            vec![root(1), bundle(2), root(3)],
+            vec![bundle(1), root(2), bundle(3)],
+            vec![root(1), root(2), bundle(3), root(4)],
+        ] {
+            let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+            let run = |task: &BbpEvaluator, source: &str| {
+                let value = task.evaluate_unit(source).unwrap();
+                let result = task.cx().unwrap().values.borrow()[&value.index]
+                    .string()
+                    .map(|s| s.to_string_lossy());
+                task.release(value).unwrap();
+                result
+            };
+            let tasks = (0..2).map(|_| {
+                let task = Rc::new(shared.evaluator().unwrap());
+                task.clone().install_compiler_service("__lightCompileUnit", Rc::new(|_, unit| {
+                    Ok(format!("rt => {{ if(globalThis.__lightCompilerBundleProducts)globalThis.__lightCompilerBundleProducts.alpha={unit}; return {unit}; }}"))
+                })).unwrap();
+                run(&task, &format!("rt => {{ const o=globalThis.__lightCompilerRoots; {preload} }}"));
+                task
+            }).collect::<Vec<_>>();
+            tasks[0].install_catalog(0, &registrations).unwrap();
+            for registration in &registrations {
+                match registration {
+                    Registration::Root(name, unit, test, once, location) => tasks[1]
+                        .register_compiler_root(name, *unit, *once, location, *test)
+                        .unwrap(),
+                    Registration::Bundle(bundle) => tasks[1]
+                        .register_compiler_bundle(&bundle.source(), bundle.unit)
+                        .unwrap(),
+                }
+            }
+            let observe = "rt => { const o=globalThis.__lightCompilerRoots, d=Object.getOwnPropertyDescriptor(o,'alpha'); return JSON.stringify([o.alpha,Reflect.ownKeys(o),d===undefined?null:[typeof d.get,d.value,d.enumerable,d.configurable]]); }";
+            assert_eq!(
+                run(&tasks[0], observe),
+                run(&tasks[1], observe),
+                "{preload}"
+            );
+        }
+    }
+}
+
+#[test]
+fn catalog_producers_share_data_without_evaluating_registration_sources() {
+    use crate::compilation_session::Registration;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let parent = shared.evaluator().unwrap();
+    let registrations = (0..128)
+        .map(|unit| {
+            Registration::Root(
+                format!("helper{unit}"),
+                Some(unit),
+                None,
+                false,
+                "fixture:1".into(),
+            )
+        })
+        .collect::<Vec<_>>();
+    parent.install_catalog(0, &registrations).unwrap();
+    let evaluations = shared.helper_counts().units_evaluated;
+    let child = parent
+        .spawn_producer(&parent.cx().unwrap(), None, |_| {})
+        .unwrap();
+    assert_eq!(child.catalog_cursor(), Some(128));
+    assert_eq!(child.registration_count(), 0);
+    assert_eq!(shared.helper_counts().units_evaluated, evaluations);
+    let parent_cx = parent.cx().unwrap();
+    let child_cx = child.cx().unwrap();
+    shared.0.runtime.scope(|s| {
+        assert!(
+            s.same_object(
+                s.local(parent_cx.catalog_snapshot.borrow().as_ref().unwrap())
+                    .unwrap(),
+                s.local(child_cx.catalog_snapshot.borrow().as_ref().unwrap())
+                    .unwrap(),
+            )
+        )
+    });
+    shared.0.runtime.collect().unwrap();
+    let result = child
+        .evaluate_unit("rt => Reflect.ownKeys(globalThis.__lightCompilerRoots).length")
+        .unwrap();
+    assert_eq!(
+        child.cx().unwrap().values.borrow()[&result.index].view(),
+        ValueView::Number(128.0)
+    );
+    child.release(result).unwrap();
+}

@@ -27,6 +27,8 @@ use std::{
     },
 };
 
+mod catalog;
+
 fn error(e: impl std::fmt::Display) -> EvalError {
     EvalError(format!("big-boy-pants-js: {e}"))
 }
@@ -507,6 +509,7 @@ struct SharedRuntime {
     /// task calls the one published function. `None` records a source
     /// whose factory cannot be shared, which tasks evaluate themselves.
     factories: Mutex<HashMap<String, Arc<std::sync::OnceLock<Option<Rooted>>>>>,
+    catalog: Mutex<catalog::Registry>,
     /// Task contexts that pool slots parked between jobs, for any slot to
     /// borrow ([`BbpEvaluator::park`], [`BbpEvaluator::adopt`]).
     idle: Mutex<Vec<TaskContext>>,
@@ -793,6 +796,7 @@ impl BbpRuntime {
             graph: Mutex::new(big_boy_pants_js::DependencyGraph::new()),
             pending_initializers: Mutex::new(HashMap::new()),
             factories: Mutex::new(HashMap::new()),
+            catalog: Mutex::new(catalog::Registry::default()),
             idle: Mutex::new(Vec::new()),
             parked: Mutex::new(HashMap::new()),
             lanes: std::sync::OnceLock::new(),
@@ -1012,6 +1016,8 @@ pub(crate) struct TaskContext {
     per_task: Arc<AtomicUsize>,
     last_thread: Arc<Mutex<std::thread::ThreadId>>,
     registrations: RefCell<Vec<String>>,
+    catalog_snapshot: RefCell<Option<Rooted>>,
+    catalog_input: RefCell<Option<big_boy_pants_js::Publisher>>,
     session: u64,
     next: Cell<u64>,
     values: RefCell<HashMap<u64, Rooted>>,
@@ -1023,9 +1029,8 @@ pub(crate) struct TaskContext {
     /// shared unit factories are called with; made on first use.
     native_runtime: Cell<Option<ValueId>>,
     gensym_scope: Cell<u64>,
-    /// For a producer task, the catalog registrations it holds
-    /// ([`MacroEvaluator::catalog_cursor`]): its parent's replayed ones and
-    /// those a worker view installed in it since.
+    /// The catalog frontier this task populated from shared immutable data
+    /// ([`MacroEvaluator::catalog_cursor`]).
     catalog: Cell<Option<usize>>,
     /// Whether a worker view prepared it (its settings and service stubs
     /// evaluated), which a view that borrows it then does not repeat.
@@ -1117,6 +1122,8 @@ impl BbpEvaluator {
             per_task: Arc::new(AtomicUsize::new(0)),
             last_thread: Arc::new(Mutex::new(std::thread::current().id())),
             registrations: RefCell::new(Vec::new()),
+            catalog_snapshot: RefCell::new(None),
+            catalog_input: RefCell::new(None),
             session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
             next: Cell::new(1),
             values: RefCell::new(HashMap::new()),
@@ -1628,10 +1635,9 @@ impl BbpEvaluator {
             }
         }
     }
-    /// A producer task for this task's helper demand, `bind` given its task
-    /// first: this evaluator's services and its task's registrations,
-    /// replayed, with its catalog cursor, so a nested producer starts where
-    /// its parent is (`WorkerView::install`).
+    /// A producer for this task's helper demand. Inherit its services and
+    /// immutable catalog data, populating a fresh ordinary root object. Only
+    /// standalone registrations outside the catalog still use source replay.
     fn spawn_producer(
         &self,
         cx: &TaskContext,
@@ -1648,14 +1654,16 @@ impl BbpEvaluator {
         *active.runner.borrow_mut() = self.runner.borrow().clone();
         *active.submitter.borrow_mut() = self.submitter.borrow().clone();
         let registrations = cx.registrations.borrow().clone();
-        // Replayed in fixed blocks from the first registration: a full
-        // block's text never changes, so every producer task calls the one
-        // factory compiled for it (`evaluate_unit`).
+        // Services and standalone registrations only. The compilation catalog
+        // is imported below without parsing or evaluating registration source.
         for block in registrations.chunks(REPLAY_BLOCK) {
             let value = active.evaluate_unit(&replay_source(block))?;
             active.release(value)?;
         }
         *producer_cx.registrations.borrow_mut() = registrations;
+        if let Some(snapshot) = cx.catalog_snapshot.borrow().clone() {
+            active.use_catalog(snapshot, 0)?;
+        }
         producer_cx.catalog.set(cx.catalog.get());
         drop(producer_cx);
         Ok(active)
@@ -2257,6 +2265,9 @@ impl big_boy_pants_js::Host for NativeHost<'_> {
     }
 }
 impl MacroEvaluator for BbpEvaluator {
+    fn native_shell(&self) -> Option<&BbpEvaluator> {
+        Some(self)
+    }
     fn gensym_scope(
         &self,
         serial: u64,
@@ -2517,10 +2528,6 @@ impl CompilerEvaluator for BbpEvaluator {
     }
     fn collect_garbage(&self) {
         let _ = self.runtime.collect();
-    }
-    #[cfg(feature = "bbp-macros")]
-    fn native_shell(&self) -> Option<&BbpEvaluator> {
-        Some(self)
     }
     #[cfg(all(test, light_v8))]
     fn number(&self, id: ValueId) -> Result<f64, EvalError> {
