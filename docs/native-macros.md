@@ -142,11 +142,16 @@ compiles it and Node prints `{:bound true}`. Neither entry completes, and
 `research/` was left untouched.
 
 The native integration suites pass 77 macro, ten reader and two Proxy tests;
-37 native evaluator unit tests also pass. The full engine run at `076a1c21`
+37 native evaluator unit tests also pass. The full engine run at `7054ab76`
 passes 2,129 tests and seven doctests, including the byte-limit, string-limit,
-yield/GC and retained-host-diagnostic regressions. The final `bbp-macros,quickjs` run
+yield/GC and retained-host-diagnostic regressions. The `bbp-macros,quickjs` run
 passes all 333 compiler unit, 79 macro, ten reader and two Proxy tests (one
 unrelated unit test is ignored).
+The full native/combined suites and Penpot runs were checked at `076a1c21`.
+The only subsequent production change, at `7054ab76`, increases the map
+snapshot reservation to cover a full B-tree node even for one entry. Those
+suite/Penpot results are reused; the expanded native/QuickJS table and full
+engine suites were rerun after that correction.
 Strict engine Clippy retains the nine documented baseline diagnostics;
 allowing only those categories passes for the engine and the native compiler,
 CLI and integration-test targets. Strict Clippy passes for the available
