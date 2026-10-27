@@ -13,6 +13,29 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 const LEAF_SIZE: usize = 64;
 
+#[cfg(all(test, feature = "bbp-macros"))]
+thread_local! {
+    static READS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Count actual entry reads, including indexed and iterator access, on this
+/// thread. Used by preparation regressions to detect repeated catalog scans.
+#[cfg(all(test, feature = "bbp-macros"))]
+pub(crate) fn count_reads<R>(f: impl FnOnce() -> R) -> (R, usize) {
+    assert!(READS.replace(Some(0)).is_none());
+    let result = f();
+    (result, READS.take().unwrap())
+}
+
+#[cfg(all(test, feature = "bbp-macros"))]
+fn note_read() {
+    READS.with(|reads| {
+        if let Some(count) = reads.get() {
+            reads.set(Some(count + 1));
+        }
+    });
+}
+
 #[derive(Clone)]
 enum Chunk<T> {
     Leaf(Vec<T>),
@@ -343,6 +366,10 @@ impl<T> Arena<T> {
     }
 
     pub fn get(&self, id: usize) -> Option<&T> {
+        #[cfg(all(test, feature = "bbp-macros"))]
+        if id < self.len() {
+            note_read();
+        }
         if id >= self.frozen {
             return self.tail.get(id - self.frozen);
         }
@@ -485,6 +512,8 @@ impl<T: Clone> Arena<T> {
 impl<T> Index<usize> for Arena<T> {
     type Output = T;
     fn index(&self, id: usize) -> &T {
+        #[cfg(all(test, feature = "bbp-macros"))]
+        note_read();
         if id >= self.frozen {
             return &self.tail[id - self.frozen];
         }
@@ -557,6 +586,8 @@ impl<'a, T> Iterator for Iter<'a, T> {
         if self.front >= self.back {
             return None;
         }
+        #[cfg(all(test, feature = "bbp-macros"))]
+        note_read();
         let (start, leaf) = self.front_leaf;
         if self.front < start || self.front - start >= leaf.len() {
             self.front_leaf = self.arena.leaf(self.front);
@@ -585,6 +616,8 @@ impl<T> DoubleEndedIterator for Iter<'_, T> {
         if self.front >= self.back {
             return None;
         }
+        #[cfg(all(test, feature = "bbp-macros"))]
+        note_read();
         self.back -= 1;
         let (start, leaf) = self.back_leaf;
         if self.back < start || self.back - start >= leaf.len() {

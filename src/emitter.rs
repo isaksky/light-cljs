@@ -292,6 +292,66 @@ pub(crate) fn emit_reader_registration(
 mod deferred_storage_tests {
     use super::*;
 
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_preparation_reads_only_the_unit_and_its_definition_time_metadata() {
+        for source in [
+            "(var marker)",
+            "(-add-method nil :default (fn [x] (even? x)))",
+            "(let [saved even?] (set! (.-call cljs.core/even?) saved)
+               (binding [cljs.core/even? saved] (even? 2)))",
+            "(deftype T [x] Object (toString [this] (str x)))",
+            "(let [x 41] (do x (+ x 1)))",
+        ] {
+            let source = format!("(def ^{{:doc \"definition-time\"}} marker 1) {source}");
+            let mut program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+            program.freeze();
+            // A source index may disable core caching because another unit,
+            // including a later one, writes this binding.
+            let replaced = [crate::CoreFnId::IsEven.runtime_name()];
+            let (expected, expected_reads) =
+                crate::arena::count_reads(|| DeferredUnit::prepare_native(&program, &replaced));
+            assert!(expected_reads > 0);
+            assert!(!expected.code().contains("nativeCore$isEven"));
+            for batches in [8, 64] {
+                let mut growing = program.clone();
+                let entry = growing.exprs[0].clone();
+                let binding = growing.globals[0].clone();
+                for batch in 0..batches {
+                    for offset in 0..64 {
+                        let mut unrelated = entry.clone();
+                        unrelated.kind = ExprKind::Number((batch * 64 + offset) as f64);
+                        growing.exprs.push(unrelated);
+                        let mut unrelated = binding.clone();
+                        unrelated.name = format!("unrelated{batch}_{offset}");
+                        growing.globals.push(unrelated);
+                    }
+                    growing.freeze();
+                }
+                // The unit comes after the frozen catalog. Its dependencies
+                // (including metadata) may still live inside that prefix.
+                let root = ExprId(growing.exprs.len());
+                growing.exprs.push(program.exprs[program.root.0].clone());
+                let snapshot = crate::program_fragment::expression_snapshot(&mut growing, root);
+                // Writes after the frontier must not change the unit's metadata
+                // or the reader tables it retains when its IR is released.
+                let metadata = growing.globals[0].metadata.take().unwrap();
+                growing.exprs[metadata.0].kind = ExprKind::Nil;
+                growing.globals[0].name = "later-name".into();
+                let (prepared, reads) = crate::arena::count_reads(|| {
+                    DeferredUnit::prepare_native(&snapshot, &replaced)
+                });
+                assert_eq!(prepared.code(), expected.code(), "{source}");
+                assert_eq!(prepared.tables().globals[0].name, "marker");
+                assert_eq!(prepared.tables().globals[0].metadata, Some(metadata));
+                assert_eq!(
+                    reads, expected_reads,
+                    "preparation revisited an unrelated frozen prefix ({batches} batches): {source}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn prepared_source_matches_direct_emission_and_freezes_reader_registration() {
         for source in [
@@ -467,45 +527,7 @@ fn emit_js_mode(
         emitter.brand_types = brand_types;
         emitter.native_forms = native_forms;
         if native_forms {
-            // A deferred unit's arena can include the entire previously analyzed
-            // program. Build this index only for the native emission that uses it.
-            emitter.native_multimethod_arguments = program
-                .exprs
-                .iter()
-                .filter_map(|expr| match &expr.kind {
-                    ExprKind::Call { callee, args }
-                        if matches!(
-                            program.exprs[callee.0].kind,
-                            ExprKind::CoreFn(crate::CoreFnId::AddMethod)
-                        ) && args.len() == 3 =>
-                    {
-                        Some(args[2])
-                    }
-                    _ => None,
-                })
-                .collect();
-            emitter.native_replaced_core = program
-                .exprs
-                .iter()
-                .flat_map(|expr| match &expr.kind {
-                    ExprKind::SetGlobal { target, .. } => vec![*target],
-                    ExprKind::Binding { bindings, .. } => {
-                        bindings.iter().map(|(target, _)| *target).collect()
-                    }
-                    _ => Vec::new(),
-                })
-                .filter_map(|mut target| {
-                    while let ExprKind::Property { receiver, .. }
-                    | ExprKind::JsIndex { receiver, .. } = program.exprs[target.0].kind
-                    {
-                        target = receiver;
-                    }
-                    match program.exprs[target.0].kind {
-                        ExprKind::CoreFn(core) => Some(core.runtime_name()),
-                        _ => None,
-                    }
-                })
-                .collect();
+            emitter.index_native_unit(root);
             emitter
                 .native_replaced_core
                 .extend(native_replacements.iter().copied());
@@ -1945,6 +1967,65 @@ impl<'a> Emitter<'a> {
             .collect::<Vec<_>>();
         for start in replacements {
             self.output.replace_range(start..start + 5, "let  ");
+        }
+    }
+
+    /// Index only the code this native factory can emit. A deferred program's
+    /// arenas also contain its frozen definition-time catalog, including other
+    /// units' initializers. Global reads demand those units separately; they
+    /// are not children of this unit. Explicit Var metadata remains a child.
+    /// Cross-unit core writes come from the session's conservative source index
+    /// (`SharedCatalog::native_replaced_core`), including later/generated writes.
+    fn index_native_unit(&mut self, root: ExprId) {
+        let program = self.program;
+        let mut pending = vec![root];
+        let mut seen = HashSet::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            match &program.exprs[id.0].kind {
+                ExprKind::Call { callee, args }
+                    if args.len() == 3
+                        && matches!(
+                            program.exprs[callee.0].kind,
+                            ExprKind::CoreFn(crate::CoreFnId::AddMethod)
+                        ) =>
+                {
+                    self.native_multimethod_arguments.insert(args[2]);
+                }
+                ExprKind::SetGlobal { target, .. } => self.index_native_core_target(*target),
+                ExprKind::Binding { bindings, .. } => {
+                    for &(target, _) in bindings {
+                        self.index_native_core_target(target);
+                    }
+                }
+                ExprKind::DefType {
+                    record,
+                    layout,
+                    methods,
+                    ..
+                } => {
+                    let native = !Self::mutable_type(*record, layout);
+                    let mut targets = self.struct_targets.borrow_mut();
+                    for (_, method) in methods {
+                        targets.insert(method.target, native);
+                    }
+                }
+                _ => (),
+            }
+            pending.extend(crate::program_fragment::children(program, id));
+        }
+    }
+
+    fn index_native_core_target(&mut self, mut target: ExprId) {
+        while let ExprKind::Property { receiver, .. } | ExprKind::JsIndex { receiver, .. } =
+            self.program.exprs[target.0].kind
+        {
+            target = receiver;
+        }
+        if let ExprKind::CoreFn(core) = self.program.exprs[target.0].kind {
+            self.native_replaced_core.insert(core.runtime_name());
         }
     }
 
