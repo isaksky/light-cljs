@@ -7576,9 +7576,6 @@ impl<'a> Emitter<'a> {
         let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind else {
             return None;
         };
-        if self.replaced(core.runtime_name()) {
-            return None;
-        }
         match (core, args.len()) {
             (C::Seq | C::Sequence, 1) | (C::WithMeta | C::Cons, 2) => Some(args),
             (C::List | C::Vector | C::Concat, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => Some(args),
@@ -7615,16 +7612,35 @@ impl<'a> Emitter<'a> {
         self.native_temporary += 1;
         self.indentation();
         writeln!(self.output, "const temporary{temporary}_0 = [];").unwrap();
-        let mut pending = vec![(id, false)];
+        let mut pending = vec![(id, false, None)];
         let mut values = 0;
-        while let Some((id, ready)) = pending.pop() {
+        while let Some((id, ready, prepared)) = pending.pop() {
             let args = self.native_form_arguments(id);
             if !ready && let Some(args) = args {
-                pending.push((id, true));
-                pending.extend(args.iter().rev().map(|&arg| (arg, false)));
+                // A replaced constructor remains an ordinary callable. Save
+                // its callee and `.call` before any operand effects, then use
+                // the same shallow traversal as intrinsic constructors.
+                let prepared = match self.program.exprs[id.0].kind {
+                    ExprKind::Call { callee, .. } if matches!(self.program.exprs[callee.0].kind, ExprKind::CoreFn(core) if self.replaced(core.runtime_name())) =>
+                    {
+                        let slot = values;
+                        values += 1;
+                        self.indentation();
+                        write!(self.output, "temporary{temporary}_0[{slot}] = ").unwrap();
+                        self.native_prepare_invoke();
+                        self.output.push('(');
+                        self.value(callee);
+                        self.output.push_str(");\n");
+                        Some(slot)
+                    }
+                    _ => None,
+                };
+                pending.push((id, true, prepared));
+                pending.extend(args.iter().rev().map(|&arg| (arg, false, None)));
                 continue;
             }
             let first = values - args.map_or(0, |args| args.len());
+            let destination = prepared.unwrap_or(first);
             if let Some(args) = args {
                 self.native_arguments = args
                     .iter()
@@ -7633,10 +7649,14 @@ impl<'a> Emitter<'a> {
                     .collect();
             }
             self.indentation();
-            write!(self.output, "temporary{temporary}_0[{first}] = ").unwrap();
+            write!(self.output, "temporary{temporary}_0[{destination}] = ").unwrap();
             // The constructor's arguments read the operand slots above. A leaf
             // emits normally, including any independent quote in its body.
-            if args.is_some() {
+            if let Some(slot) = prepared {
+                write!(self.output, "temporary{temporary}_0[{slot}](").unwrap();
+                self.arguments(args.unwrap());
+                self.output.push(')');
+            } else if args.is_some() {
                 let site = self.site.replace(id);
                 self.mark(Some(id));
                 self.value_expr(id);
@@ -7646,16 +7666,16 @@ impl<'a> Emitter<'a> {
             }
             debug_assert!(self.native_arguments.is_empty());
             self.output.push_str(";\n");
-            if args.is_some_and(|args| args.len() > 1) {
+            if args.is_some_and(|args| args.len() > 1 || prepared.is_some() && !args.is_empty()) {
                 self.indentation();
                 writeln!(
                     self.output,
                     "temporary{temporary}_0.length = {};",
-                    first + 1
+                    destination + 1
                 )
                 .unwrap();
             }
-            values = first + 1;
+            values = destination + 1;
         }
         self.native_arguments = outer;
         debug_assert_eq!(values, 1);

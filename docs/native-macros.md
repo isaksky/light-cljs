@@ -1661,7 +1661,10 @@ dispatch method; the enclosing frame retains the method, receiver and
 arguments across suspension. Sharing the helper keeps generated call syntax
 shallow without changing engine source or nesting limits. The differential
 table includes an 81-call generated helper whose method effects run exactly
-once. Function roots reading dynamic core settings such as
+once. Constructor-tree flattening also handles replaceable core functions:
+it prepares each callee and method before operand effects, then invokes that
+saved callable after its operands. This preserves core writes and getter
+order while keeping generated syntax shallow. Function roots reading dynamic core settings such as
 `*print-length*` also publish, resolving the setting in the consuming task.
 A dispatch function that captures task-owned JavaScript state fails publication
 explicitly; the constructor failure is shared, so later demands cannot replay
@@ -1669,7 +1672,7 @@ its effects. `demanded_multimethods_reject_task_owned_dispatch_without_replaying
 checks this boundary at all four pool sizes.
 
 `demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size` is one
-22-row native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
+23-row native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
 JavaScript as well as literal results. It covers scalar and structural keys,
 constructor/function keys, keyword/variadic dispatch, nested hierarchy dispatch,
 global hierarchy changes,

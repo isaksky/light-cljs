@@ -2815,6 +2815,18 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             "[:keyword :symbol :string :nil :false :number :vector :map :set [:default :other]]",
         ),
         (
+            "replaced constructor calls retain preparation order",
+            "",
+            r#"(let [seen (js/Array.) saved list
+                      wrapper (js* "({get call(){~{}.push('get');return function(_, ...xs){~{}.push('call');return ~{}.call(null,...xs);};}})" seen seen saved)
+                      result (with-redefs [list wrapper]
+                               (list (do (.push seen 1) 1)
+                                 (list (do (.push seen 2) 2)
+                                   (list (do (.push seen 3) 3)))))]
+                  [result (vec seen)])"#,
+            "[(1 (2 (3))) [\"get\" 1 \"get\" 2 \"get\" 3 \"call\" \"call\" \"call\"]]",
+        ),
+        (
             "large generated helper keeps multimethod calls compact",
             r#"
           (def calls (atom 0))
