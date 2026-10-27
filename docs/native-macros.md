@@ -1541,3 +1541,28 @@ entries repeated with the same five absolute read-only roots and every budget
 above, without a temporary merge because light-cljs-518 is now landed. Both
 exit 1 with the identical `compile-form` diagnostic above; the binding-service
 boundary remains passed and light-cljs-521 remains the next distinct failure.
+
+The combined native/QuickJS library, binary and macro/reader/Proxy targets pass
+all 434 tests, with one normally ignored test. The direct and indirect binding
+fixtures also pass twelve seeds with QuickJS available for exact one/two/four/
+eight-slot legacy comparisons. All 2,129 engine tests and seven doctests pass.
+Compiler/engine formatting and the direct JavaScript runtime checks pass.
+
+The full QuickJS-only suite passes 2,052 of 2,053 tests; the full default suite
+with `LIGHT_CLJS_V8_CACHE=require` passes 2,129 of 2,130. Both have only the
+existing `playground_crate_checks_for_wasm32` failure: Cargo discovers the main
+checkout's workspace for this nested worktree's playground crate. The earlier
+sandbox-only watch-process failure now passes. Both full runs include the
+compiler target, using a temporary read-only worktree symlink to ClojureScript
+at `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e`; that symlink was removed afterward.
+The same macOS arm64, Rust/Cargo 1.99.1 and Node 26.12.1 configuration uses three
+build jobs and eight test workers, with compiler feature variants serialized.
+
+Strict all-target Clippy passes for default and QuickJS-only features, and
+engine-free library/binary Clippy passes strictly. Engine-free all-target
+checking still fails in unchanged tests with unguarded QuickJS and legacy
+evaluator references. Strict engine Clippy retains eight library diagnostics
+and nine library-test diagnostics in the three established categories above;
+allowing only those categories passes all engine targets, all combined
+native/QuickJS compiler targets, and the selected native-only library, binary
+and macro/reader/Proxy targets. No source lint suppressions were added.
