@@ -2247,6 +2247,67 @@ fn demanded_helper_bindings_preserve_overlays_and_restore_after_errors() {
 }
 
 #[test]
+fn native_binding_snapshots_preserve_root_slots_and_belong_to_their_task() {
+    use light_cljs::{
+        bbp_evaluator::BbpRuntime,
+        evaluator::{EvaluatorOptions, MacroEvaluator},
+    };
+    let runtime = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let first = runtime.evaluator().unwrap();
+    let second = runtime.evaluator().unwrap();
+    let run = |evaluator: &light_cljs::bbp_evaluator::BbpEvaluator, source| {
+        let value = evaluator.evaluate_unit(source).unwrap();
+        evaluator.release(value).unwrap();
+    };
+    run(
+        &first,
+        r#"rt => {
+        const roots = globalThis.__lightCompilerRoots;
+        __lightRegisterUnit('fixture/pending', 520);
+        const pending = Object.getOwnPropertyDescriptor(roots, 'fixture/pending').get;
+        const saved = __lightSaveCompilerBinding('fixture/pending');
+        __lightBindCompilerRoot('fixture/pending', false);
+        if (roots['fixture/pending'] !== false) throw new Error('missing overlay');
+        __lightRestoreCompilerBinding('fixture/pending', saved);
+        if (Object.getOwnPropertyDescriptor(roots, 'fixture/pending').get !== pending)
+          throw new Error('pending slot replaced');
+        let reads = 0;
+        Object.defineProperty(roots, 'fixture/failed', {get: () => { reads++; throw new Error('sticky'); }, configurable: true});
+        const failed = __lightSaveCompilerBinding('fixture/failed');
+        __lightBindCompilerRoot('fixture/failed', null);
+        if (roots['fixture/failed'] !== null || reads !== 0) throw new Error('save forced root');
+        __lightRestoreCompilerBinding('fixture/failed', failed);
+        try { roots['fixture/failed']; } catch (e) { if (e.message !== 'sticky') throw e; }
+        if (reads !== 1) throw new Error('failed slot replaced');
+        roots['fixture/ready'] = 42;
+        globalThis.fixtureSaved = __lightSaveCompilerBinding('fixture/ready');
+        __lightBindCompilerRoot('fixture/ready', null);
+        return null;
+    }"#,
+    );
+    run(
+        &second,
+        r#"rt => {
+        if (__lightSaveCompilerBinding('fixture/ready')[0]) throw new Error('overlay crossed tasks');
+        __lightRegisterUnit('fixture/ready', null);
+        __lightBindCompilerRoot('fixture/ready', false);
+        if (globalThis.__lightCompilerRoots['fixture/ready'] !== false) throw new Error('missing task overlay');
+        return null;
+    }"#,
+    );
+    run(
+        &first,
+        r#"rt => {
+        const roots = globalThis.__lightCompilerRoots;
+        if (roots['fixture/ready'] !== null) throw new Error('task overlay replaced');
+        __lightRestoreCompilerBinding('fixture/ready', globalThis.fixtureSaved);
+        if (roots['fixture/ready'] !== 42) throw new Error('initialized slot replaced');
+        return null;
+    }"#,
+    );
+}
+
+#[test]
 fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slots() {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
     let root = temp_dir::TempDir::new("native-helper-bindings");
