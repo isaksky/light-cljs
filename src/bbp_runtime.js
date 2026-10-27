@@ -315,7 +315,7 @@ const decl = (() => {
     seq:(x,builtin)=>resolveCore('ISeqable/-seq',1,x,builtin),
     first:(x,builtin)=>resolveCore('ISeq/-first',1,x,builtin),
     rest:(x,builtin)=>resolveCore('ISeq/-rest',1,x,builtin),
-    next:(x,builtin)=>resolveCore('INext/-next',1,x,builtin)};
+    next:x=>resolveCore('INext/-next',1,x,true)};
 })();
 const native = (() => {
   let gensymScope = 0, gensymPrefix = '';
@@ -666,7 +666,7 @@ const native = (() => {
   };
   const nextOf = x => {
     const builtin = nativeSeq(x) || val(x) == null;
-    const method = decl.next(x,builtin);
+    const method = decl.next(x);
     if (method !== null) return method.call(x,x);
     return builtin ? __rt.cljNext(x) : reduceSeqOf(restOf(x));
   };
@@ -1029,7 +1029,7 @@ const native = (() => {
       :a.length<=3?rangeFrom(rangeFrom,val(a[0]),val(a[1]),a.length===3?val(a[2]):1):arity(a.length),
     partition:(...a)=>a.length===2?partitionFrom(partitionFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionFrom(partitionFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
     reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);const s=reduceSeqOf(a[0]);
-      return s===null?invoke(f):reduceSeq(f,firstOf(s),restOf(s));},
+      return s===null?invoke(f):reduceSeq(f,firstOf(s),nextOf(s));},
     reduceKv, kvReduceProtocol,
     keyProtocol:x=>entryPart(x,false), valProtocol:x=>entryPart(x,true),
     transduce,

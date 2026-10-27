@@ -397,7 +397,23 @@ fn native_reduce_kv_matches_quickjs() {
                              (reduce-kv (fn [a k v] (.push seen "stop") (reduced [k v])) nil s)
                              (reduce (fn [a e] (.push seen "reduce") (conj a [(key e) (val e)])) [] n)
                              (reduce (fn [a e] (.push seen "two") [a (val e)]) s)
+                             (reduce (fn [a e] (.push seen "two-next") [a (val e)]) n)
                              (reduce-kv (fn [a k v] (conj a [k v])) [] n)]]
+               [result (vec seen)])"#,
+            "nil",
+        ),
+        (
+            "sequence advancement ignores default next extensions",
+            r#"(deftype S [entries seen]
+                 ISeqable (-seq [this] (.push seen "seq") this)
+                 ISeq (-first [_] (.push seen "first") (first entries))
+                      (-rest [_] (.push seen "rest") (rest entries)))
+               (extend-protocol INext default (-next [_] (throw (js/Error. "default next called"))))"#,
+            r#"(let [seen (js/Array.) s (S. (seq (array-map :a 1)) seen)
+                     numbers (S. (seq [1 2 3]) seen)
+                     result [(reduce-kv (fn [a k v] (.push seen "kv") (conj a [k v])) [] s)
+                             (reduce (fn [a e] (.push seen "reduce") (conj a (val e))) [] s)
+                             (reduce (fn [a v] (.push seen "two") (+ a v)) numbers)]]
                [result (vec seen)])"#,
             "nil",
         ),
