@@ -932,7 +932,13 @@ impl MacroHost {
                     .map_err(|e| crate::evaluator::EvalError(e.to_string()))?;
                 evaluator.preload(
                     name,
-                    &crate::emitter::emit_native_macro_unit(&program, false, &[]),
+                    &crate::emitter::emit_native_macro_unit(
+                        &program,
+                        false,
+                        &self.session_handle().map_or_else(Vec::new, |session| {
+                            session.shared().native_replaced_core()
+                        }),
+                    ),
                 )?;
             }
             self.prepare_compiler_evaluator(&evaluator)?;
@@ -1999,6 +2005,16 @@ impl MacroHost {
                     .unwrap()
                     .shared()
                     .select_native();
+                for (_, source) in self.tables.native_helpers.iter() {
+                    let syntax =
+                        crate::parse(source).expect("preloaded helper syntax was validated");
+                    self.engine
+                        .session
+                        .as_ref()
+                        .unwrap()
+                        .shared()
+                        .index_native_core_writes(source, &syntax);
+                }
             }
             self.engine.session_ref = std::rc::Weak::new();
         }

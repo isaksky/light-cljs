@@ -638,7 +638,34 @@ impl SharedCatalog {
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn index_native_core_writes(&self, source: &str, syntax: &crate::SyntaxTree) {
         use crate::parser::{CollectionKind, NodeId, NodeKind};
+        if !self.native_units.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         let spelling = |id: NodeId| &source[syntax.nodes[id.0].span.clone()];
+        // Qualified aliases and bare renamed refers can name a core target.
+        // Reading symbol pairs conservatively also accepts ordinary data maps;
+        // a false positive merely keeps another core read dynamic.
+        let mut renamed = HashMap::<&str, Vec<&'static str>>::new();
+        for node in &syntax.nodes {
+            if let NodeKind::Collection {
+                kind: CollectionKind::Map,
+                children,
+            } = &node.kind
+            {
+                for pair in children.chunks_exact(2) {
+                    if pair
+                        .iter()
+                        .all(|id| matches!(syntax.nodes[id.0].kind, NodeKind::Symbol))
+                        && let Some(core) = crate::CoreFnId::resolve(spelling(pair[0]))
+                    {
+                        renamed
+                            .entry(spelling(pair[1]))
+                            .or_default()
+                            .push(core.runtime_name());
+                    }
+                }
+            }
+        }
         let mut replaced = self
             .native_replaced_core
             .lock()
@@ -650,13 +677,13 @@ impl SharedCatalog {
                 id = target;
             }
             let name = spelling(id);
-            let name = name
-                .strip_prefix("cljs.core/")
-                .or_else(|| name.strip_prefix("clojure.core/"))
-                .or_else(|| name.strip_prefix("cljs.core."))
-                .unwrap_or(name);
+            let name = name.rsplit('/').next().unwrap_or(name);
+            let name = name.strip_prefix("cljs.core.").unwrap_or(name);
             if let Some(core) = crate::CoreFnId::resolve(name) {
                 replaced.insert(core.runtime_name());
+            }
+            if let Some(names) = renamed.get(name) {
+                replaced.extend(names.iter().copied());
             }
         };
         for node in &syntax.nodes {
@@ -671,7 +698,7 @@ impl SharedCatalog {
                 continue;
             };
             let head = spelling(head);
-            let head = head.strip_prefix("cljs.core/").unwrap_or(head);
+            let head = head.rsplit('/').next().unwrap_or(head);
             match (head, args) {
                 ("set!", [place, ..]) => target(*place),
                 ("binding" | "with-redefs", [bindings, ..]) => {

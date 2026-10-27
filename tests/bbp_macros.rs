@@ -4279,6 +4279,14 @@ fn native_core_reads_observe_replacements_in_demanded_helpers() {
                (js/console.log (pr-str (m)))"#,
             "[3 42]\n",
         ),
+        (
+            r#"(declare install)
+               (defmacro m [] (let [before (even? 2)] (install) [before (even? 2)]))
+               (defmacro installer [] '(defn install [] (set! cljs.core/even? (fn [_] false))))
+               (installer)
+               (js/console.log (pr-str (m)))"#,
+            "[true false]\n",
+        ),
     ] {
         assert_native_matches_legacy(source, expected);
     }
@@ -4294,6 +4302,22 @@ fn native_core_reads_observe_replacements_in_demanded_helpers() {
         ),
         (
             r#"(ns helper) (defn install [] (set! cljs.core/even? (fn [_] false)))"#,
+            r#"(ns app (:require [helper :as h]))
+               (defmacro m [] (let [before (even? 2)] (h/install) [before (even? 2)]))
+               (js/console.log (pr-str (m)))"#,
+            "[true false]\n",
+        ),
+        (
+            r#"(ns helper (:require [cljs.core :as c]))
+               (defn install [] (set! c/even? (fn [_] false)))"#,
+            r#"(ns app (:require [helper :as h]))
+               (defmacro m [] (let [before (even? 2)] (h/install) [before (even? 2)]))
+               (js/console.log (pr-str (m)))"#,
+            "[true false]\n",
+        ),
+        (
+            r#"(ns helper (:refer-clojure :rename {even? original-even?}))
+               (defn install [] (set! original-even? (fn [_] false)))"#,
             r#"(ns app (:require [helper :as h]))
                (defmacro m [] (let [before (even? 2)] (h/install) [before (even? 2)]))
                (js/console.log (pr-str (m)))"#,
@@ -4328,6 +4352,18 @@ fn native_core_reads_observe_replacements_in_demanded_helpers() {
             assert_eq!(native, compile(false), "{helper}: jobs {jobs}");
         }
     }
+    let source = r#"(declare install)
+        (defmacro m [] (let [before (even? 2)] (install) [before (even? 2)]))
+        (js/console.log (pr-str (m)))"#;
+    let helper = "(fn [] (set! cljs.core/even? (fn [_] false)))";
+    let mut host = MacroHost::new();
+    host.preload_native_helper("cljs.user/install", helper)
+        .unwrap();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    let native = program_output(&emit_js(&program));
+    assert_eq!(native, "[true false]\n");
+    let legacy = light_cljs::compile(&format!("(def install {helper}) {source}")).unwrap();
+    assert_eq!(native, program_output(&legacy));
 }
 
 #[test]
