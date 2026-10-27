@@ -4969,6 +4969,12 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
             "[0 0 0 [] [] [] 0 0 0 1 1 1 [7] [7] [7] 7 7 7]",
         ),
         (
+            "builtin-sequence-missing-override",
+            r#"(deftype T [] ISeqable (-seq [_] (list 1 2))) (extend-type List INext)"#,
+            "(let [x (T.) v vec] [(vec x) (v x) (apply vec [x]) (count x) (reduce + x)])",
+            "[[1 2] [1 2] [1 2] 2 3]",
+        ),
+        (
             "indexed-sequence-tail",
             r#"(deftype Tail [] ISeqable (-seq [this] this) ISeq (-first [_] 8) (-rest [_] nil)
                  IIndexed (-nth [_ i] (+ 40 i)) (-nth [_ i d] [i d]))

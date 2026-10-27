@@ -1253,8 +1253,9 @@ identity shortcut and returns a boolean; user hashes are coerced to signed
 `first`, `rest` and `next` select direct protocol implementations before their
 sequence fallbacks; default extensions do not intercept that traversal. A
 declared protocol missing the requested method arity throws a missing-method
-error. Traversal accepts both nil and JavaScript undefined as exhaustion, honors
-indexed user sequence tails, and resolves user methods exposed by lazy wrappers.
+error. The count, vector conversion and nth fallbacks accept both nil and
+JavaScript undefined as exhaustion. Traversal honors indexed user sequence tails
+and resolves user methods exposed by lazy wrappers.
 
 Persistent native collections keep structural equality and hashing recursively,
 including their keys, members and stored values. They never invoke user

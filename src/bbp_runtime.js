@@ -358,7 +358,7 @@ const decl = (() => {
     seq:(x,builtin)=>resolveCore('ISeqable/-seq',1,x,builtin),
     first:(x,builtin)=>resolveCore('ISeq/-first',1,x,builtin,true),
     rest:(x,builtin)=>resolveCore('ISeq/-rest',1,x,builtin,true),
-    next:x=>resolveCore('INext/-next',1,x,false,true)};
+    next:(x,builtin)=>resolveCore('INext/-next',1,x,builtin,true)};
 })();
 const native = (() => {
   let gensymScope = 0, gensymPrefix = '';
@@ -975,7 +975,7 @@ const native = (() => {
     const cursor = arraySeqs.get(x);
     if (cursor !== undefined) return arraySeq(cursor.array, cursor.index + 1);
     const builtin = nativeSeq(x) || val(x) == null;
-    const method = decl.next(x);
+    const method = decl.next(x,builtin);
     if (method !== null) return method.call(x,x);
     return builtin ? __rt.cljNext(x) : reduceSeqOf(restOf(x));
   };
