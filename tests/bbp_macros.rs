@@ -2638,6 +2638,155 @@ fn native_binding_snapshots_preserve_root_slots_and_belong_to_their_task() {
 }
 
 #[test]
+fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    // Every row takes the demanded namespace path, including construction,
+    // declarations and dispatch. Inline --text uses a different bootstrap.
+    for (label, declarations, body, expected) in [
+        (
+            "scalar and structural keys",
+            r#"
+          (defmulti m identity)
+          (defmethod m :x [_] :keyword)
+          (defmethod m 'x [_] :symbol)
+          (defmethod m "x" [_] :string)
+          (defmethod m nil [_] :nil)
+          (defmethod m false [_] :false)
+          (defmethod m 3 [_] :number)
+          (defmethod m [1 :x] [_] :vector)
+          (defmethod m {:x 1} [_] :map)
+          (defmethod m #{:x :y} [_] :set)
+          (defmethod m :default [x] [:default x])"#,
+            r#"(mapv m [:x 'x "x" nil false 3 [1 :x] {:x 1} #{:y :x} :other])"#,
+            "[:keyword :symbol :string :nil :false :number :vector :map :set [:default :other]]",
+        ),
+        (
+            "keyword dispatch and custom default",
+            r#"
+          (defmulti m :kind :default :fallback)
+          (defmethod m :x [x] (:value x))
+          (defmethod m :fallback [x] [:fallback (:kind x)])"#,
+            "[(m {:kind :x :value false}) (m {:kind :other}) (m {})]",
+            "[false [:fallback :other] [:fallback nil]]",
+        ),
+        (
+            "arguments and apply",
+            r#"
+          (defmulti m (fn [& xs] (count xs)))
+          (defmethod m 0 [] :zero)
+          (defmethod m 2 ([a b] (+ a b)) ([a b c] (+ a b c)))
+          (defmethod m :default [a & xs] (into [a] xs))"#,
+            "[(m) (m 1 2) (apply m [1 2 3]) ((get-method m 2) 4 5)]",
+            "[:zero 3 [1 2 3] 9]",
+        ),
+        (
+            "hierarchy and nested vector dispatch",
+            r#"
+          (def h (atom (-> (make-hierarchy) (derive :dog :pet) (derive :pet :animal))))
+          (defmulti m identity :hierarchy h)
+          (defmethod m :animal [x] [:animal x])
+          (defmethod m [:animal [:animal :animal]] [_] :nested)
+          (defmethod m :default [_] :fallback)"#,
+            "[(m :dog) (m [:dog [:pet :dog]]) (m [:dog]) (isa? @h :dog :animal)
+            (= #{:pet} (parents @h :dog)) (= #{:pet :animal} (ancestors @h :dog))
+            (= #{:dog :pet} (descendants @h :animal))
+            (isa? (underive @h :dog :pet) :dog :animal)]",
+            "[[:animal :dog] :nested :fallback true true true true false]",
+        ),
+        (
+            "global hierarchy",
+            r#"
+          (defmulti m identity)
+          (defmethod m ::animal [_] :animal)
+          (defmethod m :default [_] :fallback)"#,
+            "(do (derive ::dog ::animal) (let [a (m ::dog)] (underive ::dog ::animal) [a (m ::dog)]))",
+            "[:animal :fallback]",
+        ),
+        (
+            "preferences, mutation and failure messages",
+            r#"
+          (def h (atom (-> (make-hierarchy) (derive :dog :animal) (derive :dog :pet))))
+          (defmulti m identity :hierarchy h :default :fallback)
+          (defmethod m :animal [_] :animal)
+          (defmethod m :pet [_] :pet)
+          (defmethod m :fallback [_] :fallback)"#,
+            r#"(let [ambiguous (try (m :dog) (catch :default e (.includes (.-message e) "Multiple methods")))
+                    p (prefer-method m :pet :animal)
+                    chosen (m :dog)
+                    preferences (= {:pet #{:animal}} (prefers m))
+                    conflict (try (prefer-method m :animal :pet) (catch :default e (.includes (.-message e) "Preference conflict")))
+                    removed (do (remove-method m :pet) (m :dog))
+                    cut (do (swap! h underive :dog :animal) (m :dog))
+                    restored (do (swap! h derive :dog :animal) (m :dog))]
+                (remove-all-methods m)
+                [ambiguous chosen preferences conflict removed cut restored
+                 (empty? (methods m)) (empty? (prefers m)) (nil? (get-method m :dog))
+                 (try (m :dog) (catch :default e (.includes (.-message e) "No method in multimethod 'helpers/m'")))])"#,
+            "[true :pet true true :animal :fallback :animal true true true true]",
+        ),
+        (
+            "defonce and binding restoration",
+            r#"
+          (def ^:dynamic *x* :root)
+          (defmulti m identity)
+          (defmulti m (throw (js/Error. "defonce replay")))
+          (defmethod m :x [_] *x*)
+          (defmethod m :throw [_] (throw (js/Error. "bound")))
+          (defmethod m :default [_] *x*)"#,
+            r#"[(binding [*x* nil] (m :x)) (binding [*x* false] (m :other))
+              (try (binding [*x* :bound] (m :throw)) (catch :default e (.-message e))) (m :x)]"#,
+            "[nil false \"bound\" :root]",
+        ),
+    ] {
+        let root = temp_dir::TempDir::new("native-multimethod-shapes");
+        std::fs::write(
+            root.join("helpers.cljs"),
+            format!("(ns helpers) {declarations} (defmacro probe [] (list 'quote {body}))"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("app.cljs"),
+            "(ns app (:require [helpers :refer [probe]])) (js/console.log (pr-str (probe)))",
+        )
+        .unwrap();
+        let build = |native, jobs| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            let (program, _) = analyze_namespace_entry_recorded(
+                "app",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                EntryRecorders {
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("{label}, native {native}, jobs {jobs}: {e}"));
+            emit_js(&program)
+        };
+        let mut reference = None;
+        for jobs in [1, 2, 4, 8] {
+            let native = build(true, jobs);
+            assert_eq!(
+                program_output(&native),
+                format!("{expected}\n"),
+                "{label}, jobs {jobs}"
+            );
+            if let Some(previous) = &reference {
+                assert_eq!(&native, previous, "{label}, jobs {jobs}");
+            }
+            reference = Some(native.clone());
+            #[cfg(feature = "quickjs")]
+            assert_eq!(native, build(false, jobs), "{label}, jobs {jobs}");
+        }
+    }
+}
+
+#[test]
 fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slots() {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
     let root = temp_dir::TempDir::new("native-helper-bindings");

@@ -1415,6 +1415,9 @@ const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
 /// the adapter captures no task-owned runtime object.
 const NATIVE_PREPARE_INVOKE: &str = r#"(f => {
     const value = __rt.formValue(f), kind = __rt.formKind(value);
+    if (kind === 'struct' && __rt.formName(__rt.structTypeOf(value)) === 'cljs.core/MultiFn') {
+        return (...a) => globalThis.__lightNativeRuntime.core.invokeMulti(value, a);
+    }
     if (kind === 'vector' || kind === 'map' || kind === 'set' || kind === 'keyword' || kind === 'symbol') {
         return (...a) => {
             if (kind !== 'vector' && (a.length < 1 || a.length > 2)) throw new Error('Invalid arity: ' + a.length);
@@ -1699,6 +1702,9 @@ struct Emitter<'a> {
     /// A protocol entry that receives its hidden receiver explicitly. Object,
     /// IFn and scope-sensitive methods retain the JavaScript receiver ABI.
     native_protocol_target: Option<RecurTargetId>,
+    /// A multimethod's dispatch/method function must publish with its native
+    /// tables. Its runtime reads resolve in the calling task, like root reads.
+    native_multimethod_function: bool,
     /// Direct operands already evaluated by `native_form_statements`, in
     /// occurrence order (the same ExprId can occur more than once), with
     /// the operand array's temporary name and slot index.
@@ -1930,6 +1936,7 @@ impl<'a> Emitter<'a> {
             native_core_bindings: Vec::new(),
             native_replaced_core: HashSet::new(),
             native_protocol_target: None,
+            native_multimethod_function: false,
             native_arguments: Default::default(),
             native_temporary: 0,
             native_invoke_temporary: None,
@@ -2347,6 +2354,12 @@ impl<'a> Emitter<'a> {
     /// when the program may replace the operation, or else to the binding (or
     /// member of one) holding it.
     fn runtime_read(&mut self, name: RuntimeName, site: Option<ExprId>, used: NameUse) -> String {
+        if self.native_forms && self.native_multimethod_function {
+            self.runtime_root(name, site, used);
+            return name
+                .to_string()
+                .replacen("rt.", "globalThis.__lightNativeRuntime.", 1);
+        }
         if self.native_forms
             && name.binding == CORE_HUB
             && let Some(member) = name.member
@@ -3681,6 +3694,21 @@ impl<'a> Emitter<'a> {
     /// A keyword invocation is `get`. Other calls return false.
     fn native_call(&mut self, callee: ExprId, args: &[ExprId]) -> bool {
         use crate::CoreFnId as C;
+        if matches!(
+            self.program.exprs[callee.0].kind,
+            ExprKind::CoreFn(C::AddMethod)
+        ) && args.len() == 3
+        {
+            self.rt(RuntimeName::core("addMethod"));
+            self.output.push('(');
+            self.arguments(&args[..2]);
+            self.output.push_str(", ");
+            let previous = std::mem::replace(&mut self.native_multimethod_function, true);
+            self.value(args[2]);
+            self.native_multimethod_function = previous;
+            self.output.push(')');
+            return true;
+        }
         let core = match self.program.exprs[callee.0].kind {
             ExprKind::Keyword(_) if matches!(args.len(), 1 | 2) => {
                 self.output.push_str("__rt.cljGet(");
@@ -5820,8 +5848,19 @@ impl<'a> Emitter<'a> {
             for i in 0..method.params.len() {
                 write!(self.output, "arguments[{i}], ").unwrap();
             }
-            self.rt(RuntimeName::export("fnRest"));
-            writeln!(self.output, "(arguments, {}));", method.params.len()).unwrap();
+            if self.native_forms && self.native_multimethod_function {
+                // A native variadic dispatcher must not capture the task's
+                // runtime just to construct its immutable rest argument.
+                writeln!(
+                    self.output,
+                    "((args) => {{ let rest = __rt.formList(); for (let i = args.length - 1; i >= {}; i--) rest = __rt.formConj(rest, args[i]); return rest; }})(arguments));",
+                    method.params.len()
+                )
+                .unwrap();
+            } else {
+                self.rt(RuntimeName::export("fnRest"));
+                writeln!(self.output, "(arguments, {}));", method.params.len()).unwrap();
+            }
         } else {
             self.output.push_str(if macro_function {
                 "default: throw new Error(\"Invalid arity: \" + (arguments.length - 2));\n"
@@ -5848,6 +5887,14 @@ impl<'a> Emitter<'a> {
         macro_function: bool,
         statements: bool,
     ) {
+        // Native calls use the dispatcher itself, including through apply.
+        // Attaching the legacy arity acceleration properties would allocate
+        // a mutable JS property record and prevent a multimethod's methods
+        // (and a variadic dispatch function) from publishing. Macro functions
+        // keep the properties the host uses to check their public arity.
+        if self.native_forms && self.native_multimethod_function && !macro_function {
+            return;
+        }
         let end = if statements { ";\n" } else { "" };
         let start = |emitter: &mut Self| {
             if statements {
@@ -7741,9 +7788,19 @@ impl<'a> Emitter<'a> {
                 let enclosing = self.construct_callee.replace(*callee);
                 self.value(*callee);
                 self.construct_callee = enclosing;
-                for arg in args {
+                for (index, arg) in args.iter().enumerate() {
                     self.output.push_str(", ");
+                    let previous = self.native_multimethod_function;
+                    if index == 1
+                        && matches!(
+                            self.program.exprs[callee.0].kind,
+                            ExprKind::CoreFn(crate::CoreFnId::MultiFn)
+                        )
+                    {
+                        self.native_multimethod_function = true;
+                    }
                     self.value(*arg);
+                    self.native_multimethod_function = previous;
                 }
                 self.output.push(')');
             }

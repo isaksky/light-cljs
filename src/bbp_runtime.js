@@ -61,7 +61,7 @@ const decl = (() => {
     version++;
     return null;
   };
-  const bundles = [];
+  const bundles = [], installing = [];
   const force = b => {
     if (b.state === 2) return;
     if (b.state === 3) throw b.error;
@@ -72,7 +72,11 @@ const decl = (() => {
     try {
       __rt.need(b.unit, 2);
       const factory = __rt.need(b.unit, 3);
-      factory(globalThis.__lightNativeRuntime);
+      installing.push(b);
+      try {
+        if (b.multi) globalThis.__lightInitializeCompilerValue(b.unit, () => { factory(globalThis.__lightNativeRuntime); return null; });
+        else factory(globalThis.__lightNativeRuntime);
+      } finally { installing.pop(); }
       b.state = 2;
     } catch (e) {
       b.state = 3; b.error = e;
@@ -280,7 +284,8 @@ const decl = (() => {
     return v;
   };
   const register = (names, indices, location, once, unit) => {
-    const b = {order: bundles.length + 1, names, unit, location, state: 0, error: null, products: null};
+    const b = {order: bundles.length + 1, names, unit, location, state: 0, error: null, products: null,
+      multi: indices.length > 0 && indices.every(index => index[0].startsWith('multifn:'))};
     bundles.push(b);
     if (once && names.length && names.every(name => name in globalThis.__lightCompilerRoots)) return null;
     for (const name of names) {
@@ -299,12 +304,42 @@ const decl = (() => {
   };
   const enter = next => { frontiers.push(frontier); frontier = next; return null; };
   const leave = () => { frontier = frontiers.pop() ?? Infinity; return null; };
+  // Multimethod declarations use the same source frontier as protocols.
+  // Installing a method must not recursively demand its own bundle.
+  const demandMulti = name => {
+    const pending = [...(extensions.get('multifn:' + name) ?? []), ...(extensions.get('multifn:*') ?? [])]
+      .sort((a,b) => a.order-b.order);
+    for (const b of pending) if (b.order <= frontier && !installing.includes(b)) force(b);
+  };
+  const productOwner = name => {
+    const b = installing[installing.length-1];
+    return b !== undefined && b.names.includes(name) ? b : null;
+  };
+  const keptProduct = name => {
+    const b = productOwner(name);
+    return b !== null && name in b.products;
+  };
+  const defineProduct = (name, initialize) => {
+    const b = productOwner(name);
+    if (b === null) return false;
+    if (initialize !== null) {
+      // A defmulti's defonce is a single-product bundle. Its initializer
+      // joins the existing task-owned initializer protocol, so dispatch
+      // function/hierarchy effects run once even across suspended demands.
+      b.products[name] = b.names.length === 1
+        ? globalThis.__lightInitializeCompilerValue(b.unit, initialize)
+        : initialize();
+    }
+    return true;
+  };
   const mutableRecord = x => {
     if (x === null || typeof x !== 'object' || __rt.formKind(x) !== null) return null;
     const info = views.get(x.__lightNativeType);
     return info?.mutable && info.record ? info : null;
   };
   return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, mutableRecord,
+    demandMulti, keptProduct, productOwner, defineProduct,
+    multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
     printer:x=>resolve(methodTable('IPrintWithWriter/-pr-writer',3),x),
     writer:x=>resolve(methodTable('IWriter/-write',2),x),
     flusher:x=>resolve(methodTable('IWriter/-flush',1),x),
@@ -378,6 +413,7 @@ const native = (() => {
   // callable's getter and receiver have the same order as `rf.call(null, ...)`.
   const prepareInvoke = f => {
     const value = val(f), kind = __rt.formKind(value);
+    if(multi.is(value))return (...args)=>multi.dispatch(value,args);
     if (kind === 'vector' || kind === 'map' || kind === 'set' || kind === 'keyword' || kind === 'symbol') return (...args) => {
       if (kind !== 'vector' && (args.length < 1 || args.length > 2)) arity(args.length);
       return __rt.cljInvoke(f, args[0], args.length > 1 ? args[1] : null, args.length);
@@ -387,6 +423,7 @@ const native = (() => {
   };
   const invoke = (f,...args) => {
     const value=val(f),kind=__rt.formKind(value);
+    if(multi.is(value))return multi.dispatch(value,args);
     if(kind!=='vector'&&kind!=='map'&&kind!=='set'&&kind!=='keyword'&&kind!=='symbol')return value.call(null,...args);
     if(kind!=='vector'&&(args.length<1||args.length>2))arity(args.length);
     return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null,args.length);
@@ -594,6 +631,127 @@ const native = (() => {
     store(a, n);
     return true;
   };
+  // Native multimethods carry only persistent fields and engine atom handles.
+  // In particular their identity can publish without retaining a task's JS
+  // runtime. Calls enter the consuming task's runtime through its global.
+  const multi = (() => {
+    const ty=__rt.structType('cljs.core/MultiFn',__rt.formVector('name','dispatch_fn','default_dispatch_val','hierarchy','method_table','prefer_table','method_cache','cached_hierarchy'),false);
+    const is=x=>{const t=__rt.structTypeOf(val(x));return t!==null&&__rt.formName(t)==='cljs.core/MultiFn';};
+    const field=(m,k)=>__rt.structField(val(m),k);
+    const text=x=>printStr(x);
+    const empty=()=>arrayMap([]), kw=x=>__rt.cljKeyword(x);
+    const ident=x=>{const k=__rt.formKind(val(x));return k==='symbol'||k==='keyword';};
+    const part=(h,k)=>get(h,kw(k));
+    const makeHierarchy=()=>arrayMap([kw('parents'),empty(),kw('ancestors'),empty(),kw('descendants'),empty()]);
+    let globalHierarchy;
+    const getGlobalHierarchy=()=>globalHierarchy??=globalThis.__lightInitializeCompilerValue(4503599627370495,()=>atom(makeHierarchy()));
+    const isaIn=(h,child,parent)=>{
+      if(__rt.formEquals(child,parent))return true;
+      child=val(child);parent=val(parent);
+      if(typeof child==='function'&&typeof parent==='function'&&child instanceof parent)return true;
+      if(__rt.cljContains(get(part(h,'ancestors'),child),parent))return true;
+      if(typeof child==='function')for(let base=Object.getPrototypeOf(child);base!==null;base=Object.getPrototypeOf(base))
+        if(__rt.cljContains(get(part(h,'ancestors'),base),parent))return true;
+      return __rt.formKind(child)==='vector'&&__rt.formKind(parent)==='vector'&&__rt.formCount(child)===__rt.formCount(parent)
+        &&arr(child).every((x,i)=>isaIn(h,x,__rt.formNth(parent,i)));
+    };
+    const relation=(kind,...a)=>{
+      if(a.length===1)a=[deref(getGlobalHierarchy()),a[0]];
+      if(a.length!==2)return arity(a.length);
+      let result=get(part(a[0],kind),a[1]);
+      if(typeof val(a[1])==='function'){
+        if(kind==='descendants')throw new Error("Can't get descendants of constructors");
+        let base=Object.getPrototypeOf(val(a[1]));
+        while(base!==null){result=__rt.cljConj(result??set([]),base);if(kind==='parents')break;
+          for(const x of arr(get(part(a[0],kind),base)))result=__rt.cljConj(result,x);
+          base=Object.getPrototypeOf(base);}
+      }
+      return __rt.cljCount(result)===0?null:result;
+    };
+    const derive=(...a)=>{
+      if(a.length===2){const [tag,parent]=a;
+        if(!ident(parent)||core.namespace(parent)===null||!(typeof val(tag)==='function'||ident(tag)&&core.namespace(tag)!==null))throw new Error('Assert failed: qualified derive tags');
+        const ref=getGlobalHierarchy();reset(ref,derive(deref(ref),tag,parent));return null;}
+      if(a.length!==3)return arity(a.length);
+      const [h,tag,parent]=a;
+      if(__rt.formEquals(tag,parent)||!(typeof val(tag)==='function'||ident(tag))||!ident(parent))throw new Error('Assert failed: derive tags');
+      const p=part(h,'parents'),anc=part(h,'ancestors'),desc=part(h,'descendants');
+      if(__rt.cljContains(get(p,tag),parent))return h;
+      if(__rt.cljContains(get(anc,tag),parent))throw new Error(text(tag)+'already has'+text(parent)+'as ancestor');
+      if(__rt.cljContains(get(anc,parent),tag))throw new Error('Cyclic derivation:'+text(parent)+'has'+text(tag)+'as ancestor');
+      const closure=(table,source,sources,target,targets)=>{
+        for(const k of [source,...arr(get(sources,source))])table=__rt.cljAssoc(table,k,set([...arr(get(targets,k)),target,...arr(get(targets,target))]));
+        return table;
+      };
+      return arrayMap([kw('parents'),__rt.cljAssoc(p,tag,__rt.cljConj(get(p,tag,set([])),parent)),
+        kw('ancestors'),closure(anc,tag,desc,parent,anc),kw('descendants'),closure(desc,parent,anc,tag,desc)]);
+    };
+    const underive=(...a)=>{
+      if(a.length===2){const ref=getGlobalHierarchy();reset(ref,underive(deref(ref),...a));return null;}
+      if(a.length!==3)return arity(a.length);
+      const [h,tag,parent]=a,p=part(h,'parents');
+      if(!__rt.cljContains(get(p,tag),parent))return h;
+      const remaining=__rt.cljDisj(get(p,tag),parent),updated=__rt.cljCount(remaining)?__rt.cljAssoc(p,tag,remaining):__rt.cljDissoc(p,tag);
+      let result=makeHierarchy();
+      for(const e of arr(updated))for(const x of arr(__rt.formNth(e,1)))result=derive(result,__rt.formNth(e,0),x);
+      return result;
+    };
+    function MultiFn(name,dispatch,defaultValue,hierarchy,methods,prefs,cache,cached){
+      return __rt.structNew(ty,name,dispatch,defaultValue,hierarchy,methods,prefs,cache,cached);
+    }
+    const demand=m=>decl.demandMulti(text(field(m,'name')));
+    // A persistent map of declaration order to operations. Materializing at
+    // the current frontier never reexecutes a declaration or its effects.
+    // Runtime mutations follow every source declaration, in lane order.
+    const change=(m,op,x=null,y=null)=>{
+      if(!decl.installingMulti())demand(m);
+      const ref=field(m,'method_table'),history=deref(ref),order=decl.multiOrder();
+      const key=order===0?-(__rt.cljCount(history)+1):order;
+      reset(ref,__rt.cljAssoc(history,key,__rt.cljConj(get(history,key,vector([])),vector([op,x,y]))));
+      return m;
+    };
+    const tables=m=>{
+      demand(m);
+      const history=deref(field(m,'method_table'));
+      const entries=arr(history).filter(e=>__rt.formNth(e,0)<=decl.multiFrontier())
+        .sort((a,b)=>{const x=__rt.formNth(a,0),y=__rt.formNth(b,0);return (x<0)-(y<0)||(x<0?y-x:x-y);});
+      let methods=empty(),prefs=empty();
+      for(const entry of entries)for(const e of arr(__rt.formNth(entry,1))){
+        const op=__rt.formNth(e,0),x=__rt.formNth(e,1),y=__rt.formNth(e,2);
+        if(op==='add')methods=__rt.cljAssoc(methods,x,y);
+        else if(op==='remove')methods=__rt.cljDissoc(methods,x);
+        else if(op==='reset'){methods=empty();prefs=empty();}
+        else prefs=__rt.cljAssoc(prefs,x,__rt.cljConj(get(prefs,x,set([])),y));
+      }
+      return {methods,prefs};
+    };
+    const getMethod=(m,dispatch)=>{
+      const {methods,prefs}=tables(m),h=deref(field(m,'hierarchy'));
+      const dominates=(x,y)=>truth(get(get(prefs,x),y))||isaIn(h,x,y);
+      let best=null;
+      for(const entry of arr(methods)){
+        const key=__rt.formNth(entry,0);
+        if(!isaIn(h,dispatch,key))continue;
+        const candidate=best===null||dominates(key,__rt.formNth(best,0))?entry:best;
+        if(!dominates(__rt.formNth(candidate,0),key))throw new Error("Multiple methods in multimethod '"+text(field(m,'name'))+"' match dispatch value: "+text(dispatch)+' -> '+text(key)+' and '+text(__rt.formNth(candidate,0))+', and neither is preferred');
+        best=candidate;
+      }
+      return best===null?get(methods,field(m,'default_dispatch_val')):__rt.formNth(best,1);
+    };
+    const dispatch=(m,args)=>{
+      const value=invoke(field(m,'dispatch_fn'),...args),target=getMethod(m,value);
+      if(!truth(target))throw new Error("No method in multimethod '"+text(field(m,'name'))+"' for dispatch value: "+text(value));
+      return invoke(target,...args);
+    };
+    const prefer=(m,x,y)=>{
+      const {prefs}=tables(m);
+      if(truth(get(get(prefs,y),x)))throw new Error("Preference conflict in multimethod '"+text(field(m,'name'))+"': "+text(y)+' is already preferred to '+text(x));
+      change(m,'prefer',x,y);
+      return deref(field(m,'hierarchy'));
+    };
+    return {is,field,MultiFn,dispatch,getMethod,change,tables,prefer,makeHierarchy,getGlobalHierarchy,derive,underive,relation,
+      isa:(...a)=>a.length===2?isaIn(deref(getGlobalHierarchy()),...a):a.length===3?isaIn(...a):arity(a.length)};
+  })();
   // Lazy sequences (light-cljs-479; docs/native-macros.md, "Lazy
   // sequences"): engine once-realized cells. Each step function takes
   // itself as its first argument instead of naming itself, so its thunks
@@ -937,6 +1095,14 @@ const native = (() => {
   };
   const intoReducer = (...a) => a.length === 1 ? a[0] : a.length === 2 ? __rt.cljConj(a[0], a[1]) : arity(a.length);
   const core = {
+    MultiFn:multi.MultiFn, MultiFnFactory:(...a)=>new multi.MultiFn(...a),
+    invokeMulti:(m,args)=>multi.dispatch(m,args),
+    makeHierarchy:multi.makeHierarchy,getGlobalHierarchy:multi.getGlobalHierarchy,isa:multi.isa,
+    parents:(...a)=>multi.relation('parents',...a),ancestors:(...a)=>multi.relation('ancestors',...a),descendants:(...a)=>multi.relation('descendants',...a),
+    derive:multi.derive,underive:multi.underive,
+    addMethod:(m,k,f)=>multi.change(m,'add',k,f),removeMethod:(m,k)=>multi.change(m,'remove',k),removeAllMethods:m=>multi.change(m,'reset'),
+    preferMethod:multi.prefer,getMethod:multi.getMethod,methods:m=>multi.tables(m).methods,prefers:m=>multi.tables(m).prefs,
+    dispatchFn:m=>multi.field(m,'dispatch_fn'),defaultDispatchVal:m=>multi.field(m,'default_dispatch_val'),
     assertions:true,
     gensym, rePattern, reSeq:(re,text)=>reSeq(reSeq,re,text),
     reFind:(re,text)=>reMatch(re,text,false), reMatches:(re,text)=>reMatch(re,text,true),
@@ -1237,6 +1403,19 @@ globalThis.__lightSetCompilerRoot=(name,value)=>{
   else globalThis.__lightCompilerRoots[name]=value;
   return value;
 };
+globalThis.__lightCompilerRootKept=name=>{
+  if(decl.productOwner(name)!==null)return decl.keptProduct(name);
+  return bindingOverlays.has(name)?bindingOverlays.get(name)!==undefined:name in globalThis.__lightCompilerRoots;
+};
+globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
+  if(once&&globalThis.__lightCompilerRootKept(name))return null;
+  if(decl.defineProduct(name,initialize))return globalThis.__lightCompilerBundleProducts[name];
+  if(initialize===null)return undefined;
+  const value=initialize();
+  if(bindingOverlays.has(name))bindingOverlays.set(name,value);
+  else Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,writable:true,value});
+  return value;
+};
 let initializerSerial=0;
 const initializerStack=[];
 globalThis.__lightInitializerUnit=null;
@@ -1255,8 +1434,13 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
     if(unit===null)throw new Error('unavailable definition: '+name);
     __rt.need(unit,2);
     const factory=__rt.need(unit,3);
+    return initializeValue(slot,factory);
+  }});return null;
+};
+const initializeValue=(slot,factory)=>{
+    const unit=slot.unit;
     if(slot.state===2){__rt.need(unit,4);return slot.value;}
-    if(slot.state===1)throw new Error('root initialization cycle: '+name);
+    if(slot.state===1)throw new Error('root initialization cycle: '+unit);
     if(slot.state===3)throw slot.value;
     slot.state=1;
     try{
@@ -1298,8 +1482,8 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
       slot.state=2;return slot.value;
     }
     catch(e){slot.value=e;slot.state=3;throw e;}
-  }});return null;
 };
+globalThis.__lightInitializeCompilerValue=(unit,factory)=>initializeValue({unit,state:0,value:null},factory);
 // Declaration bundles advertise their products without demanding their code.
 // Keep preloaded roots and the same explicit unsupported-demand getters as units.
 globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,group=false,unit=-1)=>{
