@@ -1700,7 +1700,7 @@ Both Penpot entries (`app.main`, `app.render`) were rebuilt natively and run wit
 all budgets from the reproduction above, jobs 1, no cache, and five absolute
 read-only roots under `/Users/admin/src/light-cljs/research/penpot-light`.
 On macOS arm64 with Homebrew Rust/Cargo 1.99.1, production code
-`b8839de2` over `5dfeade5` passes the demanded
+`b12d8ca6` over `54bd1144` passes the demanded
 `rumext.v2.compiler/compile-form` boundary. Both commands exit 1 with this exact
 next distinct error:
 
@@ -1717,57 +1717,46 @@ left unchanged.
 
 Verification used macOS arm64, Homebrew Rust/Cargo 1.99.1, Node v26.12.1,
 `CARGO_BUILD_JOBS=3`, three native/engine test threads and eight nextest slots.
-Production code is `b8839de2` over master `5dfeade5`; `5c03ab4c` updates only
-one library test's intended sharing expectation and adds mutable user-capture
-coverage. Native integration and engine results are reused across that test-only
-delta because their compiled code and relevant inputs are unchanged.
+Production `b12d8ca6` over `54bd1144` was rebased to `756aa045` over `ba7def01`.
+The final rebase changes only test-specific waiter hooks and regressions;
+production behavior, dependencies and native inputs are unchanged, so native
+and QuickJS integration results are reused across it.
 
-The native-only `bbp_macros` suite passes all 85 tests with
-`LIGHT_CLJS_STRESS_SEEDS=12`. The combined `bbp-macros,quickjs` library suite
-passes 346 tests (one ignored), and the reader/Proxy targets pass another 12.
-All three multimethod tests pass in that combined build with 12 stress seeds,
-including the 18-row table's identical native/QuickJS output at jobs 1/2/4/8.
-The updated library assertion intentionally requires `(fn [x] (map first x))`
-to publish as a function root; a root capturing a mutable user array still
-fails publication. The unrelated lazy-helper publication assertions are
-unchanged and pass. The engine all-target suite passes 2,143 tests, and all
-seven doctests pass. The native CLI was rebuilt and both full-budget Penpot
-commands were repeated; their stderr is byte-identical to the compiler-literal
-diagnostic above. The separate gap remains in the existing light-cljs-535.
+The final native-only suite passes all 96 tests with `LIGHT_CLJS_STRESS_SEEDS=12`.
+All 24 demanded differential rows match QuickJS at jobs 1/2/4/8; effect and
+capture-rejection tests pass with 12 seeds. The cross-task shared-table comparison
+also passes with 12 seeds. Final combined library tests pass 346 tests (one
+ignored), and reader/Proxy targets pass another 12. Function roots reading
+`map first` or `*print-length*` publish; mutable user-array captures still fail.
+The engine all-target suite passes 2,145 tests and all seven doctests pass.
+Engine results are reused across subsequent compiler-only emitter changes:
+engine source, dependencies and fixture inputs are unchanged. Both final native
+Penpot commands reproduce the exact compiler-literal diagnostic above.
+The existing light-cljs-535 remains the only follow-up for that gap.
 
-The complete legacy suites retain one known environment limitation each:
-`LIGHT_CLJS_V8_CACHE=require cargo nextest run --locked -j 8 --no-fail-fast`
-runs 2,130 tests: 2,129 pass and 109 are skipped. QuickJS-only nextest
-(`--no-default-features --features quickjs -j 8 --no-fail-fast`) runs 2,053
-tests: 2,052 pass and 108 are skipped. Their only failure is the unchanged
-`playground_crate_checks_for_wasm32`: installed Rust/Cargo 1.99.0 resolves this
-nested worktree's `playground/crate` to the outer checkout's workspace and
-rejects it before compiling Rust. The manifests, playground script and CLI
-test are byte-identical to master. `LIGHT_CLJS_CARGO` selects that same installed
-wasm toolchain through `/usr/bin/env`, with its `RUSTC` and library path pinned
-and `CARGO_HOME=/Users/admin/.cargo` to keep package-cache writes out of the
-shared isolated rustup installation.
+Final QuickJS-only nextest (`--no-default-features --features quickjs -j 8
+--no-fail-fast`) runs 2,054 tests: 2,053 pass, one fails and 108 are skipped.
+The full V8 run at `8cb88f19` (`LIGHT_CLJS_V8_CACHE=require cargo nextest run
+--locked -j 8 --no-fail-fast`) runs 2,130 tests: 2,129 pass, one fails and
+109 are skipped. Its full result is reused for unchanged legacy behavior;
+fresh final V8 cache, terse/name-hygiene and compilation-worker coverage passes
+all 41 selected tests, including the new worker-first waiter regression.
+Native changes have fresh stress/differential coverage; fresh full QuickJS
+coverage verifies shared compiler behavior.
 
-The waiter test
-`compilation_session::worker_tests::a_waiter_gets_the_analysis_after_the_application_took_the_program`
-passes both fresh full legacy runs. Its earlier QuickJS deadlock also reproduces
-on current master `5dfeade5`: the ordinary isolated test passes, but temporarily
-constraining only scheduling with a barrier so the worker claims first leaves
-the coordinator in its wake hook beyond ten seconds. A process sample confirms
-it waits for `Prepared`, which the coordinator can create only after returning
-from that hook. The experiment used an archived master inside this worktree;
-its temporary source/build tree was removed. No production code, assertions or
-skips were changed for this baseline test race.
+Both full legacy suites fail only `playground_crate_checks_for_wasm32`:
+installed Rust/Cargo 1.99.0 resolves this nested playground crate to the outer
+checkout workspace and rejects it before compiling Rust. Manifests, playground
+script and CLI test are unchanged from master. `LIGHT_CLJS_CARGO` pins the
+existing wasm toolchain through `/usr/bin/env`, with its `RUSTC`, library path
+and `CARGO_HOME=/Users/admin/.cargo` specified.
 
-Default-feature compiler strict all-target Clippy passes. Engine strict Clippy
-retains the nine known diagnostics (`deprecated`,
-`clippy::chunks_exact_to_as_chunks`, `clippy::byte_char_slices`); allowing only
-those three categories on the command line passes engine and combined compiler
-all-target checks and native production checks. Engine-free strict all-target
-Clippy fails in unchanged tests requiring legacy engine APIs and `rquickjs`.
-A fresh master `5dfeade5` compiler-test check reproduces all 501 compiler
-messages at identical source positions. Engine-free library/binary strict
-Clippy passes. No source lint suppressions were added. Rust formatting passes
-for compiler and engine. `src/js_runtime.js` is unchanged, so no emitted-runtime
-manifest regeneration is needed. The final documentation-only change reuses
-these checks because code, dependencies and relevant test inputs are unchanged.
+Final default-feature strict all-target Clippy passes. Combined native/QuickJS
+all-target Clippy passes allowing only the existing engine categories
+`deprecated`, `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`;
+the strict combined check reports eight existing engine-library diagnostics.
+Engine-free strict all-target Clippy still fails in unchanged examples, benches
+and tests requiring legacy evaluator APIs; engine-free library/binary strict
+Clippy passes. No source lint suppressions were added. Compiler/engine Rust
+formatting passes. `src/js_runtime.js` is unchanged; no manifest regeneration
+is needed. The documentation-only final commit reuses these checks.
