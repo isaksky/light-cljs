@@ -667,6 +667,64 @@ Engine-free all-target Clippy remains unavailable in the existing benches and
 evaluation tests: absent evaluator APIs and unused/unreachable feature-dependent
 test code. These full-suite and strict-lint limitations remain explicit.
 
+### Core rebinding and generated-name review fixes (light-cljs-501)
+
+Review found three correctness gaps in the call lowering: `binding` and
+`with-redefs` targets could become invalid cached-core assignments; a separately
+compiled helper could replace a function already cached by its caller; and raw
+JavaScript could capture the new core-cache or protocol-receiver bindings.
+Native emission now includes binding targets in its replacement set and shares
+source-wide core-write information across macro, helper and prepared-unit
+emission. The source index conservatively handles qualified aliases, renamed
+refers, preloaded helpers, mutation operators used as macro data and unquoted
+targets. Such computed writes keep all core reads dynamic. Native artifacts
+are reanalyzed when the current compilation may replace core, because their
+prepared factories can reflect an earlier compilation's caching assumptions.
+The new generated core, getter and numbered receiver names participate in
+the existing raw-JavaScript hygiene pass.
+
+The added differential cases cover restoration after rebinding and throws,
+`set!`, forward-declared installers, arithmetic and division replacements,
+shadowed core functions in separate namespaces, generated installers, earlier
+helper artifacts at one and two slots, and actual cached-getter/receiver
+collisions. The artifact and macro-argument installer cases both returned
+`[true true]` before their fixes and `[true false]` afterward. The existing
+`PROTOCOL_FIXTURES` is byte-for-byte unchanged.
+
+Final code checkpoint `557b3f95`, rebased on `79f30c85`, macOS aarch64,
+Rust/Cargo 1.99.1, Node 26.12.1; Cargo builds use three jobs, compiler nextest
+runs use eight slots and engine/cargo-test runs use three test threads:
+
+- Native-only `--test bbp_macros --test bbp_reader --test bbp_proxy_has`:
+  90 + 10 + 2 passes. These use `--no-default-features --features bbp-macros`.
+- Native plus QuickJS, the same binaries plus `--lib`: 346 library and
+  92 + 10 + 2 integration passes, one existing library test ignored. These
+  use `--no-default-features --features bbp-macros,quickjs`.
+- Full default V8 `cargo nextest run --locked --no-fail-fast -j 8`, with
+  `LIGHT_CLJS_V8_CACHE=require`: 2,129 passes, one failure. Full QuickJS-only
+  nextest (`--no-default-features --features quickjs`): 2,052 passes, one
+  failure. Both reproduce `playground_crate_checks_for_wasm32`: the nested
+  worktree's playground manifest is rejected as part of the main checkout's
+  workspace. The test, build script and manifests are unchanged.
+- The final default `cache_matrix` and `compiler namespace_artifacts::`
+  selections pass 11/11 each after the artifact-lookup change. The full
+  default/QuickJS results above are reused across native-only changes; the
+  added legacy artifact guard is constant false. Engine `--all-targets`
+  2,137/2,137 and doctests 5/5 pass; engine sources and build inputs are
+  unchanged across these compiler review fixes.
+
+Compiler and engine formatting pass. Strict default all-target and engine-free
+`--lib --bins` Clippy pass. Native plus QuickJS all-target Clippy passes when
+only the existing engine categories `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` are allowed
+after `-D warnings`; actual strict native/engine runs still fail on the same
+eight library/nine engine-test diagnostics. Native-only library, binary and
+the three affected integration targets pass with those same allowances.
+Native-only all-target Clippy also reports `unused_enumerate_index` in the
+unchanged `tests/execution.rs:1772`. Engine-free all-target Clippy still fails
+in existing evaluation tests/benches without evaluator APIs and on that
+unused index. These all-target limitations were not suppressed in source.
+
 ## Lazy sequences (light-cljs-479), October 26, 2026
 
 `bb benchmarks/native-macros-k.bb OUTPUT --workload lazy v8=BIN NAME=BIN`
