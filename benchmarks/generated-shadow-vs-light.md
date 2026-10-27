@@ -761,12 +761,13 @@ service of its own adds an engine entry to every compilation.
 ## Default V8 regression check (October 27, 2026)
 
 The October 27 slowdown reproduces with the original uncached command, without
-statistics or source maps. First quiet-machine pair (one run, not a median):
+statistics or source maps: **106.03 / 23.39 s = 4.53x slower**. Three quiet
+runs per revision; independent medians, wall range in brackets:
 
-| Revision | `release bench --no-cache`, wall | Peak RSS, GB | Load before, 1/5/15 min |
+| Revision | `release bench --no-cache`, wall | Peak RSS, GB | Pre-run load (1/5/15 min), rounds 1; 2; 3 |
 | --- | ---: | ---: | --- |
-| `ac88cb2237732ffdf6588fb0418ce5c7f86fe956` | 23.39 s | 1.180 | 2.34/2.25/2.24 |
-| `045c592656afc9d623ff73530847c782f6905099` | 106.03 s | 1.087 | 2.12/2.20/2.22 |
+| `ac88cb2237732ffdf6588fb0418ce5c7f86fe956` | 23.39 [23.08–23.43] s | 1.180 | 2.34/2.25/2.24; 2.42/2.33/2.27; 2.67/2.32/2.27 |
+| `045c592656afc9d623ff73530847c782f6905099` | 106.03 [104.35–107.28] s | 1.067 | 2.12/2.20/2.22; 2.29/2.31/2.26; 2.65/2.34/2.27 |
 
 Both release compilers were freshly built in an isolated worker worktree with
 Homebrew Rust/Cargo 1.99.1, default features, thin LTO and one codegen unit.
@@ -790,3 +791,22 @@ with its own Cargo target directory. An empty workspace with exclusions for
 `vendor/v8`, `vendor/rquickjs-sys` and `playground/crate` was appended to each
 historical manifest solely to isolate it from the enclosing modern workspace;
 source, lockfile, features and release profile were unchanged.
+
+The flag comparison also uses the single-file command from light-cljs-522,
+with the same generated roots and macro budgets, independently toggling
+`--stats` and `--source-map "$MAP" --source-map-include-sources`:
+
+```sh
+# PROJECT and MAP are fixed absolute paths under the worker's target/.
+/usr/bin/time -l "$BIN" --compile --esm --entry workload.main \
+  --source-root "$PROJECT/src" --source-root "$PROJECT/macros" \
+  --optimize advanced --no-cache \
+  --macro-expansions 10000000 --macro-nodes 1000000000 \
+  --macro-timeout-ms 3600000 --macro-memory-limit 2147483648 \
+  --macro-poll-budget 100000000000
+```
+
+Each sample starts a fresh process. The project's `.light-cljs`,
+`.compare-cache` and `out/light` are removed before every run. Revisions
+alternate within each condition, baseline first in rounds one and three,
+current first in round two. Generated conditions precede Penpot in each round.

@@ -1743,3 +1743,20 @@ Current runs add `--no-cache`; other command arguments are identical. The
 historical V8 build accepts an explicit patched archive/bindings pair from the
 machine's release cache (its patch and bindings are unchanged), because its
 build script predates automatic machine-cache lookup. No engine was rebuilt.
+
+```sh
+PORT=/Users/admin/src/light-cljs/research/penpot-light
+/usr/bin/time -l "$BIN" --compile --esm \
+  --macro-expansions 100000000 --macro-nodes 4000000000 \
+  --macro-timeout-ms 3600000 --macro-memory-limit 4000000000 \
+  --macro-poll-budget 1000000000000 \
+  --source-root "$PORT/frontend/src" --source-root "$PORT/common/src" \
+  --source-root "$PORT/vendor" --source-root "$PORT/generated" \
+  --source-root "$PORT/shims" --entry app.main --optimize none
+```
+
+Add `--no-cache` at the current revision. Independently toggle `--stats` and
+`--source-map "$MAP" --source-map-include-sources`, using one fixed absolute
+map path under the worker's `target/`. The baseline supports the map flags;
+its statistics combinations are unavailable. Revision order alternates as in
+the generated-project check.
