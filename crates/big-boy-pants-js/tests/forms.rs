@@ -633,6 +633,31 @@ fn positional_storage_obeys_the_aggregate_byte_limit() {
 }
 
 #[test]
+fn default_sorted_map_comparison_memoizes_shared_vector_pairs() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function f() {
+        let a = 0, b = 0;
+        for (let i = 0; i < 30; i++) {
+            a = __rt.formVector(a, a);
+            b = __rt.formVector(b, b);
+        }
+        const map = __rt.formSortedMap(__rt.formVector(a, "first", b, "second"));
+        if (__rt.formCount(map) !== 1 || __rt.formGet(map, b, null) !== "second") return false;
+        // The original key survives replacement. A later unequal child
+        // still decides order after the shared prefix has been memoized.
+        if (__rt.formNth(__rt.formKeys(map), 0) !== a) return false;
+        const c = __rt.formVector(a, 1), d = __rt.formVector(b, 2);
+        const ordered = __rt.formSortedMap(__rt.formVector(d, "last", c, "first"));
+        return __rt.formCount(ordered) === 2 && __rt.formGet(ordered, c, null) === "first";
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
 fn structural_key_operations_propagate_sorted_comparison_errors() {
     let rt = Runtime::new();
     let result = call(

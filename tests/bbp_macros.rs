@@ -320,6 +320,18 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "sorted comparison reuses equal shared vector prefixes",
+            "",
+            r#"(let [build (fn [] (loop [i 0 v 0] (if (= i 10) v (recur (inc i) [v v]))))
+                     a (build) b (build) m (sorted-map a :first b :second)
+                     ordered (sorted-map [b 2] :last [a 1] :first)]
+              [(count m) (get m b) (identical? a (first (keys m)))
+               (get ordered [a 1]) (get ordered [b 2])
+               (try (sorted-map [a 1] :a [b "x"] :b)
+                    (catch :default e [(.-name e) (.-message e)]))])"#,
+            "nil",
+        ),
+        (
             "sorted comparison errors are catchable and run finally",
             "",
             r#"(let [seen (js/Array.)

@@ -276,6 +276,7 @@ use std::sync::{Arc, OnceLock};
 use super::lazy::{self, ConsBody, LazyCell};
 use super::map::PMap;
 use super::{CollectionError, PVector, identical, index_from_value, object_name};
+use crate::heap::budget::GrowthCharge;
 use crate::heap::gc::{Trace, TraceEdge};
 use crate::heap::{Heap, HeapObject, Local, ObjectId, Scope};
 use crate::value::{JsString, Value};
@@ -848,53 +849,110 @@ fn compare_error(heap: &Heap, a: &Value, b: &Value) -> CollectionError {
 
 fn compare_keys(heap: &Heap, a: &Value, b: &Value) -> Result<std::cmp::Ordering, CollectionError> {
     use std::cmp::Ordering;
-    let mut pending = vec![(a.clone(), b.clone())];
-    while let Some((a, b)) = pending.pop() {
+    struct Vector {
+        left: PVector,
+        right: PVector,
+        index: usize,
+        pair: (ObjectId, ObjectId),
+    }
+    let mut pending: Vec<Vector> = Vec::new();
+    let mut pending_charge = GrowthCharge::default();
+    let mut completed = HashSet::new();
+    let mut completed_charge = GrowthCharge::default();
+    let mut next = (a.clone(), b.clone());
+    loop {
+        let (a, b) = next;
         let (a, b) = (unwrap(heap, a), unwrap(heap, b));
-        if identical(&a, &b) {
-            continue;
-        }
-        let order = match (&a, &b) {
-            (Value::Null | Value::Undefined, _) => Ordering::Less,
-            (_, Value::Null | Value::Undefined) => Ordering::Greater,
-            (Value::Number(a), Value::Number(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
-            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
-            (Value::String(a), Value::String(b)) => a.code_units().cmp(b.code_units()),
-            _ => {
-                let (left, right) = (form_object(heap, &a), form_object(heap, &b));
-                match (
-                    left.as_deref().map(FormObject::body),
-                    right.as_deref().map(FormObject::body),
-                ) {
-                    (Some(FormBody::Keyword(a)), Some(FormBody::Keyword(b)))
-                    | (Some(FormBody::Symbol(a)), Some(FormBody::Symbol(b))) => a
-                        .namespace
-                        .as_ref()
-                        .map(JsString::code_units)
-                        .cmp(&b.namespace.as_ref().map(JsString::code_units))
-                        .then_with(|| a.name.code_units().cmp(b.name.code_units())),
-                    (Some(FormBody::Vector(a)), Some(FormBody::Vector(b))) => {
-                        let order = a.len().cmp(&b.len());
-                        if order == Ordering::Equal {
-                            for i in (0..a.len()).rev() {
-                                pending.push((a.get(i).unwrap(), b.get(i).unwrap()));
+        let order = if identical(&a, &b) {
+            Ordering::Equal
+        } else {
+            match (&a, &b) {
+                (Value::Null | Value::Undefined, _) => Ordering::Less,
+                (_, Value::Null | Value::Undefined) => Ordering::Greater,
+                (Value::Number(a), Value::Number(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+                (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+                (Value::String(a), Value::String(b)) => a.code_units().cmp(b.code_units()),
+                _ => {
+                    let (left, right) = (form_object(heap, &a), form_object(heap, &b));
+                    match (
+                        left.as_deref().map(FormObject::body),
+                        right.as_deref().map(FormObject::body),
+                    ) {
+                        (Some(FormBody::Keyword(a)), Some(FormBody::Keyword(b)))
+                        | (Some(FormBody::Symbol(a)), Some(FormBody::Symbol(b))) => a
+                            .namespace
+                            .as_ref()
+                            .map(JsString::code_units)
+                            .cmp(&b.namespace.as_ref().map(JsString::code_units))
+                            .then_with(|| a.name.code_units().cmp(b.name.code_units())),
+                        (Some(FormBody::Vector(left)), Some(FormBody::Vector(right))) => {
+                            let order = left.len().cmp(&right.len());
+                            if order == Ordering::Equal {
+                                let (Value::Object(a), Value::Object(b)) = (&a, &b) else {
+                                    unreachable!("vector identities");
+                                };
+                                let pair = (*a, *b);
+                                if !completed.contains(&pair) {
+                                    pending_charge
+                                        .admit(heap, pending.len(), std::mem::size_of::<Vector>())
+                                        .map_err(|_| CollectionError::HeapLimit)?;
+                                    if pending.len() == pending.capacity() {
+                                        pending
+                                            .try_reserve_exact(pending.len().max(8))
+                                            .map_err(|_| CollectionError::OutOfMemory)?;
+                                    }
+                                    pending.push(Vector {
+                                        left: left.clone(),
+                                        right: right.clone(),
+                                        index: 0,
+                                        pair,
+                                    });
+                                }
                             }
+                            order
                         }
-                        order
+                        (Some(FormBody::Keyword(_) | FormBody::Symbol(_)), _)
+                        | (_, Some(FormBody::Keyword(_) | FormBody::Symbol(_))) => {
+                            return Err(compare_error(heap, &a, &b));
+                        }
+                        _ => return Err(compare_error(heap, &a, &b)),
                     }
-                    (Some(FormBody::Keyword(_) | FormBody::Symbol(_)), _)
-                    | (_, Some(FormBody::Keyword(_) | FormBody::Symbol(_))) => {
-                        return Err(compare_error(heap, &a, &b));
-                    }
-                    _ => return Err(compare_error(heap, &a, &b)),
                 }
             }
         };
         if order != Ordering::Equal {
             return Ok(order);
         }
+        loop {
+            let Some(frame) = pending.last_mut() else {
+                return Ok(Ordering::Equal);
+            };
+            if frame.index < frame.left.len() {
+                next = (
+                    frame.left.get(frame.index).unwrap(),
+                    frame.right.get(frame.index).unwrap(),
+                );
+                frame.index += 1;
+                break;
+            }
+            let pair = pending.pop().unwrap().pair;
+            // Only completed equal pairs may be reused: an earlier child
+            // must still determine order or raise its comparison failure.
+            // Immutable vectors are acyclic, so a pair cannot be active twice.
+            // Include hash-table control bytes and spare buckets in admission.
+            completed_charge
+                .admit(
+                    heap,
+                    completed.len(),
+                    4 * std::mem::size_of::<(ObjectId, ObjectId)>() + 64,
+                )
+                .map_err(|_| CollectionError::HeapLimit)?;
+            completed
+                .try_reserve(1)
+                .map_err(|_| CollectionError::OutOfMemory)?;
+            completed.insert(pair);
+        }
     }
-    Ok(Ordering::Equal)
 }
 
 fn sorted_position(
@@ -3001,6 +3059,42 @@ mod tests {
         let c = new_list(&heap, &[n(2.0)]).unwrap();
         let c = (0..99_999).fold(c, |c, _| new_list(&heap, &[c]).unwrap());
         assert!(!equals(&heap, &a, &c));
+    }
+
+    #[test]
+    fn sorted_comparison_traversal_storage_is_admitted_and_released() {
+        let heap = Arc::new(Heap::with_test_byte_headroom(1 << 20, false));
+        let _scope = Scope::new(&heap);
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for i in 0..512 {
+            left.push(new_vector(&heap, &[n(i as f64)]).unwrap());
+            right.push(new_vector(&heap, &[n(i as f64)]).unwrap());
+        }
+        let a = new_vector(&heap, &left).unwrap();
+        let b = new_vector(&heap, &right).unwrap();
+        let budget = heap.byte_budget();
+        let occupied = budget.used();
+        assert!(compare_keys(&heap, &a, &b).unwrap().is_eq());
+        assert_eq!(
+            budget.used(),
+            occupied,
+            "completed traversal releases its charge"
+        );
+        // The smaller allowance rejects traversal frames; the larger admits
+        // frames but rejects the growing table of completed singleton pairs.
+        for headroom in [1, 8192] {
+            budget.set_limit(occupied + headroom);
+            assert!(matches!(
+                compare_keys(&heap, &a, &b),
+                Err(CollectionError::HeapLimit)
+            ));
+            assert_eq!(
+                budget.used(),
+                occupied,
+                "failed traversal releases its charge"
+            );
+        }
     }
 
     #[test]
