@@ -1511,8 +1511,9 @@ fn failure_roots_survive_an_exhausted_heap() {
 }
 
 /// A function built from lowered core operations and literals
-/// (light-cljs-477) reads no task-owned runtime object, so it publishes;
-/// one core value passed around (`map`) still closes over it.
+/// (light-cljs-477) reads no task-owned runtime object, so it publishes.
+/// Cached pure core functions also publish (light-cljs-501); a dynamic print
+/// setting still captures the task-owned runtime.
 #[test]
 fn functions_over_lowered_core_operations_publish() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
@@ -1520,12 +1521,17 @@ fn functions_over_lowered_core_operations_publish() {
     let lowered = "(fn [x] (if (seq x) (count x) (list 'let ['value x] {:a (:k x)} #{1} \
                    (get x 1) (second x) (keyword? x) `(f ~x ~@x) [] #{x 2} (contains? x 0) \
                    (conj (disj #{x} 1) 2) (assoc {} :k (dissoc {} :k)) (with-meta [] (meta x)))))";
-    for (source, publishes) in [(lowered, true), ("(fn [x] (map first x))", false)] {
+    for (source, no_runtime_reads, publishes) in [
+        (lowered, true, true),
+        ("(fn [x] (map first x))", false, true),
+        ("(fn [x] *print-length*)", false, false),
+    ] {
         let code = native(source);
-        // Only `__rt` intrinsics, no read of the runtime object `rt`.
+        // Intrinsic-only code avoids `rt`; cached core values read it once
+        // at factory initialization, outside the returned function.
         assert_eq!(
             !code.replace("__rt.", "").contains("rt."),
-            publishes,
+            no_runtime_reads,
             "{code}"
         );
         let f = evaluator
