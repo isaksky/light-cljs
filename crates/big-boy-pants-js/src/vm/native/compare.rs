@@ -771,6 +771,110 @@ mod tests {
     use crate::{Budget, Primitive, RunOutcome, Runtime};
 
     #[test]
+    fn hashed_map_snapshot_is_admitted_before_allocating_tree_nodes() {
+        for len in [1, 64] {
+            let heap = Heap::with_test_byte_headroom(1 << 20, false);
+            let pairs: Vec<_> = (0..len)
+                .map(|i| (Value::Number(i as f64), Value::Null))
+                .collect();
+            let map = form::new_map(&heap, &pairs).unwrap();
+            let budget = heap.byte_budget();
+            let operands = budget.used();
+            let node_bytes = 12 * std::mem::size_of::<(Order, (Value, Value))>() + 256;
+            for denied in [true, false] {
+                let mut diagnostic =
+                    Diagnostic::new(&heap, ComparisonOperands(Value::Number(1.0), map.clone()))
+                        .unwrap_or_else(|_| panic!("diagnostic setup must fit"));
+                while !matches!(diagnostic.pending.last(), Some(Part::Value(value, _)) if value.same_object(&map))
+                {
+                    diagnostic
+                        .step(&heap)
+                        .unwrap_or_else(|_| panic!("prefix must fit"));
+                }
+                let before = budget.used();
+                if denied {
+                    budget.set_limit(before + len * node_bytes - 1);
+                }
+                let result = diagnostic.step(&heap);
+                if denied {
+                    assert!(matches!(result, Err(Fault::HeapLimit)));
+                    assert_eq!(
+                        budget.used(),
+                        before,
+                        "denied snapshots allocate no storage"
+                    );
+                } else {
+                    assert!(matches!(result, Ok(Action::Continue)));
+                    assert_eq!(budget.used() - before, len * node_bytes);
+                    assert!(
+                        matches!(diagnostic.pending.last(), Some(Part::Scan { entries, .. }) if entries.is_empty())
+                    );
+                }
+                drop(diagnostic);
+                assert_eq!(
+                    budget.used(),
+                    operands,
+                    "dropping a scan releases all diagnostic storage"
+                );
+                budget.set_limit(usize::MAX);
+            }
+            heap.collect().unwrap();
+            assert!(
+                budget.used() < operands,
+                "collection releases the unrooted operands"
+            );
+        }
+    }
+
+    #[test]
+    fn string_hash_continuation_charge_is_admitted_and_released() {
+        let heap = Heap::with_test_byte_headroom(1 << 20, false);
+        let text = JsString::copy_units(&heap, &vec![97; STRING_HASH_STEP_UNITS * 4]).unwrap();
+        let budget = heap.byte_budget();
+        let occupied = budget.used();
+        let bytes = std::mem::size_of::<StringKey>();
+        budget.set_limit(occupied + bytes - 1);
+        assert!(matches!(
+            StringKey::new(
+                &heap,
+                (Value::String(text.clone()), Value::Null),
+                text.clone()
+            ),
+            Err(Fault::HeapLimit)
+        ));
+        assert_eq!(budget.used(), occupied);
+        budget.set_limit(usize::MAX);
+        for cancel in [false, true] {
+            let mut hashing = StringKey::new(
+                &heap,
+                (Value::String(text.clone()), Value::Null),
+                text.clone(),
+            )
+            .unwrap_or_else(|_| panic!("hash continuation must fit"));
+            assert!(hashing.advance().is_none()); // Flat input becomes ready.
+            assert!(hashing.advance().is_none()); // Pause during hashing.
+            assert_eq!(budget.used(), occupied + bytes);
+            if !cancel {
+                while hashing.advance().is_none() {}
+                assert_eq!(
+                    budget.used(),
+                    occupied + bytes,
+                    "the owner retains admission until dropped"
+                );
+            }
+            drop(hashing);
+            assert_eq!(
+                budget.used(),
+                occupied,
+                "completion and cancellation release admission"
+            );
+        }
+        drop(text);
+        heap.collect().unwrap();
+        assert!(budget.used() < occupied);
+    }
+
+    #[test]
     fn string_key_hash_matches_language_hash() {
         let heap = Heap::default();
         for len in [0, 1, 2, 127, 128, 129, 255, 256, 257, 1025] {
@@ -821,7 +925,14 @@ mod tests {
         ).unwrap();
         for wrapped in [false, true] {
             for cancel in [false, true] {
-                let rt = Runtime::new();
+                let rt = Runtime::try_with_heap_policy(
+                    Default::default(),
+                    crate::HeapPolicy {
+                        hard_limit_bytes: Some(16 << 20),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
                 // Hash the key during preparation, outside the measured runs.
                 // Its containing map has hashed storage even with one entry.
                 let (key, weak) = rt.scope(|s| {
@@ -846,8 +957,16 @@ mod tests {
                 let result = 'run: {
                     for _ in 0..10_000 {
                         let hashed = HASHED_STRING_UNITS.get();
+                        let occupied = rt.heap_stats().managed_bytes;
                         let outcome = task.run_with(Budget::instructions(1), &mut NoHost).unwrap();
                         let work = HASHED_STRING_UNITS.get() - hashed;
+                        if work > 0 && HASHED_STRING_UNITS.get() - before == text.len() {
+                            assert_eq!(
+                                occupied - rt.heap_stats().managed_bytes,
+                                std::mem::size_of::<StringKey>(),
+                                "the completed string hash must release its continuation charge"
+                            );
+                        }
                         assert!(
                             work <= STRING_HASH_STEP_UNITS,
                             "one run hashed {work} units"
@@ -862,6 +981,7 @@ mod tests {
                                 rt.collect().unwrap();
                                 assert!(weak.is_live(), "the pending entry must stay rooted");
                                 if cancel {
+                                    let occupied = rt.heap_stats().managed_bytes;
                                     let _ = task.cancel(); // Drive cancellation cleanup below.
                                     assert!(matches!(
                                         task.run_with(Budget::instructions(1), &mut NoHost)
@@ -869,6 +989,11 @@ mod tests {
                                         RunOutcome::Cancelled
                                     ));
                                     assert_eq!(HASHED_STRING_UNITS.get() - before, total);
+                                    assert!(
+                                        occupied - rt.heap_stats().managed_bytes
+                                            >= std::mem::size_of::<StringKey>(),
+                                        "cancellation must release the pending hash continuation"
+                                    );
                                     rt.collect().unwrap();
                                     assert!(
                                         !weak.is_live(),
@@ -898,6 +1023,8 @@ mod tests {
                             format!("Cannot compare 1 to {{\"{text}\" 42}}").as_str()
                         ))
                     );
+                    rt.collect().unwrap();
+                    assert!(!weak.is_live(), "completion releases the map operand");
                 }
             }
         }

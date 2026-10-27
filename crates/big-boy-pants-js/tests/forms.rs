@@ -680,6 +680,179 @@ fn structural_key_operations_propagate_sorted_comparison_errors() {
 }
 
 #[test]
+fn sorted_comparison_map_snapshots_obey_heap_budget() {
+    use big_boy_pants_js::{Budget, HeapPolicy, Host, HostCall, VmLimits};
+    struct Marker(bool);
+    impl Host for Marker {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(Primitive::Null)
+        }
+    }
+    for entries in [1, 64] {
+        let policy = |bytes| HeapPolicy {
+            hard_limit_bytes: Some(bytes),
+            ..Default::default()
+        };
+        let realm = Runtime::try_with_heap_policy(VmLimits::default(), policy(usize::MAX / 2))
+            .unwrap()
+            .heap_stats()
+            .managed_bytes;
+        let limit = realm + (1 << 20);
+        let rt = Runtime::try_with_heap_policy(VmLimits::default(), policy(limit)).unwrap();
+        let key = rt.scope(|s| {
+            let pairs: Vec<_> = (0..entries)
+                .map(|i| {
+                    let key = s.primitive(Primitive::Number(i as f64));
+                    (key, key)
+                })
+                .collect();
+            let map = s.new_form_map(&pairs).unwrap();
+            s.persist(map)
+        });
+        let code = compile_function("function f(key) { const m = __rt.formSortedMap(__rt.formVector(1,0)); __rt.effect(7,0); try { __rt.formGet(m,key,null); } catch(e) { return e === 'heap byte limit exceeded'; } return null; }").unwrap();
+        let task = rt.spawn(&code, &[&key]).unwrap();
+        let mut marker = Marker(false);
+        while !marker.0 {
+            assert!(matches!(
+                task.run_with(Budget::instructions(1), &mut marker).unwrap(),
+                RunOutcome::Yielded
+            ));
+        }
+        rt.collect().unwrap();
+        // Pause after admission of the diagnostic traversal, then consume
+        // its three bounded prefix steps (header, first operand, separator).
+        let mut started = false;
+        for _ in 0..100 {
+            let before = rt.heap_stats().managed_bytes;
+            assert!(matches!(
+                task.run_with(Budget::instructions(1), &mut marker).unwrap(),
+                RunOutcome::Yielded
+            ));
+            if rt.heap_stats().managed_bytes.saturating_sub(before) >= 2048 {
+                started = true;
+                break;
+            }
+        }
+        assert!(started, "diagnostic traversal must be admitted");
+        for _ in 0..3 {
+            assert!(matches!(
+                task.run_with(Budget::instructions(1), &mut marker).unwrap(),
+                RunOutcome::Yielded
+            ));
+        }
+        // Leave less than even a one-entry B-tree node needs, immediately
+        // before the map operand starts its snapshot reservation.
+        let before = rt.heap_stats().managed_bytes;
+        let probe = rt.scope(|s| s.persist(s.try_string_units(&[0]).unwrap()));
+        let overhead = rt.heap_stats().managed_bytes - before - 2;
+        drop(probe);
+        let units = (limit - rt.heap_stats().managed_bytes - 512 - overhead) / 2;
+        let padding = rt.scope(|s| s.persist(s.try_string_units(&vec![0; units]).unwrap()));
+        let occupied = rt.heap_stats().managed_bytes;
+        assert!(matches!(
+            task.run_with(Budget::instructions(1), &mut marker).unwrap(),
+            RunOutcome::Yielded
+        ));
+        assert!(
+            occupied - rt.heap_stats().managed_bytes >= 2048,
+            "snapshot admission must unwind the diagnostic before scanning entries"
+        );
+        let outcome = loop {
+            match task
+                .run_with(Budget::instructions(97), &mut marker)
+                .unwrap()
+            {
+                RunOutcome::Yielded => (),
+                other => break other,
+            }
+        };
+        let value = complete(outcome);
+        assert_eq!(
+            value.view(),
+            ValueView::Bool(true),
+            "snapshot denial must be catchable"
+        );
+        assert!(rt.heap_stats().peak_managed_bytes <= limit);
+        drop((value, padding, key, task));
+        rt.collect().unwrap();
+        assert!(rt.heap_stats().managed_bytes < limit);
+    }
+}
+
+#[test]
+fn sorted_comparison_map_snapshot_cancellation_releases_storage() {
+    use big_boy_pants_js::{Budget, HeapPolicy, Host, HostCall, VmLimits};
+    struct NoHost;
+    impl Host for NoHost {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            unreachable!()
+        }
+    }
+    let limit = 16 << 20;
+    let rt = Runtime::try_with_heap_policy(
+        VmLimits::default(),
+        HeapPolicy {
+            hard_limit_bytes: Some(limit),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let entries = 128;
+    let (key, weak) = rt.scope(|s| {
+        let value = s.new_form_vector(&[]).unwrap();
+        let pairs: Vec<_> = (0..entries)
+            .map(|i| (s.primitive(Primitive::Number(i as f64)), value))
+            .collect();
+        let map = s.new_form_map(&pairs).unwrap();
+        (s.persist(map), [s.downgrade(map), s.downgrade(value)])
+    });
+    let code = compile_function(
+        "function f(key){return __rt.formGet(__rt.formSortedMap(__rt.formVector(1,0)),key,null);}",
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[&key]).unwrap();
+    drop(key);
+    rt.collect().unwrap();
+    let mut paused = false;
+    for _ in 0..500 {
+        let before = rt.heap_stats().managed_bytes;
+        assert!(matches!(
+            task.run_with(Budget::instructions(1), &mut NoHost).unwrap(),
+            RunOutcome::Yielded
+        ));
+        let after = rt.heap_stats().managed_bytes;
+        // The snapshot is admitted in one step, before any tree insertion.
+        if after.saturating_sub(before) >= entries * 512 {
+            for _ in 0..8 {
+                assert!(matches!(
+                    task.run_with(Budget::instructions(1), &mut NoHost).unwrap(),
+                    RunOutcome::Yielded
+                ));
+            }
+            paused = true;
+            break;
+        }
+    }
+    assert!(paused, "must pause with a partially scanned map snapshot");
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|value| value.is_live()));
+    let occupied = rt.heap_stats().managed_bytes;
+    let _ = task.cancel();
+    assert!(matches!(
+        task.run_with(Budget::instructions(1), &mut NoHost).unwrap(),
+        RunOutcome::Cancelled
+    ));
+    assert!(
+        occupied - rt.heap_stats().managed_bytes >= entries * 512,
+        "cancellation must immediately release snapshot storage"
+    );
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|value| !value.is_live()));
+    assert!(rt.heap_stats().peak_managed_bytes <= limit);
+}
+
+#[test]
 fn sorted_comparison_diagnostics_obey_heap_budget() {
     use big_boy_pants_js::{HeapPolicy, VmLimits};
     let policy = |bytes| HeapPolicy {
