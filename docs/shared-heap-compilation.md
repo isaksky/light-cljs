@@ -548,6 +548,19 @@ The 200-helper serial run takes 1.04 s and 68.3 MB, with 1,410 evaluations
 and 7,754 task steps versus 2,810 and 16,779 for 400 helpers. Catalog source
 evaluations remain linear; ordinary per-producer property population remains.
 
+A separate eight-job `/usr/bin/sample PID 3` after competing tests finished
+has collapsed top-of-stack counts: `semaphore_timedwait_trap` 11,421,
+`__psynch_cvwait` 4,160, VM `execute_budgeted` 410, VM fault drop 131,
+SipHash `write` 108, `Heap::mark_and_sweep` 104, `lookup_cursor` 73,
+`OrdinaryObject::push` 49 and `Heap::allocate_accounted` 41. These are sampled
+thread stacks, not CPU or retained-byte attribution. Removing historical
+catalog roots does not remove the live ordinary task registries, initializer
+slots, or per-producer property population. Those task-owned/transient
+allocations and allocator residency remain candidate sources of the measured
+RSS premium; their split is still unmeasured. The fresh ratios and profile
+were appended to the existing light-cljs-508 follow-up rather than creating
+a duplicate or restoring virtual-property machinery.
+
 On master `529e2db6`, the combined QuickJS/native library, macro, reader and
 proxy selection passes all 442 tests, and the native-only 12-seed pool stress
 passes in 306 s. On the preceding `52a1aa9f` base the native selection passed
