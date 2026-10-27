@@ -76,6 +76,9 @@
 //! * Maps are equal with the same count and, for every entry of one, an
 //!   equal key in the other mapping to an equal value; the hash is
 //!   `hashUnorderedColl` of the entries.
+//!   A sorted destination uses comparator-based key lookup. As in the legacy
+//!   runtime, compare-equal keys such as `NaN` and `1` need not hash alike,
+//!   and equality between sorted and hash maps can be directional.
 //! * Sets are equal with the same count and an equal member in the other
 //!   for every member of one; the hash is `hashUnorderedColl` of the
 //!   members. A set never equals a map, list or vector.
@@ -998,7 +1001,7 @@ fn sorted_assoc(
     };
     let (i, exists) = sorted_position(heap, pairs, &key)?;
     if exists {
-        return if equals(heap, &pairs.get(i + 1).unwrap(), &value) {
+        return if try_equals(heap, &pairs.get(i + 1).unwrap(), &value)? {
             Ok(None)
         } else {
             Ok(Some(FormMap::Positional(pairs.try_set(
@@ -2196,6 +2199,8 @@ fn seq_split(heap: &Heap, mut c: SeqCursor) -> Split {
 /// an entry whose full hash `c` keys of the other map share contributes up
 /// to `c` candidate key/value pairs instead of one.
 pub(crate) fn equals(heap: &Heap, a: &Value, b: &Value) -> bool {
+    // The embedding/key-comparison API is boolean; language equality uses
+    // the fallible variant so an incompatible sorted lookup raises an Error.
     try_equals(heap, a, b).unwrap_or(false)
 }
 

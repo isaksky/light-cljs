@@ -330,7 +330,9 @@ fn native_reduce_kv_matches_quickjs() {
                             (fn [] (sorted-map [1] :a ["x"] :b))
                             (fn [] (get (sorted-map 1 :a) "x"))
                             (fn [] (assoc (sorted-map "x" :a) 1 :b))
-                            (fn [] (dissoc (sorted-map 1 :a) "x"))])
+                            (fn [] (dissoc (sorted-map 1 :a) "x"))
+                            (fn [] (assoc (sorted-map :k (apply hash-map ["x" :v])) :k (sorted-map 1 :v)))
+                            (fn [] (sorted-map :k (apply hash-map ["x" :v]) :k (sorted-map 1 :v)))])
                (vec seen)])"#,
             "nil",
         ),
