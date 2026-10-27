@@ -71,32 +71,98 @@ engine source, and includes preloaded helper source.
 
 ### Explicit compiler literal forms (light-cljs-535)
 
-The native bridge imports and exports explicit `#js` array/object descriptors
-with immutable native payloads. Regex, instant, UUID and queue descriptors use
-the same boundary; exact big integers retain their original occurrence until
-Number emission. Payloads and metadata participate in conversion node/depth
-limits on both fresh and memoized paths, provenance retention after GC,
-publication checks and rooting. Returning an unchanged descriptor or payload
-returns its original compiler Datum. Constructed quoted `#js` data uses the
-native descriptor constructors; ordinary JavaScript arrays and objects,
-including frozen objects, still produce located non-form result errors.
+The native bridge imports and exports explicit compiler descriptors with
+immutable native payloads. It preserves original Datum identity, source
+occurrences, metadata and exact UTF-16 when an unchanged descriptor or payload
+returns. Payloads, metadata and every positional reader entry participate in
+fresh and memoized conversion node/depth limits, publication, rooting and GC.
 No legacy evaluator or native-only code in `src/js_runtime.js` is involved.
 
-Descriptors are opaque compiler values, rather than mutable JavaScript
-containers or an implementation of all Date/UUID/queue operations. Regex core
-matching obtains a task-owned RegExp view. The existing compiler reader still
-rejects metadata directly on a `#js` source literal; metadata on surrounding
-forms, payloads and API-created descriptors is retained. The EDN reader's
-previous explicit literal-tag boundary remains unchanged for now. `#queue`
-source syntax expands to an `into` form before macro input; the explicit queue
-kind can also originate from `PersistentQueue.EMPTY` in a macro unit.
+| Compiler literal kind | Native bridge representation |
+| --- | --- |
+| `#js` array | Explicit descriptor with a positional native vector payload |
+| `#js` object | Explicit descriptor with a positional native map payload |
+| Regex | Explicit descriptor with an exact pattern string |
+| Instant | Explicit descriptor with the reader's epoch-millisecond payload |
+| UUID | Explicit descriptor with the reader's UUID string |
+| Queue | Explicit descriptor with a native vector payload |
+| Big integer | Number occurrence retaining the original exact reader Datum until emission |
 
-The literal table in `tests/bbp_macros.rs` checks every compiler literal kind
-against QuickJS as incoming syntax and newly constructed results. The demanded
-helper fixture compares exact emitted output at jobs 1/2/4/8, source-ordered
-atom effects, metadata and a lone UTF-16 surrogate. Bridge and engine tests
-exercise unchanged-subtree identity, provenance, memoized limits, publication,
-lazy payload realization and GC. Ordinary host values remain rejected.
+Quoted `#js` constructors lower to native intrinsics. Known object keys keep
+JavaScript own-property order and last writes. The existing shallow constructor
+worklist handles deep literals; wide literals use its bounded fallback rather
+than exceeding the engine's 4,096-operand limit. The parser's nesting256 and VM
+stack limits are unchanged. The tests cover 60 alternating nested literals,
+4,097 array elements and 2,050 object fields. Demanded helpers publish with zero
+task-local helper fallback and identical emitted output at jobs 1/2/4/8.
+
+The bounded native reader also constructs `#js` descriptors through the same
+constructors, including its exposed tag-table handler. One runtime-owned native
+atom retains a canonical pure builtin tag table. Its functions capture no mutable
+reader adapter, so a shared `cljs.reader` tag table remains publishable and later
+tasks still recognize builtin handlers by identity after the first owner is
+dropped and a collection runs. The red/green evaluator regression transfers that
+table between tasks and collects the owner before reading another literal. The reader
+facade fixture compares exact UTF-16 and property ordering with QuickJS at jobs
+1/2/4/8. Invalid reader keys and values retain canonical located diagnostics.
+
+Descriptors remain opaque compiler values, rather than an implementation of all
+JavaScript container, Date, UUID and queue operations. Regex core matching obtains
+a task-owned RegExp view. Unquoted regex and instant expressions retain their
+existing JavaScript evaluation; raw RegExp/Date result export remains unsupported.
+The compiler reader still rejects metadata directly on a `#js` source literal;
+metadata on surrounding forms, payloads and API-created descriptors is retained.
+The EDN reader's `#inst`, `#uuid` and `#queue` value services, and code-profile
+namespace resolution, remain separate unsupported boundaries. `#queue` source
+syntax expands to an `into` form before macro input; an explicit queue descriptor
+can also originate from `PersistentQueue.EMPTY` in a macro unit. Ordinary host
+arrays and objects, including frozen objects, still produce located non-form
+result errors. They are never inferred to be compiler descriptors.
+
+The source macro literal table compares every compiler literal kind with QuickJS
+as incoming syntax, constructed results and macro printing. Other regressions
+cover unchanged payload identity/provenance after GC, metadata, memoized resource
+limits, lazy payload realization and rejection of task-owned published payloads.
+The next small Penpot service gaps, `object?`, `array?`, string `name`, `subs`,
+`sequential?`, `ffirst` and `update`, also have native/QuickJS regressions for their
+values, effects, metadata and exact strings.
+
+At `13207bd2`, rebased onto `1888f327`, a fresh native-only debug compiler on macOS
+arm64 with Homebrew Rust/Cargo 1.99.1 passes the former `rumext/v2.cljs:906:3`
+literal boundary. Both documented Penpot entries were rerun with all five absolute
+read-only roots, `--jobs 1 --no-cache` and every budget below. Both exit 1 with
+this identical first diagnostic:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro expansion: while expanding mf/defc: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro rumext.v2/defc: big-boy-pants-js: Error: unsupported operation: native macro runtime core.isList; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:334:1 (bytes 522..819)
+```
+
+This is a sequence type-fidelity boundary, tracked by light-cljs-546. Native
+`FormKind::List` also represents map and string sequence views. QuickJS's `list?`
+distinguishes those from lists and plain Cons values without realizing a lazy
+sequence. A reduced real-source macro prints
+`[true true true false false false false]` with QuickJS for empty/nonempty lists,
+plain Cons, map/string/vector seqs and an unforced lazy value; native execution
+fails explicitly at `core.isList`. Neither Penpot entry completes yet, and
+`research/` was left unchanged.
+
+On that final source/base, all 174 native evaluator/macro/reader/Proxy tests pass
+with `LIGHT_CLJS_STRESS_SEEDS=12`, as do all 2,152 engine tests and seven doctests.
+The 12 reader tests also pass with `bbp-macros,quickjs`. The complete default V8
+and QuickJS-only runs report 2,131 and 2,054 passes respectively, each with the
+same existing `playground_crate_checks_for_wasm32` environment failure: Cargo
+assigns the excluded nested playground package to the ancestor main checkout's
+workspace. Their library, source and execution checks pass. These complete runs
+are reused: later emitter changes run only in native mode, and the final reader
+fix and engine-only rebase do not affect their default/legacy paths.
+
+Root default/QuickJS Clippy passes strictly. Native and engine strict Clippy
+retain the nine established engine diagnostics; allowing only `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` passes the engine
+and the native library, CLI and integration targets. Engine-free library/CLI
+Clippy passes strictly. Engine-free all-target lint cannot compile unchanged
+benchmark support that calls legacy-only evaluator methods. Compiler and engine
+format checks cover the final content.
 
 ### Key-value reduction (light-cljs-518)
 
@@ -463,9 +529,11 @@ traversal, updates and large custom-tag results, alongside input-scope restorati
 
 Tag callbacks run in the task's VM and can suspend for compiler helpers without
 replaying earlier effects. The facade's published initial tag table contains
-shareable entry points. Native forms still have no representation for the
-builtin `#inst`, `#uuid`, `#queue` or `#js` literals: these fail explicitly,
-including when their builtin handlers come from another task's table. Custom
+shareable entry points. The builtin EDN reader services for
+`#inst`, `#uuid` and `#queue` remain unsupported: these fail explicitly,
+including when their builtin handlers come from another task's table. Native
+`#js` values and cross-task builtin identity are now supported by the explicit
+compiler literal forms above. Custom
 handlers for those names can return supported native data. Code-profile
 `cljs.core/read-string` and its namespace qualification remain unsupported;
 the new services expose the data profiles used by `cljs.reader` and
@@ -1787,11 +1855,12 @@ next distinct error:
 light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:906:3: macro expansion: while expanding fnc: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:906:3: macro rumext.v2/fnc: big-boy-pants-js: unsupported operation: compiler literal; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:320:1 (bytes 28314..28909)
 ```
 
-This call contains `#js` arrays. The native input bridge rejects every
-`DatumKind::CompilerLiteral`; even `(defmacro echo [x] (list 'quote x))
+At that checkpoint this call contained `#js` arrays, and the native input bridge
+rejected every `DatumKind::CompilerLiteral`; even `(defmacro echo [x] (list 'quote x))
 (echo #js [])` reproduces it. QuickJS compiles an equivalent macro whose result
 is tested with `js/Array.isArray`, and Node prints `true`. This different bridge
-gap is tracked by light-cljs-535. Neither Penpot entry completes; research was
+gap is fixed by light-cljs-535 above. That section records the later boundary.
+At the 521 checkpoint neither Penpot entry completed; research was
 left unchanged.
 
 Verification used macOS arm64, Homebrew Rust/Cargo 1.99.1, Node v26.12.1,

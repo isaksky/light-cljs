@@ -103,8 +103,9 @@
 //!   retain the legacy anomalies: set equality can be directional, and maps
 //!   with different values at equal keys can compare unequal to a copy.
 //!   Equality cannot reject by cached hash, even for enclosing collections.
-//! * Metadata never takes part: `with_meta` changes neither equality nor
-//!   hash.
+//! * Metadata never takes part in structural equality or hashing. Opaque
+//!   compiler descriptors retain identity equality: attaching new metadata
+//!   creates a fresh descriptor that shares the original payload.
 //! * Reduced markers compare and hash by identity, independent of their
 //!   payload. They are not sequences; `cljUnreduced` unwraps one marker.
 //! * Occurrences are transparent: an occurrence equals (and hashes as) the
