@@ -320,13 +320,19 @@ impl Operation {
             missing_nonconfig: false,
         }
     }
-    fn trap(&self) -> &'static str {
+    fn trap(&self) -> &'static property::FixedName {
+        use property::FixedName;
+        static GET: FixedName = FixedName::new("get");
+        static OWN_KEYS: FixedName = FixedName::new("ownKeys");
+        static DESCRIPTOR: FixedName = FixedName::new("getOwnPropertyDescriptor");
+        static HAS: FixedName = FixedName::new("has");
+        static EXTENSIBLE: FixedName = FixedName::new("isExtensible");
         match self.kind {
-            Kind::Get => "get",
-            Kind::Keys => "ownKeys",
-            Kind::Descriptor => "getOwnPropertyDescriptor",
-            Kind::Has => "has",
-            Kind::Extensible => "isExtensible",
+            Kind::Get => &GET,
+            Kind::Keys => &OWN_KEYS,
+            Kind::Descriptor => &DESCRIPTOR,
+            Kind::Has => &HAS,
+            Kind::Extensible => &EXTENSIBLE,
         }
     }
     fn key_value(&self, heap: &Heap) -> Result<Value, Fault> {
@@ -502,12 +508,7 @@ impl Operations {
                 };
                 op.proxy = Some(p.clone());
                 op.phase = Stage::TrapGetter;
-                return match property::read(
-                    heap,
-                    task,
-                    &Value::Object(p.handler),
-                    &Key::Name(JsString::from(op.trap())),
-                )? {
+                return match op.trap().read(heap, task, &Value::Object(p.handler))? {
                     Some(property::Read::Deferred(callee)) => {
                         Ok(Progress::Action(callee.action(Value::Object(p.handler))))
                     }

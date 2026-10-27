@@ -255,6 +255,7 @@ pub(crate) mod names {
     pub(crate) static VALUE: FixedName = FixedName::new("value");
     pub(crate) static DONE: FixedName = FixedName::new("done");
     pub(crate) static ITERATOR: FixedName = FixedName::new("iterator");
+    pub(crate) static PROTOTYPE: FixedName = FixedName::new("prototype");
 }
 
 pub(crate) fn read_named(

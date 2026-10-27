@@ -4253,12 +4253,7 @@ fn step_instanceof(
     input: Input,
 ) -> Result<Action, Fault> {
     let proto = match input {
-        Input::Start => match property::read(
-            heap,
-            task,
-            target,
-            &property::Key::Name(JsString::from("prototype")),
-        )? {
+        Input::Start => match property::names::PROTOTYPE.read(heap, task, target)? {
             Some(property::Read::Deferred(callee)) => {
                 return Ok(callee.action(target.clone()));
             }
@@ -4778,12 +4773,7 @@ impl NativeState {
                         ));
                     }
                     let value = match input {
-                        Input::Start => match property::read(
-                            heap,
-                            task,
-                            list,
-                            &property::Key::Name(JsString::from("length")),
-                        )? {
+                        Input::Start => match property::names::LENGTH.read(heap, task, list)? {
                             Some(property::Read::Deferred(callee)) => {
                                 return Ok(callee.action(list.clone()));
                             }
