@@ -3190,6 +3190,50 @@ impl<'a> Emitter<'a> {
         self.output.push_str(".EMPTY");
     }
 
+    // Quoted #js objects contain only compiler data. Canonicalize their
+    // known string keys before emission, preserving JavaScript own-property
+    // ordering and last writes, without capturing the task runtime.
+    fn native_literal_object_items(&self, items: &[ExprId]) -> Vec<ExprId> {
+        let mut positions: std::collections::HashMap<&[u16], usize> =
+            std::collections::HashMap::new();
+        let mut fields: Vec<(&[u16], ExprId, ExprId)> = Vec::new();
+        for [key, value] in items.as_chunks::<2>().0 {
+            let ExprKind::String(id) = self.program.exprs[key.0].kind else {
+                unreachable!("quoted JS object keys are strings");
+            };
+            let units = &self.program.strings[id.0][..];
+            if units.iter().copied().eq("__proto__".encode_utf16()) {
+                continue;
+            }
+            if let Some(&index) = positions.get(units) {
+                fields[index].2 = *value;
+            } else {
+                positions.insert(units, fields.len());
+                fields.push((units, *key, *value));
+            }
+        }
+        let array_index = |units: &[u16]| {
+            if units.is_empty() || units.len() > 1 && units[0] == u16::from(b'0') {
+                return None;
+            }
+            let mut index = 0u32;
+            for unit in units {
+                let digit = unit
+                    .checked_sub(u16::from(b'0'))
+                    .filter(|digit| *digit < 10)?;
+                index = index.checked_mul(10)?.checked_add(u32::from(digit))?;
+            }
+            (index != u32::MAX).then_some(index)
+        };
+        fields.sort_by_key(|(units, _, _)| {
+            array_index(units).map_or((true, 0), |index| (false, index))
+        });
+        fields
+            .into_iter()
+            .flat_map(|(_, key, value)| [key, value])
+            .collect()
+    }
+
     /// A call of a composite's runtime constructor with `count` items, which
     /// `item` writes by index: the one construction of both a pooled
     /// constant's initializer and a site that builds its value.
@@ -7694,8 +7738,20 @@ impl<'a> Emitter<'a> {
     /// their operands preserves evaluation order, throws and lazy realization.
     /// Stop at other calls, branches and closures so they keep their scope
     /// and conditional evaluation. Legacy/application emission never uses this.
-    fn native_form_arguments(&self, id: ExprId) -> Option<&'a [ExprId]> {
-        use crate::CoreFnId as C;
+    fn native_form_arguments(&self, id: ExprId) -> Option<Cow<'a, [ExprId]>> {
+        use crate::{CoreFnId as C, compiler_data::CompilerLiteralKind as K};
+        if let ExprKind::ReaderLiteral {
+            kind,
+            items,
+            quoted: true,
+        } = &self.program.exprs[id.0].kind
+        {
+            match kind {
+                K::JsArray => return Some(Cow::Borrowed(items)),
+                K::JsObject => return Some(Cow::Owned(self.native_literal_object_items(items))),
+                _ => {}
+            }
+        }
         let ExprKind::Call { callee, args } = &self.program.exprs[id.0].kind else {
             return None;
         };
@@ -7703,11 +7759,16 @@ impl<'a> Emitter<'a> {
             return None;
         };
         if self.replaced(core.runtime_name()) {
-            return (args.len() <= NATIVE_CONSTRUCTOR_LIMIT).then_some(args);
+            return (args.len() <= NATIVE_CONSTRUCTOR_LIMIT)
+                .then_some(Cow::Borrowed(args.as_ref()));
         }
         match (core, args.len()) {
-            (C::Seq | C::Sequence, 1) | (C::WithMeta | C::Cons, 2) => Some(args),
-            (C::List | C::Vector | C::Concat, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => Some(args),
+            (C::Seq | C::Sequence, 1) | (C::WithMeta | C::Cons, 2) => {
+                Some(Cow::Borrowed(args.as_ref()))
+            }
+            (C::List | C::Vector | C::Concat, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => {
+                Some(Cow::Borrowed(args.as_ref()))
+            }
             _ => None,
         }
     }
@@ -7744,7 +7805,8 @@ impl<'a> Emitter<'a> {
         let mut pending = vec![(id, false, None)];
         let mut values = 0;
         while let Some((id, ready, prepared)) = pending.pop() {
-            let args = self.native_form_arguments(id);
+            let operands = self.native_form_arguments(id);
+            let args = operands.as_deref();
             if !ready && let Some(args) = args {
                 // A replaced constructor remains an ordinary callable. Save
                 // its callee and `.call` before any operand effects, then use
@@ -8411,6 +8473,32 @@ impl<'a> Emitter<'a> {
                 quoted,
             } => {
                 use crate::compiler_data::CompilerLiteralKind as K;
+                if self.native_forms && *quoted && matches!(kind, K::JsArray | K::JsObject) {
+                    let object = *kind == K::JsObject;
+                    let canonical;
+                    let items = if object {
+                        canonical = self.native_literal_object_items(items);
+                        &canonical[..]
+                    } else {
+                        &items[..]
+                    };
+                    self.output.push_str(if object {
+                        "__rt.formCompilerLiteral(\"js-object\", "
+                    } else {
+                        "__rt.formCompilerLiteral(\"js-array\", "
+                    });
+                    self.construct(
+                        if object {
+                            Composite::LiteralMap
+                        } else {
+                            Composite::Vector
+                        },
+                        items.len(),
+                        |emitter, index| emitter.value(items[index]),
+                    );
+                    self.output.push(')');
+                    return;
+                }
                 if self.native_forms
                     && (matches!(kind, K::Uuid | K::Queue)
                         || *quoted && matches!(kind, K::Regex | K::Instant))
@@ -8424,11 +8512,11 @@ impl<'a> Emitter<'a> {
                     };
                     write!(self.output, "__rt.formCompilerLiteral({tag:?}, ").unwrap();
                     if *kind == K::Queue {
-                        self.output.push_str("__rt.formVector(");
-                    }
-                    self.arguments(items);
-                    if *kind == K::Queue {
-                        self.output.push(')');
+                        self.construct(Composite::Vector, items.len(), |emitter, index| {
+                            emitter.value(items[index])
+                        });
+                    } else {
+                        self.arguments(items);
                     }
                     self.output.push(')');
                     return;

@@ -7250,6 +7250,7 @@ fn demanded_compiler_literals_publish_and_keep_source_order_at_all_jobs() {
         .unwrap_or_else(|e| panic!("native={native}, jobs={jobs}: {e}"));
         if native {
             assert!(stats.native_helpers.published > 0, "{stats:?}");
+            assert_eq!(stats.native_helpers.per_task, 0, "{stats:?}");
         }
         emit_js(&program)
     };
@@ -7326,5 +7327,51 @@ fn compiler_literal_sequential_classification_does_not_realize_values() {
                                      cljs.core.PersistentQueue.EMPTY (S.)]) @calls])))
            (js/console.log (pr-str (m #js {})))"#,
         "[[false true true true true false false false false false false false true true] 0]\n",
+    );
+}
+
+#[test]
+fn compiler_literal_first_entry_helper_matches_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defmacro m [x] (let [f ffirst log (atom []) s (lazy-seq (swap! log conj :outer) (list (lazy-seq (swap! log conj :inner) (list :value))))]
+             (list 'quote [(ffirst x) (f nil) (f []) (f "ab") (f s) (f s) @log])))
+           (js/console.log (pr-str (m [[1 2] [3 4]])))"#,
+        "[1 nil nil \"a\" :value :value [:outer :inner]]\n",
+    );
+}
+
+#[test]
+fn compiler_literal_constructors_keep_depth_and_operand_bounds() {
+    let mut literal = "42".to_owned();
+    for i in 0..60 {
+        literal = if i % 2 == 0 {
+            format!("#js [{literal}]")
+        } else {
+            format!("#js {{:x {literal}}}")
+        };
+    }
+    let source = format!(
+        "(defmacro m [] (list 'quote '{literal}))\n(js/console.log (loop [v (m) i 0] (if (< i 60) (recur (if (js/Array.isArray v) (aget v 0) (.-x v)) (inc i)) v)))"
+    );
+    assert_native_matches_legacy(&source, "42\n");
+    let items = (0..4097)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_native_matches_legacy(
+        &format!(
+            "(defmacro m [] (list 'quote '#js [{items}])) (let [v (m)] (js/console.log (.-length v) (aget v 0) (aget v 4096)))"
+        ),
+        "4097 0 4096\n",
+    );
+    let pairs = (0..2050)
+        .map(|i| format!("\"k{i}\" {i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_native_matches_legacy(
+        &format!(
+            "(defmacro m [] (list 'quote '#js {{{pairs}}})) (let [v (m)] (js/console.log (.-length (js/Object.keys v)) (aget v \"k2049\")))"
+        ),
+        "2050 2049\n",
     );
 }
