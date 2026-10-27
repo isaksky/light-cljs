@@ -406,6 +406,33 @@ contexts in use at once each hold every catalog registration, and producer
 tasks replay their parent's, so per-task registries grow with the macro units
 that run at once (light-cljs-503).
 
+### Shared catalog data and ordinary task objects (October 26, 2026)
+
+light-cljs-503 shares immutable registration data across a compilation's native
+tasks. Each frontier is a persistent vector prefix; root and declaration
+descriptors contain only strings, numbers, booleans and other immutable vectors.
+Versions share their storage and remain rooted for the compilation's lifetime.
+A worker imports its newly registered suffix. A helper producer imports its
+parent's exact snapshot and populates a fresh ordinary JavaScript object through
+the existing registration functions, in registration order. Initializer slots,
+getters, bundle products and protocol tables belong to the task. Registration
+source is no longer retained, parsed or evaluated for the compilation catalog.
+
+This deliberately uses ordinary properties and their existing registration
+semantics: every root or bundle registration runs, including repeated and mixed
+redefinitions. Accessor and inherited preloads, saved/copied getters, partial
+descriptors, key ordering, deletion, sealing and freezing therefore follow the
+ordinary object paths. There is no descriptor coalescing, virtual property
+backing, or catalog-specific redefinition handling. The differential object
+table and once-per-task mutable initializer tests cover those contracts.
+
+Populating an ordinary object still allocates task-owned getters and slots for
+every registration a producer inherits. Sharing data removes catalog source
+replay; it does not remove the O(helpers × registrations) property-population
+work or its transient allocations. Measurements below separate this remaining
+cost from in-task source evaluations. light-cljs-508 owns the residual
+concurrent-task memory premium.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
