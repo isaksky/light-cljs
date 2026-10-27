@@ -450,10 +450,7 @@ fn emit_js_mode(
         )
     });
     // The prelude, the `let g<n>;` declarations and the program body.
-    let body = |register_namespaces: bool,
-                brand_types: TypeBrands,
-                record_kits: [bool; 2],
-                fixed_native_calls: bool| {
+    let body = |register_namespaces: bool, brand_types: TypeBrands, record_kits: [bool; 2]| {
         let mut emitter = Emitter::new(
             program,
             Setup {
@@ -469,7 +466,6 @@ fn emit_js_mode(
         );
         emitter.brand_types = brand_types;
         emitter.native_forms = native_forms;
-        emitter.native_fixed_calls = fixed_native_calls;
         if native_forms {
             emitter.native_replaced_core = program
                 .exprs
@@ -565,18 +561,9 @@ fn emit_js_mode(
     // (`RuntimeRoots::reach_reflection`): the body is emitted without the
     // registration, and again with it when those roots reach reflection.
     let slice = direct.is_some();
-    let mut fixed_native_calls = true;
-    let (mut emitter, mut prelude_end) =
-        body(!slice, TypeBrands::Shared, [false; 2], fixed_native_calls);
-    // Fixed-call preparation expands each call site. Large generated macro
-    // helpers use the shared adapter instead, leaving 4 KiB for its prelude
-    // and factory wrapper below the engine's 16 KiB eval-source ceiling.
-    if native_forms && emitter.output.encode_utf16().take(12 * 1024 + 1).count() > 12 * 1024 {
-        fixed_native_calls = false;
-        (emitter, prelude_end) = body(!slice, TypeBrands::Shared, [false; 2], fixed_native_calls);
-    }
+    let (mut emitter, mut prelude_end) = body(!slice, TypeBrands::Shared, [false; 2]);
     if slice && emitter.runtime.reach_reflection() {
-        (emitter, prelude_end) = body(true, TypeBrands::Shared, [false; 2], fixed_native_calls);
+        (emitter, prelude_end) = body(true, TypeBrands::Shared, [false; 2]);
     }
     // A record type has its own `-equiv` and `-hash`, which read its fields
     // directly, where the slice installs the shared ones
@@ -588,12 +575,7 @@ fn emit_js_mode(
         [false; 2]
     };
     if record_kits.contains(&true) {
-        (emitter, prelude_end) = body(
-            emitter.register_namespaces,
-            TypeBrands::Shared,
-            record_kits,
-            fixed_native_calls,
-        );
+        (emitter, prelude_end) = body(emitter.register_namespaces, TypeBrands::Shared, record_kits);
     }
     // A type's own constructor brands its instance only where a brand may be
     // observed (`Emitter::unobserved_brands`): the body is emitted again
@@ -602,22 +584,16 @@ fn emit_js_mode(
     // through `new`, it is emitted again with each type a class branded by a
     // private field of its own (`Emitter::own_brands`, light-cljs-346).
     if slice && emitter.unobserved_brands() {
-        (emitter, prelude_end) = body(
-            emitter.register_namespaces,
-            TypeBrands::Unread,
-            record_kits,
-            fixed_native_calls,
-        );
+        (emitter, prelude_end) = body(emitter.register_namespaces, TypeBrands::Unread, record_kits);
     } else if slice && emitter.own_brands() {
-        (emitter, prelude_end) = body(
-            emitter.register_namespaces,
-            TypeBrands::Own,
-            record_kits,
-            fixed_native_calls,
-        );
+        (emitter, prelude_end) = body(emitter.register_namespaces, TypeBrands::Own, record_kits);
     }
     if let Some(temporary) = emitter.native_invoke_temporary {
         let declaration = format!("  const temporary{temporary}_0 = {NATIVE_PREPARE_INVOKE};\n");
+        emitter.insert((prelude_end, 0, 0), &declaration);
+    }
+    if let Some(temporary) = emitter.native_call_member_temporary {
+        let declaration = format!("  const temporary{temporary}_0 = {NATIVE_CALL_MEMBER};\n");
         emitter.insert((prelude_end, 0, 0), &declaration);
     }
     #[cfg(debug_assertions)]
@@ -1441,6 +1417,15 @@ const LAZY_CONSTANT_NODES: u32 = 1024;
 /// they check what the inline forms check.
 const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
 
+// Fixed calls retain the actual method and receiver in their operand slots.
+// Keep native multimethod recognition out of each call site's syntax tree.
+const NATIVE_CALL_MEMBER: &str = r#"(value => {
+    const type = __rt.structTypeOf(value);
+    if (type !== null && __rt.formName(type) === 'cljs.core/MultiFn')
+        return function(_, ...args) { return globalThis.__lightNativeRuntime.core.invokeMulti(this, args); };
+    return value.call;
+})"#;
+
 /// Prepare native collection dispatch or read the legacy `.call` method before
 /// evaluating arguments. Retain that method and its receiver across suspension;
 /// the adapter captures no task-owned runtime object.
@@ -1727,7 +1712,6 @@ enum TypeBrands {
 
 struct Emitter<'a> {
     native_forms: bool,
-    native_fixed_calls: bool,
     /// Native units bind their immutable core functions once per factory call.
     native_core_bindings: Vec<&'static str>,
     native_replaced_core: HashSet<&'static str>,
@@ -1743,6 +1727,7 @@ struct Emitter<'a> {
     native_arguments: std::collections::VecDeque<(ExprId, usize, usize)>,
     native_temporary: usize,
     native_invoke_temporary: Option<usize>,
+    native_call_member_temporary: Option<usize>,
     /// [`Emitter::struct_fields`] by method, computed once each.
     struct_targets: std::cell::RefCell<HashMap<crate::analyzer::RecurTargetId, bool>>,
     /// In a native compile-time unit, the struct types its `deftype`s and
@@ -1965,7 +1950,6 @@ impl<'a> Emitter<'a> {
             .filter(|_| direct.is_some());
         Emitter {
             native_forms: false,
-            native_fixed_calls: true,
             native_core_bindings: Vec::new(),
             native_replaced_core: HashSet::new(),
             native_protocol_target: None,
@@ -1973,6 +1957,7 @@ impl<'a> Emitter<'a> {
             native_arguments: Default::default(),
             native_temporary: 0,
             native_invoke_temporary: None,
+            native_call_member_temporary: None,
             struct_targets: Default::default(),
             native_types: Vec::new(),
             registration_chunks: Vec::new(),
@@ -7695,7 +7680,7 @@ impl<'a> Emitter<'a> {
     /// suspension without allocating a closure, a rest array and a spread
     /// array on every call. Wider calls retain the bounded generic adapter.
     fn native_fixed_invoke(&mut self, callee: ExprId, args: &[ExprId]) -> bool {
-        if !self.native_fixed_calls || !(1..=2).contains(&args.len()) {
+        if !(1..=2).contains(&args.len()) {
             return false;
         }
         let Some(operands) = self.operands.as_mut() else {
@@ -7726,35 +7711,22 @@ impl<'a> Emitter<'a> {
         }
         write!(
             self.output,
-            ") ? 1 : (operand{} === 'struct' && __rt.formName(__rt.structTypeOf(operand{})) === 'cljs.core/MultiFn' ? 2 : 0), operand{} = operand{} ? null : operand{}.call, ",
-            base + 2,
-            base + 1,
+            "), operand{} = operand{} ? null : ",
             base + 3,
             base + 2,
-            base + 1,
         )
         .unwrap();
+        let member = *self.native_call_member_temporary.get_or_insert_with(|| {
+            let temporary = self.native_temporary;
+            self.native_temporary += 1;
+            temporary
+        });
+        write!(self.output, "temporary{member}_0(operand{}), ", base + 1).unwrap();
         for (index, &arg) in args.iter().enumerate() {
             write!(self.output, "operand{} = ", base + 4 + index).unwrap();
             self.value(arg);
             self.output.push_str(", ");
         }
-        // Native multimethods are shareable structs with no JavaScript
-        // `.call` property. Keep the fixed-call path's callee/argument order
-        // and dispatch through the consuming task, as the generic adapter does.
-        write!(
-            self.output,
-            "operand{} === 2 ? globalThis.__lightNativeRuntime.core.invokeMulti(operand{base}, [",
-            base + 2,
-        )
-        .unwrap();
-        for index in 0..args.len() {
-            if index > 0 {
-                self.output.push_str(", ");
-            }
-            write!(self.output, "operand{}", base + 4 + index).unwrap();
-        }
-        self.output.push_str("]) : ");
         write!(
             self.output,
             "operand{} ? __rt.cljInvoke(operand{base}, operand{}, ",

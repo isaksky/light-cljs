@@ -1655,13 +1655,13 @@ constructors pass both `fn?` and `ifn?`, matching their JavaScript function
 representation in the legacy runtime. Bundle products record root ownership even
 without a preceding `declare`, so a later ordinary definition can replace them.
 No native-only code was added to the emitted runtime in `src/js_runtime.js`.
-Fixed native calls recognize multimethod structs before reading `.call` and
-dispatch in the consuming task, preserving argument order. If fixed-call
-emission makes a native unit body exceed 12 KiB of UTF-16 code units, it uses
-the shared generic adapter instead. The remaining 4 KiB accommodates the
-adapter and factory below the existing 16 KiB eval-source ceiling. The
-differential table includes an 81-call generated helper whose method effects
-run exactly once. Function roots reading dynamic core settings such as
+Fixed native calls share one member-lookup helper per unit. It recognizes
+multimethod structs before reading `.call` and returns a consuming-task
+dispatch method; the enclosing frame retains the method, receiver and
+arguments across suspension. Sharing the helper keeps generated call syntax
+shallow without changing engine source or nesting limits. The differential
+table includes an 81-call generated helper whose method effects run exactly
+once. Function roots reading dynamic core settings such as
 `*print-length*` also publish, resolving the setting in the consuming task.
 A dispatch function that captures task-owned JavaScript state fails publication
 explicitly; the constructor failure is shared, so later demands cannot replay
