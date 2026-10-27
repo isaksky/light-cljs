@@ -87,25 +87,20 @@ impl Options {
 }
 
 #[derive(Debug)]
-struct Namespace {
-    valid: bool,
-    first: bool,
-    name: Option<JsString>,
-    comparing: Option<Box<NamespaceComparison>>,
+enum Namespace {
+    Invalid,
+    First,
+    Observed(Option<JsString>),
+    Comparing(Box<NamespaceComparison>),
 }
 
 impl Namespace {
     fn new(enabled: bool) -> Self {
-        Self {
-            valid: enabled,
-            first: true,
-            name: None,
-            comparing: None,
-        }
+        if enabled { Self::First } else { Self::Invalid }
     }
 
     fn observe(&mut self, heap: &Heap, key: &Value) -> Result<(), Fault> {
-        if !self.valid {
+        if matches!(self, Self::Invalid) {
             return Ok(());
         }
         let key = form::unwrap(heap, key.clone());
@@ -113,34 +108,42 @@ impl Namespace {
         let Some(FormBody::Keyword(name) | FormBody::Symbol(name)) =
             object.as_deref().map(|f| f.body())
         else {
-            self.valid = false;
+            *self = Self::Invalid;
             return Ok(());
         };
-        if self.first {
-            self.name = name.namespace.clone();
-            self.first = false;
-        } else {
-            match (&self.name, &name.namespace) {
+        match self {
+            Self::First => *self = Self::Observed(name.namespace.clone()),
+            Self::Observed(current) => match (current.as_ref(), name.namespace.as_ref()) {
                 (Some(left), Some(right)) if left.same_body(right) => (),
                 (Some(left), Some(right)) if left.len() == right.len() => {
-                    self.comparing = Some(NamespaceComparison::new(heap, left, right)?);
+                    *self = Self::Comparing(NamespaceComparison::new(heap, left, right)?);
                 }
                 (None, None) => (),
-                _ => self.valid = false,
-            }
+                _ => *self = Self::Invalid,
+            },
+            _ => unreachable!("finish pending namespace comparisons before observing another key"),
         }
         Ok(())
     }
 
     fn advance(&mut self) {
-        if let Some(equal) = self.comparing.as_mut().unwrap().advance() {
-            self.valid = equal;
-            self.comparing = None;
+        let Self::Comparing(comparing) = self else {
+            unreachable!("namespace comparison is pending");
+        };
+        if let Some(equal) = comparing.advance() {
+            *self = if equal {
+                Self::Observed(Some(comparing.name.clone()))
+            } else {
+                Self::Invalid
+            };
         }
     }
 
     fn finish(self) -> Option<JsString> {
-        self.name.filter(|name| self.valid && !name.is_empty())
+        match self {
+            Self::Observed(Some(name)) if !name.is_empty() => Some(name),
+            _ => None,
+        }
     }
 }
 
@@ -152,6 +155,8 @@ thread_local! {
 
 #[derive(Debug)]
 struct NamespaceComparison {
+    // Keep the observed spelling while the enum holds only this pointer.
+    name: JsString,
     flatten: [Option<StringFlatten>; 2],
     text: [Option<JsString>; 2],
     index: usize,
@@ -162,6 +167,7 @@ impl NamespaceComparison {
     fn new(heap: &Heap, left: &JsString, right: &JsString) -> Result<Box<Self>, Fault> {
         let charge = reserve_elements(heap, 1, std::mem::size_of::<Self>())?;
         Ok(Box::new(Self {
+            name: left.clone(),
             flatten: [
                 Some(StringFlatten::new_accounted(heap, left.clone())?),
                 Some(StringFlatten::new_accounted(heap, right.clone())?),
@@ -607,7 +613,7 @@ impl Diagnostic {
                 mut namespace,
                 context,
             } => {
-                let ready = if namespace.comparing.is_some() {
+                let ready = if matches!(namespace, Namespace::Comparing(_)) {
                     namespace.advance();
                     None
                 } else if let Some(mut string) = hashing.take() {
@@ -669,7 +675,7 @@ impl Diagnostic {
                 mut namespace,
                 context,
             } => {
-                if namespace.comparing.is_some() {
+                if matches!(namespace, Namespace::Comparing(_)) {
                     namespace.advance();
                 } else if let Some(key) = pairs.get(index) {
                     namespace.observe(heap, &key)?;
