@@ -1101,6 +1101,15 @@ replaying effects. Namespace output is compared at one, two and four slots.
 Evaluator tests also collect while both consumers are parked and check shared
 input identity and `finally` execution.
 
+Preparing a deferred native unit walks only the expressions reachable from its
+root, including explicit Var metadata. It indexes multimethod function operands,
+core writes and type method owners in that walk instead of scanning the frozen
+catalog prefix for each unit. Global reads keep their separate lazy demands;
+cross-unit core replacement still uses the session's conservative source index.
+Preparation retains executable source and reader tables, without retaining an
+old program or running initializers. A regression counts actual arena reads
+with growing frozen prefixes and checks definition-time metadata and output.
+
 A unit source of at least 512 bytes, such as a source macro's or a
 helper's code, is compiled once per runtime into a published factory; every
 task that evaluates it calls that factory with its own native runtime, so its
