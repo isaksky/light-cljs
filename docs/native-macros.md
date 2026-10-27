@@ -881,7 +881,8 @@ the unit retain their dynamic reads.
 
 One- and two-argument dynamic calls inside native functions retain the callee,
 its `.call` method and the operands in frame locals (light-cljs-501). They
-avoid allocating an adapter closure and rest/spread arrays for each call.
+avoid allocating an adapter closure and argument arrays for each call. The
+compiler-reserved `__rt.call` uses the VM's existing method-call instruction.
 The method is still read before the operands, including a failing getter;
 custom callables keep their receiver and functions receive `null`. Native
 callable collections preserve their original occurrence and optional default.

@@ -7623,16 +7623,16 @@ impl<'a> Emitter<'a> {
         }
         write!(
             self.output,
-            ", {}) : Reflect.apply(operand{}, operand{}, [null",
+            ", {}) : __rt.call(operand{}, operand{}, null",
             args.len(),
-            base + 3,
             base + 1,
+            base + 3,
         )
         .unwrap();
         for index in 0..args.len() {
             write!(self.output, ", operand{}", base + 4 + index).unwrap();
         }
-        self.output.push_str("]))");
+        self.output.push_str("))");
         self.operands.as_mut().unwrap().live = base;
         true
     }
