@@ -665,12 +665,21 @@ fn structural_key_operations_propagate_sorted_comparison_errors() {
         r#"function f() {
         const stored = __rt.formSortedMap(__rt.formVector(1, "v"));
         const query = __rt.formLiteralMap(__rt.formVector("x", "v"));
-        const map = __rt.formLiteralMap(__rt.formVector(stored, "stored"));
-        const operations = [() => __rt.formGet(map, query, "missing"),
-            () => __rt.formAssoc(map, query, "new"), () => __rt.formDissoc(map, query)];
-        for (const op of operations) {
-            try { op(); return false; }
-            catch(e) { if (e.message !== "Cannot compare 1 to x") return false; }
+        const hashStored = __rt.formSortedMap(__rt.formVector(0, "v"));
+        const hashQuery = __rt.formLiteralMap(__rt.formVector("", "v"));
+        if (__rt.formHash(hashStored) !== __rt.formHash(hashQuery)) throw new Error('equal hash precondition');
+        const cases = [
+            [__rt.formLiteralMap(__rt.formVector(stored, "stored")), query, "Cannot compare 1 to x"],
+            [__rt.formMap(hashStored, "stored"), hashQuery, "Cannot compare 0 to "]];
+        for (const item of cases) {
+            const map = item[0], key = item[1], message = item[2];
+            const operations = [() => __rt.formGet(map, key, "missing"),
+                () => __rt.cljContains(map, key),
+                () => __rt.formAssoc(map, key, "new"), () => __rt.formDissoc(map, key)];
+            for (const op of operations) {
+                try { op(); return false; }
+                catch(e) { if (e.message !== message) return false; }
+            }
         }
         return true;
     }"#,

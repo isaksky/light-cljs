@@ -353,14 +353,22 @@ fn native_reduce_kv_matches_quickjs() {
             "(defrecord KeyRecord [])",
             r#"(let [stored (sorted-map 1 :v) query (array-map "x" :v)
                      m (array-map stored :stored)
+                     hash-stored (sorted-map 0 :v) hash-query (array-map "" :v)
+                     h (apply hash-map [hash-stored :stored])
                      probe (fn [f] (try (f) (catch :default e [(.-name e) (.-message e)])))]
+              (if (= (hash hash-stored) (hash hash-query)) nil
+                (throw (js/Error. "equal hash precondition")))
               (mapv probe [(fn [] (get m query :missing))
                            (fn [] (contains? m query))
                            (fn [] (assoc m query :new))
                            (fn [] (dissoc m query))
                            (fn [] (array-map stored :stored query :new))
                            (fn [] (contains? #{stored} query))
-                           (fn [] (get (assoc (KeyRecord.) stored :stored) query :missing))]))"#,
+                           (fn [] (get (assoc (KeyRecord.) stored :stored) query :missing))
+                           (fn [] (get h hash-query :missing))
+                           (fn [] (contains? h hash-query))
+                           (fn [] (assoc h hash-query :new))
+                           (fn [] (dissoc h hash-query))]))"#,
             "nil",
         ),
         (
