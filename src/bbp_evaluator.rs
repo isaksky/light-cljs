@@ -544,6 +544,9 @@ struct SharedRuntime {
     counters: Arc<NativeCounters>,
     runtime: Runtime,
     executable: Executable,
+    // One canonical immutable builtin tag table for this runtime. The
+    // reader recognizes builtin handlers by identity across task migration.
+    reader_tags: Rooted,
     bridge: Arc<Mutex<Bridge>>,
     control: ExecutionControl,
     next_command: AtomicU32,
@@ -838,15 +841,19 @@ impl BbpRuntime {
             .replace("/* NATIVE_READER */", &reader)
             .replace("/* CORE_KEYS */", &keys);
         let executable = big_boy_pants_js::frontend::compile_function(&format!(
-            "function nativeMacroTask(commandKind, beginKind, finishKind) {{ {source} }}"
+            "function nativeMacroTask(commandKind, beginKind, finishKind, readerTagsCell) {{ {source} }}"
         ))
         .map_err(error)?;
         let control = ExecutionControl::new(options)?;
+        let reader_tags = runtime
+            .new_atom(&runtime.root(Primitive::Null))
+            .map_err(error)?;
         Ok(Self(Arc::new(SharedRuntime {
             memory_limit: options.memory_limit,
             counters: Arc::new(NativeCounters::default()),
             runtime,
             executable,
+            reader_tags,
             bridge: Arc::new(Mutex::new(Bridge {
                 control: Some(control.clone()),
                 ..Default::default()
@@ -1170,7 +1177,10 @@ impl BbpEvaluator {
         let begin = runtime.root(Primitive::Number((kind + 1) as f64));
         let finish = runtime.root(Primitive::Number((kind + 2) as f64));
         let task = runtime
-            .spawn(&self.shared.0.executable, &[&argument, &begin, &finish])
+            .spawn(
+                &self.shared.0.executable,
+                &[&argument, &begin, &finish, &self.shared.0.reader_tags],
+            )
             .map_err(error)?;
         *self.context.borrow_mut() = Some(Rc::new(TaskContext {
             task,

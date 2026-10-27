@@ -513,6 +513,14 @@ fn native_reader_js_descriptors_match_quickjs() {
             r##"((get (compiler-reader-initial-tag-table) 'js) [1 2])"##,
         ),
         (
+            "direct tag invalid value",
+            r##"(try ((get (compiler-reader-initial-tag-table) 'js) nil) (catch :default e [(.-message e) (.-source e) (.-line e) (.-column e) (.-offset e) (.-category e)]))"##,
+        ),
+        (
+            "direct tag invalid key",
+            r##"(try ((get (compiler-reader-initial-tag-table) 'js) {1 :value}) (catch :default e [(.-message e) (.-source e) (.-line e) (.-column e) (.-offset e) (.-category e)]))"##,
+        ),
+        (
             "invalid value",
             r##"(try (compiler-reader-read-string "#js nil") (catch :default e [(.-message e) (.-source e) (.-line e) (.-column e) (.-offset e) (.-category e)]))"##,
         ),
@@ -535,5 +543,16 @@ fn native_reader_js_descriptors_match_quickjs() {
         }
         #[cfg(not(feature = "quickjs"))]
         assert!(!output(&native).is_empty(), "{label}");
+    }
+}
+
+#[test]
+fn reader_facade_js_literals_keep_shared_handler_identity_at_all_jobs() {
+    let reference = namespace_js("js-use", false, 1);
+    assert_eq!(output(&reference), "55296 2,10,z\n");
+    for jobs in [1, 2, 4, 8] {
+        let native = namespace_js("js-use", true, jobs);
+        assert_eq!(native, reference, "jobs {jobs}");
+        assert_eq!(output(&native), "55296 2,10,z\n", "jobs {jobs}");
     }
 }

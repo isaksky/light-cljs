@@ -20,3 +20,7 @@
                                      (.push seen "after") v))}}
                 "#wrap [7]")]
     (list 'quote [parsed (meta parsed) (vec seen)])))
+
+(defmacro js-probe []
+  (list 'quote [(reader/read-string "#js [#js {:value \"\\uD800\"}]")
+                (reader/read-string "#js {\"10\" 10 \"2\" 2 :z 3}")]))

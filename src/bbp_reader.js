@@ -36,10 +36,35 @@
   // JS reader literals use the same explicit descriptors as source forms.
   // The other EDN value constructors retain their separate service boundary.
   const uuid=unsupported('reader UUID literal'), PersistentQueueValue={get EMPTY(){return unsupported('reader queue literal')();}};
-  const readerJsLiterals={
-    array:items=>__rt.formCompilerLiteral('js-array',vector(items)),
-    object:pairs=>__rt.formCompilerLiteral('js-object',literalMap(literalObjectPairs(pairs)))
+  const readerJsArray=items=>__rt.formCompilerLiteral('js-array',vector(items));
+  const readerJsObject=pairs=>__rt.formCompilerLiteral('js-object',literalMap(literalObjectPairs(pairs)));
+  // This entry can live in cljs.reader's shared tag-table atom: capture
+  // pure constructors and inspection, never createReader's mutable adapter.
+  const readerJsTag=value=>{
+    const fail=message=>{
+      const error=new Error(message+' at <tag-parser>:1:1');
+      error.source='<tag-parser>';error.line=1;error.column=1;error.offset=0;error.category='reader';throw error;
+    };
+    const data=inspect(value);
+    if(data?.kind==='vector')return readerJsArray(data.items);
+    if(data?.kind==='map'){
+      const pairs=[];
+      for(const [key,value] of data.entries){
+        const name=inspect(key);
+        if(typeof val(key)!=='string'&&!(name?.kind==='keyword'&&name.namespace===null))fail('Invalid JS object literal key');
+        pairs.push(typeof val(key)==='string'?key:name.name,value);
+      }
+      return readerJsObject(pairs);
+    }
+    return fail('Invalid JS literal');
   };
+  const readerJsLiterals={array:readerJsArray,object:readerJsObject};
+  // Publish one pure table, so cljs.reader can retain its handlers in a
+  // shared atom and later tasks still recognize them as builtin readers.
+  const candidateTags=__rt.formMap('inst',unsupported('reader inst literal'),
+    'uuid',unsupported('reader UUID literal'),'queue',unsupported('reader queue literal'),'js',readerJsTag);
+  const previousTags=__rt.atomCas(readerTagsCell,null,candidateTags);
+  const sharedTags=previousTags===null?candidateTags:previousTags;
   const readerCoreNames=new Set();
   /* READER */
   const reader=createReader({keyword:core.keyword,symbol:core.symbol,vectorFromArray:vector,
@@ -49,9 +74,10 @@
     callReader:(handler,args)=>invoke(handler,...args),
     ednKind:x=>{const k=kind(x);return k==='record'?'map':['list','cons','lazy-seq'].includes(k)?'seq':k??(val(x) instanceof Date?'instant':null);},
     builtinTags:new Map([
-      ['inst',unsupported('reader inst literal')],
-      ['uuid',unsupported('reader UUID literal')],
-      ['queue',unsupported('reader queue literal')]
+      ['inst',__rt.formGet(sharedTags,'inst',null)],
+      ['uuid',__rt.formGet(sharedTags,'uuid',null)],
+      ['queue',__rt.formGet(sharedTags,'queue',null)],
+      ['js',__rt.formGet(sharedTags,'js',null)]
     ]),
     readBuiltin:tag=>unsupported('reader '+(tag==='uuid'?'UUID':tag==='js'?'JS':tag)+' literal')()});
   // Code-profile read-string also needs the compiler's namespace resolution

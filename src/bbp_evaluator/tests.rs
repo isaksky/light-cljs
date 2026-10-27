@@ -3226,3 +3226,30 @@ fn compiler_literal_payloads_keep_identity_provenance_and_cached_limits_after_gc
     assert!(bridge.forms.is_empty());
     assert!(bridge.costs.is_empty());
 }
+
+#[test]
+fn published_reader_js_tags_keep_builtin_identity_across_tasks_and_gc() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let owner = shared.evaluator().unwrap();
+    let id = owner
+        .evaluate_unit("rt => rt.core.readerInitialTagTable()")
+        .unwrap();
+    let tags = owner.cx().unwrap().values.borrow()[&id.index].clone();
+    shared.0.runtime.publish(&tags).unwrap();
+    let peer = shared.evaluator().unwrap();
+    let argument = peer.id().unwrap();
+    peer.request(1, argument, tags).unwrap();
+    drop(owner);
+    shared.0.runtime.collect().unwrap();
+    let f = peer.evaluate_unit("rt => tags => rt.core.readerReadString(__rt.formMap(__rt.formKeyword(null,'readers'),tags),'#js [1]')").unwrap();
+    let result = peer.call(f, &[argument]).unwrap();
+    let value = peer.cx().unwrap().values.borrow()[&result.index].clone();
+    shared.0.runtime.scope(|s| {
+        let (tag, payload) = s.form_compiler_literal(s.local(&value).unwrap()).unwrap();
+        assert_eq!(tag, "js-array");
+        assert_eq!(
+            s.view(s.form_nth(payload, 0).unwrap()),
+            ValueView::Number(1.0)
+        );
+    });
+}
