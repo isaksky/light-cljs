@@ -11,9 +11,10 @@ use crate::compilation_session::Registration;
 
 #[derive(Default)]
 pub(super) struct Registry {
-    // Persistent vector prefixes share their storage. Keeping versions makes
-    // an earlier frontier available without rebuilding or caching JS objects.
-    versions: BTreeMap<usize, Rooted>,
+    // Tasks own their frontiers. The cache shares live immutable data without
+    // rooting every historical prefix (including its copied vector spine).
+    versions: BTreeMap<usize, WeakHandle>,
+    collected: u64,
 }
 
 fn text<'s>(s: &Scope<'s>, value: &str) -> Result<Local<'s>, EvalError> {
@@ -33,16 +34,25 @@ impl BbpEvaluator {
         let end = first + registrations.len();
         let snapshot = {
             let mut registry = self.shared.0.catalog.lock().unwrap();
-            if let Some(snapshot) = registry.versions.get(&end) {
-                snapshot.clone()
+            let collected = self.runtime.heap_stats().collections;
+            if registry.collected != collected {
+                registry.versions.retain(|_, snapshot| snapshot.is_live());
+                registry.collected = collected;
+            }
+            if let Some(snapshot) = registry.versions.get(&end).and_then(|s| s.upgrade().ok()) {
+                snapshot
             } else {
-                let previous = registry.versions.range(..end).next_back();
-                let start = previous.map_or(0, |(cursor, _)| *cursor);
-                if start < first {
+                // A task already roots the prefix it has installed. It can
+                // extend that data even after the cache's other versions die.
+                let previous = if first == 0 {
+                    None
+                } else {
+                    self.cx()?.catalog_snapshot.borrow().clone()
+                };
+                if first != 0 && previous.is_none() {
                     return Err(error("missing native catalog frontier"));
                 }
-                let pending = &registrations[start - first..];
-                for registration in pending {
+                for registration in registrations {
                     self.control.poll()?;
                     self.define_root(match registration {
                         Registration::Root(_, unit, ..) => *unit,
@@ -50,11 +60,11 @@ impl BbpEvaluator {
                     })?;
                 }
                 let snapshot = self.host_scope(|s| {
-                    let mut entries = match previous {
-                        Some((_, previous)) => s.local(previous).map_err(error)?,
+                    let mut entries = match &previous {
+                        Some(previous) => s.local(previous).map_err(error)?,
                         None => s.new_vector(&[]).map_err(error)?,
                     };
-                    for registration in pending {
+                    for registration in registrations {
                         self.control.poll()?;
                         let number = |n: usize| s.primitive(Primitive::Number(n as f64));
                         let boolean = |b| s.primitive(Primitive::Bool(b));
@@ -98,7 +108,7 @@ impl BbpEvaluator {
                     Ok::<_, EvalError>(s.persist(entries))
                 })?;
                 self.runtime.publish(&snapshot).map_err(error)?;
-                registry.versions.insert(end, snapshot.clone());
+                registry.versions.insert(end, snapshot.downgrade());
                 snapshot
             }
         };

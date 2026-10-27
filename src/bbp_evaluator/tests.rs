@@ -2792,6 +2792,131 @@ fn catalog_producers_share_data_without_evaluating_registration_sources() {
 }
 
 #[test]
+fn catalog_snapshots_live_only_as_long_as_the_tasks_using_them() {
+    use crate::compilation_session::Registration;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let parent = shared.evaluator().unwrap();
+    let registration = |unit| {
+        Registration::Root(
+            format!("helper{unit}"),
+            Some(unit),
+            None,
+            false,
+            "fixture:1".into(),
+        )
+    };
+    parent.install_catalog(0, &[registration(0)]).unwrap();
+    let first = parent
+        .cx()
+        .unwrap()
+        .catalog_snapshot
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .downgrade();
+    let child = parent
+        .spawn_producer(&parent.cx().unwrap(), None, |_| {})
+        .unwrap();
+    parent.install_catalog(1, &[registration(1)]).unwrap();
+    shared.0.runtime.collect().unwrap();
+    assert!(first.is_live(), "the lagging task owns its frontier");
+
+    // Drop the only task at the newer frontier. After collection the child
+    // must extend its own older snapshot rather than require a cached root.
+    let second = parent
+        .cx()
+        .unwrap()
+        .catalog_snapshot
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .downgrade();
+    drop(parent);
+    shared.0.runtime.collect().unwrap();
+    assert!(!second.is_live(), "unused frontiers must be collectable");
+    child.install_catalog(1, &[registration(1)]).unwrap();
+    shared.0.runtime.collect().unwrap();
+    assert!(
+        !first.is_live(),
+        "advancing the last task releases its old frontier"
+    );
+    let value = child
+        .evaluate_unit("rt => Reflect.ownKeys(globalThis.__lightCompilerRoots).length")
+        .unwrap();
+    assert_eq!(
+        child.cx().unwrap().values.borrow()[&value.index].view(),
+        ValueView::Number(2.0)
+    );
+    child.release(value).unwrap();
+    let last = child
+        .cx()
+        .unwrap()
+        .catalog_snapshot
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .downgrade();
+    drop(child);
+    shared.0.runtime.collect().unwrap();
+    assert!(
+        !last.is_live(),
+        "the registry must not own the final snapshot"
+    );
+}
+
+#[test]
+fn retained_catalog_bytes_grow_linearly_after_collecting_historical_frontiers() {
+    use crate::compilation_session::Registration;
+    let retained_bytes = |count| {
+        let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+        let task = shared.evaluator().unwrap();
+        for unit in 0..count {
+            task.install_catalog(
+                unit,
+                &[Registration::Root(
+                    format!("helper{unit:03}"),
+                    None,
+                    None,
+                    false,
+                    "fixture:1".into(),
+                )],
+            )
+            .unwrap();
+            if unit % 32 == 0 {
+                shared.0.runtime.collect().unwrap();
+            }
+        }
+        // Keep only catalog data, excluding the ordinary task-owned object,
+        // initializer slots and VM frames from the retained-byte comparison.
+        let snapshot = task
+            .cx()
+            .unwrap()
+            .catalog_snapshot
+            .borrow()
+            .clone()
+            .unwrap();
+        drop(task);
+        shared.0.runtime.collect().unwrap();
+        let retained = shared.0.runtime.heap_stats().last_live_bytes;
+        let last = snapshot.downgrade();
+        drop(snapshot);
+        shared.0.runtime.collect().unwrap();
+        assert!(
+            !last.is_live(),
+            "the weak cache must release all catalog data after the last task"
+        );
+        retained - shared.0.runtime.heap_stats().last_live_bytes
+    };
+    let small = retained_bytes(200);
+    let large = retained_bytes(400);
+    println!("retained catalog bytes at 200/400 registrations: {small}/{large}");
+    assert!(
+        small > 0 && large > small && large <= small * 21 / 10,
+        "retained catalog bytes at 200/400 registrations: {small}/{large}"
+    );
+}
+
+#[test]
 fn catalog_mutable_initializers_run_once_per_task_after_frontier_changes() {
     use crate::compilation_session::Registration;
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
