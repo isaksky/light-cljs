@@ -1964,6 +1964,57 @@ fn structs_follow_record_semantics_dispatch_by_type_identity_and_publish() {
     });
 }
 
+#[test]
+fn core_protocol_callbacks_resume_across_collection_without_entering_key_comparison() {
+    let rt = Runtime::new();
+    let code = compile_function(r#"function f() {
+      const T=__rt.structType('T',__rt.formVector('n'),false);
+      const a=__rt.structNew(T,7), b=__rt.structNew(T,7);
+      let calls=0;
+      __rt.cljCoreResolver((op,x)=> {
+        if(op==='formEquals') return (x,y)=>{calls++; __rt.need(91,1); return __rt.structField(x,'n')===__rt.structField(y,'n');};
+        if(op==='formHash') return x=>{calls++; return 123;};
+        if(op==='cljGet') return (x,k,d)=>{calls++; throw new Error('lookup');};
+        return null;
+      });
+      if(!__rt.formEquals(a,b)||calls!==1)throw new Error('equiv');
+      if(!__rt.formEquals(a,a)||calls!==1)throw new Error('identity shortcut');
+      if(__rt.formHash(a)!==123||calls!==2)throw new Error('hash');
+      // All language collection key/member operations still use frozen form
+      // comparison. Even equal user values retain separate identity keys.
+      let m=__rt.formMap(a,1,b,2), s=__rt.formSet(a,b);
+      if(__rt.cljCount(m)!==2||__rt.cljCount(s)!==2)throw new Error('structural keys');
+      m=__rt.cljAssoc(m,a,3); s=__rt.cljDisj(s,b);
+      if(__rt.cljGet(m,b,null)!==2||!__rt.cljContains(s,a)||__rt.cljContains(s,b))throw new Error('lookup keys');
+      if(__rt.cljCount(__rt.cljDissoc(m,b))!==1||calls!==2)throw new Error('key callbacks');
+      try{__rt.cljGet(a,0,null);throw new Error('not thrown');}
+      catch(e){if(e.message!=='lookup'||calls!==3)throw e;}
+      // A resolver's missing entry falls back to record operations without
+      // redispatch; that path can itself realize a lazy sequence.
+      const R=__rt.structType('R',__rt.formVector('x'),true);
+      if(__rt.cljCount(__rt.structNew(R,1))!==1)throw new Error('fallback');
+      return calls;
+    }"#).unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+    for _ in 0..2 {
+        rt.collect().unwrap();
+    }
+    let request = task.take_producer_requests().pop().unwrap();
+    let ready = rt.root(Primitive::Null);
+    let resumed = rt
+        .complete(request.key(), request.producer(), Completion::Ready(&ready))
+        .unwrap()
+        .into_runnable()
+        .pop()
+        .unwrap();
+    drop(task);
+    let result = thread::spawn(move || complete(resumed.run().unwrap()))
+        .join()
+        .unwrap();
+    assert_eq!(result.view(), ValueView::Number(3.0));
+}
+
 /// The `seq`, `rest` and `next` of a list or vector share its trie
 /// (light-cljs-502) and publish by their own elements: a task-owned object
 /// in the hidden prefix does not stop publication, and one among the

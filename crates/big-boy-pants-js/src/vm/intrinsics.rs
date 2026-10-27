@@ -378,6 +378,12 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
 /// completing (light-cljs-479; [`crate::collections::lazy`]), whatever
 /// result or failure it computed past the request.
 fn form_step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(), Fault> {
+    if instr == Instr::FormOp(FormOp::CljCoreResolver) {
+        let [resolver] = top(state.operands())?;
+        super::dispatch::callee(heap, &resolver)?;
+        state.core_resolver = Some(resolver);
+        return state.replace(1, Value::Null);
+    }
     let n = match instr {
         Instr::NewFormList(n) | Instr::NewFormVector(n) | Instr::NewFormSet(n) => usize::from(n),
         Instr::NewStruct(n) => usize::from(n),
@@ -492,6 +498,7 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::CljNth => Some(clj::nth(heap, &a(0), &a(1), None)?),
         FormOp::CljNthOr => Some(clj::nth(heap, &a(0), &a(1), Some(&a(2)))?),
         FormOp::CljGet => Some(clj::get(heap, &a(0), &a(1), &a(2))?),
+        FormOp::CljGet2 => Some(clj::get(heap, &a(0), &a(1), &Value::Null)?),
         FormOp::CljContains => Some(Value::Bool(clj::contains(heap, &a(0), &a(1))?)),
         FormOp::CljAssoc => Some(clj::assoc(heap, &a(0), &a(1), &a(2))?),
         FormOp::CljDissoc => Some(clj::dissoc(heap, &a(0), &a(1))?),
@@ -612,6 +619,8 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         }
         // Dispatched by `form_op` before reaching here.
         FormOp::CljTruth
+        | FormOp::CljCoreResolver
+        | FormOp::CljGet2
         | FormOp::CljIsZero
         | FormOp::CljIsFalse
         | FormOp::CljReduced

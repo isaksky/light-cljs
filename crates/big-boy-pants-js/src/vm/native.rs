@@ -228,6 +228,8 @@ mod array_mutate;
 mod array_search;
 mod array_sort;
 mod builtin_leaf;
+mod core_protocol;
+pub(crate) use core_protocol::start as start_core_protocol;
 
 pub(crate) use builtin_leaf::try_builtin_leaf;
 mod collator;
@@ -384,6 +386,12 @@ pub(crate) enum Action {
     /// Run the original instruction with its converted operands. This is
     /// one leaf instruction, never interpreter re-entry.
     Resume {
+        instr: Instr,
+        operands: Vec<Value>,
+    },
+    /// Resume a core operation after resolution found no user override.
+    /// Execute the leaf directly, without resolving the same method again.
+    FormFallback {
         instr: Instr,
         operands: Vec<Value>,
     },
@@ -548,6 +556,7 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    CoreProtocol(core_protocol::State),
     Comparison(Box<compare::Diagnostic>),
     BuiltinConstruct(Box<construct::State>),
     CopyProperties(copy_properties::State),
@@ -1064,6 +1073,7 @@ impl Trace for NativeFrame {
                 out.trace(visit);
             }
             NativeState::Realize(realize) => realize.trace(visit),
+            NativeState::CoreProtocol(protocol) => protocol.trace(visit),
             NativeState::Convert { operands, .. }
             | NativeState::MathHypot { operands, .. }
             | NativeState::BigIntParse { operands, .. } => {
@@ -3473,7 +3483,8 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::Return(_)
             | Action::ReturnPair(..)
             | Action::Await(_)
-            | Action::Resume { .. } => {
+            | Action::Resume { .. }
+            | Action::FormFallback { .. } => {
                 return Err("a native frame did not unwind from a failure");
             }
         }
@@ -3968,6 +3979,14 @@ fn apply_action(
             }
             Ok(Flow::Resume(instr))
         }
+        Action::FormFallback { instr, operands } => {
+            state.natives.pop();
+            for value in operands {
+                state.push(value);
+            }
+            super::intrinsics::step(state, heap, instr)?;
+            Ok(Flow::Next)
+        }
         Action::Unwind => Err(Fault::Internal("a native step unwound without a failure")),
     }
 }
@@ -4302,6 +4321,7 @@ impl NativeState {
             NativeState::ProxyCall(proxy) => proxy.step(heap, task, input),
             NativeState::RegExp(regexp) => regexp.step(heap, task, input),
             NativeState::Realize(realize) => realize.step(heap, task, input),
+            NativeState::CoreProtocol(protocol) => protocol.step(input),
             // Locale parsing descends into Intl helpers. Avoid reserving the
             // unrelated step_other temporaries on 64 KiB workers.
             NativeState::StringMethods(method) => method.step(heap, task, input),
@@ -4548,6 +4568,7 @@ impl NativeState {
             NativeState::BuiltinConstruct(_) => unreachable!("constructor dispatched separately"),
             NativeState::Reflect(_) => unreachable!("Reflect dispatched separately"),
             NativeState::Realize(_) => unreachable!("realization dispatched separately"),
+            NativeState::CoreProtocol(_) => unreachable!("core protocol dispatched separately"),
             NativeState::Async(a) => a.step(heap, input),
             NativeState::CopyProperties(_)
             | NativeState::Rest { .. }
@@ -5726,7 +5747,7 @@ impl NativeState {
         match (self, failure) {
             (NativeState::BigIntParse { .. } | NativeState::BigIntFormat(_), _) => Action::Unwind,
             // Dropping the frame gives an unsettled claim up.
-            (NativeState::Realize(_), _) => Action::Unwind,
+            (NativeState::Realize(_) | NativeState::CoreProtocol(_), _) => Action::Unwind,
             (
                 NativeState::Eval(_)
                 | NativeState::Comparison(_)

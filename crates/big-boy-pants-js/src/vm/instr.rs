@@ -1514,11 +1514,15 @@ pub enum FormOp {
     ReaderCollection = 69,
     /// alternating operands → default-comparator sorted map.
     SortedMap = 70,
+    /// resolver → null; install this task's core-protocol resolver.
+    CljCoreResolver = 71,
+    /// coll key → value (`cljGet2`), retaining ILookup's two-argument ABI.
+    CljGet2 = 72,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 71] = [
+    pub const ALL: [FormOp; 73] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1590,6 +1594,8 @@ impl FormOp {
         FormOp::ArrayMap,
         FormOp::ReaderCollection,
         FormOp::SortedMap,
+        FormOp::CljCoreResolver,
+        FormOp::CljGet2,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1601,6 +1607,7 @@ impl FormOp {
     pub const fn arity(self) -> usize {
         match self {
             FormOp::Kind
+            | FormOp::CljCoreResolver
             | FormOp::LiteralMap
             | FormOp::LiteralSet
             | FormOp::ArrayMap
@@ -1641,6 +1648,7 @@ impl FormOp {
             | FormOp::CljRealizeAll
             | FormOp::CljSymbol => 1,
             FormOp::Keyword
+            | FormOp::CljGet2
             | FormOp::Symbol
             | FormOp::Nth
             | FormOp::Dissoc
@@ -1677,6 +1685,8 @@ impl FormOp {
     /// The `__rt` intrinsic name.
     pub const fn intrinsic(self) -> &'static str {
         match self {
+            FormOp::CljCoreResolver => "cljCoreResolver",
+            FormOp::CljGet2 => "cljGet2",
             FormOp::Keyword => "formKeyword",
             FormOp::Symbol => "formSymbol",
             FormOp::Kind => "formKind",

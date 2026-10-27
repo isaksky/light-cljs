@@ -232,6 +232,8 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::CljNth),
     form_op(FormOp::CljNthOr),
     form_op(FormOp::CljGet),
+    form_op(FormOp::CljGet2),
+    form_op(FormOp::CljCoreResolver),
     form_op(FormOp::CljContains),
     form_op(FormOp::CljAssoc),
     form_op(FormOp::CljDissoc),

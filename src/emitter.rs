@@ -3749,14 +3749,17 @@ impl<'a> Emitter<'a> {
         }
         let core = match self.program.exprs[callee.0].kind {
             ExprKind::Keyword(_) if matches!(args.len(), 1 | 2) => {
-                self.output.push_str("__rt.cljGet(");
+                self.output.push_str(if args.len() == 1 {
+                    "__rt.cljGet2("
+                } else {
+                    "__rt.cljGet("
+                });
                 self.value(args[0]);
                 self.output.push_str(", ");
                 self.value(callee);
-                self.output.push_str(", ");
-                match args.get(1) {
-                    Some(&default) => self.value(default),
-                    None => self.output.push_str("null"),
+                if let Some(&default) = args.get(1) {
+                    self.output.push_str(", ");
+                    self.value(default);
                 }
                 self.output.push(')');
                 return true;
@@ -3809,7 +3812,7 @@ impl<'a> Emitter<'a> {
             (C::Cons, 2) => ("", "cljCons", false, ""),
             (C::Nth, 2) => ("", "cljNth", false, ""),
             (C::Nth, 3) => ("", "cljNthOr", false, ""),
-            (C::Get, 2) => ("", "cljGet", true, ""),
+            (C::Get, 2) => ("", "cljGet2", false, ""),
             (C::Get, 3) => ("", "cljGet", false, ""),
             (C::Contains, 2) => ("", "cljContains", false, ""),
             (C::Assoc, 3) => ("", "cljAssoc", false, ""),

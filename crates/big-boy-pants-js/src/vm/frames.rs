@@ -380,6 +380,8 @@ pub(crate) struct VmState {
     /// Pending resumable native operations, innermost last, each above the
     /// call frame that started it (`crate::vm::native`). Traced.
     pub(crate) natives: Vec<NativeFrame>,
+    /// Task-local protocol resolver. Never stored on shared form/type bodies.
+    pub(crate) core_resolver: Option<Value>,
     /// Set once the task's consumer cancellation started running its
     /// finally blocks (`crate::task`, "Cancellation and finally blocks").
     pub(crate) cancelling: bool,
@@ -585,6 +587,7 @@ impl VmState {
             pending_need: None,
             handlers: Vec::new(),
             natives: Vec::new(),
+            core_resolver: None,
             cancelling: false,
         }
     }
@@ -1678,6 +1681,7 @@ impl Trace for VmState {
         }
         self.handlers.iter().for_each(|h| h.trace(visit));
         self.natives.iter().for_each(|n| n.trace(visit));
+        self.core_resolver.iter().for_each(|v| v.trace(visit));
     }
 }
 

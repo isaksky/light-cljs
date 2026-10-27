@@ -340,6 +340,7 @@ const decl = (() => {
   return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, mutableRecord,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
+    coreMethod:resolveCore,
     printer:x=>resolve(methodTable('IPrintWithWriter/-pr-writer',3),x),
     writer:x=>resolve(methodTable('IWriter/-write',2),x),
     flusher:x=>resolve(methodTable('IWriter/-flush',1),x),
@@ -408,7 +409,46 @@ const native = (() => {
     return __rt.cljSymbol(name);
   };
   const seq = x => __rt.cljSeq(x);
-  const get = (m,k,n=null) => __rt.cljGet(m,k,n);
+  const get = function(m,k,n) { return arguments.length === 2 ? __rt.cljGet2(m,k) : __rt.cljGet(m,k,n); };
+  // The engine calls this task-local resolver only for native structs. The
+  // selected entry runs through a rooted native callback frame, so declaration
+  // demand and user methods can yield/park without replaying effects.
+  __rt.cljCoreResolver((op, x) => {
+    const record = __rt.formKind(x) === 'record';
+    const method = (name, n, builtin = record) => decl.coreMethod(name, n, x, builtin);
+    switch (op) {
+      case 'formEquals': return method('IEquiv/-equiv', 2);
+      case 'formHash': return method('IHash/-hash', 1);
+      case 'cljGet2': return method('ILookup/-lookup', 2) ?? (record ? null : () => null);
+      case 'cljGet': return method('ILookup/-lookup', 3) ?? (record ? null : (x,k,d) => d);
+      case 'cljContains': {
+        const contains = method('IAssociative/-contains-key?', 2);
+        if (contains !== null) return contains;
+        if (record) return null;
+        return (x,k) => { const missing = {}; return get(x,k,missing) !== missing; };
+      }
+      case 'cljAssoc': return method('IAssociative/-assoc', 3);
+      case 'cljDissoc': return method('IMap/-dissoc', 2);
+      case 'cljConj': return method('ICollection/-conj', 2);
+      case 'cljDisj': return method('ISet/-disjoin', 2);
+      case 'cljMeta': return method('IMeta/-meta', 1);
+      case 'cljWithMeta': return method('IWithMeta/-with-meta', 2);
+      case 'cljSeq': return method('ISeqable/-seq', 1);
+      case 'cljList': return x => __rt.cljList(__rt.cljSeq(x));
+      case 'cljCount': {
+        const count = method('ICounted/-count', 1);
+        if (count !== null || record) return count;
+        const seq = method('ISeqable/-seq', 1);
+        return seq === null ? null : x => __rt.cljCount(seq(x));
+      }
+      case 'cljFirst': return method('ISeq/-first', 1, false) ?? (x => __rt.cljFirst(__rt.cljSeq(x)));
+      case 'cljRest': return method('ISeq/-rest', 1, false) ?? (x => __rt.cljRest(__rt.cljSeq(x)));
+      case 'cljNext': return method('INext/-next', 1, false) ?? (x => __rt.cljSeq(__rt.cljRest(x)));
+      case 'cljNth': return method('IIndexed/-nth', 2, false) ?? ((x,i) => __rt.cljNth(__rt.cljSeq(x),i));
+      case 'cljNthOr': return method('IIndexed/-nth', 3, false) ?? ((x,i,d) => __rt.cljNthOr(__rt.cljSeq(x),i,d));
+    }
+    return null;
+  });
   // Read `.call` before evaluating nested callback arguments. A custom
   // callable's getter and receiver have the same order as `rf.call(null, ...)`.
   const prepareInvoke = f => {
@@ -1182,6 +1222,7 @@ const native = (() => {
     theNs:name=>{const ns=findNs(name);if(ns===null)throw new Error('No namespace: '+core.str(name));return ns;},
     nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
+    array:(...a)=>a,
     list:(...a)=>list(a), vector:(...a)=>vector(a), hashMap:(...a)=>map(a), hashSet:(...a)=>set(a), set:x=>set(arr(x)), vec:x=>vector(arr(x)),
     arrayMap:(...a)=>{ if (a.length % 2) throw new Error('No value supplied for key'); return arrayMap(a); },
     sortedMap:(...a)=>__rt.formSortedMap(vector(a)),
@@ -1373,7 +1414,9 @@ const native = (() => {
     registerReaderNamespace:name=>createNs(__rt.cljSymbol(val(name))), addReaderDefinitions:()=>null,
     PersistentVector:{EMPTY:__rt.formVector()}, PersistentArrayMap:{EMPTY:arrayMap([])}, List:{EMPTY:__rt.formList()},
     PersistentHashSet:{EMPTY:__rt.formSet()},
-    Keyword:{}, Symbol:{}, PersistentHashMap:{EMPTY:__rt.formMap()}, EmptyList:{},
+    Keyword:{}, Symbol:{}, PersistentHashMap:{EMPTY:__rt.formMap(), fromArrays:(ks,vs)=>{
+      let m=__rt.formMap();for(let i=0;i<ks.length;i++)m=__rt.cljAssoc(m,ks[i],vs[i]);return m;
+    }}, EmptyList:{},
   };
   currentNamespace=createNs(__rt.cljSymbol('cljs.user'));
   Object.defineProperty(core,'currentNs',{

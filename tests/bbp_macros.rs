@@ -4840,6 +4840,147 @@ fn protocol_type_and_record_macros_match_the_legacy_compiler_and_run() {
     }
 }
 
+/// Each row runs direct, aliased and apply call shapes at every pool size.
+/// Cold helpers inside the methods force saved-VM dependency waits.
+#[test]
+fn native_struct_core_protocol_operation_matrix_matches_legacy() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-core-protocols");
+    for (label, declarations, body, expected) in [
+        (
+            "equiv-hash",
+            r#"(deftype T [n] IEquiv (-equiv [_ other] (= n (.-n other))) IHash (-hash [_] (+ 100 n)))"#,
+            r#"(let [a (T. 7) b (T. 7) c (T. 8) e = h hash]
+              [(= a b) (e a c) (apply = [a b]) (= a a) (hash a) (h b) (apply hash [c])])"#,
+            "[true false true true 107 107 108]",
+        ),
+        (
+            "lookup",
+            r#"(deftype T [n] ILookup (-lookup [_ k] (if (= k :n) n :two)) (-lookup [_ k d] (if (= k :n) n d)))"#,
+            r#"(let [x (T. 7) g get k :n] [(get x :n) (get x :x) (get x :x :default) (g x :x) (g x :x false)
+              (apply get [x :x]) (apply get [x :x :fallback]) (:n x) (:x x) (:x x 9) (k x) (apply k [x])])"#,
+            "[7 :two :default :two false :two :fallback 7 :two 9 7 7]",
+        ),
+        (
+            "count-seq",
+            r#"(deftype T [n] ICounted (-count [_] (+ n 10)) ISeqable (-seq [_] (seq [n (inc n)])))"#,
+            r#"(let [x (T. 3) c count s seq f first r rest n next]
+              [(count x) (c x) (apply count [x]) (vec (seq x)) (vec (s x)) (vec (apply seq [x]))
+               (first x) (f x) (vec (rest x)) (vec (r x)) (vec (next x)) (vec (n x))
+               (reduce + x) (reduce + 10 x) (apply reduce [+ x])])"#,
+            "[13 13 13 [3 4] [3 4] [3 4] 3 3 [4] [4] [4] [4] 7 17 7]",
+        ),
+        (
+            "keys-members",
+            r#"(deftype T [n] IEquiv (-equiv [_ other] false) IHash (-hash [_] 17))"#,
+            r#"(let [a (T. 1) b (T. 1) m (hash-map a :a b :b) s (hash-set a b) g get
+                  run (fn [f] (try (f) (catch :default e (.-message e))))]
+              [(run #(count m)) (run #(count s)) (run #(get m a)) (run #(g m b)) (run #(apply get [m a]))
+               (run #(contains? s a)) (run #(identical? (get s b) b)) (run #(count (assoc m a :changed)))
+               (run #(get (assoc m a :changed) a)) (run #(count (dissoc m a))) (run #(count (disj s b)))
+               (run #(= a b)) (run #(= (hash a) (hash b)))])"#,
+            "[2 2 :a :b :a true true 2 :changed 1 1 false true]",
+        ),
+        (
+            "seq-count-fallback",
+            r#"(deftype T [] ISeqable (-seq [_] (seq [1 2 3])))"#,
+            "(let [x (T.)] [(count x) (apply count [x]) (reduce + x) (vec x)])",
+            "[3 3 6 [1 2 3]]",
+        ),
+        (
+            "associative",
+            r#"(deftype T [n] IAssociative (-contains-key? [_ k] (= k :n)) (-assoc [_ k v] [n k v])
+                  ICollection (-conj [_ x] [n x]) IMap (-dissoc [_ k] [n k]) ISet (-disjoin [_ k] [k n])
+                  IIndexed (-nth [_ i] (+ n i)) (-nth [_ i d] [n i d])
+                  IMeta (-meta [_] {:n n}) IWithMeta (-with-meta [_ m] m))"#,
+            r#"(let [x (T. 7) a assoc c conj d dissoc j disj n nth m meta w with-meta p contains?]
+              [(contains? x :n) (p x :x) (apply contains? [x :n])
+               (assoc x :a 1) (a x :b 2) (apply assoc [x :c 3])
+               (conj x 1) (c x 2) (apply conj [x 3])
+               (dissoc x :a) (d x :b) (apply dissoc [x :c])
+               (disj x :a) (j x :b) (apply disj [x :c])
+               (nth x 2) (n x 3) (apply nth [x 4]) (nth x 2 :d) (apply nth [x 3 :e])
+               (meta x) (m x) (apply meta [x]) (with-meta x {:a 1}) (w x {:b 2}) (apply with-meta [x {:c 3}])])"#,
+            "[true false true [7 :a 1] [7 :b 2] [7 :c 3] [7 1] [7 2] [7 3] [7 :a] [7 :b] [7 :c] [:a 7] [:b 7] [:c 7] 9 10 11 [7 2 :d] [7 3 :e] {:n 7} {:n 7} {:n 7} {:a 1} {:b 2} {:c 3}]",
+        ),
+        (
+            "throws",
+            r#"(deftype T [] IEquiv (-equiv [_ _] (throw (js/Error. "equiv"))) IHash (-hash [_] (throw (js/Error. "hash")))
+                  ILookup (-lookup [_ _] (throw (js/Error. "lookup2"))) (-lookup [_ _ _] (throw (js/Error. "lookup3")))
+                  ICounted (-count [_] (throw (js/Error. "count"))) ISeqable (-seq [_] (throw (js/Error. "seq"))))"#,
+            r#"(let [x (T.) y (T.) run (fn [f] (try (f) (catch :default e (.-message e))))]
+              [(run #(= x y)) (run #(hash x)) (run #(get x :k)) (run #(get x :k nil))
+               (run #(count x)) (run #(seq x)) (run #(reduce + x)) (run #(apply get [x :k])) (= x x)])"#,
+            "[\"equiv\" \"hash\" \"lookup2\" \"lookup3\" \"count\" \"seq\" \"seq\" \"lookup2\" true]",
+        ),
+        (
+            "resumption",
+            r#"(defn demanded [x] (inc x))
+              (deftype T [n seen] IEquiv (-equiv [_ other] (.push seen "equiv") (= (demanded n) (inc (.-n other))))
+                IHash (-hash [_] (.push seen "hash") (demanded n))
+                ILookup (-lookup [_ k] (.push seen "lookup") (demanded n)) (-lookup [_ k d] (demanded d))
+                ICounted (-count [_] (.push seen "count") (demanded n))
+                ISeqable (-seq [_] (.push seen "seq") (seq [(demanded n)])))"#,
+            r#"(let [seen (js/Array.) x (T. 7 seen) y (T. 7 seen)]
+              [(= x y) (hash x) (get x :n) (count x) (vec (seq x)) (vec seen)])"#,
+            "[true 8 8 8 [8] [\"equiv\" \"hash\" \"lookup\" \"count\" \"seq\"]]",
+        ),
+    ] {
+        std::fs::write(
+            root.join("protocols.cljs"),
+            format!("(ns protocols) {declarations} (defmacro probe [] (list 'quote {body}))"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("app.cljs"),
+            "(ns app (:require [protocols :refer [probe]])) (js/console.log (pr-str (probe)))",
+        )
+        .unwrap();
+        let mut reference = None;
+        for jobs in [1, 2, 4, 8] {
+            let mut host = MacroHost::new();
+            host.use_native_macros();
+            let mut stats = light_cljs::CompileStats::new();
+            let build = |host: &mut MacroHost, stats: &mut light_cljs::CompileStats| {
+                let (program, _) = analyze_namespace_entry_recorded(
+                    "app",
+                    &[root.path().to_path_buf()],
+                    host,
+                    Default::default(),
+                    &mut Vec::new(),
+                    EntryRecorders {
+                        slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                        stats: Some(stats),
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|e| panic!("{label}, jobs {jobs}: {e}"));
+                emit_js(&program)
+            };
+            let native = build(&mut host, &mut stats);
+            assert_eq!(
+                program_output(&native),
+                format!("{expected}\n"),
+                "{label}, jobs {jobs}"
+            );
+            if let Some(reference) = &reference {
+                assert_eq!(&native, reference, "{label}, jobs {jobs}");
+            } else {
+                reference = Some(native.clone());
+            }
+            if label == "resumption" {
+                assert!(stats.native_helpers.waits > 0, "{stats:?}");
+            }
+            #[cfg(feature = "quickjs")]
+            assert_eq!(
+                native,
+                build(&mut MacroHost::new(), &mut light_cljs::CompileStats::new()),
+                "{label}, QuickJS jobs {jobs}"
+            );
+        }
+    }
+}
+
 #[test]
 fn fixed_native_arithmetic_preserves_coercion_occurrences_and_evaluation_order() {
     for (source, expected) in [

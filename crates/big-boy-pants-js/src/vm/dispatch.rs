@@ -3010,8 +3010,12 @@ fn step_instruction(
         | Instr::NewFormVector(_)
         | Instr::NewFormSet(_)
         | Instr::NewStruct(_)
-        | Instr::NewFormMap(_)
-        | Instr::FormOp(_) => intrinsics::step(state, heap, instr)?,
+        | Instr::NewFormMap(_) => intrinsics::step(state, heap, instr)?,
+        Instr::FormOp(op) => {
+            if !native::start_core_protocol(state, heap, op)? {
+                intrinsics::step(state, heap, instr)?;
+            }
+        }
         Instr::DefineClassMethod | Instr::DefineClassGetter | Instr::DefineClassSetter => {
             return define_class_element(state, heap, instr);
         }
