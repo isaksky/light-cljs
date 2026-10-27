@@ -986,3 +986,16 @@ light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.c
 These are failed-build coverage probes, excluded from successful build timing.
 The gap is already tracked by light-cljs-535. Only V8 is measured for Penpot;
 there is no native Penpot speed or output-identity comparison.
+
+### Correctness checks
+
+The first generated jobs-1 pair emits byte-identical JavaScript, SHA-256
+`02e9caa87ea83816ed71f2427162fabcf97bd7e2a534831691b3045fab7f4ff2`,
+and both applications print the independent Babashka oracle's `484264` for
+input 42, three iterations. Their source maps differ: V8
+`42fb37caabe52643291c4b864d52242a2321923bf32bb2853817ae8ec991140c`,
+native `7fab5fe22ba4771ce98aa15269b54d8bd8f95dfabf3b4d6d671bc1dd31e3b683`.
+The parsed maps have identical `version`, `file`, `sources` (570), `names`
+(41,923) and `sourcesContent`; only `mappings` differs (3,418,912 V8 characters,
+3,417,969 native characters). This is an output-identity finding, separate
+from successful application execution and from elapsed build time.
