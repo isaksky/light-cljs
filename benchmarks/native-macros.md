@@ -753,32 +753,43 @@ three existing engine-category allowances. The preceding full-suite results
 cover unchanged lowering paths; the property-assignment eligibility change
 was verified by these focused cases.
 
-The review-fix same-commit release pair is native-only SHA-256
-`33099d5061186bc0…`, default V8 `74cb5234505da259…`, both at `701a763f`.
-Both variants were freshly built with the commands above, with
-`cargo clean --release -p big-boy-pants-js` before the native build.
-The unchanged five-round harness verifies identical Node output:
+The final integrated same-commit release pair is native-only SHA-256
+`2411fe939ceeb648…`, default V8 `fbf1cefdc45a2546…`, both at `79973136`
+on master `ae4373fd`. Both variants were freshly built with the commands
+above, after `cargo clean --release -p light-cljs`, with
+`cargo clean --release -p big-boy-pants-js` before the native build. V8 uses
+`LIGHT_CLJS_V8_CACHE=require`; these are measured V8 timings, not historical
+references. The unchanged harness verifies identical Node output:
 
 ```sh
-bb benchmarks/native-macros-k.bb target/fix4-protocol-701a763f \
-  --workload protocol --runs 5 --n 0,100,400,1600,6400 \
-  v8=target/fix4-v8 native=target/fix4-native
+bb benchmarks/native-macros-k.bb target/fix4-protocol-integrated-9 \
+  --workload protocol --runs 9 --n 0,100,400,1600,6400 \
+  v8=target/fix4-integrated-v8 native=target/fix4-integrated-native
 ```
 
-All own builds/tests had finished. After waiting for load to fall, the host's
-one-minute load was 3.05 at launch and 3.27 afterward; one peer's single-thread
-effect-lane stress test still overlapped. This is not an idle-host result.
-Analysis time, median [min–max] of five, ms:
+All own builds/tests had finished. After waiting for load to fall, an initial
+five-round run started at one-minute load 2.55 and ended at 2.71; a peer
+compiler process still overlapped. Its k values were 56.7/6.1/9.3/14.9.
+The n=100 ratio is unstable: its V8 medians are 28.8 ms at n=0 and 29.1 ms
+at n=100, a denominator of only 0.3 ms. At n=0/400, V8 measures 28.8/37.5 ms
+and native 47.2/100.1 ms (k=6.1).
+
+The nine-round repeat on exactly the same binaries started at load 2.98 and
+ended at 4.27; peers remained active. Neither run is claimed as an idle-host
+or fully serialized measurement. Analysis time, median [min–max] of nine, ms:
 
 | `n` | fresh V8 | native | k |
 | ---: | --- | --- | ---: |
-| 0 | 25.1 [24.5–26.9] | 42.2 [41.2–44.2] | – |
-| 100 | 33.0 [28.7–34.4] | 69.5 [64.3–73.5] | 3.5 |
-| 400 | 33.8 [32.4–37.7] | 93.2 [90.3–100.7] | 5.9 |
-| 1,600 | 44.2 [40.6–46.9] | 211.4 [202.3–216.1] | 8.9 |
-| 6,400 | 68.6 [66.0–74.6] | 645.6 [642.7–661.3] | 13.9 |
+| 0 | 27.6 [24.3–33.6] | 44.5 [40.2–56.4] | – |
+| 100 | 31.2 [28.4–33.4] | 70.1 [61.5–76.5] | 7.1 |
+| 400 | 35.7 [31.8–36.9] | 99.0 [88.2–113.1] | 6.7 |
+| 1,600 | 45.8 [40.5–53.2] | 206.1 [192.4–220.7] | 8.9 |
+| 6,400 | 72.3 [65.9–94.9] | 646.5 [636.5–727.9] | 13.5 |
 
-The target remains missed through n=1,600. The before/after optimization
+Both integrated runs miss the target at n=400 and n=1,600; n=100 remains
+sensitive to startup variation. Before integration, the five-round review-fix
+pair at `701a763f` measured k=3.5/5.9/8.9/13.9 at load 3.05–3.27 with a
+single peer stress test active. The before/after optimization
 comparison at `47cb9998` above remains the baseline evidence; the residual
 costs remain assigned to light-cljs-515, without another follow-up.
 
@@ -836,27 +847,27 @@ and formatting pass. The base delta touches only `bbp_runtime.js` and its
 feature-gated fixtures: broader default/QuickJS-only and engine suite results
 above are reused for their unchanged execution paths.
 
-Fresh native `/usr/bin/sample PID 3 1 -file ...` profiles at `701a763f` use the same
-256-call n=1,600 and 64-call n=6,400 inputs as above. Node output matches
-the earlier profiles. Peer suites were active (host load approximately
-8.5–9.2); these are CPU sample distributions, separate from latency timing.
-There are 1,879/2,115 main-thread samples. Top-of-stack counts collapsed by
-symbol:
+Fresh native `/usr/bin/sample PID 3 1 -file ...` profiles use the same
+integrated `79973136` binary and the 256-call n=1,600 and 64-call n=6,400
+inputs above. Node output matches the earlier profiles. Peers were active
+(one-minute load 8.04 before and 8.98 afterward); these are CPU sample
+distributions, separate from latency timing. There are 2,101/2,133 main-thread
+samples. Top-of-stack counts collapsed by symbol:
 
 | Frame | n=1,600 | n=6,400 |
 | --- | ---: | ---: |
-| `execute_budgeted` | 511 | 567 |
-| `Fault` drop glue | 93 | 120 |
-| `step_instruction` | 59 | 82 |
-| SipHash `write` | 65 | 80 |
-| `Value` drop glue | 34 | 51 |
-| heap `Directory::slot` | 36 | 56 |
-| `lookup_cursor` | 45 | 54 |
-| `start_conversion` | 50 | 42 |
-| `enter_constructor` | 40 | 41 |
-| Proxy `Operations::step` | 41 | 42 |
-| `property_read_step` | 21 | 23 |
-| VM callable `resolve` | 23 | 22 |
+| `execute_budgeted` | 573 | 605 |
+| `Fault` drop glue | 100 | 120 |
+| `step_instruction` | 81 | 71 |
+| SipHash `write` | 72 | 65 |
+| `Value` drop glue | 58 | 43 |
+| heap `Directory::slot` | 42 | 45 |
+| `lookup_cursor` | 46 | 47 |
+| `start_conversion` | 44 | 48 |
+| `enter_constructor` | 46 | 52 |
+| Proxy `Operations::step` | 48 | 49 |
+| `property_read_step` | 20 | 34 |
+| VM callable `resolve` | 39 | 33 |
 
 The residual interpreter, value/drop, hashing and property-resolution work
 remains the scope of the existing focused follow-up light-cljs-515.
