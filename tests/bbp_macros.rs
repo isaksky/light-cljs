@@ -4281,6 +4281,13 @@ fn native_core_reads_observe_replacements_in_demanded_helpers() {
         ),
         (
             r#"(declare install)
+               (defmacro m [] (let [before (/ 8 2)] (install) [before (/ 8 2)]))
+               (defn install [] (set! cljs.core// (fn [_ _] 42)))
+               (js/console.log (pr-str (m)))"#,
+            "[4 42]\n",
+        ),
+        (
+            r#"(declare install)
                (defmacro m [] (let [before (even? 2)] (install) [before (even? 2)]))
                (defmacro installer [] '(defn install [] (set! cljs.core/even? (fn [_] false))))
                (installer)
@@ -4376,8 +4383,14 @@ fn native_generated_names_do_not_capture_raw_javascript() {
             "[true \"undefined\" \"undefined\"]\n",
         ),
         (
+            r#"(defmacro m [] [(if false (cycle [1]) :unused)
+                   (js* "typeof nativeCoreGetter$cycle")])
+               (js/console.log (pr-str (m)))"#,
+            "[:unused \"undefined\"]\n",
+        ),
+        (
             r#"(defprotocol P (p [x]))
-               (deftype T [] P (p [_] ((fn [] (js* "typeof receiver0")))))
+               (deftype T [] P (p [_] ((fn [] (js* "typeof receiver2")))))
                (defmacro m [] (p (T.)))
                (js/console.log (m))"#,
             "undefined\n",

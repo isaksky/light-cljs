@@ -652,7 +652,7 @@ impl SharedCatalog {
                 children,
             } = &node.kind
             {
-                for pair in children.chunks_exact(2) {
+                for pair in children.as_chunks::<2>().0 {
                     if pair
                         .iter()
                         .all(|id| matches!(syntax.nodes[id.0].kind, NodeKind::Symbol))
@@ -677,7 +677,10 @@ impl SharedCatalog {
                 id = target;
             }
             let name = spelling(id);
-            let name = name.rsplit('/').next().unwrap_or(name);
+            let name = name
+                .split_once('/')
+                .filter(|(namespace, _)| !namespace.is_empty())
+                .map_or(name, |(_, member)| member);
             let name = name.strip_prefix("cljs.core.").unwrap_or(name);
             if let Some(core) = crate::CoreFnId::resolve(name) {
                 replaced.insert(core.runtime_name());
