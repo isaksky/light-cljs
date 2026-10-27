@@ -83,7 +83,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
     ) && form::kind(heap, &form::unwrap(heap, receiver.clone()))
         == Some(FormKind::Lazy);
     if through_lazy {
-        receiver = match form::realized_head(
+        receiver = match form::protocol_head(
             heap,
             receiver,
             &mut crate::collections::lazy::Visited::default(),

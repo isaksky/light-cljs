@@ -5013,6 +5013,19 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
             "[1 1 1 [1 2 3] [1 2 3] [1 2 3] 3 3 3 [1 2 3] 6 16 2 3 :nf 2 2]",
         ),
         (
+            "lazy-user-record",
+            r#"(defn demanded [x] (inc x)) (defrecord R [n])
+               (extend-type R ICounted (-count [_] 99) ISeqable (-seq [_] (seq [(demanded 6) 8])))"#,
+            r#"(let [make (fn [] (lazy-seq (R. 3))) f first s seq c count v vec r reduce]
+              [(count (R. 3)) (first (make)) (f (make)) (apply first [(make)])
+               (vec (seq (make))) (vec (s (make))) (vec (apply seq [(make)]))
+               (count (make)) (c (make)) (apply count [(make)])
+               (vec (make)) (v (make)) (apply vec [(make)])
+               (reduce + (make)) (r + 10 (make)) (apply reduce [+ 0 (make)])
+               (vec (next (make))) (vec (rest (make)))])"#,
+            "[99 7 7 7 [7 8] [7 8] [7 8] 2 2 2 [7 8] [7 8] [7 8] 15 25 15 [8] [8]]",
+        ),
+        (
             "lazy-user-sequence-order-and-throws",
             r#"(defn demanded [x] (inc x))
                (deftype T [seen] ISeqable (-seq [this] (.push seen "seq") this)

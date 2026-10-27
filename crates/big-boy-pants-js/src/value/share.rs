@@ -483,6 +483,7 @@ enum Children {
         cell: Arc<crate::collections::lazy::LazyCell>,
         realized: bool,
         edge: Value,
+        record: Option<Value>,
         meta: Option<Value>,
     },
     Native(Vec<ObjectId>),
@@ -570,6 +571,7 @@ impl Children {
             Children::Lazy {
                 realized,
                 edge,
+                record,
                 meta,
                 ..
             } => {
@@ -579,6 +581,9 @@ impl Children {
                     Step::LazyThunk
                 };
                 f(step, edge);
+                if let Some(record) = record {
+                    f(Step::LazyValue, record);
+                }
                 if let Some(meta) = meta {
                     f(Step::Metadata, meta);
                 }
@@ -627,11 +632,12 @@ fn inspect(object: &HeapObject, known: bool) -> Node {
             // (light-cljs-479).
             HeapObject::Form(form) => match form.lazy_cell() {
                 Some(cell) => {
-                    let (realized, edge) = cell.publication_edge();
+                    let (realized, edge, record) = cell.publication_edge();
                     Children::Lazy {
                         cell: cell.clone(),
                         realized,
                         edge,
+                        record,
                         meta: form.meta().cloned(),
                     }
                 }

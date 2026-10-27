@@ -2028,10 +2028,9 @@ fn core_protocol_callbacks_resume_across_collection_without_entering_key_compari
 
 #[test]
 fn lazy_struct_sequence_callbacks_survive_collection_and_small_stack_resumption() {
-    let rt = Runtime::new();
     let code = compile_function(
-        r#"function f() {
-      const T=__rt.structType('T',__rt.formVector(),false);
+        r#"function f(record) {
+      const T=__rt.structType('T',__rt.formVector('n'),record);
       let calls=0;
       __rt.cljCoreResolver((op,x,lazy)=>{
         __rt.need(90,1);
@@ -2041,38 +2040,69 @@ fn lazy_struct_sequence_callbacks_survive_collection_and_small_stack_resumption(
         if(op==='cljFirst')return ()=>__rt.cljFirst(__rt.cljSeq(x));
         return null;
       });
-      const s=__rt.lazySeq(()=>{__rt.need(91,1);return __rt.structNew(T);});
+      const s=__rt.lazySeq(()=>{__rt.need(91,1);return __rt.structNew(T,3);});
       if(__rt.cljFirst(s)!==7)throw new Error('lazy first');
+      __rt.need(93,1);
       if(__rt.cljCount(__rt.cljSeq(s))!==2)throw new Error('lazy seq');
+      if(record){
+        const entries=__rt.formList(__rt.formVector(__rt.formKeyword(null,'n'),3));
+        if(!__rt.formEquals(s,entries)||__rt.formHash(s)!==__rt.formHash(entries))throw new Error('structural record seq');
+        if(__rt.cljGet(__rt.formMap(s,11),entries,null)!==11)throw new Error('structural lazy key');
+      }
       return calls;
     }"#,
     )
     .unwrap();
-    let mut task = rt.spawn(&code, &[]).unwrap();
-    let mut outcome = task.run().unwrap();
-    for dependency in [91, 90, 92] {
-        assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
-        rt.collect().unwrap();
-        let request = task.take_producer_requests().pop().unwrap();
-        assert_eq!(request.key().dependency(), DependencyId::new(dependency));
-        let ready = rt.root(Primitive::Null);
-        let resumed = rt
-            .complete(request.key(), request.producer(), Completion::Ready(&ready))
-            .unwrap()
-            .into_runnable()
-            .pop()
-            .unwrap();
-        (task, outcome) = thread::Builder::new()
-            .stack_size(64 * 1024)
-            .spawn(move || {
-                let outcome = resumed.run().unwrap();
-                (resumed, outcome)
-            })
-            .unwrap()
-            .join()
-            .unwrap();
+    for record in [false, true] {
+        let rt = Runtime::new();
+        let flag = rt.root(Primitive::Bool(record));
+        let mut task = rt.spawn(&code, &[&flag]).unwrap();
+        let mut outcome = task.run().unwrap();
+        for dependency in [91, 90, 92, 93] {
+            assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
+            rt.collect().unwrap();
+            let request = task.take_producer_requests().pop().unwrap();
+            assert_eq!(request.key().dependency(), DependencyId::new(dependency));
+            let ready = rt.root(Primitive::Null);
+            let resumed = rt
+                .complete(request.key(), request.producer(), Completion::Ready(&ready))
+                .unwrap()
+                .into_runnable()
+                .pop()
+                .unwrap();
+            (task, outcome) = thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let outcome = resumed.run().unwrap();
+                    (resumed, outcome)
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+        }
+        assert_eq!(complete(outcome).view(), ValueView::Number(2.0));
     }
-    assert_eq!(complete(outcome).view(), ValueView::Number(2.0));
+}
+
+#[test]
+fn realized_lazy_records_publish_the_receiver_retained_for_protocol_dispatch() {
+    let rt = Runtime::new();
+    let lazy = call(
+        &rt,
+        r#"function f(){
+      const R=__rt.structType('R',__rt.formVector('n'),true);
+      const r=__rt.formWithMeta(__rt.structNew(R,3),__rt.formMap('hidden',{}));
+      const s=__rt.lazySeq(()=>r);
+      __rt.cljSeq(s);
+      return s;
+    }"#,
+        &[],
+    );
+    let PublishError::NotShareable { path, found, .. } = rt.publish(&lazy).unwrap_err() else {
+        panic!("published a lazy record retaining task-owned metadata");
+    };
+    assert!(path.to_string().contains(".realized.meta"), "{path}");
+    assert_eq!(found, "object");
 }
 
 #[test]

@@ -560,7 +560,9 @@ realization retains that resolution instead of running it again. Two-argument
 lookup has its own `cljGet2` selector. Sequence operations also resolve a struct
 exposed by a realized lazy wrapper; the resolver receives the realized receiver
 and a flag identifying that wrapper, while its callback retains the original
-operands. Persistent form comparison and hashing,
+operands. A realized record keeps its original receiver as well as its built-in
+sequence in the cell; both are traced and checked for publication. Structural
+operations read the built-in sequence and never resolve a protocol. Persistent form comparison and hashing,
 including map keys, set members and stored values, remain structural and never
 call the resolver; protocol and dependency tables also never call it.
 Sorted maps, shared seq views of lists, and the compiler `Datum` bridge

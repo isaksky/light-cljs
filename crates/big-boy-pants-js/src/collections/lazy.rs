@@ -88,6 +88,11 @@
 //! realizing it is a catchable `RangeError`, and equality takes the pairs
 //! it meets again as equal.
 //!
+//! A record result also retains its original receiver in the cell, reusing
+//! the thunk slot after realization. Task-local language protocol dispatch
+//! follows that receiver; structural operations still see the built-in
+//! sequence. Collection traces both values and publication checks both.
+//!
 //! A clj operation over a sequence of `k` lazy cells realizes them one at a
 //! time, executing again from its start after each. `count`, `cljList` and
 //! `cljRealizeAll`, which read their sequence to its end, realize the rest of
@@ -163,7 +168,9 @@ struct Failed {
 
 #[derive(Debug)]
 struct LazyState {
-    /// The thunk, until a realization succeeds.
+    /// The thunk until realization; afterward, the original record when
+    /// its structural sequence was cached. Protocol dispatch needs the
+    /// record itself, while internal comparison uses the cached sequence.
     thunk: Value,
     /// The realizing task and its attempt number.
     realizer: Option<(TaskId, u64)>,
@@ -285,6 +292,17 @@ impl LazyCell {
         self.realized.get()
     }
 
+    /// The realized receiver for task-local language protocol dispatch.
+    pub(crate) fn protocol_value(&self) -> Option<Value> {
+        let value = self.realized.get()?;
+        let state = lock(&self.state);
+        Some(if state.thunk == Value::Undefined {
+            value.clone()
+        } else {
+            state.thunk.clone()
+        })
+    }
+
     /// Claim the cell for `task`, or report why it cannot. `waited` is the
     /// attempt this reader parked on, if it did: a failure of that attempt
     /// is reported to it even if a later attempt has ended since.
@@ -374,6 +392,18 @@ impl LazyCell {
         outcome: Option<Result<Value, LazyFailure>>,
         checked: bool,
     ) -> Result<(), Unsettled> {
+        self.settle_record(attempt, outcome, checked, None)
+    }
+
+    /// Settle with the original record as well as its structural sequence.
+    /// Both values must have passed the publication check when `checked`.
+    pub(crate) fn settle_record(
+        &self,
+        attempt: u64,
+        outcome: Option<Result<Value, LazyFailure>>,
+        checked: bool,
+        record: Option<Value>,
+    ) -> Result<(), Unsettled> {
         let (waiters, waits) = {
             let mut state = lock(&self.state);
             if state.realizer.map(|(_, a)| a) != Some(attempt) {
@@ -388,7 +418,7 @@ impl LazyCell {
                 Some(Ok(value)) => {
                     // Under the lock: a reader's recheck cannot miss it.
                     let _ = self.realized.set(value);
-                    state.thunk = Value::Undefined;
+                    state.thunk = record.unwrap_or(Value::Undefined);
                 }
                 Some(Err(failure)) if !waiters.is_empty() => state.failures.push(Failed {
                     attempt,
@@ -434,12 +464,17 @@ impl Trace for LazyCell {
 
 impl LazyCell {
     /// The value the publication walk descends into, read under the lock:
-    /// whether it is realized, and the realized value or the thunk.
-    pub(crate) fn publication_edge(&self) -> (bool, Value) {
+    /// whether it is realized, the structural value or thunk, and any
+    /// original record retained for protocol dispatch.
+    pub(crate) fn publication_edge(&self) -> (bool, Value, Option<Value>) {
         let state = lock(&self.state);
         match self.realized.get() {
-            Some(v) => (true, v.clone()),
-            None => (false, state.thunk.clone()),
+            Some(v) => (
+                true,
+                v.clone(),
+                (state.thunk != Value::Undefined).then(|| state.thunk.clone()),
+            ),
+            None => (false, state.thunk.clone(), None),
         }
     }
 }

@@ -1681,6 +1681,25 @@ pub(crate) fn realized_head(
     v: Value,
     visited: &mut lazy::Visited,
 ) -> Result<Value, SeqError> {
+    realized_head_with(heap, v, visited, false)
+}
+
+/// Follow lazy cells for language protocol dispatch, retaining record
+/// receivers that structural traversal sees as their built-in sequences.
+pub(crate) fn protocol_head(
+    heap: &Heap,
+    v: Value,
+    visited: &mut lazy::Visited,
+) -> Result<Value, SeqError> {
+    realized_head_with(heap, v, visited, true)
+}
+
+fn realized_head_with(
+    heap: &Heap,
+    v: Value,
+    visited: &mut lazy::Visited,
+    protocols: bool,
+) -> Result<Value, SeqError> {
     let mut v = v;
     loop {
         let (u, f) = resolve(heap, v);
@@ -1690,8 +1709,13 @@ pub(crate) fn realized_head(
         if !visited.enter(cell) {
             return Err(SeqError::Cycle);
         }
-        match cell.realized() {
-            Some(r) => v = r.clone(),
+        let value = if protocols {
+            cell.protocol_value()
+        } else {
+            cell.realized().cloned()
+        };
+        match value {
+            Some(r) => v = r,
             None => return Err(SeqError::Pending(u)),
         }
     }

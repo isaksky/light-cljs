@@ -187,6 +187,9 @@ impl Realize {
             let Some(attempt) = self.attempt else {
                 return Err(Fault::Internal("lazy realization result without a claim"));
             };
+            let record = form::form_object(heap, &value)
+                .is_some_and(|f| f.record().is_some())
+                .then(|| value.clone());
             let value = match clj::realized_seq(heap, &value) {
                 Ok(value) => value,
                 Err(e) => {
@@ -199,14 +202,23 @@ impl Realize {
             let mut checked = false;
             loop {
                 if self.cell.is_shared() && !checked {
-                    if let Err(e) = share::check(heap, &value) {
+                    let check = share::check(heap, &value).and_then(|_| match &record {
+                        Some(record) => share::check(heap, record),
+                        None => Ok(()),
+                    });
+                    if let Err(e) = check {
                         return Err(self.fail(Fault::TypeError(format!(
                             "a shared lazy sequence realized a value it cannot share: {e}"
                         ))));
                     }
                     checked = true;
                 }
-                match self.cell.settle(attempt, Some(Ok(value.clone())), checked) {
+                match self.cell.settle_record(
+                    attempt,
+                    Some(Ok(value.clone())),
+                    checked,
+                    record.clone(),
+                ) {
                     Ok(()) => break,
                     // Published meanwhile: check, then install.
                     Err(_) => checked = false,
