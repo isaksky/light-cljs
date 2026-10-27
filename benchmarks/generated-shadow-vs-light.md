@@ -810,3 +810,31 @@ Each sample starts a fresh process. The project's `.light-cljs`,
 `.compare-cache` and `out/light` are removed before every run. Revisions
 alternate within each condition, baseline first in rounds one and three,
 current first in round two. Generated conditions precede Penpot in each round.
+
+### Independent statistics and source-map comparison
+
+Three runs per cell, independent medians; wall range in brackets, CPU time in
+seconds and RSS in decimal GB. `maps` includes embedded source content. Each
+load cell gives the three pre-run 1/5/15-minute load averages. Both revisions
+use the identical single-file command above, with only the named flags added.
+
+| Revision | Flags | Wall, s | User CPU, s | Peak RSS, GB | Pre-run loads, rounds 1; 2; 3 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `ac88cb2` | none | 23.10 [22.99–23.42] | 24.03 | 1.188 | 2.42/2.25/2.23; 2.20/2.25/2.24; 2.52/2.45/2.33 |
+| `045c5926` | none | 104.55 [103.75–106.44] | 104.63 | 1.081 | 1.97/2.16/2.20; 2.02/2.24/2.24; 2.22/2.38/2.31 |
+| `ac88cb2` | stats | 23.40 [23.16–23.46] | 24.30 | 1.202 | 2.49/2.29/2.24; 2.52/2.32/2.26; 2.34/2.37/2.31 |
+| `045c5926` | stats | 105.01 [104.33–106.06] | 105.09 | 1.101 | 2.55/2.32/2.25; 2.10/2.21/2.23; 1.94/2.28/2.28 |
+| `ac88cb2` | maps | 23.41 [23.27–23.67] | 24.31 | 1.244 | 2.33/2.28/2.24; 2.58/2.39/2.29; 2.18/2.24/2.25 |
+| `045c5926` | maps | 105.02 [104.53–106.58] | 105.07 | 1.167 | 2.61/2.34/2.27; 2.35/2.29/2.25; 2.22/2.24/2.25 |
+| `ac88cb2` | stats, maps | 23.50 [23.38–23.91] | 24.45 | 1.254 | 2.54/2.37/2.28; 1.95/2.29/2.27; 2.25/2.27/2.26 |
+| `045c5926` | stats, maps | 105.73 [105.00–106.13] | 105.78 | 1.176 | 2.09/2.27/2.25; 2.67/2.42/2.30; 2.19/2.24/2.25 |
+
+The same-command slowdown is 4.50–4.53x across these conditions. Neither the
+flag differences nor the release/single-file command difference explains it.
+One exploratory release+stats pair (excluded from these three-run cells) took
+23.45 / 106.54 s. All 50 original-matrix processes, including that pair and
+[Penpot](penpot-investigation.md#default-v8-regression-check-october-27-2026),
+succeeded; every generated output printed the independent oracle's `484264`.
+Each repeated revision/condition produced byte-identical JavaScript. All
+single-file outputs passed Node syntax checking. These checks establish
+execution/output repeatability, not source-map correctness.

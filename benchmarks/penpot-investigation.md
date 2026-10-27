@@ -1720,16 +1720,28 @@ are in `results/compiler-2026-10-16/penpot-phase13/`.
 
 ## Default V8 regression check (October 27, 2026)
 
-The slowdown reproduces without statistics or source maps. First quiet-machine
-pair (one run, not a median), original `benchmarks/penpot.bb` main-none command:
+The slowdown reproduces without statistics or source maps: **71.76 / 21.18 s =
+3.39x slower** with the original `benchmarks/penpot.bb` main-none command.
+Three quiet-machine runs per cell, independent medians, wall range in brackets;
+CPU time is seconds and RSS is decimal GB. `maps` includes source content.
 
-| Revision | Wall | Peak RSS, GB | Load before, 1/5/15 min |
-| --- | ---: | ---: | --- |
-| `b51af6a656c31554ca80a823f0922054355b0a18` (October 17 promotion) | 21.40 s | 0.999 | 2.37/2.29/2.25 |
-| `045c592656afc9d623ff73530847c782f6905099` | 72.52 s | 0.843 | 2.11/2.24/2.23 |
+| Revision | Flags | Wall, s | User CPU, s | Peak RSS, GB | Pre-run loads (1/5/15 min), rounds 1; 2; 3 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `b51af6a6` (October 17 promotion) | none | 21.18 [21.17–21.40] | 25.04 | 0.978 | 2.37/2.29/2.25; 2.14/2.27/2.26; 2.27/2.29/2.26 |
+| `045c5926` | none | 71.76 [71.55–72.52] | 73.81 | 0.843 | 2.11/2.24/2.23; 2.08/2.28/2.26; 2.04/2.23/2.24 |
+| `045c5926` | stats | 71.51 [71.14–72.79] | 73.62 | 0.847 | 2.25/2.26/2.25; 1.87/2.21/2.24; 2.52/2.28/2.26 |
+| `b51af6a6` | maps | 21.85 [21.69–21.85] | 25.63 | 1.221 | 2.62/2.37/2.28; 2.02/2.19/2.23; 3.02/2.47/2.33 |
+| `045c5926` | maps | 72.41 [71.87–72.72] | 74.45 | 1.058 | 2.22/2.29/2.26; 2.29/2.23/2.24; 2.85/2.47/2.33 |
+| `045c5926` | stats, maps | 72.31 [71.79–73.23] | 74.44 | 1.075 | 2.30/2.31/2.26; 1.95/2.16/2.21; 2.49/2.43/2.33 |
+
+Maps-enabled builds regress 3.31x with identical flags at both revisions.
+The statistics/map differences cannot explain either slowdown. Every repeated
+revision/condition produced byte-identical JavaScript.
 
 The compiler binaries were rebuilt at both revisions with default release
-features. [The generated-project check](generated-shadow-vs-light.md#default-v8-regression-check-october-27-2026)
+features: `b51af6a656c31554ca80a823f0922054355b0a18` and
+`045c592656afc9d623ff73530847c782f6905099`.
+[The generated-project check](generated-shadow-vs-light.md#default-v8-regression-check-october-27-2026)
 records the shared machine, toolchain and build isolation. The five read-only
 Penpot roots still match the October 17 fingerprint: 996 files,
 `b36daf80aa370322598f53f5bf776391036ab70cf993835793daa1285015ba48`.
