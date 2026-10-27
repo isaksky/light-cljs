@@ -4256,6 +4256,22 @@ fn native_core_bindings_preserve_with_redefs_and_restoration() {
 }
 
 #[test]
+fn native_core_property_writes_preserve_call_overrides() {
+    for source in [
+        r#"(defmacro m [] (let [saved (.-call cljs.core/+)]
+             (try (set! (.-call cljs.core/+) (fn [_ a b] 42)) (+ 1 2)
+               (finally (set! (.-call cljs.core/+) saved)))))
+           (js/console.log (m))"#,
+        r#"(declare install)
+           (defmacro m [] (install) (+ 1 2))
+           (defn install [] (set! (.-call cljs.core/+) (fn [_ a b] 42)))
+           (js/console.log (m))"#,
+    ] {
+        assert_native_matches_legacy(source, "42\n");
+    }
+}
+
+#[test]
 fn native_core_reads_observe_replacements_in_demanded_helpers() {
     for (source, expected) in [
         (

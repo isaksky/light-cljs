@@ -477,9 +477,16 @@ fn emit_js_mode(
                     }
                     _ => Vec::new(),
                 })
-                .filter_map(|target| match program.exprs[target.0].kind {
-                    ExprKind::CoreFn(core) => Some(core.runtime_name()),
-                    _ => None,
+                .filter_map(|mut target| {
+                    while let ExprKind::Property { receiver, .. }
+                    | ExprKind::JsIndex { receiver, .. } = program.exprs[target.0].kind
+                    {
+                        target = receiver;
+                    }
+                    match program.exprs[target.0].kind {
+                        ExprKind::CoreFn(core) => Some(core.runtime_name()),
+                        _ => None,
+                    }
                 })
                 .collect();
             emitter

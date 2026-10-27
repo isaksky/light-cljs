@@ -719,6 +719,17 @@ impl SharedCatalog {
         }
         let mut target = |mut id: NodeId| {
             loop {
+                if let NodeKind::Collection {
+                    kind: CollectionKind::List,
+                    children,
+                } = &syntax.nodes[id.0].kind
+                    && children.len() > 1
+                    && (spelling(children[0]).starts_with(".-")
+                        || matches!(spelling(children[0]), "." | "aget" | "cljs.core/aget"))
+                {
+                    id = children[1];
+                    continue;
+                }
                 match syntax.nodes[id.0].kind {
                     NodeKind::Prefix {
                         kind: PrefixKind::Unquote | PrefixKind::UnquoteSplicing,
@@ -743,6 +754,7 @@ impl SharedCatalog {
                 .filter(|(namespace, _)| !namespace.is_empty())
                 .map_or(name, |(_, member)| member);
             let name = name.strip_prefix("cljs.core.").unwrap_or(name);
+            let name = name.split_once('.').map_or(name, |(binding, _)| binding);
             if let Some(core) = crate::CoreFnId::resolve(name) {
                 replaced.insert(core.runtime_name());
             }
