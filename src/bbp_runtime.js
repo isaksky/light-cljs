@@ -811,15 +811,19 @@ const native = (() => {
     return arraySeqs.has(c) || Array.isArray(value) || typeof value === 'string'
       || kind === 'vector' || kind === 'map';
   };
-  const reduceSeq = (f, init, c, headBeforeCall = storedReduction(c)) => {
+  const reduceSeq = (f, init, c, initialized = true) => {
     let acc = init;
+    const headBeforeCall = storedReduction(c);
     for (let s = reduceSeqOf(c); s != null; s = nextOf(s)) {
+      // Seed stored two-argument reductions in the same traversal so the
+      // tail's -seq is not called again before its first head is read.
+      if (!initialized) { acc = firstOf(s); initialized = true; continue; }
       // Legacy stored collections read the item before `.call`, even with
       // a custom -seq. Sequence traversal reads `.call` before -first.
       acc = headBeforeCall ? invoke(f, acc, firstOf(s)) : prepareInvoke(f)(acc, firstOf(s));
       if (__rt.cljIsReduced(acc)) return __rt.cljUnreduced(acc);
     }
-    return acc;
+    return initialized ? acc : invoke(f);
   };
   const entryPart = (x, value) => {
     const builtin = __rt.formKind(val(x)) === 'vector' && !__rt.cljIsEditable(x);
@@ -1053,8 +1057,9 @@ const native = (() => {
     range:(...a)=>a.length===0?rangeFrom(rangeFrom,0,Infinity,1):a.length===1?rangeFrom(rangeFrom,0,val(a[0]),1)
       :a.length<=3?rangeFrom(rangeFrom,val(a[0]),val(a[1]),a.length===3?val(a[2]):1):arity(a.length),
     partition:(...a)=>a.length===2?partitionFrom(partitionFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionFrom(partitionFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
-    reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);const s=reduceSeqOf(a[0]);
-      return s==null?invoke(f):reduceSeq(f,firstOf(s),nextOf(s),storedReduction(a[0])?true:undefined);},
+    reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);
+      if(storedReduction(a[0]))return reduceSeq(f,undefined,a[0],false);
+      const s=reduceSeqOf(a[0]);return s==null?invoke(f):reduceSeq(f,firstOf(s),nextOf(s));},
     reduceKv, kvReduceProtocol,
     keyProtocol:x=>entryPart(x,false), valProtocol:x=>entryPart(x,true),
     transduce,

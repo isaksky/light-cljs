@@ -683,7 +683,7 @@ fn native_reduce_kv_matches_quickjs() {
         (
             "stored collection seq overrides read heads before reducer call lookup",
             r#"(deftype S [n seen fail]
-                 ISeqable (-seq [this] this)
+                 ISeqable (-seq [this] (.push seen "inner seq") this)
                  ISeq (-first [_] (.push seen "first")
                                  (if fail (throw (js/Error. "first failed")) n))
                       (-rest [_] (throw (js/Error. "rest called")))
