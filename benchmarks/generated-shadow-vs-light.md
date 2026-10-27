@@ -10,6 +10,9 @@ Findings are the baseline at `ac88cb2`; [the re-measurement at
 follows them, and [the head-to-head at
 `81f9837`](#re-measured-at-81f9837-october-23-2026) after that.
 
+The [October 27 regression check and repair](#default-v8-regression-check-october-27-2026)
+below records the later default-compiler regression and the restored timings.
+
 Reproduce, one project at a time and with no other heavy work running:
 
 ```sh
@@ -829,7 +832,7 @@ use the identical single-file command above, with only the named flags added.
 | `ac88cb2` | stats, maps | 23.50 [23.38–23.91] | 24.45 | 1.254 | 2.54/2.37/2.28; 1.95/2.29/2.27; 2.25/2.27/2.26 |
 | `045c5926` | stats, maps | 105.73 [105.00–106.13] | 105.78 | 1.176 | 2.09/2.27/2.25; 2.67/2.42/2.30; 2.19/2.24/2.25 |
 
-The same-command slowdown is 4.50–4.53x across these conditions. Neither the
+The same-command slowdown is 4.49–4.53x across these conditions. Neither the
 flag differences nor the release/single-file command difference explains it.
 One exploratory release+stats pair (excluded from these three-run cells) took
 23.45 / 106.54 s. All 50 original-matrix processes, including that pair and
@@ -838,3 +841,129 @@ succeeded; every generated output printed the independent oracle's `484264`.
 Each repeated revision/condition produced byte-identical JavaScript. All
 single-file outputs passed Node syntax checking. These checks establish
 execution/output repeatability, not source-map correctness.
+
+### Culprit and profiles
+
+The scripted bisect identifies **`b49764765e7f07cf7749ceed87e7fc48e37e5969`**
+("Preserve method publication under conservative core-write tracking") as the
+first bad commit. Its parent is `c92e5a557cccc85b891bffb06b3f8a04f1b04f5a`.
+The matrix revision `045c5926` has identical `src`, `Cargo.toml`, `Cargo.lock`,
+`build.rs` and `vendor` inputs to `b4976476`.
+
+```sh
+git bisect start --first-parent 045c5926 ac88cb2 -- \
+  src Cargo.toml Cargo.lock build.rs vendor/v8 vendor/rquickjs-sys \
+  ':(exclude)src/bbp*'
+```
+
+An inline Babashka command supplied to `git bisect run` built each point with
+`cargo build --locked --release`, default features, `LIGHT_CLJS_V8_CACHE=require`
+and `CARGO_BUILD_JOBS=3`, then timed `release bench --no-cache` in the same
+project. Exit 1 means wall time **over 50 s**, 0 means at most 50 s, and 125
+means build/compile failure; no points were skipped. The baseline worktree's
+target directory was reused, with `cargo clean --release -p light-cljs` and
+`cargo clean --release -p big-boy-pants-js` (where present) between revisions.
+Engine-only history and `src/bbp*` changes were excluded. One timing per bisect
+point, with three-run endpoint measurements above and below:
+
+| Point, in test order | Wall, s | Pre-run load, 1/5/15 min | Threshold result |
+| --- | ---: | --- | --- |
+| `26ca6516` | 6.95 | 2.40/2.27/2.26 | good |
+| `05007788` | 6.97 | 3.00/2.45/2.33 | good |
+| `c0a9601e` | 7.14 | 3.14/2.58/2.38 | good |
+| `a7958cb9` | 6.94 | 2.79/2.59/2.40 | good |
+| `070eda86` | 7.02 | 2.68/2.61/2.42 | good |
+| `509110a6` | 6.93 | 2.61/2.59/2.43 | good |
+| `c92e5a55` | 7.02 | 2.69/2.61/2.45 | good |
+| `b4976476` | 104.97 | 2.98/2.70/2.49 | bad |
+
+`b4976476` added an unconditional `native_multimethod_arguments` index in
+`Emitter::new`. Each prepared deferred unit scanned its whole expression arena,
+including shared earlier units, although only native emission consumes the
+index. This repeats growing-program traversal on the default path. In the
+first unprofiled release+stats run, 93.382 of 106.503 s was `trace.release-ms`;
+macro-host execution was only 1.309 s.
+
+Separate direct+stats builds of the original binary, without maps, were sampled
+from launch through exit with `/usr/bin/sample PID 600 1 -mayDie -file FILE`.
+Both compilers and samplers exited 0 and their JavaScript matched the unprofiled
+outputs. These instrumented runs are excluded from all timing medians:
+
+| Profile | Instrumented wall, s | Main-thread samples | Samples in merge-front → release IR | Pre-run → post-run load, 1/5/15 min |
+| --- | ---: | ---: | ---: | --- |
+| generated 200k | 117.595 | 85,310 | 73,990 (86.7%) | 2.02/2.31/2.29 → 2.46/2.34/2.30 |
+| Penpot main | 80.036 | 57,747 | 46,774 (81.0%) | 2.46/2.34/2.30 → 2.40/2.32/2.29 |
+
+The common inclusive path is `NamespaceAnalysis::merge_front` →
+`SharedCatalog::release_application_ir` → `emit_deferred_unit` → `emit_js_mode`
+→ `Emitter::new`, dominated by arena iteration/indexing. Percentages describe
+that main-thread branch, not whole-process CPU time; inclusive frames overlap.
+
+### Repair and three-run verification
+
+Fix `db78b7bbc0b9b2d7577ec907f70c5ed3806d8526` builds the multimethod argument
+index inside the existing `native_forms` branch, preserving native indexing
+while avoiding the unused scan during V8/QuickJS and application emission.
+The same default release build and commands were rerun after all bisect builds
+finished. Three runs per cell, independent medians, wall range in brackets:
+
+| Revision | Command/flags | Wall, s | User CPU, s | Peak RSS, GB | Pre-run loads (1/5/15 min), rounds 1; 2; 3 |
+| --- | --- | ---: | ---: | ---: | --- |
+| parent `c92e5a55` | release | 6.94 [6.91–6.98] | 7.10 | 1.090 | 2.23/2.43/2.42; 1.94/2.35/2.39; 1.88/2.32/2.37 |
+| fixed `db78b7bb` | release | 6.87 [6.85–6.88] | 7.03 | 1.087 | 2.41/2.32/2.36; 2.17/2.25/2.32; 2.25/2.23/2.31 |
+| fixed `db78b7bb` | direct, none | 6.83 [6.82–6.87] | 7.02 | 1.102 | 2.36/2.31/2.35; 2.23/2.26/2.33; 2.15/2.21/2.30 |
+| fixed `db78b7bb` | direct, stats | 6.86 [6.84–6.87] | 7.04 | 1.081 | 2.41/2.32/2.36; 2.04/2.22/2.31; 2.13/2.20/2.30 |
+| fixed `db78b7bb` | direct, maps | 7.04 [7.03–7.09] | 7.24 | 1.176 | 2.27/2.30/2.35; 1.96/2.20/2.31; 2.12/2.20/2.29 |
+| fixed `db78b7bb` | direct, stats, maps | 7.03 [7.00–7.05] | 7.20 | 1.173 | 2.25/2.29/2.34; 1.97/2.19/2.30; 2.03/2.18/2.28 |
+
+The original release command falls from **106.03 to 6.87 s**, near the culprit's
+parent (6.94 s), and below the remeasured October baseline (23.39 s). The matched
+direct+stats runs' median `trace.release-ms` falls from 92.022 to **0.167 s**.
+These phase times are included in wall time and must not be added to it.
+
+All 27 repaired builds across both workloads and all six parent builds succeed.
+Each JavaScript output is byte-identical to the corresponding original
+`045c5926` output; every generated application prints `484264`, and all
+single-file outputs pass Node syntax checks. This isolates the measured
+slowdown to unused compiler bookkeeping. The scope is these two uncached
+workloads at the default one job; native-backend and Shadow results remain
+their separate dated measurements.
+
+Verification of the repaired source at `db78b7bb`, after timing finished:
+
+- `cargo fmt --check` passes.
+- `cargo nextest run --locked --no-fail-fast` passes **2,132 tests**, 109 skipped,
+  with default features and `LIGHT_CLJS_V8_CACHE=require`.
+- Strict compiler Clippy passes for default features, QuickJS-only
+  (`--all-targets --no-default-features --features quickjs`), and engine-free
+  library/CLI (`--no-default-features --lib --bin light-cljs`), all with
+  `-- -D warnings`.
+- `cargo test --locked --no-default-features --features bbp-macros,quickjs
+  --test bbp_macros multimethod -- --test-threads=3` passes all three tests,
+  including conservative replacement, pool-size differential, capture rejection
+  and once-only effects coverage.
+
+The nested worker checkout exposed a Cargo workspace-discovery failure in the
+Wasm playground test, also reproduced at the culprit's parent. The full suite
+used a temporary empty `[workspace]` in the worktree-local playground manifest
+and the installed Rust 1.99.0 Wasm toolchain's Cargo/rustc through
+`LIGHT_CLJS_CARGO`, with the normal allowed Cargo cache. That temporary manifest
+change was restored; native verification uses Homebrew Rust/Cargo 1.99.1.
+Integration checks used the pinned read-only ClojureScript checkout
+`a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e` through a temporary local symlink.
+
+Two baseline limitations remain explicit. Engine-free `--all-targets` includes
+ungated engine-dependent tests: the compiler target reports the same 501
+QuickJS/API errors at the parent and repaired source; engine-free core lint
+passes. Native+QuickJS all-target strict Clippy stops on eight unchanged engine
+diagnostics, reproduced at untouched `045c5926` (deprecated `fetch_update`,
+`chunks_exact_to_as_chunks`, `byte_char_slices`). The same native Clippy command
+passes with only those three categories allowed after `-D warnings`; no source
+suppressions were added. The engine's full test suite was outside this compiler
+emission change.
+
+```sh
+cargo clippy --locked --all-targets --no-default-features \
+  --features bbp-macros,quickjs -- -D warnings -A deprecated \
+  -A clippy::chunks_exact_to_as_chunks -A clippy::byte_char_slices
+```

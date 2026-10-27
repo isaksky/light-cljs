@@ -915,6 +915,11 @@ at `workload/trildorplus.cljc:6:1` (light-cljs-505), above.
 
 ## Generated 200k and Penpot backend comparison, October 27, 2026
 
+The V8 timings in this section include the compiler regression introduced by
+`b4976476`. The [follow-up investigation and repair](generated-shadow-vs-light.md#default-v8-regression-check-october-27-2026)
+records the corrected default V8 baseline. The ratios below describe the
+historical binaries measured here.
+
 Both release compilers use the unchanged tree at
 `d9b1b5f9e5bcee19c7366caa71091c53d221f8f7`, including builtin/callback/name
 lowering, protocol lowering, the shared catalog and shared multimethods.

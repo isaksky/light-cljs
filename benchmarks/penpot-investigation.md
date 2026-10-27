@@ -1,5 +1,8 @@
 # Penpot compiler performance investigation — October 16–17, 2026
 
+See the [October 27 regression check and repair](#default-v8-regression-check-october-27-2026)
+for the later default-compiler slowdown and restored Penpot timings.
+
 Latest validated production rerun (phase112): **21.97 s / 0.948 GB RSS** for
 main none, **28.24 s / 1.178 GB** for advanced, and **3.73 s / 0.498 GB** for
 render. Fresh Shadow dev is **32.08 s / 2.551 GB** and release is **59.12 s /
@@ -1772,3 +1775,39 @@ Add `--no-cache` at the current revision. Independently toggle `--stats` and
 map path under the worker's `target/`. The baseline supports the map flags;
 its statistics combinations are unavailable. Revision order alternates as in
 the generated-project check.
+
+### Culprit, repair and three-run verification
+
+The [scripted generated-project bisect and both profiles](generated-shadow-vs-light.md#culprit-and-profiles)
+identify `b49764765e7f07cf7749ceed87e7fc48e37e5969`: it constructed a native
+multimethod argument index on every emitter, scanning shared expression arenas
+again when each completed unit was prepared. Its only consumer is native
+emission. The separate Penpot profile has 46,774 of 57,747 main-thread samples
+(81.0%) in the merge-front → release IR branch, through `Emitter::new` and arena
+iteration/indexing. That instrumented 80.036 s run is excluded from the medians.
+
+Fix `db78b7bbc0b9b2d7577ec907f70c5ed3806d8526` builds the index only in the
+existing native-emission branch. The culprit's parent and repaired default
+compiler were built and timed sequentially, with the same commands and port.
+Three runs per cell, independent medians, wall range in brackets:
+
+| Revision | Flags | Wall, s | User CPU, s | Peak RSS, GB | Pre-run loads (1/5/15 min), rounds 1; 2; 3 |
+| --- | --- | ---: | ---: | ---: | --- |
+| parent `c92e5a55` | none | 11.51 [11.50–11.58] | 13.56 | 0.860 | 2.21/2.42/2.41; 1.94/2.35/2.39; 1.82/2.29/2.36 |
+| fixed `db78b7bb` | none | 11.50 [11.50–11.60] | 13.56 | 0.846 | 2.21/2.28/2.34; 2.06/2.21/2.30; 2.02/2.17/2.28 |
+| fixed `db78b7bb` | stats | 11.64 [11.63–11.66] | 13.66 | 0.866 | 2.10/2.25/2.33; 2.20/2.23/2.31; 1.88/2.13/2.26 |
+| fixed `db78b7bb` | maps | 12.05 [12.01–12.06] | 14.07 | 1.092 | 2.22/2.27/2.33; 2.18/2.22/2.31; 1.82/2.11/2.25 |
+| fixed `db78b7bb` | stats, maps | 12.13 [12.05–12.20] | 14.12 | 1.069 | 2.03/2.23/2.32; 2.22/2.23/2.31; 2.29/2.20/2.28 |
+
+The original-command median falls from **71.76 to 11.50 s**, matching the
+culprit's parent (11.51 s) and below the remeasured October baseline (21.18 s).
+The matched direct+stats runs' median `trace.release-ms` falls from 58.577 to
+**0.238 s**. All repaired and parent outputs are byte-identical to the original
+`045c5926` output for the same flag combination and pass Node syntax checking.
+The regression is in compiler bookkeeping; these measurements cover uncached
+`app.main --optimize none` at the default one job.
+
+[Compiler verification](generated-shadow-vs-light.md#repair-and-three-run-verification)
+records 2,132 default tests and three native multimethod tests passing,
+formatter/Clippy results, the restored temporary Wasm workspace isolation and
+the independently reproduced engine-free/engine-lint baseline limitations.
