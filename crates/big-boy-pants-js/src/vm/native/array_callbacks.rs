@@ -344,61 +344,64 @@ impl State {
         }
     }
 
+    fn scan(&mut self, heap: &Heap, task: TaskId) -> Result<Action, Fault> {
+        use Builtin::*;
+        if self.index < 0 || self.index >= self.length {
+            return Ok(Action::Return(match self.which {
+                ArrayPrototypeEvery => Value::Bool(true),
+                ArrayPrototypeSome => Value::Bool(false),
+                ArrayPrototypeReduce | ArrayPrototypeReduceRight => {
+                    if !self.has_accumulator {
+                        return Err(Fault::TypeError(
+                            "reduce of empty array with no initial value".into(),
+                        ));
+                    }
+                    self.accumulator.clone()
+                }
+                _ => self.result.clone(),
+            }));
+        }
+        // A present own data element answers both HasProperty and Get
+        // without user code. Re-read on every visit: callbacks may
+        // delete elements, install accessors or truncate the array.
+        // This step visits at most one element, retaining a poll and
+        // budget boundary between callbacks, including skipped holes.
+        if let Value::Object(id) = self.this
+            && self.index < i64::from(u32::MAX)
+            && let Some(value) = heap
+                .read(id, |object| match object {
+                    HeapObject::Array(array)
+                        if array.object().owner().is_none_or(|owner| owner == task) =>
+                    {
+                        array
+                            .element(self.index as u32)
+                            .filter(|property| property.accessor.is_none())
+                            .map(|property| property.value)
+                    }
+                    _ => None,
+                })
+                .flatten()
+        {
+            return Ok(self.call(value));
+        }
+        self.stage = Stage::Present;
+        let key = index_key(self.index as u64);
+        match property::probe(heap, task, &self.this, &key)? {
+            property::Presence::Value(present) => {
+                self.read_value = Some(Value::Bool(present));
+                Ok(Action::Continue)
+            }
+            // HasProperty must still call traps on either the receiver
+            // or its prototype chain, through the resumable In path.
+            property::Presence::Proxy(_) => Ok(has_property(self.this.clone(), key)),
+        }
+    }
+
     #[inline(never)]
     fn iterate(&mut self, heap: &Heap, task: TaskId, input: Input) -> Result<Action, Fault> {
         use Builtin::*;
         match self.stage {
-            Stage::Scan => {
-                if self.index < 0 || self.index >= self.length {
-                    return Ok(Action::Return(match self.which {
-                        ArrayPrototypeEvery => Value::Bool(true),
-                        ArrayPrototypeSome => Value::Bool(false),
-                        ArrayPrototypeReduce | ArrayPrototypeReduceRight => {
-                            if !self.has_accumulator {
-                                return Err(Fault::TypeError(
-                                    "reduce of empty array with no initial value".into(),
-                                ));
-                            }
-                            self.accumulator.clone()
-                        }
-                        _ => self.result.clone(),
-                    }));
-                }
-                // A present own data element answers both HasProperty and Get
-                // without user code. Re-read on every visit: callbacks may
-                // delete elements, install accessors or truncate the array.
-                // This step visits at most one element, retaining a poll and
-                // budget boundary between callbacks, including skipped holes.
-                if let Value::Object(id) = self.this
-                    && self.index < i64::from(u32::MAX)
-                    && let Some(value) = heap
-                        .read(id, |object| match object {
-                            HeapObject::Array(array)
-                                if array.object().owner().is_none_or(|owner| owner == task) =>
-                            {
-                                array
-                                    .element(self.index as u32)
-                                    .filter(|property| property.accessor.is_none())
-                                    .map(|property| property.value)
-                            }
-                            _ => None,
-                        })
-                        .flatten()
-                {
-                    return Ok(self.call(value));
-                }
-                self.stage = Stage::Present;
-                let key = index_key(self.index as u64);
-                match property::probe(heap, task, &self.this, &key)? {
-                    property::Presence::Value(present) => {
-                        self.read_value = Some(Value::Bool(present));
-                        Ok(Action::Continue)
-                    }
-                    // HasProperty must still call traps on either the receiver
-                    // or its prototype chain, through the resumable In path.
-                    property::Presence::Proxy(_) => Ok(has_property(self.this.clone(), key)),
-                }
-            }
+            Stage::Scan => self.scan(heap, task),
             Stage::Present => {
                 if !self.value(input)?.truthy() {
                     return Ok(self.advance());
@@ -444,9 +447,13 @@ impl State {
                     }
                     _ => {}
                 }
-                Ok(self.advance())
+                self.advance();
+                self.scan(heap, task)
             }
-            Stage::Advance => Ok(self.advance()),
+            Stage::Advance => {
+                self.advance();
+                self.scan(heap, task)
+            }
             _ => unreachable!("not an array callback iteration stage"),
         }
     }
