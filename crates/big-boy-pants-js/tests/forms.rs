@@ -2106,6 +2106,78 @@ fn realized_lazy_records_publish_the_receiver_retained_for_protocol_dispatch() {
 }
 
 #[test]
+fn shared_lazy_records_check_retained_receivers_during_realization() {
+    let make = compile_function(
+        r#"function make(bad) {
+      return __rt.lazySeq(()=>{
+        __rt.need(94,1);
+        const R=__rt.structType('R',__rt.formVector('n'),true);
+        const hidden=bad?{}:__rt.formVector(8);
+        return __rt.formWithMeta(__rt.structNew(R,3),__rt.formMap('hidden',hidden));
+      });
+    }"#,
+    )
+    .unwrap();
+    let read = compile_function(
+        r#"function read(s) {
+      __rt.cljCoreResolver((op,x,lazy)=>{
+        if(!lazy||__rt.formKind(x)!=='record')throw new Error('lost record receiver');
+        if(op==='cljSeq')return ()=>{
+          const hidden=__rt.formGet(__rt.formMeta(x),'hidden',null);
+          if(__rt.formNth(hidden,0)!==8)throw new Error('lost receiver metadata');
+          return __rt.formList(7,8);
+        };
+        return null;
+      });
+      try { return __rt.cljFirst(__rt.cljSeq(s)); } catch(e) { return String(e); }
+    }"#,
+    )
+    .unwrap();
+    for bad in [false, true] {
+        let rt = Runtime::new();
+        let flag = rt.root(Primitive::Bool(bad));
+        let lazy = complete(rt.spawn(&make, &[&flag]).unwrap().run().unwrap());
+        // Publish before the thunk constructs its record. Its metadata is
+        // absent from the cached structural sequence, but retained for dispatch.
+        rt.publish(&lazy).unwrap();
+        let mut producer = rt.spawn(&read, &[&lazy]).unwrap();
+        assert!(matches!(producer.run().unwrap(), RunOutcome::Waiting(_)));
+        let waiter = rt.spawn(&read, &[&lazy]).unwrap();
+        assert!(matches!(waiter.run().unwrap(), RunOutcome::Waiting(_)));
+        rt.collect().unwrap();
+        let request = producer.take_producer_requests().pop().unwrap();
+        assert_eq!(request.key().dependency(), DependencyId::new(94));
+        let ready = rt.root(Primitive::Null);
+        let resumed = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+            .unwrap()
+            .into_runnable()
+            .pop()
+            .unwrap();
+        let produced = complete(resumed.run().unwrap());
+        let woken = rt.take_lazy_wakeups();
+        assert_eq!(woken.len(), 1);
+        assert_eq!(woken[0].id(), waiter.id());
+        rt.collect().unwrap();
+        let observed = complete(waiter.run().unwrap());
+        for result in [produced, observed] {
+            if bad {
+                let message = result.string().unwrap().to_string_lossy();
+                assert!(
+                    message.starts_with(
+                        "TypeError: a shared lazy sequence realized a value it cannot share:"
+                    ),
+                    "{message}"
+                );
+                assert!(message.contains(".meta"), "{message}");
+            } else {
+                assert_eq!(result.view(), ValueView::Number(7.0));
+            }
+        }
+    }
+}
+
+#[test]
 fn missing_core_protocol_resolves_once_when_record_comparison_realizes_fields() {
     let rt = Runtime::new();
     let code = compile_function(
