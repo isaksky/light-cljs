@@ -506,6 +506,10 @@ pub(crate) struct SharedCatalog {
     lanes: Arc<crate::effect_lanes::Lanes>,
     #[cfg(feature = "bbp-macros")]
     native_units: std::sync::atomic::AtomicBool,
+    /// Source-wide core writes, indexed before macro factories are emitted.
+    /// Deferred helper bodies must affect their callers' cache eligibility.
+    #[cfg(feature = "bbp-macros")]
+    native_replaced_core: Mutex<std::collections::HashSet<&'static str>>,
     #[cfg(feature = "bbp-macros")]
     native_runtime:
         std::sync::OnceLock<Result<crate::bbp_evaluator::BbpRuntime, crate::evaluator::EvalError>>,
@@ -617,6 +621,75 @@ impl SharedCatalog {
     pub(crate) fn select_native(&self) {
         self.native_units
             .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn native_replaced_core(&self) -> Vec<&'static str> {
+        self.native_replaced_core
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    /// Conservatively recognize core targets by spelling, including those in
+    /// quoted/generated forms and bodies whose analysis is still deferred.
+    /// A shadowed bare name may disable an optimization, never enable one.
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn index_native_core_writes(&self, source: &str, syntax: &crate::SyntaxTree) {
+        use crate::parser::{CollectionKind, NodeId, NodeKind};
+        let spelling = |id: NodeId| &source[syntax.nodes[id.0].span.clone()];
+        let mut replaced = self
+            .native_replaced_core
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut target = |mut id: NodeId| {
+            while let NodeKind::Metadata { target, .. } | NodeKind::Prefix { form: target, .. } =
+                syntax.nodes[id.0].kind
+            {
+                id = target;
+            }
+            let name = spelling(id);
+            let name = name
+                .strip_prefix("cljs.core/")
+                .or_else(|| name.strip_prefix("clojure.core/"))
+                .or_else(|| name.strip_prefix("cljs.core."))
+                .unwrap_or(name);
+            if let Some(core) = crate::CoreFnId::resolve(name) {
+                replaced.insert(core.runtime_name());
+            }
+        };
+        for node in &syntax.nodes {
+            let NodeKind::Collection {
+                kind: CollectionKind::List,
+                children,
+            } = &node.kind
+            else {
+                continue;
+            };
+            let Some((&head, args)) = children.split_first() else {
+                continue;
+            };
+            let head = spelling(head);
+            let head = head.strip_prefix("cljs.core/").unwrap_or(head);
+            match (head, args) {
+                ("set!", [place, ..]) => target(*place),
+                ("binding" | "with-redefs", [bindings, ..]) => {
+                    if let NodeKind::Collection {
+                        kind: CollectionKind::Vector,
+                        children,
+                    } = &syntax.nodes[bindings.0].kind
+                    {
+                        for &place in children.iter().step_by(2) {
+                            target(place);
+                        }
+                    }
+                }
+                // Raw JavaScript can assign any core value passed as a hole.
+                ("js*", [_, holes @ ..]) => holes.iter().copied().for_each(&mut target),
+                _ => (),
+            }
+        }
     }
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn native_runtime(
@@ -2256,7 +2329,7 @@ impl SharedCatalog {
         let prepared = Arc::new({
             #[cfg(feature = "bbp-macros")]
             if self.native_units.load(std::sync::atomic::Ordering::Relaxed) {
-                crate::emitter::DeferredUnit::prepare_native(&program)
+                crate::emitter::DeferredUnit::prepare_native(&program, &self.native_replaced_core())
             } else {
                 crate::emitter::DeferredUnit::prepare(&program)
             }
@@ -3022,7 +3095,11 @@ fn compile_unit_in(
                 let code = {
                     #[cfg(feature = "bbp-macros")]
                     if active.native_bridge_stats().is_some() {
-                        crate::emitter::emit_native_macro_unit(&program, true)
+                        crate::emitter::emit_native_macro_unit(
+                            &program,
+                            true,
+                            &shared.native_replaced_core(),
+                        )
                     } else {
                         crate::emitter::emit_deferred_unit(&program)
                     }

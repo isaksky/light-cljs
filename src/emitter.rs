@@ -60,6 +60,7 @@ pub(crate) fn emit_application(
         mapped,
         None,
         false,
+        &[],
     )
 }
 
@@ -157,9 +158,9 @@ pub(crate) struct DeferredUnit {
 
 impl DeferredUnit {
     #[cfg(feature = "bbp-macros")]
-    pub(crate) fn prepare_native(program: &Program) -> Self {
+    pub(crate) fn prepare_native(program: &Program, replaced: &[&'static str]) -> Self {
         Self {
-            source: emit_native_macro_unit(program, true),
+            source: emit_native_macro_unit(program, true, replaced),
             tables: crate::reader_registration::ReaderTables::of(program),
         }
     }
@@ -219,7 +220,11 @@ pub(crate) fn emit_deferred_unit(program: &Program) -> String {
 /// Native input scalars retain occurrence identity in form operations, and
 /// unwrap at truth tests and explicit JavaScript interop boundaries.
 #[cfg(feature = "bbp-macros")]
-pub(crate) fn emit_native_macro_unit(program: &Program, deferred: bool) -> String {
+pub(crate) fn emit_native_macro_unit(
+    program: &Program,
+    deferred: bool,
+    replaced: &[&'static str],
+) -> String {
     let mut registration = NamespaceRegistration {
         deferred,
         ..Default::default()
@@ -234,6 +239,7 @@ pub(crate) fn emit_native_macro_unit(program: &Program, deferred: bool) -> Strin
         false,
         deferred.then_some(&mut registration),
         true,
+        replaced,
     )
     .0
 }
@@ -350,6 +356,7 @@ fn emit_unit_parts(
         false,
         registration,
         false,
+        &[],
     )
     .0
 }
@@ -420,6 +427,7 @@ fn emit_js_mode(
     mapped: bool,
     detached_registration: Option<&mut NamespaceRegistration>,
     native_forms: bool,
+    native_replacements: &[&'static str],
 ) -> (String, EmittedRuntime, Option<SourceMapping>) {
     let application_roots = interactive.is_some();
     let entry = interactive.and_then(|interactive| interactive.entry);
@@ -474,6 +482,9 @@ fn emit_js_mode(
                     _ => None,
                 })
                 .collect();
+            emitter
+                .native_replaced_core
+                .extend(native_replacements.iter().copied());
         }
         emitter.record_kits = record_kits;
         emitter.output.push_str(PRELUDE_OPEN);
@@ -8888,6 +8899,7 @@ fn emit_interactive(
         mapped,
         None,
         false,
+        &[],
     );
     (unit, mapping)
 }
@@ -8922,6 +8934,7 @@ pub(crate) fn emit_namespace_unit(
         true,
         None,
         false,
+        &[],
     );
     (unit, mapping.expect("a mapped emission has a source map"))
 }

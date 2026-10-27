@@ -2706,6 +2706,14 @@ fn analyze_entry(
     // The persistent cache's lookups and publications, outside `analysis`.
     let mut cache_time = Duration::ZERO;
     let mut analysis = NamespaceAnalysis::new(macros);
+    #[cfg(feature = "bbp-macros")]
+    if let Some(session) = macros.session_handle() {
+        for file in &loader.ordered {
+            session
+                .shared()
+                .index_native_core_writes(&file.source, &file.syntax);
+        }
+    }
     analysis.begin_generated_names(names_start);
     // Each namespace's macro-free units may be analyzed on the pool.
     analysis.unit_slots = parse_slots(slots);

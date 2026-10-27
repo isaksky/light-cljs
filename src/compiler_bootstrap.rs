@@ -1058,7 +1058,10 @@ impl MacroHost {
         let unit = crate::emitter::emit_deferred_unit(&program);
         #[cfg(feature = "bbp-macros")]
         let unit = if bootstrap.evaluator.native_forms() {
-            crate::emitter::emit_native_macro_unit(&program, true)
+            let replaced = self
+                .session_handle()
+                .map_or_else(Vec::new, |session| session.shared().native_replaced_core());
+            crate::emitter::emit_native_macro_unit(&program, true, &replaced)
         } else {
             unit
         };

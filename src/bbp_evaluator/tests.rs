@@ -9,7 +9,7 @@ fn native(source: &str) -> String {
     if let crate::ExprKind::Do(forms) = &program.exprs[program.root.0].kind {
         program.root = *forms.last().unwrap();
     }
-    crate::emitter::emit_native_macro_unit(&program, true)
+    crate::emitter::emit_native_macro_unit(&program, true, &[])
 }
 
 fn numeric_global(evaluator: &BbpEvaluator, name: &str) -> f64 {

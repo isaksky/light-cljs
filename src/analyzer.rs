@@ -3808,6 +3808,10 @@ fn analyze_input(
         compiler_syntax(source, syntax)
     };
     let mut roots = syntax.roots.clone();
+    #[cfg(feature = "bbp-macros")]
+    if let Some(session) = macro_host.session_handle() {
+        session.shared().index_native_core_writes(source, &syntax);
+    }
     let NamespaceAnalysisView {
         namespace,
         aliases,
@@ -4062,6 +4066,14 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
     mut prepare: impl FnMut(&mut MacroHost, usize) -> Result<NamespaceResolution, AnalysisError>,
 ) -> Result<Program, (usize, AnalysisError)> {
     let mut analysis = NamespaceAnalysis::new(macro_host);
+    #[cfg(feature = "bbp-macros")]
+    if let Some(session) = macro_host.session_handle() {
+        for input in inputs {
+            session
+                .shared()
+                .index_native_core_writes(input.source, input.syntax);
+        }
+    }
     // Without artifacts, only a unit can fail a drain point.
     let drained = |outcome: Result<(), DrainError>| match outcome {
         Err(DrainError::Unit(source_index, error)) => Err((source_index, error)),
@@ -4742,6 +4754,12 @@ impl NamespaceAnalysis {
             crate::compiler_reader::select_cljs(input.source, syntax.to_mut(), &mut discards)?;
         }
         let source_roots = syntax.roots.clone();
+        #[cfg(feature = "bbp-macros")]
+        if let Some(session) = macro_host.session_handle() {
+            session
+                .shared()
+                .index_native_core_writes(input.source, &syntax);
+        }
         let namespace_globals = self.members.of(&self.program.globals, input.name);
         let mut analyzer = Analyzer {
             source: input.source,

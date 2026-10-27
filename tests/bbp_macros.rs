@@ -4256,6 +4256,81 @@ fn native_core_bindings_preserve_with_redefs_and_restoration() {
 }
 
 #[test]
+fn native_core_reads_observe_replacements_in_demanded_helpers() {
+    for (source, expected) in [
+        (
+            r#"(declare install)
+               (defmacro m [] (let [before (even? 2)] (install) [before (even? 2)]))
+               (defn install [] (set! cljs.core/even? (fn [_] false)))
+               (js/console.log (pr-str (m)))"#,
+            "[true false]\n",
+        ),
+        (
+            r#"(declare helper)
+               (defmacro m [] [(with-redefs [even? (fn [_] false)] (helper)) (helper)])
+               (defn helper [] (even? 2))
+               (js/console.log (pr-str (m)))"#,
+            "[false true]\n",
+        ),
+        (
+            r#"(declare install)
+               (defmacro m [] (let [before (inc 2)] (install) [before (inc 2)]))
+               (defn install [] (set! cljs.core/inc (fn [_] 42)))
+               (js/console.log (pr-str (m)))"#,
+            "[3 42]\n",
+        ),
+    ] {
+        assert_native_matches_legacy(source, expected);
+    }
+    for (helper, app, expected) in [
+        (
+            r#"(ns helper (:refer-clojure :exclude [even?]))
+               (defn even? [_] false)
+               (defn probe [] [(even? 2) (cljs.core/even? 2)])"#,
+            r#"(ns app (:require [helper :as h]))
+               (defmacro m [] (h/probe))
+               (js/console.log (pr-str (m)))"#,
+            "[false true]\n",
+        ),
+        (
+            r#"(ns helper) (defn install [] (set! cljs.core/even? (fn [_] false)))"#,
+            r#"(ns app (:require [helper :as h]))
+               (defmacro m [] (let [before (even? 2)] (h/install) [before (even? 2)]))
+               (js/console.log (pr-str (m)))"#,
+            "[true false]\n",
+        ),
+    ] {
+        let root = temp_dir::TempDir::new("native-core-replacement");
+        std::fs::write(root.join("helper.cljs"), helper).unwrap();
+        std::fs::write(root.join("app.cljs"), app).unwrap();
+        for jobs in [1, 2] {
+            let compile = |native| {
+                let mut host = MacroHost::new();
+                if native {
+                    host.use_native_macros();
+                }
+                let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+                    "app",
+                    &[root.path().to_path_buf()],
+                    &mut host,
+                    Default::default(),
+                    &mut Vec::new(),
+                    light_cljs::compiler::EntryRecorders {
+                        slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                emit_js(&program)
+            };
+            let native = compile(true);
+            assert_eq!(program_output(&native), expected, "{helper}: jobs {jobs}");
+            assert_eq!(native, compile(false), "{helper}: jobs {jobs}");
+        }
+    }
+}
+
+#[test]
 fn native_generated_names_do_not_capture_raw_javascript() {
     for (source, expected) in [
         (

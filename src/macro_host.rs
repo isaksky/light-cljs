@@ -932,7 +932,7 @@ impl MacroHost {
                     .map_err(|e| crate::evaluator::EvalError(e.to_string()))?;
                 evaluator.preload(
                     name,
-                    &crate::emitter::emit_native_macro_unit(&program, false),
+                    &crate::emitter::emit_native_macro_unit(&program, false, &[]),
                 )?;
             }
             self.prepare_compiler_evaluator(&evaluator)?;
