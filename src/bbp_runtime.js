@@ -104,7 +104,8 @@ const decl = (() => {
     globalThis.__lightCompilerRoots[name];
     return true;
   };
-  const lookup = (t, x) => {
+  const resolve = (t, x) => {
+    declare(x);
     if (t.version !== version || t.frontier !== frontier) build(t);
     const value=t.promise===undefined?null:__rt.formValue(x);
     const promise=value!==null&&typeof value==='object'&&__rt.formKind(value)===null&&value instanceof Promise;
@@ -118,10 +119,6 @@ const decl = (() => {
       if (m === undefined) m = __rt.getOr(t.map, '_', null);
     }
     return m;
-  };
-  const resolve = (t, x) => {
-    declare(x);
-    return lookup(t, x);
   };
   const missing = (name, x) => new Error('No protocol method ' + name + ' defined for type ' + (x === null || x === undefined ? 'null' : __rt.formKind(x) ?? typeof x));
   // `:extend-via-metadata`: the receiver's metadata entry for the method's
@@ -183,8 +180,8 @@ const decl = (() => {
   // extensions of the receiver's native type still replace that implementation.
   const resolveCore = (name, arity, x, builtin) => {
     const t = methodTable(name, arity);
+    if (!builtin) return resolve(t, x);
     declare(x);
-    if (!builtin) return lookup(t, x);
     if (t.version !== version || t.frontier !== frontier) build(t);
     const key = directKey(x);
     return key === null ? null : __rt.getOr(t.map, key, null);
