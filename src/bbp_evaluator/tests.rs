@@ -2758,7 +2758,9 @@ fn catalog_producers_share_data_without_evaluating_registration_sources() {
             )
         })
         .collect::<Vec<_>>();
+    let roots = parent.value_roots().unwrap();
     parent.install_catalog(0, &registrations).unwrap();
+    assert_eq!(parent.value_roots().unwrap(), roots);
     let evaluations = shared.helper_counts().units_evaluated;
     let child = parent
         .spawn_producer(&parent.cx().unwrap(), None, |_| {})
@@ -2787,4 +2789,40 @@ fn catalog_producers_share_data_without_evaluating_registration_sources() {
         ValueView::Number(128.0)
     );
     child.release(result).unwrap();
+}
+
+#[test]
+fn catalog_mutable_initializers_run_once_per_task_after_frontier_changes() {
+    use crate::compilation_session::Registration;
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let parent = Rc::new(shared.evaluator().unwrap());
+    parent.clone().install_compiler_service("__lightCompileUnit", Rc::new(|_, _| {
+        Ok("rt => {globalThis.initialized=(globalThis.initialized??0)+1;return {count:0};}".into())
+    })).unwrap();
+    let registration = |name: &str, unit| {
+        Registration::Root(name.into(), Some(unit), None, false, "fixture:1".into())
+    };
+    parent
+        .install_catalog(0, &[registration("alpha", 1)])
+        .unwrap();
+    let child = parent
+        .spawn_producer(
+            &parent.cx().unwrap(),
+            parent.service.borrow().clone(),
+            |_| {},
+        )
+        .unwrap();
+    for task in [&*parent, &child] {
+        let value = task.evaluate_unit("rt => { globalThis.kept=globalThis.__lightCompilerRoots.alpha; kept.count=7; return kept===globalThis.__lightCompilerRoots.alpha; }").unwrap();
+        assert_eq!(
+            task.cx().unwrap().values.borrow()[&value.index].view(),
+            ValueView::Bool(true)
+        );
+        task.release(value).unwrap();
+        task.install_catalog(1, &[registration("beta", 2)]).unwrap();
+        let value = task.evaluate_unit("rt => { if(initialized!==1 || kept!==globalThis.__lightCompilerRoots.alpha || kept.count!==7)throw 'initializer repeated'; }").unwrap();
+        task.release(value).unwrap();
+        assert_eq!(numeric_global(task, "initialized"), 1.0);
+    }
+    assert_eq!(shared.helper_counts().per_task, 2);
 }

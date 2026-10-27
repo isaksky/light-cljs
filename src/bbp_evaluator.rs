@@ -2011,7 +2011,7 @@ impl BbpEvaluator {
         if let Some(message) = failed.string() {
             return Err(error(message.to_string_lossy()));
         }
-        if op != 3 {
+        if op != 3 && op != 4 {
             let value = cx
                 .task
                 .global_value("__lightResult")
