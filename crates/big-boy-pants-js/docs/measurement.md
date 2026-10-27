@@ -30,6 +30,52 @@ The full invocation runs every row group; quick uses smaller sizes. The
 uses four executor workers and nine measured rounds; tests still use three
 test threads. The benchmark owns its default target output only.
 
+## Static engine names (2026-10-26)
+
+Engine baseline `5dfeade5`, changed source `3917552b`, macOS 15.7.3 ARM64,
+Apple M3 Ultra / 24 CPUs, Homebrew Rust/Cargo 1.99.1, Babashka 1.12.218 and
+Node 26.12.1. Both saved engine CLIs and native compilers use the workspace
+release profile (thin LTO, one codegen unit). Native compilers use
+`--no-default-features --features bbp-macros`; the V8 reference uses default
+features and `LIGHT_CLJS_V8_CACHE=require`. Compiler source is identical.
+Saved binary SHA-256 prefixes: engine before `11e7ff35`, after `24ef6f0c`;
+native compiler before `2948f9ce`, after `ca5be720`; V8 `b6f10550`.
+The [static-name audit](architecture.md#static-engine-name-conversion-audit)
+lists changed conversions and the cold sites deliberately left in place.
+
+### Byte accounting and semantic verification
+
+For the protocol workload at `n=20000`, all four macro expansions report
+**91 collections** and the same **23,916,826-byte peak managed footprint**
+before and after. Their final managed-byte counts also agree exactly:
+19,548,864; 18,668,444; 17,771,046; and 16,863,886. Both emitted programs print
+`7999099985000` four times under Node. The optimization changes neither
+heap-object layouts nor the set of interned property names, and static name
+bindings do not become collector roots.
+
+At `3917552b`, with `CARGO_BUILD_JOBS=3` throughout:
+
+- `cargo test --locked -p big-boy-pants-js --all-targets -- --test-threads=3`:
+  **2,146 passed**, zero failures or ignored tests.
+- `cargo test --locked -p big-boy-pants-js --doc -- --test-threads=3`:
+  **seven passed**.
+- Native `cargo nextest run --locked --no-default-features --features
+  bbp-macros --lib --test bbp_macros --test bbp_reader --test bbp_proxy_has -j 8`,
+  filtered to those integration binaries and `bbp_evaluator::tests::`:
+  **144 passed**. The same targets plus `--bins`, with `bbp-macros,quickjs`
+  and no filter: **443 passed**, one normally skipped test.
+- New regressions check non-interning missing-name reads, ownership, unchanged
+  byte usage, no fresh string bodies during warmed reads, key-slot reuse after
+  sweep, cross-heap rebinding and shared form-kind result bodies.
+- The expanded `builtin_cache.js`, `proxy_get.js` and `proxy_has.js` fixtures
+  pass unchanged in Node and the saved after engine. Function cases cover
+  warmed prototype replacement, bind metadata getters, constructor fallback,
+  `instanceof` and lone-surrogate property-name misses.
+- Engine formatting and `git diff --check` pass. Strict all-target Clippy
+  retains the nine Rust 1.99.1 baseline diagnostics. The same command with
+  `-D warnings -A deprecated -A clippy::chunks_exact_to_as_chunks
+  -A clippy::byte_char_slices` passes; no source suppression was added.
+
 ## Native array callback entry (2026-10-26)
 
 Compared baseline `52a1aa9f` (including intrinsic lookup caching and direct
