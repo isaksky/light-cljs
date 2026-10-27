@@ -2257,6 +2257,59 @@ fn shared_seq_views_publish_only_their_own_elements() {
 }
 
 #[test]
+fn compiler_literal_value_equality_hashing_and_queue_keys_survive_collection() {
+    let rt = Runtime::new();
+    let values = call(
+        &rt,
+        r#"function make() {
+      const literal=(tag,payload)=>__rt.formCompilerLiteral(tag,payload);
+      return __rt.formVector(
+        literal('instant',1704164645000),literal('instant',1704164645000),literal('instant',0),
+        literal('uuid','123e4567-e89b-12d3-a456-426614174000'),
+        literal('uuid','123e4567-e89b-12d3-a456-426614174000'),literal('uuid','other'),
+        literal('queue',__rt.formVector(1,__rt.formList(2))),
+        literal('queue',__rt.formVector(1,__rt.formVector(2))),
+        literal('queue',__rt.formVector(1,3)));
+    }"#,
+        &[],
+    );
+    rt.publish(&values).unwrap();
+    rt.collect().unwrap();
+    let result = call(
+        &rt,
+        r#"function check(values) {
+      const eq=(a,b)=>__rt.formEquals(a,b),hash=x=>__rt.formHash(x);
+      let map=__rt.formMap();
+      for(let i=0;i<20;i++)map=__rt.formAssoc(map,i,i);
+      for(let i=0;i<9;i+=3){
+        const a=__rt.formNth(values,i),b=__rt.formNth(values,i+1),c=__rt.formNth(values,i+2);
+        if(!eq(a,b)||eq(a,c)||eq(c,a)||hash(a)!==hash(b))throw new Error('value equality/hash');
+        map=__rt.formAssoc(map,a,i);
+        if(__rt.formGet(map,b,null)!==i)throw new Error('hashed literal key');
+        const meta=__rt.formWithMeta(a,__rt.formMap('tag',true));
+        if(!eq(meta,b)||hash(meta)!==hash(b))throw new Error('metadata');
+      }
+      const queue=__rt.formNth(values,6),vector=__rt.formVector(1,__rt.formVector(2));
+      const list=__rt.formList(1,__rt.formList(2));
+      const lazy=__rt.lazySeq(()=>list);
+      for(const sequence of [vector,list,lazy]){
+        if(!eq(queue,sequence)||!eq(sequence,queue)||hash(queue)!==hash(sequence))throw new Error('sequential queue');
+        if(__rt.formGet(map,sequence,null)!==6)throw new Error('sequential queue key');
+      }
+      if(eq(queue,__rt.formVector(1))||eq(__rt.formVector(1),queue))throw new Error('queue length');
+      for(const tag of ['js-array','js-object','regex']){
+        const payload=tag==='js-array'?__rt.formVector():tag==='js-object'?__rt.formMap():'a';
+        const a=__rt.formCompilerLiteral(tag,payload),b=__rt.formCompilerLiteral(tag,payload);
+        if(eq(a,b)||!eq(a,a)||hash(a)!==hash(a))throw new Error('identity literal');
+      }
+      return true;
+    }"#,
+        &[&values],
+    );
+    assert!(matches!(result.view(), ValueView::Bool(true)));
+}
+
+#[test]
 fn compiler_literals_trace_publish_and_realize_only_explicit_payloads() {
     let rt = Runtime::new();
     let literal = call(

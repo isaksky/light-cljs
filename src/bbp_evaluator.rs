@@ -453,10 +453,24 @@ impl Bridge {
                 .into_iter()
                 .find(|kind| tag == literal_tag(*kind))
                 .ok_or_else(|| error("invalid compiler literal tag"))?;
-                D::CompilerLiteral {
-                    kind,
-                    payload: self.export(s, payload, depth - 1, remaining)?,
+                let payload = self.export(s, payload, depth - 1, remaining)?;
+                if kind == L::JsObject {
+                    let D::Collection {
+                        kind: C::Map,
+                        children,
+                    } = payload.kind()
+                    else {
+                        return Err(error("invalid JS object literal payload"));
+                    };
+                    for pair in children.as_chunks::<2>().0 {
+                        if !matches!(pair[0].kind(), D::String(_))
+                            && !matches!(pair[0].kind(), D::Keyword(name) if name.namespace().is_none())
+                        {
+                            return Err(error("Invalid JS object literal key"));
+                        }
+                    }
                 }
+                D::CompilerLiteral { kind, payload }
             }
             Some(k) => {
                 let values = if k == FormKind::Map {

@@ -37,7 +37,7 @@
   // The other EDN value constructors retain their separate service boundary.
   const uuid=unsupported('reader UUID literal'), PersistentQueueValue={get EMPTY(){return unsupported('reader queue literal')();}};
   const readerJsArray=items=>__rt.formCompilerLiteral('js-array',vector(items));
-  const readerJsObject=pairs=>__rt.formCompilerLiteral('js-object',literalMap(literalObjectPairs(pairs)));
+  const readerJsObject=pairs=>__rt.formCompilerLiteral('js-object',constantMap(literalObjectPairs(pairs)));
   // This entry can live in cljs.reader's shared tag-table atom: capture
   // pure constructors and inspection, never createReader's mutable adapter.
   const readerJsTag=value=>{

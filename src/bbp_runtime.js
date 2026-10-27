@@ -575,6 +575,15 @@ const native = (() => {
     }
     return Object.keys(object).flatMap(key=>[key,object[key]]);
   };
+  const literalObjectFields = x => {
+    const payload=__rt.formLiteralPayload(x);
+    let pairs=arr(__rt.formPrintItems(val(payload))).flatMap(arr);
+    // Legacy bridge input decodes the compiler's map with mapFromArray before
+    // constructing the JS object. Keep that traversal view separate from the
+    // original positional payload and its occurrence/provenance identity.
+    if(__rt.formKind(payload)==='occurrence')pairs=arr(__rt.formPrintItems(literalMap(pairs))).flatMap(arr);
+    return literalObjectPairs(pairs);
+  };
   const printWriterImpl = (value,writer,options,skipMetadata=false) => {
     const x=val(value);
     if(x==null)return write(writer,'nil');
@@ -593,19 +602,20 @@ const native = (() => {
     if(kind==='compiler-literal'){
       const tag=__rt.formName(x),payload=__rt.formLiteralPayload(x);
       if(tag==='regex')return write(writer,'#\"'+regexValue(x).source+'\"');
-      if(tag==='js-array'){write(writer,'#js ');return printWriter(payload,writer,options);}
+      if(tag==='js-array')return printSequential(writer,printWriter,'#js [',' ',']',options,payload);
       if(tag==='js-object'){
+        if(!core.isObject(x))return write(writer,'#object[Object '+core.str(x)+']');
         write(writer,'#js ');
-        const pairs=literalObjectPairs(arr(__rt.formPrintItems(val(payload))).flatMap(arr));
+        const pairs=literalObjectFields(x);
         return printSequential(writer,(entry,w,o)=>{
           const key=val(__rt.cljNth(entry,0));
           printWriter(/^[A-Za-z_*+?!\-'][\w*+?!\-']*$/.test(key)?__rt.cljKeyword(key):key,w,o);
           write(w,' ');return printWriter(__rt.cljNth(entry,1),w,o);
-        },'{',', ','}',options,__rt.formPrintItems(literalMap(pairs)));
+        },'{',', ','}',options,__rt.formPrintItems(constantMap(pairs)));
       }
-      if(tag==='queue'){write(writer,'#queue ');return printWriter(payload,writer,options);}
-      if(tag==='uuid'){write(writer,'#uuid ');return printWriter(payload,writer,options);}
-      if(tag==='instant'){write(writer,'#inst ');return printWriter(new Date(val(payload)).toISOString().replace(/Z$/,'-00:00'),writer,options);}
+      if(tag==='queue')return printSequential(writer,printWriter,'#queue [',' ',']',options,payload);
+      if(tag==='uuid')return write(writer,'#uuid "'+val(payload)+'"');
+      if(tag==='instant')return write(writer,'#inst "'+new Date(val(payload)).toISOString().replace(/Z$/,'-00:00')+'"');
     }
     if(typeof x==='string'){
       const escapes={'"':'\\"','\\':'\\\\','\b':'\\b','\f':'\\f','\n':'\\n','\r':'\\r','\t':'\\t'};
@@ -1390,6 +1400,18 @@ const native = (() => {
     inc:x=>val(x)+1, dec:x=>val(x)-1, multiply:(...xs)=>xs.reduce((a,b)=>a*val(b),1),
     less:(...xs)=>chain(xs,(a,b)=>a<b), greater:(...xs)=>chain(xs,(a,b)=>a>b), lessEqual:(...xs)=>chain(xs,(a,b)=>a<=b), greaterEqual:(...xs)=>chain(xs,(a,b)=>a>=b),
     str:(...xs)=>xs.map(x=>{x=val(x);if(x==null)return '';const kind=__rt.formKind(x);
+      if(kind==='compiler-literal'){
+        const tag=__rt.formName(x),payload=__rt.formLiteralPayload(x);
+        if(tag==='js-array')return arr(payload).map(v=>val(v)==null?'':core.str(v)).join(',');
+        if(tag==='js-object'){
+          const object={},pairs=literalObjectFields(x);
+          for(let i=0;i<pairs.length;i+=2)Object.defineProperty(object,pairs[i],{value:val(pairs[i+1]),enumerable:true});
+          return String(object);
+        }
+        if(tag==='regex')return String(regexValue(x));
+        if(tag==='instant')return String(new Date(val(payload)));
+        if(tag==='uuid')return val(payload);
+      }
       if(kind==='reduced'||__rt.cljIsAtom(x))return '[object Object]';
       if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}
       if(kind==='type')return __rt.formName(x);
@@ -1403,7 +1425,12 @@ const native = (() => {
     mod:(n,d)=>{n=val(n);d=val(d);return ((n%d)+d)%d;},
     numericEqual:(...xs)=>xs.length!==0&&core.equal(...xs),
     isArray:x=>{x=val(x);return __rt.formKind(x)==='compiler-literal'?__rt.formName(x)==='js-array':Array.isArray(x);},
-    isObject:x=>{x=val(x);const kind=__rt.formKind(x);return kind==='compiler-literal'?__rt.formName(x)==='js-object':kind===null&&!__rt.cljIsAtom(x)&&x!=null&&x.constructor===Object;},
+    isObject:x=>{x=val(x);const kind=__rt.formKind(x);if(kind==='compiler-literal'){
+      if(__rt.formName(x)!=='js-object')return false;
+      const pairs=literalObjectFields(x);
+      for(let i=0;i<pairs.length;i+=2)if(pairs[i]==='constructor')return val(pairs[i+1])===Object;
+      return true;
+    }return kind===null&&!__rt.cljIsAtom(x)&&x!=null&&x.constructor===Object;},
     isNumber:x=>typeof val(x)==='number', isFloat:x=>typeof val(x)==='number', isDouble:x=>typeof val(x)==='number',
     isInfinite:x=>val(x)===Infinity||val(x)===-Infinity,
     exInfo:(m,d)=>new Error(val(m)),
@@ -1584,7 +1611,7 @@ const native = (() => {
     makeIFn:f=>f,
     compilerForms:{
       jsArray:items=>__rt.formCompilerLiteral('js-array',vector(items)),
-      jsObject:pairs=>__rt.formCompilerLiteral('js-object',literalMap(literalObjectPairs(pairs))),
+      jsObject:pairs=>__rt.formCompilerLiteral('js-object',constantMap(literalObjectPairs(pairs))),
       withMeta:(value,meta)=>__rt.cljWithMeta(value,meta),
       gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
       namespaceContext:()=>{

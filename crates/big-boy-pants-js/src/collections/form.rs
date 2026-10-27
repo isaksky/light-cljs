@@ -38,7 +38,9 @@
 //! regexes and UUIDs a string, and instants a string or Number. Payloads may
 //! retain occurrences; construction validates their underlying form kind.
 //! `formName` reads the tag and `formLiteralPayload` reads the payload.
-//! Descriptors compare and hash by identity and are opaque to collection
+//! JS containers and regexes compare and hash by identity; UUIDs and instants
+//! compare by value, and queues compare and hash as sequential collections.
+//! Descriptors are otherwise opaque to collection
 //! operations. Publication checks the payload and metadata, so wrapping a
 //! mutable host value cannot make it shareable. GC traces both.
 //! `cljRealizeAll` realizes lazy values inside the payload and metadata,
@@ -655,6 +657,11 @@ impl FormObject {
         &self.body
     }
 
+    fn sequential(&self) -> bool {
+        self.kind().sequential()
+            || matches!(&self.body, FormBody::CompilerLiteral { tag, .. } if tag == "queue")
+    }
+
     pub(crate) fn is_map_entry(&self) -> bool {
         self.map_entry
     }
@@ -676,7 +683,12 @@ impl FormObject {
             FormBody::Set(set) => set.for_each(|k, _| f(k)),
             // A deftype's hash is its identity's; a record's reads its
             // field values and extension entries.
-            FormBody::Type(_) | FormBody::Reduced(_) | FormBody::CompilerLiteral { .. } => {}
+            FormBody::Type(_) | FormBody::Reduced(_) => {}
+            FormBody::CompilerLiteral { tag, payload } => {
+                if tag == "queue" || tag == "uuid" || tag == "instant" {
+                    f(payload);
+                }
+            }
             FormBody::Struct(s) => {
                 if s.info.record {
                     s.fields.for_each(&mut f);
@@ -2300,6 +2312,10 @@ fn seq_split(heap: &Heap, mut c: SeqCursor) -> Split {
                 tail: cons.rest.clone(),
                 source: Some(id),
             },
+            FormBody::CompilerLiteral { tag, payload } if tag == "queue" => {
+                c.tail = payload.clone();
+                continue;
+            }
             _ => return Split::Stop,
         };
     }
@@ -2436,6 +2452,25 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
         // comparison. It can succeed despite different hashes, also when
         // nested, so cached hashes cannot reject an equality comparison.
         match (&x.body, &y.body) {
+            (
+                FormBody::CompilerLiteral { tag: m, payload: p },
+                FormBody::CompilerLiteral { tag: n, payload: q },
+            ) if (m == "uuid" || m == "instant") && m == n => {
+                Outcome::Expand((ia, ib), vec![Step::Pair(p.clone(), q.clone())])
+            }
+            (FormBody::CompilerLiteral { tag, .. }, _)
+            | (_, FormBody::CompilerLiteral { tag, .. })
+                if tag == "queue" && x.sequential() && y.sequential() =>
+            {
+                Outcome::Expand(
+                    (ia, ib),
+                    vec![Step::Seq(
+                        SeqCursor::new(a),
+                        SeqCursor::new(b),
+                        Positions::default(),
+                    )],
+                )
+            }
             (FormBody::Keyword(m), FormBody::Keyword(n))
             | (FormBody::Symbol(m), FormBody::Symbol(n)) => Outcome::Decided(m.same(n)),
             // A lazy or cons sequence: its realized elements, sequentially
@@ -2443,7 +2478,7 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
             // and, until realized, equal only to itself.
             (FormBody::Lazy(_) | FormBody::Cons(_), _)
             | (_, FormBody::Lazy(_) | FormBody::Cons(_))
-                if x.kind().sequential() && y.kind().sequential() =>
+                if x.sequential() && y.sequential() =>
             {
                 Outcome::Expand(
                     (ia, ib),
@@ -2803,6 +2838,15 @@ fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
             }
             sum ^ string_hash(s.info.name.code_units())
         }
+        FormBody::CompilerLiteral { tag, payload } if tag == "uuid" || tag == "queue" => {
+            child_hash(heap, payload)
+        }
+        FormBody::CompilerLiteral { tag, payload } if tag == "instant" => {
+            match unwrap(heap, payload.clone()) {
+                Value::Number(n) => crate::vm::dispatch::to_int32(n),
+                value => scalar_hash(&value),
+            }
+        }
         // Identity-hashed: set where the object identity is known
         // ([`identity_hash`]); never reached through it.
         FormBody::Struct(_)
@@ -2817,6 +2861,11 @@ fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
 fn identity_hash(f: &FormObject, id: ObjectId) -> Option<i32> {
     match &f.body {
         FormBody::Struct(s) if s.info.record => None,
+        FormBody::CompilerLiteral { tag, .. }
+            if tag == "uuid" || tag == "instant" || tag == "queue" =>
+        {
+            None
+        }
         FormBody::Struct(_)
         | FormBody::Type(_)
         | FormBody::Reduced(_)

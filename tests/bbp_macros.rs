@@ -7194,6 +7194,204 @@ fn explicit_compiler_literals_match_quickjs() {
 }
 
 #[test]
+fn compiler_literal_operations_match_quickjs_at_every_pool_size() {
+    // One table covers every literal kind and both imported occurrences and
+    // literals constructed inside a macro. Helpers are compiled on demand.
+    let wide = (0..12)
+        .map(|i| format!("\"{i}\" {i} :k{i} {i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    for (label, literal, value, extra) in [
+        (
+            "array",
+            r#"#js [1 nil #js [2 nil "\uD800"]]"#.to_owned(),
+            None,
+            "nil",
+        ),
+        ("object", "#js {:a 1}".into(), None, "nil"),
+        (
+            "shadowed toString",
+            "#js {:toString nil}".into(),
+            None,
+            "nil",
+        ),
+        (
+            "wide object",
+            format!("#js {{{wide}}}"),
+            None,
+            "(let [v (cljs.reader/read-string (pr-str x))] [(pr-str v) v])",
+        ),
+        (
+            "shadowed constructor",
+            "#js {:constructor nil}".into(),
+            None,
+            "nil",
+        ),
+        (
+            "shadowed string constructor",
+            "#js {\"constructor\" 42}".into(),
+            None,
+            "nil",
+        ),
+        (
+            "regex",
+            r##"#"(?i)(a)(b)?""##.into(),
+            None,
+            r#"(pr-str (let [f re-find m re-matches p re-pattern s re-seq r regexp?
+                      matches (s x "A ab") first-match (first matches)]
+                  [(r x) (r (p x)) (re-find x "A") (f x "ab")
+                   (re-matches x "ab") (m x "cat") (f x "A")
+                   first-match (first matches) (vec (next matches)) (vec matches)]))"#,
+        ),
+        (
+            "empty regex",
+            r##"#"""##.into(),
+            None,
+            "(vec (re-seq x \"😀\"))",
+        ),
+        (
+            "global regex",
+            r##"#"(?g)a""##.into(),
+            None,
+            "[(re-find x \"a a\") (re-find x \"a a\") (re-find x \"a a\") (vec (re-seq x \"a a a\"))]",
+        ),
+        (
+            "instant",
+            r#"#inst "2024-01-02T03:04:05.000Z""#.into(),
+            None,
+            "(hash x)",
+        ),
+        (
+            "uuid",
+            r#"#uuid "123E4567-E89B-12D3-A456-426614174000""#.into(),
+            None,
+            "(hash x)",
+        ),
+        (
+            "queue",
+            "#queue []".into(),
+            Some("cljs.core.PersistentQueue.EMPTY"),
+            "[(= x []) (= [] x) (= x '()) (= '() x) (= (hash x) (hash [])) (get {x :found} [])]",
+        ),
+        ("big integer", "9007199254740993N".into(), None, "(hash x)"),
+    ] {
+        let root = temp_dir::TempDir::new("native-literal-operations");
+        // Date's default text and zone are host dependent. Compare conversion
+        // against the represented Date in each engine; readable literal text
+        // would fail this check. Every other kind compares the exact strings.
+        let strings = if label == "instant" {
+            r#"[(= (s x) (js* "String(new Date(1704164645000))"))
+                (= (str x) (js* "String(new Date(1704164645000))"))]"#
+        } else {
+            "[(try (s x) (catch :default e :conversion-error)) (try (str x) (catch :default e :conversion-error))]"
+        };
+        let body = format!(
+            r##"(let [e = h hash s str o object? a array? p pr-str]
+            [(e x y) (e x x) (= (h x) (h x))
+             (get {{x :same}} x) (get {{x :equal}} y :missing)
+             (if (e x y) (= (h x) (h y)) true)
+             (get (assoc {{0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11}} x :equal) y :missing)
+             {strings} (p x)
+             (binding [*print-level* 0] (p x))
+             (binding [*print-level* 1] (p [x]))
+             (binding [*print-level* 2 *print-length* 1] (p [x]))
+             (binding [*print-readably* false] (p x)) (print-str x)
+             [(o x) (a x) (sequential? x) (vector? x) (map? x) (string? x) (number? x)]
+             (pr-str-with-opts [x] {{:readably true :alt-impl
+               (fn [v w opts] (if (identical? v x)
+                   ((:fallback-impl opts) v w opts)
+                   (-write w "child")))}})
+             (mapv (fn [text] (try (cljs.reader/read-string text)
+                 (catch :default e (.-message e))))
+               ["#js {{1 2}}" "#js {{[] 2}}" "#js {{:ns/x 2}}"])
+             {extra}])"##
+        );
+        std::fs::write(
+            root.join("values.cljs"),
+            format!("(ns values (:require [cljs.reader])) (defn observe [x y] {body})"),
+        )
+        .unwrap();
+        let imported = value.unwrap_or("a");
+        let imported_y = value.unwrap_or("b");
+        let constructed = value
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("'{literal}"));
+        std::fs::write(root.join("macros.cljs"), format!(
+            "(ns macros (:require [values])) (defmacro probe [a b] (list 'quote [(values/observe {imported} {imported_y}) (values/observe {constructed} {constructed})]))"
+        )).unwrap();
+        // Separate consumers force publication and exercise actual pool scheduling.
+        for name in ["a", "b"] {
+            std::fs::write(root.join(format!("{name}.cljs")), format!(
+                "(ns {name} (:require [macros :refer [probe]])) (def result (probe {literal} {literal}))"
+            )).unwrap();
+        }
+        std::fs::write(
+            root.join("app.cljs"),
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/result b/result]))",
+        )
+        .unwrap();
+        let build = |native, jobs| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+                "app",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                light_cljs::compiler::EntryRecorders {
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("{label}, native={native}, jobs={jobs}: {e}"));
+            emit_js(&program)
+        };
+        let mut previous = None;
+        for jobs in [1, 2, 4, 8] {
+            let native = build(true, jobs);
+            if let Some(previous) = &previous {
+                assert_eq!(&native, previous, "{label}, jobs={jobs}");
+            }
+            #[cfg(feature = "quickjs")]
+            {
+                let legacy = build(false, jobs);
+                assert_eq!(
+                    program_output(&native),
+                    program_output(&legacy),
+                    "{label}, jobs={jobs}"
+                );
+                assert_eq!(native, legacy, "{label}, jobs={jobs}");
+            }
+            previous = Some(native);
+        }
+    }
+}
+
+#[test]
+fn malformed_compiler_literal_keys_are_located_errors() {
+    for key in ["1", "__rt.formVector(1)", "__rt.formKeyword('ns','key')"] {
+        let source = format!(
+            r#"(defmacro bad [] (js* "__rt.formCompilerLiteral('js-object',__rt.formMap({key},2))"))
+(bad)"#
+        );
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let message = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("2:1")
+                && message.contains("macro cljs.user/bad")
+                && message.contains("Invalid JS object literal key"),
+            "{key}: {message}"
+        );
+    }
+}
+
+#[test]
 fn arbitrary_host_values_remain_located_macro_errors() {
     for value in [
         "(js/Array. 1 2)",
