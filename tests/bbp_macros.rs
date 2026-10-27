@@ -662,6 +662,25 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "array bounds are rechecked after sequence reducer call getters",
+            r#"(deftype Q [tail] ISeqable (-seq [_] tail))
+               (deftype S [head tail]
+                 ISeqable (-seq [this] this)
+                 ISeq (-first [_] head) (-rest [_] tail))"#,
+            r#"(let [run (fn [wrap two size fail]
+                          (let [seen (js/Array.) xs (js/Array. 1 2)
+                                f (js* "({calls:0,get call(){~{}.push('get');if(++this.calls===~{})~{}.length=~{};return function(_,a,x){~{}.push(x===null?'null':x===undefined?'undefined':x);if(~{}&&x===null)throw new Error('nil head');return a;};}})" seen (if two 1 2) xs size seen fail)
+                                result (try (if two (reduce f (wrap xs)) (reduce f :seed (wrap xs)))
+                                            (catch :default e (.-message e)))]
+                            [result (vec seen) (.-length xs)]))]
+              (mapv (fn [wrap]
+                      (mapv (fn [two]
+                              [(run wrap two 0 false) (run wrap two 1 false)
+                               (run wrap two 4 false) (run wrap two 0 true)]) [false true]))
+                    [identity (fn [tail] (Q. tail)) (fn [tail] (S. 9 tail))]))"#,
+            "nil",
+        ),
+        (
             "direct kv protocol rejects non implementations",
             "(defrecord R [x])",
             r#"[(mapv (fn [c] (try (-kv-reduce c (fn [a k v] (conj a [k v])) [])

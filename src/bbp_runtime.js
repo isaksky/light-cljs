@@ -658,7 +658,7 @@ const native = (() => {
   };
   const firstOf = x => {
     const cursor = arraySeqs.get(x);
-    if (cursor !== undefined) return cursor.array[cursor.index];
+    if (cursor !== undefined) return cursor.index < cursor.array.length ? cursor.array[cursor.index] : null;
     const method = decl.first(x,nativeSeq(x) || val(x) == null);
     if (method !== null) return method.call(x,x);
     if (nativeSeq(x) || val(x) == null) return __rt.cljFirst(x);
