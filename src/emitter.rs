@@ -7562,6 +7562,81 @@ impl<'a> Emitter<'a> {
         write!(self.output, "temporary{temporary}_0").unwrap();
     }
 
+    /// Fixed calls keep the callee, its `.call` read and operands in the
+    /// enclosing frame. This preserves the adapter's evaluation order across
+    /// suspension without allocating a closure, a rest array and a spread
+    /// array on every call. Wider calls retain the bounded generic adapter.
+    fn native_fixed_invoke(&mut self, callee: ExprId, args: &[ExprId]) -> bool {
+        if !(1..=2).contains(&args.len()) {
+            return false;
+        }
+        let Some(operands) = self.operands.as_mut() else {
+            return false;
+        };
+        let base = operands.live;
+        operands.live += 4 + args.len();
+        operands.declared = operands.declared.max(operands.live);
+        write!(self.output, "(operand{base} = ").unwrap();
+        self.value(callee);
+        write!(
+            self.output,
+            ", operand{} = __rt.formValue(operand{base}), operand{} = __rt.formKind(operand{}), ",
+            base + 1,
+            base + 2,
+            base + 1,
+        )
+        .unwrap();
+        write!(self.output, "operand{} = (", base + 2).unwrap();
+        for (index, kind) in ["vector", "map", "set", "keyword", "symbol"]
+            .iter()
+            .enumerate()
+        {
+            if index > 0 {
+                self.output.push_str(" || ");
+            }
+            write!(self.output, "operand{} === '{kind}'", base + 2).unwrap();
+        }
+        write!(
+            self.output,
+            "), operand{} = operand{} ? null : operand{}.call, ",
+            base + 3,
+            base + 2,
+            base + 1,
+        )
+        .unwrap();
+        for (index, &arg) in args.iter().enumerate() {
+            write!(self.output, "operand{} = ", base + 4 + index).unwrap();
+            self.value(arg);
+            self.output.push_str(", ");
+        }
+        write!(
+            self.output,
+            "operand{} ? __rt.cljInvoke(operand{base}, operand{}, ",
+            base + 2,
+            base + 4,
+        )
+        .unwrap();
+        if args.len() == 2 {
+            write!(self.output, "operand{}", base + 5).unwrap();
+        } else {
+            self.output.push_str("null");
+        }
+        write!(
+            self.output,
+            ", {}) : Reflect.apply(operand{}, operand{}, [null",
+            args.len(),
+            base + 3,
+            base + 1,
+        )
+        .unwrap();
+        for index in 0..args.len() {
+            write!(self.output, ", operand{}", base + 4 + index).unwrap();
+        }
+        self.output.push_str("]))");
+        self.operands.as_mut().unwrap().live = base;
+        true
+    }
+
     fn value_expr(&mut self, id: ExprId) {
         self.used.insert(id);
         if let Some((head, operand)) = self.substitute
@@ -8648,6 +8723,9 @@ impl<'a> Emitter<'a> {
                     && specialized.is_none()
                     && !matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_))
                 {
+                    if self.native_fixed_invoke(*callee, args) {
+                        return;
+                    }
                     self.native_prepare_invoke();
                     self.output.push('(');
                     self.value(*callee);

@@ -4838,6 +4838,26 @@ fn native_failed_calls_do_not_evaluate_arguments() {
 }
 
 #[test]
+fn native_fixed_calls_retain_custom_function_calls_and_null_receivers() {
+    assert_native_matches_legacy(
+        r#"(defmacro m []
+            (let [seen (js/Array.)
+                  f (js* "(function(x) { 'use strict'; return this === null ? x : -1; })")
+                  _ (js/Object.defineProperty f "call"
+                      (js* "({configurable: true, get() { ~{}.push(0); return Function.prototype.call; }})" seen))
+                  first (f (do (.push seen 1)
+                               (js/Object.defineProperty f "call"
+                                 (js* "({value: function(_, x) { return x + 10; }})"))
+                               7))
+                  second (f 8)
+                  nested ((fn [a b] [a b]) ((fn [x] x) 2) ((fn [x] x) 3))]
+              [first second nested (vec seen)]))
+           (js/console.log (pr-str (m)))"#,
+        "[7 18 [2 3] [0 1]]\n",
+    );
+}
+
+#[test]
 fn partial_zero_arity_matches_legacy() {
     assert_native_matches_legacy(
         r#"(defmacro m []
