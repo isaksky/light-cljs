@@ -691,7 +691,7 @@ collisions. The artifact and macro-argument installer cases both returned
 `[true true]` before their fixes and `[true false]` afterward. The existing
 `PROTOCOL_FIXTURES` is byte-for-byte unchanged.
 
-Final code checkpoint `557b3f95`, rebased on `79f30c85`, macOS aarch64,
+Initial review-fix checkpoint `557b3f95`, rebased on `79f30c85`, macOS aarch64,
 Rust/Cargo 1.99.1, Node 26.12.1; Cargo builds use three jobs, compiler nextest
 runs use eight slots and engine/cargo-test runs use three test threads:
 
@@ -724,6 +724,21 @@ Native-only all-target Clippy also reports `unused_enumerate_index` in the
 unchanged `tests/execution.rs:1772`. Engine-free all-target Clippy still fails
 in existing evaluation tests/benches without evaluator APIs and on that
 unused index. These all-target limitations were not suppressed in source.
+
+After rebasing on comparison fixes at `5dfeade5`, checkpoint `64298ac4`
+passes the native-only 102 tests, native/QuickJS 450 tests (one library test
+ignored), engine all-target 2,145 tests and five doctests. Native/QuickJS
+all-target Clippy passes with only the three existing engine categories
+allowed; refreshed strict engine Clippy still reports eight library/nine
+engine-test diagnostics. Formatting passes. The incoming delta changes only
+the optional native engine and native macro fixtures, so the default V8,
+QuickJS-only and engine-free compiler results above are reused. The native
+and engine suites were rerun because those paths changed.
+
+Fresh release binaries from this integrated checkpoint use the same build
+commands as above: native-only SHA-256 `d1d0bcb81eb5fe13…` and default V8
+(`LIGHT_CLJS_V8_CACHE=require`) `4660879ae14e81c6…`. These are built from
+one commit, rather than using a historical V8 timing reference.
 
 ## Lazy sequences (light-cljs-479), October 26, 2026
 
