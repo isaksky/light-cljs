@@ -4846,6 +4846,13 @@ fn protocol_type_and_record_macros_match_the_legacy_compiler_and_run() {
 fn native_struct_core_protocol_operation_matrix_matches_legacy() {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
     let root = temp_dir::TempDir::new("native-core-protocols");
+    let empty_sequence_body = r#"(let [x (T. input) s seq f first rs rest n next r reduce]
+      [[(seq x) (s x) (apply seq [x])]
+       [(first x) (f x) (apply first [x])]
+       [(rest x) (rs x) (apply rest [x])]
+       [(next x) (n x) (apply next [x])]
+       [(reduce + x) (r + x) (apply reduce [+ x])
+        (reduce + 10 x) (r + 10 x) (apply reduce [+ 10 x])]])"#;
     for (label, declarations, body, expected) in [
         (
             "equiv-hash",
@@ -5011,6 +5018,31 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
                (run #(apply nth [i 0 :nf])) (run #(count c)) (run #(ct c)) (run #(apply count [c]))
                (get r :n) (get r :n :nf)])"#,
             r#"[7 "No protocol method ILookup/-lookup defined for this value" "No protocol method ILookup/-lookup defined for this value" "No protocol method ILookup/-lookup defined for this value" "No protocol method ILookup/-lookup defined for this value" 8 "No protocol method IIndexed/-nth defined for this value" "No protocol method IIndexed/-nth defined for this value" "No protocol method IIndexed/-nth defined for this value" "No protocol method ICounted/-count defined for this value" "No protocol method ICounted/-count defined for this value" "No protocol method ICounted/-count defined for this value" 9 3]"#,
+        ),
+        (
+            // An imported nil literal retains its source occurrence in the method result.
+            "nil-input-sequence-termination",
+            "(deftype T [end] ISeqable (-seq [_] end))",
+            empty_sequence_body,
+            "[[nil nil nil] [nil nil nil] [() () ()] [nil nil nil] [0 0 0 10 10 10]]",
+        ),
+        (
+            "nil-literal-sequence-termination",
+            "(deftype T [end] ISeqable (-seq [_] nil))",
+            empty_sequence_body,
+            "[[nil nil nil] [nil nil nil] [() () ()] [nil nil nil] [0 0 0 10 10 10]]",
+        ),
+        (
+            "plain-nil-sequence-termination",
+            r#"(deftype T [end] ISeqable (-seq [_] (js* "null")))"#,
+            empty_sequence_body,
+            "[[nil nil nil] [nil nil nil] [() () ()] [nil nil nil] [0 0 0 10 10 10]]",
+        ),
+        (
+            "empty-list-sequence-termination",
+            "(deftype T [end] ISeqable (-seq [_] ()))",
+            empty_sequence_body,
+            "[[() () ()] [nil nil nil] [() () ()] [nil nil nil] [nil nil nil 10 10 10]]",
         ),
         (
             "undefined-sequence-termination",
@@ -5195,12 +5227,12 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
     ] {
         std::fs::write(
             root.join("protocols.cljs"),
-            format!("(ns protocols) {declarations} (defmacro probe [] (list 'quote {body}))"),
+            format!("(ns protocols) {declarations} (defmacro probe [input] (list 'quote {body}))"),
         )
         .unwrap();
         std::fs::write(
             root.join("app.cljs"),
-            "(ns app (:require [protocols :refer [probe]])) (js/console.log (pr-str (probe)))",
+            "(ns app (:require [protocols :refer [probe]])) (js/console.log (pr-str (probe nil)))",
         )
         .unwrap();
         let mut reference = None;

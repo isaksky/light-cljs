@@ -944,7 +944,11 @@ const native = (() => {
     const builtin = value == null || typeof value === 'string' || Array.isArray(value) || nativeSeq(x)
       || kind === 'vector' || kind === 'map' || kind === 'record' || kind === 'set';
     const method = decl.seq(x,builtin);
-    if (method !== null) return method.call(x,x);
+    if (method !== null) {
+      const result = method.call(x,x);
+      // Imported nil carries a source occurrence; traversal still ends here.
+      return val(result) == null ? null : result;
+    }
     if (!builtin) throw new Error(core.str(x) + ' is not ISeqable');
     return Array.isArray(value) ? arraySeq(value, 0) : __rt.cljSeq(x);
   };
