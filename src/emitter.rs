@@ -467,6 +467,23 @@ fn emit_js_mode(
         emitter.brand_types = brand_types;
         emitter.native_forms = native_forms;
         if native_forms {
+            // A deferred unit's arena can include the entire previously analyzed
+            // program. Build this index only for the native emission that uses it.
+            emitter.native_multimethod_arguments = program
+                .exprs
+                .iter()
+                .filter_map(|expr| match &expr.kind {
+                    ExprKind::Call { callee, args }
+                        if matches!(
+                            program.exprs[callee.0].kind,
+                            ExprKind::CoreFn(crate::CoreFnId::AddMethod)
+                        ) && args.len() == 3 =>
+                    {
+                        Some(args[2])
+                    }
+                    _ => None,
+                })
+                .collect();
             emitter.native_replaced_core = program
                 .exprs
                 .iter()
@@ -1955,21 +1972,7 @@ impl<'a> Emitter<'a> {
             native_replaced_core: HashSet::new(),
             native_protocol_target: None,
             native_multimethod_function: false,
-            native_multimethod_arguments: program
-                .exprs
-                .iter()
-                .filter_map(|expr| match &expr.kind {
-                    ExprKind::Call { callee, args }
-                        if matches!(
-                            program.exprs[callee.0].kind,
-                            ExprKind::CoreFn(crate::CoreFnId::AddMethod)
-                        ) && args.len() == 3 =>
-                    {
-                        Some(args[2])
-                    }
-                    _ => None,
-                })
-                .collect(),
+            native_multimethod_arguments: HashSet::new(),
             native_arguments: Default::default(),
             native_temporary: 0,
             native_invoke_temporary: None,
