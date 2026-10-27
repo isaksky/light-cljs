@@ -1036,11 +1036,16 @@ overlay: a pending shared root can capture a binding without touching an atom,
 so later callers must not initialize it first. A shared initializer reserves
 its dependency before waiting for the lane, allowing earlier callers to lend
 their position. Once the lane opens, the earliest caller's task executes the
-factory, even if a later task reserved it first. This retains the caller's
+factory, even if a later task reserved it first. Selection rechecks each
+candidate's caller ancestry, including positions lent to helper producers
+after reservation; inheritance through the initializer being selected cannot
+change the candidates' relative order. This retains the caller's
 overlays and mutable binding values by identity, with no factory effects to
 replay or task-owned objects to publish. Bindings installed inside that
-initializer still override its caller's bindings. Cancellation before task
-selection fails the reserved claim and wakes its consumers.
+initializer still override its caller's bindings. Cancelling the current owner
+before task selection fails the reserved claim and wakes its consumers.
+Cancelling a superseded reserver withdraws that candidate and leaves the
+transferred claim and its consumers alive.
 The pool regressions force a later initializer to park, check inherited lane
 progress, and verify scalar and mutable bindings, nested overrides,
 restoration and once-only effects. The scheduling regression uses
@@ -1518,3 +1523,21 @@ using a temporary merge of `13ac8b52` and unlanded light-cljs-518 at
 `1387195c50ce89d16a11ac8b8318ff56a9d8cae9`). Both pass binding services and
 report the identical `compile-form` diagnostic above. That merge was aborted,
 and the native-only CLI was rebuilt from this branch; research was untouched.
+
+The second review fix at `113db5f1`, rebased on `b3b655cc`, retains candidate
+activity ancestry and rechecks inherited caller order at task selection. Its
+deterministic evaluator regression first reproduced `"root"` instead of
+`"helper"` when the earliest caller reached the initializer indirectly. It
+also covers an earlier waiter arriving after both candidates reserve. Separate
+gated tests cancel a superseded reserver or its new owner with a real consumer
+waiting on the initializer: the former preserves one factory effect, while
+the latter wakes all consumers with failure before any factory effect. Both
+paths clear pending claims and task lane guards.
+
+On that rebased source, all 140 selected native evaluator/lane/macro/reader/Proxy
+checks pass with `LIGHT_CLJS_STRESS_SEEDS=12`, three build jobs and eight test
+workers. The native-only debug CLI was rebuilt and both documented Penpot
+entries repeated with the same five absolute read-only roots and every budget
+above, without a temporary merge because light-cljs-518 is now landed. Both
+exit 1 with the identical `compile-form` diagnostic above; the binding-service
+boundary remains passed and light-cljs-521 remains the next distinct failure.
