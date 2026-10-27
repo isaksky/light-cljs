@@ -1618,7 +1618,8 @@ native structs containing immutable fields and engine atom handles. The
 single-product declaration uses the existing task-owned initializer protocol:
 constructor/dispatch-expression effects run once in the earliest caller's
 binding context, retaining suspended frames and lane inheritance. A repeated
-`defmulti` preserves the original definition.
+`defmulti` preserves the original definition; a declaration alone does not
+count as a definition for `defonce`.
 
 Method declarations use the same source frontier as protocols. Each method
 bundle initializes once; its computed dispatch key and other effects are not
@@ -1628,7 +1629,8 @@ dispatch/preference maps are materialized in source order, cached by history
 identity and frontier, and searched using native value equality and `isa?`.
 Dispatch supports exact keys, nested vector keys, explicit or global hierarchies,
 default methods, direct preferences, removal and reset. Hierarchy mutations are
-observed on every lookup. The preference behavior matches the pinned CLJS/legacy
+observed on every lookup. Exact table entries win before hierarchy/preference
+search, including a preference for an ancestor. The preference behavior matches the pinned CLJS/legacy
 runtime, whose recursive preference walks do not return inherited matches.
 
 A native multimethod's dispatch and method functions resolve runtime services
@@ -1644,9 +1646,9 @@ its effects. `demanded_multimethods_reject_task_owned_dispatch_without_replaying
 checks this boundary at all four pool sizes.
 
 `demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size` is one
-table-driven native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
+12-row native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
 JavaScript as well as literal results. It covers scalar and structural keys,
-keyword/variadic dispatch, nested hierarchy dispatch, global hierarchy changes,
+constructor/function keys, keyword/variadic dispatch, nested hierarchy dispatch, global hierarchy changes,
 preferences and ambiguity/missing-method errors, mutations, explicit construction,
 source-frontier replacement, defonce, and binding restoration.
 `demanded_multimethod_effects_run_once_across_suspension_and_lending` checks shared

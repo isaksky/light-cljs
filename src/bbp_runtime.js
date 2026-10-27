@@ -293,7 +293,7 @@ const decl = (() => {
       // earlier definition's.
       const old = Object.getOwnPropertyDescriptor(globalThis.__lightCompilerRoots, name);
       if (old !== undefined && 'value' in old) continue;
-      Object.defineProperty(globalThis.__lightCompilerRoots, name, {configurable: true, get: () => { force(b); return b.products[name]; }});
+      globalThis.__lightInstallCompilerProduct(name, () => { force(b); return b.products[name]; });
     }
     for (const [protocol] of indices) {
       let list = extensions.get(protocol);
@@ -1393,6 +1393,13 @@ const native = (() => {
 })();
 globalThis.__lightNativeRuntime=native;
 const roots=new Map();
+// Replacing an ordinary declaration with a bundle must also retire its
+// unavailable unit slot. A later defonce then sees the bundle's definition,
+// rather than the stale declaration that preceded it.
+globalThis.__lightInstallCompilerProduct=(name,read)=>{
+  roots.delete(name);
+  Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:read});
+};
 // Each invocation of this runtime belongs to one VM task. Overlay snapshots
 // stay in its saved frames across need/producer waits and context lending;
 // saving a binding must never force, replace, or reset a root's slot.
@@ -1428,7 +1435,7 @@ globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
   if(initialize===null)return undefined;
   const value=initialize();
   if(bindingOverlays.has(name))bindingOverlays.set(name,value);
-  else Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,writable:true,value});
+  else {roots.delete(name);Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,writable:true,value});}
   return value;
 };
 let initializerSerial=0;

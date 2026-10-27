@@ -2775,6 +2775,7 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             r#"
           (declare m)
           (defmulti m identity)
+          (defmulti m (throw (js/Error. "declared defonce replay")))
           (defmethod m :x [_] :declared)
           (defmethod m :default [_] :fallback)"#,
             "[(m :x) (m :other)]",
