@@ -173,5 +173,37 @@
     check(get(m) === 4);
     delete m.get;
     check(get(m) === 2);
+
+    // Rust-side constructor, instanceof and bind helpers must read the
+    // current prototype and metadata, including dynamically spelled keys.
+    function C(x, y) { this.value = x + y; }
+    let oldPrototype = C.prototype;
+    let firstInstance = new C(1, 2);
+    for (let i = 0; i < 8; i++) {
+        check(new C(i, 1) instanceof C && C['proto' + 'type'] === oldPrototype);
+    }
+    C.prototype = {marker: 17};
+    let secondInstance = new C(3, 4);
+    check(secondInstance.value === 7 && secondInstance.marker === 17 &&
+          secondInstance instanceof C && !(firstInstance instanceof C));
+    check(C['prototyp\ud800'] === undefined && C['lengt\ud800'] === undefined);
+    let metadataReads = 0;
+    Object.defineProperty(C, 'length', {
+        configurable: true, get() { metadataReads++; return 3; }
+    });
+    Object.defineProperty(C, 'name', {
+        configurable: true, get() { metadataReads++; return 'Changed'; }
+    });
+    let bound = C.bind(null, 5);
+    check(metadataReads === 2 && bound.length === 2 && bound.name === 'bound Changed');
+    check(new bound(6).value === 11 && new bound(6) instanceof C);
+    let prototypeDescriptor = Object.getOwnPropertyDescriptor(C, 'prototype');
+    check(prototypeDescriptor.writable && !prototypeDescriptor.enumerable &&
+          !prototypeDescriptor.configurable && prototypeDescriptor.value === C.prototype);
+    C.prototype = undefined;
+    check(Object.getPrototypeOf(new C(7, 8)) === Object.prototype);
+    let invalidPrototype = false;
+    try { secondInstance instanceof C; } catch (e) { invalidPrototype = e instanceof TypeError; }
+    check(invalidPrototype);
     return true;
 })()
