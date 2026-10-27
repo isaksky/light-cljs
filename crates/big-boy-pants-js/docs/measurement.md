@@ -186,6 +186,19 @@ overrides are Node-checked. Enabling mutable shared intrinsics would change
 the engine contract and is outside this change. The final measurement record
 is documentation-only; it reuses the verified engine tree above.
 
+Review correction `8b63e6f1`, rebased onto `7cd6701d`, converts a matched
+search offset through its integral array index so `indexOf`/`lastIndexOf`
+return positive zero even for negative-zero or negative-fractional fromIndex.
+The expanded cache fixture checks `Object.is` and reciprocals, signed-zero
+and NaN needles, negative/fractional/infinite fromIndex, and `findIndex`
+predicate indices on arrays and array-like receivers. It passed unchanged in
+Node, failed at the signed-zero assertion before the correction, and passed
+in both debug tests and the rebuilt release CLI afterward. The rebased engine
+passed all **2,132 tests and seven doctests**, formatter and whitespace checks;
+strict Clippy retained the same nine baseline diagnostics, with the isolated
+lint command above passing. The benchmark tables retain their named original
+revisions; the correction changes only the search result leaf.
+
 ## Automatic collection pauses (2026-10-25)
 
 Measured engine commit `84ac7c0e`, macOS aarch64, virtual Apple M3 Ultra
