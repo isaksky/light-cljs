@@ -640,12 +640,16 @@ const native = (() => {
   // In particular their identity can publish without retaining a task's JS
   // runtime. Calls enter the consuming task's runtime through its global.
   const multi = (() => {
-    const ty=__rt.structType('cljs.core/MultiFn',__rt.formVector('name','dispatch_fn','default_dispatch_val','hierarchy','method_table','prefer_table','method_cache','cached_hierarchy'),false);
+    const ty=__rt.structType('cljs.core/MultiFn',__rt.formVector('name','dispatch_fn','default_dispatch_val','hierarchy','method_table','prefer_table','method_cache','cached_hierarchy','__journal','__initial_methods','__initial_prefs'),false);
     const is=x=>{const t=__rt.structTypeOf(val(x));return t!==null&&__rt.formName(t)==='cljs.core/MultiFn';};
     const field=(m,k)=>__rt.structField(val(m),k);
     const text=x=>printStr(x);
     const empty=()=>arrayMap([]), kw=x=>__rt.cljKeyword(x);
     const ident=x=>{const k=__rt.formKind(val(x));return k==='symbol'||k==='keyword';};
+    const constructor=x=>typeof val(x)==='function'||__rt.formKind(val(x))==='type';
+    // Immutable native types stand for the same constructor functions as
+    // deftype/defrecord in emitted JavaScript (light-cljs-478).
+    const constructorValue=x=>__rt.formKind(val(x))==='type'?MultiFn:val(x);
     const part=(h,k)=>get(h,kw(k));
     const makeHierarchy=(...a)=>a.length?arity(a.length):arrayMap([kw('parents'),empty(),kw('ancestors'),empty(),kw('descendants'),empty()]);
     let globalHierarchy;
@@ -655,9 +659,9 @@ const native = (() => {
     const isaIn=(h,child,parent)=>{
       if(__rt.formEquals(child,parent))return true;
       child=val(child);parent=val(parent);
-      if(typeof child==='function'&&typeof parent==='function'&&child instanceof parent)return true;
+      if(constructor(child)&&typeof parent==='function'&&constructorValue(child) instanceof parent)return true;
       if(__rt.cljContains(get(part(h,'ancestors'),child),parent))return true;
-      if(typeof child==='function')for(let base=Object.getPrototypeOf(child);base!==null;base=Object.getPrototypeOf(base))
+      if(constructor(child))for(let base=Object.getPrototypeOf(constructorValue(child));base!==null;base=Object.getPrototypeOf(base))
         if(__rt.cljContains(get(part(h,'ancestors'),base),parent))return true;
       return __rt.formKind(child)==='vector'&&__rt.formKind(parent)==='vector'&&__rt.formCount(child)===__rt.formCount(parent)
         &&arr(child).every((x,i)=>isaIn(h,x,__rt.formNth(parent,i)));
@@ -666,9 +670,9 @@ const native = (() => {
       if(a.length===1)a=[deref(getGlobalHierarchy()),a[0]];
       if(a.length!==2)return arity(a.length);
       let result=get(part(a[0],kind),a[1]);
-      if(typeof val(a[1])==='function'){
+      if(constructor(a[1])){
         if(kind==='descendants')throw new Error("Can't get descendants of constructors");
-        let base=Object.getPrototypeOf(val(a[1]));
+        let base=Object.getPrototypeOf(constructorValue(a[1]));
         while(base!==null){result=__rt.cljConj(result??set([]),base);if(kind==='parents')break;
           for(const x of arr(get(part(a[0],kind),base)))result=__rt.cljConj(result,x);
           base=Object.getPrototypeOf(base);}
@@ -677,11 +681,11 @@ const native = (() => {
     };
     const derive=(...a)=>{
       if(a.length===2){const [tag,parent]=a;
-        if(!ident(parent)||core.namespace(parent)===null||!(typeof val(tag)==='function'||ident(tag)&&core.namespace(tag)!==null))throw new Error('Assert failed: qualified derive tags');
+        if(!ident(parent)||core.namespace(parent)===null||!(constructor(tag)||ident(tag)&&core.namespace(tag)!==null))throw new Error('Assert failed: qualified derive tags');
         const ref=getGlobalHierarchy();reset(ref,derive(deref(ref),tag,parent));return null;}
       if(a.length!==3)return arity(a.length);
       const [h,tag,parent]=a;
-      if(__rt.formEquals(tag,parent)||!(typeof val(tag)==='function'||ident(tag))||!ident(parent))throw new Error('Assert failed: derive tags');
+      if(__rt.formEquals(tag,parent)||!(constructor(tag)||ident(tag))||!ident(parent))throw new Error('Assert failed: derive tags');
       const p=part(h,'parents'),anc=part(h,'ancestors'),desc=part(h,'descendants');
       if(__rt.cljContains(get(p,tag),parent))return h;
       if(__rt.cljContains(get(anc,tag),parent))throw new Error(text(tag)+'already has'+text(parent)+'as ancestor');
@@ -704,7 +708,8 @@ const native = (() => {
       return result;
     };
     function MultiFn(name,dispatch,defaultValue,hierarchy,methods,prefs,cache,cached){
-      return __rt.structNew(ty,name,dispatch,defaultValue,hierarchy,methods,prefs,cache,cached);
+      return __rt.structNew(ty,name,dispatch,defaultValue,hierarchy,methods,prefs,cache,cached,
+        atom(empty()),deref(methods),deref(prefs));
     }
     const demand=m=>decl.demandMulti(text(field(m,'name')));
     // A persistent map of declaration order to operations. Materializing at
@@ -712,19 +717,24 @@ const native = (() => {
     // Runtime mutations follow every source declaration, in lane order.
     const change=(m,op,x=null,y=null)=>{
       if(!decl.installingMulti())demand(m);
-      const ref=field(m,'method_table'),history=deref(ref),order=decl.multiOrder();
+      const ref=field(m,'__journal'),history=deref(ref),order=decl.multiOrder();
       const key=order===0?-(__rt.cljCount(history)+1):order;
       reset(ref,__rt.cljAssoc(history,key,__rt.cljConj(get(history,key,vector([])),vector([op,x,y]))));
+      // Retained constructor atoms remain language-level tables. Installation
+      // must not recursively demand the bundle (or any later declarations).
+      const view=tables(m,false);
+      reset(field(m,'method_cache'),view.methods);
+      reset(field(m,'cached_hierarchy'),op==='reset'?null:deref(field(m,'hierarchy')));
       return m;
     };
     const views=new WeakMap();
-    const tables=m=>{
-      demand(m);
-      const history=deref(field(m,'method_table')),frontier=decl.multiFrontier(),old=views.get(val(m));
-      if(old!==undefined&&old.history===history&&old.frontier===frontier)return old;
+    const tables=(m,force=true)=>{
+      if(force)demand(m);
+      const history=deref(field(m,'__journal')),frontier=decl.multiFrontier(),old=views.get(val(m));
+      if(old!==undefined&&old.history===history&&old.frontier===frontier){publish(m,old);return old;}
       const entries=arr(history).filter(e=>__rt.formNth(e,0)<=decl.multiFrontier())
         .sort((a,b)=>{const x=__rt.formNth(a,0),y=__rt.formNth(b,0);return (x<0)-(y<0)||(x<0?y-x:x-y);});
-      let methods=empty(),prefs=empty();
+      let methods=field(m,'__initial_methods'),prefs=field(m,'__initial_prefs');
       for(const entry of entries)for(const e of arr(__rt.formNth(entry,1))){
         const op=__rt.formNth(e,0),x=__rt.formNth(e,1),y=__rt.formNth(e,2);
         if(op==='add')methods=__rt.cljAssoc(methods,x,y);
@@ -732,7 +742,12 @@ const native = (() => {
         else if(op==='reset'){methods=empty();prefs=empty();}
         else prefs=__rt.cljAssoc(prefs,x,__rt.cljConj(get(prefs,x,set([])),y));
       }
-      const view={methods,prefs,history,frontier};views.set(val(m),view);return view;
+      const view={methods,prefs,history,frontier};views.set(val(m),view);publish(m,view);return view;
+    };
+    const publish=(m,view)=>{
+      for(const [key,value] of [['method_table',view.methods],['prefer_table',view.prefs]]){
+        const ref=field(m,key);if(deref(ref)!==value)reset(ref,value);
+      }
     };
     const getMethod=(m,dispatch)=>{
       const {methods,prefs}=tables(m),h=deref(field(m,'hierarchy'));
@@ -1109,6 +1124,8 @@ const native = (() => {
   const intoReducer = (...a) => a.length === 1 ? a[0] : a.length === 2 ? __rt.cljConj(a[0], a[1]) : arity(a.length);
   const core = {
     MultiFn:multi.MultiFn, MultiFnFactory:(...a)=>new multi.MultiFn(...a),
+    isFn:x=>typeof val(x)==='function'||decl.satisfies('Fn',x),
+    isIFn:x=>core.isFn(x)||multi.is(x)||['keyword','symbol','vector','map','set'].includes(__rt.formKind(val(x)))||decl.satisfies('IFn',x),
     invokeMulti:(m,args)=>multi.dispatch(m,args),
     makeHierarchy:multi.makeHierarchy,getGlobalHierarchy:multi.getGlobalHierarchy,isa:multi.isa,
     parents:(...a)=>multi.relation('parents',...a),ancestors:(...a)=>multi.relation('ancestors',...a),descendants:(...a)=>multi.relation('descendants',...a),
@@ -1191,7 +1208,7 @@ const native = (() => {
       if(kind==='type')return __rt.formName(x);
       if(kind==='struct'||kind==='record')return String(interop(x));
       if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const {buffer,writer}=stringWriter();printWriterImpl(x,writer,null,true);flushWriter(writer);return buffer.text;}finally{core.printReadably=saved;}}return String(x);}).join(''),
-    identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
+    identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>c===multi.MultiFn?multi.is(x):__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     divide:(...xs)=>xs.length===0?NaN:xs.length===1?1/val(xs[0]):xs.slice(1).reduce((a,b)=>a/val(b),val(xs[0])),
     int:x=>val(x)|0, long:x=>fix(val(x)), byte:x=>x, short:x=>x, float:x=>x, double:x=>x,
@@ -1396,7 +1413,9 @@ const roots=new Map();
 // A bundle replaces an unavailable declaration's getter. Remember that it
 // defines the name, retaining the unit record for later ordinary registrations.
 globalThis.__lightInstallCompilerProduct=(name,read)=>{
-  const previous=roots.get(name);if(previous!==undefined)previous.defined=true;
+  const previous=roots.get(name);
+  if(previous!==undefined)previous.defined=true;
+  else roots.set(name,{unit:null,defined:true});
   Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:read});
 };
 // Each invocation of this runtime belongs to one VM task. Overlay snapshots

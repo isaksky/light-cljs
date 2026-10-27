@@ -5758,7 +5758,16 @@ impl<'a> Emitter<'a> {
     }
 
     fn function(&mut self, name: Option<LocalId>, methods: &[FnMethod], macro_function: bool) {
+        // A referenced dispatcher can be compiled in another namespace before
+        // its MultiFn consumer is analyzed. Every ordinary native function
+        // resolves runtime services in its calling task and keeps a shareable
+        // arity dispatcher; actual user captures still undergo publication.
+        let previous = self.native_multimethod_function;
+        if self.native_forms && !macro_function {
+            self.native_multimethod_function = true;
+        }
         self.function_with_ifn_captures(name, methods, macro_function, false);
+        self.native_multimethod_function = previous;
     }
 
     fn function_with_ifn_captures(
@@ -8572,9 +8581,9 @@ impl<'a> Emitter<'a> {
                 if self.native_forms
                     && !matches!(self.program.exprs[class.0].kind, ExprKind::JsGlobal(_)) =>
             {
-                self.output.push_str(
-                    "((x, c) => __rt.formKind(c) === \"type\" ? __rt.structTypeOf(x) === c : x instanceof c)(",
-                );
+                self.output.push_str("((x, c) => ");
+                self.rt(RuntimeName::core("isInstance"));
+                self.output.push_str("(c, x))(");
                 self.value(*value);
                 self.output.push_str(", ");
                 self.value(*class);

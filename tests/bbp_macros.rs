@@ -2644,6 +2644,96 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
     // declarations and dispatch. Inline --text uses a different bootstrap.
     for (label, declarations, body, expected) in [
         (
+            "bundle product replacement without a declaration",
+            r#"
+          (defmulti replacement identity)
+          (defmethod replacement :x [_] :old)
+          (def replacement (fn [_] :replacement))"#,
+            "(replacement :x)",
+            ":replacement",
+        ),
+        (
+            "named dispatch functions",
+            r#"
+          (defn key-of [x] (name x))
+          (defn many [& xs] (name (first xs)))
+          (defmulti m key-of)
+          (defmethod m "x" [_] :fixed)
+          (defmulti n many)
+          (defmethod n "x" [& xs] (count xs))"#,
+            "[(m :x) (n :x) (n :x :y :z)]",
+            "[:fixed 1 3]",
+        ),
+        (
+            "dispatch functions from another namespace",
+            r#"
+          (def alias dispatch/key-of)
+          (defmulti m alias)
+          (defmethod m "x" [_] :fixed)
+          (defmulti n dispatch/arities)
+          (defmethod n "x" [& xs] (count xs))"#,
+            "[(m :x) (n :x) (n :x :y :z)]",
+            "[:fixed 1 3]",
+        ),
+        (
+            "seeded methods, preferences and retained public tables",
+            r#"
+          (def h (atom (-> (make-hierarchy) (derive :dog :pet) (derive :dog :animal))))
+          (def method-state (atom {:pet (fn [_] :pet) :animal (fn [_] :animal) 1 (fn [_] :number)}))
+          (def prefer-state (atom {:pet #{:animal}}))
+          (def method-cache (atom {}))
+          (def cached-hierarchy (atom nil))
+          (def m (MultiFn. 'seeded identity :fallback h method-state prefer-state method-cache cached-hierarchy))"#,
+            r#"(let [before [(m :dog) (m 1) ((get-method m :pet) :pet)
+                              (= #{:pet :animal 1} (set (keys (methods m))))
+                              (= @method-state (methods m)) (= @prefer-state (prefers m))]
+                     removed (identical? m (remove-method m :pet))
+                     after-remove [(m :dog) (not (contains? @method-state :pet))]
+                     preferred (= @h (prefer-method m :a :b))
+                     after-prefer [(= {:pet #{:animal} :a #{:b}} @prefer-state)
+                                   (= @prefer-state (prefers m))]
+                     added (identical? m (-add-method m :fallback (fn [_] :fallback)))
+                     after-add [((get @method-state :fallback) nil) (m :missing)]
+                     cleared (identical? m (remove-all-methods m))]
+                 [before removed after-remove preferred after-prefer added after-add cleared
+                  @method-state @prefer-state @method-cache @cached-hierarchy (get-method m :missing)])"#,
+            "[[:pet :number :pet true true true] true [:animal true] true [true true] true [:fallback :fallback] true {} {} {} nil nil]",
+        ),
+        (
+            "native type hierarchy tags",
+            r#"
+          (deftype T [])
+          (defrecord R [])
+          (def h (atom (-> (make-hierarchy) (derive T ::pet) (derive R ::pet) (derive ::pet ::animal))))
+          (defmulti m identity :hierarchy h)
+          (defmethod m ::animal [_] :animal)
+          (defmethod m :default [_] :fallback)"#,
+            r#"(let [local [(m T) (m R) (isa? @h T ::animal) (isa? @h R ::animal)
+                            (isa? @h T js/Function) (isa? @h R js/Object)
+                            (contains? (parents @h T) ::pet) (contains? (ancestors @h R) ::animal)
+                            (try (descendants @h T) (catch :default e (= "Can't get descendants of constructors" (.-message e))))]]
+                 (derive T ::global) (derive R ::global)
+                 (let [global [(isa? T ::global) (isa? R ::global)]]
+                   (underive T ::global) (underive R ::global)
+                   (swap! h underive T ::pet)
+                   [local global (isa? T ::global) (isa? R ::global) (m T) (m R)]))"#,
+            "[[:animal :animal true true true true true true true] [true true] false false :fallback :animal]",
+        ),
+        (
+            "multimethod instances and callable predicates",
+            r#"
+          (defmulti m identity)
+          (defmethod m :x [_] :x)
+          (def C MultiFn)
+          (def check instance?)
+          (def function? fn?)
+          (def callable? ifn?)"#,
+            "[(instance? MultiFn m) (instance? C m) (check MultiFn m) (check C m)
+              (fn? m) (ifn? m) (function? m) (callable? m) (instance? MultiFn {})
+              (fn? identity) (ifn? identity) (fn? :x) (ifn? :x)]",
+            "[true true true true false true false true false true true false true]",
+        ),
+        (
             "scalar and structural keys",
             r#"
           (defmulti m identity)
@@ -2801,8 +2891,13 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
     ] {
         let root = temp_dir::TempDir::new("native-multimethod-shapes");
         std::fs::write(
+            root.join("dispatch.cljs"),
+            "(ns dispatch) (defn key-of [x] (name x)) (defn arities ([x] (name x)) ([x & _] (name x)))",
+        )
+        .unwrap();
+        std::fs::write(
             root.join("helpers.cljs"),
-            format!("(ns helpers) {declarations} (defmacro probe [] (list 'quote {body}))"),
+            format!("(ns helpers (:require [dispatch :as dispatch])) {declarations} (defmacro probe [] (list 'quote {body}))"),
         )
         .unwrap();
         std::fs::write(
