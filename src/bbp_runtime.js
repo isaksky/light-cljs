@@ -664,6 +664,7 @@ const native = (() => {
     if (nativeSeq(x) || val(x) == null) return __rt.cljFirst(x);
     const s = reduceSeqOf(x);
     if (s == null) return null;
+    if (arraySeqs.has(s)) return firstOf(s);
     const first = decl.first(s,nativeSeq(s));
     return first === null ? __rt.cljFirst(s) : first.call(s,s);
   };
@@ -675,6 +676,7 @@ const native = (() => {
     if (nativeSeq(x) || val(x) == null) return __rt.cljRest(x);
     const s = reduceSeqOf(x);
     if (s == null) return __rt.formList();
+    if (arraySeqs.has(s)) return restOf(s);
     const rest = decl.rest(s,nativeSeq(s));
     return rest === null ? __rt.cljRest(s) : rest.call(s,s);
   };
@@ -806,8 +808,11 @@ const native = (() => {
   // nested markers let a flattening reducer propagate termination outward.
   const reduceSeq = (f, init, c) => {
     let acc = init;
+    const indexedArray = arraySeqs.has(c) || Array.isArray(val(c));
     for (let s = reduceSeqOf(c); s != null; s = nextOf(s)) {
-      acc = invoke(f, acc, firstOf(s));
+      // Legacy array traversal reads the item before `.call`; sequence
+      // reduction looks up `.call` before invoking a user-defined -first.
+      acc = indexedArray ? invoke(f, acc, firstOf(s)) : prepareInvoke(f)(acc, firstOf(s));
       if (__rt.cljIsReduced(acc)) return __rt.cljUnreduced(acc);
     }
     return acc;

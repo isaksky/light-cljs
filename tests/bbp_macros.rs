@@ -600,6 +600,68 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "reducer call lookup precedes sequence first effects and exceptions",
+            r#"(deftype S [values seen fail]
+                 ISeqable (-seq [this] (.push seen "seq") this)
+                 ISeq (-first [_] (.push seen "first")
+                                 (if fail (throw (js/Error. "first failed")) (first values)))
+                      (-rest [_] (throw (js/Error. "rest called")))
+                 INext (-next [_] (.push seen "next")
+                                 (let [tail (next values)] (if tail (S. tail seen fail) nil))))"#,
+            r#"(let [run (fn [mode two]
+                          (let [seen (js/Array.)
+                                f (js* "({get call(){const target=this;~{}.push('get');if(~{}==='get-throws')throw new Error('get failed');return function(receiver,a,x){~{}.push(this===target,receiver===null,'step');return a+x;};}})" seen mode seen)
+                                s (S. '(1 2) seen (= mode "first-throws"))
+                                result (try (if two (reduce f s) (reduce f 0 s))
+                                            (catch :default e (.-message e)))]
+                            [result (vec seen)]))]
+              [(run "success" false) (run "success" true)
+               (run "get-throws" false) (run "get-throws" true)
+               (run "first-throws" false)])"#,
+            "nil",
+        ),
+        (
+            "call getter effects are visible to sequence first",
+            r#"(deftype S [seen]
+                 ISeqable (-seq [this] this)
+                 ISeq (-first [_] (.push seen "first") (.-length seen))
+                      (-rest [_] ())
+                 INext (-next [_] nil))"#,
+            r#"(let [seen (js/Array.)
+                     f (js* "({get call(){~{}.push('get');return function(_,a,x){return a+x;};}})" seen)
+                     result (reduce f 0 (S. seen))]
+              [result (vec seen)])"#,
+            "nil",
+        ),
+        (
+            "array reads precede reducer call lookup for both arities",
+            "",
+            r#"(mapv (fn [two]
+                (let [seen (js/Array.)
+                      xs (js* "Object.defineProperties([1,2],{0:{get(){~{}.push('read0');return 1;}},1:{get(){~{}.push('read1');return 2;}}})" seen seen)
+                      f (js* "({get call(){const target=this;~{}.push('get');return function(receiver,a,x){~{}.push(this===target,receiver===null,'step');return a+x;};}})" seen seen)
+                      result (if two (reduce f xs) (reduce f 0 xs))]
+                  [result (vec seen)])) [false true])"#,
+            "nil",
+        ),
+        (
+            "protocol returned arrays retain sequence reduction lookup order",
+            r#"(deftype Q [tail] ISeqable (-seq [_] tail))
+               (deftype S [head tail]
+                 ISeqable (-seq [this] this)
+                 ISeq (-first [_] head) (-rest [_] tail))"#,
+            r#"(let [run (fn [wrap]
+                          (let [seen (js/Array.)
+                                tail (js* "Object.defineProperty([2,3],0,{get(){~{}.push('read');return 2;}})" seen)
+                                f (js* "({get call(){~{}.push('get');return function(_,a,x){return a+x;};}})" seen)
+                                result (reduce f 0 (wrap tail))]
+                            [result (vec seen)]))
+                     entry (first (seq {:a 1}))]
+              [(run (fn [tail] (Q. tail))) (run (fn [tail] (S. 1 tail)))
+               (reduce-kv (fn [a k v] (conj a [k v])) [] (Q. (js* "[~{}]" entry)))])"#,
+            "nil",
+        ),
+        (
             "direct kv protocol rejects non implementations",
             "(defrecord R [x])",
             r#"[(mapv (fn [c] (try (-kv-reduce c (fn [a k v] (conj a [k v])) [])
