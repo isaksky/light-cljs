@@ -2052,10 +2052,13 @@ fn missing_core_protocol_resolves_once_when_record_comparison_realizes_fields() 
         .into_runnable()
         .pop()
         .unwrap();
-    assert_eq!(
-        complete(resumed.run().unwrap()).view(),
-        ValueView::Number(1.0)
-    );
+    let result = thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || complete(resumed.run().unwrap()))
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(result.view(), ValueView::Number(1.0));
 }
 
 /// The `seq`, `rest` and `next` of a list or vector share its trie

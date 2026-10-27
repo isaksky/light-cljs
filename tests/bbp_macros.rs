@@ -4987,6 +4987,18 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
             "[\"equiv\" \"equiv\" \"equiv\" \"hash\" \"hash\" \"hash\" \"lookup2\" \"lookup2\" \"lookup2\" \"lookup3\" \"lookup3\" \"lookup3\" \"count\" \"count\" \"count\" \"seq\" \"seq\" \"seq\" \"seq\" true]",
         ),
         (
+            "published-type",
+            r#"(defn demanded [x] (inc x))
+               (deftype T [n] IEquiv (-equiv [_ other] (= n (.-n other)))
+                 IHash (-hash [_] (+ 100 (demanded n)))
+                 ILookup (-lookup [_ k] (demanded n)) (-lookup [_ k d] d)
+                 ICounted (-count [_] (demanded n)) ISeqable (-seq [_] (seq [(demanded n)])))
+               (def cached (T. 7)) (defn load-cached [] cached)"#,
+            r#"(let [x (load-cached) h (hash x) g (get x :n) c (count x) s (vec (seq x))]
+              [h g c s (= x (T. 7))])"#,
+            "[108 8 8 [8] true]",
+        ),
+        (
             "resumption",
             r#"(defn demanded [x] (inc x))
               (deftype T [n seen] IEquiv (-equiv [_ other] (.push seen "equiv") (= (demanded n) (inc (.-n other))))
