@@ -1217,7 +1217,8 @@ runtime's semantics: keyword lookup of fields, then the extension map; `assoc`,
 `count`, `seq` (fields in order, then extension entries), `contains?`, `keys`,
 `vals`, `meta`/`with-meta`, `map?` and `record?`; `=` of the same type with
 equal fields and extension entries; and the runtime's record hash. A deftype
-instance compares and hashes by identity. Interop on a struct (`(.-x s)`) reads
+instance compares and hashes by identity unless it supplies the core protocols
+described below. Interop on a struct (`(.-x s)`) reads
 a JavaScript view of its fields. A type with a mutable field, and a raw
 `deftype*`, keeps task-owned JavaScript instances, dispatched by their type,
 which do not publish. `Object` methods are methods of those instances and of a
@@ -1235,17 +1236,39 @@ type's declaration at its first dispatch or interop. `(R. a b meta ext)` keeps
 the record's metadata and extension map. Extensions that macro code runs
 outside a bundle come after every bundle's, in the order run.
 
-Not supported: user implementations of core protocols (`IEquiv`, `IHash`,
-`ILookup`, `ISeqable`, `ICounted` …) are installed in their tables but the
-native core operations (`=`, `hash`, `get`, `seq`, `count`) do not call them;
-`specify!`/`extend-instance`, `extend-type` of core types other than the native
+Native core operations on these structs call user `IEquiv`, `IHash`, `ILookup`,
+`ICounted`, `ISeqable`, `ISeq`, `INext`, `IIndexed`, `IAssociative`, `IMap`,
+`ICollection`, `ISet`, `IMeta` and `IWithMeta` entries. Direct, aliased and
+`apply` calls use the same task-local protocol tables and declaration frontier;
+`get` and keyword/symbol invocation preserve the two- or three-argument lookup
+method, including an explicit nil/false default. Records retain their built-in
+operations unless their own type is extended; object/default extensions do not
+replace those defaults. `count` can walk an `ISeqable` without `ICounted`, and
+sequence operations and reduction can traverse user sequences. Resolution and
+method calls run through rooted VM callback frames, so helper demand can suspend
+and resume after GC or migration without replaying effects. Equality keeps its
+identity shortcut and returns a boolean; user hashes are coerced to signed
+32-bit integers, as in the legacy compiler.
+
+Persistent native collections keep structural equality and hashing recursively,
+including their keys, members and stored values. They never invoke user
+`IEquiv`/`IHash`: two separate deftype instances remain distinct keys or set
+members even when `(= a b)` calls their method and returns true. A record key
+retains structural record comparison and hashing even after a user override.
+Consequently equality/hashing of a collection containing custom structs can
+differ from the legacy compiler. Dispatch tables, dependency tables and other
+engine bookkeeping also never call user equality or hashing. The differential
+matrix `native_struct_core_protocol_operation_matrix_matches_legacy` covers
+each operation's call shapes at 1/2/4/8 slots; engine form tests separately
+assert the structural-key policy and callback rooting across suspension/GC.
+
+Not supported: `specify!`/`extend-instance`, `extend-type` of core types other than the native
 form kinds (`Keyword`, `Symbol`, `PersistentVector`, `List`, `EmptyList`,
 `PersistentHashSet`, and `PersistentArrayMap` and `PersistentHashMap`, which
 are one native map kind, so extending either extends every map), variadic
 protocol methods, `map->R` of a record with mutable fields, `getBasis` and
 other properties of a struct type, and a macro returning a struct (export fails
-with an explicit error). User core-protocol implementations are
-light-cljs-497. A helper analyzed on demand can itself expand source macros:
+with an explicit error). A helper analyzed on demand can itself expand source macros:
 its analysis task materializes each macro declaration once from its emitted
 code, with its own function handles and the helper's declaration frontier.
 Macro bodies run only for their source occurrences; a parked consumer's

@@ -1972,9 +1972,9 @@ fn core_protocol_callbacks_resume_across_collection_without_entering_key_compari
       const a=__rt.structNew(T,7), b=__rt.structNew(T,7);
       let calls=0;
       __rt.cljCoreResolver((op,x)=> {
-        if(op==='formEquals') return (x,y)=>{calls++; __rt.need(91,1); return __rt.structField(x,'n')===__rt.structField(y,'n');};
+        if(op==='formEquals') { __rt.need(90,1); return (x,y)=>{calls++; __rt.need(91,1); return __rt.structField(x,'n')===__rt.structField(y,'n');}; }
         if(op==='formHash') return x=>{calls++; return 123;};
-        if(op==='cljGet') return (x,k,d)=>{calls++; throw new Error('lookup');};
+        if(op==='cljGet') return (x,k,d)=>{calls++; __rt.need(92,1); throw new Error('lookup');};
         return null;
       });
       if(!__rt.formEquals(a,b)||calls!==1)throw new Error('equiv');
@@ -1987,19 +1987,60 @@ fn core_protocol_callbacks_resume_across_collection_without_entering_key_compari
       m=__rt.cljAssoc(m,a,3); s=__rt.cljDisj(s,b);
       if(__rt.cljGet(m,b,null)!==2||!__rt.cljContains(s,a)||__rt.cljContains(s,b))throw new Error('lookup keys');
       if(__rt.cljCount(__rt.cljDissoc(m,b))!==1||calls!==2)throw new Error('key callbacks');
+      if(__rt.formEquals(__rt.formVector(a),__rt.formVector(b)))throw new Error('stored values');
+      __rt.formHash(__rt.formVector(a));
+      if(calls!==2)throw new Error('nested callbacks');
       try{__rt.cljGet(a,0,null);throw new Error('not thrown');}
       catch(e){if(e.message!=='lookup'||calls!==3)throw e;}
       // A resolver's missing entry falls back to record operations without
       // redispatch; that path can itself realize a lazy sequence.
       const R=__rt.structType('R',__rt.formVector('x'),true);
       if(__rt.cljCount(__rt.structNew(R,1))!==1)throw new Error('fallback');
+      const r1=__rt.structNew(R,7), r2=__rt.structNew(R,7);
+      if(__rt.cljCount(__rt.formMap(r1,1,r2,2))!==1||__rt.cljCount(__rt.formSet(r1,r2))!==1||calls!==3)throw new Error('record keys');
       return calls;
     }"#).unwrap();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    let mut outcome = task.run().unwrap();
+    for _ in 0..3 {
+        assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
+        rt.collect().unwrap();
+        let request = task.take_producer_requests().pop().unwrap();
+        let ready = rt.root(Primitive::Null);
+        let resumed = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+            .unwrap()
+            .into_runnable()
+            .pop()
+            .unwrap();
+        (task, outcome) = thread::spawn(move || {
+            let outcome = resumed.run().unwrap();
+            (resumed, outcome)
+        })
+        .join()
+        .unwrap();
+    }
+    assert_eq!(complete(outcome).view(), ValueView::Number(3.0));
+}
+
+#[test]
+fn missing_core_protocol_resolves_once_when_record_comparison_realizes_fields() {
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function f() {
+      const R=__rt.structType('R',__rt.formVector('x'),true);
+      const a=__rt.structNew(R,__rt.lazySeq(()=>{__rt.need(92,1);return __rt.formList(7);}));
+      const b=__rt.structNew(R,__rt.formList(7));
+      let resolutions=0;
+      __rt.cljCoreResolver(()=>{resolutions++;return null;});
+      if(!__rt.formEquals(a,b))throw new Error('record equality');
+      return resolutions;
+    }"#,
+    )
+    .unwrap();
     let task = rt.spawn(&code, &[]).unwrap();
     assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
-    for _ in 0..2 {
-        rt.collect().unwrap();
-    }
+    rt.collect().unwrap();
     let request = task.take_producer_requests().pop().unwrap();
     let ready = rt.root(Primitive::Null);
     let resumed = rt
@@ -2008,11 +2049,10 @@ fn core_protocol_callbacks_resume_across_collection_without_entering_key_compari
         .into_runnable()
         .pop()
         .unwrap();
-    drop(task);
-    let result = thread::spawn(move || complete(resumed.run().unwrap()))
-        .join()
-        .unwrap();
-    assert_eq!(result.view(), ValueView::Number(3.0));
+    assert_eq!(
+        complete(resumed.run().unwrap()).view(),
+        ValueView::Number(1.0)
+    );
 }
 
 /// The `seq`, `rest` and `next` of a list or vector share its trie

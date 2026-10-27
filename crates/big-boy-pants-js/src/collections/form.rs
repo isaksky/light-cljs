@@ -239,8 +239,12 @@
 //! hash is the sum of each entry's key hash xor value hash, xor the
 //! `stringHash` of the type name, cached like every form hash in an
 //! atomic, idempotent slot. A deftype instance is equal only to itself and
-//! hashes by identity; the clj operations reject it. A record is never
-//! equal to a map.
+//! hashes by identity; the leaf clj operations reject it. These structural
+//! rules also govern collection keys, members and stored values, without
+//! invoking user code. VM-level core operations on a struct may instead call
+//! a task-local user protocol resolver (`crate::vm::native`); its callbacks
+//! never enter this module's equality or hash functions. A record is never
+//! structurally equal to a map.
 //!
 //! `__rt.cljDispatch(table, v)` is protocol dispatch: `table` is a
 //! SameValueZero persistent map ([`crate::collections`]) from dispatch keys

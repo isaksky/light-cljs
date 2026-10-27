@@ -3984,7 +3984,16 @@ fn apply_action(
             for value in operands {
                 state.push(value);
             }
+            let depth = state.natives.len();
             super::intrinsics::step(state, heap, instr)?;
+            if state.natives.len() > depth
+                && let Some(NativeFrame {
+                    state: NativeState::Realize(realize),
+                    ..
+                }) = state.natives.last_mut()
+            {
+                realize.core_resolved = true;
+            }
             Ok(Flow::Next)
         }
         Action::Unwind => Err(Fault::Internal("a native step unwound without a failure")),

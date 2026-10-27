@@ -4840,7 +4840,7 @@ fn protocol_type_and_record_macros_match_the_legacy_compiler_and_run() {
     }
 }
 
-/// Each row runs direct, aliased and apply call shapes at every pool size.
+/// The matrix covers direct, aliased and apply calls at every pool size.
 /// Cold helpers inside the methods force saved-VM dependency waits.
 #[test]
 fn native_struct_core_protocol_operation_matrix_matches_legacy() {
@@ -4855,11 +4855,21 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
             "[true false true true 107 107 108]",
         ),
         (
+            "equiv-hash-coercion",
+            r#"(deftype T [n] IEquiv (-equiv [_ other] n) IHash (-hash [_] 4294967297.9))"#,
+            r#"(let [a (T. 0) b (T. 7) e = h hash]
+              [(= a b) (e b a) (apply = [a b]) (hash a) (h b) (apply hash [a])])"#,
+            "[false true false 1 1 1]",
+        ),
+        (
             "lookup",
             r#"(deftype T [n] ILookup (-lookup [_ k] (if (= k :n) n :two)) (-lookup [_ k d] (if (= k :n) n d)))"#,
-            r#"(let [x (T. 7) g get k :n] [(get x :n) (get x :x) (get x :x :default) (g x :x) (g x :x false)
-              (apply get [x :x]) (apply get [x :x :fallback]) (:n x) (:x x) (:x x 9) (k x) (apply k [x])])"#,
-            "[7 :two :default :two false :two :fallback 7 :two 9 7 7]",
+            r#"(let [x (T. 7) g get k :n missing :x sym 'x]
+              [(get x :n) (get x :x) (get x :x :default) (g x :x) (g x :x false)
+               (apply get [x :x]) (apply get [x :x :fallback]) (:n x) (:x x) (:x x 9) (k x) (apply k [x])
+               (missing x) (missing x false) (apply missing [x]) (apply missing [x nil])
+               (sym x) (sym x false) (apply sym [x]) (apply sym [x nil])])"#,
+            "[7 :two :default :two false :two :fallback 7 :two 9 7 7 :two false :two nil :two false :two nil]",
         ),
         (
             "count-seq",
@@ -4882,10 +4892,66 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
             "[2 2 :a :b :a true true 2 :changed 1 1 false true]",
         ),
         (
+            "record-overrides",
+            r#"(defrecord T [n])
+                (extend-type T IEquiv (-equiv [_ other] false) IHash (-hash [_] 41)
+                  ILookup (-lookup ([_ k] :two) ([_ k d] d))
+                  ICounted (-count [_] 12) ISeqable (-seq [_] (seq [8 9])))"#,
+            r#"(let [x (T. 7) y (T. 7) e = h hash g get c count s seq]
+              [(= x y) (e x y) (apply = [x y]) (= x x)
+               (hash x) (h x) (apply hash [x])
+               (get x :n) (g x :n) (apply get [x :n])
+               (get x :n false) (g x :n nil) (apply get [x :n :fallback])
+               (count x) (c x) (apply count [x]) (vec (seq x)) (vec (s x)) (vec (apply seq [x]))])"#,
+            "[false false false true 41 41 41 :two :two :two false nil :fallback 12 12 12 [8 9] [8 9] [8 9]]",
+        ),
+        (
+            "default-precedence",
+            r#"(deftype T []) (defrecord R [n])
+               (extend-type default ICounted (-count [_] 99)
+                 ILookup (-lookup ([_ k] :two) ([_ k d] :three))
+                 ISeqable (-seq [_] (seq [42])))"#,
+            r#"(let [x (T.) r (R. 7) c count g get s seq]
+              [(count x) (c x) (apply count [x]) (get x :k) (g x :k) (apply get [x :k])
+               (get x :k nil) (g x :k false) (apply get [x :k :d])
+               (vec (seq x)) (vec (s x)) (vec (apply seq [x]))
+               (count r) (c r) (apply count [r]) (get r :n) (g r :n) (apply get [r :n])
+               (get r :k :d) (g r :k :d) (apply get [r :k :d])
+               (vec (seq r)) (vec (s r)) (vec (apply seq [r]))])"#,
+            "[99 99 99 :two :two :two :three :three :three [42] [42] [42] 1 1 1 7 7 7 :d :d :d [[:n 7]] [[:n 7]] [[:n 7]]]",
+        ),
+        (
             "seq-count-fallback",
             r#"(deftype T [] ISeqable (-seq [_] (seq [1 2 3])))"#,
             "(let [x (T.)] [(count x) (apply count [x]) (reduce + x) (vec x)])",
             "[3 3 6 [1 2 3]]",
+        ),
+        (
+            "custom-seq",
+            r#"(deftype T [n] ISeqable (-seq [this] (when (< n 3) this))
+                  ISeq (-first [_] n) (-rest [_] (T. (inc n))))"#,
+            r#"(let [x (T. 0) f first r rest n next c count s seq]
+              [(first x) (f x) (apply first [x]) (first (rest x)) (first (r x)) (first (apply rest [x]))
+               (first (next x)) (first (n x)) (first (apply next [x]))
+               (count x) (c x) (apply count [x]) (vec x) (vec (s x)) (vec (apply seq [x]))
+               (reduce + x) (reduce + 10 x) (apply reduce [+ x])
+               (nth x 1) (apply nth [x 2]) (nth x 3 :missing)
+               (try (nth x 3) (catch :default e (.-message e)))])"#,
+            "[0 0 0 1 1 1 1 1 1 3 3 3 [0 1 2] [0 1 2] [0 1 2] 3 13 3 1 2 :missing \"Index out of bounds\"]",
+        ),
+        (
+            "counted-seq-tail",
+            r#"(deftype Tail [] ISeqable (-seq [this] this) ICounted (-count [_] 12)
+                    ISeq (-first [_] 7) (-rest [_] nil))
+               (deftype T [] ISeqable (-seq [_] (Tail.)))"#,
+            "(let [x (T.) c count] [(count x) (c x) (apply count [x])])",
+            "[12 12 12]",
+        ),
+        (
+            "next-override",
+            r#"(deftype T [] INext (-next [_] (list :tail)))"#,
+            "(let [x (T.) n next] [(vec (next x)) (vec (n x)) (vec (apply next [x]))])",
+            "[[:tail] [:tail] [:tail]]",
         ),
         (
             "associative",
@@ -4899,19 +4965,26 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
                (conj x 1) (c x 2) (apply conj [x 3])
                (dissoc x :a) (d x :b) (apply dissoc [x :c])
                (disj x :a) (j x :b) (apply disj [x :c])
-               (nth x 2) (n x 3) (apply nth [x 4]) (nth x 2 :d) (apply nth [x 3 :e])
-               (meta x) (m x) (apply meta [x]) (with-meta x {:a 1}) (w x {:b 2}) (apply with-meta [x {:c 3}])])"#,
-            "[true false true [7 :a 1] [7 :b 2] [7 :c 3] [7 1] [7 2] [7 3] [7 :a] [7 :b] [7 :c] [:a 7] [:b 7] [:c 7] 9 10 11 [7 2 :d] [7 3 :e] {:n 7} {:n 7} {:n 7} {:a 1} {:b 2} {:c 3}]",
+               (nth x 2) (n x 3) (apply nth [x 4]) (nth x 2 :d) (n x 3 :e) (apply nth [x 4 :f])
+               (meta x) (m x) (apply meta [x]) (with-meta x {:a 1}) (w x {:b 2}) (apply with-meta [x {:c 3}])
+               (try (nth x "2") (catch :default e (.-message e)))])"#,
+            "[true false true [7 :a 1] [7 :b 2] [7 :c 3] [7 1] [7 2] [7 3] [7 :a] [7 :b] [7 :c] [:a 7] [:b 7] [:c 7] 9 10 11 [7 2 :d] [7 3 :e] [7 4 :f] {:n 7} {:n 7} {:n 7} {:a 1} {:b 2} {:c 3} \"Index argument to nth must be a number\"]",
         ),
         (
             "throws",
             r#"(deftype T [] IEquiv (-equiv [_ _] (throw (js/Error. "equiv"))) IHash (-hash [_] (throw (js/Error. "hash")))
                   ILookup (-lookup [_ _] (throw (js/Error. "lookup2"))) (-lookup [_ _ _] (throw (js/Error. "lookup3")))
                   ICounted (-count [_] (throw (js/Error. "count"))) ISeqable (-seq [_] (throw (js/Error. "seq"))))"#,
-            r#"(let [x (T.) y (T.) run (fn [f] (try (f) (catch :default e (.-message e))))]
-              [(run #(= x y)) (run #(hash x)) (run #(get x :k)) (run #(get x :k nil))
-               (run #(count x)) (run #(seq x)) (run #(reduce + x)) (run #(apply get [x :k])) (= x x)])"#,
-            "[\"equiv\" \"hash\" \"lookup2\" \"lookup3\" \"count\" \"seq\" \"seq\" \"lookup2\" true]",
+            r#"(let [x (T.) y (T.) e = h hash g get c count s seq
+                     run (fn [f] (try (f) (catch :default e (.-message e))))]
+              [(run #(= x y)) (run #(e x y)) (run #(apply = [x y]))
+               (run #(hash x)) (run #(h x)) (run #(apply hash [x]))
+               (run #(get x :k)) (run #(g x :k)) (run #(apply get [x :k]))
+               (run #(get x :k nil)) (run #(g x :k false)) (run #(apply get [x :k :d]))
+               (run #(count x)) (run #(c x)) (run #(apply count [x]))
+               (run #(seq x)) (run #(s x)) (run #(apply seq [x]))
+               (run #(reduce + x)) (= x x)])"#,
+            "[\"equiv\" \"equiv\" \"equiv\" \"hash\" \"hash\" \"hash\" \"lookup2\" \"lookup2\" \"lookup2\" \"lookup3\" \"lookup3\" \"lookup3\" \"count\" \"count\" \"count\" \"seq\" \"seq\" \"seq\" \"seq\" true]",
         ),
         (
             "resumption",

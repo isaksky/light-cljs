@@ -31,6 +31,8 @@ pub(crate) struct Realize {
     /// The instruction to execute again, and its operands.
     instr: Instr,
     operands: Vec<Value>,
+    /// This leaf already resolved its struct protocol before realization.
+    pub(super) core_resolved: bool,
     /// The lazy form, which keeps the cell alive.
     lazy: Value,
     cell: Arc<LazyCell>,
@@ -56,6 +58,7 @@ impl Realize {
         Some(Realize {
             instr,
             operands,
+            core_resolved: false,
             lazy,
             cell,
             attempt: None,
@@ -81,6 +84,12 @@ impl Realize {
     }
 
     fn resume(&mut self) -> Action {
+        if self.core_resolved {
+            return Action::FormFallback {
+                instr: self.instr,
+                operands: std::mem::take(&mut self.operands),
+            };
+        }
         Action::Resume {
             instr: self.instr,
             operands: std::mem::take(&mut self.operands),

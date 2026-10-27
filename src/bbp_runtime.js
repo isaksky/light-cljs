@@ -417,8 +417,14 @@ const native = (() => {
     const record = __rt.formKind(x) === 'record';
     const method = (name, n, builtin = record) => decl.coreMethod(name, n, x, builtin);
     switch (op) {
-      case 'formEquals': return method('IEquiv/-equiv', 2);
-      case 'formHash': return method('IHash/-hash', 1);
+      case 'formEquals': {
+        const equiv = method('IEquiv/-equiv', 2);
+        return equiv === null ? null : (x,y) => !!val(equiv(x,y));
+      }
+      case 'formHash': {
+        const hash = method('IHash/-hash', 1);
+        return hash === null ? null : x => val(hash(x)) | 0;
+      }
       case 'cljGet2': return method('ILookup/-lookup', 2) ?? (record ? null : () => null);
       case 'cljGet': return method('ILookup/-lookup', 3) ?? (record ? null : (x,k,d) => d);
       case 'cljContains': {
@@ -434,18 +440,35 @@ const native = (() => {
       case 'cljMeta': return method('IMeta/-meta', 1);
       case 'cljWithMeta': return method('IWithMeta/-with-meta', 2);
       case 'cljSeq': return method('ISeqable/-seq', 1);
-      case 'cljList': return x => __rt.cljList(__rt.cljSeq(x));
+      case 'cljList': return x => {
+        const out = [];
+        for (let s = reduceSeqOf(x); s !== null; s = nextOf(s)) out.push(firstOf(s));
+        return list(out);
+      };
       case 'cljCount': {
         const count = method('ICounted/-count', 1);
         if (count !== null || record) return count;
         const seq = method('ISeqable/-seq', 1);
-        return seq === null ? null : x => __rt.cljCount(seq(x));
+        return seq === null ? null : x => {
+          let n = 0;
+          for (let s = reduceSeqOf(x); s !== null; s = nextOf(s)) {
+            const kind = __rt.formKind(val(s));
+            const builtin = nativeSeq(s) && kind !== 'lazy-seq' && kind !== 'cons'
+              || kind === 'vector' || kind === 'map' || kind === 'record' || kind === 'set'
+              || typeof val(s) === 'string' || Array.isArray(s);
+            const count = decl.coreMethod('ICounted/-count', 1, s, builtin);
+            if (count !== null) return n + val(count(s));
+            if (builtin) return n + __rt.cljCount(s);
+            n++;
+          }
+          return n;
+        };
       }
       case 'cljFirst': return method('ISeq/-first', 1, false) ?? (x => __rt.cljFirst(__rt.cljSeq(x)));
       case 'cljRest': return method('ISeq/-rest', 1, false) ?? (x => __rt.cljRest(__rt.cljSeq(x)));
       case 'cljNext': return method('INext/-next', 1, false) ?? (x => __rt.cljSeq(__rt.cljRest(x)));
-      case 'cljNth': return method('IIndexed/-nth', 2, false) ?? ((x,i) => __rt.cljNth(__rt.cljSeq(x),i));
-      case 'cljNthOr': return method('IIndexed/-nth', 3, false) ?? ((x,i,d) => __rt.cljNthOr(__rt.cljSeq(x),i,d));
+      case 'cljNth': return (x,i) => nthOf(x,i,null,false);
+      case 'cljNthOr': return (x,i,d) => nthOf(x,i,d,true);
     }
     return null;
   });
@@ -940,6 +963,23 @@ const native = (() => {
     const method = decl.next(x);
     if (method !== null) return method.call(x,x);
     return builtin ? __rt.cljNext(x) : reduceSeqOf(restOf(x));
+  };
+  const nthOf = (x, i, fallback, supplied) => {
+    if (typeof val(i) !== 'number') throw new Error('Index argument to nth must be a number');
+    const indexed = decl.coreMethod('IIndexed/-nth', supplied ? 3 : 2, x, false);
+    if (indexed !== null) return supplied ? indexed(x,i,fallback) : indexed(x,i);
+    if (!decl.implementsDirectly('ISeq', x) && !decl.implementsDirectly('ISequential', x))
+      throw new Error('nth not supported on this type');
+    let remaining = val(i);
+    for (let s = x; s !== null && remaining >= 0; s = nextOf(s), remaining--) {
+      if (remaining === 0) {
+        if (reduceSeqOf(s) !== null) return firstOf(s);
+        break;
+      }
+      if (reduceSeqOf(s) === null) break;
+    }
+    if (supplied) return fallback;
+    throw new Error('Index out of bounds');
   };
   const chunked = (s, step) => {
     const ch = __rt.cljChunkFirst(s), b = __rt.vectorBuilder();
