@@ -647,7 +647,8 @@ const native = (() => {
     return cursor;
   };
   const reduceSeqOf = x => {
-    if (arraySeqs.has(x)) return x;
+    const cursor = arraySeqs.get(x);
+    if (cursor !== undefined) return cursor.index < cursor.array.length ? x : null;
     const value = val(x), kind = __rt.formKind(value);
     const builtin = value == null || typeof value === 'string' || Array.isArray(value) || nativeSeq(x)
       || kind === 'vector' || kind === 'map' || kind === 'record' || kind === 'set';
@@ -656,9 +657,11 @@ const native = (() => {
     if (!builtin) throw new Error(core.str(x) + ' is not ISeqable');
     return Array.isArray(value) ? arraySeq(value, 0) : __rt.cljSeq(x);
   };
-  const firstOf = x => {
+  const firstOf = (x, stored = false) => {
     const cursor = arraySeqs.get(x);
-    if (cursor !== undefined) return cursor.index < cursor.array.length ? cursor.array[cursor.index] : null;
+    // Stored reductions have already checked the cursor on advancement.
+    // Sequence -first checks again, after any reducer call getter effects.
+    if (cursor !== undefined) return stored || cursor.index < cursor.array.length ? cursor.array[cursor.index] : null;
     const method = decl.first(x,nativeSeq(x) || val(x) == null);
     if (method !== null) return method.call(x,x);
     if (nativeSeq(x) || val(x) == null) return __rt.cljFirst(x);
@@ -670,7 +673,8 @@ const native = (() => {
   };
   const restOf = x => {
     const cursor = arraySeqs.get(x);
-    if (cursor !== undefined) return arraySeq(cursor.array, cursor.index + 1) ?? __rt.formList();
+    if (cursor !== undefined) return cursor.index < cursor.array.length
+      ? arraySeq(cursor.array, cursor.index + 1) ?? __rt.formList() : __rt.formList();
     const method = decl.rest(x,nativeSeq(x) || val(x) == null);
     if (method !== null) return method.call(x,x);
     if (nativeSeq(x) || val(x) == null) return __rt.cljRest(x);
@@ -817,10 +821,10 @@ const native = (() => {
     for (let s = reduceSeqOf(c); s != null; s = nextOf(s)) {
       // Seed stored two-argument reductions in the same traversal so the
       // tail's -seq is not called again before its first head is read.
-      if (!initialized) { acc = firstOf(s); initialized = true; continue; }
+      if (!initialized) { acc = firstOf(s, true); initialized = true; continue; }
       // Legacy stored collections read the item before `.call`, even with
       // a custom -seq. Sequence traversal reads `.call` before -first.
-      acc = headBeforeCall ? invoke(f, acc, firstOf(s)) : prepareInvoke(f)(acc, firstOf(s));
+      acc = headBeforeCall ? invoke(f, acc, firstOf(s, true)) : prepareInvoke(f)(acc, firstOf(s));
       if (__rt.cljIsReduced(acc)) return __rt.cljUnreduced(acc);
     }
     return initialized ? acc : invoke(f);

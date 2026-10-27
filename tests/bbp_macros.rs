@@ -681,6 +681,51 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "array reduction shapes preserve index length and has trap order",
+            r#"(deftype Q [tail] ISeqable (-seq [_] tail))
+               (deftype S [head tail]
+                 ISeqable (-seq [this] this)
+                 ISeq (-first [_] head) (-rest [_] tail))"#,
+            r#"(let [run (fn [proxy wrap two mode]
+                          (let [seen (js/Array.)
+                                xs (js* "(()=>{const seen=~{},xs=[1,2,3];if(~{})return new Proxy(xs,{get(t,k,r){if(k==='length'||/^[0-9]+$/.test(String(k)))seen.push('get:'+String(k));return Reflect.get(t,k,r);},has(t,k){seen.push('has:'+String(k));return Reflect.has(t,k);}});for(let i=0;i<3;i++){let value=xs[i];Object.defineProperty(xs,i,{configurable:true,get(){seen.push('get:'+i);return value;},set(x){value=x;}});}return xs;})()" seen proxy)
+                                f (js* "(()=>{const seen=~{},xs=~{},mode=~{};let calls=0;const step=function(_,a,x){seen.push('step',x===null?'null':x===undefined?'undefined':x);return a;};if(mode==='plain')return function(a,x){return step(null,a,x);};return {get call(){seen.push('call');if(++calls===1){if(mode==='replace')xs[1]=9;if(mode==='push')xs.push(4);if(mode==='pop')xs.pop();if(mode==='clear')xs.length=0;if(mode==='grow')xs.length=5;if(mode==='delete')delete xs[1];if(mode==='throw')throw new Error('call failed');}return step;}};})()" seen xs mode)
+                                result (try (if two (reduce f (wrap xs)) (reduce f :seed (wrap xs)))
+                                            (catch :default e (.-message e)))]
+                            [result (vec seen)]))]
+              (mapv (fn [proxy]
+                      (mapv (fn [wrap]
+                              (mapv (fn [two]
+                                      (mapv (fn [mode] (run proxy wrap two mode))
+                                            ["plain" "get" "replace" "push" "pop" "clear" "grow" "delete" "throw"]))
+                                    [false true]))
+                            [identity (fn [tail] (Q. tail)) (fn [tail] (S. 9 tail))]))
+                    [false true]))"#,
+            "nil",
+        ),
+        (
+            "array kv fallback preserves index length and has trap order",
+            r#"(deftype Q [tail] ISeqable (-seq [_] tail))
+               (deftype S [head tail]
+                 ISeqable (-seq [this] this)
+                 ISeq (-first [_] head) (-rest [_] tail))"#,
+            r#"(let [entries (vec (seq (array-map :a 1 :b 2 :c 3 :d 9)))
+                     run (fn [proxy wrap mode]
+                           (let [seen (js/Array.)
+                                 xs (js* "(()=>{const seen=~{},xs=[~{},~{},~{}];if(~{})return new Proxy(xs,{get(t,k,r){if(k==='length'||/^[0-9]+$/.test(String(k)))seen.push('get:'+String(k));return Reflect.get(t,k,r);},has(t,k){seen.push('has:'+String(k));return Reflect.has(t,k);}});for(let i=0;i<3;i++){let value=xs[i];Object.defineProperty(xs,i,{configurable:true,get(){seen.push('get:'+i);return value;},set(x){value=x;}});}return xs;})()" seen (nth entries 0) (nth entries 1) (nth entries 2) proxy)
+                                 f (js* "(()=>{const seen=~{},xs=~{},mode=~{},entry=~{};let calls=0;const step=function(_,a,k,v){seen.push('step',v);return a;};if(mode==='plain')return function(a,k,v){return step(null,a,k,v);};return {get call(){seen.push('call');if(++calls===1){if(mode==='replace')xs[1]=entry;if(mode==='push')xs.push(entry);if(mode==='pop')xs.pop();if(mode==='clear')xs.length=0;if(mode==='grow')xs.length=5;if(mode==='delete')delete xs[1];if(mode==='throw')throw new Error('call failed');}return step;}};})()" seen xs mode (nth entries 3))
+                                 result (try (reduce-kv f :seed (wrap xs))
+                                             (catch :default e (.-message e)))]
+                             [result (vec seen)]))]
+              (mapv (fn [proxy]
+                      (mapv (fn [wrap]
+                              (mapv (fn [mode] (run proxy wrap mode))
+                                    ["plain" "get" "replace" "push" "pop" "clear" "grow" "delete" "throw"]))
+                            [identity (fn [tail] (Q. tail)) (fn [tail] (S. (nth entries 3) tail))]))
+                    [false true]))"#,
+            "nil",
+        ),
+        (
             "stored collection seq overrides read heads before reducer call lookup",
             r#"(deftype S [n seen fail]
                  ISeqable (-seq [this] (.push seen "inner seq") this)
