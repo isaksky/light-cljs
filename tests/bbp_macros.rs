@@ -2700,6 +2700,50 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             "[[:pet :number :pet true true true] true [:animal true] true [true true] true [:fallback :fallback] true {} {} {} nil nil]",
         ),
         (
+            "multifns sharing constructor tables observe each others mutations",
+            r#"
+          (def h (atom (-> (make-hierarchy) (derive :dog :pet) (derive :dog :animal))))
+          (def method-state (atom {}))
+          (def prefer-state (atom {}))
+          (def a (MultiFn. 'a identity :default h method-state prefer-state (atom {}) (atom nil)))
+          (def b (MultiFn. 'b identity :default h method-state prefer-state (atom {}) (atom nil)))"#,
+            r#"(do
+                 (defmethod a :pet [_] :pet)
+                 (defmethod b :animal [_] :animal)
+                 (let [added [(b :pet) (a :animal) (= (methods a) (methods b))
+                              (= @method-state (methods b))]
+                       preferred (do (prefer-method a :pet :animal)
+                                     [(b :dog) (= (prefers b) @prefer-state)])
+                       removed (do (remove-method b :pet)
+                                   [(contains? (methods a) :pet) (= @method-state (methods a))])
+                       preferred-back (do (prefer-method b :x :y)
+                                          [(= (prefers a) (prefers b)) (= #{:y} (get (prefers a) :x))])
+                       cleared (do (remove-all-methods a)
+                                   [(methods b) (prefers b) @method-state @prefer-state])]
+                   (defmethod b :x [_] :restored)
+                   [added preferred removed preferred-back cleared (a :x)]))"#,
+            "[[:pet :animal true true] [:pet true] [false true] [true true] [{} {} {} {}] :restored]",
+        ),
+        (
+            "independently shared method and preference tables",
+            r#"
+          (def h (atom (make-hierarchy)))
+          (def method-state (atom {}))
+          (def prefer-state (atom {}))
+          (def a (MultiFn. 'a identity :default h method-state (atom {}) (atom {}) (atom nil)))
+          (def b (MultiFn. 'b identity :default h method-state prefer-state (atom {}) (atom nil)))
+          (def c (MultiFn. 'c identity :default h (atom {}) prefer-state (atom {}) (atom nil)))"#,
+            r#"(do
+                 (defmethod a :x [_] :x)
+                 (defmethod c :y [_] :y)
+                 (prefer-method c :p :q)
+                 (let [before [(b :x) (nil? (get-method b :y)) (nil? (get-method c :x))
+                               (= {:p #{:q}} (prefers b)) (empty? (prefers a))]]
+                   (remove-all-methods b)
+                   [before (methods a) (prefers a) (c :y) (prefers c)]))"#,
+            "[[:x true true true true] {} {} :y {}]",
+        ),
+        (
             "native type hierarchy tags",
             r#"
           (deftype T [])
@@ -2732,6 +2776,26 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
               (fn? m) (ifn? m) (function? m) (callable? m) (instance? MultiFn {})
               (fn? identity) (ifn? identity) (fn? :x) (ifn? :x)]",
             "[true true true true false true false true false true true false true]",
+        ),
+        (
+            "all native callable predicates",
+            r#"
+          (deftype T [])
+          (defrecord R [])
+          (deftype Mutable [^:mutable x])
+          (deftype Callable [] IFn (-invoke [_ x] x))
+          (deftype FunctionLike [] Fn IFn (-invoke [_ x] x))
+          (defmulti m identity)
+          (def function? fn?)
+          (def callable? ifn?)"#,
+            r#"[(fn? T) (ifn? T) (function? T) (callable? T)
+                (fn? R) (ifn? R) (function? R) (callable? R)
+                (mapv (fn [x] [(fn? x) (ifn? x) (function? x) (callable? x)])
+                  [Mutable Callable FunctionLike MultiFn identity (fn [x] x)
+                   (FunctionLike.)
+                   m :x 'x [] {} #{} (Callable.)
+                   (T.) (R.) (Mutable. 0) nil false 1 "x" (list) (js/Array.)])]"#,
+            "[true true true true true true true true [[true true true true] [true true true true] [true true true true] [true true true true] [true true true true] [true true true true] [true true true true] [false true false true] [false true false true] [false true false true] [false true false true] [false true false true] [false true false true] [false true false true] [false false false false] [false false false false] [false false false false] [false false false false] [false false false false] [false false false false] [false false false false] [false false false false] [false false false false]]]",
         ),
         (
             "scalar and structural keys",

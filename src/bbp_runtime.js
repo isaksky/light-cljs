@@ -640,7 +640,7 @@ const native = (() => {
   // In particular their identity can publish without retaining a task's JS
   // runtime. Calls enter the consuming task's runtime through its global.
   const multi = (() => {
-    const ty=__rt.structType('cljs.core/MultiFn',__rt.formVector('name','dispatch_fn','default_dispatch_val','hierarchy','method_table','prefer_table','method_cache','cached_hierarchy','__journal','__initial_methods','__initial_prefs'),false);
+    const ty=__rt.structType('cljs.core/MultiFn',__rt.formVector('name','dispatch_fn','default_dispatch_val','hierarchy','method_table','prefer_table','method_cache','cached_hierarchy','__method_state','__prefer_state'),false);
     const is=x=>{const t=__rt.structTypeOf(val(x));return t!==null&&__rt.formName(t)==='cljs.core/MultiFn';};
     const field=(m,k)=>__rt.structField(val(m),k);
     const text=x=>printStr(x);
@@ -707,19 +707,39 @@ const native = (() => {
       for(const e of arr(updated))for(const x of arr(__rt.formNth(e,1)))result=derive(result,__rt.formNth(e,0),x);
       return result;
     };
+    // Histories belong to constructor-supplied atom identities, independently
+    // for methods and preferences. The private registry is shared across tasks
+    // through an initializer outside the catalog's unit range. Its persistent
+    // identity map never calls user equality; CAS retries only bookkeeping,
+    // never constructor code or declaration effects. Public atoms hold maps.
+    let registry;
+    const tableState=ref=>{
+      registry??=globalThis.__lightInitializeCompilerValue(4503599627370494,()=>__rt.atomNew(__rt.map()));
+      let candidate;
+      for(;;){
+        const current=__rt.atomLoad(registry),existing=__rt.getOr(current,ref,null);
+        if(existing!==null)return existing;
+        candidate??=vector([deref(ref),atom(empty())]);
+        if(Object.is(__rt.atomCas(registry,current,__rt.assoc(current,ref,candidate)),current))return candidate;
+      }
+    };
     function MultiFn(name,dispatch,defaultValue,hierarchy,methods,prefs,cache,cached){
       return __rt.structNew(ty,name,dispatch,defaultValue,hierarchy,methods,prefs,cache,cached,
-        atom(empty()),deref(methods),deref(prefs));
+        tableState(methods),tableState(prefs));
     }
     const demand=m=>decl.demandMulti(text(field(m,'name')));
     // A persistent map of declaration order to operations. Materializing at
     // the current frontier never reexecutes a declaration or its effects.
     // Runtime mutations follow every source declaration, in lane order.
-    const change=(m,op,x=null,y=null)=>{
-      if(!decl.installingMulti())demand(m);
-      const ref=field(m,'__journal'),history=deref(ref),order=decl.multiOrder();
+    const record=(state,op,x,y)=>{
+      const ref=__rt.formNth(state,1),history=deref(ref),order=decl.multiOrder();
       const key=order===0?-(__rt.cljCount(history)+1):order;
       reset(ref,__rt.cljAssoc(history,key,__rt.cljConj(get(history,key,vector([])),vector([op,x,y]))));
+    };
+    const change=(m,op,x=null,y=null)=>{
+      if(!decl.installingMulti())demand(m);
+      if(op!=='prefer')record(field(m,'__method_state'),op,x,y);
+      if(op==='prefer'||op==='reset')record(field(m,'__prefer_state'),op,x,y);
       // Retained constructor atoms remain language-level tables. Installation
       // must not recursively demand the bundle (or any later declarations).
       const view=tables(m,false);
@@ -728,21 +748,25 @@ const native = (() => {
       return m;
     };
     const views=new WeakMap();
-    const tables=(m,force=true)=>{
-      if(force)demand(m);
-      const history=deref(field(m,'__journal')),frontier=decl.multiFrontier(),old=views.get(val(m));
-      if(old!==undefined&&old.history===history&&old.frontier===frontier){publish(m,old);return old;}
-      const entries=arr(history).filter(e=>__rt.formNth(e,0)<=decl.multiFrontier())
+    const materialize=state=>{
+      const ref=__rt.formNth(state,1),history=deref(ref),frontier=decl.multiFrontier(),old=views.get(ref);
+      if(old!==undefined&&old.history===history&&old.frontier===frontier)return old.value;
+      const entries=arr(history).filter(e=>__rt.formNth(e,0)<=frontier)
         .sort((a,b)=>{const x=__rt.formNth(a,0),y=__rt.formNth(b,0);return (x<0)-(y<0)||(x<0?y-x:x-y);});
-      let methods=field(m,'__initial_methods'),prefs=field(m,'__initial_prefs');
+      let value=__rt.formNth(state,0);
       for(const entry of entries)for(const e of arr(__rt.formNth(entry,1))){
         const op=__rt.formNth(e,0),x=__rt.formNth(e,1),y=__rt.formNth(e,2);
-        if(op==='add')methods=__rt.cljAssoc(methods,x,y);
-        else if(op==='remove')methods=__rt.cljDissoc(methods,x);
-        else if(op==='reset'){methods=empty();prefs=empty();}
-        else prefs=__rt.cljAssoc(prefs,x,__rt.cljConj(get(prefs,x,set([])),y));
+        if(op==='add')value=__rt.cljAssoc(value,x,y);
+        else if(op==='remove')value=__rt.cljDissoc(value,x);
+        else if(op==='reset')value=empty();
+        else value=__rt.cljAssoc(value,x,__rt.cljConj(get(value,x,set([])),y));
       }
-      const view={methods,prefs,history,frontier};views.set(val(m),view);publish(m,view);return view;
+      views.set(ref,{value,history,frontier});return value;
+    };
+    const tables=(m,force=true)=>{
+      if(force)demand(m);
+      const view={methods:materialize(field(m,'__method_state')),prefs:materialize(field(m,'__prefer_state'))};
+      publish(m,view);return view;
     };
     const publish=(m,view)=>{
       for(const [key,value] of [['method_table',view.methods],['prefer_table',view.prefs]]){
@@ -1124,7 +1148,7 @@ const native = (() => {
   const intoReducer = (...a) => a.length === 1 ? a[0] : a.length === 2 ? __rt.cljConj(a[0], a[1]) : arity(a.length);
   const core = {
     MultiFn:multi.MultiFn, MultiFnFactory:(...a)=>new multi.MultiFn(...a),
-    isFn:x=>typeof val(x)==='function'||decl.satisfies('Fn',x),
+    isFn:x=>typeof val(x)==='function'||__rt.formKind(val(x))==='type'||decl.satisfies('Fn',x),
     isIFn:x=>core.isFn(x)||multi.is(x)||['keyword','symbol','vector','map','set'].includes(__rt.formKind(val(x)))||decl.satisfies('IFn',x),
     invokeMulti:(m,args)=>multi.dispatch(m,args),
     makeHierarchy:multi.makeHierarchy,getGlobalHierarchy:multi.getGlobalHierarchy,isa:multi.isa,
