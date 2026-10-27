@@ -29,17 +29,21 @@ struct StringKey {
     text: Option<JsString>,
     index: usize,
     hash: i32,
+    _charge: ByteReservation,
 }
 
 impl StringKey {
-    fn new(heap: &Heap, pair: (Value, Value), text: JsString) -> Result<Self, Fault> {
-        Ok(Self {
+    fn new(heap: &Heap, pair: (Value, Value), text: JsString) -> Result<Box<Self>, Fault> {
+        // Keep the optional hash continuation out of every traversal slot.
+        let charge = reserve_elements(heap, 1, std::mem::size_of::<Self>())?;
+        Ok(Box::new(Self {
             pair,
             flatten: Some(StringFlatten::new_accounted(heap, text)?),
             text: None,
             index: 0,
             hash: 0,
-        })
+            _charge: charge,
+        }))
     }
 
     fn advance(&mut self) -> Option<u32> {
@@ -119,7 +123,7 @@ enum Part {
         entries: Entries,
         charge: ByteReservation,
         set: bool,
-        hashing: Option<StringKey>,
+        hashing: Option<Box<StringKey>>,
     },
     Map(Items, bool, bool),
 }
