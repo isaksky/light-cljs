@@ -5082,6 +5082,21 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
             "[99 7 7 7 [7 8] [7 8] [7 8] 2 2 2 [7 8] [7 8] [7 8] 15 25 15 [8] [8]]",
         ),
         (
+            "lazy-user-published-record",
+            r#"(defn demanded [x] (inc x)) (defrecord R [n])
+               (extend-type R ICounted (-count [_] 99)
+                 ISeqable (-seq [this] (seq [(demanded (.-n this)) (first (:kept (meta this)))])))
+               (def cached (lazy-seq (with-meta (R. 3) {:kept [8]})))
+               (defn load-cached [] cached)"#,
+            r#"(let [x (load-cached) f first s seq c count v vec r reduce]
+              [(identical? x (load-cached)) (first x) (f x) (apply first [x])
+               (vec (seq x)) (vec (s x)) (vec (apply seq [x]))
+               (count x) (c x) (apply count [x]) (vec x) (v x) (apply vec [x])
+               (reduce + x) (r + 10 x) (apply reduce [+ 0 x])
+               (vec (next x)) (vec (rest x))])"#,
+            "[true 4 4 4 [4 8] [4 8] [4 8] 2 2 2 [4 8] [4 8] [4 8] 12 22 12 [8] [8]]",
+        ),
+        (
             "lazy-user-sequence-order-and-throws",
             r#"(defn demanded [x] (inc x))
                (deftype T [seen] ISeqable (-seq [this] (.push seen "seq") this)
@@ -5225,6 +5240,10 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
                 || label.starts_with("lazy-user-")
             {
                 assert!(stats.native_helpers.waits > 0, "{stats:?}");
+            }
+            if label == "lazy-user-published-record" {
+                assert_eq!(stats.native_helpers.per_task, 0, "{stats:?}");
+                assert!(stats.native_helpers.published >= 2, "{stats:?}");
             }
             #[cfg(feature = "quickjs")]
             assert_eq!(
