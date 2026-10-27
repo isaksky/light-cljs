@@ -1194,7 +1194,8 @@ fixed across method `recur`, and mutable field reads and captured receivers keep
 their behavior. `Object`, `IFn` and methods whose body reads its function scope
 (including raw JavaScript and `this-as`) retain the JavaScript receiver ABI;
 protocol installation adapts those entries once. Multi-arity and metadata
-dispatch still select the same implementation at the same frontier.
+dispatch still select the same implementation at the same frontier. Metadata
+functions keep their ordinary null receiver, including strict JavaScript functions.
 
 The protocol-extension frontier is preserved: an extension's order is its
 bundle's registration order, and a table holds the extensions up to the

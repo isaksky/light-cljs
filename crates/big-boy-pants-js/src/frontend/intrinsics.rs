@@ -60,6 +60,11 @@
 //! sequence operations `__rt.lazySeq(thunk)` and `__rt.cljChunk*`
 //! (light-cljs-479; [`crate::collections::lazy`]).
 //!
+//! **`__rt.call(receiver, callee, args…)`** (light-cljs-501) uses the ordinary
+//! `CallMethod` instruction with an explicitly evaluated receiver and callable.
+//! Operands evaluate left to right; call errors and dependency waits use the
+//! same VM frames as a JavaScript method call.
+//!
 //! A call evaluates its arguments left to right, then runs one VM
 //! instruction; the operand order is the instruction's stack order
 //! ([`crate::vm::intrinsics`] documents operands, results and errors).

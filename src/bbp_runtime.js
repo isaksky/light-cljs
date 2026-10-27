@@ -130,12 +130,6 @@ const decl = (() => {
   };
   const method = (key, name, arities, viaMetadata) => {
     const ts = arities.map(n => methodTable(key, n));
-    const find = (t, x) => {
-      if (viaMetadata) { const f = viaMeta(name, x); if (f !== null) return f; }
-      const m = resolve(t, x);
-      if (m == null) throw missing(name, x);
-      return m;
-    };
     if (arities.length === 1 && !viaMetadata) {
       const t = ts[0], n = arities[0];
       switch (n) {
@@ -150,7 +144,11 @@ const decl = (() => {
       // call would be.
       if (arities.length === 1) { i = 0; args.length = arities[0] - 1; }
       if (i < 0) throw new Error('Invalid arity: ' + (args.length + 1));
-      const m = find(ts[i], x);
+      // Metadata functions are ordinary callables, not the table's adapted
+      // explicit-receiver entries. Keep the legacy null receiver.
+      if (viaMetadata) { const f = viaMeta(name, x); if (f !== null) return f.call(null, x, ...args); }
+      const m = resolve(ts[i], x);
+      if (m == null) throw missing(name, x);
       return m(x, ...args);
     };
   };

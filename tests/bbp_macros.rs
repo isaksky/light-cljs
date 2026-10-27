@@ -4187,6 +4187,14 @@ fn fixed_native_arithmetic_preserves_coercion_occurrences_and_evaluation_order()
 fn direct_native_protocol_entries_keep_receivers_recur_and_scope_sensitive_methods() {
     for (source, expected) in [
         (
+            r#"(defprotocol P :extend-via-metadata true (p [x]))
+               (defmacro m []
+                 (let [f (js* "(function(x) { 'use strict'; return this === null; })")]
+                   (p (with-meta [1] {`p f}))))
+               (js/console.log (m))"#,
+            "true\n",
+        ),
+        (
             r#"(defprotocol P (p [x n]) (q [x] [x a] [x a b] [x a b c]))
                (deftype T [a] P
                  (p [this n] (if (= n 0) [a (.-a this)] (recur nil (dec n))))
