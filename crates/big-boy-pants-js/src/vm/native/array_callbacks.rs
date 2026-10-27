@@ -251,13 +251,18 @@ impl State {
         match self.stage {
             Stage::Start => {
                 self.this = builtin::array_string_receiver(heap, task, &self.this)?;
-                self.read(
-                    heap,
-                    task,
-                    self.this.clone(),
-                    property::Key::Name("length".into()),
-                    Stage::Length,
-                )
+                self.stage = Stage::Length;
+                match property::names::LENGTH.read(heap, task, &self.this)? {
+                    Some(property::Read::Deferred(callee)) => Ok(callee.action(self.this.clone())),
+                    read => {
+                        self.read_value = Some(match read {
+                            Some(property::Read::Value(value)) => value,
+                            None => Value::Undefined,
+                            Some(property::Read::Deferred(_)) => unreachable!(),
+                        });
+                        Ok(Action::Continue)
+                    }
+                }
             }
             Stage::Length => {
                 self.stage = Stage::LengthNumber;

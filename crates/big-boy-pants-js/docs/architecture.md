@@ -301,7 +301,7 @@ Fixed-text leaf results are process-wide constants like executable constants:
 `typeof`'s type names, `Boolean.prototype.toString`, the TypedArray
 `Symbol.toStringTag` getter, `Intl.PluralRules.prototype.select`, the fixed
 spellings of Intl `resolvedOptions()` fields, Intl part `type`s and `unit`s,
-ListFormat separators, the `Symbol.toPrimitive` hint, default `Error` names,
+ListFormat separators, native `formKind` tags, the `Symbol.toPrimitive` hint, default `Error` names,
 the empty RegExp source and promise resolving functions' names each return
 one shared body per spelling (`JsString::fixed`, `FixedText`), made on first
 use and never released, so retaining one allocates nothing. Every empty
@@ -446,13 +446,25 @@ construction sites in the engine; error-message construction is unchanged.
 Only sites observed in the array/object/string/Map microbenchmarks or native
 protocol macro workload are candidates for a hot-path change.
 
+Native iterator names use `vm::property::FixedName`: one lazily initialized
+string, the same `NamedProperty` binding as executable constants, and a live
+slot cache. Its non-interning read binding caches only successful lookups;
+absence still checks ownership and consumes no key-table bytes. A collection
+or another heap invalidates the binding through the existing global stamp.
+These hints root no keys or objects, and cache neither values nor prototypes.
+Result-object construction interns exactly the same keys as before. Fixed
+form-kind results and function-name comparisons use `FixedText` directly,
+without the process-wide interning table's per-call hash and lock.
+
 | Names and construction sites | Handling |
 | --- | --- |
 | Source property constants (`vm::executable`, `vm::property::NamedProperty`) | Classified once on executable load; runtime/collection-stamped bindings and live intrinsic/ordinary slot caches avoid repeated encoding and hashing. |
 | Builtin method/global tables, prototype installation, builtin `name`/`length` (`realm`) | Constructed during realm installation, or task-global initialization. Existing keys are interned; no changes to these cold setup conversions. |
 | Builtin dispatch and equality (`vm::builtin::Builtin`) | Enum discriminants and scalar payloads, including object identities; no string names, UTF-16 encoding or string hashing in equality. Rust `name()` results serve installation and diagnostics. |
-| Function metadata and constructor prototype helpers (`vm::function`, `vm::native::construct`, `instanceof`) | Runtime helpers still convert `length`, `name`, `prototype` and related names, independently of the source-property constant path. |
-| Protocol dispatch (`collections::clj`) | The common primitive/form kind names share an existing `OnceLock` table; the default `_` key and less common kind names still construct strings when used. |
+| Function special-name classification (`vm::function::special`) | Six `FixedText` spellings compare exact UTF-16 units without re-encoding the Rust names. Metadata record reads, bind and constructor/instanceof helpers retain their existing conversions unless observed separately. |
+| Native form-kind tags (`vm::intrinsics`, `collections::form::FormKind`) | Each tag, including `record` and `occurrence`, has a `FixedText` body. Repeated protocol predicates neither allocate a string nor consult a string interning table. |
+| Protocol dispatch (`collections::clj`) | The common primitive/form kind names share an existing `OnceLock` table; the default `_` key and less common kind names still construct strings when used. These conversions did not appear among the sampled hot sites. |
+| Iterator result/record fields and reads (`vm::native::iterator`), array callback preparation | `value`, `done`, `iterator`, `next` and `length` use `FixedName`. Implicit array/string length classification also compares a fixed UTF-16 body. User getters and Proxy reads retain the deferred continuation path. |
 | Well-known symbols (`value::symbol::well_known`) | Rust-name match selects a `OnceLock`; each symbol and its formatted description are made once process-wide. Comparisons use symbol identity. |
 | Fixed leaf results (`value::string::FixedText`, `JsString::fixed`) | Existing shared bodies for typeof, boolean text, typed-array tags, conversion hints, error defaults, regexp defaults and Intl option/part spellings. Empty strings already share a body. |
 | Intl field names, option readers, resolved-options objects and bound formatter metadata (`intl::service`, `vm::native::intl*`, formatter modules) | Option values already use fixed bodies. Field keys and option names still encode when constructing or reading a service result; these paths are outside the measured workloads. Data-dependent locales, currencies and formatted output remain byte-accounted text. |

@@ -279,6 +279,7 @@ use super::{CollectionError, PVector, identical, index_from_value, object_name};
 use crate::heap::budget::GrowthCharge;
 use crate::heap::gc::{Trace, TraceEdge};
 use crate::heap::{Heap, HeapObject, Local, ObjectId, Scope};
+use crate::value::string::FixedText;
 use crate::value::{JsString, Value};
 
 /// The kinds of native form value. See the module docs.
@@ -310,18 +311,37 @@ impl FormKind {
     /// `map`, `set`, `struct` or `type` (the result of the `formKind`
     /// intrinsic).
     pub fn name(self) -> &'static str {
+        self.fixed_name().as_str()
+    }
+
+    pub(crate) fn name_string(self) -> JsString {
+        self.fixed_name().get()
+    }
+
+    fn fixed_name(self) -> &'static FixedText {
+        static KEYWORD: FixedText = FixedText::new("keyword");
+        static SYMBOL: FixedText = FixedText::new("symbol");
+        static LIST: FixedText = FixedText::new("list");
+        static VECTOR: FixedText = FixedText::new("vector");
+        static MAP: FixedText = FixedText::new("map");
+        static SET: FixedText = FixedText::new("set");
+        static STRUCT: FixedText = FixedText::new("struct");
+        static TYPE: FixedText = FixedText::new("type");
+        static LAZY: FixedText = FixedText::new("lazy-seq");
+        static CONS: FixedText = FixedText::new("cons");
+        static REDUCED: FixedText = FixedText::new("reduced");
         match self {
-            FormKind::Keyword => "keyword",
-            FormKind::Symbol => "symbol",
-            FormKind::List => "list",
-            FormKind::Vector => "vector",
-            FormKind::Map => "map",
-            FormKind::Set => "set",
-            FormKind::Struct => "struct",
-            FormKind::Type => "type",
-            FormKind::Lazy => "lazy-seq",
-            FormKind::Cons => "cons",
-            FormKind::Reduced => "reduced",
+            FormKind::Keyword => &KEYWORD,
+            FormKind::Symbol => &SYMBOL,
+            FormKind::List => &LIST,
+            FormKind::Vector => &VECTOR,
+            FormKind::Map => &MAP,
+            FormKind::Set => &SET,
+            FormKind::Struct => &STRUCT,
+            FormKind::Type => &TYPE,
+            FormKind::Lazy => &LAZY,
+            FormKind::Cons => &CONS,
+            FormKind::Reduced => &REDUCED,
         }
     }
 

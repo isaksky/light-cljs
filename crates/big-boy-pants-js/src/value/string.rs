@@ -925,6 +925,15 @@ impl FixedText {
     pub(crate) fn get(&self) -> JsString {
         self.body.get_or_init(|| JsString::from(self.text)).clone()
     }
+
+    pub(crate) fn as_str(&self) -> &'static str {
+        self.text
+    }
+
+    /// Compare exact code units without re-encoding the Rust spelling.
+    pub(crate) fn matches(&self, text: &JsString) -> bool {
+        self.body.get_or_init(|| JsString::from(self.text)) == text
+    }
 }
 
 impl From<&str> for JsString {

@@ -105,14 +105,17 @@ fn map<R>(
     .ok_or(Fault::Internal("Map was reclaimed"))?
 }
 
-fn object(heap: &Heap, task: TaskId, fields: &[(&str, Value)]) -> Result<Value, Fault> {
+fn object(
+    heap: &Heap,
+    task: TaskId,
+    fields: &[(&property::FixedName, Value)],
+) -> Result<Value, Fault> {
     let realm = crate::realm::intrinsics(heap).ok_or(Fault::OutOfMemory("iterator realm"))?;
     let mut o = OrdinaryObject::with_prototype(heap, task, realm.object_prototype);
     for (name, value) in fields {
-        let key = heap
-            .keys()
-            .intern(&JsString::from(*name))
-            .ok_or(Fault::OutOfMemory("iterator key"))?;
+        let key = name
+            .intern(heap)
+            .map_err(|_| Fault::OutOfMemory("iterator key"))?;
         o.define_with(key, value.clone(), PropertyFlags::DATA);
     }
     heap.alloc(HeapObject::Plain(o))
@@ -340,7 +343,31 @@ impl State {
                 data.source = Value::Undefined;
             })?;
         }
-        object(heap, task, &[("value", value), ("done", Value::Bool(done))]).map(Action::Return)
+        object(
+            heap,
+            task,
+            &[
+                (&property::names::VALUE, value),
+                (&property::names::DONE, Value::Bool(done)),
+            ],
+        )
+        .map(Action::Return)
+    }
+
+    fn read_name(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        base: Value,
+        name: &property::FixedName,
+        stage: Stage,
+    ) -> Result<Action, Fault> {
+        self.stage = stage;
+        match name.read(heap, task, &base)? {
+            Some(property::Read::Deferred(callee)) => Ok(callee.action(base)),
+            Some(property::Read::Value(value)) => self.step(heap, task, Input::CallResult(value)),
+            None => self.step(heap, task, Input::CallResult(Value::Undefined)),
+        }
     }
 
     pub(super) fn step(
@@ -423,11 +450,11 @@ impl State {
                 if !matches!(self.iterator, Value::Object(_)) {
                     return Err(Fault::TypeError("iterator must be an object".into()));
                 }
-                self.read(
+                self.read_name(
                     heap,
                     task,
                     self.iterator.clone(),
-                    property::Key::Name(JsString::from("next")),
+                    &property::names::NEXT,
                     Stage::Record,
                 )
             }
@@ -444,7 +471,10 @@ impl State {
                 object(
                     heap,
                     task,
-                    &[("iterator", self.iterator.clone()), ("next", next)],
+                    &[
+                        (&property::names::ITERATOR, self.iterator.clone()),
+                        (&property::names::NEXT, next),
+                    ],
                 )
                 .map(Action::Return)
             }
@@ -528,11 +558,11 @@ impl State {
                         Input::CallResult(Value::Number(view.length as f64)),
                     );
                 }
-                self.read(
+                self.read_name(
                     heap,
                     task,
                     self.source.clone(),
-                    property::Key::Name(JsString::from("length")),
+                    &property::names::LENGTH,
                     Stage::LengthValue,
                 )
             }

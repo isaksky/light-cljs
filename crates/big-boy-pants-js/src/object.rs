@@ -226,12 +226,30 @@ impl PropertyKeys {
     /// Runtime/collection identity in one word. Overflow disables caching;
     /// it never aliases a previous runtime or a reclaimed key slot.
     pub(crate) fn bind_name(&self, name: &JsString, cache: &AtomicU64) -> Option<PropertyKey> {
+        self.bind_cached_name(cache, || self.intern(name))
+    }
+
+    /// A non-interning binding for a native's fixed property name. Absence
+    /// cannot be cached: interning may add the name without changing the stamp.
+    pub(crate) fn lookup_bound_name(
+        &self,
+        name: &JsString,
+        cache: &AtomicU64,
+    ) -> Option<PropertyKey> {
+        self.bind_cached_name(cache, || self.lookup(name))
+    }
+
+    fn bind_cached_name(
+        &self,
+        cache: &AtomicU64,
+        resolve: impl FnOnce() -> Option<PropertyKey>,
+    ) -> Option<PropertyKey> {
         let stamp = self.binding_stamp.load(Ordering::Acquire);
         let cached = cache.load(Ordering::Relaxed);
         if stamp <= u64::from(u32::MAX) && cached >> 32 == stamp {
             return Some(PropertyKey(cached as u32, None));
         }
-        let key = self.intern(name)?;
+        let key = resolve()?;
         if stamp <= u64::from(u32::MAX) {
             cache.store((stamp << 32) | u64::from(key.0), Ordering::Relaxed);
         }
@@ -1532,6 +1550,32 @@ mod tests {
         assert_eq!(second.lookup(&s("live")), Some(theirs));
         assert_eq!(keys.lookup(&s("live")), Some(live));
         assert_eq!(second.lookup(&s("first")), Some(first));
+    }
+
+    #[test]
+    fn static_names_bind_only_found_keys_and_rebind_after_sweep_or_table_change() {
+        let cache = AtomicU64::new(0);
+        let name = s("static-name-probe");
+        let keys = PropertyKeys::default();
+        assert_eq!(keys.lookup_bound_name(&name, &cache), None);
+        assert_eq!(keys.len(), 0);
+        let key = keys.intern(&name).unwrap();
+        assert_eq!(keys.lookup_bound_name(&name, &cache), Some(key));
+        keys.sweep(|_| false);
+        let reused = keys.intern(&s("different-name")).unwrap();
+        assert_eq!(reused, key);
+        assert_eq!(keys.lookup_bound_name(&name, &cache), None);
+        let new = keys.intern(&name).unwrap();
+        assert_ne!(new, reused);
+        assert_eq!(keys.lookup_bound_name(&name, &cache), Some(new));
+
+        let other = PropertyKeys::default();
+        other.intern(&s("padding")).unwrap();
+        other.intern(&s("more-padding")).unwrap();
+        let theirs = other.intern(&name).unwrap();
+        assert_ne!(theirs, new);
+        assert_eq!(other.lookup_bound_name(&name, &cache), Some(theirs));
+        assert_eq!(keys.lookup_bound_name(&name, &cache), Some(new));
     }
 
     #[test]

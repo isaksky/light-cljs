@@ -206,7 +206,7 @@ use crate::collections::form::{self, FormKind};
 use crate::collections::lazy;
 use crate::collections::{self as coll, CollectionError, PersistentKind};
 use crate::heap::Heap;
-use crate::value::{JsString, Value};
+use crate::value::Value;
 
 impl From<CollectionError> for Fault {
     fn from(e: CollectionError) -> Self {
@@ -524,9 +524,11 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
 
 /// A strict `__rt.form*` operation ([`crate::collections::form`]).
 fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, CollectionError> {
+    use crate::value::string::FixedText;
+    static RECORD: FixedText = FixedText::new("record");
+    static OCCURRENCE: FixedText = FixedText::new("occurrence");
     let mut args = args.into_iter();
     let mut arg = || args.next().unwrap_or(Value::Undefined);
-    let string = |s: &str| Value::String(JsString::from(s));
     Ok(match op {
         FormOp::Keyword => form::new_named_from_values(heap, FormKind::Keyword, arg(), arg())?,
         FormOp::Symbol => form::new_named_from_values(heap, FormKind::Symbol, arg(), arg())?,
@@ -538,10 +540,10 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
             let v = arg();
             match form::kind(heap, &v) {
                 // A record is `"record"`, a deftype instance `"struct"`.
-                Some(FormKind::Struct) if form::is_record(heap, &v) => string("record"),
-                Some(kind) => string(kind.name()),
+                Some(FormKind::Struct) if form::is_record(heap, &v) => Value::String(RECORD.get()),
+                Some(kind) => Value::String(kind.name_string()),
                 None if coll::kind_of(heap, &v) == Some(PersistentKind::Occurrence) => {
-                    string("occurrence")
+                    Value::String(OCCURRENCE.get())
                 }
                 None => Value::Null,
             }
@@ -664,6 +666,49 @@ mod tests {
     use crate::host::NoHost;
     use crate::vm::{Assembler, Opcode};
     use crate::{Budget, BuilderError, Primitive, RunOutcome, Runtime, ValueView, VmErrorKind};
+
+    #[test]
+    fn static_names_form_kind_results_share_bodies_without_byte_growth() {
+        use super::{FormKind, FormOp, strict_form_op};
+        use crate::collections::{Provenance, form, new_occurrence};
+        use crate::heap::Heap;
+        use crate::value::{JsString, Value};
+
+        let heap = Heap::with_byte_limit(64 * 1024);
+        let vector = form::new_vector(&heap, &[]).unwrap();
+        let ty = form::new_type(
+            &heap,
+            &Value::String(JsString::from("R")),
+            &vector,
+            &Value::Bool(true),
+        )
+        .unwrap();
+        let record = form::new_struct(&heap, &ty, &[]).unwrap();
+        let occurrence = new_occurrence(&heap, Value::Number(1.0), Provenance::default()).unwrap();
+        for (value, expected) in [
+            (vector, FormKind::Vector.name()),
+            (ty, FormKind::Type.name()),
+            (record, "record"),
+            (occurrence, "occurrence"),
+        ] {
+            let Value::String(first) =
+                strict_form_op(&heap, FormOp::Kind, vec![value.clone()]).unwrap()
+            else {
+                panic!("expected kind string")
+            };
+            assert_eq!(first, expected);
+            let used = heap.byte_budget().used();
+            for _ in 0..100 {
+                let Value::String(next) =
+                    strict_form_op(&heap, FormOp::Kind, vec![value.clone()]).unwrap()
+                else {
+                    panic!("expected kind string")
+                };
+                assert!(first.same_body(&next));
+            }
+            assert_eq!(heap.byte_budget().used(), used);
+        }
+    }
 
     #[test]
     fn another_task_cannot_mutate_or_freeze_a_live_owners_builder() {

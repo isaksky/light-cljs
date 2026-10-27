@@ -194,6 +194,69 @@ impl NamedProperty {
     }
 }
 
+/// A Rust-side name using the executable's runtime/collection-stamped key
+/// binding and live slot validation. Only successful lookups are cached, so
+/// reading an absent property does not intern it or consume heap bytes.
+pub(crate) struct FixedName {
+    text: &'static str,
+    bound: std::sync::OnceLock<(NamedProperty, InlineCache)>,
+}
+
+impl FixedName {
+    pub(crate) const fn new(text: &'static str) -> Self {
+        Self {
+            text,
+            bound: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn bound(&self) -> &(NamedProperty, InlineCache) {
+        self.bound.get_or_init(|| {
+            (
+                NamedProperty::new(&JsString::fixed(self.text)),
+                InlineCache::default(),
+            )
+        })
+    }
+
+    pub(crate) fn intern(&self, heap: &Heap) -> Result<PropertyKey, Fault> {
+        self.bound().0.intern(heap)
+    }
+
+    pub(crate) fn matches(&self, text: &JsString) -> bool {
+        &self.bound().0.name == text
+    }
+
+    pub(crate) fn read(
+        &self,
+        heap: &Heap,
+        task: TaskId,
+        base: &Value,
+    ) -> Result<Option<Read>, Fault> {
+        let (name, cache) = self.bound();
+        let key = heap.keys().lookup_bound_name(&name.name, &name.binding);
+        lookup_cached(
+            heap,
+            task,
+            base,
+            &name.key,
+            false,
+            false,
+            key.map(|key| (key, cache)),
+        )
+    }
+}
+
+pub(crate) mod names {
+    use super::FixedName;
+
+    pub(crate) static LENGTH: FixedName = FixedName::new("length");
+    pub(crate) static NEXT: FixedName = FixedName::new("next");
+    pub(crate) static VALUE: FixedName = FixedName::new("value");
+    pub(crate) static DONE: FixedName = FixedName::new("done");
+    pub(crate) static ITERATOR: FixedName = FixedName::new("iterator");
+}
+
 pub(crate) fn read_named(
     heap: &Heap,
     task: TaskId,
@@ -260,7 +323,7 @@ impl Key {
     }
 
     pub(crate) fn is_length(&self) -> bool {
-        matches!(self, Key::Name(name) if *name == "length")
+        matches!(self, Key::Name(name) if names::LENGTH.matches(name))
     }
 }
 
@@ -2448,6 +2511,45 @@ mod tests {
     use crate::heap::NativePayload;
     use crate::heap::gc::Trace;
     use crate::value::share::Shareability;
+
+    #[test]
+    fn static_names_preserve_absence_ownership_and_byte_accounting() {
+        let heap = Heap::with_byte_limit(2 * 1024 * 1024);
+        let task = TaskId::from_raw(1);
+        let id = heap
+            .alloc(HeapObject::Plain(OrdinaryObject::new(&heap, Some(task))))
+            .unwrap();
+        let base = Value::Object(id);
+        let name = FixedName::new("static-missing-probe");
+        let used = heap.byte_budget().used();
+        let keys = heap.keys().len();
+        assert!(name.read(&heap, task, &base).ok().unwrap().is_none());
+        assert_eq!(heap.keys().len(), keys);
+        assert_eq!(heap.byte_budget().used(), used);
+        assert!(matches!(
+            name.read(&heap, TaskId::from_raw(2), &base),
+            Err(Fault::ForeignObject { .. })
+        ));
+
+        let key = name.intern(&heap).ok().unwrap();
+        assert!(
+            heap.with_object_mut(id, |object| match object {
+                HeapObject::Plain(object) => object.define(key, Value::Number(7.0)),
+                _ => false,
+            })
+            .unwrap()
+        );
+        let used = heap.byte_budget().used();
+        let releases = crate::value::string::cursor_release_counts().1;
+        for _ in 0..100 {
+            assert!(matches!(
+                name.read(&heap, task, &base).ok().unwrap(),
+                Some(Read::Value(Value::Number(7.0)))
+            ));
+        }
+        assert_eq!(crate::value::string::cursor_release_counts().1, releases);
+        assert_eq!(heap.byte_budget().used(), used);
+    }
 
     /// A string index read makes a charged string; checks that only need
     /// the property's presence or attributes make none, so they still

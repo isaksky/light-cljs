@@ -584,19 +584,23 @@ fn intern(heap: &Heap, name: &str) -> Result<PropertyKey, Fault> {
 /// The name of `key` if it needs the function's own handling: `prototype`
 /// or one of [`FUNCTION_PROTOTYPE_NAMES`].
 fn special(key: &Key) -> Option<&'static str> {
+    use crate::value::string::FixedText;
+    static NAMES: [FixedText; 6] = [
+        FixedText::new("prototype"),
+        FixedText::new("length"),
+        FixedText::new("name"),
+        FixedText::new("toString"),
+        FixedText::new("arguments"),
+        FixedText::new("caller"),
+    ];
     let Key::Name(name) = key else {
         return None;
     };
     // Avoid iterator-adapter frames on the metadata read path: name reads
     // also run on 64 KiB execution workers in debug builds.
-    for special in &[
-        &["prototype", "length", "name"][..],
-        &FUNCTION_PROTOTYPE_NAMES[..],
-    ] {
-        for &special in *special {
-            if *name == special {
-                return Some(special);
-            }
+    for special in &NAMES {
+        if special.matches(name) {
+            return Some(special.as_str());
         }
     }
     None
