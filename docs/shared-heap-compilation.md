@@ -413,9 +413,10 @@ tasks. Each frontier is a persistent vector prefix; root and declaration
 descriptors contain only strings, numbers, booleans and other immutable vectors.
 Versions share their storage. Each task roots its own frontier; the shared
 cache holds weak handles and prunes collected entries after GC. Advancing or
-dropping the last task at a frontier releases that snapshot. If a cached
-frontier has been collected, a task extends its own rooted prefix with the
-new descriptors.
+dropping the last task at a frontier releases that snapshot. On an exact
+frontier cache miss, a task extends the greatest live cached prefix within
+its requested registration range, constructing only the missing descriptors.
+If no suitable cached prefix survives, it extends its own rooted prefix.
 A worker imports its newly registered suffix. A helper producer imports its
 parent's exact snapshot and populates a fresh ordinary JavaScript object through
 the existing registration functions, in registration order. Initializer slots,
