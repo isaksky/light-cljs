@@ -29940,6 +29940,44 @@ fn array_callbacks() {
     );
 }
 
+#[test]
+fn array_callbacks_preserve_call_limits() {
+    for method in ["forEach", "map", "filter", "reduce"] {
+        let locals = (0..40)
+            .map(|i| format!("let v{i}={i};"))
+            .collect::<String>();
+        let source =
+            format!("[1,2].{method}(function() {{ {locals} return arguments.length+v39; }},0)");
+        for limits in [
+            big_boy_pants_js::VmLimits {
+                max_call_depth: 1,
+                max_stack_values: 128,
+            },
+            big_boy_pants_js::VmLimits {
+                max_call_depth: 8,
+                max_stack_values: 32,
+            },
+        ] {
+            let rt = Runtime::with_limits(limits);
+            // The entry frame fits: the callback must enforce the tighter
+            // depth/stack bound even on the direct native-to-JS path.
+            let task = rt.spawn(&exe(&source), &[]).unwrap();
+            assert!(
+                matches!(task.run().unwrap(), RunOutcome::Failed(error) if error.kind() == VmErrorKind::StackOverflow),
+                "{method}: {limits:?}"
+            );
+        }
+        assert_eq!(
+            eval(&source),
+            match method {
+                "forEach" => ValueView::Undefined,
+                "reduce" => ValueView::Number(43.0),
+                _ => ValueView::Object,
+            }
+        );
+    }
+}
+
 /// Synthetic fixtures, not light-cljs output.
 #[test]
 fn array_callbacks_order_species_and_errors() {
