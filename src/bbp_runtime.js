@@ -642,9 +642,11 @@ const native = (() => {
     const empty=()=>arrayMap([]), kw=x=>__rt.cljKeyword(x);
     const ident=x=>{const k=__rt.formKind(val(x));return k==='symbol'||k==='keyword';};
     const part=(h,k)=>get(h,kw(k));
-    const makeHierarchy=()=>arrayMap([kw('parents'),empty(),kw('ancestors'),empty(),kw('descendants'),empty()]);
+    const makeHierarchy=(...a)=>a.length?arity(a.length):arrayMap([kw('parents'),empty(),kw('ancestors'),empty(),kw('descendants'),empty()]);
     let globalHierarchy;
-    const getGlobalHierarchy=()=>globalHierarchy??=globalThis.__lightInitializeCompilerValue(4503599627370495,()=>atom(makeHierarchy()));
+    // Outside the catalog's unit range, but still inside JavaScript's exact
+    // integer range: one initializer cell for the compilation's hierarchy.
+    const getGlobalHierarchy=(...a)=>a.length?arity(a.length):(globalHierarchy??=globalThis.__lightInitializeCompilerValue(4503599627370495,()=>atom(makeHierarchy())));
     const isaIn=(h,child,parent)=>{
       if(__rt.formEquals(child,parent))return true;
       child=val(child);parent=val(parent);
@@ -710,9 +712,11 @@ const native = (() => {
       reset(ref,__rt.cljAssoc(history,key,__rt.cljConj(get(history,key,vector([])),vector([op,x,y]))));
       return m;
     };
+    const views=new WeakMap();
     const tables=m=>{
       demand(m);
-      const history=deref(field(m,'method_table'));
+      const history=deref(field(m,'method_table')),frontier=decl.multiFrontier(),old=views.get(val(m));
+      if(old!==undefined&&old.history===history&&old.frontier===frontier)return old;
       const entries=arr(history).filter(e=>__rt.formNth(e,0)<=decl.multiFrontier())
         .sort((a,b)=>{const x=__rt.formNth(a,0),y=__rt.formNth(b,0);return (x<0)-(y<0)||(x<0?y-x:x-y);});
       let methods=empty(),prefs=empty();
@@ -723,7 +727,7 @@ const native = (() => {
         else if(op==='reset'){methods=empty();prefs=empty();}
         else prefs=__rt.cljAssoc(prefs,x,__rt.cljConj(get(prefs,x,set([])),y));
       }
-      return {methods,prefs};
+      const view={methods,prefs,history,frontier};views.set(val(m),view);return view;
     };
     const getMethod=(m,dispatch)=>{
       const {methods,prefs}=tables(m),h=deref(field(m,'hierarchy'));
@@ -1405,6 +1409,7 @@ globalThis.__lightSetCompilerRoot=(name,value)=>{
 };
 globalThis.__lightCompilerRootKept=name=>{
   if(decl.productOwner(name)!==null)return decl.keptProduct(name);
+  if(roots.has(name))return roots.get(name).unit!==null;
   return bindingOverlays.has(name)?bindingOverlays.get(name)!==undefined:name in globalThis.__lightCompilerRoots;
 };
 globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
@@ -1429,7 +1434,7 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
   // A defonce keeps an earlier definition (not a declaration), as the
   // legacy runtimes' registry does.
   if(once&&roots.has(name)&&roots.get(name).unit!==null)return null;
-  const slot={unit,state:0,value:null};roots.set(name,slot);
+  const slot={unit,name,state:0,value:null};roots.set(name,slot);
   Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:()=>{
     if(unit===null)throw new Error('unavailable definition: '+name);
     __rt.need(unit,2);
@@ -1440,7 +1445,7 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
 const initializeValue=(slot,factory)=>{
     const unit=slot.unit;
     if(slot.state===2){__rt.need(unit,4);return slot.value;}
-    if(slot.state===1)throw new Error('root initialization cycle: '+unit);
+    if(slot.state===1)throw new Error('root initialization cycle: '+(slot.name??unit));
     if(slot.state===3)throw slot.value;
     slot.state=1;
     try{

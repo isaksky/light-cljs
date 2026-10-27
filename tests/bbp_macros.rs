@@ -2725,6 +2725,17 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             "[true :pet true true :animal :fallback :animal true true true true]",
         ),
         (
+            "declaration frontier and replacement",
+            r#"
+          (defmulti m identity)
+          (defmethod m :x [_] :first)
+          (defmacro snapshot [] (list 'quote (m :x)))
+          (defn early [] (snapshot))
+          (defmethod m :x [_] :second)"#,
+            "[(m :x) (early) (m :x)]",
+            "[:second :first :second]",
+        ),
+        (
             "defonce and binding restoration",
             r#"
           (def ^:dynamic *x* :root)
@@ -2782,6 +2793,119 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             reference = Some(native.clone());
             #[cfg(feature = "quickjs")]
             assert_eq!(native, build(false, jobs), "{label}, jobs {jobs}");
+        }
+    }
+}
+
+#[test]
+fn demanded_multimethod_effects_run_once_across_suspension_and_lending() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-multimethod-effects");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+          (def events (atom []))
+          (def ^:dynamic *x* :root)
+          (def captured (do (swap! events conj [:capture *x*]) *x*))
+          (defn leaf [] (swap! events conj [:leaf *x*]) captured)
+          (defmulti m (do (swap! events conj [:construct *x*])
+                       (fn [tag] (swap! events conj [:dispatch tag *x*]) tag)))
+          (defmulti m (throw (js/Error. "repeated defonce")))
+          (defmethod m (do (swap! events conj [:register *x*]) :x) [_]
+            (let [a (leaf)] [a *x*]))
+          (defmethod m :throw [_] (throw (js/Error. "bound")))
+          (defmethod m :default [_] *x*)
+          (defn helper [tag]
+            (binding [*x* tag]
+              [(m :x) (binding [*x* false] (apply m [:missing]))
+               (try (binding [*x* nil] (m :throw)) (catch :default e (.-message e))) *x*]))
+          (defmacro probe [tag] (list 'quote [(helper tag) *x*]))
+          (defmacro log [] (list 'quote @events))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [helpers :refer [probe]])) (def value (probe :a))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [helpers :refer [probe]])) (def value (probe :b))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b] [helpers :refer [probe log]]))
+          (js/console.log (pr-str [a/value b/value (probe :app) (log)]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed, held| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                #[cfg(debug_assertions)]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    lane_hold: if held {
+                        vec!["a/value".into()]
+                    } else {
+                        Vec::new()
+                    },
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}, held {held}: {e}"));
+        if native {
+            assert!(stats.lanes.entered > 0);
+        }
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0, false);
+    assert_eq!(
+        program_output(&reference),
+        "[[[[:a :a] false \"bound\" :a] :root] [[[:a :b] false \"bound\" :b] :root] \
+       [[[:a :app] false \"bound\" :app] :root] \
+       [[:construct :a] [:dispatch :x :a] [:register :a] [:leaf :a] [:capture :a] \
+        [:dispatch :missing false] [:dispatch :throw nil] \
+        [:dispatch :x :b] [:leaf :b] [:dispatch :missing false] [:dispatch :throw nil] \
+        [:dispatch :x :app] [:leaf :app] [:dispatch :missing false] [:dispatch :throw nil]]]\n"
+    );
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            reference,
+            build(false, jobs, 0, false),
+            "legacy, jobs {jobs}"
+        );
+        for seed in 1..=seeds {
+            for held in [false, true] {
+                assert_eq!(
+                    reference,
+                    build(true, jobs, seed, held),
+                    "jobs {jobs}, seed {seed}, held {held}"
+                );
+            }
         }
     }
 }

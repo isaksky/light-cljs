@@ -3698,6 +3698,7 @@ impl<'a> Emitter<'a> {
             self.program.exprs[callee.0].kind,
             ExprKind::CoreFn(C::AddMethod)
         ) && args.len() == 3
+            && !self.replaced(C::AddMethod.runtime_name())
         {
             self.rt(RuntimeName::core("addMethod"));
             self.output.push('(');
