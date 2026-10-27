@@ -530,11 +530,12 @@ pub(crate) struct SharedCatalog {
     perturbation: std::sync::OnceLock<crate::scheduler::Perturbation>,
     #[cfg(test)]
     on_claim: Mutex<Option<ClaimHook>>,
-    /// Runs once a thread registers its wait, without the catalog lock.
+    /// A test's unbounded channel: report each new waiter under the catalog
+    /// lock, before waiting or helping releases it.
     #[cfg(test)]
-    on_wait: Mutex<Option<ClaimHook>>,
-    /// Runs on a waiting thread each time its wait ends, without either
-    /// the catalog lock or the hook's mutex.
+    wait_registered: Mutex<Option<std::sync::mpsc::Sender<usize>>>,
+    /// Runs once on a waiting thread before it consumes a completed analysis,
+    /// without either the catalog lock or the hook's mutex.
     #[cfg(test)]
     on_wake: Mutex<Option<ClaimHook>>,
 }
@@ -1002,16 +1003,8 @@ impl SharedCatalog {
                     c.waiting += 1;
                     c.units[id].waiters += 1;
                     #[cfg(test)]
-                    {
-                        let hook = self.on_wait.lock().unwrap().clone();
-                        if let Some(hook) = hook {
-                            drop(guard);
-                            hook(id);
-                            guard = self.lock();
-                            // The producer may have settled before the hook
-                            // returned. Recheck before entering the wait.
-                            continue;
-                        }
+                    if let Some(waiting) = &*self.wait_registered.lock().unwrap() {
+                        waiting.send(id).unwrap();
                     }
                 }
                 if _blocked.is_none() {
@@ -1053,20 +1046,22 @@ impl SharedCatalog {
                     .settled
                     .wait(guard)
                     .unwrap_or_else(PoisonError::into_inner);
-                #[cfg(test)]
-                {
-                    drop(guard);
-                    // A hook may block another waiter until this thread
-                    // makes progress. Never serialize their callbacks or
-                    // reacquire the catalog while holding the hook's mutex.
-                    let hook = self.on_wake.lock().unwrap().clone();
-                    if let Some(hook) = hook {
-                        hook(id);
-                    }
-                    guard = self.lock();
-                }
                 continue;
             }
+            #[cfg(test)]
+            if c.threads[thread].waiting.is_some() {
+                drop(guard);
+                // Both condition-variable waits and helping can finish an
+                // analysis wait. Gate consumption on either path, and never
+                // reacquire the catalog while holding the hook's mutex.
+                let hook = self.on_wake.lock().unwrap().clone();
+                if let Some(hook) = hook {
+                    hook(id);
+                }
+                guard = self.lock();
+            }
+            #[cfg(test)]
+            let c = &mut *guard;
             if c.threads[thread].waiting.take().is_some() {
                 c.waiting -= 1;
                 let unit = &mut c.units[id];
@@ -5535,9 +5530,7 @@ mod worker_tests {
         let claimed = Arc::new(Barrier::new(2));
         let (waiting, registrations) = mpsc::channel();
         let registrations = Mutex::new(registrations);
-        *shared.on_wait.lock().unwrap() = Some(Arc::new(move |id| {
-            waiting.send(id).unwrap();
-        }));
+        *shared.wait_registered.lock().unwrap() = Some(waiting);
         let start = claimed.clone();
         *shared.on_claim.lock().unwrap() = Some(Arc::new(move |id| {
             start.wait();
