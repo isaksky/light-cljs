@@ -15,6 +15,71 @@ use std::collections::{BTreeMap, btree_map};
 type Order = (bool, [u8; 7], usize);
 type Entries = BTreeMap<Order, (Value, Value)>;
 
+const STRING_HASH_STEP_UNITS: usize = 128;
+
+#[cfg(test)]
+thread_local! {
+    static HASHED_STRING_UNITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[derive(Debug)]
+struct StringKey {
+    pair: (Value, Value),
+    flatten: Option<StringFlatten>,
+    text: Option<JsString>,
+    index: usize,
+    hash: i32,
+}
+
+impl StringKey {
+    fn new(heap: &Heap, pair: (Value, Value), text: JsString) -> Result<Self, Fault> {
+        Ok(Self {
+            pair,
+            flatten: Some(StringFlatten::new_accounted(heap, text)?),
+            text: None,
+            index: 0,
+            hash: 0,
+        })
+    }
+
+    fn advance(&mut self) -> Option<u32> {
+        if let Some(flatten) = &mut self.flatten {
+            self.text = flatten.advance(STRING_HASH_STEP_UNITS);
+            self.text.as_ref()?;
+            self.flatten = None;
+            // Flattening and hashing each get their own bounded VM steps.
+            return None;
+        }
+        let text = self.text.as_ref().unwrap();
+        let end = (self.index + STRING_HASH_STEP_UNITS).min(text.len());
+        // StringFlatten supplies a flat leaf, never a synchronous rope walk.
+        for &unit in &text.code_units()[self.index..end] {
+            self.hash = self.hash.wrapping_mul(31).wrapping_add(i32::from(unit));
+            #[cfg(test)]
+            HASHED_STRING_UNITS.with(|count| count.set(count.get() + 1));
+        }
+        self.index = end;
+        if end < text.len() {
+            return None;
+        }
+        // Finish scalar_hash's hash_int(string_hash(text)) (collections::form).
+        // Keep this constant-time finalizer here so scans need no synchronous
+        // string hash and no changes to the collection hashing API.
+        let mut h = self.hash as u32;
+        if h != 0 {
+            let k = h
+                .wrapping_mul(0xcc9e_2d51)
+                .rotate_left(15)
+                .wrapping_mul(0x1b87_3593);
+            h = k.rotate_left(13).wrapping_mul(5).wrapping_add(0xe654_6b64) ^ 4;
+            h = (h ^ (h >> 16)).wrapping_mul(0x85eb_ca6b);
+            h = (h ^ (h >> 13)).wrapping_mul(0xc2b2_ae35);
+            h ^= h >> 16;
+        }
+        Some(h)
+    }
+}
+
 #[derive(Debug)]
 enum Items {
     Positional(PVector, usize),
@@ -54,6 +119,7 @@ enum Part {
         entries: Entries,
         charge: ByteReservation,
         set: bool,
+        hashing: Option<StringKey>,
     },
     Map(Items, bool, bool),
 }
@@ -284,36 +350,54 @@ impl Diagnostic {
                 mut entries,
                 charge,
                 set,
+                mut hashing,
             } => {
-                if let Some((key, value)) = cursor.next() {
-                    let hash = form::hash(heap, &key) as u32;
-                    let nil = matches!(
-                        form::unwrap(heap, key.clone()),
-                        Value::Null | Value::Undefined
-                    );
+                let ready = if let Some(mut string) = hashing.take() {
+                    if let Some(hash) = string.advance() {
+                        Some((string.pair, hash, false))
+                    } else {
+                        hashing = Some(string);
+                        None
+                    }
+                } else if let Some((key, value)) = cursor.next() {
+                    match form::unwrap(heap, key.clone()) {
+                        Value::String(text) => {
+                            hashing = Some(StringKey::new(heap, (key, value), text)?);
+                            None
+                        }
+                        unwrapped => {
+                            let hash = form::hash(heap, &key) as u32;
+                            let nil = matches!(unwrapped, Value::Null | Value::Undefined);
+                            Some(((key, value), hash, nil))
+                        }
+                    }
+                } else {
+                    self.push(
+                        heap,
+                        Part::Map(Items::Ordered(entries.into_iter(), charge), set, false),
+                    )?;
+                    return Ok(Action::Continue);
+                };
+                if let Some((pair, hash, nil)) = ready {
                     entries.insert(
                         (
                             !nil,
                             std::array::from_fn(|i| ((hash >> (i * 5)) & 31) as u8),
                             entries.len(),
                         ),
-                        (key, value),
+                        pair,
                     );
-                    self.push(
-                        heap,
-                        Part::Scan {
-                            cursor,
-                            entries,
-                            charge,
-                            set,
-                        },
-                    )?;
-                } else {
-                    self.push(
-                        heap,
-                        Part::Map(Items::Ordered(entries.into_iter(), charge), set, false),
-                    )?;
                 }
+                self.push(
+                    heap,
+                    Part::Scan {
+                        cursor,
+                        entries,
+                        charge,
+                        set,
+                        hashing,
+                    },
+                )?;
             }
             Part::Map(mut items, set, printed) => {
                 if let Some((key, value)) = items.next() {
@@ -384,7 +468,8 @@ impl Diagnostic {
                                     // A one-entry tree already allocates a full node.
                                     // Admit a complete twelve-slot node (including
                                     // edges/header) per entry, before any insertion.
-                                    // One source entry is visited per VM step.
+                                    // Each step visits one entry or a bounded
+                                    // chunk of a primitive string key's hash.
                                     let node_bytes =
                                         12 * std::mem::size_of::<(Order, (Value, Value))>() + 256;
                                     let charge = reserve_elements(heap, map.len(), node_bytes)?;
@@ -395,6 +480,7 @@ impl Diagnostic {
                                             entries: Entries::new(),
                                             charge,
                                             set,
+                                            hashing: None,
                                         },
                                     )?;
                                 }
@@ -412,6 +498,142 @@ impl Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frontend::compile_function;
+    use crate::host::NoHost;
+    use crate::{Budget, Primitive, RunOutcome, Runtime};
+
+    #[test]
+    fn string_key_hash_matches_language_hash() {
+        let heap = Heap::default();
+        for len in [0, 1, 2, 127, 128, 129, 255, 256, 257, 1025] {
+            // Include zero, non-ASCII units, paired and lone surrogates, and
+            // enough units for repeated signed accumulator overflow.
+            let units: Vec<u16> = [0, 97, 0xffff, 0xd800, 0xdc00, 0xdc01]
+                .into_iter()
+                .cycle()
+                .take(len)
+                .collect();
+            let flat = JsString::from_code_units(units.clone()).unwrap();
+            let rope = if len > 32 {
+                JsString::from_code_units(units[..len / 2].to_vec())
+                    .unwrap()
+                    .concat(&JsString::from_code_units(units[len / 2..].to_vec()).unwrap())
+                    .unwrap()
+            } else {
+                flat.clone()
+            };
+            for text in [flat, rope] {
+                let key = Value::String(text.clone());
+                let mut hashing = StringKey::new(&heap, (key.clone(), Value::Null), text)
+                    .unwrap_or_else(|_| panic!("string hash setup must fit"));
+                let before = HASHED_STRING_UNITS.get();
+                let hash = loop {
+                    let hashed = HASHED_STRING_UNITS.get();
+                    let copied = JsString::copied_code_units();
+                    let result = hashing.advance();
+                    assert!(HASHED_STRING_UNITS.get() - hashed <= STRING_HASH_STEP_UNITS);
+                    assert!(
+                        JsString::copied_code_units() - copied <= STRING_HASH_STEP_UNITS as u64
+                    );
+                    if let Some(hash) = result {
+                        break hash;
+                    }
+                };
+                assert_eq!(HASHED_STRING_UNITS.get() - before, len);
+                assert_eq!(hash, form::hash(&heap, &key) as u32, "length {len}");
+            }
+        }
+    }
+
+    #[test]
+    fn sorted_comparison_string_key_hashing_is_budgeted() {
+        let text = "a".repeat(STRING_HASH_STEP_UNITS * 256 + 17);
+        let code = compile_function(
+            "function f(key) {try {return __rt.formGet(__rt.formSortedMap(__rt.formVector(1,0)),key,null);} catch(e) {return e.message;}}",
+        ).unwrap();
+        for wrapped in [false, true] {
+            for cancel in [false, true] {
+                let rt = Runtime::new();
+                // Hash the key during preparation, outside the measured runs.
+                // Its containing map has hashed storage even with one entry.
+                let (key, weak) = rt.scope(|s| {
+                    let mut key = s.primitive(Primitive::String(JsString::from(text.as_str())));
+                    if wrapped {
+                        key = s.new_occurrence(key, Default::default()).unwrap();
+                    }
+                    let value = s.primitive(Primitive::Number(42.0));
+                    let map = s.new_form_map(&[(key, value)]).unwrap();
+                    assert!(matches!(
+                        form::form_object(rt.heap(), &s.local_value(map))
+                            .unwrap()
+                            .body(),
+                        FormBody::Map(FormMap::Hashed(_))
+                    ));
+                    (s.persist(map), s.downgrade(map))
+                });
+                let task = rt.spawn(&code, &[&key]).unwrap();
+                drop(key);
+                let before = HASHED_STRING_UNITS.get();
+                let mut hashing_steps = 0;
+                let result = 'run: {
+                    for _ in 0..10_000 {
+                        let hashed = HASHED_STRING_UNITS.get();
+                        let outcome = task.run_with(Budget::instructions(1), &mut NoHost).unwrap();
+                        let work = HASHED_STRING_UNITS.get() - hashed;
+                        assert!(
+                            work <= STRING_HASH_STEP_UNITS,
+                            "one run hashed {work} units"
+                        );
+                        if work > 0 {
+                            hashing_steps += 1;
+                            assert!(matches!(outcome, RunOutcome::Yielded));
+                            if hashing_steps == 2 {
+                                let total = HASHED_STRING_UNITS.get() - before;
+                                assert_eq!(total, 2 * STRING_HASH_STEP_UNITS);
+                                assert!(total < text.len(), "must yield during hashing");
+                                rt.collect().unwrap();
+                                assert!(weak.is_live(), "the pending entry must stay rooted");
+                                if cancel {
+                                    let _ = task.cancel(); // Drive cancellation cleanup below.
+                                    assert!(matches!(
+                                        task.run_with(Budget::instructions(1), &mut NoHost)
+                                            .unwrap(),
+                                        RunOutcome::Cancelled
+                                    ));
+                                    assert_eq!(HASHED_STRING_UNITS.get() - before, total);
+                                    rt.collect().unwrap();
+                                    assert!(
+                                        !weak.is_live(),
+                                        "cancellation must release the operand"
+                                    );
+                                    break 'run None;
+                                }
+                            }
+                        }
+                        match outcome {
+                            RunOutcome::Yielded => (),
+                            RunOutcome::Complete(value) => break 'run Some(value),
+                            other => {
+                                panic!("expected yield or caught comparison error, got {other:?}")
+                            }
+                        }
+                    }
+                    panic!("comparison failed to finish or enter string hashing");
+                };
+                if let Some(result) = result {
+                    assert!(!cancel);
+                    assert_eq!(HASHED_STRING_UNITS.get() - before, text.len());
+                    assert_eq!(hashing_steps, text.len().div_ceil(STRING_HASH_STEP_UNITS));
+                    assert_eq!(
+                        result.string(),
+                        Some(JsString::from(
+                            format!("Cannot compare 1 to {{\"{text}\" 42}}").as_str()
+                        ))
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn string_limit_is_checked_before_output_growth() {
