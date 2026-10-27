@@ -828,77 +828,6 @@ fn map_dissoc(heap: &Heap, map: &FormMap, key: &Value) -> Result<Option<FormMap>
     }
 }
 
-/// The default ClojureScript comparator over native immutable keys. Use an
-/// explicit stack for nested vectors; no JavaScript, hashing or equality runs.
-// Comparator diagnostics use String(value), with readable collection members.
-// Keep deeply nested vector keys off the Rust stack, just as comparison does.
-fn compare_display(heap: &Heap, value: &Value) -> String {
-    enum Part {
-        Value(Value, bool),
-        Text(&'static str),
-    }
-    let mut pending = vec![Part::Value(value.clone(), false)];
-    let mut text = String::new();
-    while let Some(part) = pending.pop() {
-        let (value, nested) = match part {
-            Part::Text(s) => {
-                text.push_str(s);
-                continue;
-            }
-            Part::Value(v, nested) => (unwrap(heap, v), nested),
-        };
-        match value {
-            Value::Null | Value::Undefined => text.push_str(if nested { "nil" } else { "" }),
-            Value::Bool(v) => text.push_str(if v { "true" } else { "false" }),
-            Value::Number(v) => text.push_str(&crate::value::string::number_to_string(v)),
-            Value::String(v) => {
-                if nested {
-                    text.push('"');
-                }
-                for c in v.to_string_lossy().chars() {
-                    match c {
-                        '"' if nested => text.push_str("\\\""),
-                        '\\' if nested => text.push_str("\\\\"),
-                        '\n' if nested => text.push_str("\\n"),
-                        '\r' if nested => text.push_str("\\r"),
-                        '\t' if nested => text.push_str("\\t"),
-                        c => text.push(c),
-                    }
-                }
-                if nested {
-                    text.push('"');
-                }
-            }
-            v => match form_object(heap, &v).as_deref().map(FormObject::body) {
-                Some(FormBody::Keyword(n) | FormBody::Symbol(n)) => {
-                    if matches!(form_object(heap, &v).unwrap().body(), FormBody::Keyword(_)) {
-                        text.push(':');
-                    }
-                    if let Some(ns) = &n.namespace {
-                        text.push_str(&ns.to_string_lossy());
-                        text.push('/');
-                    }
-                    text.push_str(&n.name.to_string_lossy());
-                }
-                Some(FormBody::Vector(items) | FormBody::List(items)) => {
-                    let vector =
-                        matches!(form_object(heap, &v).unwrap().body(), FormBody::Vector(_));
-                    text.push(if vector { '[' } else { '(' });
-                    pending.push(Part::Text(if vector { "]" } else { ")" }));
-                    for i in (0..items.len()).rev() {
-                        pending.push(Part::Value(items.get(i).unwrap(), true));
-                        if i > 0 {
-                            pending.push(Part::Text(" "));
-                        }
-                    }
-                }
-                _ => text.push_str("[object Object]"),
-            },
-        }
-    }
-    text
-}
-
 fn compare_error(heap: &Heap, a: &Value, b: &Value) -> CollectionError {
     let named = |v| {
         matches!(
@@ -906,17 +835,11 @@ fn compare_error(heap: &Heap, a: &Value, b: &Value) -> CollectionError {
             Some(FormBody::Keyword(_) | FormBody::Symbol(_))
         )
     };
-    CollectionError::CannotCompare(
-        if !matches!(a, Value::Number(_)) && (named(a) || named(b)) {
-            "Cannot compare different types".into()
-        } else {
-            format!(
-                "Cannot compare {} to {}",
-                compare_display(heap, a),
-                compare_display(heap, b)
-            )
-        },
-    )
+    if !matches!(a, Value::Number(_)) && (named(a) || named(b)) {
+        CollectionError::CannotCompare("Cannot compare different types".into())
+    } else {
+        CollectionError::CannotCompareValues(super::ComparisonOperands(a.clone(), b.clone()))
+    }
 }
 
 fn compare_keys(heap: &Heap, a: &Value, b: &Value) -> Result<std::cmp::Ordering, CollectionError> {

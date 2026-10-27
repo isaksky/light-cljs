@@ -174,6 +174,10 @@ pub(crate) enum Fault {
     TypeError(String),
     /// A plain JavaScript `Error` with this message ([`VmErrorKind::Error`]).
     Error(String),
+    /// Default comparison formatting is deferred until operands are rooted
+    /// in a resumable native. ExactError retains its admitted UTF-16 result.
+    Compare(crate::collections::ComparisonOperands),
+    ExactError(JsString, crate::error::Message),
     /// A property instruction on an ordinary object the running task does
     /// not own.
     ForeignObject {
@@ -1996,6 +2000,13 @@ fn fault_error(fault: Fault, code: &Code, pc: usize) -> (VmErrorKind, String) {
         ),
         Fault::TypeError(m) => (VmErrorKind::TypeError, m),
         Fault::Error(m) => (VmErrorKind::Error, m),
+        // The fully formatted, accounted host message is installed by
+        // raise_fault without copying it through this generic String path.
+        Fault::ExactError(..) => (VmErrorKind::Error, String::new()),
+        Fault::Compare(_) => (
+            VmErrorKind::Internal,
+            "comparison formatting was not started".into(),
+        ),
         Fault::ReferenceError(m) => (VmErrorKind::ReferenceError, m),
         Fault::ForeignObject { owner, caller } => {
             let owner_name = match owner {
@@ -2132,13 +2143,18 @@ fn heap_limit_value(message: &str) -> JsString {
 
 // Production uses MAX_STRING_LEN; a smaller limit tests error-message overflow
 // through the same raise path without constructing gigabyte property names.
+enum ErrorMessage {
+    Utf8(String),
+    Exact(JsString),
+}
+
 fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
     state: &mut VmState,
     heap: &Heap,
     error: VmError,
     cause: Value,
     input: Option<(&'static str, usize, usize)>,
-    js_message: Option<&str>,
+    js_message: Option<&ErrorMessage>,
 ) -> Option<Exit> {
     let error = classify_heap_failure(heap, error);
     if !catchable(&error.kind) || !state.has_handlers() {
@@ -2185,43 +2201,54 @@ fn raise_failure_with_input<const MESSAGE_LIMIT: usize>(
             object.define_with(key, value, PropertyFlags::METHOD);
             Ok::<_, &str>(())
         };
-        let message = if error.kind == VmErrorKind::StackOverflow {
+        let message: &str = if error.kind == VmErrorKind::StackOverflow {
             "stack overflow"
         } else {
             // The internal VmError retains its positioned host diagnostic,
             // including after a catch/rethrow. JS sees only the plain message.
-            js_message.unwrap_or(&error.message)
+            match js_message {
+                Some(ErrorMessage::Utf8(message)) => message,
+                _ => &error.message,
+            }
         };
         // Diagnostic text can exceed the limit even when its property name
         // fits. Check UTF-16 length before allocating the conversion buffer.
-        let len = message
-            .encode_utf16()
-            .take(MESSAGE_LIMIT.saturating_add(1))
-            .count();
+        let len = if let Some(ErrorMessage::Exact(message)) = js_message {
+            message.len()
+        } else {
+            message
+                .encode_utf16()
+                .take(MESSAGE_LIMIT.saturating_add(1))
+                .count()
+        };
         if len > MESSAGE_LIMIT {
             return Err("error message too long");
         }
-        let ticket = JsString::reserve(heap, len, 1).map_err(|_| {
-            heap.byte_budget().note_denial();
-            "heap byte limit exceeded"
-        })?;
-        let mut units = Vec::new();
-        #[cfg(test)]
-        let reservation_len = if FAIL_MESSAGE_RESERVATION.replace(false) {
-            usize::MAX
+        let exact_message = if let Some(ErrorMessage::Exact(message)) = js_message {
+            message.clone()
         } else {
-            len
+            let ticket = JsString::reserve(heap, len, 1).map_err(|_| {
+                heap.byte_budget().note_denial();
+                "heap byte limit exceeded"
+            })?;
+            let mut units = Vec::new();
+            #[cfg(test)]
+            let reservation_len = if FAIL_MESSAGE_RESERVATION.replace(false) {
+                usize::MAX
+            } else {
+                len
+            };
+            #[cfg(not(test))]
+            let reservation_len = len;
+            units
+                .try_reserve_exact(reservation_len)
+                .map_err(|_| "error message allocation failed")?;
+            units.extend(message.encode_utf16());
+            JsString::from_owned_code_units(units)
+                .ok_or("error message too long")?
+                .with_reservation(ticket)
         };
-        #[cfg(not(test))]
-        let reservation_len = len;
-        units
-            .try_reserve_exact(reservation_len)
-            .map_err(|_| "error message allocation failed")?;
-        units.extend(message.encode_utf16());
-        let message = JsString::from_owned_code_units(units)
-            .ok_or("error message too long")?
-            .with_reservation(ticket);
-        define("message", Value::String(message))?;
+        define("message", Value::String(exact_message))?;
         if matches!(error.kind, VmErrorKind::DependencyFailed(_)) {
             define("cause", cause)?;
         }
@@ -2288,6 +2315,13 @@ fn raise_fault(
     code: &Code,
     pc: usize,
 ) -> Option<Exit> {
+    let fault = match fault {
+        Fault::Compare(values) => match native::start_comparison(state, heap, values) {
+            Ok(()) => return None,
+            Err(fault) => fault,
+        },
+        other => other,
+    };
     let input = match &fault {
         Fault::JsonSyntaxError { line, column, .. } => Some(("<input>", *line, *column)),
         Fault::CompileSyntaxError { name, error } => {
@@ -2296,18 +2330,26 @@ fn raise_fault(
         _ => None,
     };
     let js_message = match &fault {
-        Fault::CompileSyntaxError { error, .. } => Some(error.message.clone()),
+        Fault::CompileSyntaxError { error, .. } => Some(ErrorMessage::Utf8(error.message.clone())),
+        Fault::ExactError(message, _) => Some(ErrorMessage::Exact(message.clone())),
+        _ => None,
+    };
+    let exact_diagnostic = match &fault {
+        Fault::ExactError(_, diagnostic) => Some(diagnostic.clone()),
         _ => None,
     };
     let (kind, message) = fault_error(fault, code, pc);
-    let error = state.failure(kind, message, pc);
+    let mut error = state.failure(kind, message, pc);
+    if let Some(message) = exact_diagnostic {
+        error.message = message;
+    }
     raise_failure_with_input::<{ crate::value::string::MAX_STRING_LEN }>(
         state,
         heap,
         error,
         Value::Undefined,
         input,
-        js_message.as_deref(),
+        js_message.as_ref(),
     )
 }
 

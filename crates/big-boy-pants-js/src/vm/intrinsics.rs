@@ -213,6 +213,7 @@ impl From<CollectionError> for Fault {
         match e {
             CollectionError::OutOfMemory => Fault::OutOfMemory("heap object table exhausted"),
             CollectionError::CannotCompare(message) => Fault::Error(message),
+            CollectionError::CannotCompareValues(values) => Fault::Compare(values),
             other => Fault::Collection(other),
         }
     }

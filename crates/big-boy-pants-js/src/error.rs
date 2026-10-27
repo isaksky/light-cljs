@@ -175,8 +175,62 @@ impl fmt::Display for SourceLocation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VmError {
     pub(crate) kind: VmErrorKind,
-    pub(crate) message: String,
+    pub(crate) message: Message,
     pub(crate) diagnostic: Diagnostic,
+}
+
+/// A shared diagnostic string. Comparison formatting transfers its admitted
+/// buffer here, so Error objects, rethrows and host copies retain one charge
+/// and never clone a potentially large diagnostic allocation.
+#[derive(Clone, Debug)]
+pub(crate) struct Message(std::sync::Arc<MessageBody>);
+
+#[derive(Debug)]
+struct MessageBody {
+    text: String,
+    _charge: crate::heap::budget::ByteReservation,
+}
+
+impl Message {
+    pub(crate) fn accounted(text: String, charge: crate::heap::budget::ByteReservation) -> Self {
+        Self(std::sync::Arc::new(MessageBody {
+            text,
+            _charge: charge,
+        }))
+    }
+}
+
+impl From<String> for Message {
+    fn from(text: String) -> Self {
+        Self::accounted(text, Default::default())
+    }
+}
+impl From<&str> for Message {
+    fn from(text: &str) -> Self {
+        text.to_string().into()
+    }
+}
+impl std::ops::Deref for Message {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0.text
+    }
+}
+impl PartialEq for Message {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.text == other.0.text
+    }
+}
+impl Eq for Message {}
+impl PartialEq<&str> for Message {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.text == *other
+    }
+}
+impl fmt::Display for Message {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self)
+    }
 }
 
 impl VmError {

@@ -259,6 +259,7 @@ use crate::ids::{DependencyId, ResultKind, TaskId};
 use crate::value::{JsString, Value};
 use crate::vm::{descriptor, property, prototype};
 
+mod compare;
 mod copy_properties;
 pub(crate) mod error;
 mod object_statics;
@@ -536,6 +537,7 @@ enum ConvertTarget {
 /// The operation-specific state of a native frame.
 #[derive(Debug)]
 enum NativeState {
+    Comparison(Box<compare::Diagnostic>),
     BuiltinConstruct(Box<construct::State>),
     CopyProperties(copy_properties::State),
     Rest {
@@ -974,6 +976,7 @@ pub(crate) fn await_promise(
 impl Trace for NativeFrame {
     fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
         match &self.state {
+            NativeState::Comparison(diagnostic) => diagnostic.trace(visit),
             NativeState::BuiltinConstruct(constructor) => constructor.trace(visit),
             NativeState::Reflect(reflect) => reflect.trace(visit),
             NativeState::CopyProperties(copy) => copy.trace(visit),
@@ -3961,6 +3964,17 @@ fn push_native(state: &mut VmState, native: NativeState) -> Result<(), Fault> {
     Ok(())
 }
 
+pub(crate) fn start_comparison(
+    state: &mut VmState,
+    heap: &Heap,
+    values: crate::collections::ComparisonOperands,
+) -> Result<(), Fault> {
+    push_native(
+        state,
+        NativeState::Comparison(Box::new(compare::Diagnostic::new(heap, values)?)),
+    )
+}
+
 pub(super) fn index_key(index: u64) -> property::Key {
     if index < u64::from(u32::MAX) {
         property::Key::Index(index as u32)
@@ -4926,6 +4940,7 @@ impl NativeState {
                 Some(text) => Action::Return(Value::String(text)),
                 None => Action::Continue,
             }),
+            NativeState::Comparison(diagnostic) => diagnostic.step(heap),
             NativeState::Json {
                 text,
                 reviver,
@@ -5658,6 +5673,7 @@ impl NativeState {
             (NativeState::Realize(_), _) => Action::Unwind,
             (
                 NativeState::Eval(_)
+                | NativeState::Comparison(_)
                 | NativeState::Reflect(_)
                 | NativeState::BuiltinConstruct(_)
                 | NativeState::CopyProperties(_)

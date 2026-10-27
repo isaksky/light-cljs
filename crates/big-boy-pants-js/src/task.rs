@@ -1674,7 +1674,7 @@ fn guard_failure(task: &TaskInner, kind: VmErrorKind, message: &str, pc: usize) 
     let code = &task.executable.0;
     VmError {
         kind,
-        message: message.to_string(),
+        message: message.into(),
         diagnostic: crate::error::Diagnostic {
             executable: code.name.clone(),
             task: task.id,

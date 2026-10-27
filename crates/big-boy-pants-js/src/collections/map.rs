@@ -106,6 +106,57 @@ enum Entry {
     Child(Arc<Node>),
 }
 
+/// Incremental immutable-trie traversal. At most fourteen nodes cover all
+/// 64 hash bits and a collision leaf; advancing never snapshots the map.
+#[derive(Debug)]
+pub(crate) struct Cursor {
+    path: [Option<(Arc<Node>, usize)>; 14],
+    depth: usize,
+}
+
+impl Cursor {
+    pub(crate) fn new(map: &PMap) -> Self {
+        let mut path = std::array::from_fn(|_| None);
+        if let Some(root) = &map.root {
+            path[0] = Some((root.clone(), 0));
+        }
+        Self {
+            path,
+            depth: usize::from(map.root.is_some()),
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> Option<(Value, Value)> {
+        while self.depth > 0 {
+            let (node, index) = self.path[self.depth - 1].as_mut().unwrap();
+            let at = *index;
+            *index += 1;
+            match &node.kind {
+                Kind::Bitmap { entries, .. } => match entries.get(at) {
+                    Some(Entry::Pair { key, value, .. }) => {
+                        return Some((key.clone(), value.clone()));
+                    }
+                    Some(Entry::Child(child)) => {
+                        let child = child.clone();
+                        self.path[self.depth] = Some((child, 0));
+                        self.depth += 1;
+                        continue;
+                    }
+                    None => {}
+                },
+                Kind::Collision { pairs, .. } => {
+                    if let Some(pair) = pairs.get(at) {
+                        return Some(pair.clone());
+                    }
+                }
+            }
+            self.depth -= 1;
+            self.path[self.depth] = None;
+        }
+        None
+    }
+}
+
 /// A trie node and the byte charge for its own allocation
 /// ([`NodeCharge`]): shared by every version that reaches it, so the charge
 /// is released only with the last of them.

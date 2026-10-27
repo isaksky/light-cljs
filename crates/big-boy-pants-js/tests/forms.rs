@@ -632,6 +632,120 @@ fn positional_storage_obeys_the_aggregate_byte_limit() {
     assert!(rt.heap_stats().peak_managed_bytes <= limit);
 }
 
+#[test]
+fn sorted_comparison_diagnostics_obey_heap_budget() {
+    use big_boy_pants_js::{HeapPolicy, VmLimits};
+    let policy = |bytes| HeapPolicy {
+        hard_limit_bytes: Some(bytes),
+        ..Default::default()
+    };
+    let realm = Runtime::try_with_heap_policy(VmLimits::default(), policy(usize::MAX / 2))
+        .unwrap()
+        .heap_stats()
+        .managed_bytes;
+    let limit = realm + 512 * 1024;
+    let rt = Runtime::try_with_heap_policy(VmLimits::default(), policy(limit)).unwrap();
+    // Thirty tiny shared nodes would expand to about 4 GiB of text. The
+    // error must fail admission while its source graph still fits easily.
+    let key = rt.scope(|s| {
+        let mut key = s.primitive(Primitive::Number(0.0));
+        for _ in 0..30 {
+            key = s.new_form_vector(&[key, key]).unwrap();
+        }
+        s.persist(key)
+    });
+    let code =
+        compile_function("function f(key){return __rt.formSortedMap(__rt.formVector(1,0,key,0));}")
+            .unwrap();
+    match rt.spawn(&code, &[&key]).unwrap().run().unwrap() {
+        RunOutcome::Failed(error) => assert_eq!(error.kind(), VmErrorKind::HeapLimit),
+        other => panic!("expected comparison admission failure, got {other:?}"),
+    }
+    assert!(rt.heap_stats().peak_managed_bytes <= limit);
+    drop(key);
+    rt.collect().unwrap();
+    assert!(rt.heap_stats().managed_bytes < limit);
+}
+
+#[test]
+fn sorted_comparison_diagnostics_yield_and_keep_operands_rooted() {
+    use big_boy_pants_js::{Budget, Host, HostCall};
+    struct NoHost;
+    impl Host for NoHost {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            panic!("formatting must not run host effects")
+        }
+    }
+    let rt = Runtime::new();
+    let key = rt.scope(|s| {
+        let mut key = s.primitive(Primitive::Number(0.0));
+        for _ in 0..10 {
+            key = s.new_form_vector(&[key, key]).unwrap();
+        }
+        s.persist(key)
+    });
+    let code = compile_function("function f(key){try {__rt.formSortedMap(__rt.formVector(1,0,key,0));} catch(e){return e.message;}}").unwrap();
+    let task = rt.spawn(&code, &[&key]).unwrap();
+    drop(key);
+    let mut steps = 0;
+    let result = loop {
+        match task.run_with(Budget::instructions(1), &mut NoHost).unwrap() {
+            RunOutcome::Yielded => {
+                steps += 1;
+                if steps % 100 == 0 {
+                    rt.collect().unwrap();
+                }
+                assert!(steps < 20_000, "comparison failed to finish");
+            }
+            RunOutcome::Complete(result) => break result,
+            other => panic!("expected yielded diagnostic or completion, got {other:?}"),
+        }
+    };
+    assert!(steps > 1_000, "formatting must span bounded VM steps");
+    let mut expected = "0".to_string();
+    for _ in 0..10 {
+        expected = format!("[{expected} {expected}]");
+    }
+    assert_eq!(
+        result.string(),
+        Some(js(&format!("Cannot compare 1 to {expected}")))
+    );
+}
+
+#[test]
+fn sorted_comparison_host_diagnostics_remain_complete_and_accounted() {
+    use big_boy_pants_js::{HeapPolicy, VmLimits};
+    let rt = Runtime::try_with_heap_policy(
+        VmLimits::default(),
+        HeapPolicy {
+            hard_limit_bytes: Some(16 << 20),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let text = "x".repeat(4096);
+    let key = rt.scope(|s| {
+        let key = s.primitive(Primitive::String(js(&text)));
+        s.persist(key)
+    });
+    let code =
+        compile_function("function f(key){return __rt.formSortedMap(__rt.formVector(1,0,key,0));}")
+            .unwrap();
+    let RunOutcome::Failed(error) = rt.spawn(&code, &[&key]).unwrap().run().unwrap() else {
+        panic!("expected comparison failure");
+    };
+    assert_eq!(error.kind(), VmErrorKind::Error);
+    assert_eq!(error.message(), format!("Cannot compare 1 to {text}"));
+    let occupied = rt.heap_stats().managed_bytes;
+    let copy = error.clone();
+    assert_eq!(rt.heap_stats().managed_bytes, occupied);
+    drop(error);
+    assert_eq!(rt.heap_stats().managed_bytes, occupied);
+    assert_eq!(copy.message(), format!("Cannot compare 1 to {text}"));
+    drop(copy);
+    assert!(rt.heap_stats().managed_bytes < occupied);
+}
+
 /// Metadata never changes equality or hashing, and does not change identity
 /// rules: a new object, unless the metadata is the same object. Updates
 /// keep metadata.

@@ -352,7 +352,7 @@ impl JsString {
 
     /// The charge of `units` code units in `bodies` string bodies, before
     /// any owner holds it.
-    fn reserve_owned(
+    pub(crate) fn reserve_owned(
         heap: &crate::heap::Heap,
         units: usize,
         bodies: usize,

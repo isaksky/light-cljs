@@ -337,6 +337,42 @@ fn native_reduce_kv_matches_quickjs() {
             "nil",
         ),
         (
+            "sorted comparison messages preserve readable collection operands",
+            "",
+            r#"(let [message (fn [k] (try (get (sorted-map 1 :v) k)
+                                         (catch :default e [(.-name e) (.-message e)])))]
+              (mapv message [["\b\f\n\r\t\"\\"] (list "\b" "\f")
+                             (array-map :a [1 nil] :b #{2 3})
+                             (apply hash-map [33 "a" 1 "b" 32 "c" 0 "d" nil "nil"])
+                             (hash-set 33 1 32 0 nil 100 101 102 103)
+                             (array-map :ns/a 1 :ns/b ["\b\f"])
+                             #{:a :b} [##NaN ##Inf ##-Inf -0.0]
+                             [(array-map :x #{"\b\f"})]]))"#,
+            "nil",
+        ),
+        (
+            "sorted comparison messages retain exact UTF16 units",
+            "",
+            r#"(let [units (fn [k] (try (get (sorted-map 1 :v) k)
+                                       (catch :default e
+                                         (let [m (.-message e)]
+                                           (mapv (fn [i] (.charCodeAt m i)) (range (.-length m)))))))
+                     hi (js/String.fromCharCode 55296) lo (js/String.fromCharCode 56320)]
+              (mapv units [hi lo [hi "\b\f" lo] (array-map :a hi) #{lo}]))"#,
+            "nil",
+        ),
+        (
+            "sorted comparison messages retain complete large nested operands",
+            "",
+            r#"(let [large (apply str (repeat 4096 "x"))
+                     nested (loop [i 0 k 0] (if (= i 10) k (recur (inc i) [k k])))
+                     probe (fn [k] (try (sorted-map 1 :a k :b)
+                                        (catch :default e [(.-name e) (.-message e)])))]
+              [(probe large) (probe [large "\b\f"]) (probe nested)
+               (probe (array-map :large [large] :nested nested))])"#,
+            "nil",
+        ),
+        (
             "sorted equality uses destination comparison and source value direction",
             "",
             r#"(let [s (sorted-map 1 :v) n (sorted-map ##NaN :v) h (apply hash-map [##NaN :v])

@@ -1607,7 +1607,7 @@ impl VmState {
             .collect();
         VmError {
             kind,
-            message,
+            message: message.into(),
             diagnostic: Diagnostic {
                 executable: code.name.clone(),
                 task: self.diag.task,

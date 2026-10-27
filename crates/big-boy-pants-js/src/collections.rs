@@ -218,7 +218,22 @@ pub enum CollectionError {
     AmbiguousName,
     /// Default sorted-map comparison rejected these operands.
     CannotCompare(String),
+    /// Formatting is deferred to bounded VM steps. The opaque operands are
+    /// inspected only while rooted by the initiating instruction/native frame.
+    CannotCompareValues(ComparisonOperands),
 }
+
+/// Operands of a rejected default comparison. Host diagnostics deliberately
+/// describe their kinds; JavaScript receives the exact, budgeted display text.
+#[derive(Clone, Debug)]
+pub struct ComparisonOperands(pub(crate) Value, pub(crate) Value);
+
+impl PartialEq for ComparisonOperands {
+    fn eq(&self, other: &Self) -> bool {
+        map::key_eq(&self.0, &other.0) && map::key_eq(&self.1, &other.1)
+    }
+}
+impl Eq for ComparisonOperands {}
 
 impl fmt::Display for CollectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -239,6 +254,9 @@ impl fmt::Display for CollectionError {
                 "a keyword or symbol spelling must split back into its namespace and name at its first '/'",
             ),
             CollectionError::CannotCompare(message) => f.write_str(message),
+            CollectionError::CannotCompareValues(v) => {
+                write!(f, "Cannot compare {} to {}", v.0.type_name(), v.1.type_name())
+            }
         }
     }
 }
