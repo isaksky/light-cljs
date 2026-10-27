@@ -1085,3 +1085,91 @@ at jobs 1 and about 1.97x at jobs 4 and 8. Native jobs 8 (198.45 s) is still
 1.87x V8 jobs 1 (106.22 s). Shared runtime/helper publication has not made this
 workload faster than V8. Penpot supplies V8 scaling evidence and a native
 coverage blocker, not evidence of native performance on that application.
+
+### Native jobs-8 profile
+
+A separate fresh generated build used the same native binary, source roots,
+budgets and advanced/map flags, at jobs 8. Immediately after launch:
+
+```sh
+/usr/bin/sample PID 600 1 -mayDie \
+  -file target/native-project-522/profile/sample.txt
+```
+
+Sampling ran from launch through process exit, starting at 08:37:02 -0600.
+The compiler and sampler both exited 0. This instrumented run reports 220.383 s
+in `time.wall-ms`, versus the unprofiled 198.45 s median, and is excluded from
+the timing tables. Recorded load before/after was 2.34/2.47/2.50 →
+2.18/2.45/2.49. Its JS/map hashes match the native matrix and Node again prints
+`484264`. LLVM `llvm-cxxfilt` demangled the selected Rust symbols.
+
+The main thread has 163,545 samples; 136,211 (83.3%) are under this inclusive
+call path:
+
+```text
+analyze_entry → merge_namespace → NamespaceAnalysis::merge_front
+  → SharedCatalog::release_application_ir
+    → emit_native_macro_unit → emit_js_mode
+```
+
+Leading collapsed top-of-stack counts across **all** threads (waiting threads
+included; these counts are not CPU percentages):
+
+| Category | Frame | Leaf samples |
+| --- | --- | ---: |
+| Worker waits | `__psynch_cvwait` | 1,269,744 |
+| Compiler arena traversal | `Iter<GlobalBinding>::next` | 76,458 |
+| Compiler arena lookup | `Arena<GlobalBinding>::index` | 34,437 |
+| Compiler preparation | `Emitter::new` | 20,318 |
+| Native core-replacement scan | `emit_js_mode` flatten/filter iterator | 9,638 |
+| Mutex waits | `__psynch_mutexwait` | 6,515 |
+| Compiler preparation | `emit_js_mode` body closure | 4,069 |
+| Waits | `__ulock_wait` | 2,277 |
+| Native macro VM | `execute_budgeted` | 2,248 |
+| Buffer copying | `_platform_memmove` | 2,194 |
+| Native GC | `Heap::mark_and_sweep` | 1,195 |
+| Native GC tracing | `OrdinaryObject::trace` | 706 |
+| Native GC | `mark_and_sweep` closure | 703 |
+| Native GC tracing | `Code::trace` | 554 |
+
+Worker 5 has 156,884 of 161,345 samples (97.2%) in the scheduler's condition
+wait. The `light-cljs-units` coordinator also spends almost all its samples
+waiting. The main thread is busy preparing native executable source while the
+pool has little work to execute. Macro VM and GC frames are visible, but much
+smaller than the compiler preparation frames in this profile.
+
+Source inspection at the measured commit shows why this preparation can grow:
+`SharedCatalog::release_application_ir` calls `DeferredUnit::prepare_native`
+as application IR is released, retaining source for later demand. That calls
+the general `emit_js_mode`; `Emitter::new` scans the snapshot's complete
+`program.exprs` for native multimethod arguments, and the native core-replacement
+scan visits that entire expression prefix again. The arena symbol names in the
+table are as sampled. Shared storage avoids copying the prefix but does not
+avoid repeatedly traversing it. This preparation appears in analysis/deferred
+phase time, not just in the final application `time.emission-ms` counter;
+the large deferred times must not be interpreted as pure VM execution.
+
+All 12 native generated runs compile/publish 57 helpers, have zero per-task
+helper fallbacks, compile 742 native units, and report zero effect-lane wait time.
+At jobs 8, worker utilization is 1.9/3.2/3.2% (median 3.2%) for native and
+1.1/1.1/1.1% for V8. Median reported worker-startup time is 0.150 s native,
+0.101 s V8, small beside whole-build time. The measured limitation is repeated
+compiler-side preparation on the main thread despite shared helper publication.
+Focused follow-up **light-cljs-542** covers removing those repeated catalog-prefix
+scans. The existing protocol VM and task-memory work remains separate.
+
+### Verification
+
+Both locked release builds pass. The matrix completes all 48 builds with three
+successes per cell; all 24 generated Node results equal the Babashka oracle.
+The separate profiled build passes the same execution and hash checks.
+`node --check` passes for each Penpot entry's emitted ES module. Native Penpot
+has the two recorded compiler-literal failures; source-map backend identity
+has the recorded generated-project difference. No compiler code was changed.
+
+`cargo fmt --check`, `git diff --check`, and
+`LIGHT_CLJS_V8_CACHE=require CARGO_BUILD_JOBS=3 cargo clippy --locked --all-targets -- -D warnings`
+pass with default features; the vendored V8 dependency emits its existing
+`Atomic::fetch_update` deprecation warning. The full compiler/engine test suites
+were not run for this documentation/measurement-only change. These results use
+the measured compiler tree above; subsequent commits change only this document.
