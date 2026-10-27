@@ -76,9 +76,14 @@ VM, including cold callback helper demands. Nil and empty inputs return the
 original accumulator; each callback result is tested for `reduced?`, and one
 marker is unwrapped before returning without reading the next sequence item.
 No transient is created and the input collection and accumulator metadata stay
-intact. `IKVReduce` implementations take precedence; other seqable inputs use
-the public `IMapEntry` key/value methods, with their missing-method errors and
-callback getter/receiver evaluation order preserved.
+intact. Explicit type implementations precede built-in `IKVReduce` and
+`IMapEntry` implementations, which precede object/default extensions. Other
+seqable inputs use the public `IMapEntry` key/value methods, with their
+missing-method errors and callback getter/receiver evaluation order preserved.
+Reduction traverses custom `ISeqable`/`ISeq` values through their protocols,
+using `INext` when present and `ISeq/-rest` otherwise. Direct `-kv-reduce`
+calls require an `IKVReduce` implementation and reject nil, lists, arrays and
+map entries unless an extension supplies one.
 
 Vectors supply zero-based indices. Hash maps use legacy five-bit hash-path
 order, including the nil key; array maps and positional literal maps retain
@@ -93,14 +98,20 @@ keeps sorted traversal through `assoc`, `dissoc`, metadata, publication and GC,
 and remains noneditable. Supported comparable native keys are nil, numbers,
 booleans, exact UTF-16 strings, keywords, symbols and vectors of comparable
 keys. Custom sorted comparators, host-object keys and sorted sets remain
-unsupported. The source macro table compares these collection kinds, callback
+unsupported. Incomparable keys raise catchable `Error`s with the legacy
+operand-specific messages, including during construction, lookup, updates
+and equality; catch and finally both run. Map equality uses the destination
+map's comparator and preserves the source map's value-comparison direction.
+Full result realization rebuilds sorted maps containing lazy values or
+metadata while preserving sorted updates, key identity and noneditability.
+The source macro table compares these collection kinds, callback
 effects, errors, identity and early termination against QuickJS. A reduced
 rumext property-filter fixture demands cold helpers at one, two and four
 slots, retaining every callback effect exactly once. Penpot's next small
 service gaps, `qualified-keyword?`, `true?` and `vary-meta`, are also provided
 natively.
 
-At `bcb71d3d`, rebased on `d469a30b`, the native-only debug compiler was rebuilt
+At `bef2fb01`, based on `d469a30b`, the native-only debug compiler was rebuilt
 on macOS arm64 with Homebrew Rust/Cargo 1.99.1. Both Penpot entries were rerun
 with the five absolute read-only roots, `--jobs 1 --no-cache` and every budget
 from the reproduction below. Both pass the former `core.reduceKv` boundary
@@ -121,15 +132,18 @@ compiles it and Node prints `{:bound true}`. Neither entry completes, and
 `research/` was left untouched.
 
 The native integration suites pass 77 macro, ten reader and two Proxy tests;
-37 native evaluator unit tests also pass. All 2,124 engine tests and seven
-doctests pass. The final `bbp-macros,quickjs` run passes all 333 compiler unit,
-79 macro, ten reader and two Proxy tests (one unrelated unit test is ignored).
+37 native evaluator unit tests also pass. The full engine run at `03472e41`
+passes 2,125 tests and seven doctests. After the final sorted-value replacement
+fix, all 31 engine form tests and the expanded reduction table pass; the
+unaffected full-suite results are reused. The final `bbp-macros,quickjs` run
+passes all 333 compiler unit, 79 macro, ten reader and two Proxy tests (one
+unrelated unit test is ignored).
 Strict engine Clippy retains the nine documented baseline diagnostics;
 allowing only those categories passes for the engine and the native compiler,
 CLI and integration-test targets. Strict Clippy passes for the available
-QuickJS-only targets and the engine-free compiler library/CLI. Both format checks and the Node runtime
-suite pass. A broader native-only
-compiler unit run passes 258 tests and fails 27 tests requiring legacy
+QuickJS-only targets and the engine-free compiler library/CLI. Both format
+checks and the Node runtime suite pass. A prior broader native-only compiler
+unit run passes 258 tests and fails 27 tests requiring legacy
 bootstrap, compiler services or QuickJS readers. Restoring the original
 `a8edeeb5` production sources temporarily reproduces all 27 failure signatures
 under the same toolchain and feature flags (ignoring only thread/source IDs).
@@ -139,7 +153,7 @@ The QuickJS compiler integration target cannot build in this worktree: eight
 No research symlink was created, and the unavailable default V8 suite remains
 the orchestrator's check.
 
-The other QuickJS-only compiler, CLI and integration targets report 820 passed,
+The other QuickJS-only compiler, CLI and integration targets report 822 passed,
 52 ignored and two environment failures. `playground_crate_checks_for_wasm32`
 fails before compilation because Cargo assigns the excluded playground crate
 to the ancestor main checkout's workspace. The watch test
