@@ -630,11 +630,14 @@ const native = (() => {
     if (result === null || (full && result[0] !== text)) return null;
     return result.length === 1 ? result[0] : vector(Array.from(result));
   };
+  const seqOf = x => __rt.cljSeq(x);
   const nativeSeq = x => {
     const kind = __rt.formKind(val(x));
     return kind === 'list' || kind === 'cons' || kind === 'lazy-seq';
   };
-  const seqOf = x => {
+  // Reduction's protocol tables are task-owned. Keep this adapter out of the
+  // lazy sequence constructors, whose intrinsic-only closures can publish.
+  const reduceSeqOf = x => {
     const value = val(x), kind = __rt.formKind(value);
     const builtin = value == null || typeof value === 'string' || Array.isArray(value) || nativeSeq(x)
       || kind === 'vector' || kind === 'map' || kind === 'record' || kind === 'set';
@@ -647,7 +650,7 @@ const native = (() => {
     const method = decl.first(x,nativeSeq(x) || val(x) == null);
     if (method !== null) return method.call(x,x);
     if (nativeSeq(x) || val(x) == null) return __rt.cljFirst(x);
-    const s = seqOf(x);
+    const s = reduceSeqOf(x);
     if (s === null) return null;
     const first = decl.first(s,nativeSeq(s));
     return first === null ? __rt.cljFirst(s) : first.call(s,s);
@@ -656,7 +659,7 @@ const native = (() => {
     const method = decl.rest(x,nativeSeq(x) || val(x) == null);
     if (method !== null) return method.call(x,x);
     if (nativeSeq(x) || val(x) == null) return __rt.cljRest(x);
-    const s = seqOf(x);
+    const s = reduceSeqOf(x);
     if (s === null) return __rt.formList();
     const rest = decl.rest(s,nativeSeq(s));
     return rest === null ? __rt.cljRest(s) : rest.call(s,s);
@@ -665,7 +668,7 @@ const native = (() => {
     const builtin = nativeSeq(x) || val(x) == null;
     const method = decl.next(x,builtin);
     if (method !== null) return method.call(x,x);
-    return builtin ? __rt.cljNext(x) : seqOf(restOf(x));
+    return builtin ? __rt.cljNext(x) : reduceSeqOf(restOf(x));
   };
   const chunked = (s, step) => {
     const ch = __rt.cljChunkFirst(s), b = __rt.vectorBuilder();
@@ -787,7 +790,7 @@ const native = (() => {
   // nested markers let a flattening reducer propagate termination outward.
   const reduceSeq = (f, init, c) => {
     let acc = init;
-    for (let s = seqOf(c); s !== null; s = nextOf(s)) {
+    for (let s = reduceSeqOf(c); s !== null; s = nextOf(s)) {
       acc = invoke(f, acc, firstOf(s));
       if (__rt.cljIsReduced(acc)) return __rt.cljUnreduced(acc);
     }
@@ -1025,7 +1028,7 @@ const native = (() => {
     range:(...a)=>a.length===0?rangeFrom(rangeFrom,0,Infinity,1):a.length===1?rangeFrom(rangeFrom,0,val(a[0]),1)
       :a.length<=3?rangeFrom(rangeFrom,val(a[0]),val(a[1]),a.length===3?val(a[2]):1):arity(a.length),
     partition:(...a)=>a.length===2?partitionFrom(partitionFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionFrom(partitionFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
-    reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);const s=seqOf(a[0]);
+    reduce:(f,...a)=>{if(a.length===2)return reduceSeq(f,a[0],a[1]);if(a.length!==1)arity(a.length+1);const s=reduceSeqOf(a[0]);
       return s===null?invoke(f):reduceSeq(f,firstOf(s),restOf(s));},
     reduceKv, kvReduceProtocol,
     keyProtocol:x=>entryPart(x,false), valProtocol:x=>entryPart(x,true),
