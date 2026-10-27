@@ -554,6 +554,119 @@ Engine-free `--all-targets` stops at the unchanged evaluator example's missing
 These source checks do not replace the unavailable full compiler suite,
 strict all-target lint or fresh CPU profile.
 
+### Fresh V8 builds and CPU profiles (light-cljs-501 continuation)
+
+The continuation removes the remaining adapter closure and argument arrays from
+one- and two-argument native calls inside functions. Frame locals retain the
+callee, its early `.call` read and evaluated operands across suspension;
+`__rt.call(receiver, callee, args...)` lowers to the engine's existing
+`CallMethod` instruction. Callable collections retain their occurrence and
+default argument, and custom `.call` methods retain their receiver. Protocol
+declaration demand and table lookup now run in one resolver. Metadata-supplied
+functions retain the legacy null receiver, including strict JavaScript
+functions; a focused regression returned false on the earlier native binary
+and true on QuickJS before this correction.
+
+Fresh release binaries, macOS aarch64, 24 CPUs, Homebrew Rust/Cargo 1.99.1,
+Node 26.12.1:
+
+- Before: master `058404c6`, native-only, sha256 `dd1c8ee9fe11efc9…`.
+- After: `47cb9998`, native-only, sha256 `3ae827258f98ad8a…`.
+- V8: the same after commit `47cb9998`, default features with
+  `LIGHT_CLJS_V8_CACHE=require`, sha256 `7c182bc920c78719…`.
+
+Both native builds use `cargo build --locked --release --no-default-features
+--features bbp-macros`. The baseline was built from master's tracked sources
+inside this worktree, then those sources were restored before building both
+after binaries. This base includes intrinsic-property/builtin caching and the
+native catalog-retention fixes. **V8 is freshly built and measured here; these
+k values do not use the historical V8 estimates above.**
+
+```sh
+bb benchmarks/native-macros-k.bb target/protocol-final-idle \
+  --workload protocol --runs 5 --n 0,100,400,1600,6400 \
+  v8=target/v8-final master=target/native-master-final native=target/native-final
+```
+
+The original workload and harness are unchanged: four calls per compilation,
+one discarded warm-up per binary and n, five rounds alternating backend order,
+fresh `--jobs 1 --no-cache --optimize none --stats` processes, identical Node
+output. Own builds and suites finished before timing. The last run began after
+peer build/test processes stopped; another worker's benchmark was visible at
+its end. Earlier runs overlapped peer macro tests and a long compiler run.
+Host load across the runs was 2.8–5.3. Analysis time, median [min–max], ms:
+
+| `n` | fresh V8 | master | native after | k master | k after |
+| ---: | --- | --- | --- | ---: | ---: |
+| 0 | 25.0 [24.2–27.5] | 39.3 [39.1–45.9] | 43.0 [41.1–45.2] | – | – |
+| 100 | 31.5 [28.4–33.5] | 86.9 [81.5–90.7] | 67.4 [62.5–72.6] | 7.3 | 3.8 |
+| 400 | 36.7 [32.0–38.8] | 179.0 [165.7–186.9] | 92.0 [88.9–102.8] | 11.9 | 4.2 |
+| 1,600 | 47.3 [40.3–47.9] | 546.2 [538.3–558.2] | 203.2 [190.6–214.8] | 22.7 | 7.2 |
+| 6,400 | 67.7 [66.0–77.2] | 2011.9 [1999.0–2021.4] | 635.1 [626.3–653.6] | 46.2 | 13.9 |
+
+Baseline-subtracted native analysis falls by 49%, 65%, 68% and 70%. Two earlier
+five-round runs on the same binaries gave after k = 5.2/6.0/9.3/13.6 and
+5.3/6.5/9.1/13.7. The small-n rows depend on short V8 deltas and are sensitive
+to shared-machine variation. Every run misses k <= ~4 through n = 1,600;
+light-cljs-515 is updated with this evidence, rather than creating a duplicate.
+
+Fresh `/usr/bin/sample PID 3 1 -file ...` profiles completed for both native
+binaries at n = 1,600 (256 calls) and 6,400 (64 calls). These repeat the same
+kernel long enough to sample it; their Node outputs also agree. Main-thread
+sample counts are 2,212/2,206 before/after at n = 1,600 and 2,200/2,198 at
+n = 6,400. Top-of-stack counts, collapsed by symbol:
+
+| Frame | before 1,600 | after 1,600 | before 6,400 | after 6,400 |
+| --- | ---: | ---: | ---: | ---: |
+| `execute_budgeted` | 451 | 617 | 440 | 589 |
+| `Fault` drop glue | 101 | 122 | 111 | 111 |
+| `Value` drop glue | 32 | 71 | 46 | 63 |
+| SipHash `write` | 54 | 70 | 65 | 73 |
+| `lookup_cursor` | 56 | 47 | 53 | 51 |
+| heap `Directory::slot` | 39 | 55 | 50 | 47 |
+| `memmove` | 70 | 35 | 75 | 40 |
+| `start_conversion` | 30 | 48 | 32 | 50 |
+| `property_read_step` | 18 | 34 | 32 | 34 |
+| `enter_constructor` | 31 | 50 | 35 | 43 |
+| Proxy `Operations::step` | 12 | 43 | 14 | 46 |
+| VM callable `resolve` | 33 | 25 | 24 | 33 |
+
+These are distributions within separate three-second CPU samples, not costs
+per operation; faster code executes more iterations in that interval. The
+remaining leading frames are interpreter dispatch, drop/value handling,
+hashing, property/Proxy lookup, conversion and constructor entry. JavaScript
+table/frontier checks and dynamic compiler-root reads remain candidates for
+light-cljs-515; this native-stack profile does not attribute bytecode time to
+individual JavaScript functions.
+
+Validation on `47cb9998`: native-only `bbp_macros` 86/86; native plus QuickJS
+`--lib --test bbp_macros` 346 library tests and 88 differential tests pass
+(one existing library test ignored). `PROTOCOL_FIXTURES` is byte-for-byte
+unchanged. The pure `(fn [x] (map first x))` publication expectation changes
+from false to true because cached functions no longer capture `rt`; a dynamic
+`*print-length*` read remains a negative control. Native-only `--lib` has 271
+passes and the same 27 unsupported bootstrap-macro/test-service failures
+reproduced on master `529e2db6` with the same toolchain and configuration.
+The after run has the same failed test names and unsupported-service/macro
+signatures.
+
+The full default V8 nextest run has 2,129 passes and one failure; the full
+QuickJS-only run has 2,052 passes and the same failure:
+`playground_crate_checks_for_wasm32` selects the main checkout's workspace and
+rejects this nested worktree. Its test, runner and manifests are unchanged.
+Those full results are reused across the subsequent native-only lowering and
+catalog changes, whose non-native execution paths are unchanged. Engine
+`--all-targets` 2,136/2,136 and doctests 5/5 pass; those results are reused across
+the catalog rebase because no engine source changed. Compiler and engine
+formatting pass. Strict default Clippy and engine-free `--lib --bins` Clippy
+pass on the final source. Native/engine all-target strict Clippy reports only
+the existing eight library/nine engine-test diagnostics in `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`; allowing
+only those categories after `-D warnings` passes without source suppressions.
+Engine-free all-target Clippy remains unavailable in the existing benches and
+evaluation tests: absent evaluator APIs and unused/unreachable feature-dependent
+test code. These full-suite and strict-lint limitations remain explicit.
+
 ## Lazy sequences (light-cljs-479), October 26, 2026
 
 `bb benchmarks/native-macros-k.bb OUTPUT --workload lazy v8=BIN NAME=BIN`
