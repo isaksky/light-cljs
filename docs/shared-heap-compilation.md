@@ -596,6 +596,47 @@ linear-retention check remains 145,272/290,104 bytes, including on the rebased
 tree. Existing frontier lifetime, object-semantics and once-per-task initializer
 tests remain intact.
 
+The 400-helper RSS comparison uses native-only release `ba7def01` before and
+the same base plus this fix (`713c7201`, before rebasing) after. The source
+change is now carried by `b6a30129`; later engine integration changes are
+excluded from this controlled release comparison. Machine, fixture, build
+command and CLI flags are the same as above: macOS 15.7.3, Apple M3 Ultra
+(Virtual), 24 vCPUs/32 GiB, Rust 1.99.1 and Node 26.12.1. Three cycles at
+jobs 1/2/4/8 give these medians, with RSS in decimal MB:
+
+| Jobs | Before wall | After wall | Before RSS | After RSS | Before RSS vs 1 | After RSS vs 1 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 2.92 s | 2.83 s | 94.2 MB | 94.5 MB | 1.000 | 1.000 |
+| 2 | 3.48 s | 3.37 s | 104.1 MB | 105.4 MB | 1.105 | 1.115 |
+| 4 | 3.00 s | 2.87 s | 143.8 MB | 146.8 MB | 1.526 | 1.554 |
+| 8 | 3.01 s | 2.93 s | 192.1 MB | 197.2 MB | 2.039 | 2.087 |
+
+Before RSS ranges at jobs 1/2/4/8 are 94.0–94.4 / 103.8–106.6 /
+142.7–146.8 / 186.4–198.5 MB; after ranges are 94.2–95.0 / 103.1–106.1 /
+136.8–156.9 / 196.7–199.3 MB. Paired eight/one ratios are
+2.035/2.107/1.983 before and 2.109/2.092/2.072 after. There is no measured
+peak-RSS improvement in this sample, and the existing 1.15 target remains
+missed. The descriptor identity and retained-byte regression demonstrate
+the cache fix; live task state, transient allocations and allocator residency
+still require light-cljs-508's separate attribution work.
+
+No competing Cargo build/test, rustc, nextest or compiler process was present
+before or after any admitted run. One preliminary full batch overlapping
+restarted peer builds/tests was excluded; a later partial batch stopped on a
+formatter process and was rerun. The final after batch required a minute
+without competing build/test processes, excluding formatter processes from
+that gate. Load averages before decline from 5.59/7.50/6.72 to
+4.29/6.92/6.54; after they decline from 1.94/3.76/5.31 to 1.84/3.53/5.16.
+These different ambient loads preclude attributing the small wall-time change
+to prefix reuse.
+
+All 24 JavaScript outputs and inline source maps are byte-identical. Every
+run compiles and publishes 400 helpers with zero per-task fallbacks; contexts
+are 401/402/404/408 and median evaluations remain 2,810/2,004/2,008/2,016.
+Median task steps are 16,779/18,351/18,501/18,603 before and
+16,779/18,348/18,496/18,610 after. The results were appended to the existing
+light-cljs-508 evidence; no additional memory follow-up was created.
+
 Verification on master `7c7a8ed2` plus the prefix-reuse change passes all 156
 native evaluator/macro/reader/proxy tests with `LIGHT_CLJS_STRESS_SEEDS=12`;
 the pool stress takes 304 s and the effect-lane stress 425 s. Full default V8
