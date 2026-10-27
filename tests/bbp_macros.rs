@@ -4225,6 +4225,58 @@ fn direct_native_protocol_entries_keep_receivers_recur_and_scope_sensitive_metho
 }
 
 #[test]
+fn native_core_bindings_preserve_with_redefs_and_restoration() {
+    for (source, expected) in [
+        (
+            r#"(defmacro m [] [(even? 2)
+                   (with-redefs [even? (fn [_] false)] (even? 2))
+                   (even? 2)])
+               (js/console.log (pr-str (m)))"#,
+            "[true false true]\n",
+        ),
+        (
+            r#"(defmacro m [] [(binding [even? (fn [_] false)] (even? 2))
+                   (try (with-redefs [even? (fn [_] false)]
+                          (throw (js/Error. (str (even? 2)))))
+                     (catch :default e (.-message e)))
+                   (even? 2)])
+               (js/console.log (pr-str (m)))"#,
+            "[false \"false\" true]\n",
+        ),
+        (
+            r#"(defmacro m [] (let [original even?]
+                   (try (set! cljs.core/even? (fn [_] false)) (even? 2)
+                     (finally (set! cljs.core/even? original)))))
+               (js/console.log (m))"#,
+            "false\n",
+        ),
+    ] {
+        assert_native_matches_legacy(source, expected);
+    }
+}
+
+#[test]
+fn native_generated_names_do_not_capture_raw_javascript() {
+    for (source, expected) in [
+        (
+            r#"(defmacro m [] [(even? 2) (js* "typeof nativeCore$isEven")
+                   (js* "typeof nativeCoreGetter$isEven")])
+               (js/console.log (pr-str (m)))"#,
+            "[true \"undefined\" \"undefined\"]\n",
+        ),
+        (
+            r#"(defprotocol P (p [x]))
+               (deftype T [] P (p [_] ((fn [] (js* "typeof receiver0")))))
+               (defmacro m [] (p (T.)))
+               (js/console.log (m))"#,
+            "undefined\n",
+        ),
+    ] {
+        assert_native_matches_legacy(source, expected);
+    }
+}
+
+#[test]
 fn native_core_bindings_keep_unsupported_getters_at_the_original_read() {
     let source = r#"(defmacro m [x]
              (let [seen (js/Array.)

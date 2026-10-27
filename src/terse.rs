@@ -421,7 +421,7 @@ fn write_units<'n>(
 /// object's keys (`captures4.l7`) are such names too. A constant member key
 /// that is one of them stays bracketed (`x["f"]`).
 pub(crate) fn compiler_name(word: &str) -> bool {
-    const NUMBERED: [&str; 15] = [
+    const NUMBERED: [&str; 16] = [
         "l",
         "g",
         "k",
@@ -437,6 +437,7 @@ pub(crate) fn compiler_name(word: &str) -> bool {
         "recur",
         "installed",
         "operand",
+        "receiver",
     ];
     let numbered = |word: &str| {
         NUMBERED.iter().any(|head| {
@@ -466,6 +467,8 @@ pub(crate) fn compiler_name(word: &str) -> bool {
         )
         || word.starts_with("rt$")
         || word.starts_with("core$")
+        || word.starts_with("nativeCore$")
+        || word.starts_with("nativeCoreGetter$")
 }
 
 /// A prefix that no raw `js*` segment of `source` contains: `__light<n>_`.

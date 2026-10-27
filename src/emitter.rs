@@ -462,11 +462,15 @@ fn emit_js_mode(
             emitter.native_replaced_core = program
                 .exprs
                 .iter()
-                .filter_map(|expr| match expr.kind {
-                    ExprKind::SetGlobal { target, .. } => match program.exprs[target.0].kind {
-                        ExprKind::CoreFn(core) => Some(core.runtime_name()),
-                        _ => None,
-                    },
+                .flat_map(|expr| match &expr.kind {
+                    ExprKind::SetGlobal { target, .. } => vec![*target],
+                    ExprKind::Binding { bindings, .. } => {
+                        bindings.iter().map(|(target, _)| *target).collect()
+                    }
+                    _ => Vec::new(),
+                })
+                .filter_map(|target| match program.exprs[target.0].kind {
+                    ExprKind::CoreFn(core) => Some(core.runtime_name()),
                     _ => None,
                 })
                 .collect();
