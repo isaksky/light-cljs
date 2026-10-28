@@ -1569,7 +1569,7 @@ const native = (() => {
       if(bindingOverlays.has(name))return binding||bindingOverlays.get(name)!==undefined;
       if(!(name in bindings))return false;
       if(binding)return true;
-      if(roots.has(name)&&roots.get(name).unit===null)return false;
+      if(roots.has(name)&&__rt.initializerSlotGet(roots.get(name),0)===null)return false;
       return bindings[name]!==undefined;
     },
     juxt:(...fs)=>{

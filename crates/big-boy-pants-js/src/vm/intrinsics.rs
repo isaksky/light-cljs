@@ -196,7 +196,7 @@
 //! lookup runs to completion inside its instruction, like the collection
 //! intrinsics, reading only frozen form bodies; it never calls JavaScript.
 //!
-//! # Rooting
+//! # Private initializer slots
 //!
 //! `initializerSlot(unit, name)` creates private task-owned compiler storage;
 //! `initializerSlotGet(slot, field)` reads unit/name/state/value/defined at
@@ -206,6 +206,8 @@
 //! access is ForeignObject. Slots are never publishable, trace all three
 //! value edges and charge their fixed boxed body to the aggregate heap budget.
 //! Their public compiler roots and getter properties remain ordinary objects.
+//!
+//! # Rooting
 //!
 //! Every intrinsic reads its operands in place and pops them only after its
 //! result exists, so operands stay rooted by the task's frame while the
