@@ -125,6 +125,13 @@ fn scalar_origins(call: &Form) -> HashMap<ScalarKey, ScalarOrigin> {
     let mut pending: Vec<_> = call.children().into_iter().skip(1).rev().collect();
     while let Some(form) = pending.pop() {
         let data = form.data();
+        let big_integer = matches!(
+            data.kind(),
+            D::CompilerLiteral {
+                kind: L::BigInteger,
+                ..
+            }
+        );
         if let Some(key) = ScalarKey::of(&data) {
             origins.insert(
                 key,
@@ -136,7 +143,11 @@ fn scalar_origins(call: &Form) -> HashMap<ScalarKey, ScalarOrigin> {
         }
         // Legacy decoding visits children in order, then metadata.
         pending.extend(form.metadata());
-        pending.extend(form.node().compiler_payload.and_then(|id| form.at(id)));
+        // BigInteger is encoded directly as a number. Its decimal payload
+        // never becomes a decoded string argument in the legacy bridge.
+        if !big_integer {
+            pending.extend(form.node().compiler_payload.and_then(|id| form.at(id)));
+        }
         pending.extend(form.children().into_iter().rev());
     }
     origins

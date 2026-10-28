@@ -1607,6 +1607,33 @@ fn scalar_predicates_and_callable_collections_preserve_occurrences() {
 }
 
 #[test]
+fn exported_nil_metadata_keeps_collection_occurrences_and_marks_real_removals() {
+    let rt = Runtime::new();
+    let occurrence = rt.scope(|s| {
+        let vector = s.new_form_vector(&[]).unwrap();
+        let occurrence = s.new_occurrence(vector, at(3, 4)).unwrap();
+        s.persist(occurrence)
+    });
+    let cleared = call(
+        &rt,
+        r#"function probe(v) {
+        if (__rt.cljWithExportedMeta(v, null) !== v) throw new Error('occurrence identity');
+        const tagged = __rt.cljWithExportedMeta(v, __rt.formMap('tag', true));
+        const cleared = __rt.cljWithExportedMeta(tagged, null);
+        if (cleared === tagged || __rt.cljWithExportedMeta(cleared, null) !== cleared)
+            throw new Error('cleared identity');
+        return cleared;
+    }"#,
+        &[&occurrence],
+    );
+    rt.scope(|s| {
+        let cleared = s.local(&cleared).unwrap();
+        let metadata = s.form_meta(cleared).expect("explicit removal metadata");
+        assert!(matches!(s.view(metadata), ValueView::Null));
+    });
+}
+
+#[test]
 fn editable_collection_test_preserves_map_entry_and_occurrence_distinctions() {
     let rt = Runtime::new();
     let entry = call(

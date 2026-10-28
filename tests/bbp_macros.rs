@@ -4774,6 +4774,8 @@ fn native_generated_scalar_mappings_match_legacy() {
         "(defmacro keep [x] x) (defmacro pair [a b] (list 'keep (list 'quote (list a b)))) (js/console.log (pair 1 1))",
         "(defmacro first-value [x y] x) (js/console.log (pr-str (first-value '(1) 1)))",
         "(defmacro use-let [a b] (list 'let [] (list 'quote (list a b)))) (js/console.log (use-let 1 1))",
+        r#"(defmacro text [x] "100000000000000000000") (let [] (js/console.log (text 100000000000000000000N)))"#,
+        r#"(defmacro pair [x] (list 'quote [x "100000000000000000000"])) (let [] (js/console.log (pr-str (pair 100000000000000000000N))))"#,
     ] {
         assert_backend_emission(source);
     }
@@ -4809,6 +4811,61 @@ fn native_explicit_nil_metadata_keeps_following_reify_ids() {
       (defn instance [] (reify Object (toString [_] "record")))
       (js/console.log (pr-str names) (str (instance)))"#
         ));
+    }
+}
+
+#[test]
+fn native_nil_metadata_preserves_collection_identity() {
+    for strip in [
+        "(with-meta x nil)",
+        "(let [f with-meta] (f x nil))",
+        "(apply with-meta [x nil])",
+    ] {
+        for (value, same) in [
+            ("input", true),
+            ("[]", true),
+            ("[1]", true),
+            ("'()", true),
+            ("'(1 2)", true),
+            ("(cons 1 '(2))", true),
+            ("{}", true),
+            ("{:a 1}", true),
+            ("(into {} (map (fn [n] [n n]) (range 12)))", true),
+            ("(sorted-map :a 1)", true),
+            ("#{}", true),
+            ("#{1}", true),
+            ("cljs.core.PersistentQueue.EMPTY", true),
+            ("'#queue [1]", true),
+            ("(seq [1 2])", true),
+            ("(seq {:a 1})", true),
+            ("(seq #{1})", true),
+            ("(seq \"ab\")", true),
+            ("(lazy-seq '(1))", true),
+            ("(range 3)", true),
+            ("(repeat 2 :a)", true),
+            ("(iterate inc 0)", true),
+            ("(chunk-cons (chunk-first (range 3)) nil)", true),
+            ("'symbol", false),
+            ("(->MetadataRecord 1)", false),
+            ("(first (seq {:a 1}))", false),
+        ] {
+            let source = format!(
+                "(defrecord MetadataRecord [n]) \
+                 (defmacro probe [input] \
+                   (let [strip (fn [x] {strip}) x {value} \
+                         tagged (with-meta x {{:tag true}}) cleared (strip tagged)] \
+                     [(identical? x (strip x)) (identical? tagged cleared) \
+                      (identical? cleared (strip cleared)) (nil? (meta cleared)) \
+                      (map-entry? cleared)])) \
+                 (js/console.log (pr-str (probe [1 2])))"
+            );
+            // A map entry becomes an ordinary vector after with-meta.
+            let cleared_same = same || value == "(first (seq {:a 1}))";
+            assert_native_matches_legacy(
+                &source,
+                &format!("[{same} false {cleared_same} true false]\n"),
+            );
+        }
     }
 }
 

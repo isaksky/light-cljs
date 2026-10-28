@@ -584,6 +584,20 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::CljWithMeta => Some(clj::with_meta(heap, &a(0), &a(1))?),
         FormOp::CljWithExportedMeta => {
             let (value, meta) = (a(0), form::unwrap(heap, a(1)));
+            // Legacy collections keep their identity when metadata is already
+            // nil, including an explicit nil retained by a previous removal.
+            // Symbols and records always copy; map entries become vectors.
+            if matches!(meta, Value::Null | Value::Undefined)
+                && form::form_object(heap, &form::unwrap(heap, value.clone())).is_some_and(|f| {
+                    (f.sequential()
+                        || matches!(f.kind(), form::FormKind::Map | form::FormKind::Set))
+                        && !f.is_map_entry()
+                        && f.meta()
+                            .is_none_or(|m| matches!(m, Value::Null | Value::Undefined))
+                })
+            {
+                return Ok(Some(value));
+            }
             let updated = clj::with_meta(heap, &value, &meta)?;
             Some(if matches!(meta, Value::Null | Value::Undefined) {
                 form::with_exported_meta(heap, &form::unwrap(heap, updated), Value::Null)?
