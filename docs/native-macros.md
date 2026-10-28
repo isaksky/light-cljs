@@ -130,7 +130,7 @@ The `-peek` protocol entry dispatches nil extensions separately from public
 review regressions, including large array cursors and exact getter/equality
 effects, at jobs 1/2/4/8 under each default collection marker extension.
 
-Fresh native-only debug builds at `118e784a`, rebased onto `b3ef562c`, on macOS
+Fresh native-only debug builds at `ea1e76d5`, based on `b3ef562c`, on macOS
 arm64 with Homebrew Rust/Cargo 1.99.1 pass the former `core.isList` failure and the next small service gap,
 `core.peek`. The latter now observes supported persistent stacks without
 realizing other sequence kinds and dispatches user IStack methods through the
@@ -146,31 +146,40 @@ with this identical first different diagnostic:
 light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro expansion: while expanding mf/defc: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro rumext.v2/defc: big-boy-pants-js: Error: unsupported operation: native macro runtime core.flatten; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:334:1 (bytes 522..819)
 ```
 
-The probes take 186.99 s (`app.render`) and 186.06 s (`app.main`). Neither
+The probes take 193.55 s (`app.render`) and 201.85 s (`app.main`). Neither
 entry completes natively; research is unchanged. The recursive traversal
 service is tracked separately by light-cljs-551. Before adding `peek`, both
 entries reached its identical unsupported-service diagnostic at the same source
 location, in 187.40 s and 187.05 s respectively.
 
-Production `118e784a` passes all 183 selected evaluator/macro/reader/Proxy tests with
+The range-count change at `2f42bde2` passes all 183 selected
+evaluator/macro/reader/Proxy tests with
 `LIGHT_CLJS_STRESS_SEEDS=12`, three build jobs and three nextest slots. All
 2,168 engine tests and seven doctests pass on the same code. The rebase onto
 `b3ef562c` integrates heap-layout and shared-heap statistics changes, so the
 engine, native and combined checks and both Penpot probes were rerun. Fresh
-combined native/QuickJS coverage passes all 485 library, CLI and
-macro/reader/Proxy tests (one existing ignored test). The predicate, peek,
+combined native/QuickJS coverage at `b300be08` passes 516 library, CLI and
+macro/reader/Proxy tests, with only the existing wasm workspace check failing
+(one existing ignored test). The predicate, peek,
 metadata, identity and equality-effect source table matches QuickJS byte for
 byte at jobs 1/2/4/8 under all six default marker extensions. Engine strict
 Clippy retains nine baseline diagnostics (eight for the native compiler's
 engine dependency); allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks`
 and `clippy::byte_char_slices` passes engine and native combined all-target
 checks and the selected native targets. No source suppressions were added.
+The final production checkpoint `ea1e76d5` only removes an identity conversion
+from the count-validation error path. The full native and engine results are
+reused across that cleanup; all 63 form/lazy tests and the complete native-only
+source table pass again. The source table also imports explicit queue descriptors
+through both evaluator bridges at every jobs setting, since source `#queue`
+syntax lowers to an `into` form before macro input. The native cache regression
+`generated_core_writes_survive_cached_artifacts` passes against the final CLI.
 
 The default V8 and QuickJS-only full nextest runs pass 2,132 and 2,055 tests
 respectively; each fails only the documented `playground_crate_checks_for_wasm32`
 environment check. The pinned wasm Cargo assigns this worktree's excluded
 playground crate to `/Users/admin/src/light-cljs/Cargo.toml`'s workspace before
-checking source. Both full runs were repeated after the heap-layout rebase,
+checking source. Both full runs were repeated after the sequence review fixes,
 including cache checks against the final compiler identity. Default and QuickJS
 all-target Clippy pass strictly, as do engine-free library/CLI checks.
 Native-only and engine-free all-target lint retain existing benchmark/example
