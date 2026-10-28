@@ -2430,6 +2430,90 @@ The first subsequent Penpot gap was the garden compiler's private, documented
 with attributes and docstrings, retaining their legacy precedence. The
 default engine still uses its existing fallback for those metadata merges.
 
+### Penpot builds and remaining boundary
+
+**`app.render` builds completely on the native backend at jobs 1 and 4.**
+Both native runs emit identical, syntactically valid JavaScript. These runs
+use source `f7f9aef0`, macOS arm64, Homebrew Rust/Cargo 1.99.1, and a native-only
+release binary built with `--locked --release --no-default-features --features
+bbp-macros --bin light-cljs`. The five absolute read-only roots and all budgets
+are those in the Penpot reproduction above, with `--compile --esm --optimize
+none --no-cache --stats`. No other builds or tests run during these timings.
+
+`/usr/bin/time -l` reports wall/user/system seconds and maximum resident bytes:
+
+| Backend | Jobs | Wall s | User s | System s | Maximum RSS MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Native | 1 | 12.87 | 12.41 | 0.45 | 404.6 |
+| V8 | 1 | 1.96 | 2.31 | 0.15 | 401.6 |
+| Native | 4 | 8.76 | 11.44 | 0.79 | 481.8 |
+| V8 | 4 | 1.27 | 3.41 | 0.21 | 593.8 |
+
+These are single complete-build measurements. V8 output is identical at jobs
+1 and 4 too. Each output has 12,680,976 bytes. Native SHA-256 is
+`0a5320e48cd525cce43524c9fde45c2dd71ace555525014b98767b9b363e330b`;
+V8 SHA-256 is
+`d352af3a2bb2d35f1447f3d4fc6592de609dc30e92c3424f7321afc607a8d9a3`.
+
+The native/V8 comparison has exactly 47 changed internal `reify` IDs and 16
+object-property reorderings. Aligning unique object properties by name and
+those numeric `reify` arguments leaves identical parsed trees (1,608,373
+nodes), with identical property expressions. Their property evaluation and
+enumeration order differs at the sixteen objects listed below. The tables
+record the exact build differences.
+
+For the four V8 `reify` IDs `73125 131632 132255 132291`, native subtracts 32.
+For these 43 V8 IDs, native subtracts 64; all other `reify` IDs agree:
+
+```text
+198138 199249 199284 199310 229640 244565 249745 249812 250514 251051
+251099 361169 361189 362127 362212 362296 362373 362437 364131 364270
+364369 364393 364461 364507 364522 364564 364735 379949 380013 380203
+385842 386766 386826 386864 432450 432514 432594 432680 475625 475668
+476038 476502 476588
+```
+
+Object locations are generated JavaScript line numbers at `f7f9aef0`.
+The last column gives native order as one-based indices into the V8 order;
+each property's expression is unchanged. Seven marker objects share one row.
+
+| Lines | V8 property order | Native permutation |
+| --- | --- | --- |
+| 117384 | width height children x id data-mapping transform data-colors y ref | 7 1 6 9 4 10 5 2 8 3 |
+| 120565, 120576, 120587, 120598, 120609, 120629, 120649 | refX children orient id viewBox fill refY fillOpacity markerWidth markerHeight | 5 1 3 8 10 6 4 7 2 9 |
+| 120730 | width height children patternTransform x id viewBox preserveAspectRatio y patternContentUnits | 7 1 8 10 4 9 5 6 2 3 |
+| 141005 | width height className x id href style decoding y | 1 7 8 9 4 3 6 5 2 |
+| 143016 | width maskUnits height className children x id data-old-y data-old-width data-old-x y data-old-height | 12 1 9 2 8 11 6 10 4 7 3 5 |
+| 144407 | xmlns:penpot width xmlns height children viewBox style xmlnsXlink fill version | 6 2 10 7 8 3 9 1 4 5 |
+| 144490 | xmlns:penpot width xmlns height className children viewBox xmlnsXlink fill version | 7 2 10 8 3 5 9 1 4 6 |
+| 144542 | width xmlns height className children viewBox xmlnsXlink fill version | 6 1 9 7 2 4 8 3 5 |
+| 144587 | width xmlns height children id viewBox style xmlnsXlink fill version | 6 1 10 7 8 2 9 5 3 4 |
+| 144630 | width xmlns height children viewBox style xmlnsXlink fill version | 5 1 9 6 7 2 8 3 4 |
+
+`app.main` passes both former bootstrap errors and exits 1 at this next,
+different runtime-service boundary:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/plugins/flags.cljs:37:3: macro expansion: while expanding app.util.object/add-properties!: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/plugins/flags.cljs:37:3: macro app.util.object/add-properties!: big-boy-pants-js: Error: unsupported operation: native macro runtime core.memoize; definition /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/util/object.cljc:151:1 (bytes 1094..1786)
+```
+
+The same native-only release build, roots and budgets at jobs 1 take 11.58 s
+wall, 11.10 s user, 0.43 s system and 383,713,280 bytes maximum RSS. This is a
+failure reproduction, not a complete-build comparison. A reduced source macro
+that memoizes `gensym` reproduces the missing service. The focused follow-up
+is light-cljs-556. Research is unchanged.
+
+### Default V8 build check
+
+Three quiet interleaved pairs compare the saved default V8 release binary from
+`b73d0059` with `f7f9aef0` on the seed-42 200k fixture, using `release bench
+--jobs 1 --no-cache`. Median wall time is 6.80 s before and 6.80 s after
+(1.000x); ranges are 6.76–6.84 and 6.79–6.84 s. Median user+system CPU is
+7.31 and 7.30 s; median maximum RSS is 1,024.7 and 1,035.6 MiB.
+All six outputs are byte-identical with SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
+
 The rebuilt default V8 release compiler was timed against the saved
 `e28daa30` executable on the same seed-42 200k fixture, using
 `release bench --jobs 1 --no-cache`. One quiet pair takes 7.06 s before and
