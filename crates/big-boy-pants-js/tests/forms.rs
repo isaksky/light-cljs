@@ -2450,16 +2450,21 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
       const meta=__rt.formMap('kept',true);
       const lazy=__rt.lazySeq(()=>{throw new Error('predicate realized a lazy value');});
       const cons=__rt.cljCons(0,lazy);
-      const uncounted=__rt.formSequence(__rt.cljRangeCons(__rt.formVector(1,2,3),null,null));
-      const range=__rt.cljRangeCons(__rt.formVector(1,2,3),lazy,10000000);
+      const uncounted=__rt.formSequence(__rt.cljRangeCons(__rt.formVector(1,2,3),null,null,1));
+      const range=__rt.cljRangeCons(__rt.formVector(1,2,3),lazy,10000001,1);
+      const boundary=step=>{
+        const head=9007199254740992*step;
+        let chunk=__rt.formVector();for(let i=0;i<32;i++)chunk=__rt.cljConj(chunk,head);
+        return __rt.cljRangeCons(chunk,lazy,head+4*step,step);
+      };
       let big=__rt.formVector();for(let i=0;i<33;i++)big=__rt.cljConj(big,i);
-      return __rt.formVector(list,view,map,string,__rt.cljWithMeta(view,meta),lazy,cons,__rt.cljSeq(big),uncounted,range);
+      return __rt.formVector(list,view,map,string,__rt.cljWithMeta(view,meta),lazy,cons,__rt.cljSeq(big),uncounted,range,boundary(1),boundary(-1));
     }"#,
         &[],
     );
     let occurrence = rt.scope(|s| {
         let values = s.local(&made).unwrap();
-        let children = (0..10)
+        let children = (0..12)
             .map(|i| {
                 s.new_occurrence(s.form_nth(values, i).unwrap(), at(4 + i as u32, 2))
                     .unwrap()
@@ -2495,6 +2500,12 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
         const delayed=__rt.lazySeq(()=>range);
         if(__rt.cljCount(delayed)!==10000000||__rt.cljCount(__rt.cljCons(0,delayed))!==10000001)
           throw new Error('lazy range count realized tail');
+      }
+      for(let range of [at(10),__rt.cljWithMeta(at(11),__rt.formMap('range',true))]) {
+        for(let i=0;i<6;i++) {
+          if(__rt.cljCount(range)!==4)throw new Error('rounded range tail count');
+          range=__rt.cljRest(range);
+        }
       }
       if(__rt.cljSeq(at(6))!==at(6)||__rt.cljSeq(at(7))!==at(7))throw new Error('cons occurrence identity');
       const front=__rt.cljCons(0,meta);

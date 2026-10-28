@@ -1473,7 +1473,7 @@ pub(crate) fn chunk_cons(
     chunk: &Value,
     rest: &Value,
     range: bool,
-    count: Option<f64>,
+    count: Option<lazy::RangeCount>,
 ) -> Result<Value> {
     let chunk = form::unwrap(heap, chunk.clone());
     let items = match &chunk {

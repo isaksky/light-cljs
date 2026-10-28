@@ -610,12 +610,27 @@ pub(crate) struct ConsBody {
     pub(crate) start: usize,
     pub(crate) rest: Value,
     pub(crate) kind: ConsKind,
-    /// A finite integer range's remaining cardinality. No tail is read to
-    /// count it; metadata copies and shared tails retain this value.
-    pub(crate) count: Option<f64>,
+    /// A counted range's arithmetic. Metadata copies and shared tails retain
+    /// it; the actual head determines the count even when a step rounds back
+    /// to the same number beyond JavaScript's safe-integer boundary.
+    pub(crate) range: Option<RangeCount>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RangeCount {
+    pub(crate) end: f64,
+    pub(crate) step: f64,
 }
 
 impl ConsBody {
+    pub(crate) fn count(&self) -> Option<f64> {
+        let range = self.range?;
+        let Value::Number(head) = self.first() else {
+            return None;
+        };
+        Some(((range.end - head) / range.step).ceil())
+    }
+
     /// `chunked-seq?`.
     pub(crate) fn chunked(&self) -> bool {
         matches!(self.kind, ConsKind::Chunked | ConsKind::ChunkedSeq)

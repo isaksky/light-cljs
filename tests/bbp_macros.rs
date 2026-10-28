@@ -8145,6 +8145,18 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
       (defrecord RecordMarker [x] IList)
       (defrecord SequentialRecord [x] ISequential)
       (defrecord MutableSequentialRecord [^:mutable x] ISequential)
+      (defrecord MutableEquivRecord [^:mutable x seen] ISequential)
+      (defrecord ImmutableEquivRecord [x seen] ISequential)
+      (defn record-equiv-demanded [x] x)
+      (extend-type MutableEquivRecord
+        IEquiv (-equiv [this other] (swap! (.-seen this) conj :record-equiv) (record-equiv-demanded true))
+        ICounted (-count [_] 1)
+        ISeqable (-seq [_] (list 1)))
+      (extend-type ImmutableEquivRecord
+        IEquiv (-equiv [this other] (swap! (.-seen this) conj :record-equiv) (record-equiv-demanded true)))
+      (defn range-seq-demanded [r] r)
+      (deftype RangeSeqable [r seen] ISeqable
+        (-seq [_] (swap! seen conj :range-seq) (range-seq-demanded r)))
       (deftype MutableMarker [^:mutable x] IList)
       (extend-type string IList)
       (extend-type List IList)
@@ -8220,6 +8232,10 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
         [(= (seq (array [:x 1])) r) (= r (seq (array [:x 1])))
          (= (seq a) r) (into [] seen)]))
         [(SequentialRecord. 1) (MutableSequentialRecord. 1)])
+      (mapv (fn [make-record]
+        (let [seen (atom []) r (make-record seen) s (seq (array 1)) eq =]
+          [(= r s) (= s r) (eq r s) (eq s r) (apply eq [r s]) (apply eq [s r]) @seen]))
+        [(fn [seen] (MutableEquivRecord. 0 seen)) (fn [seen] (ImmutableEquivRecord. 0 seen))])
       (mapv (fn [r]
         (let [seen (js/Array.) a (js* "Object.defineProperty(new Array(1),0,{get(){~{}.push('head');return 0;}})" seen)
               s (seq a)]
@@ -8230,8 +8246,25 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
       (let [r (with-meta (range 10000000) {:range true})]
         [(count r) (count (rest r)) (count (next r)) (count (chunk-rest r))
          (count (range 10 -2 -3))])
+      (mapv (fn [r]
+        (let [seen (atom []) x (RangeSeqable. r seen) c count]
+          [(count x) (c x) (apply c [x]) @seen]))
+        [(range 10000000) (rest (range 10000000))
+         (range 10000000 0 -3) (with-meta (range 10000000) {:range true})])
+      (mapv (fn [a] (mapv (fn [b] (mapv (fn [s]
+        [a b s (mapv (fn [k] (count (nthrest (range a b s) k))) [0 1 5 31 32 33])])
+        [-3 -0.5 0.5 3])) [-3 1 3])) [-2 0 2])
+      (mapv (fn [[a b s]]
+        [a b s (mapv (fn [k] (count (nthrest (range a b s) k))) [0 1 5 31 32 33 66])])
+        [[0 40 1] [40 0 -1] [-1 4 0.1] [4 -1 -0.1]
+         [9007199254740992 9007199254740996 1]
+         [-9007199254740992 -9007199254740996 -1]
+         [9007199254740992 9007199254740996 2]
+         [-9007199254740992 -9007199254740996 -2]
+         [9007199254740996 9007199254740992 -1]
+         [-9007199254740996 -9007199254740992 1]])
       [(count (DeclaredCounted.)) (count (ExtendedCounted.)) (count (OverlayCounted.))]]"#;
-    std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker PlainMarker PendingMarker DeclaredCounted ExtendedCounted OverlayCounted ExtendedPending PrinterMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker SequentialRecord MutableSequentialRecord MutableMarker StackMarker EquivMarker load-sequences classify demanded]]))
+    std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker PlainMarker PendingMarker DeclaredCounted ExtendedCounted OverlayCounted ExtendedPending PrinterMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker SequentialRecord MutableSequentialRecord MutableEquivRecord ImmutableEquivRecord RangeSeqable MutableMarker StackMarker EquivMarker load-sequences classify demanded]]))
       (defmacro probe [input queue-input]
         (let [seen (atom []) unforced (lazy-seq (swap! seen conj :unexpected) (throw (js/Error. "forced")))
               _ (extend-type OverlayCounted ICounted (-count [_] 1))

@@ -1071,8 +1071,13 @@ const native = (() => {
   const arraySeq = (array, index) => index >= array.length ? null : copyArraySeq(array,index,null);
   const countedKinds = __rt.map('list',true,'empty-list',true,'sequence',true,'vector',true,'map-entry',true,'map',true,'set',true);
   const equalArraySeq = (a,b) => {
-    // Records compare by their type before any sequential traversal. The
-    // cursor has no record type; left-hand IEquiv dispatch happens earlier.
+    // Mutable records are host objects: when the right operand is a cursor,
+    // the engine selects its adapter before resolving the left record.
+    if (decl.mutableRecord(val(a)) !== null) {
+      const equiv = decl.coreLookup(coreTables.formEquals,a,true);
+      if (equiv !== null) return !!val(equiv(a,b));
+    }
+    // Records' builtin equality compares types before sequential traversal.
     const record = x => __rt.formKind(val(x)) === 'record' || decl.mutableRecord(val(x)) !== null;
     if (record(a) || record(b)) return false;
     if (!core.isSequential(a) || !core.isSequential(b)) return false;
@@ -1285,8 +1290,7 @@ const native = (() => {
     if (k === 0) return __rt.formList();
     const next = x;
     const counted = step !== 0 && Number.isInteger(start) && Number.isInteger(end) && Number.isInteger(step);
-    const count = counted ? Math.ceil((end-start)/step) : null;
-    const result = __rt.cljRangeCons(__rt.freeze(b), lazy(() => self(self, next, end, step)),count);
+    const result = __rt.cljRangeCons(__rt.freeze(b), lazy(() => self(self, next, end, step)),counted ? end : null,step);
     return counted ? result : __rt.formSequence(result);
   };
   const partitionFrom = (self, n, step, c) => lazy(() => {
@@ -1563,6 +1567,10 @@ const native = (() => {
     partitionBy:(...a)=>a.length===1?partitionByTransform(a[0]):a.length===2?partitionByFrom(partitionByFrom,a[0],a[1]):arity(a.length),
     partitionAll:(...a)=>a.length===1?partitionAllTransform(val(a[0])):a.length===2?partitionAllFrom(partitionAllFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionAllFrom(partitionAllFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
     take:(n,c)=>takeN(takeN,val(n),c), drop:(n,c)=>dropN(val(n),c),
+    nthrest:(x,n)=>{
+      for(n=val(n);n>0;n--){const s=seqOf(x);if(s===null)break;x=restOf(s);}
+      return x;
+    },
     takeWhile:(f,c)=>takeWhileFrom(takeWhileFrom,f,c), dropWhile:(f,c)=>dropWhileFrom(f,c),
     interleave:(...cs)=>cs.length===0?__rt.formList():cs.length===1?((c)=>lazy(()=>seqOf(c)))(cs[0]):interleaveAll(interleaveAll,list(cs)),
     interpose:(...a)=>{

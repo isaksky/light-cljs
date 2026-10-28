@@ -1845,14 +1845,14 @@ pub(crate) fn new_cons(
     start: usize,
     rest: Value,
     kind: lazy::ConsKind,
-    count: Option<f64>,
+    range: Option<lazy::RangeCount>,
 ) -> Result<Value, CollectionError> {
     let body = ConsBody {
         items,
         start,
         rest,
         kind,
-        count,
+        range,
     };
     let mut parts = body.elements();
     parts.push(body.rest.clone());
@@ -1872,8 +1872,8 @@ pub(crate) fn cons_sharing(
     source: &Value,
 ) -> Result<Value, CollectionError> {
     let source_form = resolve(heap, source.clone()).1.map(|(_, f)| f);
-    let count = source_form.as_ref().and_then(|f| match f.body() {
-        FormBody::Cons(c) => c.count.map(|n| n - (start - c.start) as f64),
+    let range = source_form.as_ref().and_then(|f| match f.body() {
+        FormBody::Cons(c) => c.range,
         _ => None,
     });
     let body = ConsBody {
@@ -1881,7 +1881,7 @@ pub(crate) fn cons_sharing(
         start,
         rest,
         kind,
-        count,
+        range,
     };
     let mut object = FormObject::new(FormBody::Cons(body), None);
     object.sequence_view = source_form.and_then(|f| f.sequence_view);
@@ -2004,7 +2004,7 @@ pub(crate) fn sequence_count(heap: &Heap, v: &Value) -> Result<Option<f64>, SeqE
                 return Ok(Some(count + items.len() as f64));
             }
             FormBody::Cons(c) => {
-                if let Some(n) = c.count {
+                if let Some(n) = c.count() {
                     return Ok(Some(count + n));
                 }
                 count += c.len() as f64;

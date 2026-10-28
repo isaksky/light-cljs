@@ -176,7 +176,7 @@
 //! `cljList(c)` (every element of the seq, realized, as a list),
 //! `cljChunkedSeq(s)`, `cljChunkFirst(s)`, `cljChunkRest(s)`,
 //! `cljChunkNext(s)`, `cljChunkCons(chunk, rest)`, `cljRangeCons(chunk,
-//! rest, countOrNil)` (a range's chunked sequence, with a retained count for
+//! rest, endOrNil, step)` (a range's chunked sequence, with retained arithmetic for
 //! finite integer ranges) and `cljRealizeAll(v)` (`v`
 //! with every lazy sequence inside it replaced by a list). A form
 //! instruction that needs an unrealized lazy sequence (a clj operation, or
@@ -598,12 +598,14 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::CljChunkNext => Some(clj::chunk_next(heap, &a(0))?),
         FormOp::CljChunkCons => Some(clj::chunk_cons(heap, &a(0), &a(1), false, None)?),
         FormOp::CljRangeCons => {
-            let count = match form::unwrap(heap, a(2)) {
-                Value::Number(n) if n >= 0.0 && n == n.floor() => Some(n),
-                Value::Null | Value::Undefined => None,
+            let count = match (form::unwrap(heap, a(2)), form::unwrap(heap, a(3))) {
+                (Value::Number(end), Value::Number(step)) if step != 0.0 => {
+                    Some(crate::collections::lazy::RangeCount { end, step })
+                }
+                (Value::Null | Value::Undefined, _) => None,
                 _ => {
                     return Err(clj::CljError::Operands(
-                        "range count must be a nonnegative integer or nil",
+                        "counted range requires a numeric end and nonzero step",
                     ));
                 }
             };
