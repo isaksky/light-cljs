@@ -2189,6 +2189,9 @@ fn retained_environment_snapshots_survive_collection_and_pruning() {
         .occurrence
         .clone();
     expand(&mut host, &second);
+    let unused_environment = Datum::new(D::Nil);
+    let unused = expand(&mut host, &unused_environment);
+    assert!(matches!(unused.children()[1].data().kind(), D::Nil));
     // expand_javascript releases every input/result handle. Only macro task
     // state holds the first envelope; the bridge roots the second one.
     assert_eq!(

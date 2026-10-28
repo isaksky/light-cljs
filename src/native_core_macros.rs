@@ -546,7 +546,7 @@ pub(crate) fn expand(
             _ => None,
         },
         "defmulti" => match args.split_first() {
-            Some((name, declarations)) => defmulti(name, declarations, namespace)?,
+            Some((name, declarations)) => defmulti::<false>(name, declarations, namespace)?,
             None => None,
         },
         "for" => match args {
@@ -1150,7 +1150,7 @@ fn js_obj(entries: &[Datum], gensym: Gensym<'_>) -> Result<Option<Datum>, String
 }
 
 /// `macro-defmulti`, whose `&env` it reads for the namespace's name only.
-fn defmulti(
+fn defmulti<const MERGE_METADATA: bool>(
     name: &Datum,
     declarations: &[Datum],
     namespace: &str,
@@ -1200,20 +1200,24 @@ fn defmulti(
         }
     }
     // `(merge (meta name) attributes (if doc {:doc doc} {}))`: the name's
-    // own metadata where nothing is added to it, else, where it has none,
-    // a map of the attributes' keyword keys within an array map's eight
-    // entries, and the docstring.
+    // own metadata where nothing is added to it, else a map of keyword keys
+    // within an array map's eight entries. Only the native backend adds the
+    // original metadata to that merge; legacy engines retain their fallback.
     let attributes = attributes
         .map(|a| a.entries())
         .transpose()?
         .unwrap_or_default();
     let metadata = match meta(name) {
         Some(metadata) if attributes.is_empty() && doc.is_none() => metadata,
-        Some(_) => return Ok(None),
-        None => {
+        Some(_) if !MERGE_METADATA => return Ok(None),
+        original => {
             let mut metadata: Vec<(Datum, Datum)> = Vec::new();
             let doc = doc.map(|doc| (C.keyword(Name::new(None, "doc")), doc));
-            for (key, value) in attributes.into_iter().chain(doc) {
+            let original = original
+                .map(|m| m.entries())
+                .transpose()?
+                .unwrap_or_default();
+            for (key, value) in original.into_iter().chain(attributes).chain(doc) {
                 if !matches!(key.kind(), DatumKind::Keyword(_)) {
                     return Ok(None);
                 }
@@ -1816,7 +1820,17 @@ impl crate::MacroHost {
         if self.measures_work() {
             self.note_node_room(crate::macro_host::WorkMarks::nodes(&call));
         }
-        let Some(expanded) = expand(name, &call, namespace, &mut scope_gensyms)? else {
+        let expanded = expand(name, &call, namespace, &mut scope_gensyms)?;
+        #[cfg(feature = "bbp-macros")]
+        let expanded = if expanded.is_none() && name == "defmulti" && self.native_macro_backend() {
+            match children(&call).get(1..).and_then(|args| args.split_first()) {
+                Some((name, declarations)) => defmulti::<true>(name, declarations, namespace)?,
+                None => None,
+            }
+        } else {
+            expanded
+        };
+        let Some(expanded) = expanded else {
             return Ok(None);
         };
         // Its names are allocated: the engine allocates others before it
@@ -2277,6 +2291,38 @@ mod tests {
             "(defmulti area \\a :default :x)",
             "~(defmulti area \\a :shape)",
         ]);
+    }
+
+    #[cfg(all(feature = "bbp-macros", light_quickjs))]
+    #[test]
+    fn native_defmulti_merges_small_keyword_metadata_as_its_definition() {
+        let mut legacy = MacroHost::new();
+        let mut native = MacroHost::new();
+        native.use_native_macros();
+        let environment = C
+            .map(&[(
+                C.keyword(Name::new(None, "ns")),
+                C.map(&[(C.keyword(Name::new(None, "name")), symbol("user"))])
+                    .unwrap(),
+            )])
+            .unwrap();
+        for source in [
+            r#"(defmulti ^:private render-at-rule "Render a CSS at-rule" :identifier)"#,
+            r#"(defmulti ^{:doc "old" :private true} area "new" {:doc "attributes" :tag Result} :shape)"#,
+            r#"(defmulti ^{:private true :tag First} area {:private false :tag Second} :shape :default :none)"#,
+        ] {
+            let text = Source::new("defmulti.cljs", source);
+            let call = legacy.read_compiler_form(&text).unwrap().unwrap();
+            let expected = legacy
+                .expand_core_javascript("defmulti", &call, &environment, None)
+                .unwrap();
+            let _names = crate::generated_names::enter_namespace(7);
+            let actual = native
+                .expand_core_native("defmulti", &call, "user", ("defmulti", &(0..source.len())))
+                .unwrap()
+                .expect("native metadata merge");
+            assert_eq!(difference(&actual, &expected, ""), None, "{source}");
+        }
     }
 
     #[test]

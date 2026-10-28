@@ -1020,8 +1020,8 @@ map construction, metadata and selector destructuring) and `simple-benchmark`
 (option maps and legacy `pr-str` of arbitrary forms). These require more than
 the direct form builders added here. The existing fallback boundaries also
 remain: unscoped text entry points, malformed calls, bridge/depth limits and
-valid calls the Rust path deliberately declines, such as `defmulti` metadata
-merges. The native bootstrap now handles declined `js-obj` calls as described
+valid calls the Rust path deliberately declines, such as large or non-keyword
+`defmulti` metadata merges. The native bootstrap handles declined `js-obj` calls as described
 below; other declined calls still fail explicitly. Expanding a wrapper such
 as `with-in-str` or `lazy-cat` does not add runtime support for operations its
 body calls.
@@ -2395,6 +2395,40 @@ jobs, three native/engine test workers and eight legacy nextest slots.
 The commits after `da76220f` change documentation only; all these results
 cover the same production source and test inputs. Neither the legacy emitter
 nor `src/js_runtime.js` differs from master.
+
+## Wide native object bootstrap (light-cljs-553, 2026-10-28)
+
+The native backend now expands `js-obj` calls beyond eight pairs. The small
+Rust expander and legacy bootstrap path retain their existing behavior. A
+native bootstrap builder is installed only when that Rust expander declines a
+call. It consumes the rooted `&form` directly, avoiding a VM argument frame
+proportional to the operand count, and uses bounded native list/vector builders.
+The native bridge keeps its last real map environment when a bootstrap call
+receives an unused nil environment.
+
+The builder preserves the legacy split: through eight raw pairs, duplicate
+keys replace whole pairs; wider inputs associate into an array map, retain the
+first stored key, and promote after nine distinct keys. Existing native form
+equality, hashing and legacy traversal determine duplicate keys and order.
+Computed expression keys bind before the initial string properties; symbol
+assignments precede computed-key assignments. Odd trailing operands remain
+ignored. Source occurrences, metadata, generated names and aggregate budgets
+use the ordinary native macro bridge. Application emission remains conventional.
+
+The table-driven source fixture compares exact JavaScript, warnings and Node
+effects with QuickJS at jobs 1/2/4/8 and twelve scheduling seeds. It includes
+the eight/nine boundary, generated serializer objects, promotion with duplicate
+keys, full hash collisions, structural and computed keys, characters and exact
+UTF-16 strings, nested objects and application-side `clj->js`. A cold helper
+evaluates a wide object while retaining operand effects and input identity.
+Separate checks cover 8,192 pairs with the default VM stack, invalid keys and
+values with their original locations, aggregate generated-node denial, and
+the exact retained key occurrence and generated-name sequence.
+
+The first subsequent Penpot gap was the garden compiler's private, documented
+`defmulti`. Native compilation now also merges small keyword metadata maps
+with attributes and docstrings, retaining their legacy precedence. The
+default engine still uses its existing fallback for those metadata merges.
 
 The rebuilt default V8 release compiler was timed against the saved
 `e28daa30` executable on the same seed-42 200k fixture, using

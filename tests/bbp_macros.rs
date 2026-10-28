@@ -1925,6 +1925,15 @@ fn bootstrap_namespace_macros_match_quickjs() {
                     (= {:a 1 :b 2} (hash-map :a 1 :b 2))])))"#,
             "[[] [1 2 3] [1 2] 42 nil nil nil true true true]\n",
         ),
+        (
+            "multimethod metadata merge",
+            r#"(ns bootstrap.app)
+               (defmulti ^{:private true :doc "old"} choose "new" {:custom true} identity)
+               (defmethod choose :x [_] 42)
+               (js/console.log (pr-str [(choose :x)
+                 (select-keys (meta #'choose) [:private :doc :custom])]))"#,
+            "[42 {:private true, :doc \"new\", :custom true}]\n",
+        ),
     ] {
         std::fs::write(root.join("bootstrap/app.cljs"), source).unwrap();
         let build = |native| {
@@ -1998,6 +2007,27 @@ fn wide_js_obj_bootstrap_matches_quickjs_at_every_pool_size() {
             format!(
                 r#"(js-obj [1 2] (touch "discarded" 1) (1 2) (touch "retained" 2) {})"#,
                 pairs(8)
+            ),
+        ),
+        (
+            "equal unordered keys",
+            format!(
+                r#"(js-obj {{:a 1 :b 2}} (touch "discarded" 1) {{:b 2 :a 1}} (touch "map" 2)
+                    #{{1 2}} (touch "discarded" 3) #{{2 1}} (touch "set" 4) {})"#,
+                pairs(9)
+            ),
+        ),
+        (
+            "small native fallback",
+            r#"(js-obj {:a 1 :b 2} (touch "discarded" 1) {:b 2 :a 1} (touch "map" 2))"#.into(),
+        ),
+        (
+            "numeric equality and NaNs",
+            format!(
+                r#"(js-obj 0 (touch "discarded" 1) -0.0 (touch "zero" 2)
+                    1 (touch "discarded" 3) 1.0 (touch "one" 4)
+                    ##NaN (touch "nan1" 5) ##NaN (touch "nan2" 6) {})"#,
+                pairs(9)
             ),
         ),
         (
