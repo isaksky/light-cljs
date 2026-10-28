@@ -2356,3 +2356,19 @@ baseline diagnostics; both all-target checks pass allowing only `deprecated`,
 `-D warnings`. The engine-free all-target attempt stops at the existing
 `unused_enumerate_index` diagnostic at `tests/execution.rs:1772`, matching the
 earlier log and unchanged test source.
+
+The fresh full compiler runs use the pinned ClojureScript checkout and rebuild
+the matching CLI sequentially before each feature variant:
+
+- `LIGHT_CLJS_V8_CACHE=require CARGO_BUILD_JOBS=3 cargo nextest run --locked
+  --no-fail-fast -j 8`: 2,132 pass, one failure, 109 skipped (244.0 s).
+- `CARGO_BUILD_JOBS=3 cargo nextest run --locked --no-default-features
+  --features quickjs --no-fail-fast -j 8`: 2,055 pass, one failure,
+  108 skipped (299.1 s).
+
+Both failures are `playground_crate_checks_for_wasm32`: Cargo reports that
+`playground/crate/Cargo.toml` believes it belongs to the main checkout's
+workspace. The error signature matches the earlier runs, and the test and
+manifest blobs are identical to master `14d74136`. These remain full-suite
+limitations, not passing full suites. Later commits change only this evidence;
+production code and checked test sources remain those at `6df98796`.
