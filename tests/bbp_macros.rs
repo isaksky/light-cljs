@@ -8300,6 +8300,89 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
                 // Equality/count must use its retained cardinality.
                 host.evaluator_options.memory_limit = 64 << 20;
             }
+            // The source reader lowers #queue to an into form. Import actual
+            // queue descriptors too, retaining their source occurrences, so
+            // nonempty queue equality exercises the descriptor adapter.
+            {
+                use light_cljs::{
+                    CollectionKind,
+                    bbp_evaluator::BbpEvaluator,
+                    compiler_data::{
+                        CompilerLiteralKind, Datum, DatumKind, ExpansionOrigin, Form, Name, Origin,
+                        Source,
+                    },
+                    evaluator::{Evaluator, MacroEvaluator},
+                };
+                let vector = |children: Vec<Datum>| {
+                    Datum::new(DatumKind::Collection {
+                        kind: CollectionKind::Vector,
+                        children: children.into(),
+                    })
+                };
+                let queues = vector(
+                    [vec![1], vec![2], vec![]]
+                        .into_iter()
+                        .map(|items| {
+                            Datum::new(DatumKind::CompilerLiteral {
+                                kind: CompilerLiteralKind::Queue,
+                                payload: vector(
+                                    items
+                                        .into_iter()
+                                        .map(|n| Datum::new(DatumKind::Integer(n)))
+                                        .collect(),
+                                ),
+                            })
+                        })
+                        .collect(),
+                );
+                let text = "(probe [#queue [1] #queue [2] #queue []])";
+                let source = Source::new("queues.cljs", text);
+                let call = Form::from_data(
+                    Datum::new(DatumKind::Collection {
+                        kind: CollectionKind::List,
+                        children: vec![
+                            Datum::new(DatumKind::Symbol(Name::new(None, "probe"))),
+                            queues,
+                        ]
+                        .into(),
+                    }),
+                    source.span(0..text.len()).unwrap(),
+                    Origin::Source,
+                );
+                let code = "(fn [form env queues] (= (mapv (fn [q] [(= (seq (array 1)) q) (= q (seq (array 1)))]) queues) [[true true] [false false] [false false]]))";
+                let program = analyze_with_macros(code, &parse(code).unwrap(), &mut host).unwrap();
+                let evaluator: Box<dyn MacroEvaluator> = if native {
+                    Box::new(BbpEvaluator::new(host.evaluator_options.clone()).unwrap())
+                } else {
+                    Box::new(Evaluator::new(host.evaluator_options.clone()).unwrap())
+                };
+                let function = evaluator
+                    .evaluate_unit(&light_cljs::emitter::emit_js_unit(&program))
+                    .unwrap();
+                let environment = Datum::new(DatumKind::Collection {
+                    kind: CollectionKind::Map,
+                    children: Box::new([]),
+                });
+                let result = host
+                    .expand_javascript(
+                        evaluator.as_ref(),
+                        function,
+                        &call,
+                        &environment,
+                        ExpansionOrigin {
+                            macro_name: Name::new(None, "probe"),
+                            call: call.span(),
+                            definition: None,
+                            helpers: vec![],
+                        },
+                    )
+                    .unwrap();
+                assert!(
+                    matches!(result.data().kind(), DatumKind::Boolean(true)),
+                    "native={native}, jobs={jobs}: {result:?}"
+                );
+                evaluator.release(function).unwrap();
+            }
             let mut stats = light_cljs::CompileStats::new();
             let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
                 "app",
