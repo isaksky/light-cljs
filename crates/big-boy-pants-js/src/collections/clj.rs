@@ -1174,6 +1174,37 @@ pub(crate) fn dispatch(heap: &Heap, table: &Value, v: &Value) -> Result<Value> {
     Ok(super::get(heap, table.clone(), Value::String(JsString::from("_")))?.unwrap_or(Value::Null))
 }
 
+/// The common task-local protocol lookup after the caller has checked its
+/// table's version and source frontier. `declared` is a SameValueZero map of
+/// the struct types whose declarations this task has installed. An unknown
+/// struct must return to JavaScript to demand its declaration before resolving
+/// any extension bundles. Host objects likewise keep their property/Promise
+/// resolution there. This leaf reads only persistent maps and native values;
+/// it cannot call user code, allocate adapters, or retain a heap borrow.
+pub(crate) fn protocol_lookup(
+    heap: &Heap,
+    table: &Value,
+    declared: &Value,
+    v: &Value,
+) -> Result<Value> {
+    let Some(key) = dispatch_key(heap, v) else {
+        return Ok(Value::Undefined);
+    };
+    let is_struct = matches!(key, Value::Object(_));
+    if is_struct && super::get(heap, declared.clone(), key.clone())?.is_none() {
+        return Ok(Value::Undefined);
+    }
+    if let Some(found) = super::get(heap, table.clone(), key)? {
+        return Ok(found);
+    }
+    if is_struct
+        && let Some(found) = super::get(heap, table.clone(), Value::String("object".into()))?
+    {
+        return Ok(found);
+    }
+    Ok(super::get(heap, table.clone(), Value::String("_".into()))?.unwrap_or(Value::Null))
+}
+
 /// `meta`: a form's metadata map, or `nil`.
 pub(crate) fn meta(heap: &Heap, v: &Value) -> Value {
     form::meta(heap, &form::unwrap(heap, v.clone())).unwrap_or(Value::Null)

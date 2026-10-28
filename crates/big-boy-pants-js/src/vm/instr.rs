@@ -1524,11 +1524,13 @@ pub enum FormOp {
     CompilerLiteral = 74,
     /// descriptor → payload.
     LiteralPayload = 75,
+    /// table declared-types v → implementation, null, or undefined for slow resolution.
+    CljProtocolLookup = 76,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 76] = [
+    pub const ALL: [FormOp; 77] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1605,6 +1607,7 @@ impl FormOp {
         FormOp::AtomAux,
         FormOp::CompilerLiteral,
         FormOp::LiteralPayload,
+        FormOp::CljProtocolLookup,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1685,6 +1688,7 @@ impl FormOp {
             | FormOp::CljRangeCons
             | FormOp::CljSymbolNs => 2,
             FormOp::Get
+            | FormOp::CljProtocolLookup
             | FormOp::Assoc
             | FormOp::CljNthOr
             | FormOp::CljGet
@@ -1773,6 +1777,7 @@ impl FormOp {
             FormOp::ArrayMap => "formArrayMap",
             FormOp::CljInvoke => "cljInvoke",
             FormOp::AtomAux => "atomAux",
+            FormOp::CljProtocolLookup => "cljProtocolLookup",
         }
     }
 }

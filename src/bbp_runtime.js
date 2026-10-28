@@ -9,6 +9,9 @@
 // declaration bundle's, and code run outside a bundle extends at order 0.
 const decl = (() => {
   const tables = new Map(), extensions = new Map(), views = new Map(), frontiers = [];
+  // Native lookup can resolve installed structs without repeating JavaScript
+  // declaration probes. This map belongs to the task, just like views/tables.
+  let declared = __rt.map();
   let order = 0, frontier = Infinity, version = 0;
   const table = (key, protocol) => {
     let t = tables.get(key);
@@ -109,6 +112,12 @@ const decl = (() => {
     return true;
   };
   const resolve = (t, x) => {
+    if (t.version === version && t.frontier === frontier) {
+      const m = __rt.cljProtocolLookup(t.map, declared, x);
+      if (m !== undefined) return m;
+    }
+    // Demand an unknown type before building the protocol's pending bundles:
+    // declaration effects, errors and dependency waits keep their order.
     declare(x);
     if (t.version !== version || t.frontier !== frontier) build(t);
     const value=t.promise===undefined?null:__rt.formValue(x);
@@ -267,6 +276,7 @@ const decl = (() => {
     // Keep one compiler-munged member per declared field: multiple fields
     // may share a member, and property enumeration may reorder names.
     views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), mutable, record});
+    declared = __rt.assoc(declared, ty, true);
     if (mutable) {
       view.__lightNativeType = ty;
       view.prototype.__lightNativeType = ty;

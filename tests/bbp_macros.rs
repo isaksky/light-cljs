@@ -4895,6 +4895,88 @@ fn protocol_type_and_record_macros_match_the_legacy_compiler_and_run() {
     }
 }
 
+#[test]
+fn native_protocol_lookup_keeps_bindings_call_order_and_frontiers_at_all_pool_sizes() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-protocol-lookup");
+    for (source, expected) in [
+        (
+            r#"(defprotocol P (p [x])) (deftype T [n] P (p [_] n))
+               (defmacro probe []
+                 (let [x (T. 7) before [(p x) (p x)]
+                       bound (with-redefs [p (fn [_] :bound)] (p x))
+                       restored (p x) seen (js/Array.)
+                       failure (with-redefs [p nil]
+                                 (try (p (do (.push seen "operand") x))
+                                   (catch :default e (.-name e))))]
+                   [before bound restored failure (vec seen)]))
+               (js/console.log (pr-str (probe)))"#,
+            "[[7 7] :bound 7 \"TypeError\" []]\n",
+        ),
+        (
+            r#"(defprotocol P (p [x])) (deftype T [n] P (p [_] n))
+               (defmacro probe []
+                 (let [x (T. 7) warm [(p x) (p x)] seen (js/Array.)]
+                   (js/Object.defineProperty p "call"
+                     (js* "({configurable: true, get() { ~{}.push('get'); return Function.prototype.call; }})" seen))
+                   (let [result (p (do (.push seen "arg")
+                                    (js/Object.defineProperty p "call"
+                                      (js* "({configurable: true, value: function(_, x) { return 99; }})"))
+                                    x))]
+                     [warm result (vec seen) (p x)])))
+               (js/console.log (pr-str (probe)))"#,
+            "[[7 7] 7 [\"get\" \"arg\"] 99]\n",
+        ),
+        (HELPER_FRONTIER, "[[1 10] [2 10] 2 10]\n"),
+        (
+            r#"(defprotocol P (p [x]))
+               (deftype T []) (deftype U [] P (p [_] :own))
+               (extend-protocol P object (p [_] :object) default (p [_] :default))
+               (defn install [] (extend-type T P (p [_] :overlay)))
+               (defmacro probe []
+                 (let [x (T.) y (U.) saved p
+                       before [(p x) (p x) (p y) (p y) (p 1) (p 1)]]
+                   (install)
+                   [before (saved x) (saved x) (p y) (p 1) (satisfies? P x)]))
+               (js/console.log (pr-str (probe)))"#,
+            "[[:object :object :own :own :default :default] :overlay :overlay :own :default true]\n",
+        ),
+    ] {
+        std::fs::write(root.join("app.cljs"), format!("(ns app) {source}")).unwrap();
+        let mut reference = None;
+        for jobs in [1, 2, 4, 8] {
+            let build = |native| {
+                let mut host = MacroHost::new();
+                if native {
+                    host.use_native_macros();
+                }
+                let (program, _) = analyze_namespace_entry_recorded(
+                    "app",
+                    &[root.path().to_path_buf()],
+                    &mut host,
+                    Default::default(),
+                    &mut Vec::new(),
+                    EntryRecorders {
+                        slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|e| panic!("jobs {jobs}, native {native}: {e}"));
+                emit_js(&program)
+            };
+            let native = build(true);
+            assert_eq!(program_output(&native), expected, "jobs {jobs}");
+            if let Some(reference) = &reference {
+                assert_eq!(&native, reference, "jobs {jobs}");
+            } else {
+                reference = Some(native.clone());
+            }
+            #[cfg(feature = "quickjs")]
+            assert_eq!(native, build(false), "QuickJS jobs {jobs}");
+        }
+    }
+}
+
 /// The matrix covers direct, aliased and apply calls at every pool size.
 /// Cold helpers inside the methods force saved-VM dependency waits.
 #[test]

@@ -1887,6 +1887,42 @@ fn opaque_object_identity_is_heap_and_generation_scoped_without_rooting() {
     });
 }
 
+#[test]
+fn protocol_lookup_requires_declared_types_and_keeps_host_resolution_outside_the_leaf() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function f() {
+          const R = __rt.structType('ns/R', __rt.formVector(), true);
+          const T = __rt.structType('ns/T', __rt.formVector(), false);
+          const sameName = __rt.structType('ns/T', __rt.formVector(), false);
+          const r = __rt.structNew(R), t = __rt.structNew(T);
+          let declared = __rt.assoc(__rt.assoc(__rt.map(), R, true), T, true);
+          let table = __rt.assoc(__rt.assoc(__rt.map(), R, 'record'), 'object', 'object');
+          table = __rt.assoc(__rt.assoc(table, '_', 'default'), 'number', 'number');
+          const check = (ok, what) => { if (!ok) throw new Error(what); };
+          check(__rt.cljProtocolLookup(table, declared, r) === 'record', 'exact type');
+          check(__rt.cljProtocolLookup(table, declared, t) === 'object', 'struct object before default');
+          check(__rt.cljProtocolLookup(table, declared, 2) === 'number', 'primitive exact');
+          check(__rt.cljProtocolLookup(table, declared, 's') === 'default', 'primitive ignores object');
+          check(__rt.cljProtocolLookup(table, declared, __rt.structNew(sameName)) === undefined, 'type identity');
+          check(__rt.cljProtocolLookup(table, __rt.map(), r) === undefined, 'declaration before exact entry');
+          const host = { get __lightNativeType() { throw new Error('host getter'); } };
+          check(__rt.cljProtocolLookup(table, declared, host) === undefined, 'host slow path');
+          check(__rt.cljProtocolLookup(table, declared, Promise.resolve(1)) === undefined, 'Promise slow path');
+          table = __rt.dissoc(table, 'object');
+          check(__rt.cljProtocolLookup(table, declared, t) === 'default', 'struct default');
+          table = __rt.dissoc(table, '_');
+          check(__rt.cljProtocolLookup(table, declared, t) === null, 'missing struct');
+          check(__rt.cljProtocolLookup(table, declared, null) === null, 'missing primitive');
+          check(__rt.cljProtocolLookup(__rt.assoc(table, 'null', 'nil'), declared, undefined) === 'nil', 'nullish key');
+          return true;
+        }"#,
+        &[],
+    );
+    assert!(matches!(result.view(), ValueView::Bool(true)));
+}
+
 /// Records, deftype instances and protocol dispatch tables
 /// (light-cljs-478): struct operations from JavaScript, publication of a
 /// struct with immutable fields (and rejection of one holding a JavaScript

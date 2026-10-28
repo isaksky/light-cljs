@@ -140,6 +140,7 @@
 //! | `structTypeOf(v)` | `form_op` | a struct's type, or `null` | – |
 //! | `recordFromMap(type, m)` | `form_op` | `map->R`: fields from `m`'s field keywords, the rest as extension entries | `WrongType` |
 //! | `cljDispatch(table, v)` | `form_op` | protocol dispatch: `v`'s implementation in `table`, its default, `null`, or `undefined` for a JavaScript object | `WrongType` |
+//! | `cljProtocolLookup(table, declared, v)` | `form_op` | protocol implementation with struct/object/default precedence; `undefined` for undeclared structs or host objects, for task-local slow resolution | `WrongType` |
 //!
 //! Sets are the fifth collection kind: `formCount`, `formGet` (the stored
 //! member), `formConj` (absent members only), `formWithMeta`,
@@ -544,6 +545,7 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::CljSymbol => Some(clj::symbol(heap, &a(0))?),
         FormOp::CljSymbolNs => Some(clj::symbol_ns(heap, &a(0), &a(1))?),
         FormOp::CljDispatch => Some(clj::dispatch(heap, &a(0), &a(1))?),
+        FormOp::CljProtocolLookup => Some(clj::protocol_lookup(heap, &a(0), &a(1), &a(2))?),
         FormOp::CljIsAtom => Some(Value::Bool(atom::is_atom(heap, &a(0)))),
         FormOp::LazySeq => Some(clj::lazy_seq(heap, &a(0))?),
         FormOp::CljRealized => Some(clj::realized(heap, &a(0))?),
@@ -693,6 +695,7 @@ fn strict_form_op(
         | FormOp::CljKeywordNs
         | FormOp::CljSymbol
         | FormOp::CljDispatch
+        | FormOp::CljProtocolLookup
         | FormOp::CljIsAtom
         | FormOp::LazySeq
         | FormOp::CljRealized
