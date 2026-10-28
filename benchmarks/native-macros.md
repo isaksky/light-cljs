@@ -2101,3 +2101,180 @@ variants are unchanged. Their full runs retain 2,132/2,055 passes and one
 full-suite pass. The strict default and engine-free library/binary checks pass;
 the engine-free all-target limitation remains the 623 diagnostics documented
 above. Fresh native/QuickJS and engine validation covers the affected paths.
+
+## Bounded native call preparation and live root reads (light-cljs-550), October 28, 2026
+
+The baseline is `b3ef562c`; production after source is `b1e94345`. Fixed calls
+with one or two operands now classify callable forms in `cljCallable` and read
+the actual `.call` member in `cljCallMember`. Getters and Proxies enter the
+existing saved property frames before operand evaluation. The enclosing frame
+retains the callee, method and operands across waits. Multimethods use one
+shared entry per unit. Ordinary fixed calls allocate no adapter closure or
+argument array. Zero-operand and wider calls retain their existing adapter.
+
+`cljReadRoot` checks the consuming task's live overlay Map and root descriptor
+on every read. Bound reads retain the original Proxy's invariant checks. For
+an unbound root, the exact compiler-installed getter of a ready declaration
+bundle can read the live product property directly, retaining its captured
+name and the product getter's receiver. Replaced descriptors, ordinary
+getters, pending bundles, exotic bookkeeping and a replaced public registry
+retain ordinary property execution. No dynamic root value is cached.
+
+### Interpreted attribution
+
+Temporary counters count executed bytecode instructions, including primitives
+executed through fusions, and exclude native continuation steps. These totals
+therefore differ from the earlier 515 counters that included native steps.
+The same convention is used for both fresh diagnostic binaries below. Source
+spans isolate preparation between callee evaluation and operand evaluation;
+callee and operand evaluation themselves are excluded. This measures the
+preparation inside the caller separately from its entire macro body. Four
+unchanged `churn` calls execute:
+
+| Bytecode region | before 1,600 | after 1,600 | before 6,400 | after 6,400 |
+| --- | ---: | ---: | ---: | ---: |
+| Fixed-call preparation spans, all callers | 844,800 | 193,600 | 3,379,200 | 774,400 |
+| Member helper | 208,000 | 0 | 832,000 | 0 |
+| Root Proxy getter | 480,000 | 0 | 1,920,000 | 0 |
+| Bundle-product getter | 288,000 | 36 | 1,152,000 | 36 |
+| Bundle `force` | 224,498 | 526 | 896,498 | 526 |
+| Entire macro body | 1,889,780 | 1,305,772 | 7,558,580 | 5,222,572 |
+| Total bytecode | 5,181,116 | 3,321,458 | 20,017,916 | 12,575,858 |
+
+The macro-body row includes some preparation spans; those rows must not be
+added together. Preparation falls from 48 to 11 bytecodes per selected call.
+The core callback's 411,200/1,644,800, `resolve`'s 307,776/1,229,376 and
+`coreLookup`'s 216,170/864,170 bytecodes are unchanged at 1,600/6,400.
+Both diagnostic binaries produce identical Node output at both sizes. Counter
+instrumentation is removed from the committed sources and is absent from
+every latency, sampling and generated-project binary.
+
+### Fresh release pairs
+
+The host is macOS 15.7.3 arm64, Apple M3 Ultra (Virtual), 24 logical CPUs and
+32 GiB RAM. Locked builds use Homebrew Rust/Cargo 1.99.1, Node 26.12.1,
+Babashka 1.12.218, three build jobs, thin LTO and one codegen unit. Native
+builds use `--no-default-features --features bbp-macros`; default V8 builds use
+`LIGHT_CLJS_V8_CACHE=require`. The engine package is cleaned with
+`cargo clean --release -p big-boy-pants-js` between release variants and
+instrumented/production trees. SHA-256:
+
+| Binary | SHA-256 |
+| --- | --- |
+| before native | `8eedf282acad442d995feedc79dbc555f95472547aed26c7cff5671ee0320ac6` |
+| before default V8 | `f3df7aebe6e13249a1fd1764054dcf609acab4da73c13cdb9f548814ca3cc334` |
+| after native | `687975f7b544f7f3bbe7df54dbb8d0d1a0883e26404d8270a4ccdeb1a5e5f480` |
+| after default V8 | `ecb9a7bef429cf93c12859650a4ae0c794eaeff940ca9cd63f3c5dc9e032a626` |
+
+```sh
+bb benchmarks/native-macros-k.bb target/550-final-protocol \
+  --workload protocol --runs 9 --n 0,100,400,1600,6400 \
+  v8=target/550-v8-after v8-before=target/550-v8-before \
+  before=target/550-native-before native=target/550-native-after
+```
+
+The unchanged harness discards one warmup per binary/size, alternates backend
+order and checks identical Node output for every fresh jobs-1/no-cache process.
+Analysis median [min–max], ms; both k columns use the fresh after V8 control:
+
+| n | V8 after | native before | native after | k before | k after |
+| ---: | --- | --- | --- | ---: | ---: |
+| 0 | 24.3 [23.2–26.3] | 43.9 [43.1–47.6] | 43.6 [42.9–45.8] | – | – |
+| 100 | 27.6 [27.2–30.6] | 65.3 [64.6–71.3] | 61.6 [60.3–68.1] | 6.5 | 5.5 |
+| 400 | 31.1 [30.5–32.4] | 91.0 [89.2–95.6] | 77.3 [75.1–80.4] | 6.9 | 5.0 |
+| 1,600 | 39.9 [39.1–42.5] | 195.7 [191.7–200.2] | 136.9 [135.7–143.3] | 9.7 | 6.0 |
+| 6,400 | 64.9 [64.3–68.2] | 607.2 [599.8–618.9] | 384.0 [374.6–408.9] | 13.9 | 8.4 |
+
+The same-source before V8 control has medians 24.2/27.8/31.2/40.1/65.1 ms.
+Incremental native analysis falls about 16/28/39/40% at the four nonzero
+sizes. **The k <= ~4 target remains missed, including through n=1,600.**
+No local build or suite overlaps timing, and process snapshots show no active
+peer build/test/compiler. Load (1/5/15 minutes) is
+2.30/3.79/7.37 → 2.76/3.72/7.20.
+
+### Native CPU sampling
+
+Serial `/usr/bin/sample PID 3 1 -file FILE` runs use 256 calls at n=1,600
+and 64 calls at n=6,400. Each before/after pair has identical Node output.
+Main-thread sample totals are 2,185/2,213 before/after at n=1,600 and
+2,219/2,218 at n=6,400. Selected collapsed top-of-stack counts:
+
+| Frame | before 1,600 | after 1,600 | before 6,400 | after 6,400 |
+| --- | ---: | ---: | ---: | ---: |
+| `execute_budgeted` | 546 | 518 | 581 | 545 |
+| `Fault` drop glue | 117 | 105 | 134 | 135 |
+| `Value` slice drop glue | 52 | 44 | 80 | 51 |
+| SipHash `write` | 79 | 105 | 93 | 92 |
+| `lookup_cursor` | 49 | 79 | 54 | 78 |
+| Heap `Directory::slot` | 46 | 61 | 58 | 70 |
+| Dispatch `form_step` | 12 | 62 | 19 | 48 |
+| `enter_constructor` | 38 | 37 | 29 | 45 |
+
+These are sample distributions, not operation timings: the faster binary
+executes more work within three seconds. Interpreter dispatch, hashing,
+ordinary property walks, heap access and value/error handling remain visible.
+No local build/test overlaps sampling; process snapshots show no active peer
+build/test/compiler. Launch loads range over 2.69–2.87 / 3.63–3.72 /
+7.06–7.20 (1/5/15 minutes).
+
+### Default V8 generated-200k guard
+
+The existing seed-42 generator creates the same 200k project. Three paired
+rounds alternate before/after order and use
+`/usr/bin/time -lp BINARY release bench --no-cache --jobs 1 --stats`.
+Wall medians [range] are **7.01 [6.98–7.08] s before and
+6.97 [6.97–7.06] s after**; user CPU medians are 7.12 and 7.11 s.
+There is no slowdown. The independent Babashka oracle and all six applications
+print `484264`; every main module retains SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+No local build/test overlaps these timings, and no active peer build/test/compiler
+appears in the process snapshot. Load is
+2.29/3.32/6.65 → 1.97/3.09/6.39.
+
+### Validation and final assessment
+
+All checks cover the production code at `b1e94345`. The final Proxy-invariant
+fix affects only the optional engine and its tests; the earlier fresh full V8
+and QuickJS-only runs have identical active compiler/dependency inputs.
+
+- `LIGHT_CLJS_STRESS_SEEDS=12 CARGO_BUILD_JOBS=3 cargo test --locked
+  --no-default-features --features bbp-macros --test bbp_macros --test
+  bbp_reader --test bbp_proxy_has -- --test-threads=3` passes all 127 tests:
+  113 macros, 12 readers and two proxies.
+- The combined `bbp-macros,quickjs` run with `--lib --test bbp_macros --test
+  bbp_reader --test bbp_proxy_has --test compiler_cache`, one stress seed and
+  the same build/thread limits passes 498 tests: 355 library (one existing
+  ignored), 115 macros, 12 readers, two proxies and 14 cache tests.
+  `PROTOCOL_FIXTURES` and all existing cross-QuickJS output assertions remain
+  unchanged. The protocol and added preparation/root matrices pass at jobs
+  1/2/4/8, including 515's warm Promise-precedence rows, cold helper demand,
+  binding/replacement, custom `.call` reads, failed callee ordering, lazy demand,
+  declaration frontiers, receiver/recur and metadata null receivers.
+- Fresh engine `cargo test --locked -p big-boy-pants-js --all-targets --
+  --test-threads=3` passes 2,170 tests; `--doc` passes seven doctests.
+  New tests use one-instruction budgets, GC at yields/waits and initialized
+  64 KiB workers. They also cover replaced registries/getters, copied product
+  getters, product accessor receivers and bound non-configurable properties.
+- Full default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, pinned ClojureScript
+  source link, `--no-fail-fast -j 8`) passes 2,132 tests with one failure.
+  QuickJS-only nextest passes 2,055 with the same failure:
+  `playground_crate_checks_for_wasm32`, whose nested manifest is associated
+  with the main checkout's workspace. Its exact error signature and unchanged
+  manifest/test match the documented baseline. These are not full-suite passes.
+- Compiler/engine formatting and strict default V8, QuickJS-only and
+  engine-free library/binary Clippy pass. Strict native/engine Clippy retains
+  eight library/nine engine-test baseline diagnostics. Both all-target checks
+  pass allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+  `clippy::byte_char_slices` after `-D warnings`, with no source suppressions.
+  Engine-free all-target strict Clippy retains 623 diagnostics and six failed
+  target summaries in unsupported engine-dependent tests/benches/examples.
+
+At n=1,600 the remaining incremental native time would need to fall by another
+third to reach k=4. The unchanged resolver/callback counts and CPU samples
+still show substantial interpretation, property/hash lookup and value/frame
+handling. A larger representation change could carry the normalized callee,
+actual method and call kind in one task-owned call reference, and represent
+compiler roots as guarded native cells. That would need its own evidence;
+this work does not demonstrate the numerical target. This is the requested
+last attempt in the 501 → 515 → 550 chain, and no further overhead follow-up
+pellet is created.
