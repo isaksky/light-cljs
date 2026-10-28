@@ -1020,9 +1020,9 @@ map construction, metadata and selector destructuring) and `simple-benchmark`
 (option maps and legacy `pr-str` of arbitrary forms). These require more than
 the direct form builders added here. The existing fallback boundaries also
 remain: unscoped text entry points, malformed calls, bridge/depth limits and
-valid calls the Rust path deliberately declines, such as large `js-obj` maps
-or `defmulti` metadata merges. On the native backend a declined call still
-fails explicitly through the empty bootstrap table. Expanding a wrapper such
+valid calls the Rust path deliberately declines, such as `defmulti` metadata
+merges. The native bootstrap now handles declined `js-obj` calls as described
+below; other declined calls still fail explicitly. Expanding a wrapper such
 as `with-in-str` or `lazy-cat` does not add runtime support for operations its
 body calls.
 

@@ -1036,6 +1036,29 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
+        self.expand_javascript_arguments::<true>(evaluator, function, call, environment, origin)
+    }
+    /// Native bootstrap builders consume the rooted &form directly. Do not
+    /// also spread its operands into a call frame with a bounded VM stack.
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn expand_form_javascript(
+        &mut self,
+        evaluator: &dyn crate::evaluator::MacroEvaluator,
+        function: crate::evaluator::ValueId,
+        call: &Form,
+        environment: &crate::compiler_data::Datum,
+        origin: crate::compiler_data::ExpansionOrigin,
+    ) -> Result<Form, String> {
+        self.expand_javascript_arguments::<false>(evaluator, function, call, environment, origin)
+    }
+    fn expand_javascript_arguments<const ARGUMENTS: bool>(
+        &mut self,
+        evaluator: &dyn crate::evaluator::MacroEvaluator,
+        function: crate::evaluator::ValueId,
+        call: &Form,
+        environment: &crate::compiler_data::Datum,
+        origin: crate::compiler_data::ExpansionOrigin,
+    ) -> Result<Form, String> {
         let native_before = evaluator.native_bridge_stats();
         if self.engine.expansions.get() >= self.limits.expansions {
             return Err("compiler macro expansion limit exceeded".into());
@@ -1076,7 +1099,9 @@ impl MacroHost {
             let expanded = (|| {
                 args.push(evaluator.import_macro_form(call, limits)?);
                 args.push(evaluator.import_environment(environment, limits)?);
-                args.extend(evaluator.macro_arguments(args[0], call, limits)?);
+                if ARGUMENTS {
+                    args.extend(evaluator.macro_arguments(args[0], call, limits)?);
+                }
                 let value = evaluator.call(function, &args)?;
                 result = Some(value);
                 evaluator.export_form(value, call, origin.clone(), limits)

@@ -20,6 +20,8 @@
 //! and what a capture records of them stay what the engine gives, and a
 //! unit whose only macros expand here needs no engine
 //! ([`native_expansion`], which the check of macro-free units walks).
+//! The native backend supplies its own rooted-form `js-obj` bootstrap builder
+//! for declined calls; the small Rust builder and legacy fallback stay unchanged.
 use crate::CollectionKind;
 use crate::compiler_data::{DataBuilder, Datum, DatumKind, Name};
 
@@ -2211,6 +2213,45 @@ mod tests {
             "(js-obj \"({})\" \"({~{}:~{}})\" x 1)",
             "~(js-obj \\a 1)",
         ]);
+    }
+
+    #[cfg(all(feature = "bbp-macros", light_quickjs))]
+    #[test]
+    fn wide_js_obj_bootstrap_preserves_forms_names_and_provenance() {
+        let mut legacy = MacroHost::new();
+        let mut native = MacroHost::new();
+        native.use_native_macros();
+        let environment = C.map(&[]).unwrap();
+        for source in [
+            r#"(js-obj ^:first k ^:discarded [0] "a" ^:a [1] "b" [2] "c" [3] "d" [4] "e" [5] "f" [6] "g" [7] "h" [8] ^:last k ^:kept [9])"#,
+            r#"(js-obj ^:first [1 2] :discarded "a" 1 "b" 2 "c" 3 "d" 4 "e" 5 "f" 6 "g" 7 "h" 8 ^:last (1 2) :kept)"#,
+            r#"(js-obj (str "key") ^:value [0] :keyword 1 nil 2 false 3 1 4 1.0 5 "Aa" 6 "BB" 7 "\uD800" 8 "😀" 9)"#,
+        ] {
+            let text = Source::new("wide-js-obj.cljs", source);
+            let call = legacy.read_compiler_form(&text).unwrap().unwrap();
+            let expand = |host: &mut MacroHost| {
+                let _names = crate::generated_names::enter_namespace(7);
+                host.expand_core_javascript("js-obj", &call, &environment, None)
+                    .unwrap()
+            };
+            let expected = expand(&mut legacy);
+            let actual = expand(&mut native);
+            assert!(actual.data().value_eq(&expected.data()), "{source}");
+            // Native occurrences retain the first stored key exactly. The
+            // legacy bridge instead gives repeated primitive children the
+            // last equal primitive's span, so compare their data above and
+            // check native provenance against the input occurrence itself.
+            let key = &call.children()[1];
+            let mut pending = vec![actual];
+            let reused = loop {
+                let form = pending.pop().expect("first key must survive");
+                if form.data().identity() == key.data().identity() {
+                    break form;
+                }
+                pending.extend(form.children());
+            };
+            assert_eq!(difference(&reused, key, ""), None, "{source}");
+        }
     }
 
     #[test]

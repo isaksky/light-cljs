@@ -429,6 +429,47 @@ const native = (() => {
   const map = a => { let v=__rt.formMap();for(let i=0;i<a.length;i+=2)v=__rt.formAssoc(v,a[i],a[i+1]);return v; };
   const arrayMap = a => __rt.formArrayMap(vector(a));
   const literalMap = a => a.length<=16?arrayMap(a):map(a);
+  // Native bootstrap for the calls the small Rust js-obj builder declines.
+  // Match compiler_core_macros.cljs: partition drops an odd trailing form;
+  // small inputs replace whole pairs, wide inputs assoc into an array map
+  // which promotes only after its ninth distinct key. Inspect the legacy
+  // traversal explicitly: ordinary native map seq has its own trie order.
+  const bootstrapJsObj = form => {
+    // Read operands from the rooted form instead of spreading them into a
+    // VM call frame: generated serializer objects can exceed its stack limit.
+    const entries=arr(form).slice(1);
+    let pairs=[];
+    if(Math.floor(entries.length/2)<=8){
+      for(let i=0;i+1<entries.length;i+=2){
+        const pair=[entries[i],entries[i+1]];
+        let found=false;
+        for(let j=0;j<pairs.length;j++)if(__rt.formEquals(pairs[j][0],pair[0])){pairs[j]=pair;found=true;}
+        if(!found)pairs.push(pair);
+      }
+    }else{
+      let object=arrayMap([]);
+      for(let i=0;i+1<entries.length;i+=2)object=__rt.cljAssoc(object,entries[i],entries[i+1]);
+      pairs=arr(__rt.formPrintItems(object)).map(arr);
+    }
+    const strings=[],symbols=[],expressions=[];
+    for(const pair of pairs){
+      const key=val(pair[0]);
+      if(typeof key==='string')strings.push(pair);
+      else if(__rt.formKind(key)==='symbol')symbols.push(pair);
+      else expressions.push(pair);
+    }
+    const bindings=[],bound=[];
+    for(const pair of expressions){const name=gensym('key');bindings.push(name,pair[0]);bound.push([name,pair[1]]);}
+    const object=gensym('object'),sym=name=>__rt.cljSymbol(name);
+    const initial=[sym('js*'),'({'+strings.map(()=>'~{}:~{}').join(',')+'})'];
+    for(const pair of strings)initial.push(pair[0],pair[1]);
+    bindings.push(object,list(initial));
+    const result=[sym('cljs.core/let'),vector(bindings)];
+    for(const pair of symbols)result.push(list([sym('cljs.core/unchecked-set'),object,pair[0],pair[1]]));
+    for(const pair of bound)result.push(list([sym('cljs.core/unchecked-set'),object,pair[0],pair[1]]));
+    result.push(object);
+    return list(result);
+  };
   const set = a => { let v=__rt.formSet();for(const x of a)v=__rt.formConj(v,x);return v; };
   // A set literal with members that are not constants rejects duplicates.
   // Reader-distinct constants retain every position after lowering.
@@ -1759,6 +1800,7 @@ const native = (() => {
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f,
     compilerForms:{
+      jsObj:bootstrapJsObj,
       jsArray:items=>__rt.formCompilerLiteral('js-array',vector(items)),
       jsObject:pairs=>__rt.formCompilerLiteral('js-object',constantMap(literalObjectPairs(pairs))),
       withMeta:(value,meta)=>__rt.cljWithMeta(value,meta),

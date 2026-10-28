@@ -392,6 +392,11 @@ impl Bridge {
         data: &Datum,
         limits: ConversionLimits,
     ) -> Result<Local<'s>, EvalError> {
+        // Bootstrap functions with an unused &env receive nil. Keep the last
+        // real map envelope for incremental imports by subsequent source calls.
+        if matches!(data.kind(), D::Nil) {
+            return self.import(s, data, limits.depth, &mut limits.nodes.clone());
+        }
         if let Some(value) = self.cached(s, data)? {
             self.charge(data, limits.depth, &mut limits.nodes.clone())?;
             return Ok(value);

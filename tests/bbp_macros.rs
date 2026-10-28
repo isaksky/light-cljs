@@ -1954,6 +1954,275 @@ fn bootstrap_namespace_macros_match_quickjs() {
 }
 
 #[test]
+fn wide_js_obj_bootstrap_matches_quickjs_at_every_pool_size() {
+    let pairs = |n: usize| {
+        (0..n)
+            .map(|i| format!("\"k{i}\" (touch \"v{i}\" {i})"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    // Each row is expanded in an application returned by a source macro. Its
+    // cold helper also evaluates a wide object with earlier operand effects live.
+    let rows = [
+        ("eight", format!("(js-obj {})", pairs(8))),
+        ("nine", format!("(js-obj {})", pairs(9))),
+        ("serializer", format!("(js-obj {})", pairs(40))),
+        (
+            "duplicate before promotion",
+            format!("(js-obj {} \"k0\" (touch \"last\" 99))", pairs(8)),
+        ),
+        (
+            "duplicate after promotion",
+            format!("(js-obj {} \"k0\" (touch \"last\" 99))", pairs(9)),
+        ),
+        (
+            "computed and symbol keys",
+            r#"(js-obj
+          (touch "computed" "expr") (touch "discarded" 0)
+          "a" (touch "a" 1) dynamic (touch "symbol" 2)
+          :keyword (touch "keyword" 3) 4 (touch "number" 4)
+          nil (touch "nil" 5) false (touch "false" 6)
+          (touch "computed" "expr") (touch "retained" 7)
+          "z" (touch "z" 8))"#
+                .into(),
+        ),
+        (
+            "hash collision",
+            format!(
+                r#"(js-obj "Aa" (touch "Aa" 1) "BB" (touch "BB" 2) {} "Aa" (touch "last" 3))"#,
+                pairs(9)
+            ),
+        ),
+        (
+            "equal sequential keys",
+            format!(
+                r#"(js-obj [1 2] (touch "discarded" 1) (1 2) (touch "retained" 2) {})"#,
+                pairs(8)
+            ),
+        ),
+        (
+            "character and exact strings",
+            format!(
+                r#"(js-obj \a (touch "discarded" 1) "a" (touch "retained" 2) "\uD800" 3 "😀" 4 {})"#,
+                pairs(7)
+            ),
+        ),
+        (
+            "ignored odd operand",
+            format!(
+                r#"(js-obj {} (throw (js/Error. "odd operand evaluated")))"#,
+                pairs(9)
+            ),
+        ),
+        (
+            "nested objects",
+            format!(r#"(js-obj "child" (js-obj {}) {})"#, pairs(9), pairs(9)),
+        ),
+    ];
+    let root = temp_dir::TempDir::new("native-wide-js-obj");
+    std::fs::write(
+        root.join("cold.cljs"),
+        r#"(ns cold)
+        (defn touch [seen label value] (.push seen label) value)
+        (defn wrap [x]
+          (let [seen (js/Array.) before (touch seen "before" nil)
+                object (js-obj (touch seen "key" "computed") (touch seen "value" 9)
+                        "form" x "a" 1 "b" 2 "c" 3 "d" 4 "e" 5 "f" 6 "g" 7 "h" 8)
+                after (touch seen "after" nil)]
+            (if (and (= (vec seen) ["before" "key" "value" "after"])
+                     (identical? x (aget object "form")))
+              (aget object "form") (throw (js/Error. "replayed operands or lost occurrence")))))"#,
+    )
+    .unwrap();
+    let observations = rows
+        .iter()
+        .map(|(label, expression)| {
+            format!(
+                r#"(let [seen (js/Array.) touch (fn [label value] (cold/touch seen label value))
+                 dynamic "symbol" object {expression}]
+             ["{label}" (js/JSON.stringify object) (vec seen)])"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        root.join("values.cljs"),
+        format!("(ns values (:require [cold])) (defn observe [] [{observations}])"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("macros.cljs"),
+        "(ns macros (:require [cold])) (defmacro probe [x] (cold/wrap x))",
+    )
+    .unwrap();
+    for name in ["a", "b"] {
+        std::fs::write(
+            root.join(format!("{name}.cljs")),
+            format!("(ns {name} (:require [macros :refer [probe]] [values])) (def result (probe (values/observe)))"),
+        )
+        .unwrap();
+    }
+    std::fs::write(root.join("app.cljs"), r#"(ns app (:require [a] [b] [values]))
+        (js/console.log (pr-str [(= a/result b/result) (= a/result (values/observe))]))
+        (js/console.log (pr-str a/result))
+        (js/console.log (js/JSON.stringify
+          (js-obj "converted" (clj->js {:items [(js-obj "a" 1 "b" 2 "c" 3 "d" 4 "e" 5 "f" 6 "g" 7 "h" 8 "i" 9)]})
+                  "a" 1 "b" 2 "c" 3 "d" 4 "e" 5 "f" 6 "g" 7 "h" 8)))"#).unwrap();
+    let build = |native, jobs, seed| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut warnings = Vec::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut warnings,
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        (emit_js(&program), warnings)
+    };
+    let reference = build(true, 1, 0);
+    let output = program_output(&reference.0);
+    assert!(output.starts_with("[true true]\n"), "{output}");
+    assert!(!output.contains("discarded"), "{output}");
+    assert!(
+        output.contains(r#"["v0" "v1" "v2" "v3" "v4" "v5" "v6" "v7"]"#),
+        "{output}"
+    );
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        {
+            let legacy = build(false, jobs, 0);
+            assert_eq!(output, program_output(&legacy.0), "legacy, jobs {jobs}");
+            assert_eq!(reference, legacy, "legacy, jobs {jobs}");
+        }
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed),
+                "jobs {jobs}, seed {seed}"
+            );
+        }
+    }
+}
+
+#[test]
+fn very_wide_js_obj_bootstrap_uses_the_rooted_form() {
+    // More arguments than fit on the native VM's default 64 KiB stack. The
+    // bootstrap must consume &form, retaining the same generated-name scope.
+    let width = 8192;
+    let pairs = (0..width)
+        .map(|i| format!("\"k{i}\" {i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let source = format!(
+        r#"(defmacro m [x]
+      (let [object (js-obj {pairs})] [(.-length (js/Object.keys object)) (aget object "k8191") x]))
+      (js/console.log (pr-str (m 42)))"#
+    );
+    let build = |native| {
+        let mut host = MacroHost::new();
+        host.limits.generated_nodes = 2_000_000;
+        host.evaluator_options.memory_limit = 512 * 1024 * 1024;
+        host.evaluator_options.poll_budget = 100_000_000;
+        host.evaluator_options.timeout = std::time::Duration::from_secs(60);
+        if native {
+            host.use_native_macros();
+        }
+        let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host).unwrap();
+        emit_js(&program)
+    };
+    let native = build(true);
+    assert_eq!(program_output(&native), "[8192 8191 42]\n");
+    #[cfg(feature = "quickjs")]
+    assert_eq!(native, build(false));
+}
+
+#[test]
+fn wide_js_obj_bootstrap_errors_keep_key_and_value_locations() {
+    let root = temp_dir::TempDir::new("native-wide-js-obj-errors");
+    let padding = r#""a" 1 "b" 2 "c" 3 "d" 4 "e" 5 "f" 6 "g" 7 "h" 8"#;
+    for (key, value, expected) in [
+        (
+            "(let [bad] bad)",
+            "1",
+            "binding vector requires binding/initializer pairs",
+        ),
+        (
+            r#""key""#,
+            "(let [bad] bad)",
+            "binding vector requires binding/initializer pairs",
+        ),
+        ("#js {1 2}", "1", "invalid built-in tagged literal"),
+        ("#js {:ns/key 2}", "1", "invalid built-in tagged literal"),
+    ] {
+        let source = format!("(ns app)\n(js-obj {padding}\n  {key}\n  {value})");
+        std::fs::write(root.join("app.cljs"), &source).unwrap();
+        let build = |native, jobs| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            light_cljs::compiler::analyze_namespace_entry_recorded(
+                "app",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                light_cljs::compiler::EntryRecorders {
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err()
+            .to_string()
+        };
+        for jobs in [1, 2, 4, 8] {
+            let native = build(true, jobs);
+            assert!(native.contains(expected), "{native}");
+            #[cfg(feature = "quickjs")]
+            assert_eq!(native, build(false, jobs), "{key}, {value}, jobs {jobs}");
+        }
+    }
+}
+
+#[test]
+fn wide_js_obj_bootstrap_obeys_the_aggregate_node_budget() {
+    let call = r#"(js-obj "a" 1 "b" 2 "c" 3 "d" 4 "e" 5 "f" 6 "g" 7 "h" 8 "i" 9)"#;
+    let source = format!(
+        "(do {})",
+        std::iter::repeat_n(call, 16).collect::<Vec<_>>().join(" ")
+    );
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    host.limits.generated_nodes = 250;
+    let message = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("generated-node limit"), "{message}");
+}
+
+#[test]
 fn as_thread_namespace_errors_keep_the_original_step_location() {
     let root = temp_dir::TempDir::new("native-bootstrap-error");
     let source = "(ns app)\n(as-> 1 value\n  (let [x] value))\n";

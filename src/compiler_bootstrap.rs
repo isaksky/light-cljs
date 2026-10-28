@@ -647,6 +647,29 @@ impl MacroHost {
                 self.engine.bootstrap = Some(build(self, true)?);
             }
         }
+        #[cfg(feature = "bbp-macros")]
+        if name == "js-obj" {
+            let frontier = self.engine.extension_frontier();
+            let bootstrap = self.engine.bootstrap.as_mut().unwrap();
+            if bootstrap.evaluator.native_forms() && !bootstrap.functions.contains_key(name) {
+                // Install only on demand. Ordinary native bootstrap primitives
+                // still need no evaluated units; legacy bootstrap is unchanged.
+                let evaluator = bootstrap.evaluator.clone();
+                let _frontier = (frontier != 0)
+                    .then(|| {
+                        crate::compilation_session::FrontierGuard::bootstrap(evaluator.as_ref())
+                    })
+                    .transpose()?;
+                install(
+                    &BootstrapUnit {
+                        source: "rt => rt.mapFromArray(['js-obj', rt.compilerForms.jsObj])".into(),
+                        environment_reads: HashMap::from([("macro-js-obj".into(), false)]),
+                    },
+                    bootstrap,
+                    &["js-obj"],
+                )?;
+            }
+        }
         let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
         if engine.is_none()
             && let Some(session) = self.session_handle()
@@ -710,6 +733,20 @@ impl MacroHost {
         } else {
             env
         };
+        #[cfg(feature = "bbp-macros")]
+        if name == "js-obj" && engine.native_bridge_stats().is_some() {
+            let result = self.expand_form_javascript(
+                engine,
+                declaration.function(engine, &self.engine)?,
+                call,
+                env,
+                origin,
+            );
+            if result.is_err() {
+                self.engine.bootstrap = None;
+            }
+            return result;
+        }
         let result = self.expand_javascript(
             engine,
             declaration.function(engine, &self.engine)?,
