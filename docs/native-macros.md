@@ -265,6 +265,18 @@ above: 215.00 s for `app.main`, 209.39 s for `app.render`, with jobs 1, no cache
 all five absolute read-only roots and every documented macro budget. The next
 boundary remains the existing light-cljs-546.
 
+Rebased onto `ba1bb3bd` at `7981ff45`, both TZ operation matrices still pass.
+The new cached-core-write regression passes with native, V8 and QuickJS, and
+the expanded twelve-seed native selection reports 194 passes and twelve
+bootstrap-oracle failures. All twelve failure names and diagnostics match an
+unmodified `ba1bb3bd` build; these tests require a legacy bootstrap engine.
+With `bbp-macros,quickjs`, all fifteen bootstrap-oracle tests pass. Native,
+default, QuickJS and engine-free library/CLI lint checks retain their results,
+with only the established engine lint categories allowed for native targets.
+Full engine and legacy suite results above are reused: the rebase changes
+native-only paths and tests; engine sources, dependency inputs and the legacy
+emission path are unchanged. Both format checks cover the rebased sources.
+
 ### Key-value reduction (light-cljs-518)
 
 Native `reduce-kv` invokes `(rf accumulator key value)` on the resumable task
