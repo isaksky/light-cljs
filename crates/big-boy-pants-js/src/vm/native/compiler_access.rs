@@ -48,8 +48,12 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
             let (target, readers) = if receiver == proxy {
                 let target = collections::nth(heap, context.clone(), 1)?;
                 let overlays = collections::nth(heap, context.clone(), 2)?;
-                if let Some(value) = map_get(heap, state.diag.task, &overlays, &name)? {
-                    state.push(value);
+                if map_get(heap, state.diag.task, &overlays, &name)?.is_some() {
+                    // Bound values still pass through the original Proxy.
+                    // Its get invariant rejects a different value for a fixed
+                    // target property or an accessor without a getter.
+                    let read = property::read(heap, state.diag.task, &receiver, &key)?;
+                    read_result(state, read, receiver)?;
                     return Ok(true);
                 }
                 (target, Some(collections::nth(heap, context, 3)?))

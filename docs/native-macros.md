@@ -1965,6 +1965,8 @@ getter can read its live product directly; replacing the root/getter or public
 registry retains ordinary property behavior. Product accessors keep their own
 receiver, and no dynamic root value is cached. Pending bundles and ordinary
 getters use the same resumable demand/property path as before.
+Bound reads retain the original Proxy's invariant checks, including fixed data
+properties and non-configurable accessors without getters.
 A dispatch function that captures task-owned JavaScript state fails publication
 explicitly; the constructor failure is shared, so later demands cannot replay
 its effects. `demanded_multimethods_reject_task_owned_dispatch_without_replaying_effects`

@@ -109,6 +109,16 @@ fn root_reads_preserve_overlays_replacements_getters_and_registry_replacement() 
       if(__rt.cljReadRoot(proxy,context,'x')!==7||calls!==1)throw new Error('getter');
       Object.defineProperty(target,'x',{configurable:true,value:8});
       if(__rt.cljReadRoot(proxy,context,'x')!==8)throw new Error('replacement');
+      Object.defineProperty(target,'fixed',{value:7,writable:false,configurable:false});
+      Object.defineProperty(target,'noGetter',{get:undefined,configurable:false});
+      for(const key of ['fixed','noGetter']) {
+        overlays.set(key,8);let failed=false;
+        try{__rt.cljReadRoot(proxy,context,key);}catch(e){failed=e instanceof TypeError;}
+        if(!failed)throw new Error('binding bypassed Proxy invariant');
+      }
+      overlays.set('fixed',7);overlays.set('noGetter',undefined);
+      if(__rt.cljReadRoot(proxy,context,'fixed')!==7||__rt.cljReadRoot(proxy,context,'noGetter')!==undefined)
+        throw new Error('valid fixed-property overlay');
       const other=new Proxy({x:9},{get(t,k,r){calls++;__rt.need(91,1);return Reflect.get(t,k,r);}});
       if(__rt.cljReadRoot(other,context,'x')!==9||calls!==2)throw new Error('registry replacement');
       return true;
