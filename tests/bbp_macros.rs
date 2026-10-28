@@ -8129,20 +8129,27 @@ fn native_raw_callable_collections_match_quickjs() {
             "helpers.cljs",
             r#"(ns helpers (:require [clojure.string :as str]))
           (def events (atom []))
-          (defn cold [x] (swap! events conj x) x)
+          (defn cold [x] (swap! events conj (pr-str x)) x)
           (defrecord Callable [value] IFn (-invoke [this x] (cold [value x])))
+          (defrecord Overloaded [value] IFn (-invoke [this] value) (-invoke [this x] [value x]))
+          (defrecord Variadic [value] IFn
+            (-invoke [this x & xs] [value x (mapv (fn [y] (if (array? y) [:js-array (vec y)] y)) xs)]))
           (defmulti dispatch (fn [x & more] x))
           (defmethod dispatch :ok [x & more] (cold [x (vec more)]))
           (def memo (memoize (fn [x] (cold x))))
-          (defn attempt [f] (try (f) (catch :default e (.-message e))))
+          (def map-call (js* "~{}.call" {}))
+          (defn attempt [f] (try (pr-str (f)) (catch :default e (.-message e))))
           (defn inspect [f xs]
             (let [args (reduce (fn [a x] (js* "~{}.push(~{})" a x) a) (js/Array.) xs)]
-              [(attempt (fn [] (apply f xs)))
-               (attempt (fn [] (js* "~{}.call(null, ...~{})" f args)))
+              [(attempt (fn [] (js* "~{}.call(null, ...~{})" f args)))
+               (attempt (fn [] (apply f xs)))
                (attempt (fn [] (js* "~{}['apply'](null, ~{})" f args)))
+               (attempt (fn [] (js* "~{}.apply(null, ~{})" f xs)))
+               (attempt (fn [] (js* "~{}.apply(null, ~{})" f (apply list xs))))
                (attempt (fn [] (js* "Function.prototype.call.call(~{}.call, ~{}, null, ...~{})" f f args)))
                (try (js* "~{}(...~{})" f args) (catch :default e :not-js-callable))
-               (try (js* "Function.prototype.call.call(~{}, null, ...~{})" f args) (catch :default e :not-js-callable))]))
+               (try (js* "Function.prototype.call.call(~{}, null, ...~{})" f args) (catch :default e :not-js-callable))
+               (attempt (fn [] (js* "~{}.call()" f)))]))
           (defmacro probe []
             (let [inner (with-meta [:same] {:tag true}) m {:nil nil :false false :inner inner}
                   lone (js/String.fromCharCode 55296) utf {lone inner}
@@ -8151,11 +8158,16 @@ fn native_raw_callable_collections_match_quickjs() {
                          [[nil false :ok] [1]] [[nil] [3]] [[1] [0 :ignored :extra]]
                          [(first {:a false}) [1]] [(first {:a false}) [2 :default]]
                          [:k [{:k false}]] [:k [{} :default]] ['k [{'k nil}]] ['k [{} :default]]
-                         [(->Callable :record) [:x]] [dispatch [:ok :tail]] [memo [:memo]] [utf [lone]]]
+                         [(->Callable :record) [:x]] [(->Overloaded :overloaded) []] [(->Overloaded :overloaded) [:x]]
+                         [(->Overloaded :overloaded) [:x :extra]] [(->Variadic :variadic) [:x :a :b]]
+                         [(->Variadic :many) (vec (range 25))]
+                         [dispatch [:ok :tail]] [memo [:memo]] [utf [lone]]]
                   values (mapv (fn [[f args]] (inspect f args)) cases)]
               (list 'quote [values (str/escape "àéx" {"à" "a" "é" "e"})
                             (identical? inner (js* "~{}.call(null, 'inner')" {"inner" inner}))
-                            (meta (js* "~{}.apply(null, [~{}])" utf lone)) @events])))"#,
+                            (meta (js* "~{}.apply(null, [~{}])" utf lone))
+                            (meta (js* "~{}.apply(null, ~{})" utf lone))
+                            (identical? inner (js* "~{}.call(~{}, null, 'inner')" map-call {"inner" inner})) @events])))"#,
         ),
         (
             "a.cljs",

@@ -3349,3 +3349,47 @@ engine Clippy keeps the nine baseline diagnostics). The fix round changes no
 default-build input: three alternating 200k pairs give median wall time
 6.96 s (master) and 6.99 s (branch). Native `app.render` at jobs 1 (13.39 s)
 and 4 (9.10 s) still matches a fresh V8 build, SHA-256 `d352af3a…a8d9a3`.
+
+## Raw JavaScript callable members (light-cljs-558, 2026-10-28)
+
+Native maps, sets, vectors, map entries, keywords, symbols, IFn records and
+multimethods now expose their legacy `.call` and `.apply` behavior to raw
+JavaScript. Member reads enter the task's core resolver through traced native
+continuations, retaining the original collection as the receiver. They may
+suspend while declaring a cold type or helper without replaying the read or
+its arguments. No collection is converted to a JavaScript wrapper, and direct
+JavaScript calls to collection objects still throw, as in QuickJS. Calling
+their `.call` member through `Function.prototype.call` works; calling the
+collection itself through that intrinsic still rejects a non-function.
+
+Adapters retain collection arities and defaults, nil/false results, map-entry
+bounds, exact UTF-16 keys, metadata and nested value identity. IFn entries
+resolve at the consuming task's source frontier. Shared raw member functions
+and lazy callbacks resolve task-owned protocol machinery through the current
+runtime; that machinery is never captured in a published closure. Memoized
+functions retain ordinary JavaScript function call/apply behavior. The existing
+aggregate budget, publication validation and effect lanes remain in force.
+
+The regression matrix compares complete emitted applications with QuickJS at
+jobs 1/2/4/8 under twelve scheduling seeds. It includes the reduced map macro,
+real `clojure.string/escape`, first-class and published members, fixed,
+overloaded and variadic IFn records, cold helper demands, errors and missing
+receiver operands. An engine regression collects during member resolution and
+again during its callback, then resumes on a 64 KiB worker and checks identity
+and once-only resolution.
+
+`app.main` passes the former property-map escape and reaches a different
+native core gap. With the five absolute read-only roots and every documented
+budget, jobs 1 now reports:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/debug/icons_preview.cljs:15:23: macro expansion: while expanding stl/css: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/debug/icons_preview.cljs:15:23: macro app.main.style/css: big-boy-pants-js: TypeError: undefined is not a function; definition /Users/admin/src/light-cljs/research/penpot-light/shims/app/main/style.cljs:42:1 (bytes 416..434)
+```
+
+The CSS shim constructs `xform-css` with one-argument `keep`. Native `keep`
+currently implements only its collection form, producing a lazy sequence where
+`into` expects a transducer. `(into [] (keep identity) [nil false 0 1])` reproduces
+the TypeError in a native macro; V8 expands it to `[false 0 1]`. This separate
+missing transducer service is light-cljs-560, the only new follow-up. Research
+was not changed. `app.main` still has no native output to compare or successful
+native/V8 build timing claim.

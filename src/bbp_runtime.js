@@ -60,7 +60,9 @@ const decl = (() => {
       const entry = object || direct || arity === 0 ? fn : (x, ...args) => fn.call(x, x, ...args);
       methodTable(name, n).entries.push({order, overlay, key, fn: entry});
       if (name === 'IFn/-invoke' && info !== undefined) {
-        info.ifn.set(arity, [fn, variadic]);
+        // Keep the raw receiver ABI in the same source-frontier machinery.
+        methodTable(name, -arity - 1).entries.push({order, overlay, key, fn});
+        info.ifn.set(arity, variadic != null);
       }
       if (!object) continue;
       let arities = objectArities.get(name);
@@ -311,22 +313,26 @@ const decl = (() => {
     extend(ty, specs);
     return mutable ? view : ty;
   };
-  const callable = x => {
+  const ifnMethods = x => {
     declare(x);
-    return views.get(__rt.structTypeOf(x))?.ifn.size > 0;
-  };
-  const invokeIFn = (x, args) => {
-    declare(x);
-    const entries = views.get(__rt.structTypeOf(x))?.ifn;
-    let fixed = null, rest = null, count = 0;
-    for (const [n, spec] of entries ?? []) {
-      if (spec[1] != null) rest = spec[0];
-      else { count++; fixed = spec[0]; }
+    resolve(methodTable('IFn',0),x);
+    const ty = __rt.structTypeOf(x), methods = [];
+    for (const [n, variadic] of views.get(ty)?.ifn ?? []) {
+      const fn = implementation('IFn/-invoke', -n - 1, ty);
+      if (fn !== null) methods.push([n, fn, variadic]);
     }
-    const exact = entries?.get(args.length + 1);
-    const method = rest ? exact?.[0] ?? rest : count === 1 ? fixed : exact?.[0];
+    return methods;
+  };
+  const callable = x => ifnMethods(x).length > 0;
+  const invokeIFn = (x, args) => {
+    let fixed = null, rest = null, exact = null, count = 0;
+    for (const [n, fn, variadic] of ifnMethods(x)) {
+      if (variadic) rest = fn;
+      else { count++; fixed = fn; if (n === args.length + 1) exact = fn; }
+    }
+    const method = rest ? exact ?? rest : count === 1 ? fixed : exact;
     if (method == null) throw new Error('Invalid arity: ' + args.length);
-    const receiver = rest && count > 0 && exact === undefined ? rest : x;
+    const receiver = rest && count > 0 && exact === null ? rest : x;
     return method.call(receiver, receiver, ...args);
   };
   // The struct a struct view, or an object inheriting from one, stands for.
@@ -542,7 +548,8 @@ const native = (() => {
     if (op === 'jsCall' || op === 'jsApply') {
       const value = val(x), kind = __rt.formKind(value);
       if ((kind === 'struct' || kind === 'record') && !multi.is(value) && !decl.callable(value)) return undefined;
-      return op === 'jsCall' ? rawCall : rawApply;
+      return op === 'jsCall' ? rawCalls.get(kind)
+        : (kind === 'struct' || kind === 'record') && !multi.is(value) ? rawIFnApply : rawApply;
     }
     if(op==='cljWithExportedMeta')op='cljWithMeta';
     const record = __rt.formKind(x) === 'record', table = coreTables[op];
@@ -648,21 +655,25 @@ const native = (() => {
     const value=val(f),kind=__rt.formKind(value);
     if(kind==='struct'&&__rt.formName(__rt.structTypeOf(value))==='cljs.core/MultiFn')
       return globalThis.__lightNativeRuntime.core.invokeMulti(value,args);
-    if(kind==='struct'||kind==='record')return decl.invokeIFn(value,args);
+    if(kind==='struct'||kind==='record')return globalThis.__lightNativeRuntime.core.invokeIFn(value,args);
     if(kind!=='vector'&&kind!=='map'&&kind!=='set'&&kind!=='keyword'&&kind!=='symbol')return value.call(null,...args);
     if(kind!=='vector'&&(args.length<1||args.length>2))arity(args.length);
     return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null,args.length);
   };
   // Match legacy collection members, including their ignored receiver operand.
   // These methods capture no task-owned state and retain the native receiver.
-  const rawCall = function(_, ...args) {
+  const rawMember = expected => function(_, ...args) {
+    if (__rt.formKind(__rt.formValue(this)) !== expected) throw new Error('Expected ' + expected);
+    if (arguments.length === 0 && (expected === 'keyword' || expected === 'symbol' || expected === 'map' || expected === 'set'
+        || expected === 'vector' && __rt.cljIsMapEntry(this))) throw new Error('Invalid arity: -1');
     return globalThis.__lightNativeRuntime.core.invoke(this,...args);
   };
-  const rawApply = function(_, args) {
-    const values = Array.from(args), value = __rt.formValue(this), kind = __rt.formKind(value);
-    const ifn = (kind === 'struct' || kind === 'record') && __rt.formName(__rt.structTypeOf(value)) !== 'cljs.core/MultiFn';
+  const rawCalls = new Map(['keyword','symbol','vector','map','set','struct','record'].map(k=>[k,rawMember(k)]));
+  const rawApplyMember = ifn => function(_, args) {
+    const values = globalThis.__lightNativeRuntime.core.nativeApplyArgs(args);
     return this.call(null,...(ifn && values.length > 20 ? [...values.slice(0,20),values.slice(20)] : values));
   };
+  const rawApply = rawApplyMember(false), rawIFnApply = rawApplyMember(true);
   // memoize calls its callback through Clojure apply, whose fixed function
   // receiver is the function itself. Native variadic dispatchers preserve
   // applyTo's null receiver in immutable engine metadata, so they can publish
@@ -1595,6 +1606,13 @@ const native = (() => {
     isFn:x=>typeof val(x)==='function'||__rt.formKind(val(x))==='type'||decl.satisfies('Fn',x),
     isIFn:x=>core.isFn(x)||multi.is(x)||['keyword','symbol','vector','map','set'].includes(__rt.formKind(val(x)))||decl.satisfies('IFn',x),
     invokeMulti:(m,args)=>multi.dispatch(m,args),
+    invokeIFn:(x,args)=>decl.invokeIFn(x,args),
+    nativeApplyArgs:args=>{
+      args=val(args);
+      const kind=__rt.formKind(args);
+      return kind==='vector'||kind==='list'||kind==='cons'||kind==='lazy-seq'||kind==='map'||kind==='set'||kind==='record'
+        ?arr(args):Array.from(args);
+    },
     makeHierarchy:multi.makeHierarchy,getGlobalHierarchy:multi.getGlobalHierarchy,isa:multi.isa,
     parents:(...a)=>multi.relation('parents',...a),ancestors:(...a)=>multi.relation('ancestors',...a),descendants:(...a)=>multi.relation('descendants',...a),
     derive:multi.derive,underive:multi.underive,
@@ -1648,7 +1666,11 @@ const native = (() => {
     pop, popProtocol,
     cons:(x,xs)=>__rt.cljCons(x,xs), concat:(...xs)=>__rt.cljConcatAll(list(xs)),
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),
-    apply:(f,...xs)=>invoke(f,...xs.slice(0,-1),...arr(xs[xs.length-1])),
+    apply:(f,...xs)=>{
+      const args=[...xs.slice(0,-1),...arr(xs[xs.length-1])], kind=__rt.formKind(val(f));
+      return args.length>20 && (kind==='struct'||kind==='record') && !multi.is(f)
+        ? f.apply(null,args) : invoke(f,...args);
+    },
     update:(value,key,f,...args)=>{const old=core.get(value,key);return core.assoc(value,key,invoke(f,old,...args));},
     assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
     dissoc:(m,...ks)=>each((m,k)=>__rt.cljDissoc(m,k),m,ks),

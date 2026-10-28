@@ -2268,6 +2268,50 @@ fn shared_lazy_records_check_retained_receivers_during_realization() {
 }
 
 #[test]
+fn raw_form_members_resume_resolution_and_calls_without_changing_identity() {
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function f() {
+      const m=__rt.formMap('x',false);
+      if(m.call!==undefined)throw new Error('unconfigured native member');
+      let resolutions=0;
+      __rt.cljCoreResolver((op,x)=>{
+        if(op!=='jsCall'||x!==m)throw new Error('member receiver');
+        resolutions++;
+        __rt.need(921,1);
+        return function(_,key) {
+          __rt.need(922,1);
+          return this===m && __rt.formGet(this,key,true)===false;
+        };
+      });
+      const member=m['call'];
+      return member.call(m,null,'x') && resolutions===1;
+    }"#,
+    )
+    .unwrap();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(task.run().unwrap(), RunOutcome::Waiting(_)));
+        rt.collect().unwrap();
+        let request = task.take_producer_requests().pop().unwrap();
+        let ready = rt.root(Primitive::Null);
+        task = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+            .unwrap()
+            .into_runnable()
+            .pop()
+            .unwrap();
+    }
+    let result = thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || complete(task.run().unwrap()))
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
 fn missing_core_protocol_resolves_once_when_record_comparison_realizes_fields() {
     let rt = Runtime::new();
     let code = compile_function(
