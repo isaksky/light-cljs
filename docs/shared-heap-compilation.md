@@ -653,6 +653,71 @@ the same unsupported `__lightCompileUnit`/`__lightBuildService` failures with
 the original catalog implementation; they pass with QuickJS available.
 Formatter checks pass.
 
+### Native concurrent-task storage attribution (October 27, 2026)
+
+light-cljs-508 keeps the ordinary-object catalog design. Specialized wrapper,
+Date, RegExp, iterator and Intl payloads now occupy optional boxed storage;
+the optional property-dictionary header is boxed too. On aarch64 this reduces
+`HeapObject` from 304 to 136 bytes. The former inline ordinary-object payload
+enlarged every function, binding cell and form allocation as well. Payload
+boxes remain charged to the aggregate budget and traced through their owner;
+intrinsic stand-ins preserve the same brands and immutable payloads. There
+is no virtual registry, registration coalescing or change to property semantics.
+
+`--stats` now reports one shared native-runtime snapshot as
+`macro.gc.{collections,live-objects,managed-bytes,peak-managed-bytes,live-bytes,admitted-bytes,byte-limit}`.
+Unlike the indexed per-expansion records, it includes worker tasks whose local
+host records have been dropped. `live-*` describes the last collection;
+`managed-bytes` is the current admission charge, including uncollected garbage.
+Neither is allocator residency or process RSS, and their difference from RSS
+must not be presented as an exact allocator-overhead measurement.
+
+The `concurrent_catalog_task_memory` test isolates root sources on one runtime:
+collect the realm, boot one/eight tasks, drop the seven extra tasks, install
+600/1,200 root registrations in the remaining task, spawn seven producers,
+then drop them and the parent. Collections occur at every boundary. The
+ordinary-object counts return exactly to the one-task counts after dropping
+the producers, and to the realm counts after dropping the parent. This is a
+lifetime regression and a diagnostic fixture, not a timing/RSS gate:
+
+```sh
+CARGO_BUILD_JOBS=3 cargo test --locked --no-default-features \
+  --features bbp-macros --lib concurrent_catalog_task_memory -- --nocapture
+```
+
+Before the layout changes (`a1d5685c`) and after (`5540e100`), collected
+accounted bytes in this fixture are:
+
+| Root source / phase | Before bytes | After bytes |
+| --- | ---: | ---: |
+| Realm only, initially | 1,152,448 | 1,070,032 |
+| One booted task | 3,193,460 | 2,939,852 |
+| Eight booted tasks | 14,578,840 | 13,126,888 |
+| One task, 600 registrations | 9,237,968 | 8,681,456 |
+| Eight tasks, 600 registrations each | 42,535,532 | 39,367,124 |
+| One task, 1,200 registrations | 13,263,480 | 12,404,568 |
+| Eight tasks, 1,200 registrations each | 70,589,124 | 65,707,116 |
+
+Each parked task has one frame, 28 stack values, no native continuation, and
+1,296 shallow saved-state bytes at both registration counts. This excludes
+vector capacity, dependency logs and compiler bookkeeping. Eight booted tasks
+retain 7,088 functions and 376 binding cells; eight 1,200-registration tasks
+retain 16,688 functions and 9,858 plain objects. All object-kind counts are
+unchanged by the layout reduction. Their shallow heap-object storage falls
+from 8,769,184 to 3,923,056 bytes; total collected admission falls 6.9%.
+
+The largest measured live task cost remains ordinary registration state,
+not saved VM frames. Each root has a task-owned `roots` Map entry, a four-field
+initializer slot and a getter on the ordinary root object. Their respective
+conservative backing-store charges are 2,048, 4 × 512 and 512 bytes per root,
+before the getter's captures and heap-object metadata. At eight tasks and
+1,200 roots these three stores alone account for 44,236,800 bytes. These are
+admission charges, not measured malloc sizes. The final realm-only phase
+still retains object-table high-water storage: 5,209,044/6,726,724 accounted
+bytes after the 600/1,200 fixtures, with all task functions and catalog vectors
+collected. Registry population also allocates temporary descriptor objects;
+automatic collection and allocator residency contribute to the transient peak.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
