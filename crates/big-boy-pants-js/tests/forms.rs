@@ -2450,14 +2450,15 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
       const meta=__rt.formMap('kept',true);
       const lazy=__rt.lazySeq(()=>{throw new Error('predicate realized a lazy value');});
       const cons=__rt.cljCons(0,lazy);
+      const uncounted=__rt.formSequence(__rt.cljRangeCons(__rt.formVector(1,2,3),null));
       let big=__rt.formVector();for(let i=0;i<33;i++)big=__rt.cljConj(big,i);
-      return __rt.formVector(list,view,map,string,__rt.cljWithMeta(view,meta),lazy,cons,__rt.cljSeq(big));
+      return __rt.formVector(list,view,map,string,__rt.cljWithMeta(view,meta),lazy,cons,__rt.cljSeq(big),uncounted);
     }"#,
         &[],
     );
     let occurrence = rt.scope(|s| {
         let values = s.local(&made).unwrap();
-        let children = (0..8)
+        let children = (0..9)
             .map(|i| {
                 s.new_occurrence(s.form_nth(values, i).unwrap(), at(4 + i as u32, 2))
                     .unwrap()
@@ -2484,7 +2485,8 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
       if(__rt.cljPeek(__rt.cljCons(1,null))!==1)throw new Error('nil cons is a List');
       const counted=__rt.map('list',true,'empty-list',true,'sequence',true);
       for(const i of [0,1,3,4,7])if(__rt.cljDispatch(counted,at(i))!==true)throw new Error('counted view '+i);
-      for(const x of [m,__rt.cljRest(m),__rt.cljNext(m),__rt.cljWithMeta(m,__rt.formMap())])
+      for(const x of [m,__rt.cljRest(m),__rt.cljNext(m),__rt.cljWithMeta(m,__rt.formMap()),
+                     at(8),__rt.cljRest(at(8)),__rt.cljNext(at(8))])
         if(__rt.cljDispatch(counted,x)!==null)throw new Error('uncounted map view');
       if(__rt.cljSeq(at(6))!==at(6)||__rt.cljSeq(at(7))!==at(7))throw new Error('cons occurrence identity');
       const front=__rt.cljCons(0,meta);

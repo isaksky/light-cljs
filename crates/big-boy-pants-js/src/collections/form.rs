@@ -1876,7 +1876,9 @@ pub(crate) fn cons_sharing(
         kind,
     };
     let mut object = FormObject::new(FormBody::Cons(body), None);
-    object.sequence_view = form_object(heap, source).and_then(|f| f.sequence_view);
+    object.sequence_view = resolve(heap, source.clone())
+        .1
+        .and_then(|(_, f)| f.sequence_view);
     alloc(heap, object, std::slice::from_ref(source))
 }
 

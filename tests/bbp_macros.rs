@@ -8143,6 +8143,8 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
         ICollection (-conj [this _] this) IVector (-assoc-n [this _ _] this)
         IMapEntry (-key [_] :a) (-val [_] 1))
       (defrecord RecordMarker [x] IList)
+      (defrecord SequentialRecord [x] ISequential)
+      (defrecord MutableSequentialRecord [^:mutable x] ISequential)
       (deftype MutableMarker [^:mutable x] IList)
       (extend-type string IList)
       (extend-type List IList)
@@ -8211,9 +8213,16 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
          (range 2) (range 0 1 0.5) (range 0 1 0) (repeat 2 1) (seq "a")])
       (let [seen (atom []) a (array (EquivMarker. 1 seen)) s (seq a) other (list (EquivMarker. 1 seen))]
         [(= s other) (= other s) @seen])
+      (mapv (fn [q] [(= (seq (array 1)) q) (= q (seq (array 1)))])
+        (conj queue-input cljs.core.PersistentQueue.EMPTY))
+      (mapv (fn [r] (let [seen (js/Array.)
+                         a (js* "Object.defineProperty(new Array(1),0,{get(){~{}.push('head');return null;}})" seen)]
+        [(= (seq (array [:x 1])) r) (= r (seq (array [:x 1])))
+         (= (seq a) r) (into [] seen)]))
+        [(SequentialRecord. 1) (MutableSequentialRecord. 1)])
       [(count (DeclaredCounted.)) (count (ExtendedCounted.)) (count (OverlayCounted.))]]"#;
-    std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker PlainMarker PendingMarker DeclaredCounted ExtendedCounted OverlayCounted ExtendedPending PrinterMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker MutableMarker StackMarker EquivMarker load-sequences classify demanded]]))
-      (defmacro probe [input]
+    std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker PlainMarker PendingMarker DeclaredCounted ExtendedCounted OverlayCounted ExtendedPending PrinterMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker SequentialRecord MutableSequentialRecord MutableMarker StackMarker EquivMarker load-sequences classify demanded]]))
+      (defmacro probe [input queue-input]
         (let [seen (atom []) unforced (lazy-seq (swap! seen conj :unexpected) (throw (js/Error. "forced")))
               _ (extend-type OverlayCounted ICounted (-count [_] 1))
               forced (lazy-seq '(1)) _ (first forced)
@@ -8244,7 +8253,7 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
     for name in ["a", "b"] {
         std::fs::write(
             root.path().join(format!("{name}.cljs")),
-            format!("(ns {name} (:require [macros :refer [probe]])) (def result (probe (1 2)))"),
+            format!("(ns {name} (:require [macros :refer [probe]])) (def result (probe (1 2) [#queue [1] #queue [2] #queue []]))"),
         )
         .unwrap();
     }

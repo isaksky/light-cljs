@@ -1071,7 +1071,16 @@ const native = (() => {
   const arraySeq = (array, index) => index >= array.length ? null : copyArraySeq(array,index,null);
   const countedKinds = __rt.map('list',true,'empty-list',true,'sequence',true,'vector',true,'map-entry',true,'map',true,'set',true);
   const equalArraySeq = (a,b) => {
+    // Records compare by their type before any sequential traversal. The
+    // cursor has no record type; left-hand IEquiv dispatch happens earlier.
+    const record = x => __rt.formKind(val(x)) === 'record' || decl.mutableRecord(val(x)) !== null;
+    if (record(a) || record(b)) return false;
     if (!core.isSequential(a) || !core.isSequential(b)) return false;
+    // Queue compiler literals retain a vector payload, including when an
+    // imported source occurrence wraps the descriptor.
+    const sequence = x => __rt.formKind(val(x)) === 'compiler-literal' && __rt.formName(val(x)) === 'queue'
+      ? __rt.formLiteralPayload(val(x)) : x;
+    a = sequence(a); b = sequence(b);
     const counted = x => {
       return arraySeqs.has(x) || __rt.cljDispatch(countedKinds,x)
         || decl.predicate('ICounted',x);
