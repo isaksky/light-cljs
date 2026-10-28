@@ -1467,11 +1467,8 @@ const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
 
 // Fixed calls retain the actual method and receiver in their operand slots.
 // Keep native multimethod recognition out of each call site's syntax tree.
-const NATIVE_CALL_MEMBER: &str = r#"(value => {
-    const type = __rt.structTypeOf(value);
-    if (type !== null && __rt.formName(type) === 'cljs.core/MultiFn')
-        return function(_, ...args) { return globalThis.__lightNativeRuntime.core.invokeMulti(this, args); };
-    return value.call;
+const NATIVE_CALL_MEMBER: &str = r#"(function(_, ...args) {
+    return globalThis.__lightNativeRuntime.core.invokeMulti(this, args);
 })"#;
 
 /// Prepare native collection dispatch or read the legacy `.call` method before
@@ -3450,15 +3447,19 @@ impl<'a> Emitter<'a> {
             );
             self.output.push(']');
         } else if self.demand_roots {
-            self.output
-                .push_str("globalThis[\"__lightCompilerRoots\"][");
+            if self.native_forms {
+                self.output.push_str("__rt.cljReadRoot(globalThis.__lightCompilerRoots, globalThis.__lightCompilerRootContext, ");
+            } else {
+                self.output
+                    .push_str("globalThis[\"__lightCompilerRoots\"][");
+            }
             let global = &self.program.globals[id.0];
             self.string_units(
                 &format!("{}/{}", global.namespace, global.name)
                     .encode_utf16()
                     .collect::<Vec<_>>(),
             );
-            self.output.push(']');
+            self.output.push(if self.native_forms { ')' } else { ']' });
         } else {
             write!(self.output, "g{}", id.0).unwrap();
         }
@@ -7898,33 +7899,16 @@ impl<'a> Emitter<'a> {
             return false;
         };
         let base = operands.live;
-        operands.live += 4 + args.len();
+        operands.live += 3 + args.len();
         operands.declared = operands.declared.max(operands.live);
         write!(self.output, "(operand{base} = ").unwrap();
         self.value(callee);
         write!(
             self.output,
-            ", operand{} = __rt.formValue(operand{base}), operand{} = __rt.formKind(operand{}), ",
+            ", operand{} = __rt.cljCallable(operand{base}), operand{} = operand{} ? null : __rt.cljCallMember(operand{base}, ",
             base + 1,
             base + 2,
             base + 1,
-        )
-        .unwrap();
-        write!(self.output, "operand{} = (", base + 2).unwrap();
-        for (index, kind) in ["vector", "map", "set", "keyword", "symbol"]
-            .iter()
-            .enumerate()
-        {
-            if index > 0 {
-                self.output.push_str(" || ");
-            }
-            write!(self.output, "operand{} === '{kind}'", base + 2).unwrap();
-        }
-        write!(
-            self.output,
-            "), operand{} = operand{} ? null : ",
-            base + 3,
-            base + 2,
         )
         .unwrap();
         let member = *self.native_call_member_temporary.get_or_insert_with(|| {
@@ -7932,34 +7916,33 @@ impl<'a> Emitter<'a> {
             self.native_temporary += 1;
             temporary
         });
-        write!(self.output, "temporary{member}_0(operand{}), ", base + 1).unwrap();
+        write!(self.output, "temporary{member}_0), ").unwrap();
         for (index, &arg) in args.iter().enumerate() {
-            write!(self.output, "operand{} = ", base + 4 + index).unwrap();
+            write!(self.output, "operand{} = ", base + 3 + index).unwrap();
             self.value(arg);
             self.output.push_str(", ");
         }
         write!(
             self.output,
             "operand{} ? __rt.cljInvoke(operand{base}, operand{}, ",
-            base + 2,
-            base + 4,
+            base + 1,
+            base + 3,
         )
         .unwrap();
         if args.len() == 2 {
-            write!(self.output, "operand{}", base + 5).unwrap();
+            write!(self.output, "operand{}", base + 4).unwrap();
         } else {
             self.output.push_str("null");
         }
         write!(
             self.output,
-            ", {}) : __rt.call(operand{}, operand{}, null",
+            ", {}) : __rt.call(__rt.formValue(operand{base}), operand{}, null",
             args.len(),
-            base + 1,
-            base + 3,
+            base + 2,
         )
         .unwrap();
         for index in 0..args.len() {
-            write!(self.output, ", operand{}", base + 4 + index).unwrap();
+            write!(self.output, ", operand{}", base + 3 + index).unwrap();
         }
         self.output.push_str("))");
         self.operands.as_mut().unwrap().live = base;

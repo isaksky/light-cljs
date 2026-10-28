@@ -5546,6 +5546,80 @@ fn native_struct_core_protocol_operation_matrix_matches_legacy() {
 }
 
 #[test]
+fn native_call_preparation_and_live_roots_match_quickjs_at_every_pool_size() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-call-preparation");
+    for (source, expected) in [
+        (
+            r#"(def ^:dynamic target (fn [x] :original))
+               (defn cold [x] (+ x 1))
+               (defmacro probe []
+                 (let [seen (js/Array.)
+                       f (js* "(function(x) { 'use strict'; return this === null ? x : -1; })")]
+                   (js/Object.defineProperty f "call"
+                     (js* "({get() { ~{}.push('get'); return Function.prototype.call; }})" seen))
+                   (let [before [(target 0) (f (do (.push seen "arg") (cold 6)))]
+                         bound (binding [target (fn [x] :bound)] (target 1))
+                         failed (with-redefs [target nil]
+                                  (try (target (.push seen "bad")) (catch :default e :failed)))]
+                     (def target (fn [x] (+ x 1)))
+                     [before bound failed (target 1) (vec seen)])))
+               (js/console.log (pr-str (probe)))"#,
+            "[[:original 7] :bound :failed 2 [\"get\" \"arg\"]]\n",
+        ),
+        (
+            r#"(def ^:dynamic *step* 1)
+               (defn cold [x] (+ x *step*))
+               (defprotocol P (p [x n]))
+               (defprotocol Q :extend-via-metadata true (q [x]))
+               (deftype T [base] P (p [this n] (if (= n 0) base (recur this (dec n)))))
+               (defmacro probe []
+                 (let [f p x (T. 7) a (f x (cold 1))
+                       s (lazy-seq (list (cold 1)))
+                       wrapped (with-meta [1]
+                                 {`q (js* "(function(x) { 'use strict'; return this === null; })")})]
+                   [(binding [*step* 10] (cold 2)) (first s) a (q wrapped)]))
+               (js/console.log (pr-str (probe)))"#,
+            "[12 2 7 true]\n",
+        ),
+        (HELPER_FRONTIER, "[[1 10] [2 10] 2 10]\n"),
+    ] {
+        std::fs::write(root.join("app.cljs"), format!("(ns app) {source}")).unwrap();
+        let mut reference = None;
+        for jobs in [1, 2, 4, 8] {
+            let build = |native| {
+                let mut host = MacroHost::new();
+                if native {
+                    host.use_native_macros();
+                }
+                let (program, _) = analyze_namespace_entry_recorded(
+                    "app",
+                    &[root.path().to_path_buf()],
+                    &mut host,
+                    Default::default(),
+                    &mut Vec::new(),
+                    EntryRecorders {
+                        slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|e| panic!("jobs {jobs}, native {native}: {e}"));
+                emit_js(&program)
+            };
+            let native = build(true);
+            assert_eq!(program_output(&native), expected, "jobs {jobs}");
+            if let Some(reference) = &reference {
+                assert_eq!(&native, reference, "jobs {jobs}");
+            } else {
+                reference = Some(native.clone());
+            }
+            #[cfg(feature = "quickjs")]
+            assert_eq!(native, build(false), "QuickJS jobs {jobs}");
+        }
+    }
+}
+
+#[test]
 fn fixed_native_arithmetic_preserves_coercion_occurrences_and_evaluation_order() {
     for (source, expected) in [
         (

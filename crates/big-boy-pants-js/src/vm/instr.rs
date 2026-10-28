@@ -1532,11 +1532,17 @@ pub enum FormOp {
     InitializerSlotGet = 78,
     /// slot field value → value; writes state/value/defined only.
     InitializerSlotSet = 79,
+    /// v → whether native collection invocation owns this value.
+    CljCallable = 80,
+    /// callee multimethod-entry → the early, live `.call` member.
+    CljCallMember = 81,
+    /// roots context name → a live compiler root, honoring binding overlays.
+    CljReadRoot = 82,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 80] = [
+    pub const ALL: [FormOp; 83] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1617,6 +1623,9 @@ impl FormOp {
         FormOp::InitializerSlot,
         FormOp::InitializerSlotGet,
         FormOp::InitializerSlotSet,
+        FormOp::CljCallable,
+        FormOp::CljCallMember,
+        FormOp::CljReadRoot,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1628,6 +1637,7 @@ impl FormOp {
     pub const fn arity(self) -> usize {
         match self {
             FormOp::Kind
+            | FormOp::CljCallable
             | FormOp::AtomAux
             | FormOp::CljCoreResolver
             | FormOp::LiteralPayload
@@ -1673,6 +1683,7 @@ impl FormOp {
             FormOp::Keyword
             | FormOp::InitializerSlot
             | FormOp::InitializerSlotGet
+            | FormOp::CljCallMember
             | FormOp::CljGet2
             | FormOp::CompilerLiteral
             | FormOp::Symbol
@@ -1700,6 +1711,7 @@ impl FormOp {
             | FormOp::CljSymbolNs => 2,
             FormOp::Get
             | FormOp::InitializerSlotSet
+            | FormOp::CljReadRoot
             | FormOp::Assoc
             | FormOp::CljNthOr
             | FormOp::CljGet
@@ -1715,6 +1727,9 @@ impl FormOp {
             FormOp::InitializerSlot => "initializerSlot",
             FormOp::InitializerSlotGet => "initializerSlotGet",
             FormOp::InitializerSlotSet => "initializerSlotSet",
+            FormOp::CljCallable => "cljCallable",
+            FormOp::CljCallMember => "cljCallMember",
+            FormOp::CljReadRoot => "cljReadRoot",
             FormOp::CljCoreResolver => "cljCoreResolver",
             FormOp::CljGet2 => "cljGet2",
             FormOp::Keyword => "formKeyword",

@@ -228,6 +228,8 @@ mod array_mutate;
 mod array_search;
 mod array_sort;
 mod builtin_leaf;
+mod compiler_access;
+pub(crate) use compiler_access::start as start_compiler_access;
 mod core_protocol;
 pub(crate) use core_protocol::start as start_core_protocol;
 

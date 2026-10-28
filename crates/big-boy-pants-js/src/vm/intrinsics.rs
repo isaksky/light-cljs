@@ -543,6 +543,16 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
             &a(2),
             crate::collections::index_from_value(&a(3))?,
         )?),
+        FormOp::CljCallable => Some(Value::Bool(matches!(
+            form::kind(heap, &form::unwrap(heap, a(0))),
+            Some(
+                form::FormKind::Vector
+                    | form::FormKind::Map
+                    | form::FormKind::Set
+                    | form::FormKind::Keyword
+                    | form::FormKind::Symbol
+            )
+        ))),
         FormOp::CljCount => Some(clj::count(heap, &a(0))?),
         FormOp::CljSeq => Some(clj::seq(heap, &a(0))?),
         FormOp::CljFirst => Some(clj::first(heap, &a(0))?),
@@ -698,6 +708,9 @@ fn strict_form_op(
         | FormOp::CljUnreduced
         | FormOp::CljIsEditable
         | FormOp::CljInvoke
+        | FormOp::CljCallable
+        | FormOp::CljCallMember
+        | FormOp::CljReadRoot
         | FormOp::CljCount
         | FormOp::CljSeq
         | FormOp::CljFirst

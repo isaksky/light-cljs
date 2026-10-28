@@ -1943,11 +1943,13 @@ constructors pass both `fn?` and `ifn?`, matching their JavaScript function
 representation in the legacy runtime. Bundle products record root ownership even
 without a preceding `declare`, so a later ordinary definition can replace them.
 No native-only code was added to the emitted runtime in `src/js_runtime.js`.
-Fixed native calls share one member-lookup helper per unit. It recognizes
-multimethod structs before reading `.call` and returns a consuming-task
-dispatch method; the enclosing frame retains the method, receiver and
-arguments across suspension. Sharing the helper keeps generated call syntax
-shallow without changing engine source or nesting limits. The differential
+Fixed native calls classify callable collections with `cljCallable` and read
+the actual `.call` member with `cljCallMember` before evaluating operands.
+The engine delegates getters and Proxies to its ordinary saved property frames;
+the enclosing frame retains the callee, member and operands across waits.
+Multimethods select one shared consuming-task dispatch method per unit.
+No adapter closure or argument array is created for an ordinary fixed call.
+The differential
 table includes an 81-call generated helper whose method effects run exactly
 once. Constructor-tree flattening also handles replaceable core functions:
 it prepares each callee and method before operand effects, then invokes that
@@ -1957,6 +1959,12 @@ core calls around constructors. Method-function arguments retain consuming-task
 reads even when global core-write tracking makes `-add-method` replaceable.
 Function roots reading dynamic core settings such as
 `*print-length*` also publish, resolving the setting in the consuming task.
+Native compiler-root reads use `cljReadRoot` to check the task's live binding
+overlay and root property on every access. A ready bundle's exact installed
+getter can read its live product directly; replacing the root/getter or public
+registry retains ordinary property behavior. Product accessors keep their own
+receiver, and no dynamic root value is cached. Pending bundles and ordinary
+getters use the same resumable demand/property path as before.
 A dispatch function that captures task-owned JavaScript state fails publication
 explicitly; the constructor failure is shared, so later demands cannot replay
 its effects. `demanded_multimethods_reject_task_owned_dispatch_without_replaying_effects`

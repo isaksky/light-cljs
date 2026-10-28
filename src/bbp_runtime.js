@@ -319,7 +319,7 @@ const decl = (() => {
       // earlier definition's.
       const old = Object.getOwnPropertyDescriptor(globalThis.__lightCompilerRoots, name);
       if (old !== undefined && 'value' in old) continue;
-      globalThis.__lightInstallCompilerProduct(name, () => { force(b); return b.products[name]; });
+      globalThis.__lightInstallCompilerProduct(name, () => { force(b); return b.products[name]; }, b);
     }
     for (const [protocol] of indices) {
       let list = extensions.get(protocol);
@@ -1656,15 +1656,17 @@ const native = (() => {
 })();
 globalThis.__lightNativeRuntime=native;
 const roots=new Map();
+const productReaders=new Map();
 // Private task-owned slots: unit/name/state/value/defined are fields 0..4.
 // Full JS values stay traced; public roots and saved getters remain ordinary.
 // A bundle replaces an unavailable declaration's getter. Remember that it
 // defines the name, retaining the unit record for later ordinary registrations.
-globalThis.__lightInstallCompilerProduct=(name,read)=>{
+globalThis.__lightInstallCompilerProduct=(name,read,bundle)=>{
   const previous=roots.get(name);
   if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);
   else {const slot=__rt.initializerSlot(null,name);__rt.initializerSlotSet(slot,4,true);roots.set(name,slot);}
   Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:read});
+  if(bundle!==undefined)productReaders.set(read,__rt.vector(bundle,name));
 };
 // Each invocation of this runtime belongs to one VM task. Overlay snapshots
 // stay in its saved frames across need/producer waits and context lending;
@@ -1785,10 +1787,14 @@ globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,g
 };
 globalThis.__lightEnterCompilerFrontier=next=>decl.enter(next);
 globalThis.__lightLeaveCompilerFrontier=()=>decl.leave();
-globalThis.__lightCompilerRoots=new Proxy({}, {
+const rootTarget={};
+globalThis.__lightCompilerRoots=new Proxy(rootTarget, {
   get:(target,name,receiver)=>bindingOverlays.has(name)?bindingOverlays.get(name):Reflect.get(target,name,receiver),
   has:(target,name)=>bindingOverlays.has(name)||Reflect.has(target,name),
 });
+// The compiler's bounded read intrinsic checks this live overlay Map and
+// target on every read. Ordinary interop retains the Proxy and its receiver.
+globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoots,rootTarget,bindingOverlays,productReaders);
 const values=new Map();
 globalThis.__lightResult=null;
 globalThis.__lightFailure=null;

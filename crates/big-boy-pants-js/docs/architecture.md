@@ -565,6 +565,19 @@ sequence in the cell; both are traced and checked for publication. Structural
 operations read the built-in sequence and never resolve a protocol. Persistent form comparison and hashing,
 including map keys, set members and stored values, remain structural and never
 call the resolver; protocol and dependency tables also never call it.
+Compiler fixed-call preparation uses `cljCallable(v)` and
+`cljCallMember(v, multimethodEntry)`. The latter unwraps occurrences and either
+selects the shared multimethod entry or starts the ordinary `.call` property
+read. `cljReadRoot(roots, context, name)` reads the task's overlay Map and live
+root descriptor. Its context is a persistent vector of the original Proxy,
+target, overlay Map and compiler-product getter registry, allocated once per
+task; its mutable members retain ordinary task ownership/publication rules.
+Only an exact registered compiler getter for a ready bundle bypasses that
+getter's JavaScript state check. It still reads the bundle's current product
+property and retains the getter's captured name. Modified descriptors, pending
+bundles and exotic bookkeeping retain ordinary property execution. These
+bounded leaves release all heap borrows before handing accessors or Proxies to
+traced property continuations; they never execute JavaScript on the Rust stack.
 Sorted maps, shared seq views of lists, and the compiler `Datum` bridge
 (light-cljs-462) are not part of this surface. The module
 docs carry a runnable example. Tests: `tests/forms.rs`, `collections::form::tests`,

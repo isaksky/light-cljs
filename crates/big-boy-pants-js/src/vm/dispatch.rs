@@ -2528,6 +2528,11 @@ fn form_step(
     instr: Instr,
 ) -> Result<Flow, Fault> {
     if let Instr::FormOp(op) = instr
+        && native::start_compiler_access(state, heap, op)?
+    {
+        return Ok(Flow::Next);
+    }
+    if let Instr::FormOp(op) = instr
         && native::start_core_protocol(state, heap, op)?
     {
         return Ok(Flow::Next);
