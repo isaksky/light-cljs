@@ -1306,6 +1306,93 @@ mod tests {
     }
 
     #[test]
+    fn sorted_comparison_unequal_namespaces_remain_qualified() {
+        let left = "a".repeat(NAMESPACE_STEP_UNITS * 2 + 17);
+        let right = format!("{}b", &left[..left.len() - 1]);
+        let code = compile_function(
+            "function f(key) {globalThis.__lightNativeRuntime={core:{printNamespaceMaps:true}};try {return __rt.formGet(__rt.formSortedMap(__rt.formVector(1,0)),key,null);} catch(e) {return e.message;}}",
+        ).unwrap();
+        for hashed in [false, true] {
+            let rt = Runtime::new();
+            let (key, expected) = rt.scope(|s| {
+                let namespaces = [
+                    JsString::from(left.as_str()),
+                    JsString::from(right.as_str()),
+                ];
+                // Two keys per namespace guarantee a subsequent observation
+                // after the first mismatch, in either traversal order.
+                let mut entries = ["a", "b", "c", "d"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, name)| {
+                        let namespace = namespaces[i % 2].clone();
+                        let label = format!(":{namespace}/{name} 1");
+                        let key = s
+                            .new_keyword(Some(namespace), JsString::from(name))
+                            .unwrap();
+                        (key, label)
+                    })
+                    .collect::<Vec<_>>();
+                let one = s.primitive(Primitive::Number(1.0));
+                let pairs = entries
+                    .iter()
+                    .map(|(key, _)| (*key, one))
+                    .collect::<Vec<_>>();
+                let map = if hashed {
+                    s.new_form_map(&pairs).unwrap()
+                } else {
+                    s.new_literal_map(&pairs).unwrap()
+                };
+                if hashed {
+                    entries.sort_by_key(|(key, _)| {
+                        let hash = s.form_hash(*key) as u32;
+                        std::array::from_fn::<_, 7, _>(|i| ((hash >> (i * 5)) & 31) as u8)
+                    });
+                }
+                let pairs = entries
+                    .iter()
+                    .map(|(_, label)| label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (s.persist(map), format!("Cannot compare 1 to {{{pairs}}}"))
+            });
+            let task = rt.spawn(&code, &[&key]).unwrap();
+            let before = COMPARED_NAMESPACE_UNITS.get();
+            let mut comparing_steps = 0;
+            let result = 'run: {
+                for _ in 0..1_000 {
+                    let compared = COMPARED_NAMESPACE_UNITS.get();
+                    let copied = JsString::copied_code_units();
+                    let outcome = task.run_with(Budget::instructions(1), &mut NoHost).unwrap();
+                    let work = COMPARED_NAMESPACE_UNITS.get() - compared;
+                    assert!(
+                        work + (JsString::copied_code_units() - copied) as usize
+                            <= NAMESPACE_STEP_UNITS,
+                        "one run exceeded the namespace work budget (hashed: {hashed})"
+                    );
+                    if work > 0 {
+                        comparing_steps += 1;
+                        assert!(matches!(outcome, RunOutcome::Yielded));
+                    }
+                    match outcome {
+                        RunOutcome::Yielded => (),
+                        RunOutcome::Complete(value) => break 'run value,
+                        other => panic!("expected yield or caught comparison error, got {other:?}"),
+                    }
+                }
+                panic!("comparison failed to finish or scan namespaces");
+            };
+            assert_eq!(
+                result.string(),
+                Some(JsString::from(expected.as_str())),
+                "hashed: {hashed}"
+            );
+            assert_eq!(COMPARED_NAMESPACE_UNITS.get() - before, left.len());
+            assert_eq!(comparing_steps, left.len().div_ceil(NAMESPACE_STEP_UNITS));
+        }
+    }
+
+    #[test]
     fn string_limit_is_checked_before_output_growth() {
         let heap = Heap::default();
         let roots = ComparisonOperands(Value::Number(1.0), Value::Number(2.0));
