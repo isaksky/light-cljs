@@ -3393,3 +3393,63 @@ the TypeError in a native macro; V8 expands it to `[false 0 1]`. This separate
 missing transducer service is light-cljs-560, the only new follow-up. Research
 was not changed. `app.main` still has no native output to compare or successful
 native/V8 build timing claim.
+
+### Callable-boundary verification
+
+Production source `4d60e13a` and the stronger publication assertion in
+`64f9b425` pass the final QuickJS/native callable matrix with twelve seeds at
+jobs 1/2/4/8. The matrix also covers native vector/list `.apply` arguments,
+string iteration and the IFn twenty-argument tail. The tail fixture records
+JavaScript array type and contents in a persistent marker before exporting its
+result. A separate native-only release macro stores the raw map member in an
+atom and successfully compiles an application printing `7`.
+
+The combined native/QuickJS full selection passes 367 library, 139 macro, two
+Proxy and twelve reader tests, with two existing ignored stress cases. That
+run precedes the final native argument-sequence and large-arity extension;
+the final twelve-seed matrix covers the affected extension and publication
+assertion. The engine's complete all-target suite passes 2,183 tests and all
+seven doctests, including collection during both raw-member resolution and
+its callback. Engine source, tests and build inputs are unchanged afterward.
+
+Fresh native-only release runs with the five absolute read-only roots and all
+budgets build `app.render` and reproduce the exact CSS `keep` failure above
+for `app.main`, both at jobs 1. The native render output is byte-identical to
+the fresh default V8 release output: 12,680,976 bytes, SHA-256
+`d352af3a2bb2d35f1447f3d4fc6592de609dc30e92c3424f7321afc607a8d9a3`.
+Both pass Node syntax checks. There is still no native main output or
+successful native/V8 main-build timing or source-map comparison.
+
+Full default V8 nextest passes 2,133 tests (253.4 s), and QuickJS-only passes
+2,056 (287.4 s). Each fails only `playground_crate_checks_for_wasm32` with the
+unchanged worktree/main-checkout workspace-discovery diagnostic. Both use
+`CARGO_BUILD_JOBS=3`, `--locked -j 8 --no-fail-fast`, the pinned read-only
+ClojureScript source `a5e94c98`, and the installed Rust/Cargo 1.99.0 WASM
+subprocess override with `CARGO_HOME=/Users/admin/.cargo`. The default run uses
+`LIGHT_CLJS_V8_CACHE=require`; QuickJS uses
+`--no-default-features --features quickjs`. Compiler checks otherwise use
+macOS arm64, Homebrew Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218.
+
+Strict V8 and QuickJS all-target Clippy pass. Engine strict lint reports the
+same eight library/nine test diagnostics in `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`; all-target
+lint passes allowing only those categories after `-D warnings`. Engine-free
+library/binary strict lint passes. Its all-target command fails on the
+unchanged evaluator example's unavailable `Evaluator::print` and `evaluate`
+APIs. Compiler/engine formatting, native runtime syntax and direct JavaScript
+runtime checks pass. No source suppressions, skips or expected golden data
+were changed.
+
+Three quiet alternating-order pairs compare the saved default V8 release
+binary from master `8771ed4f` with rebuilt production source `4d60e13a`, on the
+same seed-42 200k fixture using `release bench --jobs 1 --no-cache`. Median
+wall time is **7.34 s before and 7.26 s after** (0.9891x); ranges are
+7.18–7.44 and 7.24–7.53 s. Median user+system CPU is 7.84/7.77 s and maximum
+RSS is 1,012.7/1,049.5 MiB. The differences are within run variation.
+Before/after process snapshots and process-name checks find no overlapping
+builds, tests or compiler measurements. All six outputs are byte-identical,
+retaining SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+Node and the independent Babashka oracle both print `484264` for `42 3`.
+There are no changes to `src/js_runtime.js`, the default emitter, manifests
+or dependency inputs.
