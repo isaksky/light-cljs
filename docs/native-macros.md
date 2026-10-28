@@ -1826,8 +1826,11 @@ An earlier reader also lends its effect-lane position to the activity realizing
 that shared value and its nested helpers. The engine exposes the pending
 attempt's realizer as an opaque task identity; the compiler retains that wait
 only until settlement. The loan targets the enclosing root activity, retaining
-priority when temporary initializer entries come and go. This keeps a later realizer's shared-atom access from
-waiting behind the earlier reader that needs its result.
+priority when temporary initializer entries come and go. This keeps a later
+realizer's shared-atom access from waiting behind the earlier reader that needs
+its result. The pooled evaluator regression holds the realizer's queued step
+until its earlier reader is registered in the pool, then checks inherited lane
+opening, actual reader resubmission and exactly-once effects after a cold helper.
 
 ### Memory limit
 
