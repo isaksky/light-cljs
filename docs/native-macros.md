@@ -2823,3 +2823,21 @@ time is 7.27 s before and 7.18 s after (0.988x), with overlapping ranges. All
 twelve retained outputs keep the same module hash and print `484264`. The
 [benchmark record](../benchmarks/native-macros.md) lists every retained run and
 the three intervening pairs excluded for peer-build overlap.
+
+### Nil-metadata identity and BigInteger provenance corrections
+
+Review corrections at `cece451d` preserve ordinary collection identity when
+`with-meta` receives nil and the collection already has nil metadata, including
+an explicit nil from an earlier removal. Actual metadata removal still records
+explicit nil for compiler export. Symbols and records retain their legacy copy
+behavior; a map entry becomes a vector, whose subsequent nil-metadata update
+keeps its identity. The differential table covers 26 value shapes through
+direct, saved and `apply` calls. An engine fixture separately checks the original
+occurrence identity and exported explicit nil after a real removal.
+
+The scalar-origin walk also excludes a BigInteger's internal decimal string:
+the legacy bridge encodes that literal directly as a number and never decodes
+the payload as a string argument. Two enclosing-`let` macro fixtures compare
+complete mappings for a generated equal string and a returned BigInteger beside
+that string, at jobs 1/4 and all three optimization levels. Both review findings
+are reproduced by the new regressions on the handoff code before the fixes.
