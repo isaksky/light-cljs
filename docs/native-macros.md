@@ -3077,3 +3077,22 @@ Before/after process checks contain no overlapping builds, tests or compiler
 measurements. All six emitted applications retain SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`;
 Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
+
+### Named dispatcher self-binding verification (2026-10-28)
+
+Source `390d1e0c` fixes named dispatcher identity and publication. Before the
+fix, the new QuickJS differential returns `[false false]` natively when a
+named variadic callback returns itself, instead of QuickJS's `[true true]`.
+The final implementation passes six rows covering self-recursion, returning
+self, comparing self to the returned function, memoization and overloaded
+callbacks. The pooled memoize fixture also compares the recursive callback's
+identity across tasks and cached results at jobs 1/2/4/8.
+
+With `LIGHT_CLJS_STRESS_SEEDS=12`, `CARGO_BUILD_JOBS=3` and three test workers,
+the combined native/QuickJS library and integration selection passes 366
+library, 132 macro, two Proxy and twelve reader tests. Native-only checks
+pass 62 evaluator, 130 macro, two Proxy and twelve reader tests. Both retain
+their existing ignored stress cases. Formatting, native runtime syntax and
+the direct JavaScript runtime checks pass. The full engine's 2,181 tests and
+seven doctests from `d6ae8895` are reused: engine source, tests, dependency
+inputs and toolchain are unchanged by this emitter-only fix.
