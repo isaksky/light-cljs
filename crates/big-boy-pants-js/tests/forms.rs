@@ -2553,6 +2553,8 @@ fn compiler_queue_seq_is_unchunked_and_retains_payload_leaves_across_gc() {
             if (__rt.cljIsList(s) || !__rt.cljIsSequential(s) || !__rt.cljIsSeq(s) || __rt.cljChunkedSeq(s)) throw 'queue seq markers';
             if (__rt.cljDispatch(__rt.map('list', true, 'empty-list', true, 'sequence', true), s) !== null) throw 'queue seq countedness';
             if (__rt.cljCount(s) !== 40 || __rt.cljMeta(s) !== null) throw 'queue seq count/meta';
+            const lazy = __rt.cljSeq(__rt.lazySeq(() => queue));
+            if (!__rt.formEquals(lazy, s) || __rt.cljDispatch(__rt.map('sequence', true), lazy) !== null) throw 'lazy queue normalization';
             if (__rt.cljFirst(s) !== __rt.formNth(payload, 0) || __rt.formLiteralPayload(queue) !== payload) throw 'payload identity';
             if (!__rt.formEquals(s, payload) || __rt.formHash(s) !== __rt.formHash(payload)) throw 'queue seq equality/hash';
             if (__rt.cljSeq(__rt.formCompilerLiteral('queue', __rt.formVector())) !== null) throw 'empty queue';

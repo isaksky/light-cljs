@@ -3402,7 +3402,7 @@ fn published_flatten_worklists_survive_owner_drop_gc_and_deep_trees() {
         let tree = 7;
         for (let i = 0; i < 3000; i++) tree = __rt.formVector(tree);
         const queue = __rt.formCompilerLiteral('queue', __rt.formVector(1, tree, 9));
-        return rt.core.flatten(queue);
+        return rt.core.flatten(__rt.lazySeq(() => queue));
     }",
         )
         .unwrap();

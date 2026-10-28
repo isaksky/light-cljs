@@ -349,6 +349,9 @@ pub(crate) fn realized_seq(heap: &Heap, v: &Value) -> Result<Value> {
             FormBody::Vector(items) => vector_seq(heap, items, v),
             _ => Ok(v.clone()),
         },
+        Shape::Form(FormKind::CompilerLiteral, f) if matches!(f.body(), FormBody::CompilerLiteral { tag, .. } if tag == "queue") => {
+            seq(heap, v)
+        }
         _ => list_or_nil(
             heap,
             &collection_items(heap, "seq", v)?.unwrap_or_default(),
