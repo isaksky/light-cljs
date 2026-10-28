@@ -1915,6 +1915,11 @@ fn protocol_lookup_requires_declared_types_and_keeps_host_resolution_outside_the
           const host = { get __lightNativeType() { throw new Error('host getter'); } };
           check(lookup(table, declared, host) === undefined, 'host slow path');
           check(lookup(table, declared, Promise.resolve(1)) === undefined, 'Promise slow path');
+          const direct = __rt.vector(1, 10, table, declared, true);
+          check(__rt.cljProtocolLookup(direct, 1, 10, r) === 'record', 'direct override');
+          check(__rt.cljProtocolLookup(direct, 1, 10, t) === null, 'builtins precede object/default');
+          check(__rt.cljProtocolLookup(direct, 1, 10, 2) === undefined, 'core primitive slow path');
+          check(__rt.cljProtocolLookup(direct, 1, 10, __rt.structNew(sameName)) === undefined, 'direct declaration demand');
           table = __rt.dissoc(table, 'object');
           check(lookup(table, declared, t) === 'default', 'struct default');
           table = __rt.dissoc(table, '_');

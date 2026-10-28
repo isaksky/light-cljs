@@ -15,7 +15,7 @@ const decl = (() => {
   let order = 0, frontier = Infinity, version = 0;
   const table = (key, name, arity) => {
     let t = tables.get(key);
-    if (t === undefined) tables.set(key, t = {protocol: protocolOf(name, arity), entries: [], map: null, snapshot: null, version: -1, frontier: NaN});
+    if (t === undefined) tables.set(key, t = {name, protocol: protocolOf(name, arity), entries: [], map: null, snapshot: null, directSnapshot: null, version: -1, frontier: NaN});
     return t;
   };
   const protocolOf = (name, arity) => arity === 0 ? name : name.slice(0, name.lastIndexOf('/'));
@@ -100,6 +100,7 @@ const decl = (() => {
     for (const e of visible) map = __rt.assoc(map, e.key, e.fn);
     t.map = map; t.promise=__rt.getOr(map,'js/Promise',undefined);t.version = version; t.frontier = frontier;
     t.snapshot = __rt.vector(version, frontier, map, declared);
+    t.directSnapshot = __rt.vector(version, frontier, map, declared, true);
   };
   // A struct of a type this task has not declared yet (a published value
   // another task made): demand the type's declaration, its product of the
@@ -192,22 +193,26 @@ const decl = (() => {
   };
   // Owned core implementations precede object/default extensions. Explicit
   // extensions of the receiver's native type still replace that implementation.
-  const resolveCore = (name, arity, x, builtin, directOnly = false) => {
-    const t = methodTable(name, arity);
+  const coreLookup = (t, x, builtin, directOnly = false) => {
     if (directOnly && !builtin && !implementsDirectly(t.protocol, x)) return null;
     let m;
     if (builtin) {
-      declare(x);
-      if (t.version !== version || t.frontier !== frontier) build(t);
-      const key = directKey(x);
-      m = key === null ? null : __rt.getOr(t.map, key, null);
+      m = __rt.cljProtocolLookup(t.directSnapshot, version, frontier, x);
+      if (m === undefined) {
+        declare(x);
+        if (t.version !== version || t.frontier !== frontier) build(t);
+        const key = directKey(x);
+        m = key === null ? null : __rt.getOr(t.map, key, null);
+      }
     } else m = resolve(t, x);
     // Membership without this arity is an error, unless the engine owns
     // the implementation (notably the built-in methods of records).
     if (m === null && !builtin && satisfies(t.protocol, x))
-      throw new Error('No protocol method ' + name + ' defined for this value');
+      throw new Error('No protocol method ' + t.name + ' defined for this value');
     return m;
   };
+  const resolveCore = (name, arity, x, builtin, directOnly = false) =>
+    coreLookup(methodTable(name, arity), x, builtin, directOnly);
   // The implementation for the type `ty` (a struct type, or a mutable
   // type's key) in the table of method `name` and arity `n`, at the current
   // frontier. An `Object` method selects by its declaring type, so the
@@ -362,6 +367,7 @@ const decl = (() => {
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
     coreMethod:resolveCore,
+    coreTable:methodTable, coreLookup,
     printer:x=>resolve(methodTable('IPrintWithWriter/-pr-writer',3),x),
     writer:x=>resolve(methodTable('IWriter/-write',2),x),
     flusher:x=>resolve(methodTable('IWriter/-flush',1),x),
@@ -434,33 +440,40 @@ const native = (() => {
   // The engine calls this task-local resolver only for native structs. The
   // selected entry runs through a rooted native callback frame, so declaration
   // demand and user methods can yield/park without replaying effects.
+  // Binding table identities does not force any declarations. The lookup still
+  // checks the live version/frontier, while avoiding per-call helper closures
+  // and construction/resolution of the method's composite table key.
+  const coreTables = {
+    formEquals:decl.coreTable('IEquiv/-equiv',2), formHash:decl.coreTable('IHash/-hash',1),
+    cljGet2:decl.coreTable('ILookup/-lookup',2), cljGet:decl.coreTable('ILookup/-lookup',3),
+    cljContains:decl.coreTable('IAssociative/-contains-key?',2), cljAssoc:decl.coreTable('IAssociative/-assoc',3),
+    cljDissoc:decl.coreTable('IMap/-dissoc',2), cljConj:decl.coreTable('ICollection/-conj',2),
+    cljDisj:decl.coreTable('ISet/-disjoin',2), cljMeta:decl.coreTable('IMeta/-meta',1),
+    cljWithMeta:decl.coreTable('IWithMeta/-with-meta',2), cljSeq:decl.coreTable('ISeqable/-seq',1),
+    cljCount:decl.coreTable('ICounted/-count',1), cljNext:decl.coreTable('INext/-next',1),
+  };
   __rt.cljCoreResolver((op, x, throughLazy) => {
-    const record = __rt.formKind(x) === 'record';
-    const method = (name, n, builtin = record, directOnly = false) => decl.coreMethod(name, n, x, builtin, directOnly);
+    const record = __rt.formKind(x) === 'record', table = coreTables[op];
     switch (op) {
       case 'formEquals': {
-        const equiv = method('IEquiv/-equiv', 2);
+        const equiv = decl.coreLookup(table, x, record);
         return equiv === null ? null : (x,y) => !!val(equiv(x,y));
       }
       case 'formHash': {
-        const hash = method('IHash/-hash', 1);
+        const hash = decl.coreLookup(table, x, record);
         return hash === null ? null : x => val(hash(x)) | 0;
       }
-      case 'cljGet2': return method('ILookup/-lookup', 2) ?? (record ? null : () => null);
-      case 'cljGet': return method('ILookup/-lookup', 3) ?? (record ? null : (x,k,d) => d);
+      case 'cljGet2': return decl.coreLookup(table, x, record) ?? (record ? null : () => null);
+      case 'cljGet': return decl.coreLookup(table, x, record) ?? (record ? null : (x,k,d) => d);
       case 'cljContains': {
-        const contains = method('IAssociative/-contains-key?', 2);
+        const contains = decl.coreLookup(table, x, record);
         if (contains !== null) return contains;
         if (record) return null;
         return (x,k) => { const missing = {}; return get(x,k,missing) !== missing; };
       }
-      case 'cljAssoc': return method('IAssociative/-assoc', 3);
-      case 'cljDissoc': return method('IMap/-dissoc', 2);
-      case 'cljConj': return method('ICollection/-conj', 2);
-      case 'cljDisj': return method('ISet/-disjoin', 2);
-      case 'cljMeta': return method('IMeta/-meta', 1);
-      case 'cljWithMeta': return method('IWithMeta/-with-meta', 2);
-      case 'cljSeq': return throughLazy ? () => __rt.cljSeq(x) : method('ISeqable/-seq', 1);
+      case 'cljAssoc': case 'cljDissoc': case 'cljConj': case 'cljDisj':
+      case 'cljMeta': case 'cljWithMeta': return decl.coreLookup(table, x, record);
+      case 'cljSeq': return throughLazy ? () => __rt.cljSeq(x) : decl.coreLookup(table, x, record);
       case 'cljList': return x => {
         const out = [];
         for (let s = reduceSeqOf(x); s != null; s = nextOf(s)) out.push(firstOf(s));
@@ -468,9 +481,9 @@ const native = (() => {
       };
       case 'cljCount': {
         if (!throughLazy) {
-          const count = method('ICounted/-count', 1);
+          const count = decl.coreLookup(table, x, record);
           if (count !== null || record) return count;
-          if (method('ISeqable/-seq', 1) === null) return null;
+          if (decl.coreLookup(coreTables.cljSeq, x, record) === null) return null;
         }
         return x => {
           let n = 0;
@@ -494,7 +507,7 @@ const native = (() => {
       case 'cljRest': return throughLazy ? () => { __rt.cljSeq(x); return __rt.cljRest(x); }
         : restOf;
       case 'cljNext': return throughLazy ? () => { __rt.cljSeq(x); return __rt.cljNext(x); }
-        : method('INext/-next', 1, false, true) ?? (x => __rt.cljSeq(__rt.cljRest(x)));
+        : decl.coreLookup(table, x, false, true) ?? (x => __rt.cljSeq(__rt.cljRest(x)));
       case 'cljNth': return (x,i) => nthOf(x,i,null,false,throughLazy);
       case 'cljNthOr': return (x,i,d) => nthOf(x,i,d,true,throughLazy);
     }

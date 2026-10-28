@@ -1175,8 +1175,12 @@ pub(crate) fn dispatch(heap: &Heap, table: &Value, v: &Value) -> Result<Value> {
 }
 
 /// The common task-local protocol lookup. A snapshot is the persistent vector
-/// [version, frontier, table, declared-types], or null before the first build.
-/// Its version/frontier must match before any lookup. `declared` is a SameValueZero map of
+/// [version, frontier, table, declared-types, direct-struct-only?], or null
+/// before the first build. Its version/frontier must match before any lookup.
+/// The optional direct mode selects only a struct's own entry: record builtins
+/// precede object/default extensions. Other values stay on the caller's slow
+/// path, which knows the core collection and host-type rules.
+/// `declared` is a SameValueZero map of
 /// the struct types whose declarations this task has installed. An unknown
 /// struct must return to JavaScript to demand its declaration before resolving
 /// any extension bundles. Host objects likewise keep their property/Promise
@@ -1196,6 +1200,14 @@ pub(crate) fn protocol_lookup(
     if snapshot.get(0).as_ref() != Some(version) || snapshot.get(1).as_ref() != Some(frontier) {
         return Ok(Value::Undefined);
     }
+    let Some(key) = dispatch_key(heap, v) else {
+        return Ok(Value::Undefined);
+    };
+    let is_struct = matches!(key, Value::Object(_));
+    let direct = snapshot.get(4) == Some(Value::Bool(true));
+    if direct && !is_struct {
+        return Ok(Value::Undefined);
+    }
     let table = snapshot.get(2).ok_or(CollectionError::IndexOutOfBounds {
         index: 2,
         count: snapshot.len(),
@@ -1204,15 +1216,14 @@ pub(crate) fn protocol_lookup(
         index: 3,
         count: snapshot.len(),
     })?;
-    let Some(key) = dispatch_key(heap, v) else {
-        return Ok(Value::Undefined);
-    };
-    let is_struct = matches!(key, Value::Object(_));
     if is_struct && super::get(heap, declared, key.clone())?.is_none() {
         return Ok(Value::Undefined);
     }
     if let Some(found) = super::get(heap, table.clone(), key)? {
         return Ok(found);
+    }
+    if direct {
+        return Ok(Value::Null);
     }
     if is_struct
         && let Some(found) = super::get(heap, table.clone(), Value::String("object".into()))?

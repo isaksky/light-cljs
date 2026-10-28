@@ -1418,13 +1418,26 @@ shared.
 
 Each protocol method's implementations are an engine dispatch table: a
 SameValueZero persistent map from a dispatch key to the method, read by
-`__rt.cljDispatch` in Rust, so a call reads no JavaScript property and runs no
+native lookup in Rust, so table selection reads no JavaScript property and runs no
 user equality. The key of a struct is its type's identity; of a native form its
 kind (`"keyword"`, `"symbol"`, `"list"`, `"vector"`, `"map"`, `"set"`); of a
 primitive `"null"`, `"boolean"`, `"number"` or `"string"`; then `"function"`,
 `"array"`, and `"_"` for `default`. A JavaScript object (a mutable type's
 instance, an interop object) is resolved by its type, then `object`, then
 `default`. `satisfies?` asks the protocol's marker table the same way.
+
+An immutable table snapshot holds its version, source frontier, implementation
+map and this task's installed struct types (light-cljs-515). The bounded
+`__rt.cljProtocolLookup` leaf checks both guards before selecting an entry.
+A stale snapshot, an undeclared struct or a host object returns to the existing
+JavaScript resolver. That path demands a struct's declaration before installing
+pending protocol extensions; waits, failures and their effects keep their order.
+Known structs select their type, then `object`, then `default`. The direct
+snapshot for built-in record operations selects only a type override, retaining
+the record builtin ahead of object/default extensions. Core resolver table
+identities are bound once without demanding their declarations. The snapshots
+retain neither a caller's operands nor dynamic compiler-root values; binding,
+replacement and `.call` reads still occur at each call site.
 
 Fixed native protocol implementations take their hidden receiver explicitly;
 the dispatcher calls their entry directly (light-cljs-501). The receiver stays
