@@ -2068,3 +2068,9 @@ user CPU medians are 7.63 and 7.67 s. There is no slowdown. Every application
 prints `484264`, and every main-module SHA-256 remains
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
 No local builds or tests overlap these measurements.
+
+The corrected native-only run, with `LIGHT_CLJS_STRESS_SEEDS=12`,
+`CARGO_BUILD_JOBS=3` and three test threads, passes all 125 tests:
+111 in `bbp_macros`, 12 in `bbp_reader` and two in `bbp_proxy_has`.
+The command is `cargo test --locked --no-default-features --features bbp-macros
+--test bbp_macros --test bbp_reader --test bbp_proxy_has -- --test-threads=3`.
