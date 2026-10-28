@@ -207,6 +207,16 @@ The host is macOS 15.7.3, Apple M3 Ultra (Virtual), 24 logical CPUs and 32 GiB
 RAM, with Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218. No native/V8
 Penpot speed ratio is reported because neither native entry finishes.
 
+The second review fixes compare fresh default-feature release executables from
+`eea0eb4c` and `ea1e76d5` on that same fixture and command. One clean paired run
+takes 7.38 s before and 7.20 s after, with user+system CPU of 7.82 s and 7.68 s
+and peak RSS of 1,007 MiB and 1,012 MiB. Process snapshots are quiet before and
+after that pair. Two later pairs are discarded because peer lint/build activity
+resumed; one pair does not establish a performance improvement. Both retained
+outputs have the SHA-256 above, and Node and the Babashka oracle both return
+`484264` for inputs 42 and 3. The release builds use
+`LIGHT_CLJS_V8_CACHE=require`; legacy emitted JavaScript remains unchanged.
+
 ### Explicit compiler literal forms (light-cljs-535)
 
 The native bridge imports and exports explicit compiler descriptors with
