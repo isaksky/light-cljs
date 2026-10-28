@@ -1933,6 +1933,17 @@ seeds passes 111 macro, 12 reader and two proxy tests. The integrated engine
 passes all 2,165 tests and five doctests. The isolated timings and CPU/bytecode
 attribution above remain the comparison for the protocol change itself.
 
+The integrated `bbp-macros,quickjs` run with 12 stress seeds passes 495 tests:
+354 library (one ignored), 113 differential macros, 12 readers, two proxy and
+14 cache tests. The unchanged collection/lazy workloads also control for the
+shared resolver helper: five interleaved rounds at n=0/400/1,600, using the
+isolated release pairs, retain identical Node output and overlapping native
+analysis ranges. At n=1,600, collection analysis is 67.2 [65.6–69.2] ms before
+and 66.3 [64.8–68.7] after; lazy analysis is 154.8 [152.5–156.8] before and
+156.0 [153.0–160.9] after. No local builds/tests overlap those controls; load
+(1/5/15 minutes) is 5.20/5.69/5.60 → 5.54/5.73/5.62. There is no measured
+collection/lazy regression outside the protocol workload.
+
 The residual numerical target and the unchanged generated-call/root-read work
 are tracked in the focused follow-up `light-cljs-550`, rather than claiming
 that native table lookup alone reaches k <= ~4.
