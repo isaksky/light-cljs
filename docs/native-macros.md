@@ -2311,8 +2311,9 @@ an application whose ninth property reads as `9` in Node. This is a different
 bootstrap-expansion boundary, tracked by light-cljs-553. Native Penpot
 compilation remains incomplete there; research was unchanged.
 
-Final checks used source `854b4555`, based on `b3ef562c` plus the sequence review
-fixes through `61952e05`, on macOS arm64 with Homebrew Rust/Cargo 1.99.1 and
+Checks before the reviewed sequence integration used source `854b4555`, based
+on `b3ef562c` plus the sequence review fixes through `61952e05`, on macOS arm64
+with Homebrew Rust/Cargo 1.99.1 and
 `CARGO_BUILD_JOBS=3`. Both native-only Penpot commands were rebuilt and repeated
 on that source: `app.render` took 206.59 s and `app.main` 207.75 s, with concurrent
 acceptance tests running. These are failure reproductions, not complete-build
@@ -2366,4 +2367,23 @@ The native CLI was rebuilt from this source and both Penpot entries repeated
 with the same five absolute read-only roots and every documented budget,
 `--jobs 1 --no-cache`. Both pass flatten and exit 1 with the identical wide
 `js-obj` diagnostic above, still tracked by light-cljs-553. `app.render`
-takes 205.19 s while the engine suite runs concurrently; research is unchanged.
+takes 205.19 s while the engine suite runs concurrently; `app.main` takes
+205.40 s. Research is unchanged.
+
+Fresh complete QuickJS-only and default V8 nextest runs on `dac6136a` pass
+2,056 and 2,133 tests respectively, each failing only the unchanged
+`playground_crate_checks_for_wasm32` workspace-path check. The temporary
+ClojureScript symlink points at the pinned `a5e94c98` checkout. Both legacy
+configurations pass strict all-target Clippy. Combined native/QuickJS
+all-target and selected native-only Clippy pass with only the established
+engine diagnostic categories allowed; strict combined lint reports the same
+eight engine-library diagnostics. Engine-free strict library/binary lint
+passes, while its all-target check retains the unchanged benchmark's legacy
+`Evaluator` API errors. No lint suppressions were added to source.
+The wasm check uses the installed Rust 1.99.0 toolchain through
+`LIGHT_CLJS_CARGO`, with `CARGO_HOME=/Users/admin/.cargo`.
+All other checks use Homebrew Rust/Cargo 1.99.1, Node 26.12.1, three build
+jobs, three native/engine test workers and eight legacy nextest slots.
+The commits after `da76220f` change documentation only; all these results
+cover the same production source and test inputs. Neither the legacy emitter
+nor `src/js_runtime.js` differs from master.
