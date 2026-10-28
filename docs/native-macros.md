@@ -2826,7 +2826,7 @@ the three intervening pairs excluded for peer-build overlap.
 
 ### Nil-metadata identity and BigInteger provenance corrections
 
-Review corrections at `cece451d` preserve ordinary collection identity when
+Review corrections through `bdfead5c` preserve ordinary collection identity when
 `with-meta` receives nil and the collection already has nil metadata, including
 an explicit nil from an earlier removal. Actual metadata removal still records
 explicit nil for compiler export. Symbols and records retain their legacy copy
@@ -2843,3 +2843,13 @@ the payload as a string argument. Two enclosing-`let` macro fixtures compare
 complete mappings for a generated equal string and a returned BigInteger beside
 that string, at jobs 1/4 and all three optimization levels. Both review findings
 are reproduced by the new regressions on the handoff code before the fixes.
+
+Fresh release builds of `bdfead5c` retain every JS/map hash above for both
+workloads at jobs 1/4. All eight files pass Node's syntax check; all four
+generated modules print the Babashka oracle's `484264`. The six parity and
+metadata-identity fixtures pass against V8. Combined native/QuickJS validation
+with twelve stress seeds passes all 522 library, macro, reader, proxy and cache
+tests, with the two existing ignored cases. The final engine run passes 2,181
+tests and five doctests. Strict engine Clippy still reports the same eight
+library/nine test diagnostics; engine and combined all-target checks pass with
+only the three established diagnostic categories allowed.
