@@ -114,13 +114,18 @@ The immutable sequence-view tag also retains countedness: indexed views and
 finite integer ranges use the count shortcut, while hash-map, set, key, value
 and floating range views do not. Metadata and shared tails retain that tag.
 Occurrence wrappers are transparent when copying the tag to a shared tail.
-Finite integer ranges retain their remaining cardinality through metadata,
-rest and next; counting stops at that cardinality even after realizing a lazy
-range tail. Length mismatches therefore do not realize the range or read array
+Finite integer ranges retain their end and step through metadata, rest and
+next; counting computes the cardinality from the actual head even after
+realizing a lazy range tail. This preserves JavaScript rounding when a step
+beyond the safe-integer boundary leaves the head unchanged. Length mismatches
+therefore do not realize the range or read array
 getters. The source differential checks ten-million-element ranges under a
 64 MiB native macro memory limit, against both array cursors and small vectors.
 Array cursor equality also reads queue descriptor payloads through source
-occurrences and rejects immutable and mutable records before element access.
+occurrences and rejects immutable and mutable records before element access,
+after honoring an explicit left-hand record IEquiv implementation. Mutable
+records require this dispatch in the cursor adapter because they are host
+objects rather than native structs.
 Cursor metadata copying returns the same cursor for identical metadata and
 preserves an existing view when its backing array has become exhausted.
 `peek` honors explicit core-type and host IStack extensions while retaining
@@ -129,6 +134,13 @@ The `-peek` protocol entry dispatches nil extensions separately from public
 `peek`, which returns nil for nil. The source differential table covers these
 review regressions, including large array cursors and exact getter/equality
 effects, at jobs 1/2/4/8 under each default collection marker extension.
+The same table checks direct, saved and apply counts of uncounted user
+ISeqable types returning ten-million-element ranges under the 64 MiB limit,
+including helper demand after an observable callback effect. A grid of
+`(count (nthrest (range a b s) k))` covers empty, positive, negative,
+fractional and rounded boundary tails across chunk boundaries. Native
+`nthrest` preserves the input for nonpositive counts and uses ordinary
+resumable sequence traversal for demanded tails.
 
 Fresh native-only debug builds at `ea1e76d5`, based on `b3ef562c`, on macOS
 arm64 with Homebrew Rust/Cargo 1.99.1 pass the former `core.isList` failure and the next small service gap,
