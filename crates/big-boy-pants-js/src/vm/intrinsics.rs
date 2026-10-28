@@ -604,8 +604,7 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
                 _ => {
                     return Err(clj::CljError::Operands(
                         "range count must be a nonnegative integer or nil",
-                    )
-                    .into());
+                    ));
                 }
             };
             Some(clj::chunk_cons(heap, &a(0), &a(1), true, count)?)
