@@ -255,6 +255,16 @@ all 2,164 engine tests and seven doctests. Engine strict Clippy retains the same
 nine diagnostics; isolating only the established categories passes engine and
 native targets. The subsequent public API comment changes no executable code.
 
+Fresh full default V8 and QuickJS-only runs on that content pass 2,131/2,132
+and 2,054/2,055 tests respectively. Both reproduce only the documented playground
+workspace error. Their all-target Clippy runs pass strictly. Engine-free
+library/CLI Clippy passes strictly; its all-target run cannot compile unchanged
+legacy-dependent benchmark and evaluator fixtures. Both format checks pass.
+Fresh native-only Penpot entries again reach the exact `core.isList` diagnostic
+above: 215.00 s for `app.main`, 209.39 s for `app.render`, with jobs 1, no cache,
+all five absolute read-only roots and every documented macro budget. The next
+boundary remains the existing light-cljs-546.
+
 ### Key-value reduction (light-cljs-518)
 
 Native `reduce-kv` invokes `(rf accumulator key value)` on the resumable task
