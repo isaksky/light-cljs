@@ -723,6 +723,64 @@ bytes after the 600/1,200 fixtures, with all task-owned functions and catalog
 vectors collected. Registry population also allocates temporary descriptor objects;
 automatic collection and allocator residency contribute to the transient peak.
 
+The controlled native release comparison uses the same `bbd5d97b` integration
+base and shared-heap instrumentation on both sides (`8da03981` release code
+before, `713d5982` after). Only the ordinary-object layout changes. Build with
+`CARGO_BUILD_JOBS=3 cargo build --locked --release --no-default-features --features bbp-macros`.
+The 400-helper chain and CLI budgets are the same as above. On macOS 15.7.3,
+Apple M3 Ultra (Virtual), 24 vCPUs/32 GiB, Rust/Cargo 1.99.1 and Node 26.12.1,
+three cycles alternate before/after at each jobs value, reversing pair order
+on the middle cycle. Medians are decimal MB and seconds:
+
+| Jobs | Before RSS | After RSS | Before wall | After wall |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 99.3 | 95.0 | 2.99 | 2.93 |
+| 2 | 111.4 | 103.5 | 3.50 | 3.38 |
+| 4 | 146.4 | 130.8 | 3.00 | 2.87 |
+| 8 | 196.7 | 171.7 | 3.21 | 2.97 |
+
+Eight/one ratios of median RSS are **1.981 before and 1.806 after**; paired
+ratios are 1.897/1.993/2.025 before and 1.896/1.846/1.759 after. Every after
+pair misses 1.15. The eight-job RSS premium over one job falls from 97.4 to
+76.6 MB (21.4%), while total eight-job RSS falls 12.7%. RSS ranges at jobs
+1/2/4/8 are 98.7–100.2 / 108.3–114.2 / 143.9–150.9 / 188.3–202.9 MB before
+and 93.0–95.1 / 102.4–105.1 / 130.0–135.8 / 167.2–180.3 MB after.
+
+All 24 JavaScript outputs, including inline source maps, are byte-identical.
+Every build compiles and publishes 400 helpers with zero per-task fallbacks.
+Contexts remain 401/402/404/408 and source evaluations remain
+2,810/2,004/2,008/2,016. Median task steps are 16,729/18,337/18,475/18,589
+before and 16,729/18,332/18,477/18,586 after. Registration source replay has
+not returned; ordinary producer property population still scales with the
+catalog each producer inherits.
+
+The aggregate heap counters distinguish retained admission from allocation
+churn. These are medians of the same runs; live/peak are MB and total admitted
+volume is GB:
+
+| Jobs | Before last live | After last live | Before peak | After peak | Before admitted | After admitted |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 22.2 | 19.1 | 56.5 | 49.7 | 2.533 | 2.243 |
+| 2 | 32.7 | 28.8 | 69.2 | 61.6 | 3.362 | 3.007 |
+| 4 | 46.1 | 40.4 | 102.2 | 90.7 | 3.362 | 3.006 |
+| 8 | 80.7 | 73.1 | 151.8 | 140.6 | 3.411 | 3.054 |
+
+The last collection and the RSS peak occur at different times. The remaining
+peak includes task-owned registries/initializer slots/getters, temporary
+descriptor allocation and allocator residency; the precise malloc/residency
+split remains unmeasured. Saved VM frames are far smaller than this live task
+state. Reducing object metadata helps both retained state and transient churn,
+but does not eliminate ordinary registration replication.
+
+Two preliminary partial batches were excluded after a formatter and another
+worker's V8 run appeared. Accepted pairs use ten idle seconds at admission or
+retry, process snapshots before/after each build, and process sampling every
+second throughout it. Only the measured compiler is excluded from that scan;
+an observed competing build/test/compiler invalidates the whole pair. No such
+process was observed during any accepted run. The 400-helper window's load
+averages change from 1.98/6.41/9.96 to 2.48/3.65/7.34; the longer averages
+include preceding peer activity. All three admitted pairs are retained.
+
 On the integrated compact-storage tree `713d5982` (later documentation changes only),
 all 2,165 engine tests and six doctests pass, as do all 56 evaluator tests with
 the QuickJS differential oracle. Native-only macro integration passes all
