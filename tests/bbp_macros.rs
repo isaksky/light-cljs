@@ -5572,7 +5572,7 @@ fn native_call_preparation_and_live_roots_match_quickjs_at_every_pool_size() {
                (defn cold [x] (+ x *step*))
                (defprotocol P (p [x n]))
                (defprotocol Q :extend-via-metadata true (q [x]))
-               (deftype T [base] P (p [this n] (if (= n 0) base (recur this (dec n)))))
+               (deftype T [^:mutable base] P (p [this n] (if (= n 0) base (recur this (dec n)))))
                (defmacro probe []
                  (let [f p x (T. 7) a (f x (cold 1))
                        s (lazy-seq (list (cold 1)))

@@ -3448,7 +3448,7 @@ impl<'a> Emitter<'a> {
             self.output.push(']');
         } else if self.demand_roots {
             if self.native_forms {
-                self.output.push_str("__rt.cljReadRoot(globalThis.__lightCompilerRoots, globalThis.__lightCompilerRootContext, ");
+                self.output.push_str("(__rt.cljReadRoot(globalThis.__lightCompilerRoots, globalThis.__lightCompilerRootContext, ");
             } else {
                 self.output
                     .push_str("globalThis[\"__lightCompilerRoots\"][");
@@ -3459,7 +3459,8 @@ impl<'a> Emitter<'a> {
                     .encode_utf16()
                     .collect::<Vec<_>>(),
             );
-            self.output.push(if self.native_forms { ')' } else { ']' });
+            self.output
+                .push_str(if self.native_forms { "))" } else { "]" });
         } else {
             write!(self.output, "g{}", id.0).unwrap();
         }

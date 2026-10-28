@@ -15,38 +15,52 @@ impl Host for NoEffects {
 
 fn run(source: &str, waits: usize) {
     let rt = Runtime::new();
+    // Compiler workers enter an initialized realm. Build that realm before
+    // moving the selected call/root path onto its 64 KiB execution stack.
+    let warm = compile_function("function warm(){return [];}").unwrap();
+    assert!(matches!(
+        rt.spawn(&warm, &[]).unwrap().run().unwrap(),
+        RunOutcome::Complete(_)
+    ));
     let code = compile_function(source).unwrap();
     let mut task = rt.spawn(&code, &[]).unwrap();
-    let mut waited = 0;
-    for _ in 0..100_000 {
-        match task
-            .run_with(Budget::instructions(1), &mut NoEffects)
-            .unwrap()
-        {
-            RunOutcome::Yielded => {
-                rt.collect().unwrap();
-            }
-            RunOutcome::Waiting(_) => {
-                waited += 1;
-                rt.collect().unwrap();
-                let request = task.take_producer_requests().pop().unwrap();
-                let ready = rt.root(Primitive::Null);
-                task = rt
-                    .complete(request.key(), request.producer(), Completion::Ready(&ready))
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            let mut waited = 0;
+            for _ in 0..100_000 {
+                match task
+                    .run_with(Budget::instructions(1), &mut NoEffects)
                     .unwrap()
-                    .into_runnable()
-                    .pop()
-                    .unwrap();
+                {
+                    RunOutcome::Yielded => {
+                        rt.collect().unwrap();
+                    }
+                    RunOutcome::Waiting(_) => {
+                        waited += 1;
+                        rt.collect().unwrap();
+                        let request = task.take_producer_requests().pop().unwrap();
+                        let ready = rt.root(Primitive::Null);
+                        task = rt
+                            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+                            .unwrap()
+                            .into_runnable()
+                            .pop()
+                            .unwrap();
+                    }
+                    RunOutcome::Complete(value) => {
+                        assert_eq!(value.view(), ValueView::Bool(true));
+                        assert_eq!(waited, waits);
+                        return;
+                    }
+                    other => panic!("{other:?}"),
+                }
             }
-            RunOutcome::Complete(value) => {
-                assert_eq!(value.view(), ValueView::Bool(true));
-                assert_eq!(waited, waits);
-                return;
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-    panic!("did not finish");
+            panic!("did not finish");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
