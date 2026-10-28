@@ -2074,3 +2074,18 @@ The corrected native-only run, with `LIGHT_CLJS_STRESS_SEEDS=12`,
 111 in `bbp_macros`, 12 in `bbp_reader` and two in `bbp_proxy_has`.
 The command is `cargo test --locked --no-default-features --features bbp-macros
 --test bbp_macros --test bbp_reader --test bbp_proxy_has -- --test-threads=3`.
+
+The combined `bbp-macros,quickjs` run, with the same stress/build/thread limits
+and `--lib --test bbp_macros --test bbp_reader --test bbp_proxy_has --test
+compiler_cache`, passes all 495 tests: 354 library (one existing ignored),
+113 differential macros, 12 readers, two proxy and 14 cache tests.
+
+The full default V8/QuickJS-only nextest results and default/engine-free lint
+results recorded at `1808879d` are reused. The review fix changes only the
+optional engine, its test and a `#![cfg(feature = "bbp-macros")]` test table;
+compiler source, dependency inputs and active tests for those legacy-only
+variants are unchanged. Their full runs retain 2,132/2,055 passes and one
+`playground_crate_checks_for_wasm32` workspace failure each, rather than a
+full-suite pass. The strict default and engine-free library/binary checks pass;
+the engine-free all-target limitation remains the 623 diagnostics documented
+above. Fresh native/QuickJS and engine validation covers the affected paths.
