@@ -294,6 +294,56 @@ mod deferred_storage_tests {
 
     #[cfg(feature = "bbp-macros")]
     #[test]
+    fn discarded_named_dispatchers_do_not_hoist_or_leak_their_names() {
+        use crate::evaluator::{EvaluatorOptions, MacroEvaluator};
+
+        for function in [
+            "(fn discarded ([] discarded) ([x] x))",
+            "(fn discarded [& xs] discarded)",
+            "(fn discarded ([] discarded) ([x & xs] x))",
+        ] {
+            let source = format!(
+                r#"((fn []
+                  (js* "(() => {{ if (typeof discarded_binding !== 'undefined') throw new Error('hoisted'); }})()")
+                  {function}
+                  (js* "(() => {{ if (typeof discarded_binding !== 'undefined') throw new Error('leaked'); }})()")))"#,
+            );
+            let program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+            let name = program
+                .locals
+                .iter()
+                .position(|local| local.name == "discarded")
+                .unwrap();
+            // Install probes after emission, so raw-JS hygiene does not rename
+            // the generated binding away from the name under inspection.
+            let probe = |code: String| {
+                let original = format!("l{name}");
+                let suffix = format!("_{original}");
+                let binding = code
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '$')
+                    .find(|word| *word == original || word.ends_with(&suffix))
+                    .unwrap();
+                code.replace("discarded_binding", binding)
+            };
+            #[cfg(feature = "quickjs")]
+            {
+                let legacy = crate::evaluator::Evaluator::new(EvaluatorOptions::default()).unwrap();
+                let result = legacy
+                    .evaluate_unit(&probe(emit_js_unit(&program)))
+                    .unwrap();
+                legacy.release(result).unwrap();
+            }
+            let native =
+                crate::bbp_evaluator::BbpEvaluator::new(EvaluatorOptions::default()).unwrap();
+            let result = native
+                .evaluate_unit(&probe(emit_native_macro_unit(&program, false, &[])))
+                .unwrap_or_else(|error| panic!("{function}: {error}"));
+            native.release(result).unwrap();
+        }
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
     fn native_preparation_reads_only_the_unit_and_its_definition_time_metadata() {
         let reify_heavy = format!(
             "(let [x 41] [{}])",
@@ -6025,7 +6075,11 @@ impl<'a> Emitter<'a> {
             if apply_null {
                 self.output.push_str("__rt.fnApplyNull(");
             }
+            // A discarded named fn must remain an expression, so JavaScript
+            // cannot hoist a declaration into its enclosing scope.
+            self.output.push('(');
             self.named_dispatcher(&entries, methods, macro_function, name);
+            self.output.push(')');
             if apply_null {
                 self.output.push(')');
             }
