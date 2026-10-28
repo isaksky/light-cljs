@@ -124,12 +124,18 @@ service is tracked separately by light-cljs-551. Before adding `peek`, both
 entries reached its identical unsupported-service diagnostic at the same source
 location, in 187.40 s and 187.05 s respectively.
 
-The final source passes all 181 selected evaluator/macro/reader/Proxy tests with
+Production `db3d9740` passes all 181 selected evaluator/macro/reader/Proxy tests with
 `LIGHT_CLJS_STRESS_SEEDS=12`, three build jobs and three nextest slots. All
-2,166 engine tests and seven doctests pass on the same code. With both native and
-QuickJS enabled, the library, CLI and macro/reader/Proxy targets pass all 483
-tests (one existing ignored test). The predicate and
-peek source table matches QuickJS byte for byte at jobs 1/2/4/8. Engine strict
+2,166 engine tests and seven doctests pass on the same code. The final rebase
+onto `e28daa30` changes only documentation and tests: production source,
+dependencies and engine tests are byte-identical, so these results and both
+Penpot probes are reused. Fresh combined native/QuickJS coverage at `82065f7b`
+passes all 484 library, CLI and macro/reader/Proxy tests (one existing ignored
+test), including the added demanded-value and expanded multimethod regressions.
+The changed generated-core-write cache regression also passes with freshly
+matched native-only, QuickJS-only, combined and default V8 CLIs, including cold,
+warm and edited-consumer artifacts at jobs 1 and 4. The predicate and peek source
+table matches QuickJS byte for byte at jobs 1/2/4/8. Engine strict
 Clippy retains nine baseline diagnostics (eight for the native compiler's
 engine dependency); allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks`
 and `clippy::byte_char_slices` passes engine and native combined all-target
