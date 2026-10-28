@@ -1378,6 +1378,19 @@ warnings and helper counts match at both optimization levels. The tested
 production code is `a629b7e4`; rebasing onto `bba14eb8` adds only the independent
 initializer-slot operand tests, so this result is reused unchanged.
 
+The ordinary native-only `bbp_macros` suite separately passes **113 tests**
+with `LIGHT_CLJS_STRESS_SEEDS=12` and three test threads in 158.20 seconds,
+including its randomized, fixed-assignment and one-job-admission pool/effect
+stress. Its one ignored test is the large-fixture acceptance explicitly run
+above. This suite adds `CARGO_PROFILE_TEST_LTO=thin` and
+`CARGO_PROFILE_TEST_CODEGEN_UNITS=1` to the optimized test settings above.
+Compiler and engine format checks and default all-target strict Clippy pass.
+Native test-target strict Clippy retains the eight existing engine-library
+diagnostics; allowing only `deprecated`, `chunks_exact_to_as_chunks` and
+`byte_char_slices` passes, without source suppressions. No production code
+changes in this acceptance, so full legacy compiler/engine suites are not
+repeated.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
