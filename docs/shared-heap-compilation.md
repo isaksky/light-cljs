@@ -1328,14 +1328,14 @@ compilation-owned runtime across the pool, shared helper factories and
 dependency cells, parked/lent task contexts, completion wakeups and source-order
 effect lanes. The default remains V8 plus QuickJS.
 
-The release compiler at `a629b7e4` cannot build Penpot `app.main`. Using the
+The release compiler at `a4e173db` cannot build Penpot `app.main`. Using the
 five absolute read-only source roots and all budgets in the
 [Penpot reproduction](native-macros.md#penpot-reproduction-light-cljs-507509-2026-10-26),
 with `--entry app.main --jobs 1 --optimize none --no-cache --stats`, the exact
 first error is:
 
 ```text
-light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro expansion: while expanding mf/defc: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro rumext.v2/defc: big-boy-pants-js: Error: unsupported operation: native macro runtime core.isList; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:334:1 (bytes 522..819)
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro expansion: while expanding mf/defc: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro rumext.v2/defc: big-boy-pants-js: Error: unsupported operation: native macro runtime core.flatten; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:334:1 (bytes 522..819)
 ```
 
 The fallback workloads are the seed-42 generated 200k project (199,129
@@ -1361,6 +1361,7 @@ fixture so ordinary test runs do not generate large inputs. Reproduce with:
 LIGHT_CLJS_STRESS_SOURCE_ROOTS="$PWD/target/generated-200k/src:$PWD/target/generated-200k/macros" \
 LIGHT_CLJS_STRESS_ENTRY=workload.main LIGHT_CLJS_STRESS_SEEDS=12 \
 CARGO_BUILD_JOBS=3 CARGO_PROFILE_TEST_OPT_LEVEL=3 CARGO_PROFILE_TEST_DEBUG=0 \
+CARGO_PROFILE_TEST_LTO=thin CARGO_PROFILE_TEST_CODEGEN_UNITS=1 \
 cargo test --locked --no-default-features --features bbp-macros --test bbp_macros \
   native_large_project_matches_one_slot_under_seeded_scheduling_stress \
   -- --ignored --exact --nocapture --test-threads=1
@@ -1378,12 +1379,11 @@ warnings and helper counts match at both optimization levels. The tested
 production code is `a629b7e4`; rebasing onto `bba14eb8` adds only the independent
 initializer-slot operand tests, so this result is reused unchanged.
 
-The ordinary native-only `bbp_macros` suite separately passes **113 tests**
-with `LIGHT_CLJS_STRESS_SEEDS=12` and three test threads in 158.20 seconds,
+The ordinary native-only `bbp_macros` suite at `a4e173db` separately passes
+**114 tests** with `LIGHT_CLJS_STRESS_SEEDS=12` and three test threads in 157.83 seconds,
 including its randomized, fixed-assignment and one-job-admission pool/effect
 stress. Its one ignored test is the large-fixture acceptance explicitly run
-above. This suite adds `CARGO_PROFILE_TEST_LTO=thin` and
-`CARGO_PROFILE_TEST_CODEGEN_UNITS=1` to the optimized test settings above.
+above. This suite uses the optimized test settings above.
 Compiler and engine format checks and default all-target strict Clippy pass.
 Native test-target strict Clippy retains the eight existing engine-library
 diagnostics; allowing only `deprecated`, `chunks_exact_to_as_chunks` and
