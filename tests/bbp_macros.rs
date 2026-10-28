@@ -4875,6 +4875,159 @@ fn native_nil_metadata_preserves_collection_identity() {
     }
 }
 
+#[test]
+fn memoize_uses_argument_equality_and_caches_falsey_results() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+          (let [calls (atom 0)
+                f (memoize (fn [& xs] (swap! calls inc) xs))
+                zero (f) again (apply f [])
+                a (f [1 2] {:a #{3 4} :b nil})
+                b (apply f [(with-meta '(1 2) {:ignored true}) {:b nil :a #{4 3}}])
+                c (f [1 2] {:a #{3 4} :b false})
+                d (f 1 2 3 4 5 6 7 8 9)
+                e (apply f (range 1 10))
+                n (memoize (fn [x] (swap! calls inc) nil))
+                no (memoize (fn [x] (swap! calls inc) false))
+                u (memoize (fn [x] (swap! calls inc) js/undefined))
+                values [(n :x) (n :x) (no :x) (no :x) (nil? (u :x)) (nil? (u :x))]
+                other (memoize (fn [& xs] (swap! calls inc) :independent))]
+            (list 'quote [(identical? zero again) (identical? a b) (identical? d e)
+                          (not= a c) values (other) (other) @calls])))
+          (js/console.log (pr-str (probe)))"#,
+        "[true true true true [nil nil false false true true] :independent :independent 8]\n",
+    );
+}
+
+#[test]
+fn memoize_does_not_cache_exceptions_or_overwrite_recursive_entries() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+          (let [calls (atom 0)
+                f (memoize (fn [x] (if (< (swap! calls inc) 3) (throw (js/Error. "retry")) x)))
+                run (fn [] (try (f :ok) (catch :default e (.-message e))))
+                results [(run) (run) (run) (run)]
+                rec (atom nil) visits (atom [])
+                g (memoize (fn [x] (swap! visits conj x) (if (zero? x) 0 (inc (@rec (dec x))))))]
+            (reset! rec g)
+            (list 'quote [results @calls (g 3) (g 2) @visits])))
+          (js/console.log (pr-str (probe)))"#,
+        "[[\"retry\" \"retry\" :ok :ok] 3 3 2 [3 2 1 0]]\n",
+    );
+}
+
+#[test]
+fn memoize_shares_results_and_once_only_effects_across_tasks_and_cold_helpers() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-memoize-effects");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+          (def events (atom []))
+          (def ^:dynamic *tag* :root)
+          (defn leaf [x] (swap! events conj [:leaf x *tag*]) x)
+          (def make-sym
+            (memoize (fn [x]
+              (swap! events conj [:before x *tag*])
+              (let [value (leaf x)]
+                (swap! events conj [:after value *tag*])
+                (with-meta (gensym "property") {:key value :tag *tag*})))))
+          (def alias make-sym)
+          (defmacro probe [tag]
+            (binding [*tag* tag]
+              (let [a (alias [:same]) b (make-sym (list :same)) c (make-sym [tag])]
+                (list 'quote [(identical? a b) a (meta a) c (meta c)]))))
+          (defmacro log [] (list 'quote @events))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [helpers :refer [probe]])) (def value (probe :a))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [helpers :refer [probe]])) (def value (probe :b))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b] [helpers :refer [log]])) (js/console.log (pr-str [a/value b/value (log)]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed, held| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    lane_hold: if held {
+                        vec!["a/value".into()]
+                    } else {
+                        Vec::new()
+                    },
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}, held {held}: {e}"));
+        if native && held {
+            assert!(
+                stats.lanes.inherited > 0,
+                "no inherited memoize initializer lane"
+            );
+        }
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0, false);
+    let output = program_output(&reference);
+    assert!(output.contains("{:key [:same], :tag :a}"), "{output}");
+    assert!(output.contains("[[:before [:same] :a] [:leaf [:same] :a] [:after [:same] :a] [:before [:a] :a] [:leaf [:a] :a] [:after [:a] :a] [:before [:b] :b] [:leaf [:b] :b] [:after [:b] :b]]"), "{output}");
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for (jobs, held) in [
+        (1, false),
+        (2, false),
+        (4, false),
+        (8, false),
+        (4, true),
+        (8, true),
+    ] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            reference,
+            build(false, jobs, 0, false),
+            "QuickJS, jobs {jobs}"
+        );
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed, held),
+                "jobs {jobs}, seed {seed}, held {held}"
+            );
+        }
+    }
+}
+
 /// A macro-local JavaScript array `a` and `t`, which records its operand
 /// in `a` and returns it: operand effects in evaluation order.
 const TRACE: &str = "a (js/Array.) t (fn [x] (.push a x) x)";

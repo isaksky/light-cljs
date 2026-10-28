@@ -1627,6 +1627,27 @@ const native = (() => {
     swap:(a,f,...args)=>swapPair(a,f,args)[1],
     swapVals:(a,f,...args)=>{const [o,n]=swapPair(a,f,args);return __rt.formVector(o,n);},
     resetVals:(a,v)=>{lane(a);return __rt.formVector(store(a,v),v);},
+    // The wrapper captures only its shared atom. Resolve
+    // operations in the calling task's runtime, as with published MultiFns.
+    memoize:f=>{
+      // Including f in the atom validates its captures at construction:
+      // an initializer must never replay a memoized function's state.
+      const cache=atom(__rt.formVector(f,arrayMap([])));
+      return (...args)=>globalThis.__lightNativeRuntime.core.invokeMemoized(cache,args);
+    },
+    invokeMemoized:(cache,args)=>{
+      lane(cache);
+      const key=vector(args), state=__rt.atomLoad(cache), f=__rt.formNth(state,0), table=__rt.formNth(state,1);
+      // Presence is independent of the result: nil, false and undefined
+      // are cached too. Keys use the native Clojure equality/hash contract.
+      if(__rt.cljContains(table,key))return get(table,key);
+      // A cold helper can park here. The saved VM continuation resumes
+      // after it; exceptions leave the cache untouched. Read the table
+      // again after the call to preserve entries added by recursive calls.
+      const result=invoke(f,...args);
+      store(cache,__rt.formVector(f,__rt.cljAssoc(__rt.formNth(__rt.atomLoad(cache),1),key,result)));
+      return result;
+    },
     // Lazy and chunked sequences (light-cljs-479).
     // An explicit `(LazySeq. meta fn s hash)`: a realized one (no `fn`) holds `s`.
     LazySeq:function(m,f,s){const x=f==null?__rt.lazySeq(()=>s):__rt.lazySeq(f);return m==null?x:__rt.cljWithMeta(x,m);},

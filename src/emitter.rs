@@ -5988,7 +5988,16 @@ impl<'a> Emitter<'a> {
     }
 
     fn function(&mut self, name: Option<LocalId>, methods: &[FnMethod], macro_function: bool) {
+        // Any ordinary callback can be retained by memoize, including one
+        // passed through a first-class constructor or another helper. Resolve
+        // runtime reads in its consumer just as for function roots. User
+        // captures still undergo the engine's publication check.
+        let previous = self.native_multimethod_function;
+        if self.native_forms && !macro_function {
+            self.native_multimethod_function = true;
+        }
         self.function_with_ifn_captures(name, methods, macro_function, false);
+        self.native_multimethod_function = previous;
     }
 
     fn function_with_ifn_captures(
