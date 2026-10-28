@@ -1772,9 +1772,9 @@ stack overflows, and a sequence that realized itself (an infinite cycle) is a
 `RangeError` where ClojureScript loops. A cycle through a helper (a thunk
 that demands a helper whose initializer needs the same sequence) is not
 detected: the reader waits until the build's `--macro-timeout-ms` deadline.
-The compiler wakes a parked reader by polling the sequence's status (at most
-20 ms after the realization ends); a scheduler that enqueues the wakeups
-the engine returns (`Runtime::take_lazy_wakeups`) would not wait.
+The compiler drains `Runtime::take_lazy_wakeups` after VM steps and queues
+parked readers on their pool. Evaluators without a pool use the dependency
+status polling fallback (at most 20 ms after realization ends).
 
 A lazy sequence publishes when its thunk does (before realization) or its
 value does (after): a helper's `(def xs (map inc v))` or `(def ps (for [x v]
@@ -1805,9 +1805,12 @@ Compiler queue descriptors expose an uncounted, unchunked sequence over their
 positional payload, including when a lazy thunk returns one. Retained leaves
 keep their occurrence identity and metadata.
 
-The traversal uses an immutable list of sibling sequences rather than recursive
-host calls. Its lazy thunks capture pure functions and persistent worklists,
-so helpers can publish them and protocol/helper demands can park without replay.
+The traversal uses linked native cons worklists rather than recursive host
+calls, with constant-time pushes at every depth. Each tree node's successful
+expansion is cached in its own lazy cell before descending, so an exception
+retry does not repeat completed parents' protocol callbacks. Lazy thunks
+capture pure functions and persistent values, so helpers can publish them
+and protocol/helper demands can park without replay.
 Construction checks the root and prepares its children, matching the legacy
 `rest(tree-seq ...)`: `mapcat`'s bounded argument count reads ahead four mapped
 children, or a full source chunk, without walking those children. Later reads
@@ -1822,7 +1825,8 @@ and effects with QuickJS at jobs 1/2/4/8, including that shared user branch.
 An earlier reader also lends its effect-lane position to the activity realizing
 that shared value and its nested helpers. The engine exposes the pending
 attempt's realizer as an opaque task identity; the compiler retains that wait
-only until settlement. This keeps a later realizer's shared-atom access from
+only until settlement. The loan targets the enclosing root activity, retaining
+priority when temporary initializer entries come and go. This keeps a later realizer's shared-atom access from
 waiting behind the earlier reader that needs its result.
 
 ### Memory limit

@@ -3538,6 +3538,141 @@ fn flatten_retains_leaf_occurrences_and_metadata_across_collection() {
 }
 
 #[test]
+fn pooled_lazy_reader_inherits_lane_and_wakes_after_cold_helper() {
+    use crate::effect_lanes::{Lanes, identity};
+    use std::{cell::Cell, sync::mpsc, time::Duration};
+
+    let shared = BbpRuntime::new(&EvaluatorOptions {
+        timeout: Duration::from_secs(15),
+        ..Default::default()
+    })
+    .unwrap();
+    let lanes = Arc::new(Lanes::default());
+    lanes.enable();
+    lanes.schedule([0, 1], false);
+    shared.set_lanes(lanes.clone());
+    let owner = shared.evaluator().unwrap();
+    let value = owner
+        .evaluate_unit(
+            "rt => {
+        const seen = rt.core.atom(0);
+        const tree = __rt.lazySeq(() => {
+            const helper = globalThis.__lightCompilerRoots['fixture/helper'];
+            globalThis.__lightNativeRuntime.core.swap(seen, x => x + 1);
+            __rt.effect(65534, 0);
+            return __rt.formList(helper());
+        });
+        return __rt.formVector(seen, rt.core.flatten(__rt.formVector(tree)));
+    }",
+        )
+        .unwrap();
+    let value = owner.cx().unwrap().values.borrow()[&value.index].clone();
+    shared.0.runtime.publish(&value).unwrap();
+    let (waited, waits) = mpsc::channel();
+    let observed = shared.0.runtime.clone();
+    shared.on_wait(Arc::new(move |task, key| {
+        if key.kind() == big_boy_pants_js::LAZY_REALIZATION {
+            waited
+                .send((task.id(), observed.lazy_realizer(key).unwrap()))
+                .unwrap();
+        }
+    }));
+    let (parked, parks) = mpsc::channel();
+    let (queued, queue) = mpsc::channel();
+    std::thread::scope(|scope| {
+        let run = |unit| {
+            let evaluator = Rc::new(shared.evaluator().unwrap());
+            evaluator
+                .clone()
+                .install_compiler_service(
+                    "__lightCompileUnit",
+                    Rc::new(|_, _| Ok("rt => () => 7".into())),
+                )
+                .unwrap();
+            evaluator
+                .register_compiler_root("fixture/helper", Some(7), false, "helper.cljs:1", None)
+                .unwrap();
+            evaluator.install_native_runner(Rc::new(|step| step.run()));
+            let queued = queued.clone();
+            let submit: NativeSubmit = Arc::new(move |step, reply| {
+                queued.send((step, reply)).unwrap();
+            });
+            evaluator.install_native_submitter(Rc::new(move || Some(submit.clone())));
+            let task = evaluator.cx().unwrap().task.id();
+            let observed = shared.clone();
+            let parked = parked.clone();
+            let notified = Cell::new(false);
+            evaluator.install_wait_service(Rc::new(move || {
+                if observed.0.parked.lock().unwrap().contains_key(&task) && !notified.replace(true)
+                {
+                    parked.send((unit, task)).unwrap();
+                }
+                Ok(false)
+            }));
+            // The earlier reader represents a task resuming after a previous
+            // helper wait; the realizer becomes resumable at its cold helper.
+            if unit == 0 {
+                evaluator.cx().unwrap().resumable.set(true);
+            }
+            let argument = evaluator.id().unwrap();
+            evaluator.request(1, argument, value.clone()).unwrap();
+            let function = evaluator
+                .evaluate_unit("rt => pair => __rt.cljFirst(__rt.formNth(pair, 1))")
+                .unwrap();
+            let _root = lanes.enter_root();
+            let _unit = lanes.enter_unit(unit);
+            let result = evaluator.call(function, &[argument]).unwrap();
+            assert_eq!(
+                evaluator.cx().unwrap().values.borrow()[&result.index].view(),
+                ValueView::Number(7.0)
+            );
+        };
+        let realizer = scope.spawn(move || run(1));
+        let (unit, realizer_id) = parks.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(unit, 1);
+        assert!(
+            lanes.counts().waits > 0,
+            "realizer did not park for its lane"
+        );
+        let reader = scope.spawn(move || run(0));
+        let (reader_id, lazy_owner) = waits.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(lazy_owner, realizer_id);
+        assert_eq!(
+            parks.recv_timeout(Duration::from_secs(5)).unwrap(),
+            (0, reader_id)
+        );
+        assert!(
+            lanes.counts().inherited > 0,
+            "reader did not lend its earlier lane"
+        );
+        assert!(
+            lanes.caller_position(identity(realizer_id))
+                > lanes.caller_position(identity(reader_id))
+        );
+        // Hold the realizer's queued continuation until the lazy reader is
+        // registered in the pool. Only draining engine lazy wakeups can queue
+        // that reader after this step settles the shared traversal.
+        let (step, reply) = queue.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(step.task_id(), realizer_id);
+        reply.send(step.run()).unwrap();
+        let (step, reply) = queue.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(step.task_id(), reader_id);
+        reply.send(step.run()).unwrap();
+        realizer.join().unwrap();
+        reader.join().unwrap();
+    });
+    assert_eq!(shared.helper_counts().compiled, 1);
+    assert_eq!(shared.helper_counts().woken, 2);
+    assert_eq!(shared.0.counters.cleanups.load(Ordering::Relaxed), 1);
+    shared.0.runtime.scope(|s| {
+        let pair = s.local(&value).unwrap();
+        let seen = s.form_nth(pair, 0).unwrap();
+        assert_eq!(s.view(s.atom_load(seen).unwrap()), ValueView::Number(1.0));
+    });
+    assert!(shared.0.parked.lock().unwrap().is_empty());
+}
+
+#[test]
 fn stale_lazy_wakeups_do_not_resume_a_task_parked_on_a_new_dependency() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let evaluator = shared.evaluator().unwrap();

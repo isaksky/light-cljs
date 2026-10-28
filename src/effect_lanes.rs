@@ -69,6 +69,7 @@ const STARVED: Duration = Duration::from_millis(30);
 #[derive(Clone, Copy, Debug)]
 struct Top {
     token: u64,
+    root_token: u64,
     position: Option<Position>,
 }
 
@@ -474,12 +475,23 @@ impl Lanes {
         }
         let key = self.key();
         let top = STACK.with(|stack| {
-            (stack.borrow().iter().rev())
-                .find(|e| e.lanes == key)
-                .map(|e| Top {
-                    token: e.token,
-                    position: e.position,
-                })
+            let stack = stack.borrow();
+            let mut entries = stack.iter().rev().filter(|e| e.lanes == key);
+            let top = entries.next()?;
+            let mut root = top;
+            if !root.root {
+                for entry in entries {
+                    root = entry;
+                    if root.root {
+                        break;
+                    }
+                }
+            }
+            Some(Top {
+                token: top.token,
+                root_token: root.token,
+                position: top.position,
+            })
         });
         let mut s = self.lock();
         match top {
@@ -651,15 +663,16 @@ impl Lanes {
         guard.refresh();
         guard
     }
-    /// Lend this reader's position to the activity currently running `task`.
-    /// Its nested helpers inherit the same activity target, even if the task
-    /// has parked for its effect lane by the time this wait is registered.
+    /// Lend this reader's position to the root activity running `task`.
+    /// Initializer entries can come and go while a realization is suspended;
+    /// their enclosing root keeps the loan through subsequent helper/effect
+    /// waits, including when it has already parked for its lane.
     pub(crate) fn wait_for_task(self: &Arc<Self>, task: u64) -> Option<WaitGuard> {
         let target = self
             .lock()
             .tops
             .get(&task)
-            .map(|top| Target::Activity(top.token));
+            .map(|top| Target::Activity(top.root_token));
         target.map(|target| self.wait_for(target))
     }
     /// Block this thread until the lane at `position` opens: a blocker's
