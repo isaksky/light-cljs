@@ -2373,7 +2373,8 @@ takes 205.19 s while the engine suite runs concurrently; `app.main` takes
 Fresh complete QuickJS-only and default V8 nextest runs on `dac6136a` pass
 2,056 and 2,133 tests respectively, each failing only the unchanged
 `playground_crate_checks_for_wasm32` workspace-path check. The temporary
-ClojureScript symlink points at the pinned `a5e94c98` checkout. Both legacy
+ClojureScript symlink pointed at the pinned `a5e94c98` checkout and was removed
+after verification. Both legacy
 configurations pass strict all-target Clippy. Combined native/QuickJS
 all-target and selected native-only Clippy pass with only the established
 engine diagnostic categories allowed; strict combined lint reports the same
@@ -2387,3 +2388,13 @@ jobs, three native/engine test workers and eight legacy nextest slots.
 The commits after `da76220f` change documentation only; all these results
 cover the same production source and test inputs. Neither the legacy emitter
 nor `src/js_runtime.js` differs from master.
+
+The rebuilt default V8 release compiler was timed against the saved
+`e28daa30` executable on the same seed-42 200k fixture, using
+`release bench --jobs 1 --no-cache`. One quiet pair takes 7.06 s before and
+6.89 s after (0.9759x); CPU time is 7.49 s and 7.40 s, with peak RSS
+1,015.02 MiB and 1,040.08 MiB. Process checks before, between and after these
+two runs contain no peer builds, tests or compiler measurements. A later
+pair was discarded when a peer V8 measurement started. This comparison has
+one accepted pair. Emitted JavaScript is byte-identical, and both executables'
+applications and the Babashka oracle print `484264`.
