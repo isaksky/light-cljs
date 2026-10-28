@@ -781,6 +781,29 @@ process was observed during any accepted run. The 400-helper window's load
 averages change from 1.98/6.41/9.96 to 2.48/3.65/7.34; the longer averages
 include preceding peer activity. All three admitted pairs are retained.
 
+One admitted pair also builds the seed-42 generated project (`--lines 200k`,
+199,129 nonblank source lines, 450 worker namespaces) at one job. From
+`target/generated-200k`, run `/usr/bin/time -lp BINARY release bench --no-cache
+--stats --jobs 1` with the generated configuration's 2-GiB aggregate macro
+budget. Native RSS changes from 1,343.4 to 1,311.3 MB and wall time from
+38.61 to 34.83 s; peak managed admission changes from 578.3 to 524.1 MB.
+The generated JavaScript hashes match. This is one pair, not a repeated
+large-project performance result. The eight-job pair was rejected when peer
+builds began during the after run. Its RSS is excluded.
+
+The residual private initializer-slot representation is isolated as
+light-cljs-552: compact the four-field task-owned bags while preserving the
+ordinary root objects, getter identity/state and registration order. This
+does not move this pellet's remaining verification into that follow-up.
+
+The saved pre-compaction eight-job `/usr/bin/sample` profile on `ba1bb3bd`
+has collapsed top-of-stack counts 10,906 `semaphore_timedwait_trap`, 4,062
+`__psynch_cvwait`, 447 `execute_budgeted`, 111 VM-fault drops, 111 SipHash
+writes, 107 `Heap::mark_and_sweep`, 81 `lookup_cursor`, 63
+`Heap::allocate_accounted` and 58 `OrdinaryObject::push`. These are thread
+samples, not CPU percentages or retained-byte attribution. The subsequent
+literal/protocol integrations prevent treating it as a final-tree CPU profile.
+
 On the integrated compact-storage tree `713d5982` (later documentation changes only),
 all 2,165 engine tests and six doctests pass, as do all 56 evaluator tests with
 the QuickJS differential oracle. Native-only macro integration passes all
