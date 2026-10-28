@@ -800,8 +800,8 @@ const native = (() => {
       let candidate;
       for(;;){
         const current=__rt.atomLoad(registry),existing=__rt.getOr(current,ref,null);
-        if(existing!==null)return existing;
-        candidate??=vector([deref(ref),atom(empty())]);
+        if(existing!==null){reconcile(ref,existing);return existing;}
+        if(candidate===undefined){const initial=deref(ref);candidate=vector([initial,atom(empty()),atom(initial)]);}
         if(Object.is(__rt.atomCas(registry,current,__rt.assoc(current,ref,candidate)),current))return candidate;
       }
     };
@@ -818,8 +818,17 @@ const native = (() => {
       const key=order===0?-(__rt.cljCount(history)+1):order;
       reset(ref,__rt.cljAssoc(history,key,__rt.cljConj(get(history,key,vector([])),vector([op,x,y]))));
     };
+    // The public table may have been reset/swapped independently of a
+    // MultiFn. Remember the last observed/published identity in shared state,
+    // so frontier materialization writes never become replacement operations.
+    const reconcile=(ref,state)=>{
+      const current=deref(ref),published=__rt.formNth(state,2);
+      if(current!==deref(published)){record(state,'replace',current,null);reset(published,current);}
+    };
     const change=(m,op,x=null,y=null)=>{
       if(!decl.installingMulti())demand(m);
+      reconcile(field(m,'method_table'),field(m,'__method_state'));
+      reconcile(field(m,'prefer_table'),field(m,'__prefer_state'));
       if(op!=='prefer')record(field(m,'__method_state'),op,x,y);
       if(op==='prefer'||op==='reset')record(field(m,'__prefer_state'),op,x,y);
       // Retained constructor atoms remain language-level tables. Installation
@@ -830,7 +839,8 @@ const native = (() => {
       return m;
     };
     const views=new WeakMap();
-    const materialize=state=>{
+    const materialize=(table,state)=>{
+      reconcile(table,state);
       const ref=__rt.formNth(state,1),history=deref(ref),frontier=decl.multiFrontier(),old=views.get(ref);
       if(old!==undefined&&old.history===history&&old.frontier===frontier)return old.value;
       const entries=arr(history).filter(e=>__rt.formNth(e,0)<=frontier)
@@ -841,18 +851,20 @@ const native = (() => {
         if(op==='add')value=__rt.cljAssoc(value,x,y);
         else if(op==='remove')value=__rt.cljDissoc(value,x);
         else if(op==='reset')value=empty();
+        else if(op==='replace')value=x;
         else value=__rt.cljAssoc(value,x,__rt.cljConj(get(value,x,set([])),y));
       }
       views.set(ref,{value,history,frontier});return value;
     };
     const tables=(m,force=true)=>{
       if(force)demand(m);
-      const view={methods:materialize(field(m,'__method_state')),prefs:materialize(field(m,'__prefer_state'))};
+      const view={methods:materialize(field(m,'method_table'),field(m,'__method_state')),prefs:materialize(field(m,'prefer_table'),field(m,'__prefer_state'))};
       publish(m,view);return view;
     };
     const publish=(m,view)=>{
-      for(const [key,value] of [['method_table',view.methods],['prefer_table',view.prefs]]){
+      for(const [key,state,value] of [['method_table','__method_state',view.methods],['prefer_table','__prefer_state',view.prefs]]){
         const ref=field(m,key);if(deref(ref)!==value)reset(ref,value);
+        reset(__rt.formNth(field(m,state),2),value);
       }
     };
     const getMethod=(m,dispatch)=>{

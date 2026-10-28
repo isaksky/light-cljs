@@ -2733,6 +2733,61 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             "[[:pet :animal true true] [:pet true] [false true] [true true] [{} {} {} {}] :restored]",
         ),
         (
+            "constructor after resetting a shared method table",
+            "",
+            r#"(let [h (atom (make-hierarchy)) mt (atom {}) pt (atom {})
+                     a (MultiFn. 'a identity :default h mt pt (atom {}) (atom nil))]
+                 (-add-method a :old identity)
+                 (methods a)
+                 (reset! mt {:x identity})
+                 (let [b (MultiFn. 'b identity :default h mt pt (atom {}) (atom nil))
+                       before [(b :x) (nil? (get-method b :old)) (= @mt (methods a))]]
+                   (-add-method b :y identity)
+                   (let [c (MultiFn. 'c identity :default h mt pt (atom {}) (atom nil))]
+                     (conj before (c :y)))))"#,
+            "[:x true true :y]",
+        ),
+        (
+            "constructor after swapping a shared method table without replay",
+            "",
+            r#"(let [h (atom (make-hierarchy)) mt (atom {}) pt (atom {}) effects (atom 0)
+                     a (MultiFn. 'a identity :default h mt pt (atom {}) (atom nil))]
+                 (methods a)
+                 (swap! mt (fn [table] (swap! effects inc) (assoc table :x identity)))
+                 (let [b (MultiFn. 'b identity :default h mt pt (atom {}) (atom nil))]
+                   [(b :x) (= @mt (methods b)) @effects]))"#,
+            "[:x true 1]",
+        ),
+        (
+            "constructor after resetting a shared preference table",
+            "",
+            r#"(let [h (atom (-> (make-hierarchy) (derive :dog :pet) (derive :dog :animal)))
+                     mt (atom {:pet (fn [_] :pet) :animal (fn [_] :animal)})
+                     pt (atom {})
+                     a (MultiFn. 'a identity :default h mt pt (atom {}) (atom nil))]
+                 (prefer-method a :pet :animal)
+                 (prefers a)
+                 (reset! pt {:animal #{:pet}})
+                 (let [b (MultiFn. 'b identity :default h mt pt (atom {}) (atom nil))
+                       chosen (b :dog)]
+                   (prefer-method b :x :y)
+                   [chosen (= {:animal #{:pet} :x #{:y}} (prefers a)) (= @pt (prefers b))]))"#,
+            "[:animal true true]",
+        ),
+        (
+            "constructor after swapping a shared preference table without replay",
+            "",
+            r#"(let [h (atom (-> (make-hierarchy) (derive :dog :pet) (derive :dog :animal)))
+                     mt (atom {:pet (fn [_] :pet) :animal (fn [_] :animal)})
+                     pt (atom {}) effects (atom 0)
+                     a (MultiFn. 'a identity :default h mt pt (atom {}) (atom nil))]
+                 (prefers a)
+                 (swap! pt (fn [table] (swap! effects inc) (assoc table :pet #{:animal})))
+                 (let [b (MultiFn. 'b identity :default h mt pt (atom {}) (atom nil))]
+                   [(b :dog) (= {:pet #{:animal}} (prefers b)) @effects]))"#,
+            "[:pet true 1]",
+        ),
+        (
             "independently shared method and preference tables",
             r#"
           (def h (atom (make-hierarchy)))
