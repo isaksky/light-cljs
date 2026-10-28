@@ -524,6 +524,10 @@ pub(crate) struct OrdinaryObject {
     /// Key to position in `entries`; present once there are more than
     /// [`INDEX_THRESHOLD`] entries. Box the dictionary header so the common
     /// small property store does not enlarge every HeapObject allocation.
+    #[allow(
+        clippy::box_collection,
+        reason = "Keep the optional header out of every heap object"
+    )]
     index: Option<Box<HashMap<PropertyKey, u32>>>,
     /// `[[ErrorData]]`: independent of properties and prototype changes.
     error_data: bool,
