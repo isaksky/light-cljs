@@ -1413,6 +1413,41 @@ diagnostics; allowing only `deprecated`, `chunks_exact_to_as_chunks` and
 with the scheduling feature off is unchanged; full legacy compiler/engine
 suites are not repeated.
 
+#### Release measurement method
+
+The measured binaries are rebuilt at `6712eab2` (production base `a4e173db`,
+plus the opt-in test hooks) with `scheduling-stress` **off**. Native:
+`CARGO_BUILD_JOBS=3 cargo build --locked --release --no-default-features
+--features bbp-macros --bin light-cljs`. Default V8/QuickJS:
+`LIGHT_CLJS_V8_CACHE=require CARGO_BUILD_JOBS=3 cargo build --locked --release
+--bin light-cljs`. Default all-target strict Clippy and both format checks
+pass again on this final source. The host is macOS 15.7.3, Apple M3 Ultra
+(Virtual), 24 vCPUs and 32 GiB, Rust/Cargo 1.99.1, Node 26.12.1 and Babashka
+1.12.218.
+
+Use the chain command above (default `prepare`, inline source map, 4-GiB
+macro budget). For the generated project, use a standalone advanced ES module
+so the measured artifact includes a source map; the chunked `release` command
+does not support source maps. From `target/generated-200k`, replacing `BINARY`
+with either saved release compiler and `N` with 1/2/4/8:
+
+```sh
+/usr/bin/time -lp BINARY --compile --esm --entry workload.main \
+  --source-root src --source-root macros --optimize advanced \
+  --jobs N --no-cache --stats --source-map-inline \
+  --macro-expansions 10000000 --macro-nodes 1000000000 \
+  --macro-timeout-ms 3600000 --macro-memory-limit 2147483648 \
+  --macro-poll-budget 100000000000 > output.js 2> output.stats
+```
+
+Three rounds interleave native and V8 at each job count, reversing their
+order in the middle round. Admission requires a full minute without detected
+competing build/test/compiler processes, then ten idle seconds before each
+row, with process scans every 100 ms during execution. Load is the
+one/five/fifteen-minute average immediately before and after each row.
+RSS is `/usr/bin/time -l`'s maximum resident set size in decimal MB, rather
+than its separate peak-footprint counter or native heap admission accounting.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
