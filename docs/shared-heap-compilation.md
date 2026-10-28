@@ -723,10 +723,10 @@ bytes after the 600/1,200 fixtures, with all task-owned functions and catalog
 vectors collected. Registry population also allocates temporary descriptor objects;
 automatic collection and allocator residency contribute to the transient peak.
 
-On the compact-storage tree `5540e100` (later documentation changes only),
-all 2,161 engine tests and six doctests pass, as do all 53 evaluator tests with
+On the integrated compact-storage tree `713d5982` (later documentation changes only),
+all 2,165 engine tests and six doctests pass, as do all 56 evaluator tests with
 the QuickJS differential oracle. Native-only macro integration passes all
-97 tests with `LIGHT_CLJS_STRESS_SEEDS=12` in 475 s, including both the pool
+110 tests with `LIGHT_CLJS_STRESS_SEEDS=12` in 535 s, including both the pool
 and source-order effect-lane stress cases. Commands are:
 
 ```sh
@@ -740,7 +740,7 @@ Full compiler compatibility runs use `cargo nextest run --locked -j 8
 --no-fail-fast`: default V8 with `LIGHT_CLJS_V8_CACHE=require` passes
 2,132/2,133; QuickJS-only (`--no-default-features --features quickjs`) passes
 2,055/2,056; QuickJS/native (`--no-default-features --features bbp-macros,quickjs`)
-passes 2,229/2,230. Each has only `playground_crate_checks_for_wasm32` failing
+passes 2,247/2,248. Each has only `playground_crate_checks_for_wasm32` failing
 with the existing nested-worktree signature: Cargo finds
 `/Users/admin/src/light-cljs/Cargo.toml` as the workspace of this worktree's
 `playground/crate/Cargo.toml`. No assertion or required regression is skipped
