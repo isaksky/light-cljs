@@ -6013,11 +6013,26 @@ impl<'a> Emitter<'a> {
             self.method_with_ifn_captures(name, &methods[0], ifn_call);
             return;
         }
-        self.output.push_str("(() => {\n");
-        self.indent += 1;
         let entries: Vec<String> = (0..methods.len())
             .map(|index| format!("m{index}"))
             .collect();
+        let apply_null =
+            self.native_forms && !macro_function && methods.iter().any(|m| m.rest.is_some());
+        if self.native_forms && !macro_function && name.is_some() {
+            // Define the methods inside a named dispatcher so they capture
+            // its immutable self binding, rather than a forward binding cell
+            // that cannot publish with a memoized callback.
+            if apply_null {
+                self.output.push_str("__rt.fnApplyNull(");
+            }
+            self.named_dispatcher(&entries, methods, macro_function, name);
+            if apply_null {
+                self.output.push(')');
+            }
+            return;
+        }
+        self.output.push_str("(() => {\n");
+        self.indent += 1;
         for (entry, method) in entries.iter().zip(methods) {
             self.indentation();
             write!(self.output, "const {entry} = ").unwrap();
@@ -6031,7 +6046,7 @@ impl<'a> Emitter<'a> {
         self.output.push_str(";\n");
         self.arity_properties(&function, &entries, methods, macro_function, true);
         self.indentation();
-        if self.native_forms && !macro_function && methods.iter().any(|m| m.rest.is_some()) {
+        if apply_null {
             // Preserve applyTo's null receiver without mutable JS arity
             // properties that would prevent the function from publishing.
             writeln!(self.output, "return __rt.fnApplyNull({function});").unwrap();
@@ -6049,11 +6064,25 @@ impl<'a> Emitter<'a> {
     /// function of a multi-arity or variadic `fn` is, so an arity error
     /// rejects the call's Promise instead of throwing.
     fn dispatcher(&mut self, entries: &[String], methods: &[FnMethod], macro_function: bool) {
+        self.named_dispatcher(entries, methods, macro_function, None);
+    }
+
+    fn named_dispatcher(
+        &mut self,
+        entries: &[String],
+        methods: &[FnMethod],
+        macro_function: bool,
+        name: Option<LocalId>,
+    ) {
         self.function_mark();
         if methods.iter().any(|method| method.asynchronous) {
             self.output.push_str("async ");
         }
-        self.output.push_str("function(");
+        self.output.push_str("function");
+        if let Some(name) = name {
+            write!(self.output, " l{}", name.0).unwrap();
+        }
+        self.output.push('(');
         let count = if macro_function {
             1
         } else {
@@ -6071,6 +6100,14 @@ impl<'a> Emitter<'a> {
         }
         self.output.push_str(") {\n");
         self.indent += 1;
+        if name.is_some() {
+            for (entry, method) in entries.iter().zip(methods) {
+                self.indentation();
+                write!(self.output, "const {entry} = ").unwrap();
+                self.method_with_ifn_captures(None, method, false);
+                self.output.push_str(";\n");
+            }
+        }
         self.indentation();
         self.output.push_str("switch (arguments.length) {\n");
         self.indent += 1;

@@ -4900,6 +4900,46 @@ fn memoize_uses_argument_equality_and_caches_falsey_results() {
 }
 
 #[test]
+fn named_variadic_functions_preserve_self_identity() {
+    for (body, expected) in [
+        (
+            "(let [f (fn self [n & xs] (if (zero? n) (vec xs) (self (dec n) n)))] (f 3 :start))",
+            "[1]\n",
+        ),
+        (
+            "(let [f (fn self [& xs] self)] [(identical? f (f)) (identical? f (apply f [1 2]))])",
+            "[true true]\n",
+        ),
+        (
+            "(let [f (fn self [x & xs] (identical? self x))] [(f f) (apply f [f :tail])])",
+            "[true true]\n",
+        ),
+        (
+            "(let [calls (atom 0) f (fn self [n & xs] (swap! calls inc) (if (zero? n) self (self (dec n)))) m (memoize f)] [(identical? f (m 3)) (identical? f (apply m [3])) @calls])",
+            "[true true 4]\n",
+        ),
+        (
+            "(let [f (fn self ([] self) ([n & xs] (if (zero? n) (self) (self (dec n)))))] [(identical? f (f)) (identical? f (f 3 :tail))])",
+            "[true true]\n",
+        ),
+        (
+            "(let [f (fn self ([] self) ([n] (if (zero? n) (self) (self (dec n))))) m (memoize f)] [(identical? f (m)) (identical? f (m 3)) (identical? f (apply m [3]))])",
+            "[true true true]\n",
+        ),
+    ] {
+        let source =
+            format!("(defmacro probe [] (list 'quote {body})) (js/console.log (pr-str (probe)))");
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            program_output(&light_cljs::compile(&source).unwrap()),
+            expected,
+            "{source}"
+        );
+        assert_native_matches_legacy(&source, expected);
+    }
+}
+
+#[test]
 fn memoize_preserves_apply_receiver_semantics() {
     let source = r#"(defn apply-variadic [x & xs]
             (this-as receiver [(fn? receiver) x (vec xs)]))
@@ -5043,10 +5083,15 @@ fn memoize_shares_results_and_once_only_effects_across_tasks_and_cold_helpers() 
                 (swap! events conj [:after value *tag*])
                 (with-meta (gensym "property") attrs)))))
           (def alias make-sym)
+          (def recursive-self
+            (fn self [n & xs] (if (zero? n) self (self (dec n)))))
+          (def memo-self (memoize recursive-self))
           (defmacro probe [tag]
             (binding [*tag* tag]
               (let [a (alias [:same]) b (make-sym (list :same)) c (make-sym [tag])]
-                (list 'quote [(identical? a b) a (meta a) c (meta c)]))))
+                (list 'quote [(identical? a b) a (meta a) c (meta c)
+                              (identical? recursive-self (memo-self 3))
+                              (identical? (memo-self 3) (apply memo-self [3]))]))))
           (defmacro log [] (list 'quote @events))"#,
         ),
         (
@@ -5108,6 +5153,7 @@ fn memoize_shares_results_and_once_only_effects_across_tasks_and_cold_helpers() 
     let reference = build(true, 1, 0, false);
     let output = program_output(&reference);
     assert!(output.contains("{:key [:same], :tag :a}"), "{output}");
+    assert!(output.contains("true true]"), "{output}");
     assert!(output.contains("[[:before [:same] :a] [:leaf [:same] :a] [:after [:same] :a] [:before [:a] :a] [:leaf [:a] :a] [:after [:a] :a] [:before [:b] :b] [:leaf [:b] :b] [:after [:b] :b]]"), "{output}");
     let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
         .ok()

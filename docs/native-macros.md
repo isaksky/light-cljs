@@ -2897,6 +2897,15 @@ calls, invalid arities, cold helpers and sequence application across the
 its cached result has only a weak witness until the consumer retrieves it.
 The native variadic dispatcher supplies nil for an empty rest argument,
 matching the legacy `fnRest` behavior instead of constructing an empty list.
+Named native dispatchers define their methods inside the named JavaScript
+function. The methods capture its immutable self binding, so copying the
+dispatcher to attach its apply convention preserves recursion and identity.
+This also avoids capturing a forward, task-owned binding cell when memoizing
+named variadic or overloaded callbacks. Method closures are allocated on each
+call; their executable code remains shared. Differential rows cover returning
+self, comparing self with the returned function, self-recursion and memoizing
+these callbacks. The pooled fixture retains a recursive named variadic callback
+and its memoized result across tasks at jobs 1/2/4/8 with seeded scheduling.
 
 Ordinary native callbacks use consuming-task runtime reads and shareable arity
 dispatchers, including inline callbacks passed through first-class constructors.
