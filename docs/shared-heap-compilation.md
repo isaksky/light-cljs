@@ -1371,6 +1371,13 @@ For the chain, use the same command with
 `LIGHT_CLJS_STRESS_ENTRY=chain.n7`. Test optimization changes speed only;
 debug assertions and the scheduler's debug-only perturbation remain enabled.
 
+The chain run passes all **49 builds** (one reference plus twelve seeds at
+four job counts), in 891.30 seconds. Every build compiles and publishes
+**400 helpers**, with **zero per-task fallbacks**. JavaScript, full maps,
+warnings and helper counts match at both optimization levels. The tested
+production code is `a629b7e4`; rebasing onto `bba14eb8` adds only the independent
+initializer-slot operand tests, so this result is reused unchanged.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
