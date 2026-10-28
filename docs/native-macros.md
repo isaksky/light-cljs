@@ -2463,4 +2463,25 @@ examples, benches and tests. No source lint suppressions were added.
 Checks use macOS arm64, Homebrew Rust/Cargo 1.99.1, Node 26.12.1, three Cargo
 build jobs, three native/engine test workers and eight nextest slots. The wasm
 check uses the installed 1.99.0 toolchain with `CARGO_HOME=/Users/admin/.cargo`.
-The ClojureScript source symlink points at pinned `a5e94c98` during checks.
+The ClojureScript source symlink pointed at pinned `a5e94c98` during checks and
+was removed afterwards.
+
+Three quiet, interleaved pairs compare the saved pre-review default V8 release
+executable with the rebuilt review-fix source on the seed-42 200k fixture,
+using `release bench --jobs 1 --no-cache`. Median wall time is 7.24 seconds
+before and 7.17 seconds after (0.9903x); ranges are 7.17–7.40 and 7.12–7.26
+seconds. Median user+system CPU is 7.78 and 7.66 seconds, and median peak RSS is
+1,019.0 and 1,004.6 MiB. The difference is smaller than the observed variation.
+Process snapshots before and after every accepted run contain no peer builds,
+tests or compiler measurements. An initial guard refused to start while peer
+tests were active. All six emitted applications are byte-identical, with
+SHA-256 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`;
+Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
+
+The final rebase onto master `6cd56b89` adds only the `nthrest` source
+differential. On `66525b00` that table passes in both combined native/QuickJS
+and native-only configurations at jobs 1/2/4/8. Final formatting and combined
+all-target lint pass with the same baseline engine categories allowed. No
+production code, dependency or benchmark input changed in this test-only
+rebase, so the complete suites, Penpot reproductions and timings above remain
+valid. Subsequent changes only record this verification.
