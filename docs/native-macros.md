@@ -2444,3 +2444,23 @@ seconds while native stress checks run concurrently. These results are reused
 across the equivalent cfg-only rebase; research is unchanged. Neither entry
 completes, and light-cljs-553 remains the existing follow-up for that different
 bootstrap gap.
+
+Fresh full default V8 and QuickJS-only nextest runs on the rebased source pass
+2,133 and 2,056 tests respectively. Each fails only the existing
+`playground_crate_checks_for_wasm32`: Rust/Cargo 1.99.0 resolves the excluded
+worktree playground crate to the main checkout's workspace and rejects it
+before compiling source. The diagnostic matches the prior baseline, and the
+playground manifests and check are unchanged.
+
+Default V8 and QuickJS-only strict all-target Clippy pass. Combined native and
+QuickJS all-target Clippy passes with only the existing engine categories
+`deprecated`, `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`
+allowed; strict combined and engine checks retain their eight library and nine
+all-target baseline diagnostics. Native selected-target Clippy passes with
+those categories allowed. Engine-free strict library/binary Clippy passes;
+its all-target check retains the unchanged legacy evaluator API errors in
+examples, benches and tests. No source lint suppressions were added.
+Checks use macOS arm64, Homebrew Rust/Cargo 1.99.1, Node 26.12.1, three Cargo
+build jobs, three native/engine test workers and eight nextest slots. The wasm
+check uses the installed 1.99.0 toolchain with `CARGO_HOME=/Users/admin/.cargo`.
+The ClojureScript source symlink points at pinned `a5e94c98` during checks.
