@@ -999,6 +999,31 @@ runs replace the reused legacy-engine results for this final base. The
 no failure or required regression is skipped. Both formatters, default
 all-target strict Clippy and engine-free library/binary strict Clippy pass.
 
+The final combined `bbp-macros,quickjs` check runs `cargo test --locked
+--no-default-features --features bbp-macros,quickjs --lib --test bbp_macros
+--test bbp_reader --test bbp_proxy_has --test compiler_cache -- --test-threads=3`
+with `CARGO_BUILD_JOBS=3`. All **497 selected tests pass**, with one normally
+ignored library test: 355 library, 114 macro, two proxy, 12 reader and 14 cache
+tests. The combined macro run uses the default one stress seed; the separate
+native-only run above supplies the required twelve-seed coverage. Combined
+strict all-target Clippy has the same eight engine library diagnostics; the
+check allowing only the three documented existing categories passes.
+
+Engine-free all-target strict Clippy can stop at more targets than the earlier
+seven-error benchmark result. To establish its complete baseline, run
+`CARGO_BUILD_JOBS=3 cargo clippy --locked --no-default-features --all-targets
+--keep-going -- -D warnings` on the final source and with `src/compile_stats.rs`
+temporarily restored from `e28daa30` (all other code compiled without engines
+is unchanged from that base). Restore the final file afterward. Both runs
+produce **identical diagnostic/message and source-path multiplicities**:
+seven benchmark errors, two evaluator-example errors, five benchmark-variant
+test errors, 501 compiler-test errors, 107 evaluator-test errors and one
+execution-test error. These are ungated missing evaluator methods/optional
+QuickJS imports and empty-engine unreachable/unused diagnostics, not errors
+introduced by the heap statistics or object layout. Engine-free library/binary
+strict Clippy still passes. This broader baseline is recorded explicitly;
+the all-target check is not claimed to pass and no source suppression is added.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
