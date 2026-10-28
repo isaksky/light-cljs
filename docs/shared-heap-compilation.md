@@ -1036,6 +1036,28 @@ not CPU percentages, retained-byte attribution or a quiet before/after speed
 comparison. The sampled build's JavaScript and inline map match the admitted
 chain outputs. Its timing/RSS is excluded from the quiet measurement tables.
 
+The default V8 200k guard isolates the compiler statistics change on the same
+base: the before release temporarily restores `src/compile_stats.rs` from
+`e28daa30`, and the after release uses `6f2ed7bf`; all other code compiled for
+default V8 is identical. Build both with `LIGHT_CLJS_V8_CACHE=require
+CARGO_BUILD_JOBS=3 cargo build --locked --release --bin light-cljs`, restoring
+the final source after the baseline build. Run the same seed-42 generated
+project with `/usr/bin/time -lp BINARY release bench --no-cache --stats --jobs 1`.
+The first admitted pair is below (seconds and decimal MB). Both processes
+have no detected competing build/test/compiler before, during or after; idle
+admission requires ten seconds. Later pairs interrupted by restarted peer
+tests are excluded, including the whole pair when only one side overlaps.
+
+| Pair | Version | Wall | RSS | Load before → after |
+| --- | --- | ---: | ---: | --- |
+| 0 | Before | 7.12 | 1061.8 | 2.87/6.04/7.98 → 2.72/5.95/7.94 |
+| 0 | After | 7.02 | 1063.3 | 2.72/5.95/7.94 → 2.58/5.87/7.90 |
+
+This admitted pair shows **no observed V8 slowdown** (after/before 0.986).
+It is one pair, not a repeated median or a statistical bound. Generated
+JavaScript is byte-identical (SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`).
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
