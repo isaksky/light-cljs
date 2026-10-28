@@ -2788,6 +2788,66 @@ fn demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size() {
             "[:pet true 1]",
         ),
         (
+            "read existing methods immediately after external replacement",
+            "",
+            r#"(let [mt (atom {}) pt (atom {}) effects (atom 0)
+                     a (MultiFn. 'a identity :default (atom (make-hierarchy)) mt pt (atom {}) (atom nil))]
+                 (-add-method a :old identity)
+                 (methods a)
+                 (reset! mt {:x identity})
+                 (let [after-reset [(= #{:x} (set (keys (methods a)))) (a :x)]]
+                   (swap! mt (fn [table] (swap! effects inc) (assoc table :y identity)))
+                   [after-reset (= #{:x :y} (set (keys (methods a))))
+                    (a :x) (a :y) (= @mt (methods a)) @effects]))"#,
+            "[[true :x] true :x :y true 1]",
+        ),
+        (
+            "read existing preferences immediately after external replacement",
+            "",
+            r#"(let [mt (atom {}) pt (atom {}) effects (atom 0)
+                     a (MultiFn. 'a identity :default (atom (make-hierarchy)) mt pt (atom {}) (atom nil))]
+                 (prefer-method a :old :lost)
+                 (prefers a)
+                 (reset! pt {:x #{:y}})
+                 (let [after-reset (= {:x #{:y}} (prefers a))]
+                   (swap! pt (fn [table] (swap! effects inc) (assoc table :p #{:q})))
+                   [after-reset (= {:x #{:y} :p #{:q}} (prefers a))
+                    (= @pt (prefers a)) @effects]))"#,
+            "[true true true 1]",
+        ),
+        (
+            "mutate existing methods immediately after external replacement",
+            "",
+            r#"(let [mt (atom {}) pt (atom {}) effects (atom 0)
+                     a (MultiFn. 'a identity :default (atom (make-hierarchy)) mt pt (atom {}) (atom nil))]
+                 (-add-method a :old identity)
+                 (methods a)
+                 (reset! mt {:x identity})
+                 (-add-method a :y identity)
+                 (let [after-reset [(= #{:x :y} (set (keys (methods a)))) (a :x) (a :y)]]
+                   (swap! mt (fn [table] (swap! effects inc) (assoc (dissoc table :x) :z identity)))
+                   (-add-method a :w identity)
+                   [after-reset (= #{:y :z :w} (set (keys (methods a))))
+                    (a :y) (a :z) (a :w) (= @mt (methods a)) @effects]))"#,
+            "[[true :x :y] true :y :z :w true 1]",
+        ),
+        (
+            "mutate existing preferences immediately after external replacement",
+            "",
+            r#"(let [mt (atom {}) pt (atom {}) effects (atom 0)
+                     a (MultiFn. 'a identity :default (atom (make-hierarchy)) mt pt (atom {}) (atom nil))]
+                 (prefer-method a :old :lost)
+                 (prefers a)
+                 (reset! pt {:x #{:y}})
+                 (prefer-method a :p :q)
+                 (let [after-reset (= {:x #{:y} :p #{:q}} (prefers a))]
+                   (swap! pt (fn [table] (swap! effects inc) (assoc (dissoc table :x) :r #{:s})))
+                   (prefer-method a :t :u)
+                   [after-reset (= {:p #{:q} :r #{:s} :t #{:u}} (prefers a))
+                    (= @pt (prefers a)) @effects]))"#,
+            "[true true true 1]",
+        ),
+        (
             "independently shared method and preference tables",
             r#"
           (def h (atom (make-hierarchy)))
