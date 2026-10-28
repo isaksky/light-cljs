@@ -19,7 +19,7 @@ const decl = (() => {
   let order = 0, frontier = Infinity, version = 0;
   const table = (key, name, arity) => {
     let t = tables.get(key);
-    if (t === undefined) tables.set(key, t = {name, protocol: protocolOf(name, arity), entries: [], map: null, snapshot: null, directSnapshot: null, version: -1, frontier: NaN});
+    if (t === undefined) tables.set(key, t = {name, marker: arity===0, protocol: protocolOf(name, arity), entries: [], map: null, snapshot: null, directSnapshot: null, version: -1, frontier: NaN});
     return t;
   };
   const protocolOf = (name, arity) => arity === 0 ? name : name.slice(0, name.lastIndexOf('/'));
@@ -51,7 +51,6 @@ const decl = (() => {
     if (key === 'js/Promise' && specs.some(spec => spec[0].startsWith('Object/')))
       throw new Error('unsupported operation: native Promise Object extension');
     const overlay = order === 0 ? ++overlays : 0, info = views.get(key);
-    if (info !== undefined && specs.some(spec => partition0.has(protocolOf(spec[0],spec[1])))) info.partition0 = true;
     for (const [name, arity, fn, , variadic, member, direct] of specs) {
       const object = name.startsWith('Object/');
       const n = object && variadic != null ? -1 : arity;
@@ -203,9 +202,14 @@ const decl = (() => {
     const value=__rt.formValue(x),kind=__rt.formKind(value);
     if (owned || ownedKinds.has(kind) || __rt.cljIsAtom(x)
         || kind==='compiler-literal' && __rt.formName(value)==='queue') return false;
-    const ty=__rt.structTypeOf(x),info=views.get(ty!==null?ty:
-      kind===null && value!==null && (typeof value==='object'||typeof value==='function')?value.__lightNativeType:null);
-    if (info?.record || info?.partition0) return false;
+    const ty=directKey(x);
+    if (views.get(ty)?.record) return false;
+    // Read membership at this declaration frontier, including overlays. Do
+    // not retain a later extension's mask in a shared type's layout.
+    if (ty!==null) for (const t of tables.values()) {
+      if (t.marker && partition0.has(t.protocol)
+          && t.entries.some(e=>e.key===ty && (e.overlay>0 || e.order<=frontier))) return false;
+    }
     return satisfies(key,x);
   };
   // Owned core implementations precede object/default extensions. Explicit
@@ -296,7 +300,7 @@ const decl = (() => {
     const record = __rt.formKind(__rt.structNew(ty)) === 'record';
     // Keep one compiler-munged member per declared field: multiple fields
     // may share a member, and property enumeration may reorder names.
-    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), mutable, record, partition0: false});
+    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), mutable, record});
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
       view.__lightNativeType = ty;
