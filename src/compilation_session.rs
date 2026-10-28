@@ -506,8 +506,9 @@ pub(crate) struct SharedCatalog {
     lanes: Arc<crate::effect_lanes::Lanes>,
     #[cfg(feature = "bbp-macros")]
     native_units: std::sync::atomic::AtomicBool,
-    /// Source-wide core writes, indexed before macro factories are emitted.
-    /// Deferred helper bodies must affect their callers' cache eligibility.
+    /// Source-wide core writes and resolved generated targets, indexed before
+    /// later macro factories are emitted. Deferred helper bodies must affect
+    /// their callers' cache eligibility even after their IR is released.
     #[cfg(feature = "bbp-macros")]
     native_replaced_core: Mutex<std::collections::HashSet<&'static str>>,
     #[cfg(feature = "bbp-macros")]

@@ -1455,3 +1455,70 @@ Rebased binary SHA-256 values are native
 `2c6ea7b40427a0f66196e20f1e7a8732d40b8dfaf92be5e22fc59ea5f7fd0119`
 and default V8
 `252204e2a389fdc26388d09813632da382a664c7943f4af212cad1dc6ca20b5e`.
+
+### Review fixes: generated writes and captured reify methods
+
+`a03f22bc` preserves resolved `SetGlobal` and `Binding` core targets in the
+session's existing replacement index as the analyzer creates them. This
+includes writes assembled with `symbol` that the lexical index cannot see.
+Later factories keep seeing these writes after the earlier unit's IR is
+released, without scanning its frozen prefix or retaining its program.
+The focused native/QuickJS regression puts a generated installer in an earlier
+nested definition: before the fix its macro prints `[3 3]`, after the fix both
+backends print `[3 42]`. A generated binding/restoration case prints `[3 42 3]`.
+
+The unit traversal also indexes reify methods as non-struct owners. Previously
+a captured local caused the fallback type-owner search to scan the prefix:
+one captured reify needs 129 arena reads without the added catalog and 642
+with 512 unrelated entries. The fixed deterministic regression has identical
+read counts and emitted source with 512 and 4,096 added frozen expressions
+and globals. It covers both one captured reify and 32 captured reify instances,
+alongside the existing definition-time metadata, core write and type cases.
+
+As a consequence of publishing resolved writes, the separate `light-cljs-544`
+two-namespace reproduction above now prints `[true false]` and emits identical
+JavaScript to the fresh default V8 reference. That pellet remains separate:
+its job-count and restoration acceptance was not added to this work.
+
+Fresh release binaries were rebuilt for this repair with the same locked
+toolchain and build settings. The default V8 before binary uses the handoff's
+`4c23a788` production sources; after binaries use `a03f22bc` (later changes
+are comments and documentation). The same generated seed-42 200k project,
+`release bench --no-cache --stats`, three fresh processes per cell and Node
+oracle checks were retained. No local feature suite or build overlapped these
+measurements. Peer workers remained active; the native runs began with about
+one busy background CPU, and later overlapped an engine GC test using about
+two. The V8 after jobs-1 runs overlapped a native stress test using about six
+CPUs. This is shared-host evidence, not a controlled hardware comparison.
+
+| Backend | Revision | Jobs | Wall median [range], s | User CPU median, s | Peak RSS median, GiB | Load at cell start → end (1/5/15 min) |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| V8 | before repair | 1 | 7.98 [7.89–8.01] | 8.15 | 1.025 | 4.18/3.78/2.72 → 4.22/3.82/2.76 |
+| V8 | after repair | 1 | 7.98 [7.95–8.11] | 8.14 | 1.014 | 7.56/4.75/3.31 → 8.06/5.09/3.48 |
+| V8 | after repair | 4 | 5.55 [5.54–5.60] | 10.83 | 1.334 | 4.53/6.11/5.41 → 5.12/6.14/5.43 |
+| native | after repair | 1 | 37.82 [36.77–40.10] | 35.73 | 1.250 | 7.28/8.16/5.63 → 5.55/7.22/5.59 |
+| native | after repair | 4 | 20.00 [19.62–20.07] | 26.83 | 1.509 | 5.55/7.22/5.59 → 4.95/6.75/5.52 |
+
+The large native speedup remains, with higher absolute times than the earlier
+matrix for both backends. Native remains 4.74x/3.60x slower than the same-source
+V8 reference at jobs 1/4. The default-engine guard has unchanged wall medians
+and overlapping ranges before/after the repair. All 15 applications print
+`484264` and match the original release JavaScript hash
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+Every native run still publishes 57 helpers, makes zero per-task helper copies
+and compiles 742 units.
+
+A fresh native jobs-8 mapped build was sampled from launch to exit with the
+same `/usr/bin/sample PID 600 1 -mayDie` command. Compiler and sampler exit
+zero in 29.03 s; this instrumented process is excluded from the timing table.
+Load is 5.07/6.57/5.50 → 5.00/6.43/5.48. Its main thread has 19,267 samples,
+with 505 (2.6%) in `release_application_ir`, consistent with the previous
+optimized profile's 2.8% and far below the original 86.5%. Collapsed leaf
+samples for global arena iteration/indexing are 133/155, compared with the
+original 76,069/33,015. The mapped application's Node result is `484264`;
+its JavaScript and map match both original native hashes listed above.
+
+Repair binary SHA-256 values: before V8
+`590a13175ac89d5c8148e081b3c0a134ddeb9bf07fcf866eb4354f37ea462fb8`,
+after V8 `add332540ddacb8c9450ba332751c111e5141a02d9c8ccf294010a0fde488bb7`,
+after native `83dac96bf15d9d3a487a847151b14d4710471a9b8019321b92563703877007b7`.
