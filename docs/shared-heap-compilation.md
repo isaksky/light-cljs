@@ -838,6 +838,26 @@ to `Evaluator::{evaluate_js,string,number}` in `benches/support/{callees,levels}
 those files and `src/evaluator.rs` are unchanged from `ba1bb3bd`. Both formatter
 checks pass. These are explicit strict-lint/full-suite limitations.
 
+The final rebase onto protocol integration `7004c99b` changes native protocol
+lookups/runtime code and native tests, with no changes to the ordinary-object
+layout or shared-heap reporting. Affected coverage is rerun: all 2,166 engine
+tests, seven doctests, 56 evaluator tests and 113 combined QuickJS/native macro
+tests pass, as do both formatters and combined all-target lint with only the
+three existing diagnostic categories allowed. The native macro rerun uses
+the default one stress seed. The 12-seed result above is on the preceding
+literal integration; it is not a claim of fresh 12-seed coverage on the final
+protocol base. Default V8 and QuickJS-only results are reused across this
+native-only delta; the complete combined compiler suite predates that delta.
+
+This worker releases light-cljs-508 with useful code and the controlled
+400-helper result preserved. Repeated peer builds/tests interrupted the
+remaining measurement window. Still required: fresh final-protocol-base
+12-seed coverage and RSS/profile checks, the unadmitted 200-helper/eight-job
+large-project comparisons, and default V8 200k before/after timing. The saved
+pre-change V8 baseline is 8.00 s at one job and 5.55 s at eight jobs (three-run
+medians on `ba1bb3bd`); no post-change timing comparison or no-slowdown claim
+is made here. Do not treat the incomplete verification as acceptance met.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
