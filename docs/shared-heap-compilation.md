@@ -1118,6 +1118,166 @@ saved-state bytes. The former four-property charge of 2,048 bytes is replaced
 by the fixed 64-byte payload charge, saving 1,984 accounted bytes per slot
 before small differences in interned keys/runtime storage.
 
+The size diagnostic also reports an **80-byte ordinary property entry** on
+this host. Four live entries therefore contain 320 bytes, before any spare
+Vec capacity, shared shape storage or allocator overhead, versus the slot's
+64-byte fixed payload. Both representations use the same 136-byte heap
+object. This is a backing-storage comparison independent of the much larger
+512-byte-per-property admission charge; neither measures allocator residency.
+
+#### Quiet RSS and build-time comparisons
+
+The before release is `b3ef562c`; the after release uses runtime code
+`674a1b58`, with no other production changes. Both use
+`CARGO_BUILD_JOBS=3 cargo build --locked --release --no-default-features
+--features bbp-macros --bin light-cljs`. Host and toolchain remain macOS
+15.7.3, Apple M3 Ultra (Virtual), 24 vCPUs/32 GiB, Rust/Cargo 1.99.1 and Node
+26.12.1. Inputs, CLI limits and inline maps are the same eight-namespace,
+50-helpers-per-namespace chain described above.
+
+Admission requires a full minute without detected competing build/test/compiler
+processes before each batch, then 10–16 consecutive idle seconds before each
+run. Process scans occur before/after and every 100 ms during a run. Three
+cycles pair before/after at each job count, reversing pair order in the middle
+cycle. All three accepted pairs per cell are retained. One V8 200k pair overlaps
+`rustfmt` and is excluded in its entirety, then retried; no other pair is
+excluded. Load is the one/five/fifteen-minute average before and after each
+run; RSS is decimal MB and wall time is seconds. The 400-helper raw pairs are:
+
+| Round | Jobs | Version | RSS MB | Wall s | Load before → after |
+| --- | ---: | --- | ---: | ---: | --- |
+| 0 | 1 | before | 92.0 | 2.77 | 2.12/3.08/6.35 → 2.12/3.08/6.35 |
+| 0 | 1 | after | 91.7 | 2.66 | 2.10/3.05/6.30 → 2.01/3.01/6.27 |
+| 0 | 2 | before | 102.0 | 3.22 | 2.01/2.96/6.20 → 2.01/2.96/6.20 |
+| 0 | 2 | after | 104.0 | 3.14 | 1.78/2.87/6.10 → 1.80/2.85/6.08 |
+| 0 | 4 | before | 136.8 | 2.75 | 1.69/2.78/6.00 → 1.80/2.78/5.98 |
+| 0 | 4 | after | 126.2 | 2.64 | 1.85/2.74/5.91 → 1.85/2.74/5.91 |
+| 0 | 8 | before | 167.6 | 2.77 | 1.72/2.68/5.85 → 1.74/2.67/5.83 |
+| 0 | 8 | after | 168.2 | 2.69 | 1.50/2.57/5.74 → 1.50/2.57/5.74 |
+| 1 | 1 | after | 91.9 | 2.65 | 1.38/2.49/5.65 → 1.35/2.47/5.63 |
+| 1 | 1 | before | 92.3 | 2.69 | 1.34/2.41/5.55 → 1.34/2.41/5.55 |
+| 1 | 2 | after | 100.4 | 3.19 | 1.29/2.33/5.45 → 1.29/2.33/5.45 |
+| 1 | 2 | before | 102.3 | 3.18 | 1.31/2.29/5.38 → 1.29/2.26/5.35 |
+| 1 | 4 | after | 132.6 | 2.62 | 1.68/2.30/5.31 → 1.68/2.30/5.31 |
+| 1 | 4 | before | 134.3 | 2.74 | 1.67/2.27/5.24 → 1.70/2.26/5.23 |
+| 1 | 8 | after | 170.6 | 2.68 | 2.76/2.47/5.02 → 2.76/2.47/5.02 |
+| 1 | 8 | before | 180.3 | 2.84 | 2.52/2.43/4.96 → 2.52/2.43/4.96 |
+| 2 | 1 | before | 91.5 | 2.63 | 2.33/2.39/4.90 → 2.33/2.39/4.90 |
+| 2 | 1 | after | 92.0 | 2.63 | 2.17/2.35/4.83 → 2.17/2.35/4.83 |
+| 2 | 2 | before | 101.2 | 3.20 | 2.07/2.32/4.79 → 2.14/2.33/4.78 |
+| 2 | 2 | after | 100.6 | 3.12 | 2.41/2.38/4.75 → 2.41/2.38/4.75 |
+| 2 | 4 | before | 130.2 | 2.84 | 2.17/2.33/4.69 → 2.23/2.34/4.68 |
+| 2 | 4 | after | 128.3 | 2.65 | 1.96/2.28/4.63 → 2.21/2.32/4.63 |
+| 2 | 8 | before | 169.5 | 2.80 | 2.42/2.36/4.62 → 2.47/2.37/4.61 |
+| 2 | 8 | after | 180.5 | 2.69 | 2.24/2.33/4.57 → 2.30/2.34/4.56 |
+The resulting medians are:
+
+| Jobs | Before RSS | After RSS | Before wall | After wall |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 92.0 | 91.9 | 2.69 | 2.65 |
+| 2 | 102.0 | 100.6 | 3.20 | 3.14 |
+| 4 | 134.3 | 128.3 | 2.75 | 2.64 |
+| 8 | 169.5 | 170.6 | 2.80 | 2.69 |
+
+At four jobs, all three after RSS values are lower than their paired before
+values: 136.8→126.2, 134.3→132.6 and 130.2→128.3 MB. The median reduction is
+**4.4%**. One/two-job median reductions are smaller. **No repeatable eight-job
+RSS improvement is demonstrated**: before/after ranges overlap at
+167.6–180.3 / 168.2–180.5 MB, and the after median is 0.6% higher.
+Eight/one ratios of median RSS are **1.842 before / 1.856 after**; paired
+ratios are 1.822/1.953/1.852 before and 1.834/1.856/1.963 after. Every after
+pair still misses **1.15**. The reduction in accounted live storage must not
+be described as an equivalent process-RSS reduction.
+
+All 24 JavaScript outputs, including inline source maps, are byte-identical.
+Every run compiles/publishes 400 helpers, executes 400 deferred helper units
+and has zero per-task fallbacks; pooled runs initialize exactly 400 helpers.
+Contexts remain 401/402/404/408 and source evaluations remain
+2810/2004/2008/2016. Median task steps change from
+16729/18342/18471/18586 to 16579/17979/18115/18235. The shared native heap
+counters describe admission and collection, independently of RSS:
+
+| Jobs | Version | Last collected live MB | Managed at report MB | Peak managed MB | Total admitted GB |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | before | 18.5 | 26.2 | 48.7 | 2.301 |
+| 1 | after | 16.9 | 23.0 | 40.8 | 1.942 |
+| 2 | before | 25.5 | 33.1 | 60.1 | 3.066 |
+| 2 | after | 22.3 | 28.3 | 50.0 | 2.468 |
+| 4 | before | 42.9 | 67.2 | 92.7 | 3.067 |
+| 4 | after | 36.3 | 43.8 | 74.6 | 2.469 |
+| 8 | before | 72.2 | 80.6 | 136.7 | 3.109 |
+| 8 | after | 60.7 | 74.2 | 115.0 | 2.506 |
+
+The 200-helper entry (`chain.n3`, otherwise identical flags) exercises 600
+registrations, matching the smaller collected diagnostic. Its three paired
+rounds at jobs one/eight are:
+
+| Round | Jobs | Version | RSS MB | Wall s | Load before → after |
+| --- | ---: | --- | ---: | ---: | --- |
+| 0 | 1 | before | 65.3 | 1.00 | 1.87/2.19/4.27 → 1.87/2.19/4.27 |
+| 0 | 1 | after | 63.0 | 1.01 | 2.03/2.22/4.24 → 2.03/2.22/4.24 |
+| 0 | 8 | before | 113.4 | 1.00 | 2.15/2.24/4.21 → 2.15/2.24/4.21 |
+| 0 | 8 | after | 116.1 | 0.97 | 2.03/2.21/4.17 → 2.03/2.21/4.17 |
+| 1 | 1 | after | 63.8 | 0.98 | 2.74/2.36/4.19 → 2.74/2.36/4.19 |
+| 1 | 1 | before | 65.2 | 1.02 | 2.34/2.29/4.13 → 2.34/2.29/4.13 |
+| 1 | 8 | after | 118.1 | 1.06 | 2.17/2.26/4.08 → 2.17/2.26/4.08 |
+| 1 | 8 | before | 113.9 | 1.01 | 1.91/2.20/4.03 → 1.91/2.20/4.03 |
+| 2 | 1 | before | 65.6 | 0.98 | 2.15/2.23/4.01 → 2.15/2.23/4.01 |
+| 2 | 1 | after | 62.3 | 0.97 | 2.13/2.23/3.99 → 2.13/2.23/3.99 |
+| 2 | 8 | before | 122.1 | 1.00 | 2.11/2.22/3.95 → 2.26/2.24/3.95 |
+| 2 | 8 | after | 113.4 | 0.96 | 2.14/2.22/3.92 → 2.14/2.22/3.92 |
+One-job median RSS falls **65.3→63.0 MB (3.4%)**, with lower RSS in all three
+pairs; median wall time changes 1.00→0.98 s. Eight-job medians are
+**113.9→116.1 MB**, with wall time 1.00→0.97 s: this smaller workload also
+shows no reliable eight-job RSS improvement. All twelve outputs and inline
+maps match. Each build compiles/publishes 200 helpers, executes 200 deferred
+helper units, and uses zero per-task fallbacks; pooled initialization count
+is 200. Contexts remain 201/208 and evaluations remain 1406/1016.
+
+The seed-42 generated project uses `--lines 200k` (199,129 nonblank source
+lines, 450 worker namespaces), the existing generated configuration and its
+2-GiB aggregate macro budget. From `target/generated-200k`, run
+`/usr/bin/time -lp BINARY release bench --no-cache --stats --jobs 1`.
+Native release uses one admitted pair; default V8 uses three admitted pairs,
+with before/after pair order reversed in the middle round. Both default
+releases are built with `LIGHT_CLJS_V8_CACHE=require CARGO_BUILD_JOBS=3
+cargo build --locked --release --bin light-cljs`:
+
+| Workload | Pair | Version | RSS MB | Wall s | Load before → after |
+| --- | ---: | --- | ---: | ---: | --- |
+| native200k | 0 | before | 1316.9 | 33.72 | 1.68/2.06/3.71 → 2.03/2.11/3.66 |
+| native200k | 0 | after | 1293.0 | 33.26 | 2.27/2.16/3.66 → 1.90/2.08/3.57 |
+| v8200k | 0 | before | 1090.1 | 7.22 | 2.18/2.13/3.39 → 2.24/2.14/3.38 |
+| v8200k | 0 | after | 1091.3 | 7.05 | 2.05/2.10/3.34 → 1.89/2.07/3.32 |
+| v8200k | 1 | after | 1115.3 | 7.03 | 1.75/2.03/3.29 → 1.94/2.06/3.29 |
+| v8200k | 1 | before | 1107.2 | 7.07 | 2.55/2.19/3.31 → 2.38/2.17/3.29 |
+| v8200k | 2 | before | 1079.9 | 7.09 | 2.29/2.16/3.26 → 2.09/2.12/3.24 |
+| v8200k | 2 | after | 1067.7 | 7.04 | 1.92/2.08/3.21 → 2.02/2.10/3.20 |
+The native pair lowers RSS **1,316.9→1,293.0 MB (1.8%)** and wall time
+33.72→33.26 s. Last-collected live admission falls 349.2→273.9 MB, managed
+at report 360.5→284.2 MB, peak managed 505.9→411.4 MB and total admitted
+8.198→7.058 GB. This is one large-project pair, not a repeated native timing
+gate. Default V8 wall medians are **7.09→7.04 s (0.993x)**, with no observed
+slowdown; RSS medians are 1090.1→1091.3 MB. All eight accepted large-project
+JavaScript artifacts are byte-identical (SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`).
+
+The remaining retained contributors are the ordinary registries/getters,
+getter captures, bootstrap state and heap-table high-water storage. In the
+collected 1,200-registration diagnostic, eight tasks still retain **37.5 MB**
+more accounted bytes than one task. Seven extra booted tasks account for
+11.0 MB before registration. Their 8,400 extra Map entries/root properties
+retain conservative charges of **17.20 + 4.30 MB**, with another **0.54 MB**
+for compact slot payloads, plus metadata/captures and other storage. These
+are admission components, not exact malloc sizes or a decomposition of the
+RSS peak. Temporary descriptors/property population, collection timing,
+compiler data, executable code, stacks and allocator residency also affect
+process peaks; the RSS/accounting difference is not an allocator-overhead
+measurement. The smaller actual slot backing store and lower admission are
+verified, but the 1.15 target and an eight-job RSS benefit remain unproven.
+No distinct new retained-memory cause was isolated, so no additional memory
+follow-up is filed.
+
 A separate eight-job `/usr/bin/sample PID 3 1 -mayDie` run of the after
 executable records collapsed top-of-stack counts of 10,976
 `semaphore_timedwait_trap`, 3,834 `__psynch_cvwait`, 465 `execute_budgeted`,

@@ -146,5 +146,9 @@ mod tests {
             std::mem::size_of::<HeapObject>(),
             charge
         );
+        eprintln!(
+            "ordinary property entry bytes: {}",
+            std::mem::size_of::<(crate::object::PropertyKey, crate::object::Property)>()
+        );
     }
 }
