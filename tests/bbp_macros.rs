@@ -8100,6 +8100,126 @@ fn compiler_literal_property_updates_keep_callbacks_and_metadata() {
 }
 
 #[test]
+fn nthrest_identity_realization_and_callbacks_match_quickjs_at_all_jobs() {
+    let root = temp_dir::TempDir::new("native-nthrest");
+    for (label, declarations, body, expected) in [
+        (
+            "nonpositive",
+            "",
+            r#"(mapv (fn [n]
+              (let [seen (atom [])
+                    input (lazy-seq (swap! seen conj :forced) (throw (js/Error. "forced")))
+                    f nthrest result CALL]
+                [(identical? input result) (realized? input) @seen])) [0 -1])"#,
+            "[[true false []] [true false []]]",
+        ),
+        (
+            "lazy-tail",
+            "",
+            // The first two thunks must run, but the returned tail must stay
+            // identical and unforced until the explicit first below.
+            r#"(let [seen (atom []) tail (lazy-seq (swap! seen conj 2) (list 2 3))
+                    middle (lazy-seq (swap! seen conj 1) (cons 1 tail))
+                    input (lazy-seq (swap! seen conj 0) (cons 0 middle))
+                    n 2 f nthrest result CALL
+                    before [(identical? tail result) (realized? tail) @seen]
+                    value (first result)]
+                [before value @seen])"#,
+            "[[true false [0 1]] 2 [0 1 2]]",
+        ),
+        (
+            "suspended-callbacks",
+            // Each callback demands its own cold helper, including both
+            // callbacks in the second traversal step. Effects before a demand
+            // must survive parking without replay, and -first is never needed.
+            r#"(defn seq-zero-demanded [x] x)
+              (defn rest-zero-demanded [x] x)
+              (defn seq-one-demanded [x] x)
+              (defn rest-one-demanded [x] x)
+              (deftype NthrestCell [tail seen step]
+                ISeqable (-seq [this]
+                  (swap! seen conj [:seq step])
+                  (if (zero? step) (seq-zero-demanded this) (seq-one-demanded this)))
+                ISeq (-first [_] (throw (js/Error. "nthrest read first")))
+                  (-rest [_]
+                    (swap! seen conj [:rest step])
+                    (if (zero? step) (rest-zero-demanded tail) (rest-one-demanded tail))))"#,
+            r#"(let [seen (atom [])
+                    tail (lazy-seq (swap! seen conj :past-tail) (throw (js/Error. "past tail")))
+                    middle (NthrestCell. tail seen 1) input (NthrestCell. middle seen 0)
+                    n 2 f nthrest result CALL]
+                [(identical? tail result) (realized? tail) @seen])"#,
+            "[true false [[:seq 0] [:rest 0] [:seq 1] [:rest 1]]]",
+        ),
+    ] {
+        for (call_kind, call) in [
+            ("direct", "(nthrest input n)"),
+            ("saved", "(f input n)"),
+            ("apply", "(apply f [input n])"),
+        ] {
+            std::fs::write(
+                root.path().join("macros.cljs"),
+                format!(
+                    "(ns macros) {declarations}\n(defmacro probe [] (list 'quote {}))",
+                    body.replace("CALL", call)
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                root.path().join("app.cljs"),
+                "(ns app (:require [macros :refer [probe]])) (js/console.log (pr-str (probe)))",
+            )
+            .unwrap();
+            let build = |native, jobs| {
+                let mut host = MacroHost::new();
+                if native {
+                    host.use_native_macros();
+                }
+                let mut stats = light_cljs::CompileStats::new();
+                let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+                    "app",
+                    &[root.path().to_path_buf()],
+                    &mut host,
+                    Default::default(),
+                    &mut Vec::new(),
+                    light_cljs::compiler::EntryRecorders {
+                        slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                        stats: Some(&mut stats),
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|e| {
+                    panic!("{label}, {call_kind}, native={native}, jobs={jobs}: {e}")
+                });
+                if native && label == "suspended-callbacks" {
+                    assert!(stats.native_helpers.waits >= 4, "{stats:?}");
+                }
+                emit_js(&program)
+            };
+            let mut previous = None;
+            for jobs in [1, 2, 4, 8] {
+                let native = build(true, jobs);
+                assert_eq!(
+                    program_output(&native),
+                    format!("{expected}\n"),
+                    "{label}, {call_kind}, jobs={jobs}"
+                );
+                if let Some(previous) = &previous {
+                    assert_eq!(&native, previous, "{label}, {call_kind}, jobs={jobs}");
+                }
+                #[cfg(feature = "quickjs")]
+                assert_eq!(
+                    native,
+                    build(false, jobs),
+                    "{label}, {call_kind}, QuickJS jobs={jobs}"
+                );
+                previous = Some(native);
+            }
+        }
+    }
+}
+
+#[test]
 fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
     let root = temp_dir::TempDir::new("native-sequence-predicates");
     // Every row runs direct, saved and apply calls. The same source is the
