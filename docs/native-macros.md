@@ -3096,3 +3096,32 @@ their existing ignored stress cases. Formatting, native runtime syntax and
 the direct JavaScript runtime checks pass. The full engine's 2,181 tests and
 seven doctests from `d6ae8895` are reused: engine source, tests, dependency
 inputs and toolchain are unchanged by this emitter-only fix.
+
+Fresh full default V8 and QuickJS-only nextest runs pass 2,133 and 2,056
+tests respectively, each failing only `playground_crate_checks_for_wasm32`.
+The same installed Rust 1.99.0 WASM subprocess resolves the worktree playground
+crate to the main checkout workspace before compiling it. Its exact diagnostic,
+manifests, script and test match the prior review. The runs use
+`cargo nextest run --locked -j 8 --no-fail-fast`, adding
+`--no-default-features --features quickjs` for QuickJS and
+`LIGHT_CLJS_V8_CACHE=require` for V8, with the same pinned ClojureScript
+source and WASM toolchain override recorded above.
+
+Strict V8 and QuickJS all-target Clippy and engine-free library/binary lint
+pass. Combined strict lint reports the same eight engine-library diagnostics;
+combined all-target and native production lint pass allowing only the three
+established engine categories after `-D warnings`. Engine-free all-target lint
+reaches 501 errors in legacy-dependent compiler fixtures plus the execution
+fixture's `unused_enumerate_index` lint when no engine is enabled. Checking
+both targets with pre-fix `5ac614f6` emitter source reproduces all 504 error
+summary lines exactly. No source lint suppressions or test skips were added.
+
+The rebuilt native-only release compiler again builds `app.render` at jobs 1
+and 4 with all five absolute read-only roots and every documented budget.
+Both 12,680,976-byte outputs are byte-identical to the pre-fix output and pass
+JavaScript syntax checks, retaining SHA-256
+`0a5320e48cd525cce43524c9fde45c2dd71ace555525014b98767b9b363e330b`.
+`app.main` at jobs 1 repeats the exact light-cljs-558 TypeError quoted above.
+There is still no native main output or native/V8 main-build performance
+comparison. These repeated Penpot runs establish build behavior, with no new
+performance claim while a peer suite is active.
