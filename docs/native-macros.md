@@ -2357,4 +2357,13 @@ macro, reader and Proxy selection passes all 492 tests (one normally ignored)
 with `LIGHT_CLJS_STRESS_SEEDS=12` and three test workers. This includes both
 the flatten and expanded sequence-predicate differential tables at jobs
 1/2/4/8. Compiler/engine formatting, JavaScript syntax and direct runtime checks
-also pass. Further integration checks are recorded below when complete.
+also pass. The native-only evaluator/lane/macro/reader/Proxy selection passes
+all 195 tests with twelve stress seeds. All 2,180 engine tests and seven
+doctests pass. Strict engine Clippy retains the same nine diagnostics;
+allowing only the three established categories passes all engine targets.
+
+The native CLI was rebuilt from this source and both Penpot entries repeated
+with the same five absolute read-only roots and every documented budget,
+`--jobs 1 --no-cache`. Both pass flatten and exit 1 with the identical wide
+`js-obj` diagnostic above, still tracked by light-cljs-553. `app.render`
+takes 205.19 s while the engine suite runs concurrently; research is unchanged.
