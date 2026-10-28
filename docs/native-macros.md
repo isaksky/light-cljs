@@ -1910,9 +1910,14 @@ replayed in another task or when an earlier frontier is selected. Persistent
 maps in a private shared journal record declaration operations and subsequent
 runtime mutations. Each supplied method/preference atom identity owns its history,
 shared by every `MultiFn` constructed with that atom, including in another task.
-The histories are independent when only one table is shared. An initializer-owned
-private registry uses persistent identity maps and CAS bookkeeping without user
-equality or effect replay. Constructor-supplied method and preference maps seed each view;
+The histories are independent when only one table is shared. Each supplied atom
+retains a private auxiliary atom through a traced edge; that auxiliary atom owns
+the shared history state. CAS attaches one state without user equality or effect
+replay. Retaining a supplied atom preserves its history even after its `MultiFn`
+instances are discarded. Once the supplied atom, its instances and other references
+to the history are unreachable, the auxiliary state, journal and captured method
+values can be reclaimed together; no compilation-wide registry roots them.
+Constructor-supplied method and preference maps seed each view;
 the supplied atoms continue to contain language-level tables after additions,
 removals, preferences and resets. The visible dispatch/preference maps are
 materialized in source order, cached by history
@@ -1958,7 +1963,7 @@ its effects. `demanded_multimethods_reject_task_owned_dispatch_without_replaying
 checks this boundary at all four pool sizes.
 
 `demanded_multimethod_dispatch_shapes_match_quickjs_at_every_pool_size` is one
-24-row native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
+32-row native/QuickJS comparison at jobs 1/2/4/8, checking identical emitted
 JavaScript as well as literal results. It covers scalar and structural keys,
 constructor/function keys, keyword/variadic dispatch, nested hierarchy dispatch,
 global hierarchy changes,
@@ -1968,6 +1973,9 @@ binding restoration, referenced fixed/variadic dispatch functions, retained
 constructor table atoms, native type tags, shared and independently shared
 constructor tables, and direct/first-class predicates on functions, constructors,
 protocol callables, multimethods, callable collections and noncallable values.
+External `reset!`/`swap!` replacements are reconciled on immediate table reads and
+mutations through existing instances, as well as on later construction; swap
+callbacks run once.
 `multifns_sharing_constructor_tables_observe_each_others_mutations` checks
 addition, removal, preferences and reset across separate namespace macro callers
 and a later constructor sharing the same atoms, with seeded scheduling at all
