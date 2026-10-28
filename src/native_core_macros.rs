@@ -1211,6 +1211,7 @@ fn defmulti<const MERGE_METADATA: bool>(
         Some(metadata) if attributes.is_empty() && doc.is_none() => metadata,
         Some(_) if !MERGE_METADATA => return Ok(None),
         original => {
+            let map_metadata = original.as_ref().and_then(meta);
             let mut metadata: Vec<(Datum, Datum)> = Vec::new();
             let doc = doc.map(|doc| (C.keyword(Name::new(None, "doc")), doc));
             let original = original
@@ -1223,13 +1224,18 @@ fn defmulti<const MERGE_METADATA: bool>(
                 }
                 match metadata.iter_mut().find(|(k, _)| k.value_eq(&key)) {
                     Some(entry) => entry.1 = value,
-                    None => metadata.push((key, value)),
+                    // A ninth distinct key promotes the legacy array map.
+                    // Decline before doing unbounded quadratic Rust work or
+                    // rebuilding its entries in the wrong iteration order.
+                    None => {
+                        if metadata.len() == 8 {
+                            return Ok(None);
+                        }
+                        metadata.push((key, value));
+                    }
                 }
             }
-            if metadata.len() > 8 {
-                return Ok(None);
-            }
-            C.map(&metadata)?
+            with_meta(C.map(&metadata)?, map_metadata)
         }
     };
     let qualified = match symbol_name.namespace() {
@@ -2306,13 +2312,43 @@ mod tests {
                     .unwrap(),
             )])
             .unwrap();
-        for source in [
-            r#"(defmulti ^:private render-at-rule "Render a CSS at-rule" :identifier)"#,
-            r#"(defmulti ^{:doc "old" :private true} area "new" {:doc "attributes" :tag Result} :shape)"#,
-            r#"(defmulti ^{:private true :tag First} area {:private false :tag Second} :shape :default :none)"#,
+        for (source, nested_metadata) in [
+            (
+                r#"(defmulti ^:private render-at-rule "Render a CSS at-rule" :identifier)"#,
+                false,
+            ),
+            (
+                r#"(defmulti ^{:doc "old" :private true} area "new" {:doc "attributes" :tag Result} :shape)"#,
+                false,
+            ),
+            (
+                r#"(defmulti ^{:private true :tag First} area {:private false :tag Second} :shape :default :none)"#,
+                false,
+            ),
+            (r#"(defmulti ^{:private true} area "doc" identity)"#, true),
+            (r#"(defmulti ^{} area {:private true} identity)"#, true),
+            (
+                r#"(defmulti ^{:private true :doc "old"} area ^{:ignored true} {:private false} identity)"#,
+                true,
+            ),
         ] {
             let text = Source::new("defmulti.cljs", source);
-            let call = legacy.read_compiler_form(&text).unwrap().unwrap();
+            let mut call = legacy.read_compiler_form(&text).unwrap().unwrap();
+            if nested_metadata {
+                // Macro-generated metadata maps can carry metadata of their
+                // own even though the reader rejects this nested ^ syntax.
+                let mut parts = call.data().elements().unwrap();
+                let marker = C
+                    .map(&[(C.keyword(Name::new(None, "marker")), C.boolean(true))])
+                    .unwrap();
+                let metadata = parts[1].metadata().unwrap().with_metadata(marker);
+                parts[1] = parts[1].with_metadata(metadata);
+                call = Form::from_data(
+                    list(parts),
+                    call.span(),
+                    crate::compiler_data::Origin::Source,
+                );
+            }
             let expected = legacy
                 .expand_core_javascript("defmulti", &call, &environment, None)
                 .unwrap();
@@ -2322,6 +2358,85 @@ mod tests {
                 .unwrap()
                 .expect("native metadata merge");
             assert_eq!(difference(&actual, &expected, ""), None, "{source}");
+        }
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_defmulti_declines_wide_name_metadata() {
+        for width in [8, 9, 10, 20_000] {
+            let metadata = C
+                .map(
+                    &(0..width)
+                        .map(|i| {
+                            (
+                                C.keyword(Name::new(None, &format!("k{i}"))),
+                                C.integer(i as i64),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+            let name = symbol("area").with_metadata(metadata);
+            // Updating a key in an eight-entry map stays native; inserting
+            // a ninth key (including :doc) must leave promotion to bootstrap.
+            let override_key = C
+                .map(&[(C.keyword(Name::new(None, "k0")), C.boolean(true))])
+                .unwrap();
+            let override_call = [override_key, symbol("identity")];
+            let doc_call = [
+                C.string("doc".encode_utf16().collect::<Vec<_>>()),
+                symbol("identity"),
+            ];
+            let actual = defmulti::<true>(&name, &override_call, "user").unwrap();
+            assert_eq!(actual.is_some(), width == 8, "{width} keys, override");
+            assert!(
+                defmulti::<true>(&name, &doc_call, "user")
+                    .unwrap()
+                    .is_none(),
+                "{width} keys, insert"
+            );
+            #[cfg(light_quickjs)]
+            if width <= 10 {
+                let mut legacy = MacroHost::new();
+                let environment = C
+                    .map(&[(
+                        C.keyword(Name::new(None, "ns")),
+                        C.map(&[(C.keyword(Name::new(None, "name")), symbol("user"))])
+                            .unwrap(),
+                    )])
+                    .unwrap();
+                for (declarations, native) in [(&override_call, actual), (&doc_call, None)] {
+                    let mut parts = vec![symbol("defmulti"), name.clone()];
+                    parts.extend_from_slice(declarations);
+                    let call = Form::from_data(
+                        list(parts),
+                        Source::new("wide-meta.cljs", "").span(0..0).unwrap(),
+                        crate::compiler_data::Origin::Source,
+                    );
+                    let expected = legacy
+                        .expand_core_javascript("defmulti", &call, &environment, None)
+                        .unwrap();
+                    if let Some(native) = native {
+                        let actual = Form::from_expansion(
+                            native,
+                            &call,
+                            Name::new(Some("cljs.core"), "defmulti"),
+                        );
+                        assert_eq!(difference(&actual, &expected, ""), None, "{width} keys");
+                    } else {
+                        assert!(
+                            expected.data().elements().unwrap()[1]
+                                .metadata()
+                                .unwrap()
+                                .entries()
+                                .unwrap()
+                                .len()
+                                >= width
+                        );
+                    }
+                }
+            }
         }
     }
 

@@ -452,7 +452,9 @@ fn core_source() -> String {
     source.push('}');
     source
 }
-fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), String> {
+fn definitions(
+    names: &[&str],
+) -> Result<HashMap<String, crate::compiler_data::SourceSpan>, String> {
     let (file, text) = if names.first() == Some(&"for") {
         ("compiler_sequence_macros.cljs", SEQUENCES)
     } else {
@@ -472,6 +474,10 @@ fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> R
             );
         }
     }
+    Ok(definitions)
+}
+fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), String> {
+    let definitions = definitions(names)?;
     let e = &bootstrap.evaluator;
     let values = e.evaluate_unit(unit).map_err(|e| e.to_string())?;
     // Registry access is compiler-emitted code too, sharing canonical get.
@@ -649,25 +655,24 @@ impl MacroHost {
         }
         #[cfg(feature = "bbp-macros")]
         if name == "js-obj" {
-            let frontier = self.engine.extension_frontier();
             let bootstrap = self.engine.bootstrap.as_mut().unwrap();
             if bootstrap.evaluator.native_forms() && !bootstrap.functions.contains_key(name) {
-                // Install only on demand. Ordinary native bootstrap primitives
-                // still need no evaluated units; legacy bootstrap is unchanged.
-                let evaluator = bootstrap.evaluator.clone();
-                let _frontier = (frontier != 0)
-                    .then(|| {
-                        crate::compilation_session::FrontierGuard::bootstrap(evaluator.as_ref())
-                    })
-                    .transpose()?;
-                install(
-                    &BootstrapUnit {
-                        source: "rt => rt.mapFromArray(['js-obj', rt.compilerForms.jsObj])".into(),
-                        environment_reads: HashMap::from([("macro-js-obj".into(), false)]),
+                // The active helper producer may own a different task from
+                // this bootstrap. Keep code identity here, and resolve its
+                // function only in the selected task below.
+                bootstrap.functions.insert(
+                    name.into(),
+                    CompiledMacro {
+                        function: MacroFunction::NativeJsObj(CodeIdentity::next()),
+                        definition: definitions(&[name])?
+                            .remove("macro-js-obj")
+                            .ok_or("missing bootstrap declaration macro-js-obj")?,
+                        metadata: None,
+                        generation: 0,
+                        reads_environment: false,
+                        environment_keys: None,
                     },
-                    bootstrap,
-                    &["js-obj"],
-                )?;
+                );
             }
         }
         let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
@@ -776,6 +781,10 @@ pub(crate) struct CompiledMacro {
 /// a macro installed from its namespace's artifact, on its first expansion.
 #[derive(Clone)]
 enum MacroFunction {
+    /// Native bootstrap code whose callable handle belongs to the active
+    /// task, including a producer analyzing while the bootstrap task waits.
+    #[cfg(feature = "bbp-macros")]
+    NativeJsObj(CodeIdentity),
     /// Evaluated in the engine that declared it; a source macro's also with
     /// the code that declared it, which a worker's engine evaluates itself.
     Ready(
@@ -874,6 +883,8 @@ impl CompiledMacro {
             return self.foreign_function(engine, binding);
         }
         let installed = match &self.function {
+            #[cfg(feature = "bbp-macros")]
+            MacroFunction::NativeJsObj(_) => return self.foreign_function(engine, binding),
             MacroFunction::Ready(function, _) => return Ok(function.id),
             MacroFunction::Installed(installed) => installed,
         };
@@ -906,6 +917,12 @@ impl CompiledMacro {
         binding: &crate::macro_host::EngineBinding,
     ) -> Result<ValueId, String> {
         let key = match &self.function {
+            #[cfg(feature = "bbp-macros")]
+            MacroFunction::NativeJsObj(identity) => {
+                return engine
+                    .source_macro_function(identity.0, "rt => rt.compilerForms.jsObj")
+                    .map_err(|e| e.to_string());
+            }
             MacroFunction::Ready(_, Some(code)) => code.identity.0,
             // A bootstrap macro, which the worker's own bootstrap holds.
             MacroFunction::Ready(function, None) => return Ok(function.id),
@@ -930,6 +947,8 @@ impl CompiledMacro {
                 (&parts.0, &parts.1)
             }
             MacroFunction::Ready(_, None) => unreachable!("bootstrap macros returned above"),
+            #[cfg(feature = "bbp-macros")]
+            MacroFunction::NativeJsObj(_) => unreachable!("native bootstrap returned above"),
         };
         crate::reader_registration::register(engine, tables).map_err(|e| e.to_string())?;
         let source = format!("rt => rt.core.macroReaderFunction(({})(rt))", unit);
@@ -1320,6 +1339,75 @@ impl MacroHost {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "bbp-macros")]
+    #[test]
+    fn native_js_obj_bootstrap_uses_active_producer_context() {
+        use crate::evaluator::MacroEvaluator;
+        let runtime = crate::bbp_evaluator::BbpRuntime::new(&Default::default()).unwrap();
+        let owner = Rc::new(runtime.evaluator().unwrap());
+        let mut seed = MacroHost::new();
+        seed.use_native_macros();
+        let mut host = MacroHost::bind(seed.environment(), Some(owner.clone())).unwrap();
+        let producer = runtime.evaluator().unwrap();
+        assert_ne!(owner.heap(), producer.heap());
+        let call = host
+            .read_compiler_form(&Source::new(
+                "producer.cljs",
+                r#"(js-obj "a" 1 "b" 2 "c" 3 "d" 4 "e" 5 "f" 6 "g" 7 "h" 8 "i" 9)"#,
+            ))
+            .unwrap()
+            .unwrap();
+        let environment = DataBuilder.map(&[]).unwrap();
+        let expand = |host: &mut MacroHost, engine: Option<&dyn MacroEvaluator>| {
+            let _names = crate::generated_names::enter_namespace(7);
+            host.expand_core_javascript("js-obj", &call, &environment, engine)
+                .unwrap()
+        };
+        // The first demand happens in a producer, without entering the
+        // bootstrap's owner. Each task then retains its own callable handle.
+        let expected = expand(&mut host, Some(&producer));
+        let declaration = host.engine.bootstrap.as_ref().unwrap().functions["js-obj"].clone();
+        let MacroFunction::NativeJsObj(identity) = declaration.function else {
+            panic!("native bootstrap code identity");
+        };
+        assert!(owner.cached_source_macro_function(identity.0).is_none());
+        let before = runtime.helper_counts().units_evaluated;
+        let function = declaration.function(&producer, &host.engine).unwrap();
+        assert_eq!(function.session as usize, producer.heap());
+        assert_eq!(runtime.helper_counts().units_evaluated, before);
+        let own_function = declaration.function(owner.as_ref(), &host.engine).unwrap();
+        assert_ne!(own_function.session, function.session);
+        assert_eq!(runtime.helper_counts().units_evaluated, before + 1);
+        assert!(expand(&mut host, None).data().value_eq(&expected.data()));
+        for _ in 0..2 {
+            assert!(
+                expand(&mut host, Some(&producer))
+                    .data()
+                    .value_eq(&expected.data())
+            );
+            assert_eq!(
+                declaration.function(&producer, &host.engine).unwrap(),
+                function
+            );
+        }
+        // Lending preserves the task's cached function, while the host
+        // still carries the bootstrap bound to its original owner.
+        assert!(producer.park(Default::default()));
+        let (borrowed, state) = runtime.lent_evaluator().unwrap();
+        assert!(state.is_some());
+        let before = runtime.helper_counts().units_evaluated;
+        assert_eq!(
+            declaration.function(&borrowed, &host.engine).unwrap(),
+            function
+        );
+        assert_eq!(runtime.helper_counts().units_evaluated, before);
+        assert!(
+            expand(&mut host, Some(&borrowed))
+                .data()
+                .value_eq(&expected.data())
+        );
+    }
+
     #[cfg(feature = "bbp-macros")]
     #[test]
     fn native_macro_cache_hits_skip_reader_registration() {
