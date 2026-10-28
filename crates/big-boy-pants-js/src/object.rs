@@ -1481,6 +1481,48 @@ mod tests {
         assert!(std::mem::size_of::<crate::heap::HeapObject>() <= 192);
     }
 
+    #[test]
+    fn specialized_payload_boxes_require_headroom_and_release_it_after_collection() {
+        use crate::heap::{Heap, HeapObject, Scope};
+
+        for wrapper in [false, true] {
+            let heap = std::sync::Arc::new(Heap::with_byte_limit(usize::MAX / 2));
+            // Warm the slot batch and free list before fixing exact headroom.
+            let scope = Scope::new(&heap);
+            scope.new_object();
+            drop(scope);
+            heap.collect().unwrap();
+            let baseline = heap.byte_budget().used();
+            let object = || {
+                let object = OrdinaryObject::new(&heap, None);
+                HeapObject::Plain(if wrapper {
+                    object.with_primitive_data(PrimitiveData::Number(42.0))
+                } else {
+                    object.with_date_value(42.0)
+                })
+            };
+            let body = std::mem::size_of::<ObjectData>();
+            assert_eq!(object().boxed_bytes(), body);
+            let charge = std::mem::size_of::<HeapObject>() + body;
+
+            heap.byte_budget().set_limit(baseline + charge - 1);
+            assert!(heap.alloc(object()).is_none());
+            assert_eq!(heap.byte_budget().used(), baseline);
+            assert!(heap.byte_budget().take_denial());
+
+            heap.byte_budget().set_limit(baseline + charge);
+            let scope = Scope::new(&heap);
+            let id = heap.alloc(object()).expect("exact payload headroom");
+            scope.new_local(Value::Object(id));
+            assert_eq!(heap.byte_budget().used(), baseline + charge);
+            heap.collect().unwrap();
+            assert_eq!(heap.byte_budget().used(), baseline + charge);
+            drop(scope);
+            heap.collect().unwrap();
+            assert_eq!(heap.byte_budget().used(), baseline);
+        }
+    }
+
     use super::*;
 
     fn s(text: &str) -> JsString {
