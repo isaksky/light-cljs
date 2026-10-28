@@ -982,7 +982,17 @@ impl BbpRuntime {
     }
     pub fn helper_counts(&self) -> crate::compile_stats::NativeHelperCounts {
         let c = &self.0.counters;
+        let heap = self.0.runtime.heap_stats();
         crate::compile_stats::NativeHelperCounts {
+            heap: Some(crate::compile_stats::NativeHeapStats {
+                collections: heap.collections,
+                live_objects: heap.last_live_objects,
+                managed_bytes: heap.managed_bytes,
+                peak_managed_bytes: heap.peak_managed_bytes,
+                live_bytes: heap.last_live_bytes,
+                admitted_bytes: heap.admitted_bytes_total,
+                byte_limit: heap.byte_limit.unwrap_or(0),
+            }),
             compiled: c.compiled.load(Ordering::Relaxed),
             published: c.published.load(Ordering::Relaxed),
             per_task: c.per_task.load(Ordering::Relaxed),

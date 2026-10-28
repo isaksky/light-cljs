@@ -53,6 +53,9 @@ pub struct NativeBridgeCall {
 /// Actual native-runtime work across all tasks, counted once per event.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NativeHelperCounts {
+    /// One snapshot of the shared heap, including pooled tasks. Per-call
+    /// samples alone omit calls whose worker-local host has been dropped.
+    pub heap: Option<NativeHeapStats>,
     pub compiled: usize,
     pub published: usize,
     pub per_task: usize,
@@ -74,6 +77,18 @@ pub struct NativeHelperCounts {
     pub contexts_borrowed: usize,
     /// Parked task steps a completion queued on the pool from its wakeups.
     pub woken: usize,
+}
+
+/// Aggregate native heap accounting; this is not process RSS.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeHeapStats {
+    pub collections: u64,
+    pub live_objects: usize,
+    pub managed_bytes: usize,
+    pub peak_managed_bytes: usize,
+    pub live_bytes: usize,
+    pub admitted_bytes: usize,
+    pub byte_limit: usize,
 }
 
 /// Wall time per phase of a compilation. The phases do not overlap; work a
@@ -622,6 +637,15 @@ impl CompileStats {
         }
         if self.native_helpers.steps > 0 {
             let helpers = &self.native_helpers;
+            if let Some(heap) = helpers.heap {
+                line("macro.gc.collections", &heap.collections);
+                line("macro.gc.live-objects", &heap.live_objects);
+                line("macro.gc.managed-bytes", &heap.managed_bytes);
+                line("macro.gc.peak-managed-bytes", &heap.peak_managed_bytes);
+                line("macro.gc.live-bytes", &heap.live_bytes);
+                line("macro.gc.admitted-bytes", &heap.admitted_bytes);
+                line("macro.gc.byte-limit", &heap.byte_limit);
+            }
             line("native.helpers.compiled", &helpers.compiled);
             line("native.helpers.published", &helpers.published);
             line("native.helpers.per-task", &helpers.per_task);

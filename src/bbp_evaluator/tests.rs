@@ -2913,6 +2913,65 @@ fn catalog_producers_share_data_without_evaluating_registration_sources() {
 }
 
 #[test]
+fn concurrent_catalog_task_memory() {
+    use crate::compilation_session::Registration;
+    for count in [600, 1200] {
+        let shared = BbpRuntime::new(&EvaluatorOptions {
+            memory_limit: 4 << 30,
+            ..Default::default()
+        })
+        .unwrap();
+        let rt = &shared.0.runtime;
+        let report = |label: &str| {
+            rt.collect().unwrap();
+            eprintln!(
+                "{count} {label}: {:?}; {:?}",
+                rt.heap_stats(),
+                rt.heap_usage()
+            );
+            rt.heap_stats().last_live_bytes
+        };
+        report("realm");
+        let parent = shared.evaluator().unwrap();
+        report("one boot");
+        let boots = (0..7)
+            .map(|_| shared.evaluator().unwrap())
+            .collect::<Vec<_>>();
+        report("eight boots");
+        drop(boots);
+        report("one boot again");
+        let registrations = (0..count)
+            .map(|unit| {
+                Registration::Root(
+                    format!("helper{unit}"),
+                    Some(unit),
+                    None,
+                    false,
+                    "fixture:1".into(),
+                )
+            })
+            .collect::<Vec<_>>();
+        parent.install_catalog(0, &registrations).unwrap();
+        report("one catalog");
+        let one = rt.heap_usage().objects;
+        let mut children = Vec::new();
+        for _ in 0..7 {
+            children.push(
+                parent
+                    .spawn_producer(&parent.cx().unwrap(), None, |_| {})
+                    .unwrap(),
+            );
+        }
+        report("eight catalogs");
+        drop(children);
+        report("drop children");
+        assert_eq!(rt.heap_usage().objects, one);
+        drop(parent);
+        report("drop parent");
+    }
+}
+
+#[test]
 fn catalog_catchup_reuses_live_prefix_descriptors() {
     use crate::compilation_session::Registration;
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();

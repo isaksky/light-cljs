@@ -892,6 +892,13 @@ fn rumext_property_filters_resume_reduce_kv_callbacks() {
         assert!(stats.native_helpers.compiled >= 5, "{stats:?}");
         assert!(stats.native_helpers.published > 0, "{stats:?}");
         assert!(stats.native_helpers.waits >= 2, "{stats:?}");
+        // The shared heap includes worker tasks even when their local
+        // per-expansion records do not survive the pool.
+        let heap = stats.native_helpers.heap.unwrap();
+        assert_eq!(heap.byte_limit, host.evaluator_options.memory_limit);
+        assert!(heap.admitted_bytes >= heap.peak_managed_bytes);
+        assert!(heap.peak_managed_bytes > 0);
+        assert!(stats.report().contains("\nmacro.gc.peak-managed-bytes "));
         if let Some(reference) = &reference {
             assert_eq!(&native, reference, "jobs {jobs}");
         } else {
