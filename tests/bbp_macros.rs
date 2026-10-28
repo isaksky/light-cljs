@@ -4865,6 +4865,12 @@ fn native_nil_metadata_preserves_collection_identity() {
                 &source,
                 &format!("[{same} false {cleared_same} true false]\n"),
             );
+            // JavaScript undefined is nil-like but distinct from null metadata.
+            let source = source.replace("x nil", "x js/undefined");
+            assert_native_matches_legacy(
+                &source,
+                &format!("[false false {cleared_same} true false]\n"),
+            );
         }
     }
 }

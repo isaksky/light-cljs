@@ -592,15 +592,14 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
                     (f.sequential()
                         || matches!(f.kind(), form::FormKind::Map | form::FormKind::Set))
                         && !f.is_map_entry()
-                        && f.meta()
-                            .is_none_or(|m| matches!(m, Value::Null | Value::Undefined))
+                        && f.meta().unwrap_or(&Value::Null).strict_equals(&meta)
                 })
             {
                 return Ok(Some(value));
             }
             let updated = clj::with_meta(heap, &value, &meta)?;
             Some(if matches!(meta, Value::Null | Value::Undefined) {
-                form::with_exported_meta(heap, &form::unwrap(heap, updated), Value::Null)?
+                form::with_exported_meta(heap, &form::unwrap(heap, updated), meta)?
             } else {
                 updated
             })

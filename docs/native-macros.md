@@ -2832,8 +2832,10 @@ an explicit nil from an earlier removal. Actual metadata removal still records
 explicit nil for compiler export. Symbols and records retain their legacy copy
 behavior; a map entry becomes a vector, whose subsequent nil-metadata update
 keeps its identity. The differential table covers 26 value shapes through
-direct, saved and `apply` calls. An engine fixture separately checks the original
-occurrence identity and exported explicit nil after a real removal.
+direct, saved and `apply` calls with both nil and JavaScript `undefined`.
+Undefined metadata remains distinct from null metadata for identity checks,
+including subsequent metadata updates. An engine fixture separately checks the
+original occurrence identity and exported explicit nil after a real removal.
 
 The scalar-origin walk also excludes a BigInteger's internal decimal string:
 the legacy bridge encodes that literal directly as a number and never decodes

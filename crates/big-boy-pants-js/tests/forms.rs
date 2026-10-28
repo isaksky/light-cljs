@@ -1622,6 +1622,13 @@ fn exported_nil_metadata_keeps_collection_occurrences_and_marks_real_removals() 
         const cleared = __rt.cljWithExportedMeta(tagged, null);
         if (cleared === tagged || __rt.cljWithExportedMeta(cleared, null) !== cleared)
             throw new Error('cleared identity');
+        const missing = __rt.cljWithExportedMeta(v, undefined);
+        if (missing === v || __rt.cljMeta(missing) !== undefined ||
+            __rt.cljWithExportedMeta(missing, undefined) !== missing)
+            throw new Error('undefined metadata identity');
+        const nil = __rt.cljWithExportedMeta(missing, null);
+        if (nil === missing || __rt.cljMeta(nil) !== null)
+            throw new Error('undefined to null');
         return cleared;
     }"#,
         &[&occurrence],

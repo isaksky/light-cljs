@@ -2379,8 +2379,9 @@ pub(crate) fn with_meta(heap: &Heap, v: &Value, meta: &Value) -> Result<Value, C
 }
 
 /// A new copy of the collection `v` holding `meta`: a form map, or an
-/// explicit `nil`, which `with_meta` never stores. A realized lazy
-/// sequence keeps it (light-cljs-479): the light-cljs runtime's `LazySeq`
+/// explicit `nil` (`null` or `undefined`), which `with_meta` never stores.
+/// Their distinction remains observable through metadata and identity.
+/// A realized lazy sequence keeps it (light-cljs-479): the light-cljs runtime's `LazySeq`
 /// has metadata, `nil` when none was given, which the compiler bridge
 /// exports, so the native bridge exports it too.
 pub(crate) fn with_exported_meta(
@@ -2392,7 +2393,7 @@ pub(crate) fn with_exported_meta(
         return Err(wrong(heap, "list", v));
     };
     match &meta {
-        Value::Null => {}
+        Value::Null | Value::Undefined => {}
         m if kind(heap, m) == Some(FormKind::Map) => {}
         other => return Err(wrong(heap, "form map or nil", other)),
     }
