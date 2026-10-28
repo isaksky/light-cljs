@@ -2970,3 +2970,44 @@ library tests need the QuickJS feature.
 Native-only checks pass all 62 evaluator tests, 128 `bbp_macros` tests (one
 existing ignored generated-project case), two Proxy tests and twelve reader
 tests. They use the same twelve scheduling seeds and three test workers.
+
+Full default V8 nextest passes 2,133 tests and QuickJS-only nextest passes 2,056;
+each fails only `playground_crate_checks_for_wasm32`. Rust/Cargo 1.99.0 rejects
+the worktree playground crate as belonging to the main checkout workspace
+before compiling Rust. This matches the existing baseline with unchanged
+playground manifests, test and script. Both commands use `--locked -j 8
+--no-fail-fast`; V8 uses `LIGHT_CLJS_V8_CACHE=require`. The WASM subprocess uses
+`LIGHT_CLJS_CARGO` with the installed 1.99.0 Rust compiler/library paths and
+`CARGO_HOME=/Users/admin/.cargo`.
+
+Formatting, native runtime JavaScript syntax and the direct JavaScript runtime
+tests pass. Strict all-target V8 and QuickJS Clippy pass. Combined strict lint
+retains the same eight engine-library diagnostics; combined all-target and
+native selected-target lint pass allowing only `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` after
+`-D warnings`. Engine-free library/binary strict lint passes; its all-target
+check fails on unchanged compiler benchmark calls to unavailable legacy
+`Evaluator::evaluate_js`, `string` and `number` APIs. No source lint suppressions
+were added. Checks use macOS arm64, Homebrew Rust/Cargo 1.99.1, Node 26.12.1,
+Babashka 1.12.218 and the read-only ClojureScript source pin `a5e94c98`.
+
+### Default V8 build check
+
+Three quiet interleaved pairs compare the saved default V8 release binary from
+`b73d0059` with the final source over master `01175afc`, using the seed-42 200k
+fixture and `release bench --jobs 1 --no-cache`. Median wall time is 7.11 s
+before and 7.14 s after (1.0042x); ranges are 7.08–7.16 and 7.03–7.16 s.
+Median user+system CPU is 7.59 s for both; median maximum RSS is 1,039.2 and
+1,045.0 MiB. The difference is smaller than the observed variation. Process
+checks before and after every accepted run contain no peer builds, tests or
+compiler measurements. Overlapping attempts were discarded.
+
+All six outputs are byte-identical with SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
+The final native-only Penpot rerun again builds `app.render` with 12,680,976
+bytes and SHA-256
+`0a5320e48cd525cce43524c9fde45c2dd71ace555525014b98767b9b363e330b`,
+identical to the initial native run and syntactically valid JavaScript.
+`app.main` reproduces the exact light-cljs-558 diagnostic above. These Penpot
+runs establish build behavior; no main-build performance comparison is claimed.
