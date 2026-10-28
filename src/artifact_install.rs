@@ -993,6 +993,8 @@ impl Installer<'_> {
             .insert(root, namespace.to_owned());
         self.index.extend(self.program);
         self.check(macro_host)?;
+        #[cfg(feature = "bbp-macros")]
+        self.restore_native_core_writes(macro_host)?;
         self.declare(macro_host, &views)?;
         self.check(macro_host)?;
         // The namespace's warnings, for its drain point, which reports
@@ -1012,6 +1014,52 @@ impl Installer<'_> {
             });
         }
         Ok(root)
+    }
+
+    /// Analysis publishes resolved mutation targets even when macros construct
+    /// their spelling. A cache hit bypasses analysis, so restore those facts
+    /// before later factories are prepared. Include deferred bodies now: their
+    /// IR installs only after the following namespace's top-level pass.
+    #[cfg(feature = "bbp-macros")]
+    fn restore_native_core_writes(&self, macro_host: &MacroHost) -> Result<(), String> {
+        if !macro_host.native_macro_backend() {
+            return Ok(());
+        }
+        let Some(session) = macro_host.session_handle() else {
+            return Ok(());
+        };
+        for ir in std::iter::once(&self.artifact.ir)
+            .chain(self.artifact.bodies.as_ref().map(|bodies| &bodies.ir))
+        {
+            let note_target = |mut target: ExprRef| {
+                while let ExprKind::Property { receiver, .. } | ExprKind::JsIndex { receiver, .. } =
+                    ir.exprs[target.0 as usize].kind
+                {
+                    target = receiver;
+                }
+                if let ExprKind::CoreFn(core) = ir.exprs[target.0 as usize].kind {
+                    session.shared().index_native_core_function(core);
+                }
+            };
+            // Only the installed artifact's tables are visited, once, never
+            // the growing catalog prefix. Preserve installation's cancellation
+            // checks while reading each delta.
+            for (index, expr) in ir.exprs.iter().enumerate() {
+                if index % CHECK_INTERVAL == 0 {
+                    self.check(macro_host)?;
+                }
+                match &expr.kind {
+                    ExprKind::SetGlobal { target, .. } => note_target(*target),
+                    ExprKind::Binding { bindings, .. } => {
+                        for &(target, _) in bindings {
+                            note_target(target);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Append `bodies` as [`install_bodies`] says.

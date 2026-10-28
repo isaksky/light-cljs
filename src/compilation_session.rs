@@ -668,6 +668,14 @@ impl SharedCatalog {
             target = receiver;
         }
         if let ExprKind::CoreFn(core) = program.exprs[target.0].kind {
+            self.index_native_core_function(core);
+        }
+    }
+
+    /// Publish a resolved target from analysis or a restored artifact.
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn index_native_core_function(&self, core: crate::CoreFnId) {
+        if self.native_units.load(std::sync::atomic::Ordering::Relaxed) {
             self.native_replaced_core
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)

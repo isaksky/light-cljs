@@ -219,6 +219,69 @@ fn dynamic_core_bindings_reuse_cached_artifacts() {
     assert_eq!(edited.js, oracle.js);
 }
 
+/// Computed mutation symbols leave no lexical core-write hint. Installing the
+/// writer must restore its resolved writes before preparing later factories,
+/// including when the write lives in the artifact's deferred bodies.
+#[test]
+fn generated_core_writes_survive_cached_artifacts() {
+    for jobs in ["1", "4"] {
+        for deferred in [false, true] {
+            for (mutation, body, expected) in [
+                (
+                    "(list (symbol \"set!\") (symbol \"cljs.core/inc\") '(fn [_] 42))",
+                    "(let [before (inc 2)] (writer/install) [before (inc 2)])",
+                    "[3 42]\n",
+                ),
+                (
+                    "(list (symbol \"binding\") [(symbol \"cljs.core/inc\") '(fn [_] 42)] '(inc 2))",
+                    "[(inc 2) (writer/install) (inc 2)]",
+                    "[3 42 3]\n",
+                ),
+            ] {
+                let definition = if deferred {
+                    "(defn install [] (write-core))"
+                } else {
+                    "(if true (def install (fn [] (write-core))) nil)"
+                };
+                let writer = format!(
+                    "(ns writer) (defmacro write-core [] {mutation}) {definition} \
+                     (defmacro ready [] (fn? install))"
+                );
+                let main = format!(
+                    "(ns main (:require [writer])) (writer/ready) (defmacro probe [] {body}) \
+                     (js/console.log (pr-str (probe)))"
+                );
+                // Explicitly demand the installer's function value before
+                // preparing probe, without executing the mutation itself.
+                let project = Project::new(&[("writer.cljs", &writer), ("main.cljs", &main)]);
+                let options = ["--jobs", jobs];
+                let cold =
+                    Project::finish(project.command("main", &options, false).output().unwrap());
+                assert_eq!(cold.run(), expected, "{definition}: jobs {jobs}");
+                let populated = project.cached("main", &options);
+                assert!(
+                    populated.js == cold.js,
+                    "populated {definition}: jobs {jobs}"
+                );
+                assert_eq!(populated.stat("cache.hits"), 0, "{}", populated.stats);
+                let warm = project.cached("main", &options);
+                assert!(warm.stat("cache.hits") > 0, "{}", warm.stats);
+                assert_eq!(warm.run(), expected);
+                assert!(warm.js == cold.js, "warm {definition}: jobs {jobs}");
+
+                // Keep the writer cached and force the consumer's macro to run
+                // again, using the restored write index for its new factory.
+                project.write("main.cljs", &format!("{main} ; touched consumer"));
+                let edited = project.cached("main", &options);
+                assert_eq!(edited.stat("cache.hits"), 1, "{}", edited.stats);
+                assert!(edited.stat("macro-calls") > 0, "{}", edited.stats);
+                assert_eq!(edited.run(), expected, "edited {definition}: jobs {jobs}");
+                assert!(edited.js == cold.js, "edited {definition}: jobs {jobs}");
+            }
+        }
+    }
+}
+
 const COUNTER: &[(&str, &str)] = &[
     (
         "macros.cljs",
