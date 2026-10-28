@@ -1947,3 +1947,54 @@ collection/lazy regression outside the protocol workload.
 The residual numerical target and the unchanged generated-call/root-read work
 are tracked in the focused follow-up `light-cljs-550`, rather than claiming
 that native table lookup alone reaches k <= ~4.
+
+The final merged source also repeats the complete default V8 and QuickJS-only
+nextest runs: 2,132/2,055 passes respectively, with only the same playground
+workspace failure in each. Formatting passes. Strict default Clippy and
+engine-free library/binary Clippy pass; strict native/engine Clippy retains
+eight library/nine engine-test baseline diagnostics, and both all-target checks
+pass with only the three existing categories allowed. Engine-free all-target
+Clippy still has exactly 623 diagnostic headers and six failed-target summaries.
+No production source changes follow these checks; subsequent commits only
+record evidence.
+
+Fresh integrated native/default-V8 release builds, with an engine-package clean
+between variants, have SHA-256
+`a3cd56bc5a7d904acea9196a5083cbf28e094d05382bdf51084a435298d1093d`
+and `99f6914cae29fd2efcb7d66eb842e9001cc2c862514ec6d26d3b5c9ae787bd54`.
+They use the merged production source at `9c8d4c18` on `bbd5d97b`, with the same
+locked release flags/toolchain as the isolated pair. A nine-round repeat of
+the unchanged protocol harness compares the original baseline, the isolated
+after binary and this integrated after binary against its same-source V8:
+
+```sh
+bb benchmarks/native-macros-k.bb target/515-integrated-protocol \
+  --workload protocol --runs 9 --n 0,100,400,1600,6400 \
+  v8=target/515-v8-integrated before=target/515-native-before \
+  isolated=target/515-native-final native=target/515-native-integrated
+```
+
+Analysis median [min–max], ms:
+
+| n | integrated V8 | native before | isolated native after | integrated native after | k before | k integrated |
+| ---: | --- | --- | --- | --- | ---: | ---: |
+| 0 | 26.7 [26.0–29.8] | 47.7 [47.3–51.4] | 48.0 [47.3–49.5] | 49.5 [48.8–50.6] | – | – |
+| 100 | 31.3 [30.5–32.8] | 75.1 [73.2–76.8] | 73.1 [72.0–76.0] | 74.8 [73.1–90.4] | 6.0 | 5.5 |
+| 400 | 35.5 [33.7–38.5] | 107.4 [106.6–108.3] | 100.4 [99.5–102.9] | 102.3 [100.2–108.5] | 6.8 | 6.0 |
+| 1,600 | 44.9 [43.5–56.6] | 236.8 [233.6–243.1] | 209.1 [207.2–213.9] | 209.2 [204.1–211.5] | 10.4 | 8.8 |
+| 6,400 | 70.6 [69.8–81.0] | 761.6 [755.7–1004.8] | 646.9 [640.5–685.1] | 650.3 [640.0–699.2] | 16.3 | 13.7 |
+
+All Node outputs agree. The integrated and isolated after ranges overlap;
+the numerical target remains missed. No local build/test overlaps timing,
+but peer rustc, compiler tests and Node processes are active throughout.
+Load (1/5/15 minutes) is 10.00/13.28/12.22 → 15.38/14.11/12.58. These shared-host
+latencies supplement the isolated comparison and quiet CPU profiles above;
+they are not claimed as idle-machine timings.
+
+The integrated default V8 200k guard uses three alternating-order paired rounds
+against the original before binary, retaining the same project, command and
+oracle as above. Wall medians [range] are 8.48 [8.42–8.57] s before and
+8.39 [8.36–8.42] s integrated after; user CPU medians are 8.70 and 8.62 s.
+There is no slowdown. Every output still prints `484264` and retains the same
+main-module SHA-256 above. Peer tests remain active; load (1/5/15 minutes) is
+17.41/15.19/13.19 → 17.25/15.52/13.44, with no local builds/tests overlapping.
