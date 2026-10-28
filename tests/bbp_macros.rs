@@ -8125,6 +8125,10 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
                    (cons 1 (lazy-seq '(2))) (ListMarker.)])
       (defn load-sequences [] cached)
       (defn demanded [x] x)
+      (defn peek-demanded [x] x)
+      (deftype StackMarker [value seen] IStack
+        (-peek [_] (swap! seen conj :peek) (peek-demanded value))
+        (-pop [this] this))
       (defn classify [x]
         (let [l list? s seq? q sequential? c coll? v vector? e map-entry?]
           [[(list? x) (seq? x) (sequential? x) (coll? x) (vector? x) (map-entry? x)]
@@ -8133,7 +8137,7 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
     "#,
     )
     .unwrap();
-    std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker MutableMarker load-sequences classify demanded]]))
+    std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker MutableMarker StackMarker load-sequences classify demanded]]))
       (defmacro probe [input]
         (let [seen (atom []) unforced (lazy-seq (swap! seen conj :unexpected) (throw (js/Error. "forced")))
               forced (lazy-seq '(1)) _ (first forced)
@@ -8149,6 +8153,13 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
                            (vec s) (meta m) (first (next s)) (count s)])
                         (let [tail (with-meta (seq [2 3]) {{:tag true}}) c (cons 1 tail)]
                           [(identical? tail (rest c)) (meta (rest c)) (meta (conj tail 0))])
+                        (let [p peek pp -peek effects (atom []) stack (StackMarker. 8 effects)
+                              check (fn [x] (try (p x) (catch :default e (.-message e))))]
+                          [(mapv check [nil () '(1 2) [] [1 2] (with-meta [3 4] {{:tag true}})
+                                        (first (seq {{:a 1}})) (seq [1 2]) (cons 1 unforced)
+                                        unforced (seq {{:a 1}}) {{}} #{{}} "a" (seq (js/Array. 1 2))
+                                        cljs.core.PersistentQueue.EMPTY])
+                           (peek stack) (p stack) (apply p [stack]) (pp stack) @effects])
                         [(= (seq [1 2]) '(1 2)) (= (seq "ab") '("a" "b"))
                          (= (hash (seq [1 2])) (hash '(1 2)))
                          (get {{(seq [1 2]) :found}} '(1 2))
@@ -8197,6 +8208,7 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
         let output = program_output(&native);
         assert!(output.contains(":realize"));
         assert!(!output.contains(":unexpected"));
+        assert!(output.contains("[true {:tag true} nil]"), "{output}");
         assert!(
             output.contains("[true true true :found {:tag true}]"),
             "{output}"

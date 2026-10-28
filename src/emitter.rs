@@ -3954,6 +3954,7 @@ impl<'a> Emitter<'a> {
             (C::Second, 1) => ("__rt.cljFirst(", "cljNext", false, ")"),
             (C::Rest, 1) => ("", "cljRest", false, ""),
             (C::Next, 1) => ("", "cljNext", false, ""),
+            (C::Peek | C::PeekProtocol, 1) => ("", "cljPeek", false, ""),
             (C::Cons, 2) => ("", "cljCons", false, ""),
             (C::Nth, 2) => ("", "cljNth", false, ""),
             (C::Nth, 3) => ("", "cljNthOr", false, ""),

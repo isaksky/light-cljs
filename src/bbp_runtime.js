@@ -451,7 +451,7 @@ const native = (() => {
     cljDissoc:decl.coreTable('IMap/-dissoc',2), cljConj:decl.coreTable('ICollection/-conj',2),
     cljDisj:decl.coreTable('ISet/-disjoin',2), cljMeta:decl.coreTable('IMeta/-meta',1),
     cljWithMeta:decl.coreTable('IWithMeta/-with-meta',2), cljSeq:decl.coreTable('ISeqable/-seq',1),
-    cljCount:decl.coreTable('ICounted/-count',1), cljNext:decl.coreTable('INext/-next',1),
+    cljPeek:decl.coreTable('IStack/-peek',1), cljCount:decl.coreTable('ICounted/-count',1), cljNext:decl.coreTable('INext/-next',1),
   };
   __rt.cljCoreResolver((op, x, throughLazy) => {
     const record = __rt.formKind(x) === 'record', table = coreTables[op];
@@ -473,6 +473,7 @@ const native = (() => {
     }
     if ((op==='formEquals'||op==='formHash') && __rt.formKind(x)===null) return null;
     switch (op) {
+      case 'cljPeek': return decl.coreLookup(table,x,record);
       case 'cljIsList': return x => decl.satisfies('IList',x);
       case 'cljIsSeq': return x => cursor!==undefined || val(x)!=null && decl.satisfies('ISeq',x);
       case 'cljIsSequential': return x => cursor!==undefined || decl.satisfies('ISequential',x);
@@ -1425,7 +1426,7 @@ const native = (() => {
     nth:(x,n,...d)=>d.length?__rt.cljNthOr(x,n,d[0]):__rt.cljNth(x,n),
     count:x=>__rt.cljCount(x),
     seq, isEmpty:x=>__rt.cljSeq(x)===null,
-    rest:x=>__rt.cljRest(x), next:x=>__rt.cljNext(x),
+    rest:x=>__rt.cljRest(x), next:x=>__rt.cljNext(x), peek:x=>__rt.cljPeek(x), peekProtocol:x=>__rt.cljPeek(x),
     cons:(x,xs)=>__rt.cljCons(x,xs), concat:(...xs)=>__rt.cljConcatAll(list(xs)),
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),
     apply:(f,...xs)=>invoke(f,...xs.slice(0,-1),...arr(xs[xs.length-1])),

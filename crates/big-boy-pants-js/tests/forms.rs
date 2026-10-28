@@ -2474,6 +2474,9 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
         r#"function check(values) {
       const at=i=>__rt.cljNth(values,i), l=at(0),v=at(1),m=at(2),s=at(3),meta=at(4);
       if(!__rt.cljIsList(l)||!__rt.cljIsList(at(6)))throw new Error('lists');
+      if(__rt.cljPeek(l)!==1||__rt.cljPeek(__rt.formVector(1,2))!==2||__rt.cljPeek(__rt.formList())!==null)throw new Error('stack head');
+      try { __rt.cljPeek(at(5)); throw new Error('accepted lazy stack'); }
+      catch(e) { if(e.message!=='No protocol method IStack.-peek defined for this value')throw e; }
       for(const i of [1,2,3,4,5,7])if(__rt.cljIsList(at(i)))throw new Error('non-list '+i);
       for(let i=0;i<8;i++)if(!__rt.cljIsSeq(at(i))||!__rt.cljIsSequential(at(i))||!__rt.cljIsColl(at(i)))throw new Error('sequence markers');
       if(__rt.cljSeq(v)!==v||__rt.cljSeq(l)!==l)throw new Error('unchanged identity');

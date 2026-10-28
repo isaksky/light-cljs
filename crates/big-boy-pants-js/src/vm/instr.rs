@@ -1552,11 +1552,13 @@ pub enum FormOp {
     CljIsMapEntry = 88,
     /// positional form → non-IList sequence view, without realization.
     Sequence = 89,
+    /// collection → persistent stack head (`cljPeek`).
+    CljPeek = 90,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 90] = [
+    pub const ALL: [FormOp; 91] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1647,6 +1649,7 @@ impl FormOp {
         FormOp::CljIsVector,
         FormOp::CljIsMapEntry,
         FormOp::Sequence,
+        FormOp::CljPeek,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1660,6 +1663,7 @@ impl FormOp {
             FormOp::Kind
             | FormOp::CljCallable
             | FormOp::Sequence
+            | FormOp::CljPeek
             | FormOp::AtomAux
             | FormOp::CljCoreResolver
             | FormOp::LiteralPayload
@@ -1759,6 +1763,7 @@ impl FormOp {
             FormOp::CljCallMember => "cljCallMember",
             FormOp::CljReadRoot => "cljReadRoot",
             FormOp::Sequence => "formSequence",
+            FormOp::CljPeek => "cljPeek",
             FormOp::CljCoreResolver => "cljCoreResolver",
             FormOp::CljGet2 => "cljGet2",
             FormOp::Keyword => "formKeyword",

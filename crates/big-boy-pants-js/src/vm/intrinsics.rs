@@ -543,6 +543,7 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::CljIsColl => Some(Value::Bool(clj::is_coll(heap, &a(0)))),
         FormOp::CljIsVector => Some(Value::Bool(clj::is_vector(heap, &a(0)))),
         FormOp::CljIsMapEntry => Some(Value::Bool(clj::is_map_entry(heap, &a(0)))),
+        FormOp::CljPeek => Some(clj::peek(heap, &a(0))?),
         FormOp::CljInvoke => Some(clj::invoke(
             heap,
             &a(0),
@@ -721,6 +722,7 @@ fn strict_form_op(
         | FormOp::CljIsColl
         | FormOp::CljIsVector
         | FormOp::CljIsMapEntry
+        | FormOp::CljPeek
         | FormOp::CljInvoke
         | FormOp::CljCallable
         | FormOp::CljCallMember

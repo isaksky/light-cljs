@@ -293,6 +293,30 @@ pub(crate) fn is_map_entry(heap: &Heap, v: &Value) -> bool {
     form::form_object(heap, &form::unwrap(heap, v.clone())).is_some_and(|f| f.is_map_entry())
 }
 
+/// Persistent stack observation does not realize other sequence kinds.
+pub(crate) fn peek(heap: &Heap, v: &Value) -> Result<Value> {
+    match shape(heap, v) {
+        Shape::Nil => Ok(Value::Null),
+        Shape::Form(_, f) => match f.body() {
+            FormBody::List(items) if f.is_list() => Ok(items.get(0).unwrap_or(Value::Null)),
+            FormBody::Vector(items) => Ok(items
+                .len()
+                .checked_sub(1)
+                .and_then(|i| items.get(i))
+                .unwrap_or(Value::Null)),
+            FormBody::CompilerLiteral { tag, payload, .. } if tag == "queue" => {
+                first(heap, payload)
+            }
+            _ => Err(CljError::Operands(
+                "No protocol method IStack.-peek defined for this value",
+            )),
+        },
+        _ => Err(CljError::Operands(
+            "No protocol method IStack.-peek defined for this value",
+        )),
+    }
+}
+
 /// The head of `v` with realized lazy sequences followed, and its shape.
 fn head(heap: &Heap, v: &Value) -> Result<(Value, Shape)> {
     let head = form::realized_head(heap, v.clone(), &mut lazy::Visited::default())?;

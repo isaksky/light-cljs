@@ -49,6 +49,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
             | FormOp::CljIsColl
             | FormOp::CljIsVector
             | FormOp::CljIsMapEntry
+            | FormOp::CljPeek
     ) {
         return Ok(false);
     }
@@ -135,6 +136,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
                 | FormOp::CljWithMeta
                 | FormOp::CljCount
                 | FormOp::CljList
+                | FormOp::CljPeek
         );
     if builtin_marker == Some(true)
         || (builtin_marker.is_none() && !array_adapter && receiver_kind != Some(FormKind::Struct))
