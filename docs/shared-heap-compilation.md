@@ -1376,8 +1376,8 @@ retain their existing hooks without requiring the feature. No assertions are
 changed: the test's JavaScript, map, warning and count comparisons are ordinary
 assertions and run in release builds. A sampled debug-assertion-enabled 200k
 reference spends its time rescanning accumulated program prefixes in
-`program_fragment::append`; that attempt was stopped during the reference and
-supplies no completed 200k stress result. The release feature permits the large
+`program_fragment::append`; debug-assertion-enabled attempts were stopped before
+completing a seed matrix and supply no completed 200k stress result. The release feature permits the large
 matrix without changing those debug checks or production defaults.
 
 The debug chain run at `a4e173db` passes all **49 builds** (one reference plus
@@ -1393,6 +1393,11 @@ above. Its test profile uses optimization level 3, debug info 0, thin LTO and
 one codegen unit, retaining debug assertions. The scheduling feature only
 broadens the hook guards; their debug-build behavior is unchanged, so these
 debug results are reused across that change.
+With `--release --features bbp-macros,scheduling-stress`, all **34 scheduler
+unit tests** pass in 4.20 seconds and all **114 ordinary native macro tests**
+pass with twelve stress seeds and two test threads in 207.43 seconds (the
+large-fixture test remains opt-in). The release feature's macro test-target
+Clippy passes allowing only the same three existing engine categories.
 Compiler and engine format checks and default all-target strict Clippy pass.
 Native test-target strict Clippy retains the eight existing engine-library
 diagnostics; allowing only `deprecated`, `chunks_exact_to_as_chunks` and
