@@ -2,7 +2,9 @@
 //! task; compiler helper factories cross explicit dependency boundaries.
 use crate::{
     CollectionKind as C,
-    compiler_data::{CompilerLiteralKind as L, Datum, DatumKind as D, ExpansionOrigin, Form, Name},
+    compiler_data::{
+        CompilerLiteralKind as L, Datum, DatumKind as D, ExpansionOrigin, Form, Name, SourceSpan,
+    },
     compiler_evaluator::{
         CompilerEvaluator, NativeRunner, NativeSubmit, NativeSubmitter, StringService, UnitService,
         WaitService,
@@ -113,25 +115,29 @@ impl ScalarKey {
     }
 }
 
-fn scalar_origins(call: &Form) -> HashMap<ScalarKey, Datum> {
+struct ScalarOrigin {
+    data: Datum,
+    span: SourceSpan,
+}
+
+fn scalar_origins(call: &Form) -> HashMap<ScalarKey, ScalarOrigin> {
     let mut origins = HashMap::new();
-    let mut pending: Vec<_> = call
-        .children()
-        .into_iter()
-        .skip(1)
-        .rev()
-        .map(|f| f.data())
-        .collect();
-    while let Some(data) = pending.pop() {
+    let mut pending: Vec<_> = call.children().into_iter().skip(1).rev().collect();
+    while let Some(form) = pending.pop() {
+        let data = form.data();
         if let Some(key) = ScalarKey::of(&data) {
-            origins.insert(key, data.clone());
+            origins.insert(
+                key,
+                ScalarOrigin {
+                    data,
+                    span: form.compiler_span(),
+                },
+            );
         }
         // Legacy decoding visits children in order, then metadata.
-        pending.extend(data.metadata());
-        pending.extend(data.compiler_literal_data());
-        if let D::Collection { children, .. } = data.kind() {
-            pending.extend(children.iter().rev().cloned());
-        }
+        pending.extend(form.metadata());
+        pending.extend(form.node().compiler_payload.and_then(|id| form.at(id)));
+        pending.extend(form.children().into_iter().rev());
     }
     origins
 }
@@ -512,7 +518,7 @@ impl Bridge {
         v: Local<'s>,
         depth: usize,
         remaining: &mut usize,
-        origins: &HashMap<ScalarKey, Datum>,
+        origins: &HashMap<ScalarKey, ScalarOrigin>,
     ) -> Result<Datum, EvalError> {
         self.poll()?;
         if let Some(data) = s
@@ -619,7 +625,7 @@ impl Bridge {
             // Runtime keyword construction is fresh; only imported, interned
             // keyword occurrences above share their call's latest provenance.
             self.stats.reused += 1;
-            return Ok(original.clone());
+            return Ok(original.data.clone());
         }
         self.stats.exported += 1;
         Ok(data)
@@ -651,10 +657,34 @@ impl Bridge {
         Ok(())
     }
 
-    fn compiler_spans(&self, result: Form, origins: &HashMap<ScalarKey, Datum>) -> Form {
+    fn compiler_spans(&self, result: Form, origins: &HashMap<ScalarKey, ScalarOrigin>) -> Form {
         let mut spans = HashMap::new();
-        let mut pending = vec![result.clone()];
-        while let Some(form) = pending.pop() {
+        let mut pending = vec![(result.clone(), None::<Form>)];
+        while let Some((form, inherited)) = pending.pop() {
+            if let Some(original) = inherited {
+                let span = original.compiler_span();
+                if span.bytes() != form.span().bytes() {
+                    spans.insert(form.id(), span);
+                }
+                pending.extend(
+                    form.children()
+                        .into_iter()
+                        .zip(original.children())
+                        .map(|(f, o)| (f, Some(o))),
+                );
+                pending.extend(
+                    form.metadata()
+                        .zip(original.metadata())
+                        .map(|(f, o)| (f, Some(o))),
+                );
+                let payload = |f: &Form| f.node().compiler_payload.and_then(|id| f.at(id));
+                pending.extend(
+                    payload(&form)
+                        .zip(payload(&original))
+                        .map(|(f, o)| (f, Some(o))),
+                );
+                continue;
+            }
             let data = form.data();
             if let Some(key) = ScalarKey::of(&data) {
                 if matches!(data.kind(), D::Keyword(_))
@@ -662,11 +692,8 @@ impl Bridge {
                 {
                     continue;
                 }
-                if let Some(original) = origins
-                    .get(&key)
-                    .and_then(|d| self.forms.get(&d.identity()))
-                {
-                    let span = original.compiler_span();
+                if let Some(original) = origins.get(&key) {
+                    let span = original.span.clone();
                     if span.bytes() != form.span().bytes() {
                         spans.insert(form.id(), span);
                     }
@@ -674,13 +701,26 @@ impl Bridge {
                 continue;
             }
             // An unchanged imported collection restores its complete subtree,
-            // just as legacy canonical export does. Do not alias its leaves.
+            // including annotations from an earlier expansion. Do not apply
+            // the current call's aliases to its leaves.
             if self.imports.contains_key(&data.identity()) {
+                if let Some(original) = self
+                    .forms
+                    .get(&data.identity())
+                    .filter(|f| f.has_compiler_spans())
+                {
+                    pending.push((form, Some(original.clone())));
+                }
                 continue;
             }
-            pending.extend(form.children());
-            pending.extend(form.metadata());
-            pending.extend(form.node().compiler_payload.and_then(|id| form.at(id)));
+            pending.extend(form.children().into_iter().map(|f| (f, None)));
+            pending.extend(form.metadata().map(|f| (f, None)));
+            pending.extend(
+                form.node()
+                    .compiler_payload
+                    .and_then(|id| form.at(id))
+                    .map(|f| (f, None)),
+            );
         }
         result.with_compiler_spans(spans)
     }

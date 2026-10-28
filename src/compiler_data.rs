@@ -451,6 +451,10 @@ impl Form {
             .unwrap_or_else(|| self.span())
     }
     #[cfg(feature = "bbp-macros")]
+    pub(crate) fn has_compiler_spans(&self) -> bool {
+        self.compiler_spans.is_some()
+    }
+    #[cfg(feature = "bbp-macros")]
     pub(crate) fn with_compiler_spans(
         mut self,
         spans: std::collections::HashMap<FormId, SourceSpan>,
