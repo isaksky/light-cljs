@@ -103,7 +103,7 @@ pub trait Job: Send {
 
     /// A stable identity for the test-only [`Perturbation`], which keys its
     /// delays, fixed assignment and log on it.
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     fn key(&self) -> u64 {
         0
     }
@@ -159,8 +159,8 @@ pub struct Config {
     /// phases. Empty means every worker serves every phase; with one slot
     /// the coordinator runs every job. Every count is at least one.
     pub servers: Vec<usize>,
-    /// The test-only scheduling perturbation, debug builds only.
-    #[cfg(debug_assertions)]
+    /// Test-only perturbation: debug builds or the `scheduling-stress` feature.
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     pub perturbation: Option<Perturbation>,
 }
 
@@ -172,7 +172,7 @@ impl Config {
             limits: Limits::default(),
             stack_size: None,
             servers: Vec::new(),
-            #[cfg(debug_assertions)]
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
             perturbation: None,
         }
     }
@@ -312,7 +312,7 @@ struct Entry<J> {
     seq: u64,
     /// When it was submitted, for [`PoolCounts::queue_wait`].
     queued: std::time::Instant,
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     key: u64,
 }
 
@@ -330,7 +330,7 @@ impl<J: Job> Entry<J> {
             bytes: job.bytes(),
             seq: 0,
             queued: std::time::Instant::now(),
-            #[cfg(debug_assertions)]
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
             key: job.key(),
             job,
         }
@@ -412,7 +412,7 @@ struct State<J, O> {
     clock: u64,
     panic: Option<WorkerPanic>,
     counts: PoolCounts,
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     perturbed: Option<perturb::Perturbed>,
 }
 
@@ -458,7 +458,7 @@ impl<J: Job, O> State<J, O> {
             clock: 0,
             panic: None,
             counts: PoolCounts::default(),
-            #[cfg(debug_assertions)]
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
             perturbed: config.perturbation.clone().map(perturb::Perturbed::new),
         }
     }
@@ -634,7 +634,7 @@ impl<J: Job, O> State<J, O> {
         if self.shutdown || self.cancelled {
             return None;
         }
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if self.perturbed.is_some() {
             return self.claim_perturbed(w, limits);
         }
@@ -703,7 +703,7 @@ impl<J: Job, O> State<J, O> {
                 if !eligible(entry) {
                     return false;
                 }
-                #[cfg(debug_assertions)]
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                 if let Some(p) = &self.perturbed
                     && p.config.fixed
                     && p.config.owner(entry.key, self.servers[entry.phase]) != w
@@ -749,7 +749,7 @@ impl<J: Job, O> State<J, O> {
                 }
             }
         };
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if self.perturbed.is_some() {
             return Some(self.start_logged(w, entry, 0));
         }
@@ -864,7 +864,7 @@ struct Shared<J, O> {
     phases: usize,
     /// [`State::restricted`], read without the lock.
     restricted: bool,
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     perturbation: Option<Perturbation>,
 }
 
@@ -905,7 +905,7 @@ impl<J: Job, O> Shared<J, O> {
     /// one woken might not serve the job's phase.
     fn wake(&self, count: usize) {
         // Under a fixed assignment only the job's owner may run it.
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if count > 0 && self.perturbation.as_ref().is_some_and(|p| p.fixed) {
             self.work.notify_all();
             return;
@@ -1051,14 +1051,14 @@ impl<J: Job, O> Worker<'_, J, O> {
         let wake = left.min(state.parked);
         drop(state);
         self.shared.wake(wake);
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if let Some(p) = &self.shared.perturbation {
             p.pause(entry.key, self.index, perturb::Boundary::Start);
         }
         let mut nested = None;
         let result = execute_caught(&worker, &mut nested, &make, &execute, entry.job);
         drop(nested);
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if let Some(p) = &self.shared.perturbation {
             p.pause(entry.key, self.index, perturb::Boundary::Finish);
         }
@@ -1096,9 +1096,9 @@ impl<J: Job, O> Worker<'_, J, O> {
             drop(state);
             return;
         }
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         let assigned = state.assigns();
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
         let assigned = false;
         if !assigned && state.backlog_len == 0 && state.has_room(&self.shared.limits, entry.bytes) {
             state.count_admission(entry.bytes);
@@ -1222,14 +1222,14 @@ fn work<J: Job, O, W>(
             }
         }
         let bytes = entry.bytes;
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         let key = entry.key;
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if let Some(p) = &shared.perturbation {
             p.pause(key, index, perturb::Boundary::Start);
         }
         let result = execute_caught(&worker, &mut slot_state, make, execute, entry.job);
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if let Some(p) = &shared.perturbation {
             p.pause(key, index, perturb::Boundary::Finish);
         }
@@ -1272,7 +1272,7 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
     /// one newly runnable job wakes one worker.
     pub fn submit(&mut self, job: J) {
         let entry = Entry::new(job, self.shared.phases);
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if let Some(p) = &self.shared.perturbation {
             p.pause(entry.key, usize::MAX, perturb::Boundary::Submit);
         }
@@ -1292,7 +1292,7 @@ impl<J: Job, O, W> Coordinator<'_, J, O, W> {
             .into_iter()
             .map(|job| Entry::new(job, self.shared.phases))
             .collect();
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if let Some(p) = &self.shared.perturbation
             && let Some(first) = entries.first()
         {
@@ -1480,7 +1480,7 @@ where
         contended: AtomicU64::new(0),
         limits: limits(config),
         phases: config.phases,
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         perturbation: config.perturbation.clone(),
     });
     let make: MakeSlot<'_, W> = &make;
@@ -1550,16 +1550,16 @@ fn servers(config: &Config, deques: usize) -> Vec<usize> {
 
 /// The pool's bounds: a perturbation's in place of the configured ones.
 fn limits(config: &Config) -> Limits {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     if let Some(limits) = config.perturbation.as_ref().and_then(|p| p.limits.clone()) {
         return limits;
     }
     config.limits.clone()
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 mod perturb;
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 pub use perturb::Perturbation;
 
 #[cfg(test)]

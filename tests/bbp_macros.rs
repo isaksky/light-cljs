@@ -1171,7 +1171,7 @@ fn native_namespace_context_matches_quickjs_across_helpers_and_jobs() {
                 EntryRecorders {
                     stats: Some(&mut stats),
                     slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
-                    #[cfg(debug_assertions)]
+                    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                     perturbation: native.then_some(light_cljs::scheduler::Perturbation {
                         seed,
                         lane_hold: if held {
@@ -1488,7 +1488,7 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
             EntryRecorders {
                 capture: Some(&mut capture),
                 slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
-                #[cfg(debug_assertions)]
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                 perturbation: Some(light_cljs::scheduler::Perturbation {
                     seed: 3,
                     fixed,
@@ -1643,7 +1643,7 @@ fn native_gensym_keeps_scopes_helpers_and_cache_names_at_one_two_and_four_slots(
             EntryRecorders {
                 capture: Some(&mut capture),
                 slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
-                #[cfg(debug_assertions)]
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                 perturbation: Some(light_cljs::scheduler::Perturbation {
                     seed,
                     lane_hold: if held {
@@ -3233,7 +3233,7 @@ fn multifns_sharing_constructor_tables_observe_each_others_mutations() {
             &mut Vec::new(),
             EntryRecorders {
                 slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
-                #[cfg(debug_assertions)]
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                 perturbation: native.then_some(light_cljs::scheduler::Perturbation {
                     seed,
                     limits: Some(light_cljs::scheduler::Limits {
@@ -3382,7 +3382,7 @@ fn demanded_multimethod_effects_run_once_across_suspension_and_lending() {
             EntryRecorders {
                 slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
                 stats: Some(&mut stats),
-                #[cfg(debug_assertions)]
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                 perturbation: native.then_some(light_cljs::scheduler::Perturbation {
                     seed,
                     lane_hold: if held {
@@ -3517,7 +3517,7 @@ fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slo
                 EntryRecorders {
                     stats: Some(&mut stats),
                     slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
-                    #[cfg(debug_assertions)]
+                    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                     perturbation: native.then_some(light_cljs::scheduler::Perturbation {
                         seed: 520,
                         lane_hold: if held {
@@ -3537,7 +3537,7 @@ fn demanded_helper_bindings_keep_once_only_effects_at_one_two_four_and_eight_slo
             if native && result.is_ok() {
                 assert!(stats.native_helpers.units_evaluated > 0);
                 assert!(stats.lanes.entered > 0);
-                #[cfg(debug_assertions)]
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                 if held {
                     assert!(stats.lanes.inherited > 0, "no inherited binding lane");
                 }
@@ -3644,7 +3644,7 @@ fn inherited_initializer_bindings(indirect: bool) {
             EntryRecorders {
                 stats: Some(&mut stats),
                 slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
-                #[cfg(debug_assertions)]
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                 perturbation: native.then_some(light_cljs::scheduler::Perturbation {
                     seed,
                     lane_hold: if held {
@@ -3662,7 +3662,7 @@ fn inherited_initializer_bindings(indirect: bool) {
             },
         )
         .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}, held {held}: {e}"));
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if native && held {
             assert!(
                 stats.lanes.inherited > 0,
@@ -6204,7 +6204,7 @@ fn record_helpers_publish_once_at_one_and_two_slots() {
 /// What a native namespace build at some slots produced: its JavaScript or
 /// error, its source mappings at two optimization levels, its warnings and
 /// the actual helper factories it compiled.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 #[derive(Debug, PartialEq)]
 struct NativeBuild {
     output: Result<String, String>,
@@ -6213,7 +6213,7 @@ struct NativeBuild {
     compiled: usize,
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 fn native_build(
     entry: &str,
     slots: usize,
@@ -6226,7 +6226,7 @@ fn native_build(
 
 /// [`native_build`] of `entry` under `tests/fixtures/{fixtures}`, with
 /// `--cache-blocker` namespaces, and all of its stats.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 fn native_build_in(
     fixtures: &str,
     entry: &str,
@@ -6294,7 +6294,7 @@ fn native_build_in(
 /// unperturbed one-slot build: JavaScript or error, source maps, warnings
 /// and compiled helper factories. Seed 1, or 1 to `LIGHT_CLJS_STRESS_SEEDS`
 /// (12 for the acceptance stress, about five minutes in a debug build).
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 #[test]
 fn native_pool_builds_match_one_slot_under_seeded_scheduling_stress() {
     use light_cljs::scheduler::{Limits, Perturbation};
@@ -6344,7 +6344,7 @@ fn native_pool_builds_match_one_slot_under_seeded_scheduling_stress() {
 /// Opt-in acceptance on generated projects too large for the ordinary suite.
 /// Supply LIGHT_CLJS_STRESS_SOURCE_ROOTS (platform path list) and
 /// LIGHT_CLJS_STRESS_ENTRY; LIGHT_CLJS_STRESS_SEEDS defaults to 12.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 #[test]
 #[ignore = "requires generated source roots and entry; see docs/shared-heap-compilation.md"]
 fn native_large_project_matches_one_slot_under_seeded_scheduling_stress() {
@@ -6431,7 +6431,7 @@ fn native_large_project_matches_one_slot_under_seeded_scheduling_stress() {
 /// docs/compiler-concurrency.md, "Effect lanes (light-cljs-480)"): each
 /// entry, whether it needs `--cache-blocker counter.macros`, and what its
 /// one-slot program prints, or `Err` with a part of its error.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 const LANE_FIXTURES: &[(&str, bool, Result<&str, &str>)] = &[
     // Shared counter: `dep`'s unit and `main`'s top-level call.
     ("counter.main", false, Ok("1 2\n")),
@@ -6485,7 +6485,7 @@ const LANE_FIXTURES: &[(&str, bool, Result<&str, &str>)] = &[
 /// each lane fixture's JavaScript or error, source maps, warnings and
 /// helper counts match the unperturbed one-slot build, without
 /// `--cache-blocker` and with it. Seed 1, or 1 to `LIGHT_CLJS_STRESS_SEEDS`.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 #[test]
 fn effect_lanes_keep_one_slot_atom_effects_under_seeded_scheduling_stress() {
     use light_cljs::scheduler::{Limits, Perturbation};
@@ -6554,7 +6554,7 @@ fn effect_lanes_keep_one_slot_atom_effects_under_seeded_scheduling_stress() {
 /// slots give `t` a worker of its own). `s` then demands `snapshot`, so the
 /// initializer inherits `s`'s position and runs, instead of each waiting
 /// for the other; the output is the one-slot build's.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 #[test]
 fn an_earlier_unit_demanding_a_parked_initializer_lends_it_its_lane() {
     let (reference, _) = native_build_in("native-lanes", "inherit.main", 1, None, &[]);
@@ -7354,7 +7354,7 @@ fn native_transducer_helpers_publish_and_resume_without_replay() {
             light_cljs::compiler::EntryRecorders {
                 slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
                 stats: Some(&mut stats),
-                #[cfg(debug_assertions)]
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                 perturbation: Some(light_cljs::scheduler::Perturbation {
                     seed: 1,
                     fixed: single_admission,

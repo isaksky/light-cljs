@@ -675,7 +675,7 @@ impl Lanes {
     /// Block until some task has parked for its lane inside an initializer
     /// or a helper's production, or `limit` passes (the test-only
     /// [`crate::scheduler::Perturbation::lane_hold`]).
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     pub(crate) fn wait_parked(&self, limit: Duration) {
         let since = Instant::now();
         let mut s = self.lock();

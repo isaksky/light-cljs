@@ -1,6 +1,6 @@
 //! The test-only scheduling perturbation (docs/compiler-concurrency.md,
-//! "As built (light-cljs-342)"). Debug builds only: release builds have
-//! none of it.
+//! "As built (light-cljs-342)"). Enabled in debug builds and by the opt-in
+//! `scheduling-stress` feature; ordinary release builds omit it.
 //!
 //! One seed drives everything: randomized delays at job boundaries, the
 //! order and size of each claimed batch, the steal victim and how much it

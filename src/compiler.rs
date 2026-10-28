@@ -1484,7 +1484,7 @@ impl crate::scheduler::Job for ParseJob {
     fn phase(&self) -> usize {
         0
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     fn key(&self) -> u64 {
         u64::from(self.id)
     }
@@ -1686,7 +1686,7 @@ struct Loader<'a> {
     /// order.
     pooled_times: Vec<Duration>,
     /// The parse pool's test-only perturbation.
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     perturbation: Option<crate::scheduler::Perturbation>,
     /// What the parse pool's scheduler did over the load phases, when it
     /// had workers, for `--stats`.
@@ -1791,7 +1791,7 @@ impl Loader<'_> {
         };
         #[allow(unused_mut)]
         let mut config = Config::new(self.slots, 1);
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         {
             config.perturbation = self.perturbation.clone();
         }
@@ -2350,8 +2350,9 @@ pub struct EntryRecorders<'a> {
     /// comes from [`crate::compile_cache::CacheOptions::blockers`].
     pub blockers: &'a [String],
     /// The test-only perturbation of this compilation's pools and unit
-    /// analyses ([`crate::scheduler::Perturbation`]), debug builds only.
-    #[cfg(debug_assertions)]
+    /// analyses ([`crate::scheduler::Perturbation`]), in debug builds or with
+    /// the `scheduling-stress` feature.
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     pub perturbation: Option<crate::scheduler::Perturbation>,
 }
 
@@ -2639,7 +2640,7 @@ fn analyze_entry(
         mut cache,
         slots,
         blockers,
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         perturbation,
     } = recorders;
     // V8 is initialized before this compilation starts a thread: the load
@@ -2681,7 +2682,7 @@ fn analyze_entry(
         pooled_times: Vec::new(),
         parse_pool: None,
         // Its own log: the perturbation's is the unit pool's assignment.
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         perturbation: perturbation
             .clone()
             .map(|p| crate::scheduler::Perturbation {
@@ -2724,11 +2725,11 @@ fn analyze_entry(
     {
         session.shared().lanes().enable();
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     let fresh_isolates = perturbation.as_ref().is_some_and(|p| p.fresh_isolates);
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
     let fresh_isolates = false;
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     if let Some(perturbation) = perturbation
         && let Some(session) = macros.session_handle()
     {

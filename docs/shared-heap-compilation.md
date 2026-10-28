@@ -1359,37 +1359,46 @@ fixture so ordinary test runs do not generate large inputs. Reproduce with:
 
 ```sh
 LIGHT_CLJS_STRESS_SOURCE_ROOTS="$PWD/target/generated-200k/src:$PWD/target/generated-200k/macros" \
-LIGHT_CLJS_STRESS_ENTRY=workload.main LIGHT_CLJS_STRESS_SEEDS=12 \
-CARGO_BUILD_JOBS=3 CARGO_PROFILE_TEST_OPT_LEVEL=3 CARGO_PROFILE_TEST_DEBUG=0 \
-CARGO_PROFILE_TEST_LTO=thin CARGO_PROFILE_TEST_CODEGEN_UNITS=1 \
-cargo test --locked --no-default-features --features bbp-macros --test bbp_macros \
+LIGHT_CLJS_STRESS_ENTRY=workload.main LIGHT_CLJS_STRESS_SEEDS=12 CARGO_BUILD_JOBS=3 \
+cargo test --locked --release --no-default-features \
+  --features bbp-macros,scheduling-stress --test bbp_macros \
   native_large_project_matches_one_slot_under_seeded_scheduling_stress \
   -- --ignored --exact --nocapture --test-threads=1
 ```
 
 For the chain, use the same command with
 `LIGHT_CLJS_STRESS_SOURCE_ROOTS="$PWD/target/catalog-chain-400"` and
-`LIGHT_CLJS_STRESS_ENTRY=chain.n7`. Test optimization changes speed only;
-debug assertions and the scheduler's debug-only perturbation remain enabled.
+`LIGHT_CLJS_STRESS_ENTRY=chain.n7`.
 
-The chain run passes all **49 builds** (one reference plus twelve seeds at
-four job counts), in 891.30 seconds. Every build compiles and publishes
+The opt-in `scheduling-stress` feature exposes the existing debug scheduling
+hooks in release builds. Ordinary release builds omit them, and debug builds
+retain their existing hooks without requiring the feature. No assertions are
+changed: the test's JavaScript, map, warning and count comparisons are ordinary
+assertions and run in release builds. A sampled debug-assertion-enabled 200k
+reference spends its time rescanning accumulated program prefixes in
+`program_fragment::append`; that attempt was stopped during the reference and
+supplies no completed 200k stress result. The release feature permits the large
+matrix without changing those debug checks or production defaults.
+
+The debug chain run at `a4e173db` passes all **49 builds** (one reference plus
+twelve seeds at four job counts), in 885.38 seconds. Every build compiles and publishes
 **400 helpers**, with **zero per-task fallbacks**. JavaScript, full maps,
-warnings and helper counts match at both optimization levels. The tested
-production code is `a629b7e4`; rebasing onto `bba14eb8` adds only the independent
-initializer-slot operand tests, so this result is reused unchanged.
+warnings and helper counts match at both optimization levels.
 
-The ordinary native-only `bbp_macros` suite at `a4e173db` separately passes
+The ordinary native-only debug `bbp_macros` suite at `a4e173db` separately passes
 **114 tests** with `LIGHT_CLJS_STRESS_SEEDS=12` and three test threads in 157.83 seconds,
 including its randomized, fixed-assignment and one-job-admission pool/effect
 stress. Its one ignored test is the large-fixture acceptance explicitly run
-above. This suite uses the optimized test settings above.
+above. Its test profile uses optimization level 3, debug info 0, thin LTO and
+one codegen unit, retaining debug assertions. The scheduling feature only
+broadens the hook guards; their debug-build behavior is unchanged, so these
+debug results are reused across that change.
 Compiler and engine format checks and default all-target strict Clippy pass.
 Native test-target strict Clippy retains the eight existing engine-library
 diagnostics; allowing only `deprecated`, `chunks_exact_to_as_chunks` and
-`byte_char_slices` passes, without source suppressions. No production code
-changes in this acceptance, so full legacy compiler/engine suites are not
-repeated.
+`byte_char_slices` passes, without source suppressions. Production behavior
+with the scheduling feature off is unchanged; full legacy compiler/engine
+suites are not repeated.
 
 ### Single-thread speed
 

@@ -67,7 +67,7 @@ impl Job for Task {
     fn priority(&self) -> u64 {
         self.priority
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     fn key(&self) -> u64 {
         self.id
     }
@@ -1003,7 +1003,7 @@ fn backlog_admission_ages_phases_behind_a_higher_priority() {
 /// every job runs once, under random batches, steals and delays, with
 /// one-job admission, and under a fixed assignment, where each job runs on
 /// the worker the seed assigns it, local pushes included.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 #[test]
 fn perturbed_pools_run_every_job_once_and_a_fixed_assignment_holds() {
     within(120, || {
@@ -1057,7 +1057,7 @@ fn perturbed_pools_run_every_job_once_and_a_fixed_assignment_holds() {
 
 /// A perturbed claim takes jobs from random places, so one worker runs a
 /// batch submitted in order out of it.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 #[test]
 fn a_perturbed_worker_runs_a_batch_out_of_submission_order() {
     within(30, || {
@@ -1093,7 +1093,7 @@ fn a_perturbed_worker_runs_a_batch_out_of_submission_order() {
 /// admitted jobs as workers, the first jobs waiting on a barrier that only
 /// opens once each worker runs one, and the rest of the jobs and their
 /// local pushes in the backlog. The perturbed pool still finishes them all.
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
 #[test]
 fn perturbed_small_queues_progress_with_every_worker_busy() {
     within(60, || {
@@ -1209,7 +1209,7 @@ fn a_phase_with_fewer_servers_runs_only_on_them() {
                     bytes: 0,
                 };
                 let mut modes = vec![(None, "plain")];
-                #[cfg(debug_assertions)]
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                 for fixed in [false, true] {
                     let perturbation = Perturbation {
                         seed,
@@ -1221,11 +1221,11 @@ fn a_phase_with_fewer_servers_runs_only_on_them() {
                 for (perturbation, mode) in modes {
                     let mut config = config(slots, 2);
                     config.servers = vec![slots - 1, servers];
-                    #[cfg(debug_assertions)]
+                    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                     {
                         config.perturbation = perturbation;
                     }
-                    #[cfg(not(debug_assertions))]
+                    #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
                     let _ = perturbation;
                     let (runs, outcomes, _) = graph.run(&config);
                     let case = format!("slots {slots} servers {servers} seed {seed} {mode}");

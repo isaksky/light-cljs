@@ -527,7 +527,7 @@ pub(crate) struct SharedCatalog {
     measuring_ir: std::sync::atomic::AtomicBool,
     /// The build's test-only perturbation ([`crate::scheduler::Perturbation`]):
     /// the unit pool's scheduling, and the unit whose analysis panics.
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     perturbation: std::sync::OnceLock<crate::scheduler::Perturbation>,
     #[cfg(test)]
     on_claim: Mutex<Option<ClaimHook>>,
@@ -2278,7 +2278,7 @@ impl CompilationSession {
             .collect()
     }
     /// Perturb this build's unit pool and analyses, for a stress test.
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     pub(crate) fn perturb(&self, perturbation: crate::scheduler::Perturbation) {
         let _ = self.shared.perturbation.set(perturbation);
     }
@@ -2365,7 +2365,7 @@ impl CompilationSession {
         if self.bootstrap().is_some() {
             return Ok(());
         }
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if let Some(delay) = self
             .shared
             .perturbation
@@ -2378,7 +2378,7 @@ impl CompilationSession {
             Some(bootstrap) => bootstrap.clone(),
             None => crate::compiler_bootstrap::build(host, true)?,
         };
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if let Some(delay) = self
             .shared
             .perturbation
@@ -2414,7 +2414,7 @@ impl CompilationSession {
         };
         let host = MacroHost::from_parts(environment, binding.frame());
         let bootstrap = crate::compiler_bootstrap::build(&host, true)?;
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if let Some(delay) = self
             .shared
             .perturbation
@@ -2770,7 +2770,7 @@ impl CompilationSession {
             // started the coordinator's engine with one slot, at that
             // expansion; it starts it there, so later polls are spent.
             let start = || {
-                #[cfg(debug_assertions)]
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                 if let Some(delay) = self
                     .shared
                     .perturbation
@@ -3229,7 +3229,7 @@ fn compile_unit_in(
     id: usize,
     analyze: impl FnOnce() -> Result<(Arc<Program>, Vec<AnalysisWarning>), String>,
 ) -> Result<String, String> {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     if let Some(perturbation) = shared.perturbation.get()
         && let Some(name) = &perturbation.panic_in
         && shared.unit_name(id) == *name
@@ -3521,7 +3521,7 @@ impl crate::scheduler::Job for UnitJob {
             Self::Native(..) => true,
         }
     }
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     fn key(&self) -> u64 {
         match self {
             Self::Analyze(id, _, _) => *id as u64,
@@ -3936,7 +3936,7 @@ fn worker_view(
             .isolates
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         PoolCounters::add(&counters.startup_ns, started);
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         if let Some(perturbation) = shared.perturbation.get() {
             (perturbation.isolates).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
@@ -4134,7 +4134,7 @@ fn execute_pool_job(
         }));
     }
     let started = std::time::Instant::now();
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     if let Some(perturbation) = shared.perturbation.get()
         && perturbation.lane_hold.contains(&shared.unit_name(id))
     {
@@ -4173,14 +4173,15 @@ fn execute_pool_job(
 }
 
 /// Whether the build's test perturbation holds units back for a lane
-/// ([`crate::scheduler::Perturbation::lane_hold`]); never in release builds.
+/// ([`crate::scheduler::Perturbation::lane_hold`]); enabled in debug builds or
+/// by the opt-in `scheduling-stress` feature.
 #[cfg(feature = "bbp-macros")]
 fn lane_hold(shared: &SharedCatalog) -> bool {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     {
         (shared.perturbation.get()).is_some_and(|p| !p.lane_hold.is_empty())
     }
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
     {
         let _ = shared;
         false
@@ -4272,7 +4273,7 @@ fn serve_pool(
     // A worker analyzes as deep as the coordinator, whose main thread has
     // 8 MiB; V8's stack limit is set from where each engine entry starts.
     config.stack_size = Some(8 << 20);
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     {
         config.perturbation = shared.perturbation.get().cloned();
     }
