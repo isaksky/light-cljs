@@ -3168,3 +3168,8 @@ On macOS arm64, Homebrew Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218,
 138 macro, two Proxy and twelve reader tests, retaining two existing ignored
 stress cases. The earlier pre-rebase macro run was interrupted when master
 advanced; these complete results replace it.
+
+Native-only verification on the same source passes all 62 evaluator tests,
+the dispatcher scope regression, 136 macro tests, two Proxy tests and twelve
+reader tests. The macro/reader/Proxy command uses the same twelve seeds and
+three test workers, with the existing generated-project stress case ignored.
