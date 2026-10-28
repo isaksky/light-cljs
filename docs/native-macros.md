@@ -2771,3 +2771,49 @@ The existing positional-literal matrix and exact sequence-element identity/span
 assertions remain unchanged: compiler mapping annotations never replace those
 native input values. The annotation storage and import branch are feature gated
 out of the default build.
+
+Annotations follow reused subtrees through subsequent native and compiler-owned
+macro expansions. The scalar table covers a nested macro handoff, an unchanged
+subtree beside an equal scalar argument, and a compiler-owned `let` handoff.
+
+Final verification uses production source `ca2ba2e2`, three build jobs and three
+`cargo test` workers; compiler nextest uses eight slots while the peer is active.
+The saved release binaries again match all four JS/map files at jobs 1/4. The
+generated `release bench` output also matches across backends and jobs 1/4
+(one JavaScript module), retaining main-module SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e` and
+printing `484264` in all four Node executions.
+
+- Full default V8 `cargo nextest run --locked --no-fail-fast -j 8`:
+  2,133 pass, 109 skipped, one existing WASM workspace failure (254.2 s).
+- Full QuickJS-only nextest with `--no-default-features --features quickjs`:
+  2,056 pass, 108 skipped, the same single failure (289.8 s).
+- Native-only `LIGHT_CLJS_STRESS_SEEDS=12 cargo test --locked
+  --no-default-features --features bbp-macros --test bbp_macros --test
+  bbp_reader --test bbp_proxy_has -- --test-threads=3`: 126 macro, 12 reader
+  and two proxy tests pass; the existing large-project case stays ignored.
+- Combined `bbp-macros,quickjs`, twelve stress seeds, with `--lib --test
+  bbp_macros --test bbp_reader --test bbp_proxy_has --test compiler_cache`:
+  all 521 tests pass (365 library, 128 macro, 12 reader, two proxy, 14 cache),
+  with the two existing ignored cases.
+- Engine all-target tests and doctests pass 2,180 and five tests. This result
+  is reused after the final root-package fixes: no engine source or dependency
+  input changed after that run. Compiler/engine formatting and all eight full
+  output syntax checks pass.
+
+The only full-suite failure is `playground_crate_checks_for_wasm32`: Cargo
+reports that the worktree's `playground/crate/Cargo.toml` believes it belongs
+to the main checkout's workspace. Its diagnostic matches the 553 baseline;
+the test and workspace manifests remain unchanged from `01175afc`.
+
+Strict default and QuickJS all-target Clippy pass. Strict engine/native checks
+retain the eight engine-library/nine engine-test diagnostics in `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`. Engine and
+combined all-target Clippy pass allowing only these categories; focused native
+library/binary/macro/reader/proxy/cache targets pass with the same isolation.
+Engine-free library/binary strict Clippy passes. Engine-free all-target and
+native-only all-integration-test attempts encounter the existing missing legacy
+`Evaluator` APIs (`print`, `evaluate_js`, `string`, etc.). With both legacy
+features off that evaluator is an empty enum; its implementation and the
+affected evaluation tests are byte-unchanged from `01175afc`. These are explicit
+configuration/lint limitations, not passing broad native/engine-free checks.
