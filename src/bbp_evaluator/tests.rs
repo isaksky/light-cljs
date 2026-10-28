@@ -3146,6 +3146,68 @@ fn catalog_mutable_initializers_run_once_per_task_after_frontier_changes() {
 }
 
 #[test]
+fn invalid_compiler_literal_keys_cannot_enter_the_identity_cache() {
+    let rt = Runtime::new();
+    for key in [
+        Datum::new(D::Integer(1)),
+        Datum::new(D::Collection {
+            kind: C::Vector,
+            children: [].into(),
+        }),
+        Datum::new(D::Keyword(Name::new(Some("ns"), "key"))),
+    ] {
+        let data = Datum::new(D::CompilerLiteral {
+            kind: L::JsObject,
+            payload: Datum::new(D::Collection {
+                kind: C::Map,
+                children: vec![key, Datum::new(D::Integer(2))].into(),
+            }),
+        });
+        let mut bridge = Bridge::default();
+        rt.scope(|s| {
+            for _ in 0..2 {
+                let message = bridge
+                    .import(s, &data, 64, &mut 100)
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    message.contains("Invalid JS object literal key"),
+                    "{message}"
+                );
+                assert!(!bridge.imports.contains_key(&data.identity()));
+            }
+        });
+    }
+    for payload in [
+        Datum::new(D::Collection {
+            kind: C::Map,
+            children: vec![Datum::new(D::String("key".encode_utf16().collect()))].into(),
+        }),
+        Datum::new(D::Collection {
+            kind: C::Vector,
+            children: [].into(),
+        }),
+    ] {
+        let data = Datum::new(D::CompilerLiteral {
+            kind: L::JsObject,
+            payload,
+        });
+        let mut bridge = Bridge::default();
+        rt.scope(|s| {
+            let message = bridge
+                .import(s, &data, 64, &mut 100)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                message.contains("invalid JS object literal payload"),
+                "{message}"
+            );
+            assert!(!bridge.imports.contains_key(&data.identity()));
+        });
+    }
+}
+
+#[test]
 fn compiler_literal_payloads_keep_identity_provenance_and_cached_limits_after_gc() {
     let rt = Runtime::new();
     let payload = Datum::new(D::Collection {

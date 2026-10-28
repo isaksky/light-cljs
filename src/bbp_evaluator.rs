@@ -53,6 +53,27 @@ fn literal_tag(kind: L) -> &'static str {
     }
 }
 
+fn validate_js_object_payload(payload: &Datum) -> Result<(), EvalError> {
+    let D::Collection {
+        kind: C::Map,
+        children,
+    } = payload.kind()
+    else {
+        return Err(error("invalid JS object literal payload"));
+    };
+    if !children.len().is_multiple_of(2) {
+        return Err(error("invalid JS object literal payload"));
+    }
+    for pair in children.as_chunks::<2>().0 {
+        if !matches!(pair[0].kind(), D::String(_))
+            && !matches!(pair[0].kind(), D::Keyword(name) if name.namespace().is_none())
+        {
+            return Err(error("Invalid JS object literal key"));
+        }
+    }
+    Ok(())
+}
+
 pub type BridgeStats = crate::compile_stats::NativeBridgeCall;
 struct Imported {
     data: Datum,
@@ -270,6 +291,11 @@ impl Bridge {
                 .map_err(error)?
             }
             D::CompilerLiteral { kind, payload } => {
+                // Memoized exports return their original Datum directly. Only
+                // validated object literals may enter that identity cache.
+                if *kind == L::JsObject {
+                    validate_js_object_payload(payload)?;
+                }
                 let value = self.import(s, payload, depth - 1, remaining)?;
                 if *kind == L::BigInteger {
                     let D::String(text) = payload.kind() else {
@@ -455,20 +481,7 @@ impl Bridge {
                 .ok_or_else(|| error("invalid compiler literal tag"))?;
                 let payload = self.export(s, payload, depth - 1, remaining)?;
                 if kind == L::JsObject {
-                    let D::Collection {
-                        kind: C::Map,
-                        children,
-                    } = payload.kind()
-                    else {
-                        return Err(error("invalid JS object literal payload"));
-                    };
-                    for pair in children.as_chunks::<2>().0 {
-                        if !matches!(pair[0].kind(), D::String(_))
-                            && !matches!(pair[0].kind(), D::Keyword(name) if name.namespace().is_none())
-                        {
-                            return Err(error("Invalid JS object literal key"));
-                        }
-                    }
+                    validate_js_object_payload(&payload)?;
                 }
                 D::CompilerLiteral { kind, payload }
             }
