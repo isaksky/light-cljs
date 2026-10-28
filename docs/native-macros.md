@@ -277,6 +277,17 @@ Full engine and legacy suite results above are reused: the rebase changes
 native-only paths and tests; engine sources, dependency inputs and the legacy
 emission path are unchanged. Both format checks cover the rebased sources.
 
+The final V8 gate compares the saved `30fa1ecd` default-feature release binary
+with the rebuilt `7981ff45` executable content on the same seed-42, 200k-line
+generated project using `release bench --no-cache`. Ten clean interleaved pairs
+across quiet windows have median wall times of 7.305 s before and 7.250 s after
+(0.99247x, -0.75%); ranges are 7.25–7.98 s and 7.16–7.82 s. Pairs interrupted
+by other builds or tests are excluded. There is no V8 slowdown.
+Both final native Penpot commands repeat the exact `core.isList` diagnostic
+above, taking 181.19 s (`app.main`) and 183.45 s (`app.render`), with jobs 1,
+no cache, all five absolute roots and every budget. The existing light-cljs-546
+remains the next boundary. Final documentation-only commits reuse these checks.
+
 ### Key-value reduction (light-cljs-518)
 
 Native `reduce-kv` invokes `(rf accumulator key value)` on the resumable task
