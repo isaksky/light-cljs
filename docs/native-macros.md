@@ -3177,3 +3177,20 @@ three test workers, with the existing generated-project stress case ignored.
 Fresh `CARGO_BUILD_JOBS=3 cargo test --locked -p big-boy-pants-js --all-targets
 -- --test-threads=3` passes all 2,182 engine tests; the matching `--doc` command
 passes seven doctests. These runs cover the rebased intrinsic selector merge.
+
+Fresh full nextest runs use `CARGO_BUILD_JOBS=3`, `--locked --no-fail-fast
+-j 8`, the pinned ClojureScript symlink and the recorded WASM toolchain
+override. QuickJS-only passes 2,056 tests (288.2 s); default V8 with
+`LIGHT_CLJS_V8_CACHE=require` passes 2,133 (244.2 s). Each fails only
+`playground_crate_checks_for_wasm32`, with the same worktree/main-checkout
+workspace diagnostic. The test, playground manifests, build script and Cargo
+inputs are unchanged from `fefa58b8`; these remain full-suite limitations.
+
+Compiler/engine formatting, runtime syntax and the direct JavaScript runtime
+checks pass. Strict V8 and QuickJS all-target Clippy and engine-free production
+Clippy pass. Strict combined/engine checks retain eight engine-library/nine
+engine-test diagnostics; all-target checks pass allowing only `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` after
+`-D warnings`, as does native production lint. Engine-free all-target lint
+retains the unsupported legacy-dependent fixture errors. No assertions, test
+skips or source lint suppressions were changed.
