@@ -104,3 +104,47 @@ pub(crate) fn operation(
     })
     .ok_or_else(invalid)?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::heap::Scope;
+
+    #[test]
+    fn slot_body_requires_exact_headroom_and_releases_its_charge() {
+        let heap = std::sync::Arc::new(Heap::with_byte_limit(usize::MAX / 2));
+        // Warm the slot batch/free list before setting the payload headroom.
+        let scope = Scope::new(&heap);
+        scope.new_object();
+        drop(scope);
+        heap.collect().unwrap();
+        let baseline = heap.byte_budget().used();
+        let charge = HeapObject::charged_with_box::<InitializerSlot>();
+        let args = [Value::Number(1.5), Value::Null];
+        let owner = TaskId::from_raw(1);
+
+        heap.byte_budget().set_limit(baseline + charge - 1);
+        assert!(operation(&heap, owner, FormOp::InitializerSlot, &args).is_err());
+        assert_eq!(heap.byte_budget().used(), baseline);
+        assert!(heap.byte_budget().take_denial());
+
+        heap.byte_budget().set_limit(baseline + charge);
+        let scope = Scope::new(&heap);
+        let slot = operation(&heap, owner, FormOp::InitializerSlot, &args)
+            .ok()
+            .expect("exact payload headroom");
+        scope.new_local(slot);
+        assert_eq!(heap.byte_budget().used(), baseline + charge);
+        heap.collect().unwrap();
+        assert_eq!(heap.byte_budget().used(), baseline + charge);
+        drop(scope);
+        heap.collect().unwrap();
+        assert_eq!(heap.byte_budget().used(), baseline);
+        eprintln!(
+            "slot payload/heap object/total bytes: {}/{}/{}",
+            std::mem::size_of::<InitializerSlot>(),
+            std::mem::size_of::<HeapObject>(),
+            charge
+        );
+    }
+}
