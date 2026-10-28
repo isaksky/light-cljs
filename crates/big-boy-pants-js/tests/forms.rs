@@ -2264,8 +2264,8 @@ fn compiler_literal_value_equality_hashing_and_queue_keys_survive_collection() {
         r#"function make() {
       const literal=(tag,payload)=>__rt.formCompilerLiteral(tag,payload);
       return __rt.formVector(
-        literal('instant',1704164645000),literal('instant',1704164645000),literal('instant',0),
-        literal('uuid','123e4567-e89b-12d3-a456-426614174000'),
+        literal('instant','2024-01-02T03:04:05.000Z'),literal('instant',1704164645000),literal('instant',0),
+        literal('uuid','123E4567-E89B-12D3-A456-426614174000'),
         literal('uuid','123e4567-e89b-12d3-a456-426614174000'),literal('uuid','other'),
         literal('queue',__rt.formVector(1,__rt.formList(2))),
         literal('queue',__rt.formVector(1,__rt.formVector(2))),
@@ -2279,6 +2279,10 @@ fn compiler_literal_value_equality_hashing_and_queue_keys_survive_collection() {
         &rt,
         r#"function check(values) {
       const eq=(a,b)=>__rt.formEquals(a,b),hash=x=>__rt.formHash(x);
+      if(__rt.formLiteralPayload(__rt.formNth(values,0))!=='2024-01-02T03:04:05.000Z')throw new Error('instant payload identity');
+      if(__rt.formLiteralPayload(__rt.formNth(values,3))!=='123E4567-E89B-12D3-A456-426614174000')throw new Error('UUID payload identity');
+      const clipped=__rt.formCompilerLiteral('instant',0.9),zero=__rt.formCompilerLiteral('instant',0);
+      if(!eq(clipped,zero)||hash(clipped)!==hash(zero))throw new Error('instant TimeClip');
       let map=__rt.formMap();
       for(let i=0;i<20;i++)map=__rt.formAssoc(map,i,i);
       for(let i=0;i<9;i+=3){

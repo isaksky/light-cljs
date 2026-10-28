@@ -110,6 +110,16 @@ Descriptors remain opaque compiler values, rather than an implementation of all
 JavaScript container, Date, UUID and queue operations. Regex core matching obtains
 a task-owned RegExp view. Unquoted regex and instant expressions retain their
 existing JavaScript evaluation; raw RegExp/Date result export remains unsupported.
+JS containers and regexes retain identity equality and hashing. UUIDs compare
+their lowercase contents, instants their clipped epoch values, and queues their
+elements, with the same hashes as equal sequential collections. Canonical scalar
+values are retained separately from the original payload occurrence, including
+for a textual instant or uppercase UUID supplied through the explicit engine API.
+Normalized object fields retain positional storage at every size; imported
+compiler maps retain their legacy traversal view without replacing their payload.
+Object predicates observe an own `constructor` field. Literal `str` uses the
+represented value's conversion, including array joining and object coercion.
+Date's default string and time zone remain engine/host dependent.
 The compiler reader still rejects metadata directly on a `#js` source literal;
 metadata on surrounding forms, payloads and API-created descriptors is retained.
 The EDN reader's `#inst`, `#uuid` and `#queue` value services, and code-profile
@@ -126,6 +136,13 @@ limits, lazy payload realization and rejection of task-owned published payloads.
 The next small Penpot service gaps, `object?`, `array?`, string `name`, `subs`,
 `sequential?`, `ffirst` and `update`, also have native/QuickJS regressions for their
 values, effects, metadata and exact strings.
+The operation matrix also compares equality, repeated hashing, equal-key lookup
+in small and hashed maps, string conversion, printer depth/readability/length,
+alternate printer callbacks, predicates and invalid reader keys at jobs 1/2/4/8.
+It checks descriptor regex flags, captures, repeated matching and incremental
+`re-seq` tails. Date string conversion is compared with a raw Date in each engine
+to avoid equating their different host-defined date formats. Malformed explicit
+object keys fail with a located macro diagnostic before analyzer lowering.
 
 At `13207bd2`, rebased onto `1888f327`, a fresh native-only debug compiler on macOS
 arm64 with Homebrew Rust/Cargo 1.99.1 passes the former `rumext/v2.cljs:906:3`

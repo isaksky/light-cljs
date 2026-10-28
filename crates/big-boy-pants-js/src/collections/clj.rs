@@ -1399,7 +1399,7 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                     ),
                     FormBody::List(items) => (Rebuild::List, items.to_vec()),
                     FormBody::Vector(items) => (Rebuild::Vector, items.to_vec()),
-                    FormBody::CompilerLiteral { tag, payload } => {
+                    FormBody::CompilerLiteral { tag, payload, .. } => {
                         (Rebuild::CompilerLiteral(tag.clone()), vec![payload.clone()])
                     }
                     FormBody::Set(set) => {

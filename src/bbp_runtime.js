@@ -614,7 +614,7 @@ const native = (() => {
         },'{',', ','}',options,__rt.formPrintItems(constantMap(pairs)));
       }
       if(tag==='queue')return printSequential(writer,printWriter,'#queue [',' ',']',options,payload);
-      if(tag==='uuid')return write(writer,'#uuid "'+val(payload)+'"');
+      if(tag==='uuid')return write(writer,'#uuid "'+val(payload).toLowerCase()+'"');
       if(tag==='instant')return write(writer,'#inst "'+new Date(val(payload)).toISOString().replace(/Z$/,'-00:00')+'"');
     }
     if(typeof x==='string'){
@@ -1410,7 +1410,7 @@ const native = (() => {
         }
         if(tag==='regex')return String(regexValue(x));
         if(tag==='instant')return String(new Date(val(payload)));
-        if(tag==='uuid')return val(payload);
+        if(tag==='uuid')return val(payload).toLowerCase();
       }
       if(kind==='reduced'||__rt.cljIsAtom(x))return '[object Object]';
       if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}

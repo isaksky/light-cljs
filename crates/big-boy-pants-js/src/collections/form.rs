@@ -466,6 +466,8 @@ pub(crate) enum FormBody {
     CompilerLiteral {
         tag: JsString,
         payload: Value,
+        // Comparable value without replacing the original payload occurrence.
+        scalar: Option<Value>,
     },
 }
 
@@ -684,8 +686,8 @@ impl FormObject {
             // A deftype's hash is its identity's; a record's reads its
             // field values and extension entries.
             FormBody::Type(_) | FormBody::Reduced(_) => {}
-            FormBody::CompilerLiteral { tag, payload } => {
-                if tag == "queue" || tag == "uuid" || tag == "instant" {
+            FormBody::CompilerLiteral { tag, payload, .. } => {
+                if tag == "queue" {
                     f(payload);
                 }
             }
@@ -719,7 +721,14 @@ impl Trace for FormObject {
             FormBody::Lazy(cell) => cell.trace(visit),
             FormBody::Cons(c) => c.trace(visit),
             FormBody::Reduced(value) => value.trace(visit),
-            FormBody::CompilerLiteral { payload, .. } => payload.trace(visit),
+            FormBody::CompilerLiteral {
+                payload, scalar, ..
+            } => {
+                payload.trace(visit);
+                if let Some(scalar) = scalar {
+                    scalar.trace(visit);
+                }
+            }
         }
         if let Some(meta) = &self.meta {
             meta.trace(visit);
@@ -1334,6 +1343,57 @@ pub(crate) fn new_compiler_literal(
     if !valid {
         return Err(wrong(heap, "valid compiler literal payload", payload));
     }
+    let scalar = if tag == "uuid" {
+        let Value::String(text) = unwrap(heap, payload.clone()) else {
+            unreachable!()
+        };
+        let text = if text
+            .code_units()
+            .iter()
+            .any(|unit| (65..=90).contains(unit))
+        {
+            let units: Vec<_> = text
+                .code_units()
+                .iter()
+                .map(|&unit| {
+                    if (65..=90).contains(&unit) {
+                        unit + 32
+                    } else {
+                        unit
+                    }
+                })
+                .collect();
+            JsString::copy_units(heap, &units)
+        } else {
+            text.import(heap)
+        }
+        .ok_or(CollectionError::HeapLimit)?;
+        Some(Value::String(text))
+    } else if tag == "instant" {
+        let time = match unwrap(heap, payload.clone()) {
+            Value::Number(time) => crate::vm::date::time_clip(time),
+            Value::String(text) => {
+                let mut parser = crate::vm::date::Parser::new(heap, text)
+                    .map_err(|_| CollectionError::HeapLimit)?;
+                loop {
+                    if let Some(result) = parser.advance(4096) {
+                        break result.map_or(f64::NAN, |date| {
+                            date.time(
+                                heap.date_zone
+                                    .get()
+                                    .copied()
+                                    .unwrap_or(crate::host::TimeZone::UTC),
+                            )
+                        });
+                    }
+                }
+            }
+            _ => unreachable!(),
+        };
+        Some(Value::Number(time))
+    } else {
+        None
+    };
     let tag = tag.clone().import(heap).ok_or(CollectionError::HeapLimit)?;
     alloc(
         heap,
@@ -1341,6 +1401,7 @@ pub(crate) fn new_compiler_literal(
             FormBody::CompilerLiteral {
                 tag,
                 payload: payload.clone(),
+                scalar,
             },
             None,
         ),
@@ -1353,7 +1414,7 @@ pub(crate) fn compiler_literal(
     value: &Value,
 ) -> Result<(JsString, Value), CollectionError> {
     match form_object(heap, value).as_deref().map(FormObject::body) {
-        Some(FormBody::CompilerLiteral { tag, payload }) => Ok((tag.clone(), payload.clone())),
+        Some(FormBody::CompilerLiteral { tag, payload, .. }) => Ok((tag.clone(), payload.clone())),
         _ => Err(wrong(heap, "compiler literal", value)),
     }
 }
@@ -2312,7 +2373,7 @@ fn seq_split(heap: &Heap, mut c: SeqCursor) -> Split {
                 tail: cons.rest.clone(),
                 source: Some(id),
             },
-            FormBody::CompilerLiteral { tag, payload } if tag == "queue" => {
+            FormBody::CompilerLiteral { tag, payload, .. } if tag == "queue" => {
                 c.tail = payload.clone();
                 continue;
             }
@@ -2453,8 +2514,16 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
         // nested, so cached hashes cannot reject an equality comparison.
         match (&x.body, &y.body) {
             (
-                FormBody::CompilerLiteral { tag: m, payload: p },
-                FormBody::CompilerLiteral { tag: n, payload: q },
+                FormBody::CompilerLiteral {
+                    tag: m,
+                    scalar: Some(p),
+                    ..
+                },
+                FormBody::CompilerLiteral {
+                    tag: n,
+                    scalar: Some(q),
+                    ..
+                },
             ) if (m == "uuid" || m == "instant") && m == n => {
                 Outcome::Expand((ia, ib), vec![Step::Pair(p.clone(), q.clone())])
             }
@@ -2838,15 +2907,19 @@ fn shallow_hash(heap: &Heap, v: &Value, f: &FormObject) -> i32 {
             }
             sum ^ string_hash(s.info.name.code_units())
         }
-        FormBody::CompilerLiteral { tag, payload } if tag == "uuid" || tag == "queue" => {
+        FormBody::CompilerLiteral { tag, payload, .. } if tag == "queue" => {
             child_hash(heap, payload)
         }
-        FormBody::CompilerLiteral { tag, payload } if tag == "instant" => {
-            match unwrap(heap, payload.clone()) {
-                Value::Number(n) => crate::vm::dispatch::to_int32(n),
-                value => scalar_hash(&value),
-            }
-        }
+        FormBody::CompilerLiteral {
+            tag,
+            scalar: Some(Value::Number(time)),
+            ..
+        } if tag == "instant" => crate::vm::dispatch::to_int32(*time),
+        FormBody::CompilerLiteral {
+            tag,
+            scalar: Some(value),
+            ..
+        } if tag == "uuid" => scalar_hash(value),
         // Identity-hashed: set where the object identity is known
         // ([`identity_hash`]); never reached through it.
         FormBody::Struct(_)
