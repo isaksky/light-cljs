@@ -1118,6 +1118,38 @@ saved-state bytes. The former four-property charge of 2,048 bytes is replaced
 by the fixed 64-byte payload charge, saving 1,984 accounted bytes per slot
 before small differences in interned keys/runtime storage.
 
+Correctness is checked independently of timing/RSS. Native-only
+`LIGHT_CLJS_STRESS_SEEDS=12 CARGO_BUILD_JOBS=3 cargo test --locked
+--no-default-features --features bbp-macros --test bbp_macros -- --test-threads=3`
+passes all **112 tests** in 518.87 s, including both scheduling/effect-lane
+stress tests. All 56 native evaluator tests pass, including the ordinary-object
+differential table, saved getters, preloads, redefinitions, cancellation and
+once-per-task execution. Combined `bbp-macros,quickjs` library, reader, proxy
+and cache coverage passes **383 tests** (355 library, 12 reader, two proxy,
+14 cache; one normally ignored library test), including the QuickJS oracle
+for the object table. The full engine run passes **2,171 tests and seven
+doctests**; the subsequently added exact-headroom unit test also passes.
+Its addition and later documentation do not change engine production code,
+so the full-engine result is reused without repeating the unchanged suite.
+
+Full compiler nextest runs use `-j 8 --no-fail-fast`, with
+`LIGHT_CLJS_V8_CACHE=require` for default V8 and
+`--no-default-features --features quickjs` for QuickJS. V8 passes
+**2,132/2,133** in 254.82 s; QuickJS passes **2,055/2,056** in 323.26 s.
+Both fail only `playground_crate_checks_for_wasm32` with the unchanged
+`tests/cli.rs:2000` workspace-discovery signature described above. Their
+109/108 normally ignored tests remain ignored; no failure is skipped.
+Both formatters and default/QuickJS all-target strict Clippy pass.
+Engine-free library/binary strict Clippy passes; its all-target `--keep-going`
+run reproduces the same 7/2/5/501/107/1 benchmark/example/benchmark-variant/
+compiler/evaluation/execution errors recorded above. Engine all-target strict
+Clippy retains the same eight library/ninth test diagnostics; combined
+`bbp-macros,quickjs` all-target strict Clippy retains the eight engine library
+diagnostics. Allowing only the three documented baseline categories passes
+both configurations, with no source suppressions. Runtime code is
+`674a1b58`, based on `b3ef562c`; these checks cover that code, with subsequent
+changes confined to tests/documentation as identified above.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
