@@ -2986,8 +2986,8 @@ retains the same eight engine-library diagnostics; combined all-target and
 native selected-target lint pass allowing only `deprecated`,
 `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` after
 `-D warnings`. Engine-free library/binary strict lint passes; its all-target
-check fails on unchanged compiler benchmark calls to unavailable legacy
-`Evaluator::evaluate_js`, `string` and `number` APIs. No source lint suppressions
+check fails on unchanged example and benchmark calls to unavailable legacy
+`Evaluator::print`, `evaluate`, `evaluate_js`, `string` and `number` APIs. No source lint suppressions
 were added. Checks use macOS arm64, Homebrew Rust/Cargo 1.99.1, Node 26.12.1,
 Babashka 1.12.218 and the read-only ClojureScript source pin `a5e94c98`.
 
