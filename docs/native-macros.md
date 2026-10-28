@@ -2493,6 +2493,10 @@ Rust expander and legacy bootstrap path retain their existing behavior. A
 native bootstrap builder is installed only when that Rust expander declines a
 call. It consumes the rooted `&form` directly, avoiding a VM argument frame
 proportional to the operand count, and uses bounded native list/vector builders.
+The bootstrap retains immutable builder code identity; its callable handle is
+resolved and cached in the active native task. Helper producers never call a
+handle owned by the bootstrap's task. A lent context keeps its cached handle,
+including across new bootstrap bindings, without rebuilding the function.
 The native bridge keeps its last real map environment when a bootstrap call
 receives an unused nil environment.
 
@@ -2517,8 +2521,13 @@ the exact retained key occurrence and generated-name sequence.
 
 The first subsequent Penpot gap was the garden compiler's private, documented
 `defmulti`. Native compilation now also merges small keyword metadata maps
-with attributes and docstrings, retaining their legacy precedence. The
-default engine still uses its existing fallback for those metadata merges.
+with attributes and docstrings, retaining their legacy precedence and metadata
+attached to the original metadata map itself. The merge declines immediately
+on the ninth distinct key, before array-map promotion could change its order;
+overriding an existing key in an eight-entry map remains supported. Metadata
+maps without additions retain their original representation, including maps
+with more than eight entries. The default engine still uses its existing
+fallback for those metadata merges.
 
 ### Penpot builds and remaining boundary
 
@@ -2635,3 +2644,78 @@ Checks use Homebrew Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218.
 The ClojureScript source link points at pinned `a5e94c98` during verification
 and is removed for hand-back. Production source and tests are unchanged since
 `f7f9aef0`; subsequent commits record these results and reuse the checks.
+
+### Review-fix verification
+
+Source `04daaa28` resolves bootstrap builders in the active task and preserves
+the metadata map's own metadata. The producer regression uses two evaluators
+from one native runtime, then explicitly parks and lends the producer context;
+each task owns its handle and cache hits evaluate no builder code. Source-level
+wide-object differentials additionally demand a second cold helper and assert
+actual lending and borrowing at jobs 2/4/8. They retain exact JavaScript,
+warnings and Node effects against QuickJS at jobs 1/2/4/8 with twelve seeds.
+
+Complete-expansion differentials cover metadata-bearing metadata maps,
+including an empty original map and attributes whose own metadata is ignored.
+Boundary rows cover 8/9/10 original keys, an eight-key override, insertion of
+a ninth key, and a 20,000-key map that is declined. Source applications compare
+nested metadata, eight-key overrides, and unchanged nine/ten-key maps against
+QuickJS at all four job counts.
+
+Combined native/QuickJS library and macro suites pass 365 and 123 tests, with
+their two existing ignored cases, using twelve stress seeds and three test
+workers. Full default V8 nextest passes 2,133 tests and reproduces only the
+same `playground_crate_checks_for_wasm32` workspace failure described above.
+Default V8 strict all-target Clippy passes.
+
+An additional unfiltered native-only library run passes 288 tests and fails
+27 legacy-oriented tests. Repeating it with the handoff production source
+`231652c6` in this worktree passes 286 and fails the same 27 tests. Every
+failure's first diagnostic is identical after normalizing process-local
+`SourceId`s. They require unsupported direct bootstrap macros, legacy reader
+support or fake legacy host services; the combined configuration passes them.
+This baseline run restores both source files before further checks. The native
+evaluator's 61 tests and the new producer/bounded-metadata regressions pass
+within the unfiltered current-source run.
+
+Native-only `bbp_macros` separately passes 121 tests with twelve stress seeds
+and its existing ignored case. QuickJS-only full nextest passes 2,056 tests,
+with only the same WASM workspace failure; strict all-target Clippy passes.
+Native strict Clippy reports the same eight engine diagnostics, with identical
+locations and categories as the handoff. Native selected-target and combined
+all-target Clippy pass allowing only `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`. Engine-free
+strict library/binary Clippy passes. Its all-target check encounters unsupported
+legacy evaluator methods; a focused compiler-benchmark check reproduces the
+same seven method-not-found diagnostics on both `231652c6` and current source.
+Formatting, direct JavaScript runtime tests and all four emitted Penpot module
+syntax checks pass. These checks retain the toolchain and source pin above.
+
+The rebuilt native-only release CLI again **builds `app.render` at jobs 1 and
+4**. With the same five absolute roots, budgets and commands above, the quiet
+`/usr/bin/time -l` measurements are:
+
+| Backend | Jobs | Wall s | User s | System s | Maximum RSS MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Native | 1 | 14.36 | 13.79 | 0.55 | 405.0 |
+| V8 | 1 | 2.13 | 2.48 | 0.16 | 409.5 |
+| Native | 4 | 9.34 | 12.22 | 0.84 | 471.2 |
+| V8 | 4 | 1.30 | 3.49 | 0.22 | 597.3 |
+
+Each output is byte-identical to its corresponding earlier backend output,
+with the same sizes and SHA-256 values above. Thus all 47 internal `reify` ID
+changes and all 16 property reorderings are unchanged; this metadata-bound fix
+resolves none of those reorderings. Light-cljs-557 owns them. `app.main` at
+jobs 1 still exits 1 with the exact `core.memoize` diagnostic above, in 12.18 s
+wall, 11.65 s user and 0.48 s system, with 368.5 MiB maximum RSS. The existing
+light-cljs-556 owns that different runtime-service gap; no new pellet is filed.
+
+The review-fix default V8 guard compares the saved handoff binary (production
+source `f7f9aef0`) with `04daaa28`. Three quiet interleaved pairs on the same
+seed-42 200k project use `release bench --jobs 1 --no-cache`. Median wall time
+is 7.60 s before and 7.59 s after (0.999x), with ranges 7.27–7.67 and
+7.17–7.61 s. Median user+system CPU is 8.14 and 8.10 s; median maximum RSS is
+1,009.3 and 1,039.1 MiB. All six outputs retain SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
+No peer builds or tests overlap these timings or the Penpot measurements.
