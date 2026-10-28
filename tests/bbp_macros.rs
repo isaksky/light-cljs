@@ -5788,6 +5788,97 @@ fn native_core_reads_observe_replacements_in_demanded_helpers() {
 }
 
 #[test]
+fn generated_core_writes_in_demanded_values_match_quickjs_at_every_pool_size() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    for (label, helper, app, expected) in [
+        (
+            "computed write in demanded value",
+            r#"(ns helper.core)
+               (defmacro make-installer []
+                 (list 'defn 'install []
+                   (list (symbol "set!") (symbol "cljs.core/even?") '(fn [_] false))))
+               (make-installer)"#,
+            r#"(ns app.core (:require [helper.core :as h]))
+               (def result (let [before (even? 2)] (h/install) [before (even? 2)]))
+               (defmacro m [] result)
+               (js/console.log (pr-str (m)))"#,
+            "[true false]\n",
+        ),
+        (
+            "computed write executes initializers once",
+            r#"(ns helper.core)
+               (def effects (atom 0))
+               (def unused (swap! effects + 100))
+               (defmacro make-installer []
+                 (list 'defn 'install [] '(swap! effects inc)
+                   (list (symbol "set!") (symbol "cljs.core/even?") '(fn [_] false))))
+               (make-installer)"#,
+            r#"(ns app.core (:require [helper.core :as h]))
+               (def effects (atom 0))
+               (def result (do (swap! effects inc)
+                 (let [before (even? 2)] (h/install) [before (even? 2)])))
+               (defmacro m [] [result @effects @h/effects])
+               (js/console.log (pr-str [(m) (m)]))"#,
+            "[[[true false] 1 1] [[true false] 1 1]]\n",
+        ),
+        (
+            "computed binding restores after a demanded callback",
+            r#"(ns helper.core)
+               (def effects (atom 0))
+               (defmacro make-installer []
+                 (list 'defn 'install ['probe] '(swap! effects inc)
+                   (list (symbol "with-redefs")
+                     [(symbol "cljs.core/even?") '(fn [_] false)] '(probe))))
+               (make-installer)"#,
+            r#"(ns app.core (:require [helper.core :as h]))
+               (def effects (atom 0))
+               (def result (do (swap! effects inc)
+                 (let [before (even? 2)]
+                   [before (h/install (fn [] (even? 2))) (even? 2)])))
+               (defmacro m [] [result @effects @h/effects])
+               (js/console.log (pr-str [(m) (m)]))"#,
+            "[[[true false true] 1 1] [[true false true] 1 1]]\n",
+        ),
+    ] {
+        let root = temp_dir::TempDir::new("native-demanded-value-core-write");
+        std::fs::create_dir(root.join("helper")).unwrap();
+        std::fs::create_dir(root.join("app")).unwrap();
+        std::fs::write(root.join("helper/core.cljs"), helper).unwrap();
+        std::fs::write(root.join("app/core.cljs"), app).unwrap();
+        let build = |native, jobs| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            let (program, _) = analyze_namespace_entry_recorded(
+                "app.core",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                EntryRecorders {
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("{label}, native {native}, jobs {jobs}: {e}"));
+            emit_js(&program)
+        };
+        let mut reference = None;
+        for jobs in [1, 2, 4, 8] {
+            let native = build(true, jobs);
+            assert_eq!(program_output(&native), expected, "{label}, jobs {jobs}");
+            if let Some(previous) = &reference {
+                assert_eq!(&native, previous, "{label}, jobs {jobs}");
+            }
+            reference = Some(native.clone());
+            #[cfg(feature = "quickjs")]
+            assert_eq!(native, build(false, jobs), "{label}, QuickJS jobs {jobs}");
+        }
+    }
+}
+
+#[test]
 fn native_core_replacements_reanalyze_helpers_from_earlier_artifacts() {
     use light_cljs::{compiler::EntryRecorders, namespace_artifact::NamespaceCapture};
     let root = temp_dir::TempDir::new("native-core-artifact");
