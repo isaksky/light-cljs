@@ -1727,3 +1727,25 @@ The remaining native/V8 wall ratios are 4.71/4.01/3.59/4.38 at jobs 1/2/4/8;
 the cache repair does not close that gap. The emitter traversal and preparation
 paths are unchanged by this repair, so the earlier native map-identity and
 full-process preparation-profile evidence remains applicable.
+
+The repair's production source is `5cd5182f`; subsequent commits only record
+documentation and verification. Feature variants run sequentially with three
+Cargo build jobs and the same toolchain and pinned ClojureScript input above.
+
+- Default V8 full nextest (`LIGHT_CLJS_V8_CACHE=require`, `-j 8
+  --no-fail-fast`): 2,132 pass, including the new cache regression; the sole
+  failure remains the nested-worktree playground Cargo workspace check.
+  Its error block matches the saved baseline. Default all-target strict
+  Clippy and formatting pass.
+- Native-only `--lib --test bbp_macros --test compiler_cache -j 4
+  --no-fail-fast`, with twelve stress seeds: 385 pass, including both long
+  scheduling tests and the new cache regression. The 27 existing library
+  failures have exactly matching names and all 30 panic payloads against
+  the saved baseline. Twelve of fourteen cache tests pass; the two resource
+  cases also fail on the saved pre-fix native release binary
+  `29b954479a0fb53067504802f82ef6400ddfb48879d2bc9267b9970b736bab09`.
+  The optional resource case prints `failed` instead of `absent`; the
+  persistent resource case reports that `light.build/resource` is only
+  available at compile time. Running the same existing test bodies against
+  that binary reproduces both diagnostics, normalizing only temporary
+  project names. No assertions or expected data were weakened or skipped.
