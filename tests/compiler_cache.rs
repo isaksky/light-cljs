@@ -221,7 +221,7 @@ fn dynamic_core_bindings_reuse_cached_artifacts() {
 
 /// Computed mutation symbols leave no lexical core-write hint. Installing the
 /// writer must restore its resolved writes before preparing later factories,
-/// including when the write lives in the artifact's deferred bodies.
+/// including property/index targets and writes in the artifact's deferred bodies.
 #[test]
 fn generated_core_writes_survive_cached_artifacts() {
     for jobs in ["1", "4"] {
@@ -236,6 +236,18 @@ fn generated_core_writes_survive_cached_artifacts() {
                     "(list (symbol \"binding\") [(symbol \"cljs.core/inc\") '(fn [_] 42)] '(inc 2))",
                     "[(inc 2) (writer/install) (inc 2)]",
                     "[3 42 3]\n",
+                ),
+                (
+                    "(list (symbol \"set!\") (list (symbol \".-call\") (symbol \"cljs.core/+\")) '(fn [_ a b] 42))",
+                    "(let [before (+ 1 2)] (writer/install) [before (+ 1 2)])",
+                    "[3 42]\n",
+                ),
+                (
+                    // set! of an aget form is intentionally rejected; aset
+                    // produces the assignment's JsIndex target directly.
+                    "(list (symbol \"aset\") (symbol \"cljs.core/+\") \"call\" '(fn [_ a b] 42))",
+                    "(let [before (+ 1 2)] (writer/install) [before (+ 1 2)])",
+                    "[3 42]\n",
                 ),
             ] {
                 let definition = if deferred {
