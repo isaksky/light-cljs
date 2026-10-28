@@ -1486,7 +1486,7 @@ pub enum FormOp {
     /// v → v with every lazy sequence inside realized into a list
     /// (`cljRealizeAll`).
     CljRealizeAll = 56,
-    /// chunk rest → a finite range's chunked sequence (`cljRangeCons`).
+    /// chunk rest count-or-nil → a range's chunked sequence (`cljRangeCons`).
     CljRangeCons = 57,
     /// v → strict numeric zero test (`cljIsZero`).
     CljIsZero = 58,
@@ -1739,7 +1739,6 @@ impl FormOp {
             | FormOp::RecordFromMap
             | FormOp::CljDispatch
             | FormOp::CljChunkCons
-            | FormOp::CljRangeCons
             | FormOp::CljSymbolNs => 2,
             FormOp::Get
             | FormOp::InitializerSlotSet
@@ -1748,6 +1747,7 @@ impl FormOp {
             | FormOp::CljNthOr
             | FormOp::CljGet
             | FormOp::CljAssoc
+            | FormOp::CljRangeCons
             | FormOp::StructType => 3,
             FormOp::CljInvoke | FormOp::CljProtocolLookup => 4,
         }

@@ -8220,6 +8220,16 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
         [(= (seq (array [:x 1])) r) (= r (seq (array [:x 1])))
          (= (seq a) r) (into [] seen)]))
         [(SequentialRecord. 1) (MutableSequentialRecord. 1)])
+      (mapv (fn [r]
+        (let [seen (js/Array.) a (js* "Object.defineProperty(new Array(1),0,{get(){~{}.push('head');return 0;}})" seen)
+              s (seq a)]
+          [(= s r) (= r s) (= r [0]) (= [0] r) (into [] seen)]))
+        [(range 10000000) (range 1 10000000) (range 10000000 0 -3)
+         (rest (range 10000000)) (next (range 10000000))
+         (with-meta (range 10000000) {:range true})])
+      (let [r (with-meta (range 10000000) {:range true})]
+        [(count r) (count (rest r)) (count (next r)) (count (chunk-rest r))
+         (count (range 10 -2 -3))])
       [(count (DeclaredCounted.)) (count (ExtendedCounted.)) (count (OverlayCounted.))]]"#;
     std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker PlainMarker PendingMarker DeclaredCounted ExtendedCounted OverlayCounted ExtendedPending PrinterMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker SequentialRecord MutableSequentialRecord MutableMarker StackMarker EquivMarker load-sequences classify demanded]]))
       (defmacro probe [input queue-input]
@@ -8286,6 +8296,9 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
             let mut host = MacroHost::new();
             if native {
                 host.use_native_macros();
+                // A ten-million-element range cannot fit in this bound.
+                // Equality/count must use its retained cardinality.
+                host.evaluator_options.memory_limit = 64 << 20;
             }
             let mut stats = light_cljs::CompileStats::new();
             let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(

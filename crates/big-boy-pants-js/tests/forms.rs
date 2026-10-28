@@ -2450,15 +2450,16 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
       const meta=__rt.formMap('kept',true);
       const lazy=__rt.lazySeq(()=>{throw new Error('predicate realized a lazy value');});
       const cons=__rt.cljCons(0,lazy);
-      const uncounted=__rt.formSequence(__rt.cljRangeCons(__rt.formVector(1,2,3),null));
+      const uncounted=__rt.formSequence(__rt.cljRangeCons(__rt.formVector(1,2,3),null,null));
+      const range=__rt.cljRangeCons(__rt.formVector(1,2,3),lazy,10000000);
       let big=__rt.formVector();for(let i=0;i<33;i++)big=__rt.cljConj(big,i);
-      return __rt.formVector(list,view,map,string,__rt.cljWithMeta(view,meta),lazy,cons,__rt.cljSeq(big),uncounted);
+      return __rt.formVector(list,view,map,string,__rt.cljWithMeta(view,meta),lazy,cons,__rt.cljSeq(big),uncounted,range);
     }"#,
         &[],
     );
     let occurrence = rt.scope(|s| {
         let values = s.local(&made).unwrap();
-        let children = (0..9)
+        let children = (0..10)
             .map(|i| {
                 s.new_occurrence(s.form_nth(values, i).unwrap(), at(4 + i as u32, 2))
                     .unwrap()
@@ -2488,6 +2489,13 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
       for(const x of [m,__rt.cljRest(m),__rt.cljNext(m),__rt.cljWithMeta(m,__rt.formMap()),
                      at(8),__rt.cljRest(at(8)),__rt.cljNext(at(8))])
         if(__rt.cljDispatch(counted,x)!==null)throw new Error('uncounted map view');
+      for(const range of [at(9),__rt.cljWithMeta(at(9),__rt.formMap('range',true))]) {
+        if(__rt.cljCount(range)!==10000000||__rt.cljCount(__rt.cljRest(range))!==9999999
+          ||__rt.cljCount(__rt.cljNext(range))!==9999999)throw new Error('range count realized tail');
+        const delayed=__rt.lazySeq(()=>range);
+        if(__rt.cljCount(delayed)!==10000000||__rt.cljCount(__rt.cljCons(0,delayed))!==10000001)
+          throw new Error('lazy range count realized tail');
+      }
       if(__rt.cljSeq(at(6))!==at(6)||__rt.cljSeq(at(7))!==at(7))throw new Error('cons occurrence identity');
       const front=__rt.cljCons(0,meta);
       if(__rt.cljRest(front)!==meta||__rt.cljIsList(__rt.cljRest(front)))throw new Error('cons tail identity/kind');

@@ -176,7 +176,8 @@
 //! `cljList(c)` (every element of the seq, realized, as a list),
 //! `cljChunkedSeq(s)`, `cljChunkFirst(s)`, `cljChunkRest(s)`,
 //! `cljChunkNext(s)`, `cljChunkCons(chunk, rest)`, `cljRangeCons(chunk,
-//! rest)` (a finite range's chunked sequence) and `cljRealizeAll(v)` (`v`
+//! rest, countOrNil)` (a range's chunked sequence, with a retained count for
+//! finite integer ranges) and `cljRealizeAll(v)` (`v`
 //! with every lazy sequence inside it replaced by a list). A form
 //! instruction that needs an unrealized lazy sequence (a clj operation, or
 //! equality or hashing inside any form instruction) does not complete: it
@@ -595,8 +596,20 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::CljChunkFirst => Some(clj::chunk_first(heap, &a(0))?),
         FormOp::CljChunkRest => Some(clj::chunk_rest(heap, &a(0))?),
         FormOp::CljChunkNext => Some(clj::chunk_next(heap, &a(0))?),
-        FormOp::CljChunkCons => Some(clj::chunk_cons(heap, &a(0), &a(1), false)?),
-        FormOp::CljRangeCons => Some(clj::chunk_cons(heap, &a(0), &a(1), true)?),
+        FormOp::CljChunkCons => Some(clj::chunk_cons(heap, &a(0), &a(1), false, None)?),
+        FormOp::CljRangeCons => {
+            let count = match form::unwrap(heap, a(2)) {
+                Value::Number(n) if n >= 0.0 && n == n.floor() => Some(n),
+                Value::Null | Value::Undefined => None,
+                _ => {
+                    return Err(clj::CljError::Operands(
+                        "range count must be a nonnegative integer or nil",
+                    )
+                    .into());
+                }
+            };
+            Some(clj::chunk_cons(heap, &a(0), &a(1), true, count)?)
+        }
         FormOp::CljRealizeAll => Some(clj::realize_all(heap, &a(0))?),
         _ => None,
     })

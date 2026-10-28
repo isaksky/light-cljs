@@ -113,6 +113,14 @@ comparisons can demand helpers and suspend through the ordinary callback path.
 The immutable sequence-view tag also retains countedness: indexed views and
 finite integer ranges use the count shortcut, while hash-map, set, key, value
 and floating range views do not. Metadata and shared tails retain that tag.
+Occurrence wrappers are transparent when copying the tag to a shared tail.
+Finite integer ranges retain their remaining cardinality through metadata,
+rest and next; counting stops at that cardinality even after realizing a lazy
+range tail. Length mismatches therefore do not realize the range or read array
+getters. The source differential checks ten-million-element ranges under a
+64 MiB native macro memory limit, against both array cursors and small vectors.
+Array cursor equality also reads queue descriptor payloads through source
+occurrences and rejects immutable and mutable records before element access.
 Cursor metadata copying returns the same cursor for identical metadata and
 preserves an existing view when its backing array has become exhausted.
 `peek` honors explicit core-type and host IStack extensions while retaining

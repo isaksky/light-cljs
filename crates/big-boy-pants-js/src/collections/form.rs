@@ -1845,12 +1845,14 @@ pub(crate) fn new_cons(
     start: usize,
     rest: Value,
     kind: lazy::ConsKind,
+    count: Option<f64>,
 ) -> Result<Value, CollectionError> {
     let body = ConsBody {
         items,
         start,
         rest,
         kind,
+        count,
     };
     let mut parts = body.elements();
     parts.push(body.rest.clone());
@@ -1869,16 +1871,20 @@ pub(crate) fn cons_sharing(
     kind: lazy::ConsKind,
     source: &Value,
 ) -> Result<Value, CollectionError> {
+    let source_form = resolve(heap, source.clone()).1.map(|(_, f)| f);
+    let count = source_form.as_ref().and_then(|f| match f.body() {
+        FormBody::Cons(c) => c.count.map(|n| n - (start - c.start) as f64),
+        _ => None,
+    });
     let body = ConsBody {
         items,
         start,
         rest,
         kind,
+        count,
     };
     let mut object = FormObject::new(FormBody::Cons(body), None);
-    object.sequence_view = resolve(heap, source.clone())
-        .1
-        .and_then(|(_, f)| f.sequence_view);
+    object.sequence_view = source_form.and_then(|f| f.sequence_view);
     alloc(heap, object, std::slice::from_ref(source))
 }
 
@@ -1972,6 +1978,36 @@ pub(crate) fn sequence_elements(heap: &Heap, v: &Value) -> Result<Option<Vec<Val
             }
             FormBody::Cons(c) => {
                 out.extend(c.elements());
+                cur = c.rest.clone();
+            }
+            _ => return Ok(None),
+        }
+    }
+}
+
+/// The length of a native sequence, without copying elements or following a
+/// counted range's lazy tail. Pending cells use the ordinary realization path.
+pub(crate) fn sequence_count(heap: &Heap, v: &Value) -> Result<Option<f64>, SeqError> {
+    let mut count = 0.0;
+    let mut visited = lazy::Visited::default();
+    let mut cur = v.clone();
+    loop {
+        let head = realized_head(heap, cur, &mut visited)?;
+        if matches!(head, Value::Null | Value::Undefined) {
+            return Ok(Some(count));
+        }
+        let Some(f) = form_object(heap, &head) else {
+            return Ok(None);
+        };
+        match &f.body {
+            FormBody::List(items) | FormBody::Vector(items) => {
+                return Ok(Some(count + items.len() as f64));
+            }
+            FormBody::Cons(c) => {
+                if let Some(n) = c.count {
+                    return Ok(Some(count + n));
+                }
+                count += c.len() as f64;
                 cur = c.rest.clone();
             }
             _ => return Ok(None),

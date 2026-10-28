@@ -250,7 +250,12 @@ impl Realize {
         ) {
             return None;
         }
-        match form::sequence_elements(heap, value) {
+        let result = if self.instr == Instr::FormOp(FormOp::CljCount) {
+            form::sequence_count(heap, value).map(|_| ())
+        } else {
+            form::sequence_elements(heap, value).map(|_| ())
+        };
+        match result {
             Err(form::SeqError::Pending(next)) => Some(next),
             _ => None,
         }

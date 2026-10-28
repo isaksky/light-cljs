@@ -610,6 +610,9 @@ pub(crate) struct ConsBody {
     pub(crate) start: usize,
     pub(crate) rest: Value,
     pub(crate) kind: ConsKind,
+    /// A finite integer range's remaining cardinality. No tail is read to
+    /// count it; metadata copies and shared tails retain this value.
+    pub(crate) count: Option<f64>,
 }
 
 impl ConsBody {

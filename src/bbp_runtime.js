@@ -532,7 +532,7 @@ const native = (() => {
           let n = 0;
           for (let s = reduceSeqOf(x); s != null; s = nextOf(s)) {
             const kind = __rt.formKind(val(s));
-            const builtin = nativeSeq(s) && kind !== 'lazy-seq' && kind !== 'cons'
+            const builtin = nativeSeq(s) && kind !== 'lazy-seq' && (kind !== 'cons' || __rt.cljDispatch(countedKinds,s))
               || kind === 'vector' || kind === 'map' || kind === 'record' || kind === 'set'
               || typeof val(s) === 'string' || Array.isArray(s);
             const count = decl.coreMethod('ICounted/-count', 1, s, builtin);
@@ -1284,9 +1284,10 @@ const native = (() => {
     for (; k < 32 && (step > 0 ? x < end : step < 0 ? x > end : true); k++) { __rt.builderConj(b, x); x += step; }
     if (k === 0) return __rt.formList();
     const next = x;
-    const result = __rt.cljRangeCons(__rt.freeze(b), lazy(() => self(self, next, end, step)));
-    return step !== 0 && Number.isInteger(start) && Number.isInteger(end) && Number.isInteger(step)
-      ? result : __rt.formSequence(result);
+    const counted = step !== 0 && Number.isInteger(start) && Number.isInteger(end) && Number.isInteger(step);
+    const count = counted ? Math.ceil((end-start)/step) : null;
+    const result = __rt.cljRangeCons(__rt.freeze(b), lazy(() => self(self, next, end, step)),count);
+    return counted ? result : __rt.formSequence(result);
   };
   const partitionFrom = (self, n, step, c) => lazy(() => {
     const s = seqOf(c);

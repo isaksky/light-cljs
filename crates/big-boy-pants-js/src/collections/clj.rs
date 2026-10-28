@@ -427,11 +427,13 @@ pub(crate) fn unreduced(heap: &Heap, v: &Value) -> Value {
 }
 
 /// `count`: elements, entries, members or UTF-16 code units; `nil` is 0.
-/// A lazy or cons sequence is realized to its end.
+/// A finite integer range retains its count; other lazy or cons sequences
+/// are realized to their end.
 pub(crate) fn count(heap: &Heap, v: &Value) -> Result<Value> {
     if is_lazy_seq(heap, v) {
-        let n = seq_items(heap, "count", v)?.map_or(0, |items| items.len());
-        return Ok(Value::Number(n as f64));
+        let n =
+            form::sequence_count(heap, v)?.ok_or_else(|| unsupported("count", &shape(heap, v)))?;
+        return Ok(Value::Number(n));
     }
     let shape = shape(heap, v);
     let n = match &shape {
@@ -637,7 +639,14 @@ pub(crate) fn cons(heap: &Heap, x: &Value, coll: &Value) -> Result<Value> {
         _ => seq(heap, coll)?,
     };
     let items = PVector::try_from_values(heap, std::slice::from_ref(x))?;
-    Ok(form::new_cons(heap, items, 0, rest, lazy::ConsKind::Cons)?)
+    Ok(form::new_cons(
+        heap,
+        items,
+        0,
+        rest,
+        lazy::ConsKind::Cons,
+        None,
+    )?)
 }
 
 /// The concatenation of `colls`, always a LazySeq, including empty and
@@ -713,7 +722,7 @@ pub(crate) fn concat_step(heap: &Heap, colls: &Value) -> Result<Value> {
         } else {
             lazy::ConsKind::Cons
         };
-        return Ok(form::new_cons(heap, items, start, rest, kind)?);
+        return Ok(form::new_cons(heap, items, start, rest, kind, None)?);
     }
     Ok(Value::Null)
 }
@@ -1459,7 +1468,13 @@ pub(crate) fn chunk_next(heap: &Heap, v: &Value) -> Result<Value> {
 /// a form vector or list) followed by `rest`, unrealized; `rest` itself for
 /// an empty chunk. A `range` chunk (`range`) is a finite range's sequence,
 /// which the runtime's `IntegerRange` stands for: chunked, without metadata.
-pub(crate) fn chunk_cons(heap: &Heap, chunk: &Value, rest: &Value, range: bool) -> Result<Value> {
+pub(crate) fn chunk_cons(
+    heap: &Heap,
+    chunk: &Value,
+    rest: &Value,
+    range: bool,
+    count: Option<f64>,
+) -> Result<Value> {
     let chunk = form::unwrap(heap, chunk.clone());
     let items = match &chunk {
         Value::Object(id) => heap
@@ -1492,7 +1507,7 @@ pub(crate) fn chunk_cons(heap: &Heap, chunk: &Value, rest: &Value, range: bool) 
     } else {
         lazy::ConsKind::Chunked
     };
-    Ok(form::new_cons(heap, items, 0, rest, kind)?)
+    Ok(form::new_cons(heap, items, 0, rest, kind, count)?)
 }
 
 /// `v` with every lazy and cons sequence inside it (elements, keys,
