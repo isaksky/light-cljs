@@ -87,12 +87,46 @@ Demanded helpers publish without task-local copies; a cold helper in a lazy
 thunk resumes without replaying its effect. The table also checks metadata,
 equality, hashing and source input. Engine coverage retains occurrences and
 metadata across publication, owner release and GC.
+Plain cons cells retain their actual sequence tails, so `rest` preserves the
+tail's sequence kind, metadata and occurrence identity. `conj` of a sequence view
+creates a Cons with that view as its tail; the new Cons has no collection metadata.
 
 JavaScript array sequence operations reuse the task-owned reduction cursor,
 retaining the original mutable array rather than taking a snapshot. Their
 classification, metadata, traversal and direct equality/hash observations match
 the legacy runtime; these cursors remain task-owned. Emitted application code
 and `src/js_runtime.js` are unchanged.
+
+Fresh native-only debug builds at `243da6ef`, macOS arm64, Homebrew Rust/Cargo
+1.99.1, pass both the former `core.isList` failure and the next small service gap,
+`core.peek`. The latter now observes supported persistent stacks without
+realizing other sequence kinds and dispatches user IStack methods through the
+existing resumable adapter. Its differential includes direct, saved, `apply`
+and protocol calls, exact unsupported-sequence errors and a cold helper demand
+after a callback effect.
+
+Both documented Penpot entries were rerun with all five absolute read-only roots,
+`--jobs 1 --no-cache` and every budget in the reproduction below. Both exit 1
+with this identical first different diagnostic:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro expansion: while expanding mf/defc: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro rumext.v2/defc: big-boy-pants-js: Error: unsupported operation: native macro runtime core.flatten; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:334:1 (bytes 522..819)
+```
+
+The probes take 190.87 s (`app.render`) and 203.21 s (`app.main`). Neither
+entry completes natively; research is unchanged. The recursive traversal
+service is tracked separately by light-cljs-551. Before adding `peek`, both
+entries reached its identical unsupported-service diagnostic at the same source
+location, in 187.40 s and 187.05 s respectively.
+
+The final source passes all 180 selected evaluator/macro/reader/Proxy tests with
+`LIGHT_CLJS_STRESS_SEEDS=12`, three build jobs and three nextest slots. All
+2,165 engine tests and seven doctests pass on the same code. The predicate and
+peek source table matches QuickJS byte for byte at jobs 1/2/4/8. Engine strict
+Clippy retains nine baseline diagnostics (eight for the native compiler's
+engine dependency); allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks`
+and `clippy::byte_char_slices` passes engine all-target and native library/CLI
+checks. No source suppressions were added.
 
 ### Explicit compiler literal forms (light-cljs-535)
 
@@ -1065,7 +1099,7 @@ This is a finite-form integration, not backend parity. Lists, vectors, maps,
 sets, keywords, symbols, scalar occurrences, metadata, construction, lookup,
 basic finite sequence operations, equality, hashing, arithmetic
 addition/subtraction and native truth tests have first-party implementations
-using native form intrinsics. `seq` returns native lists for map entries
+using native form intrinsics. `seq` returns positional sequence views for map entries
 (two-element vectors), set members and strings (UTF-16 code units), a chunked
 sequence for a vector (chunks of 32, as a vector's `ChunkedSeq` is), the
 realized sequence of a lazy sequence, preserves nonempty lists and cons
@@ -1575,7 +1609,7 @@ vector's seq of more than 32 elements, a finite `range` and `chunk-cons`
 sequences are chunked; lists and shorter vectors are not). The clj intrinsics read lazy sequences through: `first`, `rest`,
 `next`, `seq`, `nth`, `count`, `=`, `hash`, `concat`, structural map keys and
 the rest. `cons` and `conj` keep a lazy sequence as an unrealized tail, and
-a `concat` involving one is lazy, realizing one collection at a time.
+every `concat` is lazy, realizing one collection at a time.
 Equality stops at the first unequal element. Not provided:
 `cycle`, `eduction`, `sequence` of a transducer, transducers other
 than `map`, `filter`, `mapcat` and `partition-by`, and sorted sequences.
