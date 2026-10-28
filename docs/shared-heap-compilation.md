@@ -987,6 +987,18 @@ cargo test --locked --no-default-features --features bbp-macros --test bbp_macro
 `effect_lanes_keep_one_slot_atom_effects_under_seeded_scheduling_stress` pass;
 this replaces the earlier one-seed-only final-protocol result.
 
+Fresh full compiler runs use `cargo nextest run --locked -j 8 --no-fail-fast`,
+with `LIGHT_CLJS_V8_CACHE=require` for default V8, and
+`--no-default-features --features quickjs` for QuickJS. V8 passes **2132/2133**
+in 268.63 s; QuickJS passes **2055/2056** in 298.23 s. Both fail only
+`playground_crate_checks_for_wasm32`, with the same `tests/cli.rs:2000`
+workspace-discovery signature quoted above: the worktree's playground package
+finds `/Users/admin/src/light-cljs/Cargo.toml` as its workspace. These fresh
+runs replace the reused legacy-engine results for this final base. The
+109/108 normally ignored tests remain ignored by nextest's ordinary selection;
+no failure or required regression is skipped. Both formatters, default
+all-target strict Clippy and engine-free library/binary strict Clippy pass.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
