@@ -1522,3 +1522,37 @@ Repair binary SHA-256 values: before V8
 `590a13175ac89d5c8148e081b3c0a134ddeb9bf07fcf866eb4354f37ea462fb8`,
 after V8 `add332540ddacb8c9450ba332751c111e5141a02d9c8ccf294010a0fde488bb7`,
 after native `83dac96bf15d9d3a487a847151b14d4710471a9b8019321b92563703877007b7`.
+
+### Rebased repair performance guard
+
+The repair was rebased cleanly onto `730a770f`; its production tree is
+`fa4a80db`. That base adds native struct protocol dispatch, lazy sequence
+fallbacks and two-argument native lookup lowering. The earlier repair matrix
+remains an isolated comparison; fresh native/default V8 release binaries from
+the integrated tree were measured again at jobs 1/4, three fresh processes per
+cell, using the same project, flags, budgets and toolchain. Peer work used
+about three background CPUs at the first launch. No local build or suite
+overlapped these measurements.
+
+| Backend | Jobs | Wall median [range], s | User CPU median, s | Peak RSS median, GiB | Load at cell start → end (1/5/15 min) |
+| --- | ---: | ---: | ---: | ---: | --- |
+| V8 | 1 | 7.89 [7.88–8.13] | 8.06 | 1.020 | 6.69/8.45/9.26 → 6.51/8.27/9.17 |
+| V8 | 4 | 5.49 [5.48–5.56] | 10.82 | 1.327 | 6.51/8.27/9.17 → 6.33/8.12/9.09 |
+| native | 1 | 38.85 [38.11–39.81] | 36.80 | 1.277 | 6.33/8.12/9.09 → 6.32/7.45/8.69 |
+| native | 4 | 20.68 [20.38–20.76] | 27.60 | 1.492 | 6.32/7.45/8.69 → 7.46/7.55/8.63 |
+
+The default V8 guard remains unchanged within the measured ranges. Native is
+still 4.92x/3.77x slower than V8 at jobs 1/4. All twelve Node results are
+`484264`; release JavaScript matches the original hash in every run, and every
+native build still publishes 57 helpers with zero per-task copies and compiles
+742 units.
+
+A fresh integrated native jobs-8 mapped build and full-process sample both
+exit zero in 30.45 s, excluded from the matrix. Load is
+7.00/7.45/8.59 → 6.43/7.27/8.48. Of 20,152 main-thread samples, 500 (2.5%) are
+in `release_application_ir`. Both original native JavaScript and map hashes
+still match byte-for-byte, and the mapped application prints `484264`.
+
+Integrated binary SHA-256 values: native
+`451ad00567e940aac22a2764f95dc40072f69f88cc53de197b8f92fa72cea44d`,
+default V8 `bef3cbfed9ae0829c45ca7949cc450a2a3de68505096ec26d1fd1a575ae00167`.
