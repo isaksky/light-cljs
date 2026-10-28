@@ -1110,6 +1110,9 @@ index, augmented with resolved mutation targets as they are analyzed. This
 preserves generated writes from earlier units even after their IR is released.
 Coordinator and worker frames both publish these targets; workers reach the
 shared catalog directly without needing a coordinator session handle.
+Installing a cached namespace restores resolved targets from both its top-level
+and deferred-body artifact tables before later factories are prepared. This
+visits only the installed artifact's IR and checks cancellation along the way.
 Preparation retains executable source and reader tables, without retaining an
 old program or running initializers. A regression counts actual arena reads
 with growing frozen prefixes, including captured reify methods, and checks
