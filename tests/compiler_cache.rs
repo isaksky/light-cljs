@@ -179,15 +179,15 @@ fn dynamic_core_bindings_reuse_cached_artifacts() {
     let project = Project::new(&[
         (
             "macros.cljs",
-            "(ns macros) (defmacro setting [] (binding [*print-length* 3] *print-length*))",
+            "(ns macros) (defn current-setting [] *print-length*) (defmacro setting [n] [(current-setting) (binding [*print-length* n] (current-setting)) (current-setting)])",
         ),
         (
             "main.cljs",
-            "(ns main (:require [macros :refer [setting]])) (js/console.log (setting) (binding [*print-length* 3] *print-length*))",
+            "(ns main (:require [macros :refer [setting]])) (js/console.log (pr-str (setting 3)) (binding [*print-length* 3] *print-length*))",
         ),
     ]);
     let oracle = project.uncached("main");
-    assert_eq!(oracle.run(), "3 3\n");
+    assert_eq!(oracle.run(), "[nil 3 nil] 3\n");
     let populated = project.cached("main", &[]);
     assert_eq!(populated.js, oracle.js);
     assert_eq!(populated.stat("cache.published"), 2, "{}", populated.stats);
@@ -198,7 +198,25 @@ fn dynamic_core_bindings_reuse_cached_artifacts() {
     assert_eq!(warm.stat("macro-calls"), 0, "{}", warm.stats);
     assert!(warm.rows().is_empty(), "{:?}", warm.rows());
     assert_eq!(warm.js, oracle.js);
-    assert_eq!(warm.run(), "3 3\n");
+    assert_eq!(warm.run(), "[nil 3 nil] 3\n");
+
+    // Miss only the consumer so expansion executes the provider's restored
+    // macro and helper factories, including reads before and after binding.
+    project.write(
+        "main.cljs",
+        "(ns main (:require [macros :refer [setting]])) (js/console.log (pr-str (setting 3)) (pr-str (setting 1)) (binding [*print-length* 3] *print-length*))",
+    );
+    let edited = project.cached("main", &[]);
+    assert_eq!(edited.stat("cache.hits"), 1, "{}", edited.stats);
+    assert_eq!(edited.stat("cache.misses"), 1, "{}", edited.stats);
+    assert_eq!(edited.stat("cache.published"), 1, "{}", edited.stats);
+    assert_eq!(edited.stat("macro-calls"), 2, "{}", edited.stats);
+    assert_eq!(edited.rows(), ["main miss source: source changed"]);
+    let oracle = project.uncached("main");
+    let printed = edited.run();
+    assert_eq!(printed, "[nil 3 nil] [nil 1 nil] 3\n");
+    assert_eq!(printed, oracle.run());
+    assert_eq!(edited.js, oracle.js);
 }
 
 const COUNTER: &[(&str, &str)] = &[
