@@ -1920,3 +1920,19 @@ all generated main modules retain SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
 No local build/test overlaps these timings; load (1/5/15 minutes) falls from
 3.68/3.20/5.62 to 2.48/2.95/5.39.
+
+### Integration with the literal changes
+
+The branch rebases onto `bbd5d97b`, preserving the incoming literal selectors
+74/75 and appending protocol lookup at selector 76 (`FormOp::ALL` has 77 entries).
+Only the selector additions conflict; the literal implementation is retained.
+On this merged source, the four protocol differential tests (including the
+unchanged fixtures, receiver/recur cases and jobs-1/2/4/8 matrices) and the
+focused engine lookup test pass. The repeated native-only run with 12 stress
+seeds passes 111 macro, 12 reader and two proxy tests. The integrated engine
+passes all 2,165 tests and five doctests. The isolated timings and CPU/bytecode
+attribution above remain the comparison for the protocol change itself.
+
+The residual numerical target and the unchanged generated-call/root-read work
+are tracked in the focused follow-up `light-cljs-550`, rather than claiming
+that native table lookup alone reaches k <= ~4.
