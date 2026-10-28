@@ -1631,6 +1631,57 @@ fn failure_roots_survive_an_exhausted_heap() {
 /// Function roots publish with either lowered operations or consuming-task
 /// runtime reads (light-cljs-521). Mutable user captures remain task-owned.
 #[test]
+fn memoized_functions_retain_shared_results_across_gc_and_release_their_cache() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let producer = shared.evaluator().unwrap();
+    let result = producer
+        .evaluate_unit(
+            "rt => {
+        const f = rt.core.memoize(x => __rt.formVector(x));
+        const value = f(__rt.formVector(42));
+        return __rt.vector(f, value);
+    }",
+        )
+        .unwrap();
+    let (published, weak) = shared.0.runtime.scope(|s| {
+        let cx = producer.cx().unwrap();
+        let values = cx.values.borrow();
+        let result = s.local(&values[&result.index]).unwrap();
+        (s.persist(result), s.downgrade(s.nth(result, 1).unwrap()))
+    });
+    shared.0.runtime.publish(&published).unwrap();
+    producer.release(result).unwrap();
+    drop(producer);
+    shared.0.runtime.collect().unwrap();
+    assert!(weak.is_live());
+
+    let consumer = shared.evaluator().unwrap();
+    let input = consumer.id().unwrap();
+    consumer.request(1, input, published.clone()).unwrap();
+    let f = consumer
+        .evaluate_unit(
+            "rt => values =>
+        __rt.nth(values, 0)(__rt.formList(42)) === __rt.nth(values, 1)
+    ",
+        )
+        .unwrap();
+    let result = consumer.call(f, &[input]).unwrap();
+    assert!(matches!(
+        consumer.cx().unwrap().values.borrow()[&result.index].view(),
+        ValueView::Bool(true)
+    ));
+    for value in [result, f, input] {
+        consumer.release(value).unwrap();
+    }
+    drop((consumer, published));
+    shared.0.runtime.collect().unwrap();
+    assert!(
+        !weak.is_live(),
+        "discarded memoized results must be reclaimable"
+    );
+}
+
+#[test]
 fn native_function_roots_publish_without_capturing_the_runtime() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let evaluator = shared.evaluator().unwrap();

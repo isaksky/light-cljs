@@ -4900,6 +4900,56 @@ fn memoize_uses_argument_equality_and_caches_falsey_results() {
 }
 
 #[test]
+fn memoize_rejects_task_owned_captures_keys_and_results() {
+    for body in [
+        "(let [state (js/Array.)] (memoize (fn [x] (.push state x))))",
+        "((memoize identity) (js/Array.))",
+        "((memoize (fn [x] (js/Array.))) :key)",
+    ] {
+        let source = format!("(defmacro probe [] {body}) (probe)");
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let error = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not shareable"), "{body}: {error}");
+    }
+}
+
+#[test]
+fn memoize_retained_entries_obey_the_aggregate_memory_budget() {
+    let source = r#"(defmacro fill []
+        (let [f (memoize (fn [x] (.repeat (str x) 4096)))]
+          (loop [i 0] (f i) (recur (inc i))))) (fill)"#;
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    host.evaluator_options.memory_limit = 8 << 20;
+    let error = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("heap byte limit exceeded"), "{error}");
+}
+
+#[test]
+fn memoize_supports_first_class_construction_and_independent_instances() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+          (let [m memoize calls (atom 0)
+                make (fn [] (m (fn [x] (swap! calls inc))))
+                f (make) g (make)
+                values [(f :x) (f :x) (g :x) (g :x)]
+                lookup (m :key)
+                many (m (fn [x] (swap! calls inc) x))
+                keys (mapv (fn [i] [i {:nested #{i}}]) (range 20))
+                populated (mapv many keys)]
+            (list 'quote [values @calls (lookup {:key false}) (lookup {:key false})
+                          (mapv many keys) @calls (fn? f) (ifn? f)])))
+          (js/console.log (pr-str (probe)))"#,
+        "[[1 1 2 2] 22 false false [[0 {:nested #{0}}] [1 {:nested #{1}}] [2 {:nested #{2}}] [3 {:nested #{3}}] [4 {:nested #{4}}] [5 {:nested #{5}}] [6 {:nested #{6}}] [7 {:nested #{7}}] [8 {:nested #{8}}] [9 {:nested #{9}}] [10 {:nested #{10}}] [11 {:nested #{11}}] [12 {:nested #{12}}] [13 {:nested #{13}}] [14 {:nested #{14}}] [15 {:nested #{15}}] [16 {:nested #{16}}] [17 {:nested #{17}}] [18 {:nested #{18}}] [19 {:nested #{19}}]] 22 true true]\n",
+    );
+}
+
+#[test]
 fn memoize_does_not_cache_exceptions_or_overwrite_recursive_entries() {
     assert_native_matches_legacy(
         r#"(defmacro probe []

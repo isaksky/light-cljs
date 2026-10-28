@@ -2876,3 +2876,29 @@ ranges. All six modules retain SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`
 and print `484264`. The [benchmark record](../benchmarks/native-macros.md)
 contains the retained measurements and excluded first pair.
+## Native memoized macro functions (light-cljs-556, 2026-10-28)
+
+`memoize` keeps one native atom per returned function. Its state contains the
+callback and a persistent map from argument vectors to successful results.
+Keys use native Clojure equality and hashing, including structural collections,
+sequence equality across lists and vectors, and metadata-independent equality.
+Presence checks distinguish a missing entry from cached nil, false or undefined.
+Zero and variadic arguments work, separate calls to `memoize` have independent
+caches, and exceptions leave no entry. Recursive calls retain entries installed
+by the inner call before adding the outer result.
+
+Ordinary native callbacks use consuming-task runtime reads and shareable arity
+dispatchers, including inline callbacks passed through first-class constructors.
+The memoized wrapper captures only its atom and resolves operations through the
+calling task's runtime. Including the callback in the atom validates its
+captures at construction, so an initializer cannot silently fall back to
+replaying a task-local cache. As with native atoms and multimethod tables,
+task-owned JavaScript objects in captures, keys or results fail the existing
+shareability check; native persistent forms, metadata and atoms remain supported.
+
+Cache access follows the compilation's existing source-order effect lanes.
+The callback runs only after a miss, and a cold helper demand saves and resumes
+the VM continuation before installing the result. The cache remains in the
+aggregate heap budget, is rooted through its function, and becomes collectible
+when the function is discarded. No native-only behavior was added to the legacy
+JavaScript runtime or the default engine path.

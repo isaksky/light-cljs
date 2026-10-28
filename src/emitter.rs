@@ -1763,8 +1763,8 @@ struct Emitter<'a> {
     /// A protocol entry that receives its hidden receiver explicitly. Object,
     /// IFn and scope-sensitive methods retain the JavaScript receiver ABI.
     native_protocol_target: Option<RecurTargetId>,
-    /// A function root or inline multimethod function may publish with native
-    /// tables. Its runtime reads resolve in the calling task, like root reads.
+    /// A function root or ordinary callback may publish with native state.
+    /// Its runtime reads resolve in the calling task, like root reads.
     native_multimethod_function: bool,
     native_multimethod_arguments: HashSet<ExprId>,
     /// Direct operands already evaluated by `native_form_statements`, in
@@ -6129,8 +6129,8 @@ impl<'a> Emitter<'a> {
     ) {
         // Native calls use the dispatcher itself, including through apply.
         // Attaching the legacy arity acceleration properties would allocate
-        // a mutable JS property record and prevent a multimethod's methods
-        // (and a variadic dispatch function) from publishing. Macro functions
+        // a mutable JS property record and prevent ordinary callbacks from
+        // publishing with memoized state or multimethod tables. Macro functions
         // keep the properties the host uses to check their public arity.
         if self.native_forms && self.native_multimethod_function && !macro_function {
             return;
