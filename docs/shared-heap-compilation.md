@@ -1401,6 +1401,11 @@ Clippy passes allowing only the same three existing engine categories.
 The release-feature chain matrix also passes all **49 builds** in 867.51
 seconds, with `(compiled, published, per-task) = (400, 400, 0)` throughout and
 identical JavaScript/full maps at both optimization levels, warnings included.
+The generated 200k release-feature matrix passes all **49 builds** in
+1,717.26 seconds, with `(compiled, published, per-task) = (57, 57, 0)`
+throughout. All twelve seeds match the serial reference at jobs 1/2/4/8 for
+full JavaScript, serialized maps with sources, warnings and helper counts at
+both `none` and `advanced`. Together the two large matrices cover 98 builds.
 Compiler and engine format checks and default all-target strict Clippy pass.
 Native test-target strict Clippy retains the eight existing engine-library
 diagnostics; allowing only `deprecated`, `chunks_exact_to_as_chunks` and
