@@ -454,7 +454,30 @@ const native = (() => {
   };
   __rt.cljCoreResolver((op, x, throughLazy) => {
     const record = __rt.formKind(x) === 'record', table = coreTables[op];
+    const cursor = arraySeqs.get(x), array = Array.isArray(val(x));
+    if (cursor !== undefined || array) {
+      switch (op) {
+        case 'formEquals': if (cursor !== undefined) return (a,b) =>
+          core.isSequential(a) && core.isSequential(b) && __rt.formEquals(
+            arraySeqs.has(a)?list(arr(a)):a,arraySeqs.has(b)?list(arr(b)):b); break;
+        case 'formHash': if (cursor !== undefined) return x => __rt.formHash(list(arr(x))); break;
+        case 'cljSeq': return reduceSeqOf;
+        case 'cljFirst': return firstOf;
+        case 'cljRest': return restOf;
+        case 'cljNext': return nextOf;
+        case 'cljCount': return () => cursor === undefined ? val(x).length : Math.max(0,cursor.array.length-cursor.index);
+        case 'cljMeta': return () => cursor?.meta ?? null;
+        case 'cljWithMeta': if (cursor !== undefined) return (x,m) => arraySeq(cursor.array,cursor.index,m); break;
+      }
+    }
+    if ((op==='formEquals'||op==='formHash') && __rt.formKind(x)===null) return null;
     switch (op) {
+      case 'cljIsList': return x => decl.satisfies('IList',x);
+      case 'cljIsSeq': return x => cursor!==undefined || val(x)!=null && decl.satisfies('ISeq',x);
+      case 'cljIsSequential': return x => cursor!==undefined || decl.satisfies('ISequential',x);
+      case 'cljIsColl': return x => cursor!==undefined || val(x)!=null && decl.satisfies('ICollection',x);
+      case 'cljIsVector': return x => decl.satisfies('IVector',x);
+      case 'cljIsMapEntry': return x => decl.implementsDirectly('IMapEntry',x);
       case 'formEquals': {
         const equiv = decl.coreLookup(table, x, record);
         return equiv === null ? null : (x,y) => !!val(equiv(x,y));
@@ -1019,10 +1042,10 @@ const native = (() => {
   // Array cursors retain the original storage and check its current length
   // on advancement. Reducers can replace, append or remove unvisited items.
   const arraySeqs = new WeakMap();
-  const arraySeq = (array, index) => {
+  const arraySeq = (array, index, meta = null) => {
     if (index >= array.length) return null;
     const cursor = {};
-    arraySeqs.set(cursor, {array, index});
+    arraySeqs.set(cursor, {array, index, meta});
     return cursor;
   };
   const reduceSeqOf = x => {
@@ -1193,7 +1216,7 @@ const native = (() => {
     if (ss === null) return null;
     return __rt.cljConcat(list(ss.map(s => __rt.cljFirst(s))), self(self, list(ss.map(s => __rt.cljRest(s)))));
   });
-  const iterateFrom = (self, f, x) => __rt.cljCons(x, lazy(() => self(self, f, invoke(f, x))));
+  const iterateFrom = (self, f, x) => __rt.formSequence(__rt.cljCons(x, lazy(() => self(self, f, invoke(f, x)))));
   const repeatForever = (self, x) => lazy(() => __rt.cljCons(x, self(self, x)));
   // A range: its first chunk of 32 numbers, then the rest lazily, as the
   // runtime's `IntegerRange` (a chunked sequence without metadata); `()`
@@ -1412,15 +1435,16 @@ const native = (() => {
     merge:(...xs)=>xs.some(truth)?xs.reduce((left,right)=>val(right)==null?left:__rt.cljConj(truth(left)?left:arrayMap([]),right)):null,
     disj:(s,...xs)=>each((s,x)=>__rt.cljDisj(s,x),s,xs),
     contains:(c,k)=>__rt.cljContains(c,k),
-    keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:list(arr(s).map(e=>__rt.formNth(e,0)));}
-      const k=__rt.formValue(m)==null?null:__rt.formKeys(__rt.formValue(m));return k===null||__rt.formCount(k)===0?null:list(arr(k));},
-    vals:m=>{const s=__rt.cljSeq(m);return s===null?null:list(arr(s).map(e=>__rt.formNth(e,1)));},
+    keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,0))));}
+      const k=__rt.formValue(m)==null?null:__rt.formKeys(__rt.formValue(m));return k===null||__rt.formCount(k)===0?null:__rt.formSequence(k);},
+    vals:m=>{const s=__rt.cljSeq(m);return s===null?null:__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,1))));},
     meta:x=>__rt.cljMeta(x), withMeta:(x,m)=>__rt.cljWithMeta(x,m),
     varyMeta:(x,f,...args)=>{const m=invoke(f,__rt.cljMeta(x),...args);return val(x)==null?null:__rt.cljWithMeta(x,m);},
     isKeyword:x=>__rt.formKind(val(x))==='keyword', isSymbol:x=>__rt.formKind(val(x))==='symbol',
     isQualifiedKeyword:x=>__rt.formKind(val(x))==='keyword'&&__rt.formNamespace(val(x))!==null,
-    isSequential:x=>{const v=val(x),k=__rt.formKind(v);return ['list','vector','lazy-seq','cons'].includes(k)||(k==='compiler-literal'&&__rt.formName(v)==='queue')||decl.satisfies('ISequential',x);},
-    isVector:x=>__rt.formKind(val(x))==='vector', isMap:x=>{const k=__rt.formKind(val(x));return k==='map'||k==='record';}, isSeq:x=>{const k=__rt.formKind(val(x));return k==='list'||k==='lazy-seq'||k==='cons';},
+    isList:x=>__rt.cljIsList(x), isColl:x=>__rt.cljIsColl(x), isMapEntry:x=>__rt.cljIsMapEntry(x),
+    isSequential:x=>__rt.cljIsSequential(x), isVector:x=>__rt.cljIsVector(x),
+    isMap:x=>{const k=__rt.formKind(val(x));return k==='map'||k==='record';}, isSeq:x=>__rt.cljIsSeq(x),
     isSet:x=>__rt.formKind(val(x))==='set',
     isNil:x=>val(x)==null, isSome:x=>val(x)!=null, isFalse:x=>__rt.cljIsFalse(x), isTrue:x=>val(x)===true, isString:x=>typeof val(x)==='string', not:x=>!truth(x), boolean:truth,
     reduced:x=>__rt.cljReduced(x), isReduced:x=>__rt.cljIsReduced(x), unreduced:x=>__rt.cljUnreduced(x),

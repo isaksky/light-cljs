@@ -1538,11 +1538,25 @@ pub enum FormOp {
     CljCallMember = 81,
     /// roots context name → a live compiler root, honoring binding overlays.
     CljReadRoot = 82,
+    /// v → builtin List predicate, without realization.
+    CljIsList = 83,
+    /// v → builtin Seq predicate, without realization.
+    CljIsSeq = 84,
+    /// v → builtin Sequential predicate, without realization.
+    CljIsSequential = 85,
+    /// v → builtin Coll predicate, without realization.
+    CljIsColl = 86,
+    /// v → builtin Vector predicate, without realization.
+    CljIsVector = 87,
+    /// v → builtin MapEntry predicate, without realization.
+    CljIsMapEntry = 88,
+    /// positional form → non-IList sequence view, without realization.
+    Sequence = 89,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 83] = [
+    pub const ALL: [FormOp; 90] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1626,6 +1640,13 @@ impl FormOp {
         FormOp::CljCallable,
         FormOp::CljCallMember,
         FormOp::CljReadRoot,
+        FormOp::CljIsList,
+        FormOp::CljIsSeq,
+        FormOp::CljIsSequential,
+        FormOp::CljIsColl,
+        FormOp::CljIsVector,
+        FormOp::CljIsMapEntry,
+        FormOp::Sequence,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1638,6 +1659,7 @@ impl FormOp {
         match self {
             FormOp::Kind
             | FormOp::CljCallable
+            | FormOp::Sequence
             | FormOp::AtomAux
             | FormOp::CljCoreResolver
             | FormOp::LiteralPayload
@@ -1661,6 +1683,12 @@ impl FormOp {
             | FormOp::CljIsReduced
             | FormOp::CljUnreduced
             | FormOp::CljIsEditable
+            | FormOp::CljIsList
+            | FormOp::CljIsSeq
+            | FormOp::CljIsSequential
+            | FormOp::CljIsColl
+            | FormOp::CljIsVector
+            | FormOp::CljIsMapEntry
             | FormOp::CljCount
             | FormOp::CljSeq
             | FormOp::CljFirst
@@ -1730,6 +1758,7 @@ impl FormOp {
             FormOp::CljCallable => "cljCallable",
             FormOp::CljCallMember => "cljCallMember",
             FormOp::CljReadRoot => "cljReadRoot",
+            FormOp::Sequence => "formSequence",
             FormOp::CljCoreResolver => "cljCoreResolver",
             FormOp::CljGet2 => "cljGet2",
             FormOp::Keyword => "formKeyword",
@@ -1801,6 +1830,12 @@ impl FormOp {
             FormOp::CljIsReduced => "cljIsReduced",
             FormOp::CljUnreduced => "cljUnreduced",
             FormOp::CljIsEditable => "cljIsEditable",
+            FormOp::CljIsList => "cljIsList",
+            FormOp::CljIsSeq => "cljIsSeq",
+            FormOp::CljIsSequential => "cljIsSequential",
+            FormOp::CljIsColl => "cljIsColl",
+            FormOp::CljIsVector => "cljIsVector",
+            FormOp::CljIsMapEntry => "cljIsMapEntry",
             FormOp::LiteralMap => "formLiteralMap",
             FormOp::LiteralSet => "formLiteralSet",
             FormOp::ArrayMap => "formArrayMap",

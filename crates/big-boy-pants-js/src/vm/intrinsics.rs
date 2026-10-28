@@ -536,6 +536,12 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::CljIsReduced => Some(Value::Bool(clj::is_reduced(heap, &a(0)))),
         FormOp::CljUnreduced => Some(clj::unreduced(heap, &a(0))),
         FormOp::CljIsEditable => Some(Value::Bool(clj::is_editable(heap, &a(0)))),
+        FormOp::CljIsList => Some(Value::Bool(clj::is_list(heap, &a(0)))),
+        FormOp::CljIsSeq => Some(Value::Bool(clj::is_seq(heap, &a(0)))),
+        FormOp::CljIsSequential => Some(Value::Bool(clj::is_sequential(heap, &a(0)))),
+        FormOp::CljIsColl => Some(Value::Bool(clj::is_coll(heap, &a(0)))),
+        FormOp::CljIsVector => Some(Value::Bool(clj::is_vector(heap, &a(0)))),
+        FormOp::CljIsMapEntry => Some(Value::Bool(clj::is_map_entry(heap, &a(0)))),
         FormOp::CljInvoke => Some(clj::invoke(
             heap,
             &a(0),
@@ -618,6 +624,7 @@ fn strict_form_op(
         FormOp::LiteralMap => form::literal_from_sequence(heap, &arg(), false)?,
         FormOp::LiteralSet => form::literal_from_sequence(heap, &arg(), true)?,
         FormOp::ArrayMap => form::array_map_from_sequence(heap, &arg())?,
+        FormOp::Sequence => form::sequence_view(heap, &arg())?,
         FormOp::SortedMap => form::sorted_map_from_sequence(heap, &arg())?,
         FormOp::Kind => {
             let v = arg();
@@ -707,6 +714,12 @@ fn strict_form_op(
         | FormOp::CljIsReduced
         | FormOp::CljUnreduced
         | FormOp::CljIsEditable
+        | FormOp::CljIsList
+        | FormOp::CljIsSeq
+        | FormOp::CljIsSequential
+        | FormOp::CljIsColl
+        | FormOp::CljIsVector
+        | FormOp::CljIsMapEntry
         | FormOp::CljInvoke
         | FormOp::CljCallable
         | FormOp::CljCallMember

@@ -43,6 +43,12 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
             | FormOp::CljWithMeta
             | FormOp::CljList
             | FormOp::CljInvoke
+            | FormOp::CljIsList
+            | FormOp::CljIsSeq
+            | FormOp::CljIsSequential
+            | FormOp::CljIsColl
+            | FormOp::CljIsVector
+            | FormOp::CljIsMapEntry
     ) {
         return Ok(false);
     }
@@ -57,6 +63,15 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
         .ok_or(Fault::Internal("core protocol operand underflow"))?;
     let args = &state.operands()[start..];
     let mut receiver = args[0].clone();
+    // An array sequence cursor is task-owned. Equality must also offer a
+    // cursor on the right to the adapter, without reversing its operands.
+    if op == FormOp::Equals
+        && form::kind(heap, &form::unwrap(heap, receiver.clone())) != Some(FormKind::Struct)
+        && form::kind(heap, &form::unwrap(heap, args[1].clone())).is_none()
+        && matches!(form::unwrap(heap, args[1].clone()), Value::Object(_))
+    {
+        receiver = args[1].clone();
+    }
     if op == FormOp::CljInvoke {
         if !matches!(
             form::kind(heap, &form::unwrap(heap, args[0].clone())),
@@ -93,7 +108,37 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
             Err(_) => return Ok(false),
         };
     }
-    if form::kind(heap, &form::unwrap(heap, receiver.clone())) != Some(FormKind::Struct) {
+    // Predicates never follow lazy values. Builtin markers are leaf checks;
+    // other receivers may satisfy a user marker through a host/default
+    // extension as well as an immutable or mutable user type.
+    let builtin_marker = match op {
+        FormOp::CljIsList => Some(crate::collections::clj::is_list(heap, &receiver)),
+        FormOp::CljIsSeq => Some(crate::collections::clj::is_seq(heap, &receiver)),
+        FormOp::CljIsSequential => Some(crate::collections::clj::is_sequential(heap, &receiver)),
+        FormOp::CljIsColl => Some(crate::collections::clj::is_coll(heap, &receiver)),
+        FormOp::CljIsVector => Some(crate::collections::clj::is_vector(heap, &receiver)),
+        FormOp::CljIsMapEntry => Some(crate::collections::clj::is_map_entry(heap, &receiver)),
+        _ => None,
+    };
+    let receiver_kind = form::kind(heap, &form::unwrap(heap, receiver.clone()));
+    let array_adapter = receiver_kind.is_none()
+        && matches!(form::unwrap(heap, receiver.clone()), Value::Object(_))
+        && matches!(
+            op,
+            FormOp::CljSeq
+                | FormOp::Equals
+                | FormOp::Hash
+                | FormOp::CljFirst
+                | FormOp::CljRest
+                | FormOp::CljNext
+                | FormOp::CljMeta
+                | FormOp::CljWithMeta
+                | FormOp::CljCount
+                | FormOp::CljList
+        );
+    if builtin_marker == Some(true)
+        || (builtin_marker.is_none() && !array_adapter && receiver_kind != Some(FormKind::Struct))
+    {
         return Ok(false);
     }
     // Language equality keeps its identity shortcut, even when -equiv rejects

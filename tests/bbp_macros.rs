@@ -8012,3 +8012,199 @@ fn compiler_literal_property_updates_keep_callbacks_and_metadata() {
         "[{:a 3} {:tag :source} {:a 1} 1 {:n 10} [0 2] {:k :value}]\n",
     );
 }
+
+#[test]
+fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
+    let root = temp_dir::TempDir::new("native-sequence-predicates");
+    // Every row runs direct, saved and apply calls. The same source is the
+    // legacy oracle; no native-only constructors appear in this fixture.
+    let rows = [
+        ("nil", "nil"),
+        ("scalar", "42"),
+        ("host-list-marker", "\"host\""),
+        ("empty-list", "'()"),
+        ("list", "'(1 2)"),
+        ("list-seq", "(seq '(1 2))"),
+        ("list-rest", "(rest '(1 2))"),
+        ("list-empty-rest", "(rest '(1))"),
+        ("vector", "[1 2]"),
+        ("vector-seq", "(seq [1 2])"),
+        ("vector-rest", "(rest [1 2])"),
+        ("vector-empty-rest", "(rest [1])"),
+        ("vector-next", "(next [1 2])"),
+        ("chunked-vector-seq", "(seq (vec (range 33)))"),
+        ("chunked-vector-rest", "(rest (seq (vec (range 33))))"),
+        ("chunked-vector-tail", "(chunk-rest (seq (vec (range 33))))"),
+        ("map-seq", "(seq {:a 1 :b 2})"),
+        ("map-rest", "(rest {:a 1 :b 2})"),
+        ("map-empty-rest", "(rest {:a 1})"),
+        ("hash-map-seq", "(seq (apply hash-map (range 34)))"),
+        ("set-seq", "(seq #{1 2})"),
+        ("set-rest", "(rest #{1 2})"),
+        ("string-seq", "(seq \"ab\")"),
+        ("string-rest", "(rest \"ab\")"),
+        ("string-empty-rest", "(rest \"a\")"),
+        ("array-seq", "(seq (js/Array. 1 2))"),
+        ("array-rest", "(rest (seq (js/Array. 1 2)))"),
+        ("array-empty-rest", "(rest (seq (js/Array. 1)))"),
+        (
+            "array-meta",
+            "(with-meta (seq (js/Array. 1 2)) {:tag true})",
+        ),
+        ("cons", "(cons 1 [])"),
+        ("cons-view", "(cons 1 (seq [2 3]))"),
+        ("cons-lazy", "(cons 1 unforced)"),
+        ("lazy", "unforced"),
+        ("realized-lazy", "forced"),
+        ("lazy-list-seq", "(seq (lazy-seq '(1 2)))"),
+        ("lazy-vector-seq", "(seq (lazy-seq [1 2]))"),
+        ("mapped", "(map identity '(1 2))"),
+        ("filtered", "(filter identity [1 2])"),
+        ("kept", "(keep identity [1 2])"),
+        ("range", "(range 2)"),
+        ("range-empty", "(range 0)"),
+        ("repeat", "(repeat 2 1)"),
+        ("iterate", "(iterate inc 1)"),
+        ("iterate-seq", "(seq (iterate inc 1))"),
+        ("iterate-next", "(next (iterate inc 1))"),
+        ("take", "(take 1 [1 2])"),
+        ("drop", "(drop 1 [1 2])"),
+        ("keys", "(keys {:a 1})"),
+        ("vals", "(vals {:a 1})"),
+        ("concat", "(concat '(1) '(2))"),
+        ("concat-empty", "(concat)"),
+        ("concat-seq", "(seq (concat '(1) '(2)))"),
+        ("concat-rest", "(rest (concat '(1) '(2)))"),
+        (
+            "chunk-cons",
+            "(chunk-cons (chunk-first (seq (vec (range 33)))) nil)",
+        ),
+        ("list-meta", "(with-meta '(1) {:tag true})"),
+        ("view-meta", "(with-meta (seq [1 2]) {:tag true})"),
+        ("map-view-meta", "(with-meta (seq {:a 1}) {:tag true})"),
+        ("lazy-meta", "(with-meta unforced {:tag true})"),
+        ("view-conj", "(conj (seq [1 2]) 0)"),
+        ("map-entry", "(first (seq {:a 1}))"),
+        (
+            "map-entry-meta",
+            "(with-meta (first (seq {:a 1})) {:tag true})",
+        ),
+        ("map-entry-conj", "(conj (first (seq {:a 1})) 2)"),
+        ("list-marker", "(ListMarker.)"),
+        ("seq-marker", "(SeqMarker.)"),
+        ("sequential-marker", "(SequentialMarker.)"),
+        ("coll-marker", "(CollMarker.)"),
+        ("vector-marker", "(VectorMarker.)"),
+        ("entry-marker", "(EntryMarker.)"),
+        ("all-markers", "(AllMarkers.)"),
+        ("record-marker", "(RecordMarker. 1)"),
+        ("mutable-marker", "(MutableMarker. 1)"),
+        ("published", "(load-sequences)"),
+    ];
+    let table = rows.iter().map(|(label, value)| format!("[:{label} (try {value} (catch :default e (throw (js/Error. (str \"{label}: \" (.-message e))))))]"))
+        .collect::<Vec<_>>().join("\n");
+    std::fs::write(
+        root.path().join("values.cljs"),
+        r#"(ns values)
+      (deftype ListMarker [] IList)
+      (deftype SeqMarker [] ISeq (-first [_] 1) (-rest [_] '()))
+      (deftype SequentialMarker [] ISequential)
+      (deftype CollMarker [] ICollection (-conj [this _] this))
+      (deftype VectorMarker [] IVector (-assoc-n [this _ _] this))
+      (deftype EntryMarker [] IMapEntry (-key [_] :a) (-val [_] 1))
+      (deftype AllMarkers [] IList ISeq (-first [_] 1) (-rest [_] '()) ISequential
+        ICollection (-conj [this _] this) IVector (-assoc-n [this _ _] this)
+        IMapEntry (-key [_] :a) (-val [_] 1))
+      (defrecord RecordMarker [x] IList)
+      (deftype MutableMarker [^:mutable x] IList)
+      (extend-type string IList)
+      (def cached [(seq [1 2]) (seq {:a 1}) (seq #{1}) (seq "ab")
+                   (cons 1 (lazy-seq '(2))) (ListMarker.)])
+      (defn load-sequences [] cached)
+      (defn demanded [x] x)
+      (defn classify [x]
+        (let [l list? s seq? q sequential? c coll? v vector? e map-entry?]
+          [[(list? x) (seq? x) (sequential? x) (coll? x) (vector? x) (map-entry? x)]
+           [(l x) (s x) (q x) (c x) (v x) (e x)]
+           [(apply l [x]) (apply s [x]) (apply q [x]) (apply c [x]) (apply v [x]) (apply e [x])]]))
+    "#,
+    )
+    .unwrap();
+    std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker MutableMarker load-sequences classify demanded]]))
+      (defmacro probe [input]
+        (let [seen (atom []) unforced (lazy-seq (swap! seen conj :unexpected) (throw (js/Error. "forced")))
+              forced (lazy-seq '(1)) _ (first forced)
+              table [{table}]
+              result (mapv (fn [[label x]] [label (classify x)]) table)
+              published (mapv classify (load-sequences))
+              delayed (lazy-seq (swap! seen conj :realize) (list (demanded 7)))
+              before (classify delayed) value (first delayed) after (classify delayed)]
+          (list 'quote [result published (classify input) before value after @seen
+                        (let [a (js/Array. 1 2) s (seq a) m (with-meta s {{:tag true}})]
+                          (aset a 1 9)
+                          [(= s '(1 9)) (= '(1 9) s) (= (hash s) (hash '(1 9)))
+                           (vec s) (meta m) (first (next s)) (count s)])
+                        [(= (seq [1 2]) '(1 2)) (= (seq "ab") '("a" "b"))
+                         (= (hash (seq [1 2])) (hash '(1 2)))
+                         (get {{(seq [1 2]) :found}} '(1 2))
+                         (meta (with-meta (seq [1 2]) {{:tag true}}))]])))"#)).unwrap();
+    for name in ["a", "b"] {
+        std::fs::write(
+            root.path().join(format!("{name}.cljs")),
+            format!("(ns {name} (:require [macros :refer [probe]])) (def result (probe (1 2)))"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.path().join("app.cljs"),
+        "(ns app (:require [a] [b])) (js/console.log (pr-str [a/result b/result]))",
+    )
+    .unwrap();
+    let build = |native, jobs| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native={native}, jobs={jobs}: {e}"));
+        if native {
+            assert!(stats.native_helpers.published > 0, "{stats:?}");
+            assert_eq!(stats.native_helpers.per_task, 0, "{stats:?}");
+            assert!(stats.native_helpers.waits > 0, "{stats:?}");
+        }
+        emit_js(&program)
+    };
+    let mut previous = None;
+    for jobs in [1, 2, 4, 8] {
+        let native = build(true, jobs);
+        let output = program_output(&native);
+        assert!(output.contains(":realize"));
+        assert!(!output.contains(":unexpected"));
+        assert!(
+            output.contains("[true true true :found {:tag true}]"),
+            "{output}"
+        );
+        if let Some(previous) = &previous {
+            assert_eq!(&native, previous, "jobs={jobs}");
+        }
+        #[cfg(feature = "quickjs")]
+        {
+            let legacy = build(false, jobs);
+            assert_eq!(output, program_output(&legacy), "jobs={jobs}");
+            assert_eq!(native, legacy, "jobs={jobs}");
+        }
+        previous = Some(native);
+    }
+}

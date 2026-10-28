@@ -15,8 +15,9 @@
 //! * **`nil` puns.** `(count nil)` is `0`, `(first nil)`, `(seq nil)` and
 //!   `(get nil k)` are `nil`, `(assoc nil k v)` is `{k v}`, `(conj nil x)`
 //!   is `(x)`, `(contains? nil k)` is `false`.
-//! * **Sequences are lists.** `seq`, `rest`, `next` and `cons` return form
-//!   lists (or `nil`): a vector's elements (its `seq` in chunks, below), a map's entries as two-element
+//! * **Sequence storage preserves language markers.** `seq`, `rest` and
+//!   `next` use positional list bodies (or `nil`): a vector's elements
+//!   (its `seq` in chunks, below), a map's entries as two-element
 //!   vectors and a set's members (in trie order for hashed forms, source
 //!   order for positional literals), and a string's
 //!   UTF-16 code units as one-unit strings. A nonempty list is its own
@@ -29,7 +30,10 @@
 //!   [`crate::collections::lazy`]) are read through, realizing what an
 //!   operation needs: `first`, `rest` and `cons` realize one cell, `count`,
 //!   `nth` as far as they read; `cons` and `conj` keep a lazy sequence as an
-//!   unrealized tail, and a `concat` involving one is lazy.
+//!   unrealized tail. Every `concat` is lazy. Positional sequence views
+//!   retain a non-IList tag through metadata and shared tails; plain lists
+//!   and Cons cells alone satisfy the builtin IList marker. Predicates
+//!   never realize lazy values or inspect sequence elements.
 //! * **Unchanged updates return their input.** An `assoc` of an identical
 //!   value, a `dissoc` or `disj` of an absent key, a `conj` of a present set
 //!   member and `with-meta` of the same metadata return the operand itself
@@ -250,6 +254,45 @@ fn is_lazy_seq(heap: &Heap, v: &Value) -> bool {
     )
 }
 
+/// Builtin collection markers inspect the original value, never a lazy head.
+/// User protocol membership is resolved by the task-local runtime adapter.
+pub(crate) fn is_list(heap: &Heap, v: &Value) -> bool {
+    form::form_object(heap, &form::unwrap(heap, v.clone())).is_some_and(|f| f.is_list())
+}
+
+pub(crate) fn is_seq(heap: &Heap, v: &Value) -> bool {
+    matches!(
+        shape(heap, v),
+        Shape::Form(FormKind::List | FormKind::Lazy | FormKind::Cons, _)
+    )
+}
+
+pub(crate) fn is_sequential(heap: &Heap, v: &Value) -> bool {
+    match shape(heap, v) {
+        Shape::Form(_, f) => f.sequential(),
+        _ => false,
+    }
+}
+
+pub(crate) fn is_coll(heap: &Heap, v: &Value) -> bool {
+    match shape(heap, v) {
+        Shape::Form(kind, f) => {
+            is_sequential(heap, v)
+                || matches!(kind, FormKind::Map | FormKind::Set)
+                || f.record().is_some()
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn is_vector(heap: &Heap, v: &Value) -> bool {
+    matches!(shape(heap, v), Shape::Form(FormKind::Vector, _))
+}
+
+pub(crate) fn is_map_entry(heap: &Heap, v: &Value) -> bool {
+    form::form_object(heap, &form::unwrap(heap, v.clone())).is_some_and(|f| f.is_map_entry())
+}
+
 /// The head of `v` with realized lazy sequences followed, and its shape.
 fn head(heap: &Heap, v: &Value) -> Result<(Value, Shape)> {
     let head = form::realized_head(heap, v.clone(), &mut lazy::Visited::default())?;
@@ -291,7 +334,7 @@ fn list_or_nil(heap: &Heap, items: &[Value]) -> Result<Value> {
     if items.is_empty() {
         Ok(Value::Null)
     } else {
-        Ok(form::new_list(heap, items)?)
+        Ok(form::new_sequence(heap, items)?)
     }
 }
 
@@ -525,7 +568,7 @@ pub(crate) fn rest(heap: &Heap, v: &Value) -> Result<Value> {
     }
     match tail(heap, "rest", &v)? {
         Tail::Shared(items, source) => Ok(form::list_sharing(heap, items, &source)?),
-        Tail::Copied(items) => Ok(form::new_list(heap, &items)?),
+        Tail::Copied(items) => Ok(form::new_sequence(heap, &items)?),
     }
 }
 
@@ -562,20 +605,11 @@ pub(crate) fn cons(heap: &Heap, x: &Value, coll: &Value) -> Result<Value> {
     Ok(form::new_list(heap, &items)?)
 }
 
-/// The concatenation of `colls`: a new list of their elements when none is
-/// a lazy or cons sequence (realizing them runs nothing), otherwise a lazy
-/// `concat` ([`concat_step`]) that realizes them one at a time, as
-/// ClojureScript's `concat` does.
+/// The concatenation of `colls`, always a LazySeq, including empty and
+/// entirely finite inputs.
 fn concat_onto(heap: &Heap, colls: &[Value]) -> Result<Value> {
-    if colls.iter().any(|c| is_lazy_seq(heap, c)) {
-        let colls = form::new_list(heap, colls)?;
-        return Ok(form::new_lazy_concat(heap, colls)?);
-    }
-    let mut items = Vec::new();
-    for coll in colls {
-        items.extend(seq_items(heap, "concat", coll)?.unwrap_or_default());
-    }
-    Ok(form::new_list(heap, &items)?)
+    let colls = form::new_list(heap, colls)?;
+    Ok(form::new_lazy_concat(heap, colls)?)
 }
 
 /// Realize a lazy `concat` of the list `colls`: the elements of the first
@@ -637,17 +671,16 @@ pub(crate) fn concat_step(heap: &Heap, colls: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
-/// `concat` of two collections: a new list of the elements of `a` and then
-/// those of `b` (empty when both are; `nil` contributes none); lazy when
-/// either is a lazy or cons sequence.
+/// `concat` of two collections: a lazy sequence of the elements of `a`
+/// followed by those of `b` (`nil` contributes none).
 pub(crate) fn concat(heap: &Heap, a: &Value, b: &Value) -> Result<Value> {
     concat_onto(heap, &[a.clone(), b.clone()])
 }
 
 /// `concat` of any number of collections, given as the elements of the
-/// list `colls`: one new list of all their elements, in order (`nil`
+/// list `colls`: a lazy sequence of all their elements, in order (`nil`
 /// contributes none). The lowering of `(concat a b c …)`, flat however many
-/// operands there are. Lazy when one is a lazy or cons sequence.
+/// operands there are.
 pub(crate) fn concat_all(heap: &Heap, colls: &Value) -> Result<Value> {
     let colls = sequential_items(heap, "concat", colls)?;
     concat_onto(heap, &colls)
@@ -1786,10 +1819,11 @@ mod tests {
         let a = form::new_vector(&heap, &[n(1.0)]).unwrap();
         let b = form::new_list(&heap, &[n(2.0), n(3.0)]).unwrap();
         let colls = form::new_list(&heap, &[a, Value::Null, b, s("x")]).unwrap();
-        assert_eq!(
-            elements(&heap, &concat_all(&heap, &colls).unwrap()),
-            vec![n(1.0), n(2.0), n(3.0), s("x")]
-        );
+        // Concat is a LazySeq even when every input is finite. Its element
+        // assertion runs through VM realization in the forms integration test.
+        let concatenated = concat_all(&heap, &colls).unwrap();
+        assert_eq!(form::kind(&heap, &concatenated), Some(FormKind::Lazy));
+        assert!(!is_list(&heap, &concatenated));
         let keys = form::new_list(&heap, &[n(1.0), n(1.0)]).unwrap();
         let values = form::new_list(&heap, &[n(2.0), n(3.0)]).unwrap();
         let m = zip_map(&heap, &keys, &values).unwrap();

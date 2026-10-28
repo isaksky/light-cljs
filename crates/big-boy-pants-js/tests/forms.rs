@@ -2438,3 +2438,62 @@ fn compiler_literals_trace_publish_and_realize_only_explicit_payloads() {
         assert!(error.to_string().contains("valid compiler literal payload"));
     }
 }
+
+#[test]
+fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_and_gc() {
+    let rt = Runtime::new();
+    let made = call(
+        &rt,
+        r#"function make() {
+      const list=__rt.formList(1,2), view=__rt.cljSeq(__rt.formVector(1,2));
+      const map=__rt.cljSeq(__rt.formMap('a',1)), string=__rt.cljSeq('ab');
+      const meta=__rt.formMap('kept',true);
+      const lazy=__rt.lazySeq(()=>{throw new Error('predicate realized a lazy value');});
+      const cons=__rt.cljCons(0,lazy);
+      let big=__rt.formVector();for(let i=0;i<33;i++)big=__rt.cljConj(big,i);
+      return __rt.formVector(list,view,map,string,__rt.cljWithMeta(view,meta),lazy,cons,__rt.cljSeq(big));
+    }"#,
+        &[],
+    );
+    let occurrence = rt.scope(|s| {
+        let values = s.local(&made).unwrap();
+        let children = (0..8)
+            .map(|i| {
+                s.new_occurrence(s.form_nth(values, i).unwrap(), at(4 + i as u32, 2))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let values = s.new_form_vector(&children).unwrap();
+        s.persist(s.new_occurrence(values, at(3, 4)).unwrap())
+    });
+    rt.publish(&occurrence).unwrap();
+    drop(made);
+    rt.collect().unwrap();
+    let checked = call(
+        &rt,
+        r#"function check(values) {
+      const at=i=>__rt.cljNth(values,i), l=at(0),v=at(1),m=at(2),s=at(3),meta=at(4);
+      if(!__rt.cljIsList(l)||!__rt.cljIsList(at(6)))throw new Error('lists');
+      for(const i of [1,2,3,4,5,7])if(__rt.cljIsList(at(i)))throw new Error('non-list '+i);
+      for(let i=0;i<8;i++)if(!__rt.cljIsSeq(at(i))||!__rt.cljIsSequential(at(i))||!__rt.cljIsColl(at(i)))throw new Error('sequence markers');
+      if(__rt.cljSeq(v)!==v||__rt.cljSeq(l)!==l)throw new Error('unchanged identity');
+      if(__rt.cljIsList(__rt.cljRest(v))||!__rt.cljIsList(__rt.cljRest(__rt.cljRest(v))))throw new Error('rest kind');
+      if(!__rt.cljIsList(__rt.cljConj(v,0))||__rt.cljIsList(__rt.cljWithMeta(v,__rt.formMap())))throw new Error('update kind');
+      if(!__rt.formEquals(l,v)||__rt.formHash(l)!==__rt.formHash(v))throw new Error('sequential equality/hash');
+      if(__rt.cljGet(__rt.formMap(v,'found'),l,null)!=='found')throw new Error('sequence map key');
+      if(__rt.cljGet(__rt.cljMeta(meta),'kept',null)!==true)throw new Error('metadata');
+      if(__rt.cljIsVector(v)||__rt.cljIsMapEntry(v)||!__rt.cljIsMapEntry(__rt.cljFirst(m)))throw new Error('entry markers');
+      if(!__rt.formEquals(s,__rt.formList('a','b')))throw new Error('string sequence equality');
+      const concatenated=__rt.cljConcatAll(__rt.formList(__rt.formVector(1),null,__rt.formList(2,3),'x'));
+      if(__rt.cljIsList(concatenated)||!__rt.formEquals(__rt.cljList(concatenated),__rt.formList(1,2,3,'x')))throw new Error('concat type/elements');
+      return values;
+    }"#,
+        &[&occurrence],
+    );
+    rt.scope(|s| {
+        let original = s.local(&occurrence).unwrap();
+        let returned = s.local(&checked).unwrap();
+        assert!(s.same_object(original, returned));
+        assert_eq!(s.provenance(returned).unwrap(), at(3, 4));
+    });
+}

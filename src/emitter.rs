@@ -3969,7 +3969,7 @@ impl<'a> Emitter<'a> {
             (C::Equal, 2) => ("", "formEquals", false, ""),
             (C::Hash, 1) => ("", "formHash", false, ""),
             (C::Concat, 1) => ("", "cljConcat", true, ""),
-            (C::Concat, 0) => ("", "formList", false, ""),
+            (C::Concat, 0) => ("__rt.cljConcatAll(", "formList", false, ")"),
             (C::Not, 1) => ("(!", "cljTruth", false, ")"),
             (C::Boolean, 1) => ("", "cljTruth", false, ""),
             (C::IsZero, 1) => ("", "cljIsZero", false, ""),
@@ -3990,7 +3990,11 @@ impl<'a> Emitter<'a> {
             (C::IsEmpty, 1) => ("(", "cljSeq", false, " === null)"),
             (C::IsKeyword, 1) => kind_test(") === \"keyword\")"),
             (C::IsSymbol, 1) => kind_test(") === \"symbol\")"),
-            (C::IsVector, 1) => kind_test(") === \"vector\")"),
+            (C::IsList, 1) => ("", "cljIsList", false, ""),
+            (C::IsColl, 1) => ("", "cljIsColl", false, ""),
+            (C::IsMapEntry, 1) => ("", "cljIsMapEntry", false, ""),
+            (C::IsSequential, 1) => ("", "cljIsSequential", false, ""),
+            (C::IsVector, 1) => ("", "cljIsVector", false, ""),
             // A record is a map too (light-cljs-478).
             (C::IsMap, 1) => (
                 "((k) => k === \"map\" || k === \"record\")(__rt.formKind(",
@@ -3999,13 +4003,7 @@ impl<'a> Emitter<'a> {
                 "))",
             ),
             (C::IsSet, 1) => kind_test(") === \"set\")"),
-            // Lazy and cons sequences are seqs too (light-cljs-479).
-            (C::IsSeq, 1) => (
-                "((k) => k === \"list\" || k === \"lazy-seq\" || k === \"cons\")(__rt.formKind(",
-                "formValue",
-                false,
-                "))",
-            ),
+            (C::IsSeq, 1) => ("", "cljIsSeq", false, ""),
             // Lazy and chunked sequences (light-cljs-479): what `for` and
             // `doseq` expand to, so that their helper values publish.
             (C::Realized, 1) => ("", "cljRealized", false, ""),

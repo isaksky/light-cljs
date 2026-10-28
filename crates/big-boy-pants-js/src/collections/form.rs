@@ -568,6 +568,9 @@ pub(crate) struct FormObject {
     /// A map's seq entry has a vector body but requires exact 0/1 call
     /// indices. Vector-producing updates and `with-meta` clear this flag.
     map_entry: bool,
+    /// A positional sequence view (IndexedSeq, map/set/string seq), rather
+    /// than an IList. Its list body still supplies structural value semantics.
+    sequence_view: bool,
     /// Runtime reader collections use legacy hash traversal for seq as well as
     /// printing. Keep their actual hash storage through every persistent update.
     reader_traversal: bool,
@@ -587,6 +590,7 @@ impl FormObject {
             body,
             meta,
             map_entry: false,
+            sequence_view: false,
             reader_traversal: false,
             sorted: false,
             hash: OnceLock::new(),
@@ -604,6 +608,7 @@ impl FormObject {
             body: self.body.clone(),
             meta,
             map_entry: false,
+            sequence_view: self.sequence_view,
             reader_traversal: self.reader_traversal,
             sorted: self.sorted,
             hash,
@@ -659,13 +664,19 @@ impl FormObject {
         &self.body
     }
 
-    fn sequential(&self) -> bool {
+    pub(crate) fn sequential(&self) -> bool {
         self.kind().sequential()
             || matches!(&self.body, FormBody::CompilerLiteral { tag, .. } if tag == "queue")
     }
 
     pub(crate) fn is_map_entry(&self) -> bool {
         self.map_entry
+    }
+
+    pub(crate) fn is_list(&self) -> bool {
+        !self.sequence_view
+            && (matches!(&self.body, FormBody::List(_))
+                || matches!(&self.body, FormBody::Cons(c) if c.kind == lazy::ConsKind::Cons))
     }
 
     pub(crate) fn meta(&self) -> Option<&Value> {
@@ -1157,6 +1168,32 @@ pub(crate) fn new_list(heap: &Heap, items: &[Value]) -> Result<Value, Collection
     alloc(heap, FormObject::new(body, None), items)
 }
 
+/// A nonempty positional sequence, with list equality and hashing but no
+/// IList marker. Empty sequence tails use the ordinary EmptyList instead.
+pub(crate) fn new_sequence(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
+    let body = FormBody::List(PVector::try_from_values(heap, items)?);
+    let mut object = FormObject::new(body, None);
+    object.sequence_view = !items.is_empty();
+    alloc(heap, object, items)
+}
+
+/// A non-IList sequence over an existing positional trie or cons cell. No
+/// elements are inspected or realized, and retained edges are unchanged.
+pub(crate) fn sequence_view(heap: &Heap, value: &Value) -> Result<Value, CollectionError> {
+    let source = unwrap(heap, value.clone());
+    let Some(f) = form_object(heap, &source) else {
+        return Err(wrong(heap, "positional sequence", &source));
+    };
+    let body = match f.body() {
+        FormBody::List(items) | FormBody::Vector(items) => FormBody::List(items.clone()),
+        FormBody::Cons(_) => f.body().clone(),
+        _ => return Err(wrong(heap, "positional sequence", &source)),
+    };
+    let mut object = FormObject::new(body, None);
+    object.sequence_view = !matches!(&object.body, FormBody::List(items) if items.len() == 0);
+    alloc(heap, object, std::slice::from_ref(&source))
+}
+
 /// A list of `items`, a body taken from the list or vector `source` (or a
 /// [`PVector::drop_first`] view of it) that shares its trie: the `seq`,
 /// `rest` or `next` of `source`, allocated without copying an element.
@@ -1167,12 +1204,13 @@ pub(crate) fn list_sharing(
     items: PVector,
     source: &Value,
 ) -> Result<Value, CollectionError> {
+    let sequence_view = items.len() != 0
+        && form_object(heap, source)
+            .is_some_and(|f| f.sequence_view || f.kind() == FormKind::Vector);
     let body = FormBody::List(items);
-    alloc(
-        heap,
-        FormObject::new(body, None),
-        std::slice::from_ref(source),
-    )
+    let mut object = FormObject::new(body, None);
+    object.sequence_view = sequence_view;
+    alloc(heap, object, std::slice::from_ref(source))
 }
 
 pub(crate) fn new_vector(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
@@ -1819,11 +1857,9 @@ pub(crate) fn cons_sharing(
         rest,
         kind,
     };
-    alloc(
-        heap,
-        FormObject::new(FormBody::Cons(body), None),
-        std::slice::from_ref(source),
-    )
+    let mut object = FormObject::new(FormBody::Cons(body), None);
+    object.sequence_view = form_object(heap, source).is_some_and(|f| f.sequence_view);
+    alloc(heap, object, std::slice::from_ref(source))
 }
 
 /// Why a sequence could not be read through.

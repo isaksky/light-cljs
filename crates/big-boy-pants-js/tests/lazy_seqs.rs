@@ -455,7 +455,7 @@ fn equality_concat_and_cycles_read_only_what_they_need() {
            !__rt.formEquals(__rt.cljCons(0, boom()), __rt.formList(1)),
            // concat realizes its collections one at a time.
            __rt.cljFirst(__rt.cljConcat(__rt.cljCons(1, boom()), __rt.formVector())) === 1,
-           __rt.formKind(__rt.cljConcat(__rt.formList(1), __rt.formVector(2))) === 'list',
+           __rt.formKind(__rt.cljConcat(__rt.formList(1), __rt.formVector(2))) === 'lazy-seq',
          ];
          let xs; xs = __rt.lazySeq(() => __rt.formList(xs));
          __rt.cljFirst(xs);
