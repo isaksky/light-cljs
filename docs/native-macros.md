@@ -1801,8 +1801,9 @@ the original nonsequential leaves, including nil, maps, sets, strings and
 arrays. A nonsequential root produces an empty lazy sequence. Native list,
 vector, cons, lazy and positional/chunked views use their sequence markers;
 user sequential types obtain their children through `ISeqable` and `ISeq`.
-Compiler queue descriptors expose an unchunked sequence over their positional
-payload. Retained leaves keep their occurrence identity and metadata.
+Compiler queue descriptors expose an uncounted, unchunked sequence over their
+positional payload, including when a lazy thunk returns one. Retained leaves
+keep their occurrence identity and metadata.
 
 The traversal uses an immutable list of sibling sequences rather than recursive
 host calls. Its lazy thunks capture pure functions and persistent worklists,
@@ -1823,22 +1824,6 @@ that shared value and its nested helpers. The engine exposes the pending
 attempt's realizer as an opaque task identity; the compiler retains that wait
 only until settlement. This keeps a later realizer's shared-atom access from
 waiting behind the earlier reader that needs its result.
-
-Both documented Penpot entries now pass `core.flatten`. With the five absolute
-read-only roots, `--jobs 1 --no-cache` and every budget in the reproduction below,
-`app.render` and `app.main` both exit 1 at this identical next diagnostic:
-
-```text
-light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/render_wasm/api/enums.cljs:15:25: macro expansion: while expanding cljs.core/js-obj: big-boy-pants-js: unsupported operation: bootstrap macro js-obj (bytes 712..738)
-```
-
-The shim's `app.common.render-wasm.enums/serializers` generates a wide `js-obj`.
-The Rust bootstrap expander deliberately declines more than eight pairs, and
-the native backend has no bootstrap fallback for that call. A nine-pair
-`--compile --text` probe repeats the error; the unchanged V8 compiler emits
-an application whose ninth property reads as `9` in Node. This is a different
-bootstrap-expansion boundary, tracked by light-cljs-553. Native Penpot
-compilation remains incomplete there; research was unchanged.
 
 ### Memory limit
 
@@ -2307,3 +2292,56 @@ and tests requiring legacy evaluator APIs; engine-free library/binary strict
 Clippy passes. No source lint suppressions were added. Compiler/engine Rust
 formatting passes. `src/js_runtime.js` is unchanged; no manifest regeneration
 is needed. The documentation-only final commit reuses these checks.
+
+## Native sequential tree traversal (light-cljs-551, 2026-10-28)
+
+Both documented Penpot entries now pass `core.flatten`. With the five absolute
+read-only roots, `--jobs 1 --no-cache` and every budget in the reproduction below,
+`app.render` and `app.main` both exit 1 at this identical next diagnostic:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/render_wasm/api/enums.cljs:15:25: macro expansion: while expanding cljs.core/js-obj: big-boy-pants-js: unsupported operation: bootstrap macro js-obj (bytes 712..738)
+```
+
+The shim's `app.common.render-wasm.enums/serializers` generates a wide `js-obj`.
+The Rust bootstrap expander deliberately declines more than eight pairs, and
+the native backend has no bootstrap fallback for that call. A nine-pair
+`--compile --text` probe repeats the error; the unchanged V8 compiler emits
+an application whose ninth property reads as `9` in Node. This is a different
+bootstrap-expansion boundary, tracked by light-cljs-553. Native Penpot
+compilation remains incomplete there; research was unchanged.
+
+Final checks used source `854b4555`, based on `b3ef562c` plus the sequence review
+fixes through `61952e05`, on macOS arm64 with Homebrew Rust/Cargo 1.99.1 and
+`CARGO_BUILD_JOBS=3`. Both native-only Penpot commands were rebuilt and repeated
+on that source: `app.render` took 206.59 s and `app.main` 207.75 s, with concurrent
+acceptance tests running. These are failure reproductions, not complete-build
+performance comparisons.
+
+The native-only evaluator/macro/reader/Proxy selection passes 188 tests with
+`LIGHT_CLJS_STRESS_SEEDS=12` and three test threads. The combined native/QuickJS
+selection passes 490 tests with the same 12 seeds, including identical emitted
+applications and effects at jobs 1/2/4/8. That broad combined result is reused
+across the final queue-only lazy-normalization addition, which separately passes
+four combined library regressions and all 64 engine form/lazy tests; the final
+native-only selection includes it. The final engine source passes all 2,169 tests
+and seven doctests. The 3,000-level published tree starts with a lazy queue,
+survives dropping its owner and collection, and is read by two fresh tasks.
+
+The complete default V8 and QuickJS-only runs report 2,133 and 2,056 passes,
+respectively, each with the existing `playground_crate_checks_for_wasm32`
+workspace-path failure. Root and engine formatting, JavaScript syntax, and
+strict V8/QuickJS Clippy pass. Strict engine all-target Clippy retains the nine
+existing diagnostics; engine and native checks pass allowing only `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`. Engine-free
+strict library/binary Clippy passes; its all-target check still fails unchanged
+legacy `Evaluator` API calls in examples and benchmark/test helpers.
+
+The default V8 release compiler was built with `LIGHT_CLJS_V8_CACHE=require`.
+For the seed-42 200k fixture, three quiet interleaved pairs of
+`release bench --no-cache` compare the saved `e28daa30` binary with the final
+integrated source. Median wall time is 7.05 s before and 7.08 s after (1.0043x,
++0.43%); ranges are 6.98–7.27 s and 7.03–7.12 s. Two later pairs were discarded
+when a peer suite started. The difference is within the observed variation.
+Emitted JavaScript is byte-identical, and Node and the Babashka oracle both
+print `484264`.
