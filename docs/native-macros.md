@@ -2966,3 +2966,7 @@ signatures match a reproduced `b73d0059` baseline on the same toolchain, after
 normalizing task/source IDs. Dedicated native-only evaluator and BBP integration
 targets exercise the supported configuration; unrestricted legacy-comparison
 library tests need the QuickJS feature.
+
+Native-only checks pass all 62 evaluator tests, 128 `bbp_macros` tests (one
+existing ignored generated-project case), two Proxy tests and twelve reader
+tests. They use the same twelve scheduling seeds and three test workers.
