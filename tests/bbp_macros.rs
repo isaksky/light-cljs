@@ -4943,7 +4943,8 @@ fn memoize_supports_first_class_construction_and_independent_instances() {
                 keys (mapv (fn [i] [i {:nested #{i}}]) (range 20))
                 populated (mapv many keys)]
             (list 'quote [values @calls (lookup {:key false}) (lookup {:key false})
-                          (mapv many keys) @calls (fn? f) (ifn? f)])))
+                          (mapv (fn [i] (many (list i {:nested (set [i])}))) (range 20))
+                          @calls (fn? f) (ifn? f)])))
           (js/console.log (pr-str (probe)))"#,
         "[[1 1 2 2] 22 false false [[0 {:nested #{0}}] [1 {:nested #{1}}] [2 {:nested #{2}}] [3 {:nested #{3}}] [4 {:nested #{4}}] [5 {:nested #{5}}] [6 {:nested #{6}}] [7 {:nested #{7}}] [8 {:nested #{8}}] [9 {:nested #{9}}] [10 {:nested #{10}}] [11 {:nested #{11}}] [12 {:nested #{12}}] [13 {:nested #{13}}] [14 {:nested #{14}}] [15 {:nested #{15}}] [16 {:nested #{16}}] [17 {:nested #{17}}] [18 {:nested #{18}}] [19 {:nested #{19}}]] 22 true true]\n",
     );
