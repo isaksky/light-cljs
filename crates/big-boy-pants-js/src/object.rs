@@ -522,8 +522,9 @@ pub(crate) struct OrdinaryObject {
     entries: Vec<(PropertyKey, Property)>,
     shape: Option<std::sync::Arc<shape::ShapeHandle>>,
     /// Key to position in `entries`; present once there are more than
-    /// [`INDEX_THRESHOLD`] entries.
-    index: Option<HashMap<PropertyKey, u32>>,
+    /// [`INDEX_THRESHOLD`] entries. Box the dictionary header so the common
+    /// small property store does not enlarge every HeapObject allocation.
+    index: Option<Box<HashMap<PropertyKey, u32>>>,
     /// `[[ErrorData]]`: independent of properties and prototype changes.
     error_data: bool,
     /// Arguments exotic brand, independent of user properties/prototype.
@@ -1100,7 +1101,7 @@ impl OrdinaryObject {
                 .enumerate()
                 .map(|(i, (k, _))| (*k, i as u32))
                 .collect();
-            self.index = Some(index);
+            self.index = Some(Box::new(index));
         }
         true
     }
