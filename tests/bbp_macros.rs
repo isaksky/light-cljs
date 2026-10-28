@@ -8733,6 +8733,8 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
         (-first [_] (swap! seen conj :first) (demanded (first items)))
         (-rest [_] (swap! seen conj :rest) (demanded (rest items))))
       (deftype NotSequential [] ISeqable (-seq [_] (throw (js/Error. "leaf was traversed"))))
+      (deftype CountedBranch [items seen] ISequential ISeqable
+        (-seq [_] (swap! seen inc) (seq items)))
       (def shared-seen (atom []))
       (def cached (flatten [[:cached] (LateBranch. ['(:shared)] shared-seen)]))
       (defn cold [x] x)
@@ -8740,7 +8742,7 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
     )
     .unwrap();
     std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros
-      (:require [values :refer [Branch LateBranch UserSeq NotSequential cached cold shared-seen]]))
+      (:require [values :refer [Branch LateBranch UserSeq NotSequential CountedBranch cached cold shared-seen]]))
       (defmacro probe [input]
         (let [table [{table}]
               trace (atom [])
@@ -8761,6 +8763,16 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
               good (first broken)
               failure (fn [] (try (second broken) (catch :default e (.-message e))))
               fail1 (failure) fail2 (failure)
+              retry-trace (atom []) retry-count (atom 0)
+              retry-bad (lazy-seq (swap! retry-trace conj :fail) (throw (js/Error. "retry")))
+              retry-tree (flatten [(Branch. [(CountedBranch. [retry-bad] retry-count)] retry-trace)])
+              retry-first (fn [] (try (first retry-tree) (catch :default e (.-message e))))
+              retry1 (retry-first) retry2 (retry-first)
+              seq-retry-trace (atom [])
+              seq-retry-tree (flatten [(UserSeq. (list retry-bad) seq-retry-trace)])
+              seq-retry-first (fn [] (try (first seq-retry-tree) (catch :default e (.-message e))))
+              seq-retry1 (seq-retry-first) seq-retry-before @seq-retry-trace
+              seq-retry2 (seq-retry-first) seq-retry-after @seq-retry-trace
               leaf (with-meta 'leaf {{:tag :retained}}) leaves (flatten [[leaf input]])
               unforced (lazy-seq (throw (js/Error. "unreachable")))
               kept (NotSequential.)
@@ -8775,6 +8787,8 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
             [(vec (take 5 (flatten [(map (fn [x] [x]) (range)) unforced])))
              (vec (take 3 (flatten (repeat [7]))))]
             [good fail1 fail2 @errors]
+            [retry1 retry2 @retry-trace @retry-count]
+            [seq-retry1 seq-retry2 seq-retry-before seq-retry-after]
             [(identical? leaf (first leaves)) (meta (first leaves))
              (identical? input (second leaves)) (meta (second leaves))
              (= leaves (list leaf input)) (= (hash leaves) (hash (list leaf input)))

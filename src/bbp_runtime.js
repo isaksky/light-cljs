@@ -1276,25 +1276,29 @@ const native = (() => {
   // applies concat. Its bounded argument count reads four mapped children
   // (or a whole source chunk) before returning, without walking any child.
   // Keep that observable lookahead, including when flatten removes the root.
-  const flattenChildren = node => {
-    const children = mapOne(mapOne, x => x, __rt.cljSeq(node));
+  const flattenChildren = (walk, node) => {
+    const children = mapOne(mapOne, x => walk(walk, x), __rt.cljSeq(node));
     let s = __rt.cljSeq(children);
     for (let n = 0; n < 3 && s !== null; n++) s = __rt.cljNext(s);
     return children;
   };
-  // An immutable list of sibling sequences replaces recursive tree walks.
-  // Only a realization's locals change; the thunk captures a persistent
-  // worklist and pure functions, so it can publish and park in a protocol
-  // callback without retaining task-owned state or replaying earlier work.
+  // Cache each successful tree-seq node before descending. If a descendant
+  // throws, retry its cell without replaying the completed parents' callbacks.
+  const flattenWalk = (self, node) => lazy(() => __rt.cljCons(node,
+    __rt.cljIsSequential(node) ? flattenChildren(self, node) : null));
+  // Linked cons cells keep pushes constant-time at every depth. Each entry
+  // contains sibling walk cells, so traversal and retries stay iterative.
+  // Captures are persistent values and pure functions, safe to publish/park.
   const flattenFrom = (self, stack) => lazy(() => {
     let pending = stack;
-    while (__rt.formCount(pending) !== 0) {
+    while (__rt.cljSeq(pending) !== null) {
       const s = __rt.cljSeq(__rt.cljFirst(pending));
       pending = __rt.cljRest(pending);
       if (s === null) continue;
-      const node = __rt.cljFirst(s);
-      pending = __rt.formConj(pending, __rt.cljRest(s));
-      if (__rt.cljIsSequential(node)) pending = __rt.formConj(pending, flattenChildren(node));
+      const walk = __rt.cljSeq(__rt.cljFirst(s));
+      const node = __rt.cljFirst(walk);
+      pending = __rt.cljCons(__rt.cljRest(s), pending);
+      pending = __rt.cljCons(__rt.cljRest(walk), pending);
       // tree-seq tests a node before obtaining its children; filter tests it
       // again afterwards. In particular, declaration demand stays resumable.
       if (!__rt.cljIsSequential(node)) return __rt.cljCons(node, self(self, pending));
@@ -1593,7 +1597,7 @@ const native = (() => {
     filter:(...a)=>a.length===1?filterTransform(a[0]):a.length===2?select(select,a[0],a[1],0):arity(a.length),
     remove:(...a)=>a.length===1?filterTransform(x=>!truth(invoke(a[0],x))):a.length===2?select(select,a[0],a[1],1):arity(a.length), keep:(f,c)=>select(select,f,c,2),
     mapcat:(...a)=>a.length===0?arity(0):a.length===1?mapcatTransform(a[0]):catSeqs(catSeqs,core.mapSeq(...a)),
-    flatten:x=>flattenFrom(flattenFrom,__rt.cljIsSequential(x)?__rt.formList(flattenChildren(x)):__rt.formList()),
+    flatten:x=>flattenFrom(flattenFrom,__rt.cljIsSequential(x)?__rt.cljCons(flattenChildren(flattenWalk,x),null):null),
     partitionBy:(...a)=>a.length===1?partitionByTransform(a[0]):a.length===2?partitionByFrom(partitionByFrom,a[0],a[1]):arity(a.length),
     partitionAll:(...a)=>a.length===1?partitionAllTransform(val(a[0])):a.length===2?partitionAllFrom(partitionAllFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionAllFrom(partitionAllFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
     take:(n,c)=>takeN(takeN,val(n),c), drop:(n,c)=>dropN(val(n),c),

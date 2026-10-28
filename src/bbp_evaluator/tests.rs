@@ -3395,44 +3395,59 @@ fn published_flatten_worklists_survive_owner_drop_gc_and_deep_trees() {
         ..Default::default()
     };
     let shared = BbpRuntime::new(&options).unwrap();
-    let owner = shared.evaluator().unwrap();
-    let id = owner
-        .evaluate_unit(
-            "rt => {
+    let mut allocations = Vec::new();
+    for depth in [5_000, 10_000] {
+        let started = std::time::Instant::now();
+        let before = shared.0.runtime.heap_stats().admitted_bytes_total;
+        let owner = shared.evaluator().unwrap();
+        let id = owner
+            .evaluate_unit(&format!(
+                "rt => {{
         let tree = 7;
-        for (let i = 0; i < 3000; i++) tree = __rt.formVector(tree);
+        for (let i = 0; i < {depth}; i++) tree = __rt.formVector(tree);
         const queue = __rt.formCompilerLiteral('queue', __rt.formVector(1, tree, 9));
         return rt.core.flatten(__rt.lazySeq(() => queue));
-    }",
-        )
-        .unwrap();
-    let worklist = owner.cx().unwrap().values.borrow()[&id.index].clone();
-    shared.0.runtime.publish(&worklist).unwrap();
-    let peers = [shared.evaluator().unwrap(), shared.evaluator().unwrap()];
-    let arguments = peers.each_ref().map(|peer| {
-        let argument = peer.id().unwrap();
-        peer.request(1, argument, worklist.clone()).unwrap();
-        argument
-    });
-    drop(owner);
-    shared.0.runtime.collect().unwrap();
-    for (peer, argument) in peers.iter().zip(arguments) {
-        let f = peer
-            .evaluate_unit("rt => xs => __rt.cljNth(xs, 1)")
+    }}"
+            ))
             .unwrap();
-        let result = peer.call(f, &[argument]).unwrap();
-        assert!(matches!(
-            peer.cx().unwrap().values.borrow()[&result.index].view(),
-            ValueView::Number(7.0)
-        ));
+        let worklist = owner.cx().unwrap().values.borrow()[&id.index].clone();
+        shared.0.runtime.publish(&worklist).unwrap();
+        let peers = [shared.evaluator().unwrap(), shared.evaluator().unwrap()];
+        let arguments = peers.each_ref().map(|peer| {
+            let argument = peer.id().unwrap();
+            peer.request(1, argument, worklist.clone()).unwrap();
+            argument
+        });
+        drop(owner);
         shared.0.runtime.collect().unwrap();
-        let f = peer.evaluate_unit("rt => xs => __rt.cljCount(xs)").unwrap();
-        let result = peer.call(f, &[argument]).unwrap();
-        assert!(matches!(
-            peer.cx().unwrap().values.borrow()[&result.index].view(),
-            ValueView::Number(3.0)
-        ));
+        for (peer, argument) in peers.iter().zip(arguments) {
+            let f = peer
+                .evaluate_unit("rt => xs => __rt.cljNth(xs, 1)")
+                .unwrap();
+            let result = peer.call(f, &[argument]).unwrap();
+            assert!(matches!(
+                peer.cx().unwrap().values.borrow()[&result.index].view(),
+                ValueView::Number(7.0)
+            ));
+            shared.0.runtime.collect().unwrap();
+            let f = peer.evaluate_unit("rt => xs => __rt.cljCount(xs)").unwrap();
+            let result = peer.call(f, &[argument]).unwrap();
+            assert!(matches!(
+                peer.cx().unwrap().values.borrow()[&result.index].view(),
+                ValueView::Number(3.0)
+            ));
+        }
+        allocations.push(shared.0.runtime.heap_stats().admitted_bytes_total - before);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "depth {depth}"
+        );
     }
+    eprintln!("flatten 5k/10k admitted bytes: {allocations:?}");
+    assert!(
+        allocations[1] < 3 * allocations[0],
+        "superlinear traversal allocation: {allocations:?}"
+    );
     assert!(shared.0.runtime.heap_stats().peak_managed_bytes <= options.memory_limit);
 }
 
