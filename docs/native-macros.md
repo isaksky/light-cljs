@@ -187,6 +187,15 @@ The host is macOS 15.7.3, Apple M3 Ultra (Virtual), 24 logical CPUs and 32 GiB
 RAM, with Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218. No native/V8
 Penpot speed ratio is reported because neither native entry finishes.
 
+For the review fixes at `cef7c7fb`, the same seed-42 200k fixture was rebuilt
+with default-feature release V8 executables from `f72ee773` and `cef7c7fb`.
+Three quiet interleaved pairs have median wall times 7.00 s before and 7.02 s
+after (+0.3%), with ranges 6.92–7.02 s and 6.93–7.06 s. Median user+system CPU
+is 7.54 s and 7.58 s; median peak RSS is 1,015 MiB and 1,021 MiB. Process
+snapshots before and after each pair contain no peer builds or test suites.
+All six output hashes equal the SHA-256 above; Node and the Babashka oracle
+again print `484264` for inputs 42 and 3. The host and toolchain are unchanged.
+
 ### Explicit compiler literal forms (light-cljs-535)
 
 The native bridge imports and exports explicit compiler descriptors with
