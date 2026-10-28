@@ -517,6 +517,7 @@ const native = (() => {
     cljPeek:decl.coreTable('IStack/-peek',1), cljCount:decl.coreTable('ICounted/-count',1), cljNext:decl.coreTable('INext/-next',1),
   };
   __rt.cljCoreResolver((op, x, throughLazy) => {
+    if(op==='cljWithExportedMeta')op='cljWithMeta';
     const record = __rt.formKind(x) === 'record', table = coreTables[op];
     const cursor = arraySeqs.get(x), array = Array.isArray(val(x));
     if (cursor !== undefined || array) {
@@ -1578,8 +1579,8 @@ const native = (() => {
     keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,0))));}
       const k=__rt.formValue(m)==null?null:__rt.formKeys(__rt.formValue(m));return k===null||__rt.formCount(k)===0?null:__rt.formSequence(k);},
     vals:m=>{const s=__rt.cljSeq(m);return s===null?null:__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,1))));},
-    meta:x=>__rt.cljMeta(x), withMeta:(x,m)=>__rt.cljWithMeta(x,m),
-    varyMeta:(x,f,...args)=>{const m=invoke(f,__rt.cljMeta(x),...args);return val(x)==null?null:__rt.cljWithMeta(x,m);},
+    meta:x=>__rt.cljMeta(x), withMeta:(x,m)=>__rt.cljWithExportedMeta(x,m),
+    varyMeta:(x,f,...args)=>{const m=invoke(f,__rt.cljMeta(x),...args);return val(x)==null?null:__rt.cljWithExportedMeta(x,m);},
     isKeyword:x=>__rt.formKind(val(x))==='keyword', isSymbol:x=>__rt.formKind(val(x))==='symbol',
     isQualifiedKeyword:x=>__rt.formKind(val(x))==='keyword'&&__rt.formNamespace(val(x))!==null,
     isList:x=>__rt.cljIsList(x), isColl:x=>__rt.cljIsColl(x), isMapEntry:x=>__rt.cljIsMapEntry(x),
@@ -1806,7 +1807,7 @@ const native = (() => {
       jsObj:bootstrapJsObj,
       jsArray:items=>__rt.formCompilerLiteral('js-array',vector(items)),
       jsObject:pairs=>__rt.formCompilerLiteral('js-object',constantMap(literalObjectPairs(pairs))),
-      withMeta:(value,meta)=>__rt.cljWithMeta(value,meta),
+      withMeta:(value,meta)=>__rt.cljWithExportedMeta(value,meta),
       gensymScope:(serial,prefix)=>{gensymScope=serial;gensymPrefix=prefix;return null;},takeEncodePeak:()=>0,
       namespaceContext:()=>{
         if(!(currentNamespace instanceof Namespace))return __rt.formVector(0,currentNamespace);

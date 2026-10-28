@@ -1554,11 +1554,13 @@ pub enum FormOp {
     Sequence = 89,
     /// collection → persistent stack head (`cljPeek`).
     CljPeek = 90,
+    /// v meta → v' with explicit nil metadata retained for compiler export.
+    CljWithExportedMeta = 91,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 91] = [
+    pub const ALL: [FormOp; 92] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1650,6 +1652,7 @@ impl FormOp {
         FormOp::CljIsMapEntry,
         FormOp::Sequence,
         FormOp::CljPeek,
+        FormOp::CljWithExportedMeta,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1732,6 +1735,7 @@ impl FormOp {
             | FormOp::CljConj
             | FormOp::CljDisj
             | FormOp::CljWithMeta
+            | FormOp::CljWithExportedMeta
             | FormOp::CljConcat
             | FormOp::CljZipMap
             | FormOp::CljKeywordNs
@@ -1805,6 +1809,7 @@ impl FormOp {
             FormOp::CljDisj => "cljDisj",
             FormOp::CljMeta => "cljMeta",
             FormOp::CljWithMeta => "cljWithMeta",
+            FormOp::CljWithExportedMeta => "cljWithExportedMeta",
             FormOp::CljConcat => "cljConcat",
             FormOp::CljConcatAll => "cljConcatAll",
             FormOp::CljZipMap => "cljZipMap",

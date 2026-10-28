@@ -3260,7 +3260,7 @@ impl<'a> Emitter<'a> {
                 Composite::Set | Composite::CheckedSet => Some("formSet"),
                 Composite::LiteralMap => Some("formLiteralMap"),
                 Composite::LiteralSet => Some("formLiteralSet"),
-                Composite::WithMeta => Some("cljWithMeta"),
+                Composite::WithMeta => Some("cljWithExportedMeta"),
                 Composite::Uuid => Some("formCompilerLiteral"),
             }
         {
@@ -3983,7 +3983,7 @@ impl<'a> Emitter<'a> {
             (C::Conj, 2) => ("", "cljConj", false, ""),
             (C::Disj, 2) => ("", "cljDisj", false, ""),
             (C::Meta, 1) => ("", "cljMeta", false, ""),
-            (C::WithMeta, 2) => ("", "cljWithMeta", false, ""),
+            (C::WithMeta, 2) => ("", "cljWithExportedMeta", false, ""),
             (C::Equal, 2) => ("", "formEquals", false, ""),
             (C::Hash, 1) => ("", "formHash", false, ""),
             (C::Concat, 0) => ("__rt.cljConcatAll(", "formList", false, ")"),

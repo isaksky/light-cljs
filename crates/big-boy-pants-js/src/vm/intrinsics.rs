@@ -579,6 +579,15 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
         FormOp::CljDisj => Some(clj::disj(heap, &a(0), &a(1))?),
         FormOp::CljMeta => Some(clj::meta(heap, &a(0))),
         FormOp::CljWithMeta => Some(clj::with_meta(heap, &a(0), &a(1))?),
+        FormOp::CljWithExportedMeta => {
+            let (value, meta) = (a(0), form::unwrap(heap, a(1)));
+            let updated = clj::with_meta(heap, &value, &meta)?;
+            Some(if matches!(meta, Value::Null | Value::Undefined) {
+                form::with_exported_meta(heap, &form::unwrap(heap, updated), Value::Null)?
+            } else {
+                updated
+            })
+        }
         FormOp::CljConcat => Some(clj::concat(heap, &a(0), &a(1))?),
         FormOp::CljConcatAll => Some(clj::concat_all(heap, &a(0))?),
         FormOp::CljZipMap => Some(clj::zip_map(heap, &a(0), &a(1))?),
@@ -757,6 +766,7 @@ fn strict_form_op(
         | FormOp::CljDisj
         | FormOp::CljMeta
         | FormOp::CljWithMeta
+        | FormOp::CljWithExportedMeta
         | FormOp::CljConcat
         | FormOp::CljConcatAll
         | FormOp::CljZipMap

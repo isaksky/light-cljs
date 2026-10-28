@@ -41,6 +41,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
             | FormOp::CljDisj
             | FormOp::CljMeta
             | FormOp::CljWithMeta
+            | FormOp::CljWithExportedMeta
             | FormOp::CljList
             | FormOp::CljInvoke
             | FormOp::CljIsList
@@ -141,6 +142,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
                 | FormOp::CljNext
                 | FormOp::CljMeta
                 | FormOp::CljWithMeta
+                | FormOp::CljWithExportedMeta
                 | FormOp::CljCount
                 | FormOp::CljList
                 | FormOp::CljPeek

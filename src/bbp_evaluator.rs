@@ -85,6 +85,7 @@ enum ScalarKey {
     Boolean(bool),
     Number(u64),
     String(Arc<[u16]>),
+    Keyword(Name),
 }
 impl ScalarKey {
     fn of(data: &Datum) -> Option<Self> {
@@ -106,6 +107,7 @@ impl ScalarKey {
             } => number(*numerator as f64 / *denominator as f64),
             D::Character(c) => Self::String(Arc::from([*c])),
             D::String(s) => Self::String(s.clone()),
+            D::Keyword(n) => Self::Keyword(n.clone()),
             _ => return None,
         })
     }
@@ -614,7 +616,11 @@ impl Bridge {
                 remaining,
                 origins,
             )?);
-        } else if let Some(original) = ScalarKey::of(&data).and_then(|key| origins.get(&key)) {
+        } else if !matches!(data.kind(), D::Keyword(_))
+            && let Some(original) = ScalarKey::of(&data).and_then(|key| origins.get(&key))
+        {
+            // Runtime keyword construction is fresh; only imported, interned
+            // keyword occurrences above share their call's latest provenance.
             self.stats.reused += 1;
             return Ok(original.clone());
         }
@@ -628,9 +634,9 @@ impl Bridge {
         remaining: &mut usize,
     ) -> Result<(), EvalError> {
         self.poll()?;
-        if self.forms.contains_key(&form.data().identity()) {
-            return Ok(());
-        }
+        // A generated symbol (notably an anonymous fn parameter) may share
+        // one Datum at several source positions. Legacy retain chooses the
+        // last occurrence, including inside an already remembered subtree.
         if depth == 0 || *remaining == 0 {
             return Err(error("form conversion limit exceeded"));
         }
