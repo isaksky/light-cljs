@@ -731,6 +731,27 @@ LIGHT_CLJS_STRESS_SEEDS=12 CARGO_BUILD_JOBS=3 cargo test --locked \
   --no-default-features --features bbp-macros --test bbp_macros -- --test-threads=3
 ```
 
+Full compiler compatibility runs use `cargo nextest run --locked -j 8
+--no-fail-fast`: default V8 with `LIGHT_CLJS_V8_CACHE=require` passes
+2,132/2,133; QuickJS-only (`--no-default-features --features quickjs`) passes
+2,055/2,056; QuickJS/native (`--no-default-features --features bbp-macros,quickjs`)
+passes 2,229/2,230. Each has only `playground_crate_checks_for_wasm32` failing
+with the existing nested-worktree signature: Cargo finds
+`/Users/admin/src/light-cljs/Cargo.toml` as the workspace of this worktree's
+`playground/crate/Cargo.toml`. No assertion or required regression is skipped
+to obtain these results.
+
+Compiler default all-target strict Clippy and engine-free library/binary
+strict Clippy pass. Engine strict all-target Clippy still has eight existing
+library diagnostics and one additional test diagnostic; combined native/QuickJS
+strict Clippy reaches the eight library diagnostics. The isolated all-target
+check passes with only `-A deprecated -A clippy::chunks_exact_to_as_chunks
+-A clippy::byte_char_slices` after `-D warnings`. Engine-free all-target strict
+Clippy remains blocked by seven E0599 errors for the ungated benchmark calls
+to `Evaluator::{evaluate_js,string,number}` in `benches/support/{callees,levels}.rs`;
+those files and `src/evaluator.rs` are unchanged from `ba1bb3bd`. Both formatter
+checks pass. These are explicit strict-lint/full-suite limitations.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
