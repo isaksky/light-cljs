@@ -718,6 +718,19 @@ bytes after the 600/1,200 fixtures, with all task functions and catalog vectors
 collected. Registry population also allocates temporary descriptor objects;
 automatic collection and allocator residency contribute to the transient peak.
 
+On the compact-storage tree `5540e100` (later documentation changes only),
+all 2,161 engine tests and six doctests pass, as do all 53 evaluator tests with
+the QuickJS differential oracle. Native-only macro integration passes all
+97 tests with `LIGHT_CLJS_STRESS_SEEDS=12` in 475 s, including both the pool
+and source-order effect-lane stress cases. Commands are:
+
+```sh
+CARGO_BUILD_JOBS=3 cargo test --locked -p big-boy-pants-js --all-targets -- --test-threads=3
+CARGO_BUILD_JOBS=3 cargo test --locked -p big-boy-pants-js --doc -- --test-threads=3
+LIGHT_CLJS_STRESS_SEEDS=12 CARGO_BUILD_JOBS=3 cargo test --locked \
+  --no-default-features --features bbp-macros --test bbp_macros -- --test-threads=3
+```
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
