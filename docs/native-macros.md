@@ -2717,5 +2717,53 @@ is 7.60 s before and 7.59 s after (0.999x), with ranges 7.27–7.67 and
 7.17–7.61 s. Median user+system CPU is 8.14 and 8.10 s; median maximum RSS is
 1,009.3 and 1,039.1 MiB. All six outputs retain SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+
+## Exact native/V8 emission (light-cljs-557, 2026-10-28)
+
+The 553 `app.render` differences above are resolved. Fresh release builds at
+jobs 1 and 4 emit byte-identical JavaScript **and complete source maps** under
+both backends. The seed-42 generated 200k project also matches in both files
+at both job counts. These comparisons use the five read-only Penpot roots,
+budgets and direct-CLI commands documented above, `--no-cache`, and
+`--source-map-include-sources`. Penpot uses `--optimize none`; generated uses
+`--optimize advanced`. Mac arm64, Homebrew Rust/Cargo 1.99.1, locked dependencies,
+and the required existing V8 machine cache were used.
+
+Every difference falls into these five classes:
+
+| Class | Cause and correction |
+| --- | --- |
+| 16 reordered property lists | Macro-created native hash maps/sets traversed the engine's spread-hash trie. Rumext constructs property templates and operands by traversing these maps, making the difference observable in evaluation and enumeration order. Native macro constructors now select the existing legacy hash-path traversal view, including direct intrinsics and empty maps that later promote. Positional literals retain their positions; the engine's ordinary internal map contract is unchanged. |
+| 47 shifted `reify` IDs | `with-meta` with explicit `nil` discarded the metadata annotation. The custom record macro strips metadata from 2 Point, 6 Matrix, 8 Rect and 16 Shape fields. The missing 32 `Nil` and 32 `WithMeta` IR nodes shifted later expression IDs by 32, then 64. A compiler-specific intrinsic retains explicit nil metadata, with ordinary core-protocol dispatch; ordinary engine `cljWithMeta` is unchanged. No gensym or task counter was responsible. |
+| Primitive source positions | The legacy bridge reuses the latest equal scalar argument's provenance, including newly constructed scalar results. Native export now applies the same call-local rule while evaluation retains native occurrences. A retained whole input collection still restores its original subtree. |
+| Repeated keyword source positions | Imported literal keywords are interned on the legacy side, so repeated equal keyword arguments use the last occurrence. Native export matches this rule for imported keywords. Runtime keyword construction remains fresh. |
+| Shared-Datum source positions | Anonymous-function parameters can share one Datum across several source occurrences. Native remembering stopped at the first identity; legacy remembering retains the last occurrence. Native remembering now visits all occurrences, including reused subtrees. |
+
+After the collection/primitive fixes, Penpot had only its 47 ID changes and
+45 mapping differences (15 legacy-only segments, 30 changed origins).
+Generated JS was already identical, with 42 remaining mapping differences
+(7 legacy-only segments, 35 changed origins). The explicit metadata,
+interned-keyword and shared-Datum fixes remove all of them. There are no
+remaining JS, metadata or map-field differences and no accepted exceptions.
+
+With fixed map basenames `render.map` and `generated.map`, all four builds of
+each workload (two backends, two job counts) have these hashes. The JavaScript
+includes its `sourceMappingURL` line; maps include sources. Paths affect hashes.
+
+| Workload | File | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| `app.render` | JS | 12,681,008 | `0cc8853beec0a1a4ceb69e202365d76a42b50889460201c225ae654277dcb7e1` |
+| `app.render` | map | 9,834,037 | `a81ff610b257f7eae0efdace3e08470a84884a1b0c022f13bcbac81cb8d86868` |
+| generated 200k | JS | 3,456,940 | `d260017e883e3ec20d63eb933bb14deac41664920b5e59e81e7b5c6276ebc0d1` |
+| generated 200k | map | 15,037,740 | `7f4deb7d1cdd3ddea479de94a28fdcbaf1025ae01dc40a0db75cebd8e8b1a813` |
+
+Five small `bbp_macros` regression tests compare complete JS, source mappings
+and warnings against the available legacy backend at jobs 1/4 and optimization
+levels none/prepare/advanced. They cover map promotion and explicit hash-map
+construction with observable property effects, set traversal, new primitives,
+repeated keywords versus fresh keyword construction, shared anonymous-function
+parameters, and explicit nil metadata before `reify` through direct, saved and
+`apply` calls. The five tests pass against V8. The default JavaScript runtime
+has no changes; all compatibility machinery is confined to native compilation.
 Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
 No peer builds or tests overlap these timings or the Penpot measurements.

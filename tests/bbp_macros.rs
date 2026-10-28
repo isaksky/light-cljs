@@ -4771,24 +4771,42 @@ fn native_generated_scalar_mappings_match_legacy() {
     for source in [
         "(defmacro add-one [x] (list '+ x 1)) (js/console.log (add-one 1))",
         r#"(defmacro strings [a b] (list 'str (str a) b)) (js/console.log (strings "[" "]"))"#,
-        "(defmacro keywords [x] (list 'quote (keyword (name x)))) (js/console.log (keywords :same))",
-        "(defmacro first-keyword [a b] (list 'quote a)) (js/console.log (first-keyword :same :same))",
-        "(defmacro wrap [x] x) (js/console.log ((wrap #(+ % %)) 2))",
     ] {
         assert_backend_emission(source);
     }
 }
 
 #[test]
+fn native_interned_keyword_mappings_match_legacy() {
+    for source in [
+        "(defmacro keywords [x] (list 'quote (keyword (name x)))) (js/console.log (keywords :same))",
+        "(defmacro first-keyword [a b] (list 'quote a)) (js/console.log (first-keyword :same :same))",
+    ] {
+        assert_backend_emission(source);
+    }
+}
+
+#[test]
+fn native_shared_datum_mappings_match_legacy() {
+    assert_backend_emission("(defmacro wrap [x] x) (js/console.log ((wrap #(+ % %)) 2))");
+}
+
+#[test]
 fn native_explicit_nil_metadata_keeps_following_reify_ids() {
-    assert_backend_emission(
-        r#"
+    for strip in [
+        "(with-meta % nil)",
+        "(let [strip with-meta] (strip % nil))",
+        "(apply with-meta [% nil])",
+    ] {
+        assert_backend_emission(&format!(
+            r#"
       (defmacro fields [names]
-        (list 'quote (mapv #(with-meta % nil) names)))
+        (list 'quote (mapv #{strip} names)))
       (def names (fields [x ^double y]))
       (defn instance [] (reify Object (toString [_] "record")))
-      (js/console.log (pr-str names) (str (instance)))"#,
-    );
+      (js/console.log (pr-str names) (str (instance)))"#
+        ));
+    }
 }
 
 /// A macro-local JavaScript array `a` and `t`, which records its operand

@@ -165,6 +165,9 @@
 //! `cljKeyword(x)`, `cljKeywordNs(ns, name)`, `cljSymbol(x)` and
 //! `cljSymbolNs(ns, name)` (`keyword` and `symbol` of one or two
 //! arguments). [`crate::collections::clj`] documents them.
+//! `cljWithExportedMeta(v, m)` uses the same protocol dispatch and validation
+//! as `cljWithMeta`, retaining an explicit `nil` on builtin forms so compiler
+//! export can distinguish removing metadata from never having metadata.
 //! Unlike the operations above, an unsupported operand kind raises a
 //! catchable `TypeError`, `cljNth` past the end a catchable `RangeError` and
 //! an invalid constructor operand a catchable plain `Error`
