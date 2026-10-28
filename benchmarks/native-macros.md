@@ -2080,6 +2080,18 @@ and `--lib --test bbp_macros --test bbp_reader --test bbp_proxy_has --test
 compiler_cache`, passes all 495 tests: 354 library (one existing ignored),
 113 differential macros, 12 readers, two proxy and 14 cache tests.
 
+Fresh engine `cargo test --locked -p big-boy-pants-js --all-targets --
+--test-threads=3` passes all 2,165 tests, and the corresponding `--doc` run
+passes seven doctests (two executable and five compile-fail). Compiler and
+engine formatting pass. Strict all-target native/QuickJS and engine Clippy
+retain eight library/nine engine-test diagnostics. Comparing diagnostic text
+and source paths against the integrated pre-fix logs gives the same eight/nine
+diagnostics; these remain strict failures. Both all-target checks pass with
+only `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+`clippy::byte_char_slices` allowed after `-D warnings`, with no source
+suppressions. All fresh checks cover the corrected production source at
+`dcc7c12e`; the following checkpoints only update this evidence.
+
 The full default V8/QuickJS-only nextest results and default/engine-free lint
 results recorded at `1808879d` are reused. The review fix changes only the
 optional engine, its test and a `#![cfg(feature = "bbp-macros")]` test table;
