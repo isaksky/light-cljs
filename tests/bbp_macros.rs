@@ -7239,7 +7239,7 @@ fn compiler_literal_operations_match_quickjs_at_every_pool_size() {
             None,
             r#"(pr-str (let [f re-find m re-matches p re-pattern s re-seq r regexp?
                       matches (s x "A ab") first-match (first matches)]
-                  [(r x) (r (p x)) (re-find x "A") (f x "ab")
+                  [(regexp? x) (r x) (regexp? (re-pattern x)) (r (p x)) (re-find x "A") (f x "ab")
                    (re-matches x "ab") (m x "cat") (f x "A")
                    first-match (first matches) (vec (next matches)) (vec matches)]))"#,
         ),
