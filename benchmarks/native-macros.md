@@ -1998,3 +1998,73 @@ oracle as above. Wall medians [range] are 8.48 [8.42–8.57] s before and
 There is no slowdown. Every output still prints `484264` and retains the same
 main-module SHA-256 above. Peer tests remain active; load (1/5/15 minutes) is
 17.41/15.19/13.19 → 17.25/15.52/13.44, with no local builds/tests overlapping.
+
+### Review fix: Promise precedence on warm array lookups
+
+The review of `1808879d` found that an array inheriting from
+`Promise.prototype` selected the Promise extension on its cold lookup, then
+the array/default extension through the native snapshot. The added differential
+row reproduces `[:promise :array :array]` before the fix, where QuickJS returns
+`[:promise :promise :promise]`. Production source `dcc7c12e` returns arrays to
+the existing task-local resolver whenever their snapshot table has a
+`js/Promise` entry. Its Promise probe still precedes array/default dispatch.
+The guard reads the current snapshot table rather than caching a value's
+prototype classification; installing an extension and mutating a warmed
+array's prototype both preserve that precedence. Structs and primitives retain
+the bounded native lookup.
+
+The existing jobs-1/2/4/8 differential matrix now includes repeated calls on
+arrays, Promises and objects with array/object/default/Promise extensions,
+Promise/default precedence without an array extension, prototype changes in
+both directions, and installing a Promise extension after the table is warm.
+All rows match QuickJS. The focused engine test also verifies the array
+fallback and the unchanged struct/primitive fast paths. `PROTOCOL_FIXTURES`
+and all existing expected outputs are unchanged.
+
+Fresh locked release binaries on the same macOS arm64 host, Rust/Cargo
+1.99.1, Node 26.12.1 and Babashka 1.12.218 use the same flags as above and an
+engine-package release clean between native and default V8 builds. SHA-256:
+
+| Binary | SHA-256 |
+| --- | --- |
+| corrected native | `141d9b6a0b6d8d0714236a02951fb3d172dddc8d05208cc7e6c98faa0c48716b` |
+| corrected default V8 | `7305326dc9d4348d0d715f1394bf9f9c7d269da57861b63d881efcaaf56631ed` |
+
+```sh
+bb benchmarks/native-macros-k.bb target/515-review-protocol \
+  --workload protocol --runs 9 --n 0,100,400,1600,6400 \
+  v8=target/515-v8-review-fixed before=target/515-native-before \
+  before-fix=target/515-native-integrated native=target/515-native-review-fixed
+```
+
+Nine interleaved rounds, with a discarded warmup per binary/size, give the
+following analysis medians [min–max], ms. The original pre-optimization native
+binary is the same `ba1bb3bd` baseline above; the pre-fix native binary is the
+integrated source at `1808879d`. All k values use the fresh corrected V8 control.
+
+| n | V8 | native original | native pre-fix | native corrected | k original | k pre-fix | k corrected |
+| ---: | --- | --- | --- | --- | ---: | ---: | ---: |
+| 0 | 23.4 [22.9–25.1] | 42.6 [41.9–45.5] | 44.5 [43.4–46.9] | 43.5 [43.0–47.0] | – | – | – |
+| 100 | 27.7 [26.8–29.9] | 68.5 [64.9–73.4] | 66.5 [64.5–69.5] | 65.7 [64.9–69.4] | 6.0 | 5.1 | 5.2 |
+| 400 | 31.0 [30.4–32.4] | 98.1 [95.0–99.8] | 92.8 [89.9–100.5] | 91.5 [90.6–101.0] | 7.3 | 6.4 | 6.3 |
+| 1,600 | 39.6 [38.7–41.7] | 219.2 [217.4–230.0] | 193.4 [191.6–209.1] | 194.6 [193.5–205.2] | 10.9 | 9.2 | 9.3 |
+| 6,400 | 64.1 [63.5–66.5] | 719.0 [709.9–745.9] | 603.2 [600.3–627.3] | 608.5 [603.0–623.9] | 16.6 | 13.7 | 13.9 |
+
+All Node outputs agree. At n=400, baseline-subtracted native analysis retains
+the optimization's gain: 55.5 ms originally, 48.3 ms pre-fix and 48.0 ms
+corrected (about 14% below the original). Pre-fix/corrected ranges overlap at
+every size. The numerical target remains missed and is still tracked by the
+existing `light-cljs-550`. No local build or suite overlaps timing; the process
+snapshot shows no active peer build/test/compiler. Load (1/5/15 minutes) is
+2.47/4.15/7.96 → 2.40/3.90/7.67. The earlier quiet CPU profiles and bytecode
+attribution above remain the evidence for the selected optimization; no new
+profiling instrumentation is included.
+
+The default V8 200k guard repeats three alternating-order paired rounds using
+the integrated pre-fix V8 binary and the fresh corrected V8 binary, with the
+same seed-42 project and `release bench --no-cache --jobs 1 --stats` command.
+Wall medians [range] are 7.51 [7.03–7.54] s before and 7.49 [7.11–7.53] s after;
+user CPU medians are 7.63 and 7.67 s. There is no slowdown. Every application
+prints `484264`, and every main-module SHA-256 remains
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+No local builds or tests overlap these measurements.
