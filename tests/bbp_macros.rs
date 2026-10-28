@@ -4773,6 +4773,7 @@ fn native_generated_scalar_mappings_match_legacy() {
         r#"(defmacro strings [a b] (list 'str (str a) b)) (js/console.log (strings "[" "]"))"#,
         "(defmacro keep [x] x) (defmacro pair [a b] (list 'keep (list 'quote (list a b)))) (js/console.log (pair 1 1))",
         "(defmacro first-value [x y] x) (js/console.log (pr-str (first-value '(1) 1)))",
+        "(defmacro use-let [a b] (list 'let [] (list 'quote (list a b)))) (js/console.log (use-let 1 1))",
     ] {
         assert_backend_emission(source);
     }

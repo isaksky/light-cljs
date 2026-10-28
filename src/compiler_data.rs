@@ -444,11 +444,14 @@ impl Form {
     }
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn compiler_span(&self) -> SourceSpan {
+        self.compiler_span_override().unwrap_or_else(|| self.span())
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn compiler_span_override(&self) -> Option<SourceSpan> {
         self.compiler_spans
             .as_ref()
             .and_then(|s| s.get(&self.id))
             .cloned()
-            .unwrap_or_else(|| self.span())
     }
     #[cfg(feature = "bbp-macros")]
     pub(crate) fn has_compiler_spans(&self) -> bool {
@@ -878,6 +881,24 @@ impl Form {
         let forms = Arc::get_mut(&mut result.forms).unwrap();
         forms.expansions = original.expansions().to_vec();
         forms.expansions.push(expansion);
+        #[cfg(feature = "bbp-macros")]
+        {
+            // Compiler-owned seed expansions also preserve the native mapping
+            // view of every reused input, without changing its public span.
+            let spans = result
+                .forms
+                .data
+                .iter()
+                .enumerate()
+                .filter_map(|(i, data)| {
+                    originals
+                        .get(&data.identity())
+                        .and_then(Form::compiler_span_override)
+                        .map(|span| (FormId(i), span))
+                })
+                .collect();
+            result = result.with_compiler_spans(spans);
+        }
         result
     }
 }

@@ -662,8 +662,7 @@ impl Bridge {
         let mut pending = vec![(result.clone(), None::<Form>)];
         while let Some((form, inherited)) = pending.pop() {
             if let Some(original) = inherited {
-                let span = original.compiler_span();
-                if span.bytes() != form.span().bytes() {
+                if let Some(span) = original.compiler_span_override() {
                     spans.insert(form.id(), span);
                 }
                 pending.extend(
@@ -684,6 +683,9 @@ impl Bridge {
                         .map(|(f, o)| (f, Some(o))),
                 );
                 continue;
+            }
+            if let Some(span) = form.compiler_span_override() {
+                spans.insert(form.id(), span);
             }
             let data = form.data();
             if let Some(key) = ScalarKey::of(&data) {
@@ -707,8 +709,9 @@ impl Bridge {
                 if let Some(original) = self
                     .forms
                     .get(&data.identity())
-                    .filter(|f| f.has_compiler_spans())
+                    .filter(|f| f.has_compiler_spans() || result.has_compiler_spans())
                 {
+                    spans.remove(&form.id());
                     pending.push((form, Some(original.clone())));
                 }
                 continue;
