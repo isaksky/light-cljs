@@ -1749,3 +1749,19 @@ Cargo build jobs and the same toolchain and pinned ClojureScript input above.
   available at compile time. Running the same existing test bodies against
   that binary reproduces both diagnostics, normalizing only temporary
   project names. No assertions or expected data were weakened or skipped.
+- QuickJS-only full nextest (`--no-default-features --features quickjs -j 8
+  --no-fail-fast`): 2,055 pass and the same single playground workspace
+  failure; its complete error block matches the saved baseline. All 25
+  `cache_matrix` and `compiler_cache` tests pass, including the new regression.
+- Native plus QuickJS `--lib --test bbp_macros --test compiler_cache -j 4
+  --no-fail-fast`, with one stress seed: all 464 tests pass, with one normally
+  ignored test. This includes the native/QuickJS differential, helper-demand,
+  dynamic core replacement, shared multimethod and cache coverage.
+- Final formatting passes. Native combined all-target strict Clippy retains
+  exactly the latest baseline's eight diagnostics and locations; allowing only
+  `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+  `clippy::byte_char_slices` passes. Engine-free library/binary strict Clippy
+  passes. Engine-free all-target `--keep-going` retains exactly the saved
+  error-header frequencies and location sets: 623 diagnostics plus six failed
+  target summaries. These unsupported engine-dependent tests and benches do
+  not introduce any new diagnostic in this repair.
