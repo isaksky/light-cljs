@@ -1064,6 +1064,60 @@ wall ranges overlap at 7.04–7.20 / 7.02–7.24 s. RSS medians are
 1061.8/1107.0 MB. All six generated JavaScript outputs are byte-identical (SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`).
 
+### Compact task-owned initializer slots (October 28, 2026)
+
+light-cljs-552 replaces only the private initializer bags with a fixed
+`HeapObject::Native` payload. Unit, name and result remain full traced JavaScript
+values; state and the independent definition flag are private scalar fields.
+Reads and writes check the owning task under the existing per-object access
+word. Slots cannot publish, survive saved-frame migration and collection, and
+use the existing boxed-payload aggregate admission/reclamation path. The
+ordinary root objects, Map registries, property descriptors and saved getter
+identities keep their existing semantics. There is no virtual property,
+registration coalescing or initializer replay.
+
+The payload is **64 bytes**, plus the unchanged **136-byte heap object**.
+An exact-headroom regression proves that one byte short denies the allocation
+without retaining a reservation, exact slot/body headroom succeeds, collection
+preserves a rooted payload, and releasing its root reclaims the complete
+200-byte charge. Direct engine tests also cover arbitrary unit/name identities
+(including fractional numbers, negative zero, NaN, symbols and mutable objects),
+mutable/falsy results, cyclic edges, foreign-task read/write rejection,
+publication rejection, byte-limit recovery, and collection between VM slices
+on distinct OS workers.
+
+Before choosing the fixed payload, the isolated 1,200-slot storage comparison
+measures four-property bags, five-element JavaScript arrays and native slots
+on separate byte-accounted runtimes, keeping the same outer array live.
+Collected admission / total admitted bytes are respectively
+**3,874,712 / 3,874,848**, **1,866,776 / 1,866,912**, and
+**1,492,376 / 1,492,512**. Each case retains 1,694 heap objects; the array
+alternative also retains its full array/exotic storage. These totals include
+the common realm, container and high-water table costs. Admission is
+conservative accounting, not a measurement of malloc sizes or RSS.
+
+The existing `concurrent_catalog_task_memory` diagnostic runs unchanged on
+`b3ef562c` before and release-code `674a1b58` after, using the same warmed
+reader-cache protocol and 4-GiB aggregate budget described above:
+
+| Collected phase | Before bytes | After bytes |
+| --- | ---: | ---: |
+| One task, 600 registrations | 8,851,374 | 7,659,438 |
+| Eight tasks, 600 registrations each | 40,377,420 | 30,853,196 |
+| One task, 1,200 registrations | 12,574,486 | 10,192,150 |
+| Eight tasks, 1,200 registrations each | 66,752,268 | 47,704,844 |
+
+Eight-task collected admission falls **23.6% / 28.5%** at 600/1,200 roots.
+The 4,800/9,600 initializer objects move from plain objects to native payloads;
+plain-object counts remain 378 at both sizes, with the same
+11,941/16,741 functions and 408 binding cells as before. Object-kind counts
+return exactly to the one-task counts after producer release, then to the
+warmed no-task counts after parent release; no slot survives. Each task still
+parks with one frame, 29 stack values, no native continuation and 1,312 shallow
+saved-state bytes. The former four-property charge of 2,048 bytes is replaced
+by the fixed 64-byte payload charge, saving 1,984 accounted bytes per slot
+before small differences in interned keys/runtime storage.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
