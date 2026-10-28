@@ -3022,3 +3022,49 @@ bytes and SHA-256
 identical to the initial native run and syntactically valid JavaScript.
 `app.main` reproduces the exact light-cljs-558 diagnostic above. These Penpot
 runs establish build behavior; no main-build performance comparison is claimed.
+
+### Review-fix verification (2026-10-28)
+
+Production source `f7c9e901` fixes the callback apply receiver and empty
+variadic tail, and the cache GC test now roots only the memoized function.
+Fresh combined native/QuickJS checks pass 366 library tests, 131 macro tests,
+two Proxy tests and twelve reader tests; native-only checks pass 62 evaluator,
+129 macro, two Proxy and twelve reader tests. Both configurations use
+`LIGHT_CLJS_STRESS_SEEDS=12`, `CARGO_BUILD_JOBS=3` and three test threads, keeping
+the existing ignored stress cases. The stronger receiver differential checks
+its expected result with QuickJS before checking native expansion.
+
+The full engine all-target suite passes 2,181 tests and all seven doctests.
+The complete QuickJS-only suite passes 2,056 tests, and a fresh final default
+V8 suite passes 2,133 tests. Each legacy run retains only the exact documented
+`playground_crate_checks_for_wasm32` workspace-discovery failure. Engine and
+QuickJS-only results from `d6ae8895` remain valid: the subsequent change affects
+only the native variadic emitter branch and its test/documentation. Toolchains,
+feature flags, the read-only ClojureScript source pin and test inputs are those
+recorded above.
+
+Strict all-target V8 and QuickJS Clippy pass. Engine strict lint retains eight
+library diagnostics and nine with tests, in the same three baseline categories;
+engine all-target, combined all-target and native production checks pass when
+allowing only those categories after `-D warnings`. Engine-free library/binary
+strict lint passes; its all-target check still fails on the unchanged evaluator
+example's unavailable `print` and `evaluate` APIs. Formatting, native runtime
+syntax, direct JavaScript runtime tests and both emitted Penpot syntax checks
+pass. No source lint suppressions were added.
+
+The fresh native-only release compiler builds `app.render` at jobs 1 and 4
+with the same five roots and every documented budget. Both 12,680,976-byte
+outputs are byte-identical to each other and the pre-review output, retaining
+SHA-256 `0a5320e48cd525cce43524c9fde45c2dd71ace555525014b98767b9b363e330b`.
+`app.main` at jobs 1 repeats the exact light-cljs-558 TypeError above; there is
+still no native main output or native/V8 main-build timing comparison.
+
+Three quiet interleaved pairs compare the saved pre-review V8 release binary
+(`512b8a75` source) with `f7c9e901` on the same seed-42 200k fixture, using
+`release bench --jobs 1 --no-cache`. Median wall time is 7.08 s before and
+7.04 s after (0.9944x); ranges are 7.03–7.20 and 6.94–7.10 s. Median user+system
+CPU is 7.55 and 7.56 s, and median maximum RSS is 1,014.7 and 1,014.2 MiB.
+Before/after process checks contain no overlapping builds, tests or compiler
+measurements. All six emitted applications retain SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`;
+Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
