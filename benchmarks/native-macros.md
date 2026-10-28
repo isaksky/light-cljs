@@ -1576,7 +1576,7 @@ default V8 `374f170a29a496505df916566f1d144f59c10aee9c60cabc7981fe58ca1310c0`.
 
 ### Final repair verification
 
-The production source is `097d9a78`, rebased onto `730a770f`, with the same
+The production source was `097d9a78`, rebased onto `730a770f`, with the same
 Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218 toolchain. Feature
 variants ran sequentially with three Cargo build jobs. Default V8 used
 `LIGHT_CLJS_V8_CACHE=require`; the pinned ClojureScript source was linked
@@ -1608,3 +1608,45 @@ read-only for the checks.
   match the saved unchanged-base `--keep-going` log (623 errors, 626 location
   lines). No source suppressions, assertion changes or new skipped tests were
   introduced.
+
+### Latest integration verification
+
+The final implementation was subsequently rebased onto `359b8bbe` (native
+multimethod history/GC fixes), then `af0c13dc` (test-only cache-binding and
+namespace-comparison coverage). Its tested tree before this documentation
+update is `3bff28c8`. No preparation implementation changed in either rebase.
+Default/QuickJS full-suite evidence remains valid: these integration changes
+are native-only or tests, and the changed cache case was rerun on every backend.
+
+The native-only library/macro run was repeated with twelve stress seeds and
+`-j 4`: 373 pass, including all 97 macro tests and both long stress tests;
+the same 27 library failures retain exactly matching names and panic payloads.
+Native plus QuickJS then passes all 450 selected tests with one normal ignore
+and one stress seed. The strengthened
+`compiler_cache::dynamic_core_bindings_reuse_cached_artifacts` passes separately
+in default V8, QuickJS-only and native-only configurations. The new engine
+`sorted_comparison_unequal_namespaces_remain_qualified` test also passes.
+These targeted checks cover the final test-only rebase without repeating
+unchanged production suites. Formatting, default all-target strict Clippy and
+native combined all-target Clippy with only the documented baseline categories
+allowed cover the final content; strict native still reports the same eight
+engine diagnostics.
+
+Fresh native/default release binaries from the multimethod-history integration
+were spot-checked with the same generated 200k project and `--no-cache`:
+
+| Backend/jobs | Wall, s | User CPU, s | Peak RSS, bytes | Load before → after (1/5/15 min) |
+| --- | ---: | ---: | ---: | --- |
+| native/1 | 34.77 | 33.21 | 1347567616 | 2.28/5.39/6.13 → 2.23/5.03/5.97 |
+| native/4 | 19.13 | 25.41 | 1659830272 | 2.23/5.03/5.97 → 2.38/4.88/5.89 |
+| V8/1 | 7.22 | 7.31 | 1110032384 | 2.33/5.50/6.18 → 2.28/5.39/6.13 |
+
+Each launch again waited for background CPU below 350%; all outputs match the
+original release hash and print `484264`. Native retains 57 published helpers,
+zero per-task copies and 742 compiled units. A new jobs-8 mapped build plus
+full-process sample exits zero in 27.32 s (excluded from timings), at load
+2.09/4.43/5.67 → 2.32/4.26/5.56. Deferred-unit release accounts for
+508/18,272 main-thread samples (2.8%). Both original JS/map hashes still match,
+and the mapped application prints `484264`. Release binary SHA-256 values are
+native `29b954479a0fb53067504802f82ef6400ddfb48879d2bc9267b9970b736bab09`
+and V8 `fe58b964d2f301ba1f6c450818ef381a29adc8b30cd51d16c760e87ea3a0b729`.
