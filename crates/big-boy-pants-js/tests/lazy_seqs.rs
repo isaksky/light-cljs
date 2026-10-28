@@ -356,11 +356,13 @@ fn a_cancelled_realizer_gives_its_claim_to_a_parked_reader() {
             RunOutcome::Yielded
         ));
     }
-    let RunOutcome::Waiting(_) = b.run_with(Budget::UNLIMITED, &mut host.clone()).unwrap() else {
+    let RunOutcome::Waiting(key) = b.run_with(Budget::UNLIMITED, &mut host.clone()).unwrap() else {
         panic!("B did not park");
     };
+    assert_eq!(rt.lazy_realizer(key), Some(a.id()));
     let _ = a.cancel();
     assert!(matches!(a.run().unwrap(), RunOutcome::Cancelled));
+    assert_eq!(rt.lazy_realizer(key), None);
     // The dropped claim woke B, which realizes the sequence itself.
     assert_eq!(rt.take_lazy_wakeups().len(), 1);
     assert_eq!(
