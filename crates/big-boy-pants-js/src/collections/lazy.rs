@@ -360,7 +360,11 @@ impl LazyCell {
             None => state.waiters.push(waiter),
         }
         // Lock order: cell, then registry.
-        waits.insert(self.serial, attempt);
+        waits.insert(
+            self.serial,
+            attempt,
+            state.realizer.expect("active attempt").0,
+        );
         state.waits = Some(waits.clone());
         true
     }
@@ -483,18 +487,21 @@ impl LazyCell {
 /// Woken readers are held weakly: one nobody else holds would never run.
 #[derive(Debug, Default)]
 pub(crate) struct LazyWaits {
-    pending: Mutex<HashMap<u64, u64>>,
+    pending: Mutex<HashMap<u64, (u64, TaskId)>>,
     woken: Mutex<Vec<Weak<TaskInner>>>,
 }
 
 impl LazyWaits {
-    fn insert(&self, serial: u64, attempt: u64) {
-        lock(&self.pending).insert(serial, attempt);
+    fn insert(&self, serial: u64, attempt: u64, realizer: TaskId) {
+        lock(&self.pending).insert(serial, (attempt, realizer));
     }
 
     fn remove(&self, serial: u64, attempt: u64) {
         let mut pending = lock(&self.pending);
-        if pending.get(&serial) == Some(&attempt) {
+        if pending
+            .get(&serial)
+            .is_some_and(|&(active, _)| active == attempt)
+        {
             pending.remove(&serial);
         }
     }
@@ -512,6 +519,10 @@ impl LazyWaits {
     /// Whether readers wait on the cell with serial `serial`.
     pub(crate) fn is_pending(&self, serial: u64) -> bool {
         lock(&self.pending).contains_key(&serial)
+    }
+
+    pub(crate) fn realizer(&self, serial: u64) -> Option<TaskId> {
+        lock(&self.pending).get(&serial).map(|&(_, task)| task)
     }
 
     /// The readers woken since the last call, to enqueue.

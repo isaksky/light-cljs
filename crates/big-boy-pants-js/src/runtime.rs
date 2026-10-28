@@ -342,6 +342,16 @@ impl Runtime {
         self.0.deps.lazy.take_woken()
     }
 
+    /// The task realizing the lazy attempt that readers of `key` currently
+    /// wait on. An embedder can lend a reader's scheduling priority to that
+    /// task. This snapshot does not claim ownership or keep the attempt alive;
+    /// settlement or cancellation removes it along with the pending wait.
+    pub fn lazy_realizer(&self, key: DependencyKey) -> Option<crate::TaskId> {
+        (key.kind() == crate::collections::lazy::LAZY_REALIZATION)
+            .then(|| self.0.deps.lazy.realizer(key.dependency().get()))
+            .flatten()
+    }
+
     /// The shared heap (crate-internal native operations and tests).
     pub(crate) fn heap(&self) -> &Arc<Heap> {
         &self.0.heap

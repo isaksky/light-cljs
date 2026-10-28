@@ -1818,6 +1818,11 @@ pool's existing task handoff. A published traversal can demand a cold user-type
 declaration or helper while another resumable task waits on it, then wake that
 reader after the thunk completes. The source-macro table compares applications
 and effects with QuickJS at jobs 1/2/4/8, including that shared user branch.
+An earlier reader also lends its effect-lane position to the activity realizing
+that shared value and its nested helpers. The engine exposes the pending
+attempt's realizer as an opaque task identity; the compiler retains that wait
+only until settlement. This keeps a later realizer's shared-atom access from
+waiting behind the earlier reader that needs its result.
 
 ### Memory limit
 

@@ -1500,14 +1500,17 @@ impl BbpEvaluator {
         }
         // What produces `key` inherits this task's lane position while it
         // waits ([`crate::effect_lanes`]).
-        let lane_wait = (key.kind() == HELPER || key.kind() == INITIALIZER)
-            .then(|| self.shared.lanes())
-            .flatten()
-            .map(|lanes| {
-                lanes.wait_for(crate::effect_lanes::Target::Cell(
+        let lane_wait = self.shared.lanes().and_then(|lanes| {
+            if key.kind() == HELPER || key.kind() == INITIALIZER {
+                Some(lanes.wait_for(crate::effect_lanes::Target::Cell(
                     crate::effect_lanes::identity(key),
-                ))
-            });
+                )))
+            } else {
+                self.runtime
+                    .lazy_realizer(key)
+                    .and_then(|task| lanes.wait_for_task(crate::effect_lanes::identity(task)))
+            }
+        });
         #[cfg(test)]
         let hook = self.shared.0.on_wait.lock().unwrap().clone();
         #[cfg(test)]

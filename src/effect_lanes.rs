@@ -49,6 +49,8 @@ pub(crate) enum Target {
     Unit(usize),
     /// A dependency cell it produces, by [`identity`] of its key.
     Cell(u64),
+    /// An active compiler activity, for a task realizing a shared lazy value.
+    Activity(u64),
 }
 
 /// A stable identity for an engine key or task id, which the compiler sees
@@ -298,6 +300,7 @@ fn chain(lanes: usize) -> (Option<Position>, Vec<Target>) {
                 top = false;
             }
             targets.extend(entry.target);
+            targets.push(Target::Activity(entry.token));
             if entry.root {
                 break;
             }
@@ -648,6 +651,17 @@ impl Lanes {
         guard.refresh();
         guard
     }
+    /// Lend this reader's position to the activity currently running `task`.
+    /// Its nested helpers inherit the same activity target, even if the task
+    /// has parked for its effect lane by the time this wait is registered.
+    pub(crate) fn wait_for_task(self: &Arc<Self>, task: u64) -> Option<WaitGuard> {
+        let target = self
+            .lock()
+            .tops
+            .get(&task)
+            .map(|top| Target::Activity(top.token));
+        target.map(|target| self.wait_for(target))
+    }
     /// Block this thread until the lane at `position` opens: a blocker's
     /// consumer, which waits before it runs anything.
     pub(crate) fn wait_open(&self, position: Option<Position>) {
@@ -805,6 +819,35 @@ mod tests {
             other.finish(0, false);
             wait.try_recv()
                 .expect("the initializer runs at unit 1's place");
+            drop(waiting);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(lanes.counts().inherited, 1);
+    }
+
+    #[test]
+    fn a_lazy_reader_lends_its_position_to_the_realizing_task_and_nested_helpers() {
+        let lanes = Arc::new(Lanes::default());
+        lanes.enable();
+        lanes.schedule([0, 1, 2], false);
+        let _unit = lanes.enter_unit(2);
+        let task = synced(&lanes, 7);
+        // The realizer enters a cold helper, which first waits for its lane.
+        // The task's recorded activity precedes that nested helper.
+        let _helper = lanes.enter_cell(99);
+        let cell = lanes.check(task, 0);
+        let (opened, wait) = mpsc::channel();
+        lanes.attach(cell, Box::new(move || opened.send(()).unwrap()));
+        let other = lanes.clone();
+        std::thread::spawn(move || {
+            let _root = other.enter_root();
+            let _unit = other.enter_unit(1);
+            let waiting = other.wait_for_task(task).expect("active realizer");
+            assert!(wait.try_recv().is_err(), "unit 0 is still running");
+            other.finish(0, false);
+            wait.try_recv()
+                .expect("the helper inherits its lazy reader's position");
             drop(waiting);
         })
         .join()

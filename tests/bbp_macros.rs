@@ -8699,7 +8699,7 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
         ),
         ("lazy", "(lazy-seq (list [1] (lazy-seq '([2] 3))))"),
         ("user-seqable", "(Branch. [[1] '(2)] (atom []))"),
-        ("late-marker", "(LateBranch. [[1] '(2)])"),
+        ("late-marker", "(LateBranch. [[1] '(2)] (atom []))"),
         ("user-seq", "(UserSeq. '([1] [2]) (atom []))"),
         ("nonsequential-seqable", "(NotSequential.)"),
         // Queue literals are opaque compiler descriptors: EMPTY is exposed,
@@ -8724,7 +8724,8 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
       (defn demanded [x] x)
       (deftype Branch [items seen] ISequential ISeqable
         (-seq [_] (swap! seen conj :seq) (demanded (seq items))))
-      (deftype LateBranch [items] ISeqable (-seq [_] (demanded (seq items))))
+      (deftype LateBranch [items seen] ISeqable
+        (-seq [_] (swap! seen conj :shared-seq) (demanded (seq items))))
       (extend-type LateBranch ISequential)
       (deftype UserSeq [items seen] ISequential ISeqable
         (-seq [this] (swap! seen conj :seq) (when (seq items) this))
@@ -8732,13 +8733,14 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
         (-first [_] (swap! seen conj :first) (demanded (first items)))
         (-rest [_] (swap! seen conj :rest) (demanded (rest items))))
       (deftype NotSequential [] ISeqable (-seq [_] (throw (js/Error. "leaf was traversed"))))
-      (def cached (flatten [[:cached] (LateBranch. ['(:shared)])]))
+      (def shared-seen (atom []))
+      (def cached (flatten [[:cached] (LateBranch. ['(:shared)] shared-seen)]))
       (defn cold [x] x)
     "#,
     )
     .unwrap();
     std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros
-      (:require [values :refer [Branch LateBranch UserSeq NotSequential cached cold]]))
+      (:require [values :refer [Branch LateBranch UserSeq NotSequential cached cold shared-seen]]))
       (defmacro probe [input]
         (let [table [{table}]
               trace (atom [])
@@ -8765,7 +8767,7 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
               array-leaf (js/Array. 6 7)
               cold-trace (atom []) cold-tree (flatten [(lazy-seq (swap! cold-trace conj :cold) (list (cold 9)))])
               cold-before @cold-trace cold-first (first cold-tree) cold-again (first cold-tree)]
-          (list 'quote [table
+          (list 'quote [table @shared-seen
             [before a after-first b after-second again after-again all after-all]
             [chunk-before chunk-first chunk-after (count chunked) @chunk-trace]
             [user-before user-first user-after user-all user-final]

@@ -110,11 +110,13 @@ fn racing_readers_park_and_the_thunk_runs_once() {
     let key = park(b.clone(), host.clone());
     assert_eq!(key.kind(), LAZY_REALIZATION);
     assert!(matches!(rt.cell_status(key), CellStatus::Pending { .. }));
+    assert_eq!(rt.lazy_realizer(key), Some(a.id()));
     assert!(rt.take_lazy_wakeups().is_empty());
     // A's thunk returns: the settlement wakes B.
     release.wait();
     assert_eq!(complete(realizer.join().unwrap()), ValueView::Number(6.0));
     assert!(matches!(rt.cell_status(key), CellStatus::Absent));
+    assert_eq!(rt.lazy_realizer(key), None);
     let woken = rt.take_lazy_wakeups();
     assert_eq!(woken.iter().map(Task::id).collect::<Vec<_>>(), [b.id()]);
     assert_eq!(complete(b.run().unwrap()), ValueView::Number(6.0));
