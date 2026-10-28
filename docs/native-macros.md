@@ -122,7 +122,7 @@ The `-peek` protocol entry dispatches nil extensions separately from public
 review regressions, including large array cursors and exact getter/equality
 effects, at jobs 1/2/4/8 under each default collection marker extension.
 
-Fresh native-only debug builds at `db3d9740`, rebased onto `7004c99b`, on macOS
+Fresh native-only debug builds at `118e784a`, rebased onto `b3ef562c`, on macOS
 arm64 with Homebrew Rust/Cargo 1.99.1 pass the former `core.isList` failure and the next small service gap,
 `core.peek`. The latter now observes supported persistent stacks without
 realizing other sequence kinds and dispatches user IStack methods through the
@@ -138,66 +138,57 @@ with this identical first different diagnostic:
 light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro expansion: while expanding mf/defc: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro rumext.v2/defc: big-boy-pants-js: Error: unsupported operation: native macro runtime core.flatten; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:334:1 (bytes 522..819)
 ```
 
-The probes take 186.32 s (`app.render`) and 189.11 s (`app.main`). Neither
+The probes take 186.99 s (`app.render`) and 186.06 s (`app.main`). Neither
 entry completes natively; research is unchanged. The recursive traversal
 service is tracked separately by light-cljs-551. Before adding `peek`, both
 entries reached its identical unsupported-service diagnostic at the same source
 location, in 187.40 s and 187.05 s respectively.
 
-Production `db3d9740` passes all 181 selected evaluator/macro/reader/Proxy tests with
+Production `118e784a` passes all 183 selected evaluator/macro/reader/Proxy tests with
 `LIGHT_CLJS_STRESS_SEEDS=12`, three build jobs and three nextest slots. All
-2,166 engine tests and seven doctests pass on the same code. The final rebase
-onto `e28daa30` changes only documentation and tests: production source,
-dependencies and engine tests are byte-identical, so these results and both
-Penpot probes are reused. Fresh combined native/QuickJS coverage at `82065f7b`
-passes all 484 library, CLI and macro/reader/Proxy tests (one existing ignored
-test), including the added demanded-value and expanded multimethod regressions.
-The changed generated-core-write cache regression also passes with freshly
-matched native-only, QuickJS-only, combined and default V8 CLIs, including cold,
-warm and edited-consumer artifacts at jobs 1 and 4. The predicate and peek source
-table matches QuickJS byte for byte at jobs 1/2/4/8. Engine strict
+2,168 engine tests and seven doctests pass on the same code. The rebase onto
+`b3ef562c` integrates heap-layout and shared-heap statistics changes, so the
+engine, native and combined checks and both Penpot probes were rerun. Fresh
+combined native/QuickJS coverage passes all 485 library, CLI and
+macro/reader/Proxy tests (one existing ignored test). The predicate, peek,
+metadata, identity and equality-effect source table matches QuickJS byte for
+byte at jobs 1/2/4/8 under all six default marker extensions. Engine strict
 Clippy retains nine baseline diagnostics (eight for the native compiler's
 engine dependency); allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks`
 and `clippy::byte_char_slices` passes engine and native combined all-target
-checks. No source suppressions were added.
+checks and the selected native targets. No source suppressions were added.
 
 The default V8 and QuickJS-only full nextest runs pass 2,132 and 2,055 tests
 respectively; each fails only the documented `playground_crate_checks_for_wasm32`
 environment check. The pinned wasm Cargo assigns this worktree's excluded
 playground crate to `/Users/admin/src/light-cljs/Cargo.toml`'s workspace before
-checking source. These results are reused after the final native mask changes
-and guarded-lookup rebase: legacy emitter/runtime paths and dependency inputs
-are unchanged. Default and QuickJS all-target Clippy pass strictly, as do
-engine-free library/CLI checks. Engine-free all-target lint retains the existing
-benchmark support errors for unavailable legacy evaluator methods. Compiler and
+checking source. Both full runs were repeated after the heap-layout rebase,
+including cache checks against the final compiler identity. Default and QuickJS
+all-target Clippy pass strictly, as do engine-free library/CLI checks.
+Native-only and engine-free all-target lint retain existing benchmark/example
+calls to unavailable legacy evaluator methods; engine-free compiler tests also
+import disabled `rquickjs` APIs. The unchanged execution fixture has a
+cfg-specific `unused_enumerate_index` diagnostic without QuickJS. Compiler and
 engine format checks cover the integrated source. The read-only ClojureScript
 symlink uses `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e` and is removed afterward.
 
-The default-feature V8 200k build was timed before compiler changes at
-`bbd5d97b` and after integration at `db3d9740`. Generate the fixture with
+The default-feature V8 200k build compares the same-base baseline `b3ef562c`
+with the integrated sequence fixes at `118e784a`. Both release executables
+were built in this worktree with the matching source trees. Generate the fixture with
 `bb benchmarks/generated-project/generate.bb target/g200k --seed 42 --lines 200k`,
 build the release CLI with `LIGHT_CLJS_V8_CACHE=require`, then run
 `/usr/bin/time -l <saved-cli> release bench --no-cache` from `target/g200k`
-(default jobs 1). Three quiet paired runs give median wall time 7.03 s before
-and 7.08 s after (+0.7%); ranges are 6.95–7.18 s and 6.93–7.14 s. Median
-user+system CPU is 7.57 s and 7.60 s, and median peak RSS rounds to 1,019 MiB
-for both. An earlier pair was discarded because its process snapshot showed a
-peer rustc build; all three retained pairs have clean before/after snapshots.
+(default jobs 1). Three quiet paired runs give median wall time 7.07 s before
+and 7.00 s after (-1.0%); ranges are 6.99–7.32 s and 6.96–7.10 s. Median
+user+system CPU is 7.58 s and 7.51 s; median peak RSS is 1,037 MiB and
+1,035 MiB. An earlier set was discarded because peer tests were active;
+all three retained pairs have clean before/after process snapshots.
 All six outputs have SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`;
 Node and the fixture's Babashka oracle both print `484264` for inputs 42 and 3.
 The host is macOS 15.7.3, Apple M3 Ultra (Virtual), 24 logical CPUs and 32 GiB
 RAM, with Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218. No native/V8
 Penpot speed ratio is reported because neither native entry finishes.
-
-For the review fixes at `3b22f395`, the same seed-42 200k fixture was rebuilt
-with default-feature release V8 executables from `f72ee773` and `3b22f395`.
-Three quiet interleaved pairs have median wall times 7.31 s before and 7.32 s
-after (+0.1%), with ranges 7.26–7.52 s and 7.18–7.33 s. Median user+system CPU
-is 7.81 s and 7.87 s; median peak RSS is 1,014 MiB and 1,017 MiB. Process
-snapshots before and after each pair contain no peer builds or test suites.
-All six output hashes equal the SHA-256 above; Node and the Babashka oracle
-again print `484264` for inputs 42 and 3. The host and toolchain are unchanged.
 
 ### Explicit compiler literal forms (light-cljs-535)
 
