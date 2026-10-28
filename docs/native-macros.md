@@ -229,6 +229,46 @@ outputs have the SHA-256 above, and Node and the Babashka oracle both return
 `484264` for inputs 42 and 3. The release builds use
 `LIGHT_CLJS_V8_CACHE=require`; legacy emitted JavaScript remains unchanged.
 
+Final review-fix validation at `141bfa60`, including the native call/root
+changes from `a629b7e4`, passes all 184 selected native evaluator, macro,
+reader and Proxy tests with `LIGHT_CLJS_STRESS_SEEDS=12`, three Cargo build
+jobs and three nextest slots. All 2,178 engine tests and seven doctests pass.
+The native/QuickJS source table matches emitted output and effects at jobs
+1/2/4/8 under every default marker extension, including mutable record
+IEquiv overrides, rounded range-tail counts and user ISeqable range counts.
+The native cached-artifact regression passes too. Fresh full QuickJS and
+default V8 nextest runs pass 2,055 and 2,132 tests respectively, each failing
+only the same `playground_crate_checks_for_wasm32` workspace diagnostic
+described above. Both all-target compiler Clippy configurations pass strictly.
+Engine strict Clippy retains its nine baseline diagnostics; allowing only
+the three documented categories passes engine all-target and selected native
+checks. Engine-free library/binary Clippy passes strictly; engine-free
+all-target checks retain unavailable legacy evaluator APIs and rquickjs imports.
+
+The final rebase onto `bba14eb8` changes only the initializer-slot integration
+test. Its five tests, compiler/engine formatting and isolated engine all-target
+Clippy pass after the rebase. Production sources and root build inputs are
+identical to `141bfa60`, so the other results remain valid across that rebase
+and this documentation update. The same macOS arm64/Rust 1.99.1 toolchain and
+pinned read-only ClojureScript checkout are used throughout.
+
+Both Penpot entries at `141bfa60` again stop at the exact `core.flatten`
+diagnostic shown above, in 184.58 s (`app.render`) and 184.20 s (`app.main`).
+These diagnostic probes overlap native/engine verification; they establish
+the boundary rather than a speed comparison. Neither entry builds natively,
+and the different recursive traversal gap remains with light-cljs-551.
+
+The final default-feature V8 comparison uses fresh release executables from
+`d66755ad` before this review and `141bfa60` after it, including the integrated
+master changes. With the same seed-42 200k fixture and `release bench --no-cache`
+command (jobs 1), three quiet paired runs have median wall times of 7.32 s
+before and 7.29 s after; ranges are 7.19–7.42 s and 7.20–7.29 s. Median
+user+system CPU is 7.75 s and 7.76 s, and median peak RSS is 1,037 MiB and
+1,036 MiB. Process snapshots contain no active peer builds or tests. All six
+outputs retain the SHA-256 recorded above; Node and the Babashka oracle both
+print `484264` for inputs 42 and 3. The final test-only rebase changes no
+production input to either executable.
+
 ### Explicit compiler literal forms (light-cljs-535)
 
 The native bridge imports and exports explicit compiler descriptors with
