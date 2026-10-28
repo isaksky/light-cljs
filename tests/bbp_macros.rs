@@ -7281,9 +7281,11 @@ fn compiler_literal_operations_match_quickjs_at_every_pool_size() {
         // would fail this check. Every other kind compares the exact strings.
         let strings = if label == "instant" {
             r#"[(= (s x) (js* "String(new Date(1704164645000))"))
-                (= (str x) (js* "String(new Date(1704164645000))"))]"#
+                (= (str x) (js* "String(new Date(1704164645000))"))
+                (= (with-redefs [str (fn [& _] :replacement)] (s x))
+                   (js* "String(new Date(1704164645000))"))]"#
         } else {
-            "[(try (s x) (catch :default e :conversion-error)) (try (str x) (catch :default e :conversion-error))]"
+            "[(try (s x) (catch :default e :conversion-error)) (try (str x) (catch :default e :conversion-error)) (try (with-redefs [str (fn [& _] :replacement)] (s x)) (catch :default e :conversion-error))]"
         };
         let body = format!(
             r##"(let [e = h hash s str o object? a array? p pr-str]
@@ -7296,6 +7298,7 @@ fn compiler_literal_operations_match_quickjs_at_every_pool_size() {
              (binding [*print-level* 1] (p [x]))
              (binding [*print-level* 2 *print-length* 1] (p [x]))
              (binding [*print-readably* false] (p x)) (print-str x)
+             (with-redefs [str (fn [& _] :replacement)] (p x))
              [(o x) (a x) (sequential? x) (vector? x) (map? x) (string? x) (number? x)]
              (pr-str-with-opts [x] {{:readably true :alt-impl
                (fn [v w opts] (if (identical? v x)

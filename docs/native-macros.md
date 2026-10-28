@@ -119,6 +119,8 @@ Normalized object fields retain positional storage at every size; imported
 compiler maps retain their legacy traversal view without replacing their payload.
 Object predicates observe an own `constructor` field. Literal `str` uses the
 represented value's conversion, including array joining and object coercion.
+Saved `str` functions retain that conversion under `with-redefs`; object
+printing also uses object coercion independently of a rebound `str`.
 Date's default string and time zone remain engine/host dependent.
 The compiler reader still rejects metadata directly on a `#js` source literal;
 metadata on surrounding forms, payloads and API-created descriptors is retained.

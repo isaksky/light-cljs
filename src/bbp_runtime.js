@@ -584,6 +584,11 @@ const native = (() => {
     if(__rt.formKind(payload)==='occurrence')pairs=arr(__rt.formPrintItems(literalMap(pairs))).flatMap(arr);
     return literalObjectPairs(pairs);
   };
+  const literalObjectString = x => {
+    const object={},pairs=literalObjectFields(x);
+    for(let i=0;i<pairs.length;i+=2)Object.defineProperty(object,pairs[i],{value:val(pairs[i+1]),writable:true,enumerable:true,configurable:true});
+    return String(object);
+  };
   const printWriterImpl = (value,writer,options,skipMetadata=false) => {
     const x=val(value);
     if(x==null)return write(writer,'nil');
@@ -604,7 +609,7 @@ const native = (() => {
       if(tag==='regex')return write(writer,'#\"'+regexValue(x).source+'\"');
       if(tag==='js-array')return printSequential(writer,printWriter,'#js [',' ',']',options,payload);
       if(tag==='js-object'){
-        if(!core.isObject(x))return write(writer,'#object[Object '+core.str(x)+']');
+        if(!core.isObject(x))return write(writer,'#object[Object '+literalObjectString(x)+']');
         write(writer,'#js ');
         const pairs=literalObjectFields(x);
         return printSequential(writer,(entry,w,o)=>{
@@ -1399,15 +1404,11 @@ const native = (() => {
     subs:(...a)=>a.length===2?val(a[0]).substring(val(a[1])):a.length===3?val(a[0]).substring(val(a[1]),val(a[2])):arity(a.length),
     inc:x=>val(x)+1, dec:x=>val(x)-1, multiply:(...xs)=>xs.reduce((a,b)=>a*val(b),1),
     less:(...xs)=>chain(xs,(a,b)=>a<b), greater:(...xs)=>chain(xs,(a,b)=>a>b), lessEqual:(...xs)=>chain(xs,(a,b)=>a<=b), greaterEqual:(...xs)=>chain(xs,(a,b)=>a>=b),
-    str:(...xs)=>xs.map(x=>{x=val(x);if(x==null)return '';const kind=__rt.formKind(x);
+    str:function str(...xs){return xs.map(x=>{x=val(x);if(x==null)return '';const kind=__rt.formKind(x);
       if(kind==='compiler-literal'){
         const tag=__rt.formName(x),payload=__rt.formLiteralPayload(x);
-        if(tag==='js-array')return arr(payload).map(v=>val(v)==null?'':core.str(v)).join(',');
-        if(tag==='js-object'){
-          const object={},pairs=literalObjectFields(x);
-          for(let i=0;i<pairs.length;i+=2)Object.defineProperty(object,pairs[i],{value:val(pairs[i+1]),enumerable:true});
-          return String(object);
-        }
+        if(tag==='js-array')return arr(payload).map(v=>val(v)==null?'':str(v)).join(',');
+        if(tag==='js-object')return literalObjectString(x);
         if(tag==='regex')return String(regexValue(x));
         if(tag==='instant')return String(new Date(val(payload)));
         if(tag==='uuid')return val(payload).toLowerCase();
@@ -1416,7 +1417,7 @@ const native = (() => {
       if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}
       if(kind==='type')return __rt.formName(x);
       if(kind==='struct'||kind==='record')return String(interop(x));
-      if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const {buffer,writer}=stringWriter();printWriterImpl(x,writer,null,true);flushWriter(writer);return buffer.text;}finally{core.printReadably=saved;}}return String(x);}).join(''),
+      if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const {buffer,writer}=stringWriter();printWriterImpl(x,writer,null,true);flushWriter(writer);return buffer.text;}finally{core.printReadably=saved;}}return String(x);}).join('');},
     identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>c===multi.MultiFn?multi.is(x):__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     divide:(...xs)=>xs.length===0?NaN:xs.length===1?1/val(xs[0]):xs.slice(1).reduce((a,b)=>a/val(b),val(xs[0])),
