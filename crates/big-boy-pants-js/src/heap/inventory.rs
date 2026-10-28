@@ -52,6 +52,8 @@ enum Holder {
     DependencyOutcome,
     /// An atom's current value.
     AtomCurrent,
+    /// The bookkeeping atom attached to another atom.
+    AtomAuxiliary,
     /// An atom's replaced value, still held by a reader (load-to-root).
     AtomRetainedOld,
     /// A value captured by a closure.
@@ -119,7 +121,7 @@ enum Holder {
 
 /// Every holder. A new [`Holder`] must also be added to [`coverage`]
 /// (exhaustive) and here.
-const HOLDERS: [Holder; 53] = [
+const HOLDERS: [Holder; 54] = [
     Holder::PersistentHandle,
     Holder::ScopeLocal,
     Holder::TaskResult,
@@ -133,6 +135,7 @@ const HOLDERS: [Holder; 53] = [
     Holder::TransientBuilder,
     Holder::DependencyOutcome,
     Holder::AtomCurrent,
+    Holder::AtomAuxiliary,
     Holder::AtomRetainedOld,
     Holder::ClosureEnvironment,
     Holder::BindingCell,
@@ -235,6 +238,7 @@ fn holders_of_category(category: RootCategory) -> &'static [Holder] {
             TaskResult,
             AtomRetainedOld,
             AtomCurrent,
+            AtomAuxiliary,
             ClosureEnvironment,
             BindingCell,
             PersistentCollectionEdges,
@@ -316,7 +320,7 @@ fn holders_of_kind(kind: ObjectKind) -> &'static [Holder] {
             MethodHomeObject,
         ],
         ObjectKind::Cell => &[BindingCell, TaskGlobalLexicals, ModuleEnvironment],
-        ObjectKind::Atom => &[AtomCurrent],
+        ObjectKind::Atom => &[AtomCurrent, AtomAuxiliary],
         ObjectKind::Builtin => &[Intrinsic],
         ObjectKind::Array => &[ArrayElement],
         ObjectKind::BoundFunction => &[BoundFunction],
@@ -505,6 +509,7 @@ fn coverage(holder: Holder) -> Coverage {
             reclaims: (Inventory, "dependency_outcome_reclaims_with_its_cell"),
         },
         Holder::AtomCurrent => public("atom_current_value_retains", "atom_current_value_reclaims"),
+        Holder::AtomAuxiliary => public("atom_auxiliary_retains", "atom_auxiliary_reclaims"),
         Holder::AtomRetainedOld => public(
             "atom_retained_old_value_retains",
             "atom_retained_old_value_reclaims",

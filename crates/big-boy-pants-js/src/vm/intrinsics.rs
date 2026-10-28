@@ -87,6 +87,11 @@
 //! Single-writer atoms are readable here; only their Rust
 //! [`Publisher`](crate::Publisher) can change them.
 //!
+//! `__rt.atomAux(atom)` (`form_op`) returns a stable shared bookkeeping atom,
+//! initially holding null, separate from the parent's current value. Its
+//! lifetime follows the parent through a traced edge; no global registry or
+//! host root retains it. Concurrent calls attach exactly one auxiliary atom.
+//!
 //! # Form intrinsics
 //!
 //! Opcodes `0xBF`–`0xC2` operate on native Clojure form values
@@ -460,6 +465,9 @@ impl From<clj::CljError> for Fault {
 /// An operation that needs a lazy sequence realized records the request
 /// ([`crate::collections::lazy::request`]) and returns a placeholder.
 fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Fault> {
+    if op == FormOp::AtomAux {
+        return atom::auxiliary(heap, args[0].clone(), |v| v).map_err(Fault::from);
+    }
     match clj_op(heap, op, &args) {
         Ok(Some(result)) => Ok(result),
         Ok(None) => Ok(strict_form_op(heap, op, args)?),
@@ -619,6 +627,7 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
         }
         // Dispatched by `form_op` before reaching here.
         FormOp::CljTruth
+        | FormOp::AtomAux
         | FormOp::CljCoreResolver
         | FormOp::CljGet2
         | FormOp::CljIsZero

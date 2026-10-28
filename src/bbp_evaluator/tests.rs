@@ -109,6 +109,124 @@ fn explicit_namespace_cache_retains_only_observable_snapshots() {
     );
 }
 
+#[test]
+fn temporary_multimethod_tables_are_reclaimed() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    for batch in 0..4 {
+        let result = evaluator
+            .evaluate_unit(
+                "rt => {
+                    let witnesses = __rt.vector();
+                    for (let n = 0; n < 12; n++) {
+                        let items = __rt.formVector();
+                        for (let i = 0; i < 1024; i++) items = __rt.cljConj(items, i + n);
+                        const payload = items, method = () => __rt.formCount(payload);
+                        const methods = __rt.atomNew(__rt.formMap(__rt.cljKeyword('x'), method));
+                        const prefs = __rt.atomNew(__rt.formMap());
+                        const m = new rt.core.MultiFn('temporary', rt.core.identity, null,
+                            __rt.atomNew(rt.core.makeHierarchy()), methods, prefs,
+                            __rt.atomNew(__rt.formMap()), __rt.atomNew(null));
+                        if (rt.core.invokeMulti(m, [__rt.cljKeyword('x')]) !== 1024)
+                            throw new Error('temporary dispatch lost its capture');
+                        for (const value of [methods, prefs, payload, method,
+                            __rt.structField(m, '__method_state'), __rt.structField(m, '__prefer_state')])
+                            witnesses = __rt.conj(witnesses, value);
+                    }
+                    return witnesses;
+                }",
+            )
+            .unwrap();
+        let weak = shared.0.runtime.scope(|s| {
+            let cx = evaluator.cx().unwrap();
+            let values = cx.values.borrow();
+            let result = s.local(&values[&result.index]).unwrap();
+            (0..72)
+                .map(|i| s.downgrade(s.nth(result, i).unwrap()))
+                .collect::<Vec<_>>()
+        });
+        evaluator.release(result).unwrap();
+        shared.0.runtime.collect().unwrap();
+        for (i, value) in weak.iter().enumerate() {
+            assert!(
+                !value.is_live(),
+                "batch {batch}, discarded table/capture {i}"
+            );
+        }
+    }
+
+    // Keep only supplied atoms, with no MultiFn or task-local view left.
+    // A fresh task must still find the same histories after collection.
+    let result = evaluator
+        .evaluate_unit(
+            "rt => {
+                const methods = __rt.atomNew(__rt.formMap()), prefs = __rt.atomNew(__rt.formMap());
+                const h = __rt.atomNew(rt.core.makeHierarchy());
+                const payload = __rt.formVector(10, 20, 30), method = () => __rt.formCount(payload);
+                const m = new rt.core.MultiFn('retained', rt.core.identity, null, h, methods, prefs,
+                    __rt.atomNew(__rt.formMap()), __rt.atomNew(null));
+                rt.core.addMethod(m, __rt.cljKeyword('x'), method);
+                rt.core.preferMethod(m, __rt.cljKeyword('p'), __rt.cljKeyword('q'));
+                return __rt.vector(methods, prefs, h, payload, method,
+                    __rt.structField(m, '__method_state'), __rt.structField(m, '__prefer_state'));
+            }",
+        )
+        .unwrap();
+    let (tables, weak) = shared.0.runtime.scope(|s| {
+        let cx = evaluator.cx().unwrap();
+        let values = cx.values.borrow();
+        let result = s.local(&values[&result.index]).unwrap();
+        let tables = (0..3)
+            .map(|i| s.nth(result, i).unwrap())
+            .collect::<Vec<_>>();
+        (
+            s.persist(s.new_vector(&tables).unwrap()),
+            (0..7)
+                .map(|i| s.downgrade(s.nth(result, i).unwrap()))
+                .collect::<Vec<_>>(),
+        )
+    });
+    evaluator.release(result).unwrap();
+    drop(evaluator);
+    shared.0.runtime.collect().unwrap();
+    assert!(weak.iter().all(WeakHandle::is_live));
+
+    let consumer = shared.evaluator().unwrap();
+    let input = consumer.id().unwrap();
+    consumer.request(1, input, tables.clone()).unwrap();
+    let function = consumer
+        .evaluate_unit(
+            "rt => tables => {
+                const m = new rt.core.MultiFn('consumer', rt.core.identity, null, __rt.nth(tables, 2),
+                    __rt.nth(tables, 0), __rt.nth(tables, 1), __rt.atomNew(__rt.formMap()), __rt.atomNew(null));
+                if (rt.core.invokeMulti(m, [__rt.cljKeyword('x')]) !== 3
+                    || !__rt.formEquals(rt.core.prefers(m),
+                        __rt.formMap(__rt.cljKeyword('p'), __rt.formSet(__rt.cljKeyword('q')))))
+                    throw new Error('shared tables lost their histories');
+                return __rt.vector(__rt.structField(m, '__method_state'), __rt.structField(m, '__prefer_state'));
+            }",
+        )
+        .unwrap();
+    let result = consumer.call(function, &[input]).unwrap();
+    shared.0.runtime.scope(|s| {
+        let cx = consumer.cx().unwrap();
+        let values = cx.values.borrow();
+        let result = s.local(&values[&result.index]).unwrap();
+        for i in 0..2 {
+            assert!(
+                s.persist(s.nth(result, i).unwrap())
+                    .same_object(&weak[5 + i].upgrade().unwrap())
+            );
+        }
+    });
+    for value in [result, function, input] {
+        consumer.release(value).unwrap();
+    }
+    drop((consumer, tables));
+    shared.0.runtime.collect().unwrap();
+    assert!(weak.iter().all(|value| !value.is_live()));
+}
+
 /// Runs while both consumers are parked on the unavailable helper, on the
 /// producer's thread, before the helper is compiled.
 type WhileParked = Arc<dyn Fn(&BbpRuntime) + Send + Sync>;

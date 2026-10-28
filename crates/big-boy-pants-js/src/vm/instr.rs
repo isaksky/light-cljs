@@ -1518,11 +1518,13 @@ pub enum FormOp {
     CljCoreResolver = 71,
     /// coll key → value (`cljGet2`), retaining ILookup's two-argument ABI.
     CljGet2 = 72,
+    /// atom → stable auxiliary atom, initially null (`atomAux`).
+    AtomAux = 73,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 73] = [
+    pub const ALL: [FormOp; 74] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1596,6 +1598,7 @@ impl FormOp {
         FormOp::SortedMap,
         FormOp::CljCoreResolver,
         FormOp::CljGet2,
+        FormOp::AtomAux,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1607,6 +1610,7 @@ impl FormOp {
     pub const fn arity(self) -> usize {
         match self {
             FormOp::Kind
+            | FormOp::AtomAux
             | FormOp::CljCoreResolver
             | FormOp::LiteralMap
             | FormOp::LiteralSet
@@ -1758,6 +1762,7 @@ impl FormOp {
             FormOp::LiteralSet => "formLiteralSet",
             FormOp::ArrayMap => "formArrayMap",
             FormOp::CljInvoke => "cljInvoke",
+            FormOp::AtomAux => "atomAux",
         }
     }
 }

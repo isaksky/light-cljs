@@ -789,21 +789,18 @@ const native = (() => {
       for(const e of arr(updated))for(const x of arr(__rt.formNth(e,1)))result=derive(result,__rt.formNth(e,0),x);
       return result;
     };
-    // Histories belong to constructor-supplied atom identities, independently
-    // for methods and preferences. The private registry is shared across tasks
-    // through an initializer outside the catalog's unit range. Its persistent
-    // identity map never calls user equality; CAS retries only bookkeeping,
-    // never constructor code or declaration effects. Public atoms hold maps.
-    let registry;
+    // Histories follow the supplied atom's lifetime, including across tasks
+    // and after all its MultiFns have been discarded. The engine's private
+    // auxiliary slot keeps bookkeeping out of the public map and introduces
+    // no compilation-wide root. CAS publishes only one state, without user
+    // equality, constructor replay or declaration effects.
     const tableState=ref=>{
-      registry??=globalThis.__lightInitializeCompilerValue(4503599627370494,()=>__rt.atomNew(__rt.map()));
-      let candidate;
-      for(;;){
-        const current=__rt.atomLoad(registry),existing=__rt.getOr(current,ref,null);
-        if(existing!==null){reconcile(ref,existing);return existing;}
-        if(candidate===undefined){const initial=deref(ref);candidate=vector([initial,atom(empty()),atom(initial)]);}
-        if(Object.is(__rt.atomCas(registry,current,__rt.assoc(current,ref,candidate)),current))return candidate;
-      }
+      const slot=__rt.atomAux(ref),existing=__rt.atomLoad(slot);
+      if(existing!==null){reconcile(ref,existing);return existing;}
+      const initial=deref(ref),candidate=vector([initial,atom(empty()),atom(initial)]);
+      const previous=__rt.atomCas(slot,null,candidate);
+      if(previous===null)return candidate;
+      reconcile(ref,previous);return previous;
     };
     function MultiFn(name,dispatch,defaultValue,hierarchy,methods,prefs,cache,cached){
       return __rt.structNew(ty,name,dispatch,defaultValue,hierarchy,methods,prefs,cache,cached,

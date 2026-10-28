@@ -433,6 +433,31 @@ fn atom_current(rt: &Runtime) -> Held {
     .keeping(atom)
 }
 
+/// Only the parent atom keeps its auxiliary slot and the slot's value alive.
+fn atom_auxiliary(rt: &Runtime) -> Held {
+    let (value, mut weak) = shareable(rt);
+    let code = compile(
+        "function f(v) {
+            const atom = __rt.atomNew(1), slot = __rt.atomAux(atom);
+            if (__rt.atomAux(atom) !== slot || __rt.atomLoad(slot) !== null)
+                throw 'unstable auxiliary slot';
+            __rt.atomCas(slot, null, __rt.vector(v, atom));
+            if (__rt.atomLoad(atom) !== 1) throw 'auxiliary changed public value';
+            return __rt.vector(atom, slot);
+        }",
+    );
+    let task = rt.spawn(&code, &[&value]).unwrap();
+    let result = run_to_end(&task);
+    let atom = rt.scope(|s| {
+        let result = s.local(&result).unwrap();
+        weak.push(s.downgrade(s.nth(result, 1).unwrap()));
+        s.persist(s.nth(result, 0).unwrap())
+    });
+    weak.push(atom.downgrade());
+    drop((result, task, code, value));
+    Held::new(weak, move || drop(atom))
+}
+
 /// An atom's replaced (old) value, retained by a reader that loaded it
 /// before the replacement (load-to-root).
 fn atom_retained_old(rt: &Runtime) -> Held {
@@ -856,6 +881,20 @@ fn atom_current_value_retains() {
 fn atom_current_value_reclaims() {
     let rt = Runtime::new();
     let held = atom_current(&rt);
+    assert_retained(&rt, &held);
+    assert_reclaimed(&rt, held);
+}
+
+#[test]
+fn atom_auxiliary_retains() {
+    let rt = Runtime::new();
+    assert_retained(&rt, &atom_auxiliary(&rt));
+}
+
+#[test]
+fn atom_auxiliary_reclaims() {
+    let rt = Runtime::new();
+    let held = atom_auxiliary(&rt);
     assert_retained(&rt, &held);
     assert_reclaimed(&rt, held);
 }
@@ -1762,6 +1801,7 @@ fn churn_retaining_inventory(rt: &Runtime, n: u32) -> big_boy_pants_js::HeapStat
         suspended_frame(&rt),
         pending_need(&rt),
         atom_current(&rt),
+        atom_auxiliary(&rt),
         atom_retained_old(&rt),
         closure_environment(&rt),
         binding_cell(&rt),
@@ -1832,6 +1872,7 @@ fn every_holder_retains_while_other_workers_allocate_and_collect() {
         suspended_frame(&rt),
         pending_need(&rt),
         atom_current(&rt),
+        atom_auxiliary(&rt),
         atom_retained_old(&rt),
         closure_environment(&rt),
         binding_cell(&rt),

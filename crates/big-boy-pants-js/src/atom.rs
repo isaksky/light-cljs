@@ -35,6 +35,13 @@
 //! the path; the atom is left unchanged. Values are never copied: a reader
 //! gets the identical object the writer installed.
 //!
+//! `__rt.atomAux(atom)` lazily attaches one shared bookkeeping atom whose
+//! initial value is null. Attachment is thread-safe and runs no user code.
+//! The parent's current value and public identity are unchanged. The slot is
+//! an ordinary traced edge, so even cycles through its state are collectable
+//! after the parent and all other references disappear. Its atom allocation
+//! uses the same aggregate budget; unused atoms allocate no auxiliary slot.
+//!
 //! # CAS comparison: identity, never user equality
 //!
 //! `compare_and_set(atom, expected, new)` succeeds when the atom's current
@@ -130,7 +137,7 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use crate::collections::object_name;
 use crate::heap::gc::Trace;
@@ -177,6 +184,9 @@ pub(crate) struct AtomCell {
     current: AtomicPtr<AtomValue>,
     /// Single-writer mode: changed only by its [`Publisher`].
     single_writer: bool,
+    /// Lazily attached bookkeeping atom. This is a traced heap edge, not a
+    /// host root: the parent and its auxiliary state can be collected together.
+    auxiliary: OnceLock<Value>,
     /// Replaced boxes not yet known unreachable. Taken by writers of this
     /// atom (after their store), by `Drop`, and by the collector while the
     /// world is stopped ([`AtomCell::take_retired`]); never by readers.
@@ -227,6 +237,7 @@ impl AtomCell {
         Ok(AtomCell {
             current: AtomicPtr::new(Box::into_raw(Box::new(AtomValue::new(heap, initial)?))),
             single_writer,
+            auxiliary: OnceLock::new(),
             retired: Mutex::new(Retirement::default()),
         })
     }
@@ -371,6 +382,9 @@ impl Trace for AtomCell {
         // operation contains no safepoint), so no writer can replace or
         // retire the current box during the trace.
         Self::read(self.current.load(Ordering::Acquire)).trace(visit);
+        if let Some(auxiliary) = self.auxiliary.get() {
+            auxiliary.trace(visit);
+        }
     }
 }
 
@@ -541,6 +555,24 @@ pub(crate) fn load<R>(
     Ok(keep(access.cell.load()))
 }
 
+/// Return this atom's stable auxiliary atom, initially holding null. It is
+/// private runtime bookkeeping, independent of the language-level value.
+/// The parent operand stays rooted and `access` keeps collection out until
+/// `keep` roots the result. Racing allocations contain no user code; exactly
+/// one is attached, and unattached candidates are ordinary collectable garbage.
+pub(crate) fn auxiliary<R>(
+    heap: &Heap,
+    atom: Value,
+    keep: impl FnOnce(Value) -> R,
+) -> Result<R, AtomError> {
+    let access = access(heap, atom)?;
+    if access.cell.auxiliary.get().is_none() {
+        let candidate = new_atom(heap, Value::Null, false, |v| v)?;
+        let _ = access.cell.auxiliary.set(candidate);
+    }
+    Ok(keep(access.cell.auxiliary.get().unwrap().clone()))
+}
+
 /// Multi-writer compare-and-set: `Ok(Ok(()))` when swapped, `Ok(Err(keep(current)))`
 /// on conflict, with `current` passed to `keep` (as in [`load`]).
 pub(crate) fn compare_and_set<R>(
@@ -677,6 +709,34 @@ mod tests {
     use super::*;
     use crate::heap::ObjectId;
 
+    #[test]
+    fn racing_auxiliary_calls_share_one_slot_without_changing_the_parent() {
+        let rt = Runtime::new();
+        let initial = rt.root(crate::Primitive::Number(42.0));
+        let atom = rt.new_atom(&initial).unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        let slots = std::thread::scope(|s| {
+            (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        barrier.wait();
+                        let heap = rt.heap();
+                        auxiliary(heap, atom.value_in(heap).unwrap(), |v| Rooted::new(heap, v))
+                            .unwrap()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(slots.iter().all(|slot| slot.same_object(&slots[0])));
+        assert_eq!(
+            rt.atom_load(&slots[0]).unwrap().view(),
+            crate::ValueView::Null
+        );
+        assert_eq!(rt.atom_load(&atom).unwrap().view(), initial.view());
+    }
     fn cell_of(heap: &Arc<Heap>, atom: &Rooted) -> Arc<AtomCell> {
         let Value::Object(id) = atom.value_in(heap).unwrap() else {
             panic!("not an object")

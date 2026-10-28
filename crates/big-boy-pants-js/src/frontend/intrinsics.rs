@@ -174,6 +174,7 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     // to its witness (`expected` itself when it swapped).
     op("atomNew", 1, Opcode::AtomNew),
     op("atomLoad", 1, Opcode::AtomLoad),
+    form_op(FormOp::AtomAux),
     Intrinsic {
         name: "atomCas",
         arity: Arity::Exactly(3),
