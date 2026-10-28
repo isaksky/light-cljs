@@ -1701,3 +1701,29 @@ interleaved controls above account for the changing machine load.
 Default binary SHA-256 values are before
 `79937de45731e50b7bb42ecb175e42f1a0d6aa57b541f2f2abe3c8f7176f37cd`
 and after `43da37d5c7931be0969058434c1540f9706256dd06c4c73e4d2e415679fe8179`.
+
+A fresh native release binary from the same production source was then
+spot-checked against that default binary at all four job counts, with
+`release bench --no-cache --stats`. These are single runs, supplementing the
+earlier three-run preparation matrix rather than replacing its medians.
+No local build or suite overlapped them; the external 535 review remained
+active. Every output retains the original JavaScript hash and prints `484264`.
+Every native run publishes 57 helpers, copies none per task and compiles 742
+units. Native binary SHA-256 is
+`8366569a9d0fcaf5a352ff93b66ad4a04a125c5fab157ccab24491615e975444`.
+
+| Backend/jobs | Wall, s | User CPU, s | Peak RSS, bytes | Load before → after (1/5/15 min) |
+| --- | ---: | ---: | ---: | --- |
+| V8/1 | 8.12 | 8.30 | 1101266944 | 5.15/6.70/5.73 → 5.21/6.68/5.73 |
+| native/1 | 38.24 | 36.26 | 1381761024 | 5.21/6.68/5.73 → 4.38/6.28/5.62 |
+| V8/2 | 6.34 | 8.81 | 1193590784 | 4.38/6.28/5.62 → 4.25/6.19/5.60 |
+| native/2 | 25.45 | 28.66 | 1487781888 | 4.25/6.19/5.60 → 4.07/6.00/5.55 |
+| V8/4 | 5.59 | 10.97 | 1380958208 | 4.07/6.00/5.55 → 3.99/5.95/5.53 |
+| native/4 | 20.08 | 27.32 | 1692368896 | 3.99/5.95/5.53 → 3.97/5.82/5.49 |
+| V8/8 | 5.54 | 14.42 | 1650540544 | 3.97/5.82/5.49 → 4.38/5.87/5.51 |
+| native/8 | 24.24 | 38.50 | 1824309248 | 4.38/5.87/5.51 → 3.96/5.66/5.45 |
+
+The remaining native/V8 wall ratios are 4.71/4.01/3.59/4.38 at jobs 1/2/4/8;
+the cache repair does not close that gap. The emitter traversal and preparation
+paths are unchanged by this repair, so the earlier native map-identity and
+full-process preparation-profile evidence remains applicable.
