@@ -219,6 +219,29 @@ diagnostics; allowing only the three categories listed above passes the engine
 and final native targets. Both Rust format checks pass, with no source lint
 suppressions and no native-only changes to `src/js_runtime.js`.
 
+Final integration at `c2a22059` is rebased onto `af0c13dc`. Object payloads are
+validated on native import as well as export, so malformed public Datum inputs
+cannot enter the identity cache and bypass fresh export checks. Numeric,
+collection and qualified keys, odd map payloads and non-map payloads have
+regressions. The integrated native suite passes all 179 tests with twelve stress
+seeds; the combined native/QuickJS evaluator and literal selection passes all
+68 tests, including exact one/two/four/eight-slot comparisons. The engine passes
+2,161 tests and seven doctests. The subsequent test-only rebase adds one passing
+namespace-diagnostic regression; its strengthened cached-factory binding test
+passes with native-only, QuickJS and V8. Unchanged engine and legacy suite results
+are reused across that rebase. The legacy runtime, emitter and dependency inputs
+are unchanged by these integrations. Both final Penpot entries repeat the exact
+`core.isList` diagnostic above, taking 225.93 s and 221.18 s respectively.
+
+The final default-feature release binary was rebuilt with
+`LIGHT_CLJS_V8_CACHE=require` and compared with the saved `967e2a57` release
+binary on the same seed-42 200k fixture. Ten clean, interleaved pairs of
+`release bench --no-cache` have median wall times of 7.565 s before and 7.480 s
+after (0.9888x, -1.12%); ranges are 7.18–7.91 s and 7.31–7.76 s. One pair
+interrupted by other builds/tests was excluded. Measurements wait for a quiet
+window and detect interference throughout each run. There is no material V8
+slowdown. The final documentation-only commit reuses these source checks.
+
 ### Key-value reduction (light-cljs-518)
 
 Native `reduce-kv` invokes `(rf accumulator key value)` on the resumable task
