@@ -3173,3 +3173,7 @@ Native-only verification on the same source passes all 62 evaluator tests,
 the dispatcher scope regression, 136 macro tests, two Proxy tests and twelve
 reader tests. The macro/reader/Proxy command uses the same twelve seeds and
 three test workers, with the existing generated-project stress case ignored.
+
+Fresh `CARGO_BUILD_JOBS=3 cargo test --locked -p big-boy-pants-js --all-targets
+-- --test-threads=3` passes all 2,182 engine tests; the matching `--doc` command
+passes seven doctests. These runs cover the rebased intrinsic selector merge.
