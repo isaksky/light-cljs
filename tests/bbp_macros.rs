@@ -8053,6 +8053,8 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
         ),
         ("cons", "(cons 1 [])"),
         ("cons-view", "(cons 1 (seq [2 3]))"),
+        ("cons-view-rest", "(rest (cons 1 (seq [2 3])))"),
+        ("cons-vector-rest", "(rest (cons 1 [2 3]))"),
         ("cons-lazy", "(cons 1 unforced)"),
         ("lazy", "unforced"),
         ("realized-lazy", "forced"),
@@ -8145,6 +8147,8 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
                           (aset a 1 9)
                           [(= s '(1 9)) (= '(1 9) s) (= (hash s) (hash '(1 9)))
                            (vec s) (meta m) (first (next s)) (count s)])
+                        (let [tail (with-meta (seq [2 3]) {{:tag true}}) c (cons 1 tail)]
+                          [(identical? tail (rest c)) (meta (rest c)) (meta (conj tail 0))])
                         [(= (seq [1 2]) '(1 2)) (= (seq "ab") '("a" "b"))
                          (= (hash (seq [1 2])) (hash '(1 2)))
                          (get {{(seq [1 2]) :found}} '(1 2))

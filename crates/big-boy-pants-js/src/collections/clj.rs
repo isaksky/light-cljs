@@ -423,11 +423,7 @@ pub(crate) fn seq(heap: &Heap, v: &Value) -> Result<Value> {
     let (head_value, head_shape) = head(heap, v)?;
     // A value that is not lazy keeps its occurrence.
     let own_is_lazy = form::kind(heap, &form::unwrap(heap, v.clone())) == Some(FormKind::Lazy);
-    let own = if is_lazy_seq(heap, v) {
-        head_value
-    } else {
-        v.clone()
-    };
+    let own = if own_is_lazy { head_value } else { v.clone() };
     if let Shape::Form(FormKind::List, f) = &head_shape
         && let FormBody::List(items) = f.body()
     {
@@ -590,19 +586,13 @@ pub(crate) fn next(heap: &Heap, v: &Value) -> Result<Value> {
 /// `cons`: a new list of `x` followed by the elements of `coll`; onto a
 /// lazy or cons sequence, a cons sequence whose tail is `coll`, unrealized.
 pub(crate) fn cons(heap: &Heap, x: &Value, coll: &Value) -> Result<Value> {
-    if is_lazy_seq(heap, coll) {
-        let items = PVector::try_from_values(heap, std::slice::from_ref(x))?;
-        return Ok(form::new_cons(
-            heap,
-            items,
-            0,
-            coll.clone(),
-            lazy::ConsKind::Cons,
-        )?);
-    }
-    let mut items = vec![x.clone()];
-    items.extend(seq_items(heap, "cons", coll)?.unwrap_or_default());
-    Ok(form::new_list(heap, &items)?)
+    let rest = match shape(heap, coll) {
+        Shape::Nil => Value::Null,
+        Shape::Form(FormKind::List | FormKind::Cons | FormKind::Lazy, _) => coll.clone(),
+        _ => seq(heap, coll)?,
+    };
+    let items = PVector::try_from_values(heap, std::slice::from_ref(x))?;
+    Ok(form::new_cons(heap, items, 0, rest, lazy::ConsKind::Cons)?)
 }
 
 /// The concatenation of `colls`, always a LazySeq, including empty and
@@ -1070,6 +1060,9 @@ pub(crate) fn conj(heap: &Heap, coll: &Value, x: &Value) -> Result<Value> {
         return cons(heap, x, coll);
     }
     let shape = shape(heap, coll);
+    if matches!(&shape, Shape::Form(FormKind::List, f) if !f.is_list()) {
+        return cons(heap, x, coll);
+    }
     let target = form::unwrap(heap, coll.clone());
     let updated = match &shape {
         Shape::Nil => return Ok(form::new_list(heap, std::slice::from_ref(x))?),
@@ -1614,6 +1607,7 @@ fn elements(heap: &Heap, v: &Value) -> Vec<Value> {
         .map(form::FormObject::body)
     {
         Some(FormBody::List(items) | FormBody::Vector(items)) => items.to_vec(),
+        Some(FormBody::Cons(_)) => seq_items(heap, "test sequence", v).unwrap().unwrap(),
         _ => panic!("not sequential"),
     }
 }

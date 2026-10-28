@@ -2477,6 +2477,9 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
       for(const i of [1,2,3,4,5,7])if(__rt.cljIsList(at(i)))throw new Error('non-list '+i);
       for(let i=0;i<8;i++)if(!__rt.cljIsSeq(at(i))||!__rt.cljIsSequential(at(i))||!__rt.cljIsColl(at(i)))throw new Error('sequence markers');
       if(__rt.cljSeq(v)!==v||__rt.cljSeq(l)!==l)throw new Error('unchanged identity');
+      if(__rt.cljSeq(at(6))!==at(6)||__rt.cljSeq(at(7))!==at(7))throw new Error('cons occurrence identity');
+      const front=__rt.cljCons(0,meta);
+      if(__rt.cljRest(front)!==meta||__rt.cljIsList(__rt.cljRest(front)))throw new Error('cons tail identity/kind');
       if(__rt.cljIsList(__rt.cljRest(v))||!__rt.cljIsList(__rt.cljRest(__rt.cljRest(v))))throw new Error('rest kind');
       if(!__rt.cljIsList(__rt.cljConj(v,0))||__rt.cljIsList(__rt.cljWithMeta(v,__rt.formMap())))throw new Error('update kind');
       if(!__rt.formEquals(l,v)||__rt.formHash(l)!==__rt.formHash(v))throw new Error('sequential equality/hash');
