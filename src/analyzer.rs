@@ -5493,21 +5493,22 @@ impl Analyzer<'_> {
         // spelling either in source. Publish each resolved write as it is
         // analyzed, before later factories lose access to this unit's IR.
         #[cfg(feature = "bbp-macros")]
-        if matches!(kind, ExprKind::SetGlobal { .. } | ExprKind::Binding { .. })
-            && let Some(session) = self.macro_host.session_handle()
-        {
-            match &kind {
-                ExprKind::SetGlobal { target, .. } => session
-                    .shared()
-                    .index_native_core_target(&self.program, *target),
-                ExprKind::Binding { bindings, .. } => {
-                    for &(target, _) in bindings {
-                        session
-                            .shared()
-                            .index_native_core_target(&self.program, target);
+        if matches!(kind, ExprKind::SetGlobal { .. } | ExprKind::Binding { .. }) {
+            let session = self.macro_host.session_handle();
+            let catalog = self.macro_host.engine.catalog.as_ref();
+            let shared = session.as_ref().map(|session| session.shared()).or(catalog);
+            if let Some(shared) = shared {
+                match &kind {
+                    ExprKind::SetGlobal { target, .. } => {
+                        shared.index_native_core_target(&self.program, *target);
                     }
+                    ExprKind::Binding { bindings, .. } => {
+                        for &(target, _) in bindings {
+                            shared.index_native_core_target(&self.program, target);
+                        }
+                    }
+                    _ => unreachable!(),
                 }
-                _ => unreachable!(),
             }
         }
         let id = ExprId(self.program.exprs.len());

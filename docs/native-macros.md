@@ -1108,6 +1108,8 @@ the frozen catalog prefix for each unit. Global reads keep their separate lazy
 demands. Cross-unit core replacement uses the session's conservative source
 index, augmented with resolved mutation targets as they are analyzed. This
 preserves generated writes from earlier units even after their IR is released.
+Coordinator and worker frames both publish these targets; workers reach the
+shared catalog directly without needing a coordinator session handle.
 Preparation retains executable source and reader tables, without retaining an
 old program or running initializers. A regression counts actual arena reads
 with growing frozen prefixes, including captured reify methods, and checks

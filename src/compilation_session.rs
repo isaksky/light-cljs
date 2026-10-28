@@ -4960,6 +4960,45 @@ mod worker_tests {
 
     #[cfg(feature = "bbp-macros")]
     #[test]
+    fn a_native_worker_publishes_resolved_core_writes_before_releasing_ir() {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let (session, units, environment) = registered_with_host(
+            "(defn installer [] (set! cljs.core/inc (fn [_] 42))
+               (binding [cljs.core/even? (fn [_] false)] (even? 2)))
+             (defn later [] [(inc 2) (even? 2)])",
+            host,
+        );
+        // Registration into this fresh catalog copies no lexical write hints.
+        // A worker's owned form must publish the resolved targets itself.
+        let shared = session.shared().clone();
+        shared.select_native();
+        assert!(shared.native_replaced_core().is_empty());
+        let installer = units["cljs.user/installer"];
+        let worker_shared = shared.clone();
+        std::thread::spawn(move || {
+            let host = MacroHost::bind(environment, None).unwrap();
+            assert!(host.session_handle().is_none());
+            let view = WorkerView::new(worker_shared, host).unwrap();
+            view.analyze(installer, None).unwrap();
+        })
+        .join()
+        .unwrap();
+        session.release_application_ir(installer);
+        assert!(matches!(
+            &shared.lock().units[installer].state,
+            AnalysisState::Prepared(program, _, _) if program.upgrade().is_none()
+        ));
+        let replaced = shared.native_replaced_core();
+        assert!(replaced.contains(&crate::CoreFnId::Inc.runtime_name()));
+        assert!(replaced.contains(&crate::CoreFnId::IsEven.runtime_name()));
+        let (later, _) = session.analyze(units["cljs.user/later"], None).unwrap();
+        let prepared = crate::emitter::DeferredUnit::prepare_native(&later, &replaced);
+        assert!(!prepared.code().contains("nativeCore$isEven"));
+    }
+
+    #[cfg(feature = "bbp-macros")]
+    #[test]
     fn native_build_cancellation_reaches_every_shared_runtime_task() {
         let session = CompilationSession::default();
         let runtime = session.shared.native_runtime(&Default::default()).unwrap();

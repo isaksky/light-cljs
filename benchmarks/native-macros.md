@@ -1467,6 +1467,13 @@ The focused native/QuickJS regression puts a generated installer in an earlier
 nested definition: before the fix its macro prints `[3 3]`, after the fix both
 backends print `[3 42]`. A generated binding/restoration case prints `[3 42 3]`.
 
+Resolved writes are also published by worker analysis frames, which have a
+shared catalog without a coordinator session handle. A separate-thread worker
+regression starts with no lexical write hints, analyzes both mutation kinds,
+releases the unit's IR, verifies that its `Program` has been dropped, and checks
+that its core replacement keys still reach a later factory. It fails before
+the worker catalog path is used: the resolved `inc` target is missing.
+
 The unit traversal also indexes reify methods as non-struct owners. Previously
 a captured local caused the fallback type-owner search to scan the prefix:
 one captured reify needs 129 arena reads without the added catalog and 642
