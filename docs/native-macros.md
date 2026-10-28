@@ -246,6 +246,15 @@ interrupted by other builds/tests was excluded. Measurements wait for a quiet
 window and detect interference throughout each run. There is no material V8
 slowdown. The final documentation-only commit reuses these source checks.
 
+The second literal review fixes at `9269dc8f` pass the operation differential
+with both `TZ=UTC` and `TZ=America/Denver`, including rebound printing predicates
+and offsetless/offset `#inst` equality and hashing at jobs 1/2/4/8. The new
+engine regressions reproduce both host-selected and hostless time-zone ordering
+bugs before the fix. All 179 native tests pass with twelve stress seeds, as do
+all 2,164 engine tests and seven doctests. Engine strict Clippy retains the same
+nine diagnostics; isolating only the established categories passes engine and
+native targets. The subsequent public API comment changes no executable code.
+
 ### Key-value reduction (light-cljs-518)
 
 Native `reduce-kv` invokes `(rf accumulator key value)` on the resumable task

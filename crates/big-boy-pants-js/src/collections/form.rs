@@ -3039,6 +3039,8 @@ fn realized_keys<T>(op: impl FnOnce() -> Result<T, CollectionError>) -> Result<T
 /// The embedder API. See the module docs.
 impl<'s> Scope<'s> {
     /// A new explicit compiler literal. The payload stays rooted and traced.
+    /// Local date-time text uses the runtime's selected zone; this hostless
+    /// operation selects and freezes UTC if no zone has been selected yet.
     pub fn new_compiler_literal(
         &self,
         tag: JsString,
