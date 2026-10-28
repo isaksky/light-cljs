@@ -5388,6 +5388,10 @@ fn native_zipmap_matches_legacy_collection_and_realization_semantics() {
 fn memoize_rejects_task_owned_captures_keys_and_results() {
     for body in [
         "(let [state (js/Array.)] (memoize (fn [x] (.push state x))))",
+        "(let [state (js/Array.)] (with-redefs [gensym (fn [x] (js* \"~{}\" state))] (memoize gensym)))",
+        r#"(let [state (js/Array.) f gensym]
+             (js* "Object.defineProperty(~{}, 'call', {value:function(){ return ~{}; }})" f state)
+             (memoize f))"#,
         "((memoize identity) (js/Array.))",
         "((memoize (fn [x] (js/Array.))) :key)",
     ] {
@@ -5433,6 +5437,122 @@ fn memoize_supports_first_class_construction_and_independent_instances() {
           (js/console.log (pr-str (probe)))"#,
         "[[1 1 2 2] 22 false false [[0 {:nested #{0}}] [1 {:nested #{1}}] [2 {:nested #{2}}] [3 {:nested #{3}}] [4 {:nested #{4}}] [5 {:nested #{5}}] [6 {:nested #{6}}] [7 {:nested #{7}}] [8 {:nested #{8}}] [9 {:nested #{9}}] [10 {:nested #{10}}] [11 {:nested #{11}}] [12 {:nested #{12}}] [13 {:nested #{13}}] [14 {:nested #{14}}] [15 {:nested #{15}}] [16 {:nested #{16}}] [17 {:nested #{17}}] [18 {:nested #{18}}] [19 {:nested #{19}}]] 22 true true]\n",
     );
+}
+
+#[test]
+fn memoize_supports_first_class_core_callbacks() {
+    assert_native_matches_legacy(
+        r#"(defmacro m []
+          (let [g gensym s str bare (memoize gensym) aliased (memoize g)
+                text (memoize str) text-alias (memoize s) number (memoize inc)
+                a (bare "x") b (bare "x") c (aliased "y") d (aliased "y")]
+            (list 'quote [(identical? a b) (identical? c d) (not= a c)
+                          (symbol? a) (symbol? c) (text :a 1) (text-alias :a 1)
+                          (number 41) (number 41) (identical? g gensym) (identical? s str)])))
+          (js/console.log (pr-str (m)))"#,
+        "[true true true true true \":a1\" \":a1\" 42 42 true true]\n",
+    );
+    assert_native_matches_legacy(
+        r#"(defmacro m []
+          (let [s str old (memoize s)
+                replaced (with-redefs [str (fn [& xs] [:replacement (vec xs)])] (memoize str))
+                other-core (with-redefs [gensym s] (memoize gensym))]
+            (list 'quote [(with-redefs [str (fn [& _] :wrong)] (old :old))
+                          (old :next) (replaced :a 1) (replaced :b 2)
+                          (other-core :alias 3) (identical? s str)])))
+          (js/console.log (pr-str (m)))"#,
+        "[\":old\" \":next\" [:replacement [:a 1]] [:replacement [:b 2]] \":alias3\" true]\n",
+    );
+    assert_native_matches_legacy(
+        r#"(defrecord Callable [] IFn
+            (-invoke [this & xs] (mapv (fn [x] (if (array? x) [:tail (vec x)] x)) xs)))
+          (defmacro m []
+            (let [f (memoize (->Callable)) a (apply f (range 25)) b (apply f (range 25))]
+              (list 'quote [(count a) (last a) (identical? a b)])))
+          (js/console.log (pr-str (m)))"#,
+        "[21 [:tail [20 21 22 23 24]] true]\n",
+    );
+
+    let root = temp_dir::TempDir::new("native-memoize-core-callbacks");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+          (def g gensym)
+          (def s str)
+          (def bare (memoize gensym))
+          (def aliased (memoize g))
+          (def text (memoize str))
+          (def text-alias (memoize s))
+          (def number (memoize inc))
+          (defmacro probe [tag]
+            (let [a (bare "x") b (bare "x") c (aliased "y") d (aliased "y")]
+              (list 'quote [a b c d (identical? a b) (identical? c d)
+                            (text :a 1) (text-alias :a 1) (number 41)
+                            (bare tag) (aliased tag) (text tag)])))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [helpers :refer [probe]])) (def value (probe :a))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [helpers :refer [probe]])) (def value (probe :b))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/value b/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        if native {
+            assert!(stats.native_helpers.published >= 5, "{stats:?}");
+        }
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0);
+    let output = program_output(&reference);
+    assert!(output.contains("true true \":a1\" \":a1\" 42"), "{output}");
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(reference, build(false, jobs, 0), "QuickJS jobs {jobs}");
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed),
+                "jobs {jobs}, seed {seed}"
+            );
+        }
+    }
 }
 
 #[test]

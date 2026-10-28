@@ -680,7 +680,8 @@ const native = (() => {
   // without a mutable JavaScript arity property record.
   const applyArgs = (f,args) => {
     const value=val(f),kind=__rt.formKind(value);
-    if(kind!==null)return invoke(f,...args);
+    if(kind!==null)return args.length>20 && (kind==='struct'||kind==='record')
+      && __rt.formName(__rt.structTypeOf(value))!=='cljs.core/MultiFn' ? value.apply(null,args) : invoke(f,...args);
     if(value.cljs$lang$applyTo){
       return args.length<=value.cljs$lang$maxFixedArity
         ?value.call(null,...args):value.cljs$lang$applyTo(list(args));
@@ -1741,22 +1742,25 @@ const native = (() => {
     // The wrapper captures only its shared atom. Resolve
     // operations in the calling task's runtime, as with published MultiFns.
     memoize:f=>{
-      // Including f in the atom validates its captures at construction:
-      // an initializer must never replay a memoized function's state.
-      const cache=atom(__rt.formVector(f,arrayMap([])));
+      // Original core closures belong to a task (gensym's current scope,
+      // namespace state, etc.). Keep their identity as a descriptor, resolved
+      // against the consuming task's original bindings, not live replacements.
+      // Custom callable properties and user callbacks still undergo capture validation.
+      const descriptor=memoCoreCallback(f), adapted=descriptor!==undefined;
+      const cache=atom(__rt.formVector(adapted?descriptor:f,arrayMap([]),adapted));
       return (...args)=>globalThis.__lightNativeRuntime.core.invokeMemoized(cache,args);
     },
     invokeMemoized:(cache,args)=>{
       lane(cache);
-      const key=vector(args), state=__rt.atomLoad(cache), f=__rt.formNth(state,0), table=__rt.formNth(state,1);
+      const key=vector(args), state=__rt.atomLoad(cache), callback=__rt.formNth(state,0), table=__rt.formNth(state,1), adapted=__rt.formNth(state,2);
       // Presence is independent of the result: nil, false and undefined
       // are cached too. Keys use the native Clojure equality/hash contract.
       if(__rt.cljContains(table,key))return get(table,key);
       // A cold helper can park here. The saved VM continuation resumes
       // after it; exceptions leave the cache untouched. Read the table
       // again after the call to preserve entries added by recursive calls.
-      const result=applyArgs(f,args);
-      store(cache,__rt.formVector(f,__rt.cljAssoc(__rt.formNth(__rt.atomLoad(cache),1),key,result)));
+      const f=adapted?memoCoreCallbacks[callback]:callback, result=applyArgs(f,args);
+      store(cache,__rt.formVector(callback,__rt.cljAssoc(__rt.formNth(__rt.atomLoad(cache),1),key,result),adapted));
       return result;
     },
     // Lazy and chunked sequences (light-cljs-479).
@@ -1913,6 +1917,25 @@ const native = (() => {
     decl.coreKeys.set(core[name], key);
   /* NATIVE_READER */
   for (const name of [/* CORE_KEYS */]) if (!(name in core)) Object.defineProperty(core,name,{get:unsupported('core.'+name)});
+  // Compact identity snapshot before user core writes. Bootstrap data entries
+  // have the same order in every task; live/unsupported getters are nonenumerable.
+  // Descriptors store an index, never a task-owned function or property table.
+  const memoCoreCallbacks=Object.values(core);
+  const memoCoreCallback=f=>{
+    const index=typeof f==='function'?memoCoreCallbacks.indexOf(f):-1;
+    if(index===-1)return undefined;
+    for(const key of Reflect.ownKeys(f)){
+      const d=Object.getOwnPropertyDescriptor(f,key);
+      if(d.get!==undefined||d.set!==undefined)return undefined;
+      if(key==='name'&&typeof d.value==='string'||key==='length'&&typeof d.value==='number')continue;
+      if(key==='prototype'&&d.value!==null&&typeof d.value==='object'){
+        const keys=Reflect.ownKeys(d.value), constructor=Object.getOwnPropertyDescriptor(d.value,'constructor');
+        if(keys.length===1&&keys[0]==='constructor'&&constructor?.value===f)continue;
+      }
+      return undefined;
+    }
+    return index;
+  };
   const rt={core,
     // Inspect data properties without running an unsupported entry's getter.
     // Units keep that getter's access at the original expression site.
