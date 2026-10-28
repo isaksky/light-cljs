@@ -625,6 +625,22 @@ const native = (() => {
     if(kind!=='vector'&&(args.length<1||args.length>2))arity(args.length);
     return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null,args.length);
   };
+  // memoize calls its callback through Clojure apply, whose fixed function
+  // receiver is the function itself. Native variadic dispatchers preserve
+  // applyTo's null receiver in immutable engine metadata, so they can publish
+  // without a mutable JavaScript arity property record.
+  const applyArgs = (f,args) => {
+    const value=val(f),kind=__rt.formKind(value);
+    if(kind!==null)return invoke(f,...args);
+    if(value.cljs$lang$applyTo){
+      return args.length<=value.cljs$lang$maxFixedArity
+        ?value.call(null,...args):value.cljs$lang$applyTo(list(args));
+    }
+    const receiver=__rt.fnApplyReceiver(value);
+    if(args.length>20)return value.apply(receiver,args);
+    const entry=value['cljs$core$IFn$_invoke$arity$'+args.length];
+    return entry?entry.call(receiver,...args):value.call(receiver,...args);
+  };
   const unsupported = name => function(){throw new Error('unsupported operation: native macro runtime '+name);};
   // Printing walks native seqs incrementally. In particular, a bounded print
   // must not realize the whole lazy input. All strings remain exact UTF-16.
@@ -1653,7 +1669,7 @@ const native = (() => {
       // A cold helper can park here. The saved VM continuation resumes
       // after it; exceptions leave the cache untouched. Read the table
       // again after the call to preserve entries added by recursive calls.
-      const result=invoke(f,...args);
+      const result=applyArgs(f,args);
       store(cache,__rt.formVector(f,__rt.cljAssoc(__rt.formNth(__rt.atomLoad(cache),1),key,result)));
       return result;
     },

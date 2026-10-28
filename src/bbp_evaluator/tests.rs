@@ -1647,7 +1647,10 @@ fn memoized_functions_retain_shared_results_across_gc_and_release_their_cache() 
         let cx = producer.cx().unwrap();
         let values = cx.values.borrow();
         let result = s.local(&values[&result.index]).unwrap();
-        (s.persist(result), s.downgrade(s.nth(result, 1).unwrap()))
+        (
+            s.persist(s.nth(result, 0).unwrap()),
+            s.downgrade(s.nth(result, 1).unwrap()),
+        )
     });
     shared.0.runtime.publish(&published).unwrap();
     producer.release(result).unwrap();
@@ -1659,17 +1662,14 @@ fn memoized_functions_retain_shared_results_across_gc_and_release_their_cache() 
     let input = consumer.id().unwrap();
     consumer.request(1, input, published.clone()).unwrap();
     let f = consumer
-        .evaluate_unit(
-            "rt => values =>
-        __rt.nth(values, 0)(__rt.formList(42)) === __rt.nth(values, 1)
-    ",
-        )
+        .evaluate_unit("rt => f => f(__rt.formList(42))")
         .unwrap();
     let result = consumer.call(f, &[input]).unwrap();
-    assert!(matches!(
-        consumer.cx().unwrap().values.borrow()[&result.index].view(),
-        ValueView::Bool(true)
-    ));
+    {
+        let expected = weak.upgrade().unwrap();
+        let cx = consumer.cx().unwrap();
+        assert!(cx.values.borrow()[&result.index].same_object(&expected));
+    }
     for value in [result, f, input] {
         consumer.release(value).unwrap();
     }

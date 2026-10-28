@@ -245,6 +245,8 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::CljMeta),
     form_op(FormOp::CljWithMeta),
     form_op(FormOp::CljWithExportedMeta),
+    form_op(FormOp::FnApplyNull),
+    form_op(FormOp::FnApplyReceiver),
     form_op(FormOp::CljConcat),
     form_op(FormOp::CljConcatAll),
     form_op(FormOp::CljZipMap),

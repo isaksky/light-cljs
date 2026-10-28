@@ -2887,6 +2887,15 @@ Zero and variadic arguments work, separate calls to `memoize` have independent
 caches, and exceptions leave no entry. Recursive calls retain entries installed
 by the inner call before adding the outer result.
 
+Callbacks preserve Clojure `apply` receivers: fixed and overloaded fixed
+functions receive themselves, while variadic dispatchers retain the null
+receiver of their legacy `applyTo` path. Native variadic functions carry that
+convention in immutable engine metadata rather than mutable JavaScript arity
+properties. Differential coverage includes receiver reads, zero/variadic
+calls, invalid arities, cold helpers and sequence application across the
+20-argument boundary. The GC retention test roots only the memoized function;
+its cached result has only a weak witness until the consumer retrieves it.
+
 Ordinary native callbacks use consuming-task runtime reads and shareable arity
 dispatchers, including inline callbacks passed through first-class constructors.
 The memoized wrapper captures only its atom and resolves operations through the

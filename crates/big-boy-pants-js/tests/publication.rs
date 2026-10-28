@@ -722,6 +722,39 @@ fn closures_using_builtin_globals_publish() {
 /// immutable: no task can give it properties or a prototype any more.
 /// JavaScript source is a synthetic fixture, not light-cljs output.
 #[test]
+fn compiler_apply_receiver_metadata_publishes_without_changing_direct_calls() {
+    let rt = Runtime::new();
+    let source = compile_script(
+        "apply-receiver",
+        "const payload = __rt.vector(42);
+         __rt.fnApplyNull(function(value) {
+             'use strict'; return __rt.vector(this, value, payload);
+         })",
+    )
+    .unwrap();
+    let task = rt.spawn(&source, &[]).unwrap();
+    let function = complete(task.run().unwrap());
+    rt.publish(&function).unwrap();
+    drop(task);
+    rt.collect().unwrap();
+
+    let call = compile_function(
+        "function check(f) {
+            if (__rt.fnApplyReceiver(f) !== null) throw new Error('apply receiver');
+            const value = f.call(7, 5);
+            const ordinary = function() {};
+            return __rt.nth(value, 0) === 7 && __rt.nth(value, 1) === 5
+                && __rt.nth(__rt.nth(value, 2), 0) === 42
+                && __rt.fnApplyReceiver(ordinary) === ordinary;
+        }",
+    )
+    .unwrap();
+    let task = rt.spawn(&call, &[&function]).unwrap();
+    let result = thread::scope(|t| t.spawn(|| complete(task.run().unwrap())).join().unwrap());
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+#[test]
 fn function_own_properties_follow_publication_rule() {
     let rt = Runtime::new();
     let run = |src: &str| {

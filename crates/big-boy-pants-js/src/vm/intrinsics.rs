@@ -519,6 +519,12 @@ fn form_op(
     if op == FormOp::AtomAux {
         return atom::auxiliary(heap, args[0].clone(), |v| v).map_err(Fault::from);
     }
+    if op == FormOp::FnApplyNull {
+        return super::function::apply_null(heap, args[0].clone());
+    }
+    if op == FormOp::FnApplyReceiver {
+        return Ok(super::function::apply_receiver(heap, args[0].clone()));
+    }
     match clj_op(heap, op, &args) {
         Ok(Some(result)) => Ok(result),
         Ok(None) => Ok(strict_form_op(heap, host, op, args)?),
@@ -743,6 +749,8 @@ fn strict_form_op(
         }
         // Dispatched by `form_op` before reaching here.
         FormOp::CljTruth
+        | FormOp::FnApplyNull
+        | FormOp::FnApplyReceiver
         | FormOp::InitializerSlot
         | FormOp::InitializerSlotGet
         | FormOp::InitializerSlotSet

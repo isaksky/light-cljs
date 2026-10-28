@@ -190,6 +190,9 @@ pub(crate) struct FunctionObject {
     /// Set once by a computed literal definition before the closure escapes.
     /// Per-closure metadata; executable code remains shared and immutable.
     pub(crate) computed_name: Option<JsString>,
+    /// Compiler calling convention: Clojure variadic dispatchers apply with
+    /// a null receiver. Immutable from allocation, without JS own properties.
+    pub(crate) apply_null_receiver: bool,
     pub(crate) reservation: Option<Arc<crate::heap::budget::ByteReservation>>,
 }
 
@@ -204,9 +207,44 @@ impl FunctionObject {
             properties: None,
             home_object: None,
             computed_name: None,
+            apply_null_receiver: false,
             reservation: None,
         }
     }
+}
+
+/// Copy a compiler dispatcher with its immutable apply convention. The
+/// original's captures, code and ordinary property/publication rules remain
+/// intact; no task-owned arity property record is needed.
+pub(crate) fn apply_null(heap: &Heap, value: Value) -> Result<Value, Fault> {
+    let Value::Object(id) = value else {
+        return Err(Fault::TypeError("expected a function".into()));
+    };
+    let mut function = heap
+        .read(id, |object| match object {
+            HeapObject::Function(f) => Some(f.clone()),
+            _ => None,
+        })
+        .flatten()
+        .ok_or_else(|| Fault::TypeError("expected a function".into()))?;
+    function.apply_null_receiver = true;
+    heap.alloc(HeapObject::Function(function))
+        .map(Value::Object)
+        .ok_or(Fault::HeapLimit)
+}
+
+/// The receiver used by Clojure `apply`, including a native variadic
+/// dispatcher whose legacy equivalent has `cljs$lang$applyTo`.
+pub(crate) fn apply_receiver(heap: &Heap, value: Value) -> Value {
+    if let Value::Object(id) = value
+        && heap.read(
+            id,
+            |object| matches!(object, HeapObject::Function(f) if f.apply_null_receiver),
+        ) == Some(true)
+    {
+        return Value::Null;
+    }
+    value
 }
 
 impl Trace for FunctionObject {

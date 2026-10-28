@@ -6031,7 +6031,13 @@ impl<'a> Emitter<'a> {
         self.output.push_str(";\n");
         self.arity_properties(&function, &entries, methods, macro_function, true);
         self.indentation();
-        writeln!(self.output, "return {function};").unwrap();
+        if self.native_forms && !macro_function && methods.iter().any(|m| m.rest.is_some()) {
+            // Preserve applyTo's null receiver without mutable JS arity
+            // properties that would prevent the function from publishing.
+            writeln!(self.output, "return __rt.fnApplyNull({function});").unwrap();
+        } else {
+            writeln!(self.output, "return {function};").unwrap();
+        }
         self.indent -= 1;
         self.indentation();
         self.output.push_str("})()");

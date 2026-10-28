@@ -4900,6 +4900,36 @@ fn memoize_uses_argument_equality_and_caches_falsey_results() {
 }
 
 #[test]
+fn memoize_preserves_apply_receiver_semantics() {
+    assert_native_matches_legacy(
+        r#"(defn apply-variadic [x & xs]
+            (this-as receiver [(fn? receiver) x (vec xs)]))
+          (defmacro probe []
+          (let [fixed (memoize (fn self [] (this-as receiver (identical? self receiver))))
+                multi (memoize (fn
+                  ([] (this-as receiver (fn? receiver)))
+                  ([x] (this-as receiver [(fn? receiver) x]))))
+                mixed (memoize (fn
+                  ([] (this-as receiver (fn? receiver)))
+                  ([x & xs] (this-as receiver [(fn? receiver) x (vec xs)]))))
+                variadic (memoize (fn [x & xs]
+                  (this-as receiver [(fn? receiver) x (vec xs)])))
+                zero (memoize (fn [& xs] (this-as receiver [(fn? receiver) (vec xs)])))
+                helper (memoize apply-variadic)
+                raw (memoize (js* "(function self(...xs) { return this === self && xs.length; })"))]
+            (list 'quote [(fixed) (apply fixed '()) (multi) (apply multi [:x])
+                          (try (multi 1 2) (catch :default e (.-message e)))
+                          (mixed) (apply mixed [:x]) (apply mixed :x '(1 2))
+                          (zero) (apply zero '(1 2 3))
+                          (variadic 1) (apply variadic 2 '(3 4))
+                          (apply variadic (range 24)) (helper 5 6) (raw)
+                          (apply raw (range 20)) (apply raw (range 21)) (apply raw (range 24))])))
+          (js/console.log (pr-str (probe)))"#,
+        "[true true true [true :x] \"Invalid arity: 2\" false [false :x []] [false :x [1 2]] [false []] [false [1 2 3]] [false 1 []] [false 2 [3 4]] [false 0 [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23]] [false 5 [6]] 0 20 21 24]\n",
+    );
+}
+
+#[test]
 fn native_zipmap_matches_legacy_collection_and_realization_semantics() {
     assert_native_matches_legacy(
         r#"(defmacro probe []

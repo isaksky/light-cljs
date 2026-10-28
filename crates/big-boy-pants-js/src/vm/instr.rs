@@ -1556,11 +1556,15 @@ pub enum FormOp {
     CljPeek = 90,
     /// v meta → v' with explicit nil metadata retained for compiler export.
     CljWithExportedMeta = 91,
+    /// function → copy with the compiler's null apply receiver convention.
+    FnApplyNull = 92,
+    /// value → its Clojure apply receiver (itself or null).
+    FnApplyReceiver = 93,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 92] = [
+    pub const ALL: [FormOp; 94] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1653,6 +1657,8 @@ impl FormOp {
         FormOp::Sequence,
         FormOp::CljPeek,
         FormOp::CljWithExportedMeta,
+        FormOp::FnApplyNull,
+        FormOp::FnApplyReceiver,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1664,6 +1670,8 @@ impl FormOp {
     pub const fn arity(self) -> usize {
         match self {
             FormOp::Kind
+            | FormOp::FnApplyNull
+            | FormOp::FnApplyReceiver
             | FormOp::CljCallable
             | FormOp::Sequence
             | FormOp::CljPeek
@@ -1759,6 +1767,8 @@ impl FormOp {
     /// The `__rt` intrinsic name.
     pub const fn intrinsic(self) -> &'static str {
         match self {
+            FormOp::FnApplyNull => "fnApplyNull",
+            FormOp::FnApplyReceiver => "fnApplyReceiver",
             FormOp::InitializerSlot => "initializerSlot",
             FormOp::InitializerSlotGet => "initializerSlotGet",
             FormOp::InitializerSlotSet => "initializerSlotSet",
