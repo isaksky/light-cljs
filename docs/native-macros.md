@@ -2916,7 +2916,7 @@ inside that stream without repeating any callback or generated-name effect.
 ### Penpot progression and remaining boundary
 
 **`app.render` builds natively; `app.main` does not yet build.** Native-only
-release source `b879bba7` includes the bootstrap dependency `04daaa28`, memoize
+release source `bdbedcd4` includes the bootstrap dependency `04daaa28`, memoize
 and zipmap. Both entries were run at jobs 1 with the five absolute read-only
 Penpot roots, no cache, and all budgets in the reproduction above. The reduced
 memoized-gensym release macro also compiles and prints `true`.
@@ -2947,3 +2947,22 @@ A namespace requiring `clojure.string` and expanding
 `(str/escape "àéx" {"à" "a" "é" "e"})` also fails natively and prints `aex`
 with V8. No Penpot source was changed. Since `app.main` has no native output,
 there is no successful native/V8 main-build comparison or timing claim.
+
+### Verification
+
+The final combined native/QuickJS library and `bbp_macros` suites pass 366 and
+130 tests, with their two existing ignored stress cases. Both commands use
+`LIGHT_CLJS_STRESS_SEEDS=12`, `CARGO_BUILD_JOBS=3` and three test workers. This
+includes byte-identical QuickJS/native emitted applications at jobs 1/2/4/8,
+held initializer lanes, generated names and metadata, exceptions, independent
+closures, structural hash-map keys, aggregate memory limits and cross-task GC.
+The rebase onto master `01175afc` adds documentation only relative to dependency
+`04daaa28`; source, tests and build inputs are byte-identical to the release
+build `b879bba7`, now represented by production commit `bdbedcd4`.
+
+An extra unrestricted native-only library run before that dependency integration
+hit 27 legacy-engine/bootstrap comparison failures. All 27 test names and error
+signatures match a reproduced `b73d0059` baseline on the same toolchain, after
+normalizing task/source IDs. Dedicated native-only evaluator and BBP integration
+targets exercise the supported configuration; unrestricted legacy-comparison
+library tests need the QuickJS feature.
