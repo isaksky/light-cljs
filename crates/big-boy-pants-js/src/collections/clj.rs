@@ -495,7 +495,7 @@ pub(crate) fn seq(heap: &Heap, v: &Value) -> Result<Value> {
         return vector_seq(heap, items, &own);
     }
     // A compiler queue is sequential, but its PersistentQueueSeq view is
-    // unchunked even when the positional vector payload spans many chunks.
+    // uncounted and unchunked even when the payload spans many vector chunks.
     if let Shape::Form(FormKind::CompilerLiteral, f) = &head_shape
         && let FormBody::CompilerLiteral { tag, payload, .. } = f.body()
         && tag == "queue"
@@ -503,6 +503,7 @@ pub(crate) fn seq(heap: &Heap, v: &Value) -> Result<Value> {
         return list_or_nil(
             heap,
             &collection_items(heap, "seq", payload)?.unwrap_or_default(),
+            false,
         );
     }
     match collection_items(heap, "seq", &own)? {

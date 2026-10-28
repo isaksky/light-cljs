@@ -2551,6 +2551,7 @@ fn compiler_queue_seq_is_unchunked_and_retains_payload_leaves_across_gc() {
         "function check(values) {
             const queue = __rt.formNth(values, 0), s = __rt.formNth(values, 1), payload = __rt.formNth(values, 2);
             if (__rt.cljIsList(s) || !__rt.cljIsSequential(s) || !__rt.cljIsSeq(s) || __rt.cljChunkedSeq(s)) throw 'queue seq markers';
+            if (__rt.cljDispatch(__rt.map('list', true, 'empty-list', true, 'sequence', true), s) !== null) throw 'queue seq countedness';
             if (__rt.cljCount(s) !== 40 || __rt.cljMeta(s) !== null) throw 'queue seq count/meta';
             if (__rt.cljFirst(s) !== __rt.formNth(payload, 0) || __rt.formLiteralPayload(queue) !== payload) throw 'payload identity';
             if (!__rt.formEquals(s, payload) || __rt.formHash(s) !== __rt.formHash(payload)) throw 'queue seq equality/hash';
