@@ -8020,6 +8020,10 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
     // legacy oracle; no native-only constructors appear in this fixture.
     let rows = [
         ("nil", "nil"),
+        ("atom", "(atom 1)"),
+        ("reduced", "(reduced 1)"),
+        ("keyword", ":a"),
+        ("symbol", "'a"),
         ("scalar", "42"),
         ("host-list-marker", "\"host\""),
         ("empty-list", "'()"),
@@ -8093,6 +8097,8 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
         ),
         ("map-entry-conj", "(conj (first (seq {:a 1})) 2)"),
         ("list-marker", "(ListMarker.)"),
+        ("plain-marker", "(PlainMarker.)"),
+        ("pending-marker", "(PendingMarker.)"),
         ("seq-marker", "(SeqMarker.)"),
         ("sequential-marker", "(SequentialMarker.)"),
         ("coll-marker", "(CollMarker.)"),
@@ -8109,6 +8115,8 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
         root.path().join("values.cljs"),
         r#"(ns values)
       (deftype ListMarker [] IList)
+      (deftype PlainMarker [])
+      (deftype PendingMarker [] IPending (-realized? [_] false))
       (deftype SeqMarker [] ISeq (-first [_] 1) (-rest [_] '()))
       (deftype SequentialMarker [] ISequential)
       (deftype CollMarker [] ICollection (-conj [this _] this))
@@ -8137,7 +8145,7 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
     "#,
     )
     .unwrap();
-    std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker MutableMarker StackMarker load-sequences classify demanded]]))
+    std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker PlainMarker PendingMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker MutableMarker StackMarker load-sequences classify demanded]]))
       (defmacro probe [input]
         (let [seen (atom []) unforced (lazy-seq (swap! seen conj :unexpected) (throw (js/Error. "forced")))
               forced (lazy-seq '(1)) _ (first forced)
@@ -8176,52 +8184,73 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
         "(ns app (:require [a] [b])) (js/console.log (pr-str [a/result b/result]))",
     )
     .unwrap();
-    let build = |native, jobs| {
-        let mut host = MacroHost::new();
-        if native {
-            host.use_native_macros();
-        }
-        let mut stats = light_cljs::CompileStats::new();
-        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
-            "app",
-            &[root.path().to_path_buf()],
-            &mut host,
-            Default::default(),
-            &mut Vec::new(),
-            light_cljs::compiler::EntryRecorders {
-                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
-                stats: Some(&mut stats),
-                ..Default::default()
-            },
+    let baseline = std::fs::read_to_string(root.path().join("values.cljs")).unwrap();
+    for marker in [
+        "",
+        "IList",
+        "ISeq",
+        "ISequential",
+        "ICollection",
+        "IVector",
+        "IMapEntry",
+    ] {
+        let extension = if marker.is_empty() {
+            String::new()
+        } else {
+            format!("(extend-type default {marker})")
+        };
+        std::fs::write(
+            root.path().join("values.cljs"),
+            format!("{baseline}\n{extension}"),
         )
-        .unwrap_or_else(|e| panic!("native={native}, jobs={jobs}: {e}"));
-        if native {
-            assert!(stats.native_helpers.published > 0, "{stats:?}");
-            assert_eq!(stats.native_helpers.per_task, 0, "{stats:?}");
-            assert!(stats.native_helpers.waits > 0, "{stats:?}");
+        .unwrap();
+        let build = |native, jobs| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            let mut stats = light_cljs::CompileStats::new();
+            let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+                "app",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                light_cljs::compiler::EntryRecorders {
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    stats: Some(&mut stats),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("native={native}, jobs={jobs}: {e}"));
+            if native {
+                assert!(stats.native_helpers.published > 0, "{stats:?}");
+                assert_eq!(stats.native_helpers.per_task, 0, "{stats:?}");
+                assert!(stats.native_helpers.waits > 0, "{stats:?}");
+            }
+            emit_js(&program)
+        };
+        let mut previous = None;
+        for jobs in [1, 2, 4, 8] {
+            let native = build(true, jobs);
+            let output = program_output(&native);
+            assert!(output.contains(":realize"));
+            assert!(!output.contains(":unexpected"));
+            assert!(output.contains("[true {:tag true} nil]"), "{output}");
+            assert!(
+                output.contains("[true true true :found {:tag true}]"),
+                "{output}"
+            );
+            if let Some(previous) = &previous {
+                assert_eq!(&native, previous, "jobs={jobs}");
+            }
+            #[cfg(feature = "quickjs")]
+            {
+                let legacy = build(false, jobs);
+                assert_eq!(output, program_output(&legacy), "jobs={jobs}");
+                assert_eq!(native, legacy, "jobs={jobs}");
+            }
+            previous = Some(native);
         }
-        emit_js(&program)
-    };
-    let mut previous = None;
-    for jobs in [1, 2, 4, 8] {
-        let native = build(true, jobs);
-        let output = program_output(&native);
-        assert!(output.contains(":realize"));
-        assert!(!output.contains(":unexpected"));
-        assert!(output.contains("[true {:tag true} nil]"), "{output}");
-        assert!(
-            output.contains("[true true true :found {:tag true}]"),
-            "{output}"
-        );
-        if let Some(previous) = &previous {
-            assert_eq!(&native, previous, "jobs={jobs}");
-        }
-        #[cfg(feature = "quickjs")]
-        {
-            let legacy = build(false, jobs);
-            assert_eq!(output, program_output(&legacy), "jobs={jobs}");
-            assert_eq!(native, legacy, "jobs={jobs}");
-        }
-        previous = Some(native);
     }
 }

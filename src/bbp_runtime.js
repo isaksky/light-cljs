@@ -12,6 +12,10 @@ const decl = (() => {
   // Native lookup can resolve installed structs without repeating JavaScript
   // declaration probes. This map belongs to the task, just like views/tables.
   let declared = __rt.map();
+  // All six collection predicates use partition zero. A declared mask in
+  // that partition blocks host/default fallback for a missing core marker,
+  // as protocolMasks/satisfies in the shared runtime do.
+  const partition0 = new Set('IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable ISequential IList IRecord IReversible ISorted IPrintWithWriter IWriter'.split(' '));
   let order = 0, frontier = Infinity, version = 0;
   const table = (key, name, arity) => {
     let t = tables.get(key);
@@ -47,6 +51,7 @@ const decl = (() => {
     if (key === 'js/Promise' && specs.some(spec => spec[0].startsWith('Object/')))
       throw new Error('unsupported operation: native Promise Object extension');
     const overlay = order === 0 ? ++overlays : 0, info = views.get(key);
+    if (info !== undefined && specs.some(spec => partition0.has(protocolOf(spec[0],spec[1])))) info.partition0 = true;
     for (const [name, arity, fn, , variadic, member, direct] of specs) {
       const object = name.startsWith('Object/');
       const n = object && variadic != null ? -1 : arity;
@@ -192,6 +197,17 @@ const decl = (() => {
     const direct = directKey(x);
     return direct !== null && __rt.getOr(t.map, direct, null) !== null;
   };
+  const ownedKinds = new Set(['keyword','symbol','list','vector','map','record','set','lazy-seq','cons','reduced']);
+  const predicate = (key, x, owned = false) => {
+    if (implementsDirectly(key,x)) return true;
+    const value=__rt.formValue(x),kind=__rt.formKind(value);
+    if (owned || ownedKinds.has(kind) || __rt.cljIsAtom(x)
+        || kind==='compiler-literal' && __rt.formName(value)==='queue') return false;
+    const ty=__rt.structTypeOf(x),info=views.get(ty!==null?ty:
+      kind===null && value!==null && (typeof value==='object'||typeof value==='function')?value.__lightNativeType:null);
+    if (info?.record || info?.partition0) return false;
+    return satisfies(key,x);
+  };
   // Owned core implementations precede object/default extensions. Explicit
   // extensions of the receiver's native type still replace that implementation.
   const coreLookup = (t, x, builtin, directOnly = false) => {
@@ -280,7 +296,7 @@ const decl = (() => {
     const record = __rt.formKind(__rt.structNew(ty)) === 'record';
     // Keep one compiler-munged member per declared field: multiple fields
     // may share a member, and property enumeration may reorder names.
-    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), mutable, record});
+    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), mutable, record, partition0: false});
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
       view.__lightNativeType = ty;
@@ -364,7 +380,7 @@ const decl = (() => {
     const info = views.get(x.__lightNativeType);
     return info?.mutable && info.record ? info : null;
   };
-  return {extend, method, satisfies, implementsDirectly, type, viewOf, register, enter, leave, coreKeys, mutableRecord,
+  return {extend, method, satisfies, implementsDirectly, predicate, type, viewOf, register, enter, leave, coreKeys, mutableRecord,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
     coreMethod:resolveCore,
@@ -474,11 +490,11 @@ const native = (() => {
     if ((op==='formEquals'||op==='formHash') && __rt.formKind(x)===null) return null;
     switch (op) {
       case 'cljPeek': return decl.coreLookup(table,x,record);
-      case 'cljIsList': return x => decl.satisfies('IList',x);
-      case 'cljIsSeq': return x => cursor!==undefined || val(x)!=null && decl.satisfies('ISeq',x);
-      case 'cljIsSequential': return x => cursor!==undefined || decl.satisfies('ISequential',x);
-      case 'cljIsColl': return x => cursor!==undefined || val(x)!=null && decl.satisfies('ICollection',x);
-      case 'cljIsVector': return x => decl.satisfies('IVector',x);
+      case 'cljIsList': return x => decl.predicate('IList',x,cursor!==undefined||multi.is(x));
+      case 'cljIsSeq': return x => cursor!==undefined || val(x)!=null && decl.predicate('ISeq',x,multi.is(x));
+      case 'cljIsSequential': return x => cursor!==undefined || decl.predicate('ISequential',x,multi.is(x));
+      case 'cljIsColl': return x => cursor!==undefined || val(x)!=null && decl.predicate('ICollection',x,multi.is(x));
+      case 'cljIsVector': return x => decl.predicate('IVector',x,cursor!==undefined||multi.is(x));
       case 'cljIsMapEntry': return x => decl.implementsDirectly('IMapEntry',x);
       case 'formEquals': {
         const equiv = decl.coreLookup(table, x, record);
