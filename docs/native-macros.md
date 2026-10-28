@@ -2912,3 +2912,38 @@ metadata, nil/false values, larger maps, unequal/empty inputs, first-class calls
 and exact lazy realization effects. The pooled memoize fixture now obtains its
 metadata through `zipmap` over a lazy value stream; the cold helper suspends
 inside that stream without repeating any callback or generated-name effect.
+
+### Penpot progression and remaining boundary
+
+**`app.render` builds natively; `app.main` does not yet build.** Native-only
+release source `b879bba7` includes the bootstrap dependency `04daaa28`, memoize
+and zipmap. Both entries were run at jobs 1 with the five absolute read-only
+Penpot roots, no cache, and all budgets in the reproduction above. The reduced
+memoized-gensym release macro also compiles and prints `true`.
+
+After passing both missing core services, `app.main` exits 1 with this first
+non-trivial failure:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/plugins/flags.cljs:37:3: macro expansion: while expanding app.util.object/add-properties!: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/plugins/flags.cljs:37:3: macro app.util.object/add-properties!: big-boy-pants-js: TypeError: undefined is not a function; definition /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/util/object.cljc:151:1 (bytes 1094..1786)
+```
+
+The property macro uses `cuerdas.core/slug`, whose `clojure.string/escape` call
+passes its transliteration map to raw JavaScript `cmap.call(null, ch)`
+(`src/compiler_libraries/clojure/string.cljs:130`). Clojure invocation of native
+maps works; the raw JavaScript property access has no callable adapter. This
+is a different interop layer, tracked by the single follow-up light-cljs-558.
+The reduced macro below reproduces the TypeError natively; the V8 compiler
+emits an application that prints `y`:
+
+```clojure
+(defmacro m []
+  (let [f {"x" "y"}]
+    (js* "~{}.call(null, 'x')" f)))
+(js/console.log (m))
+```
+
+A namespace requiring `clojure.string` and expanding
+`(str/escape "àéx" {"à" "a" "é" "e"})` also fails natively and prints `aex`
+with V8. No Penpot source was changed. Since `app.main` has no native output,
+there is no successful native/V8 main-build comparison or timing claim.
