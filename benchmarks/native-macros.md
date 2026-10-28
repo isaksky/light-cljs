@@ -2278,3 +2278,81 @@ compiler roots as guarded native cells. That would need its own evidence;
 this work does not demonstrate the numerical target. This is the requested
 last attempt in the 501 → 515 → 550 chain, and no further overhead follow-up
 pellet is created.
+
+### Deferred Proxy read corrections on the initializer-slot base
+
+The review-fix baseline is `94373a52`, the implementation rebased onto
+initializer-slot master `14d74136`; corrected production source is `6df98796`.
+The rebase retains the initializer slots and appends the three call/root
+selectors after them. Unbound root accessors can replace their own descriptor
+while suspended. Ordinary/pending root getters and deferred ready-product
+reads now run through the original root Proxy, including its final descriptor
+invariant check. Plain ready-product data reads retain the direct path.
+
+The new engine fixtures are checked in Node using ordinary property reads,
+`Reflect.apply` and a no-op demand hook, then run with one-instruction budgets,
+GC at every yield/wait and initialized 64 KiB workers. Twelve suspended root
+cases cover ordinary/pending getters, ready product accessors/Proxies, and
+descriptor changes to conflicting/matching fixed data or getterless accessors.
+Proxy callees suspend in `get('call')` and `apply`, retaining the early member,
+original receiver and operands after a replacement. Compiler rows compare
+against QuickJS at jobs 1/2/4/8. The root initializer row emits `1` with the
+fresh pre-fix native binary and `"TypeError"` with both corrected native and
+QuickJS.
+
+Fresh locked release pairs use the same host/toolchain and build settings as
+above, cleaning the engine release package between variants/trees. SHA-256:
+
+| Binary | SHA-256 |
+| --- | --- |
+| before native | `fe1ad896d9d1dbbea7323820420853dd4e545e24709521f8098e1cdc735078f3` |
+| before default V8 | `68ffb579fc48b5a897c20a5e5850992e3f2300f426f4ead70698df8d93cd70b1` |
+| after native | `c32094a9a02a59021bf48407f576f79067039dc19ac8242b253b18d209f27d54` |
+| after default V8 | `a8f64f9352b243bd74bb15e344e33ef8e7dc8a8ef49bb53d171e9ae7603e6ec2` |
+
+```sh
+bb benchmarks/native-macros-k.bb target/550-review-protocol \
+  --workload protocol --runs 9 --n 0,400 \
+  v8=target/550-review-v8-after v8-before=target/550-review-v8-before \
+  before=target/550-review-native-before native=target/550-review-native-after
+```
+
+The unchanged harness again discards one warmup and checks identical Node
+output. Analysis median [range], ms; k uses the fresh after V8 control:
+
+| Backend | n=0 | n=400 | k at 400 |
+| --- | --- | --- | ---: |
+| before V8 | 24.7 [24.0–24.9] | 32.3 [31.9–34.0] | – |
+| after V8 | 24.7 [24.3–25.2] | 32.9 [32.0–35.7] | 1.0 |
+| before native | 47.3 [46.2–47.7] | 81.4 [79.0–82.3] | 4.2 |
+| after native | 47.5 [46.2–47.7] | 80.5 [78.9–81.7] | 4.0 |
+
+This shows no regression from the correctness fix. The V8 incremental control
+is larger than in the earlier full-size run; this small-size repeat does not
+replace its k=5.5/5.0/6.0/8.4 results or resolve the larger-size target miss.
+The earlier CPU frames and representation-change assessment remain applicable;
+no further overhead follow-up is opened. No local or peer build/suite overlaps
+timing. Load is 3.78/5.80/5.57 → 3.96/5.78/5.56 (1/5/15 minutes).
+
+Three alternating-order paired default V8 generated-200k builds repeat
+`/usr/bin/time -lp BINARY release bench --no-cache --jobs 1 --stats` on the
+same seed-42 fixture. Wall medians [range] are **7.28 [7.22–7.40] s before
+and 7.34 [7.20–7.35] s after**, a 0.8% difference with overlapping ranges;
+user CPU medians are 7.45/7.51 s. There is no demonstrated slowdown. The
+Babashka oracle and all six applications print `484264`, and every main module
+retains SHA-256 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+No local or peer build/suite overlaps timing. Load is
+3.36/5.49/5.46 → 3.04/5.07/5.31.
+
+Fresh validation on `6df98796` passes 2,177 engine tests and seven doctests,
+all 127 native tests with 12 stress seeds, and all 498 combined native/QuickJS
+library, macro, reader, proxy and cache tests with one stress seed. Existing
+protocol fixtures and differential assertions are unchanged, including the
+warm Promise-precedence rows at jobs 1/2/4/8. Compiler/engine formatting,
+strict default-feature all-target Clippy and engine-free library/binary Clippy
+pass. Strict engine/native checks retain the eight library/nine engine-test
+baseline diagnostics; both all-target checks pass allowing only `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` after
+`-D warnings`. The engine-free all-target attempt stops at the existing
+`unused_enumerate_index` diagnostic at `tests/execution.rs:1772`, matching the
+earlier log and unchanged test source.
