@@ -870,7 +870,7 @@ impl Heap {
     /// kinds may be changed: transient builders, binding cells and ordinary
     /// objects (each by its owning task's run), a realm intrinsic while its
     /// realm is being built, before anything can reach it (`crate::realm`),
-    /// and, in tests, native payloads. A frozen object is never lent
+    /// and task-owned native payloads. A frozen object is never lent
     /// mutably: `f` inspects a private copy (to reject the change) and
     /// anything it writes there is discarded ([`storage`]).
     #[inline]

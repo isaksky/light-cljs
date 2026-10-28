@@ -198,6 +198,15 @@
 //!
 //! # Rooting
 //!
+//! `initializerSlot(unit, name)` creates private task-owned compiler storage;
+//! `initializerSlotGet(slot, field)` reads unit/name/state/value/defined at
+//! fields 0..4. `initializerSlotSet(slot, field, value)` writes state (0..3),
+//! value (any JavaScript value), or defined (boolean) at fields 2/3/4 and
+//! returns the value. Invalid slots/fields are TypeErrors; a foreign task's
+//! access is ForeignObject. Slots are never publishable, trace all three
+//! value edges and charge their fixed boxed body to the aggregate heap budget.
+//! Their public compiler roots and getter properties remain ordinary objects.
+//!
 //! Every intrinsic reads its operands in place and pops them only after its
 //! result exists, so operands stay rooted by the task's frame while the
 //! intrinsic allocates. Each call happens inside a run, a registered heap
@@ -264,6 +273,18 @@ pub(crate) fn step(
 ) -> Result<(), Fault> {
     let caller = state.diag.task;
     match instr {
+        Instr::FormOp(
+            op
+            @ (FormOp::InitializerSlot | FormOp::InitializerSlotGet | FormOp::InitializerSlotSet),
+        ) => {
+            let ops = state.operands();
+            let start = ops
+                .len()
+                .checked_sub(op.arity())
+                .ok_or(Fault::Internal("operand stack underflow"))?;
+            let value = super::initializer::operation(heap, caller, op, &ops[start..])?;
+            state.replace(op.arity(), value)?;
+        }
         Instr::NewVector(n) => {
             let n = usize::from(n);
             let ops = state.operands();
@@ -662,6 +683,9 @@ fn strict_form_op(
         }
         // Dispatched by `form_op` before reaching here.
         FormOp::CljTruth
+        | FormOp::InitializerSlot
+        | FormOp::InitializerSlotGet
+        | FormOp::InitializerSlotSet
         | FormOp::AtomAux
         | FormOp::CljCoreResolver
         | FormOp::CljGet2

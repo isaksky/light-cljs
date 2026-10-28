@@ -38,6 +38,7 @@ pub mod executable;
 pub(crate) mod frames;
 pub(crate) mod function;
 pub(crate) mod generator;
+pub(crate) mod initializer;
 pub mod instr;
 pub(crate) mod integrity;
 pub mod intrinsics;

@@ -263,6 +263,9 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::RecordFromMap),
     form_op(FormOp::CljDispatch),
     form_op(FormOp::CljProtocolLookup),
+    form_op(FormOp::InitializerSlot),
+    form_op(FormOp::InitializerSlotGet),
+    form_op(FormOp::InitializerSlotSet),
     form_op(FormOp::CljIsAtom),
     // Lazy and chunked sequences (light-cljs-479).
     form_op(FormOp::LazySeq),

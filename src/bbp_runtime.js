@@ -1656,12 +1656,14 @@ const native = (() => {
 })();
 globalThis.__lightNativeRuntime=native;
 const roots=new Map();
+// Private task-owned slots: unit/name/state/value/defined are fields 0..4.
+// Full JS values stay traced; public roots and saved getters remain ordinary.
 // A bundle replaces an unavailable declaration's getter. Remember that it
 // defines the name, retaining the unit record for later ordinary registrations.
 globalThis.__lightInstallCompilerProduct=(name,read)=>{
   const previous=roots.get(name);
-  if(previous!==undefined)previous.defined=true;
-  else roots.set(name,{unit:null,defined:true});
+  if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);
+  else {const slot=__rt.initializerSlot(null,name);__rt.initializerSlotSet(slot,4,true);roots.set(name,slot);}
   Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:read});
 };
 // Each invocation of this runtime belongs to one VM task. Overlay snapshots
@@ -1690,7 +1692,7 @@ globalThis.__lightSetCompilerRoot=(name,value)=>{
 globalThis.__lightCompilerRootKept=name=>{
   const bound=bindingOverlays.has(name)&&bindingOverlays.get(name)!==undefined;
   if(decl.productOwner(name)!==null)return decl.keptProduct(name)||bound;
-  if(roots.has(name)){const root=roots.get(name);return root.unit!==null||root.defined===true||bound;}
+  if(roots.has(name)){const root=roots.get(name);return __rt.initializerSlotGet(root,0)!==null||__rt.initializerSlotGet(root,4)===true||bound;}
   return Object.getOwnPropertyDescriptor(globalThis.__lightCompilerRoots,name)!==undefined||bound;
 };
 globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
@@ -1699,7 +1701,7 @@ globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
   if(initialize===null)return undefined;
   const value=initialize();
   if(bindingOverlays.has(name))bindingOverlays.set(name,value);
-  else {const previous=roots.get(name);if(previous!==undefined)previous.defined=true;Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,writable:true,value});}
+  else {const previous=roots.get(name);if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,writable:true,value});}
   return value;
 };
 let initializerSerial=0;
@@ -1712,11 +1714,11 @@ globalThis.__lightInitializerRequireShared=false;
 globalThis.__lightInitializerSelect=false;
 globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
   if(!roots.has(name)&&(name in globalThis.__lightCompilerRoots))return null;
-  if(roots.has(name)&&roots.get(name).unit===unit)return null;
+  if(roots.has(name)&&__rt.initializerSlotGet(roots.get(name),0)===unit)return null;
   // A defonce keeps an earlier definition (not a declaration), as the
   // legacy runtimes' registry does.
-  if(once&&roots.has(name)&&(roots.get(name).unit!==null||roots.get(name).defined===true))return null;
-  const slot={unit,name,state:0,value:null};roots.set(name,slot);
+  if(once&&roots.has(name)&&(__rt.initializerSlotGet(roots.get(name),0)!==null||__rt.initializerSlotGet(roots.get(name),4)===true))return null;
+  const slot=__rt.initializerSlot(unit,name);roots.set(name,slot);
   Object.defineProperty(globalThis.__lightCompilerRoots,name,{configurable:true,get:()=>{
     if(unit===null)throw new Error('unavailable definition: '+name);
     __rt.need(unit,2);
@@ -1725,11 +1727,11 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
   }});return null;
 };
 const initializeValue=(slot,factory)=>{
-    const unit=slot.unit;
-    if(slot.state===2){__rt.need(unit,4);return slot.value;}
-    if(slot.state===1)throw new Error('root initialization cycle: '+(slot.name??unit));
-    if(slot.state===3)throw slot.value;
-    slot.state=1;
+    const unit=__rt.initializerSlotGet(slot,0),state=__rt.initializerSlotGet(slot,2);
+    if(state===2){__rt.need(unit,4);return __rt.initializerSlotGet(slot,3);}
+    if(state===1)throw new Error('root initialization cycle: '+(__rt.initializerSlotGet(slot,1)??unit));
+    if(state===3)throw __rt.initializerSlotGet(slot,3);
+    __rt.initializerSlotSet(slot,2,1);
     try{
       const serial=++initializerSerial;
       globalThis.__lightInitializerUnit=unit;
@@ -1754,25 +1756,25 @@ const initializeValue=(slot,factory)=>{
         let failed=false,failure;
         initializerStack.push(unit);
         native.compilerForms.enterNamespace(unit);
-        try{slot.value=factory(native);}catch(e){failed=true;failure=e;}finally{native.compilerForms.leaveNamespace();initializerStack.pop();}
+        try{__rt.initializerSlotSet(slot,3,factory(native));}catch(e){failed=true;failure=e;}finally{native.compilerForms.leaveNamespace();initializerStack.pop();}
         globalThis.__lightInitializerUnit=unit;
-        globalThis.__lightInitializerResult=slot.value;
+        globalThis.__lightInitializerResult=__rt.initializerSlotGet(slot,3);
         globalThis.__lightInitializerFailure=failed?String(failure):null;
-        const type=__rt.structTypeOf(slot.value);
+        const type=__rt.structTypeOf(__rt.initializerSlotGet(slot,3));
         globalThis.__lightInitializerRequireShared=type!==null&&__rt.formName(type)==='cljs.core/MultiFn';
         __rt.need(serial,finishKind);
         if(failed)throw failure;
         __rt.need(unit,4);
       }else{
         const initialized=__rt.need(unit,4);
-        if(__rt.nth(initialized,0))slot.value=__rt.nth(initialized,1);
-        else {slot.value=factory(native);__rt.effect(65535,unit);}
+        if(__rt.nth(initialized,0))__rt.initializerSlotSet(slot,3,__rt.nth(initialized,1));
+        else {__rt.initializerSlotSet(slot,3,factory(native));__rt.effect(65535,unit);}
       }
-      slot.state=2;return slot.value;
+      __rt.initializerSlotSet(slot,2,2);return __rt.initializerSlotGet(slot,3);
     }
-    catch(e){slot.value=e;slot.state=3;throw e;}
+    catch(e){__rt.initializerSlotSet(slot,3,e);__rt.initializerSlotSet(slot,2,3);throw e;}
 };
-globalThis.__lightInitializeCompilerValue=(unit,factory)=>initializeValue({unit,state:0,value:null},factory);
+globalThis.__lightInitializeCompilerValue=(unit,factory)=>initializeValue(__rt.initializerSlot(unit,undefined),factory);
 // Declaration bundles advertise their products without demanding their code.
 // Keep preloaded roots and the same explicit unsupported-demand getters as units.
 globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,group=false,unit=-1)=>{

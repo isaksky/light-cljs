@@ -1526,11 +1526,17 @@ pub enum FormOp {
     LiteralPayload = 75,
     /// snapshot version frontier v → implementation, null, or undefined for slow resolution.
     CljProtocolLookup = 76,
+    /// unit name → private task-owned initializer slot.
+    InitializerSlot = 77,
+    /// slot field → value (unit/name/state/value/defined: 0/1/2/3/4).
+    InitializerSlotGet = 78,
+    /// slot field value → value; writes state/value/defined only.
+    InitializerSlotSet = 79,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 77] = [
+    pub const ALL: [FormOp; 80] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1608,6 +1614,9 @@ impl FormOp {
         FormOp::CompilerLiteral,
         FormOp::LiteralPayload,
         FormOp::CljProtocolLookup,
+        FormOp::InitializerSlot,
+        FormOp::InitializerSlotGet,
+        FormOp::InitializerSlotSet,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1662,6 +1671,8 @@ impl FormOp {
             | FormOp::CljRealizeAll
             | FormOp::CljSymbol => 1,
             FormOp::Keyword
+            | FormOp::InitializerSlot
+            | FormOp::InitializerSlotGet
             | FormOp::CljGet2
             | FormOp::CompilerLiteral
             | FormOp::Symbol
@@ -1688,6 +1699,7 @@ impl FormOp {
             | FormOp::CljRangeCons
             | FormOp::CljSymbolNs => 2,
             FormOp::Get
+            | FormOp::InitializerSlotSet
             | FormOp::Assoc
             | FormOp::CljNthOr
             | FormOp::CljGet
@@ -1700,6 +1712,9 @@ impl FormOp {
     /// The `__rt` intrinsic name.
     pub const fn intrinsic(self) -> &'static str {
         match self {
+            FormOp::InitializerSlot => "initializerSlot",
+            FormOp::InitializerSlotGet => "initializerSlotGet",
+            FormOp::InitializerSlotSet => "initializerSlotSet",
             FormOp::CljCoreResolver => "cljCoreResolver",
             FormOp::CljGet2 => "cljGet2",
             FormOp::Keyword => "formKeyword",
