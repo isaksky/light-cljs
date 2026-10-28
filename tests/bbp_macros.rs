@@ -5551,6 +5551,39 @@ fn native_call_preparation_and_live_roots_match_quickjs_at_every_pool_size() {
     let root = temp_dir::TempDir::new("native-call-preparation");
     for (source, expected) in [
         (
+            r#"(def ^:dynamic target
+                 (do (js* "typeof globalThis.__lightCompilerRoots==='undefined' ? null :
+                           Object.defineProperty(globalThis.__lightCompilerRoots,'app/target',
+                             {value:2,writable:false,configurable:false})")
+                     1))
+               (defmacro probe [] (try target (catch :default e (.-name e))))
+               (js/console.log (pr-str (probe)))"#,
+            "\"TypeError\"\n",
+        ),
+        (
+            r#"(defn cold [x] (+ x 1))
+               (defmacro probe []
+                 (let [seen (js/Array.)
+                       holder (js* "(function(pause,seen) {
+                         let method=new Proxy(function(_,x) {
+                           if(this!==p)throw new Error('Proxy receiver');return x+1;
+                         },{apply(t,r,a) {
+                           if(r!==p)throw new Error('apply receiver');
+                           seen.push('apply');pause();return Reflect.apply(t,r,a);
+                         }});
+                         const p=new Proxy(function(){throw new Error('target called');},{get(t,k,r) {
+                           if(k!=='call')return Reflect.get(t,k,r);
+                           if(r!==p)throw new Error('get receiver');
+                           seen.push('get');pause();return method;
+                         }});
+                         return {p,replace(){seen.push('arg');method=()=>99;}};
+                       })(~{},~{})" (fn [] (cold 1)) seen)
+                       f (.-p holder)]
+                   [(f (do (.replace holder) (cold 40))) (vec seen)]))
+               (js/console.log (pr-str (probe)))"#,
+            "[42 [\"get\" \"arg\" \"apply\"]]\n",
+        ),
+        (
             r#"(def ^:dynamic target (fn [x] :original))
                (defn cold [x] (+ x 1))
                (defmacro probe []

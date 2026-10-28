@@ -94,6 +94,16 @@ fn call_members_keep_early_reads_receivers_and_operands_across_waits() {
 }
 
 #[test]
+fn proxy_call_members_keep_early_reads_across_waits() {
+    run(include_str!("fixtures/js/compiler_proxy_calls.js"), 6);
+}
+
+#[test]
+fn unbound_root_reads_check_invariants_after_getter_mutation() {
+    run(include_str!("fixtures/js/compiler_root_invariants.js"), 12);
+}
+
+#[test]
 fn root_reads_preserve_overlays_replacements_getters_and_registry_replacement() {
     run(
         r#"function f() {
@@ -143,9 +153,9 @@ fn ready_product_reads_guard_the_live_getter_and_keep_its_captured_name() {
       Object.defineProperty(target,'alias',{get:getter});
       if(__rt.cljReadRoot(proxy,context,'alias')!==8||forces!==1)throw new Error('captured product name');
       Object.defineProperty(bundle.products,'x',{get(){if(this!==bundle.products)throw new Error('product receiver');__rt.need(91,1);return 9;}});
-      if(__rt.cljReadRoot(proxy,context,'x')!==9||forces!==1)throw new Error('live product getter');
+      if(__rt.cljReadRoot(proxy,context,'x')!==9||forces!==2)throw new Error('deferred product uses root getter');
       Object.defineProperty(target,'x',{get(){forces++;return 10;}});
-      if(__rt.cljReadRoot(proxy,context,'x')!==10||forces!==2)throw new Error('replaced getter');
+      if(__rt.cljReadRoot(proxy,context,'x')!==10||forces!==3)throw new Error('replaced getter');
       return true;
     }"#,
         2,

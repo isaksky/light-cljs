@@ -74,9 +74,10 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
                 && let Some(products) = data(heap, state.diag.task, &bundle, &PRODUCTS)?
             {
                 // Only the exact compiler-installed getter takes this path.
-                // Ready bundles' force is a state check; read the live product
-                // property, including an ordinary getter/Proxy, with its own
-                // receiver. Neither a value nor a root generation is cached.
+                // Ready bundles' force is a state check. A plain product read
+                // cannot mutate the root descriptor; a getter/Proxy can, so
+                // it must run through the original root Proxy and its final
+                // get invariant check. No value or root generation is cached.
                 let Value::String(name) = collections::nth(heap, product, 1)? else {
                     return Err(Fault::TypeError(
                         "compiler product name must be a string".into(),
@@ -84,9 +85,18 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
                 };
                 let read =
                     property::read(heap, state.diag.task, &products, &property::Key::Name(name))?;
-                read_result(state, read, products)?;
-                return Ok(true);
+                if !matches!(read, Some(property::Read::Deferred(_))) {
+                    read_result(state, read, products)?;
+                    return Ok(true);
+                }
             }
+            // Accessors may freeze or replace the root while suspended. The
+            // original Proxy must check the descriptor after they return.
+            let read = if target != receiver && matches!(read, Some(property::Read::Deferred(_))) {
+                property::read(heap, state.diag.task, &receiver, &key)?
+            } else {
+                read
+            };
             read_result(state, read, receiver)?;
         }
         _ => return Ok(false),

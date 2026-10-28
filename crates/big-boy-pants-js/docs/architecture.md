@@ -574,8 +574,10 @@ target, overlay Map and compiler-product getter registry, allocated once per
 task; its mutable members retain ordinary task ownership/publication rules.
 Only an exact registered compiler getter for a ready bundle bypasses that
 getter's JavaScript state check. It still reads the bundle's current product
-property and retains the getter's captured name. Modified descriptors, pending
-bundles and exotic bookkeeping retain ordinary property execution. These
+data property and retains the getter's captured name. Deferred reads, including
+product accessors and Proxies, run through the original root Proxy so its get
+invariants check the descriptor after user code returns. Modified descriptors,
+pending bundles and exotic bookkeeping retain ordinary property execution. These
 bounded leaves release all heap borrows before handing accessors or Proxies to
 traced property continuations; they never execute JavaScript on the Rust stack.
 Sorted maps, shared seq views of lists, and the compiler `Datum` bridge
