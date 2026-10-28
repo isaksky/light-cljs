@@ -69,6 +69,31 @@ engine source, and includes preloaded helper source.
 
 ## Supported boundary
 
+### List and sequence markers (light-cljs-546)
+
+Native `list?` distinguishes lists and plain Cons cells from positional,
+chunked and lazy sequences. An immutable non-IList tag travels with positional
+sequence storage through shared tails and metadata; it does not participate in
+equality, hashing, tracing or source occurrence identity. Empty sequence tails
+remain EmptyList values. `concat` retains its LazySeq identity even for finite
+or empty inputs; `iterate`, `keys` and `vals` retain their sequence identities.
+No predicate realizes a lazy value or classifies a sequence by its elements.
+
+`list?`, `seq?`, `sequential?`, `coll?`, `vector?` and `map-entry?` use native
+builtin marker checks and the existing resumable declaration adapter for user
+markers. The source differential table covers direct, saved and `apply` calls,
+immutable/mutable types, records and host marker extensions at jobs 1/2/4/8.
+Demanded helpers publish without task-local copies; a cold helper in a lazy
+thunk resumes without replaying its effect. The table also checks metadata,
+equality, hashing and source input. Engine coverage retains occurrences and
+metadata across publication, owner release and GC.
+
+JavaScript array sequence operations reuse the task-owned reduction cursor,
+retaining the original mutable array rather than taking a snapshot. Their
+classification, metadata, traversal and direct equality/hash observations match
+the legacy runtime; these cursors remain task-owned. Emitted application code
+and `src/js_runtime.js` are unchanged.
+
 ### Explicit compiler literal forms (light-cljs-535)
 
 The native bridge imports and exports explicit compiler descriptors with

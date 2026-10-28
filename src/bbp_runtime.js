@@ -176,11 +176,12 @@ const decl = (() => {
   // type instance's type, or a core collection's native kind (`extend-type
   // PersistentVector`); never a host tag or `default`.
   const directKinds = new Set(['keyword', 'symbol', 'vector', 'map', 'set']);
+  const sequenceKinds = __rt.map('list','list','empty-list','empty-list','sequence','sequence');
   const directKey = x => {
     const ty = __rt.structTypeOf(x);
     if (ty !== null) return ty;
     const value = __rt.formValue(x), kind = __rt.formKind(value);
-    if (kind === 'list') return __rt.formCount(value) === 0 ? 'empty-list' : 'list';
+    if (kind === 'list') return __rt.cljDispatch(sequenceKinds,value);
     if (kind !== null) return directKinds.has(kind) ? kind : null;
     if (value instanceof Promise) return 'js/Promise';
     return value !== null && typeof value === 'object' ? value.__lightNativeType ?? null : null;

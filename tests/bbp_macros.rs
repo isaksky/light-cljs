@@ -8118,6 +8118,7 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
       (defrecord RecordMarker [x] IList)
       (deftype MutableMarker [^:mutable x] IList)
       (extend-type string IList)
+      (extend-type List IList)
       (def cached [(seq [1 2]) (seq {:a 1}) (seq #{1}) (seq "ab")
                    (cons 1 (lazy-seq '(2))) (ListMarker.)])
       (defn load-sequences [] cached)

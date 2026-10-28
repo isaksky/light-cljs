@@ -1167,12 +1167,17 @@ pub(crate) fn dispatch_key(heap: &Heap, v: &Value) -> Option<Value> {
                     FormBody::List(items) if items.len() == 0 => {
                         Value::String(JsString::from("empty-list"))
                     }
-                    FormBody::List(_) => key_string(8),
+                    FormBody::List(_) if f.is_list() => key_string(8),
+                    FormBody::List(_) => Value::String(JsString::from("sequence")),
                     FormBody::Vector(_) => key_string(9),
                     FormBody::Map(_) => key_string(10),
                     FormBody::Set(_) => key_string(11),
                     FormBody::Lazy(_) => Value::String(JsString::from("lazy-seq")),
-                    FormBody::Cons(_) => Value::String(JsString::from("cons")),
+                    FormBody::Cons(_) => Value::String(JsString::from(if f.is_list() {
+                        "cons"
+                    } else {
+                        "sequence"
+                    })),
                     FormBody::Reduced(_) => Value::String(JsString::from("reduced")),
                     FormBody::CompilerLiteral { .. } => return None,
                 });
