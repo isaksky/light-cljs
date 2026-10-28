@@ -1650,3 +1650,54 @@ full-process sample exits zero in 27.32 s (excluded from timings), at load
 and the mapped application prints `484264`. Release binary SHA-256 values are
 native `29b954479a0fb53067504802f82ef6400ddfb48879d2bc9267b9970b736bab09`
 and V8 `fe58b964d2f301ba1f6c450818ef381a29adc8b30cd51d16c760e87ea3a0b729`.
+
+### Restoring resolved writes on cache hits
+
+The second review found that artifact installation bypassed the analyzer's
+resolved core-write publication. `5cd5182f` restores `SetGlobal` and `Binding`
+targets from both the top-level and deferred-body artifact tables before
+installing their factories. The walk visits each installed namespace's own IR,
+with cancellation checks, rather than the frozen catalog prefix. No initializer
+runs, and no old program is retained.
+
+The new `compiler_cache::generated_core_writes_survive_cached_artifacts`
+regression constructs mutation operators and targets with `symbol`, outside
+the lexical index. It covers top-level and deferred definitions, mutation and
+binding/restoration, at jobs 1 and 4. It explicitly demands the installer
+function without invoking it before preparing the consumer. Cold, populated,
+warm and touched-consumer builds must emit identical JavaScript and execute
+identically while the writer remains cached. The final test fails against the
+saved pre-fix native release binary: the touched consumer prints `[3 3]`
+instead of `[3 42]`. All eight cases pass after restoration.
+
+Fresh default release binaries compare `9cf22f99` with `5cd5182f`, using the
+same locked Rust/Cargo 1.99.1 toolchain, V8 machine cache, Node 26.12.1,
+Babashka 1.12.218 and seed-42 generated 200k project. Three before/after groups
+were interleaved, each running `release bench --jobs 1 --stats` with
+`--no-cache`, then a fresh `--cache-dir`, then that populated cache. All 18
+outputs have the original release hash and print the oracle's `484264`.
+Every cold cache has 569 misses; every warm cache has 569 hits and zero misses.
+
+| V8 build | Mode | Wall median [range], s | User CPU median, s | Peak RSS median, bytes |
+| --- | --- | ---: | ---: | ---: |
+| before | no cache | 8.29 [7.77–8.40] | 8.24 | 1113882624 |
+| after | no cache | 8.00 [7.98–8.14] | 8.16 | 1104740352 |
+| before | cold cache | 11.32 [11.08–11.45] | 11.58 | 1131593728 |
+| after | cold cache | 11.14 [10.99–11.22] | 11.45 | 1135853568 |
+| before | warm cache | 1.24 [1.24–1.36] | 1.12 | 530939904 |
+| after | warm cache | 1.32 [1.23–1.43] | 1.13 | 536264704 |
+
+The default guard shows overlapping ranges and no cold-build regression. Warm
+wall time differs by 0.08 s, with overlapping ranges and 0.01 s more user CPU.
+Both the restoration call and implementation are feature-gated out of the
+default binary. No local build or suite overlapped these measurements. The
+535 review was running native tests and rustc elsewhere: background CPU at
+group launch ranged from 180.5% to 376.1%. Load (1/5/15 min) was
+11.42/8.80/5.85 → 6.13/7.74/5.80 for the before groups and
+9.90/8.62/5.85 → 5.97/7.59/5.80 for the after groups. Earlier unpaired batches
+had medians 7.29/10.08/1.13 s before and 7.48/10.53/1.16 s after; the
+interleaved controls above account for the changing machine load.
+
+Default binary SHA-256 values are before
+`79937de45731e50b7bb42ecb175e42f1a0d6aa57b541f2f2abe3c8f7176f37cd`
+and after `43da37d5c7931be0969058434c1540f9706256dd06c4c73e4d2e415679fe8179`.
