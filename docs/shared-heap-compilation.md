@@ -849,14 +849,136 @@ literal integration; it is not a claim of fresh 12-seed coverage on the final
 protocol base. Default V8 and QuickJS-only results are reused across this
 native-only delta; the complete combined compiler suite predates that delta.
 
-This worker releases light-cljs-508 with useful code and the controlled
-400-helper result preserved. Repeated peer builds/tests interrupted the
-remaining measurement window. Still required: fresh final-protocol-base
-12-seed coverage and RSS/profile checks, the unadmitted 200-helper/eight-job
-large-project comparisons, and default V8 200k before/after timing. The saved
-pre-change V8 baseline is 8.00 s at one job and 5.55 s at eight jobs (three-run
-medians on `ba1bb3bd`); no post-change timing comparison or no-slowdown claim
-is made here. Do not treat the incomplete verification as acceptance met.
+That attempt released light-cljs-508 after peer activity interrupted the
+remaining measurements. The resumed verification below records the final-base
+checks and completes the previously missing 200-helper attribution.
+
+#### Rebased verification (October 28, 2026)
+
+The resumed branch rebases cleanly onto `e28daa30`; its delta from the previous
+`7004c99b` base contains tests and documentation only. Native release code is
+`6f2ed7bf`, with the same compiler flags, host, toolchain, chain inputs and
+budgets as the controlled comparison above. A new exact-headroom regression
+covers both Date and primitive-wrapper payload boxes: one byte short denies
+allocation without leaking a reservation, exact headroom succeeds, collection
+preserves a rooted box, and dropping its root releases the entire slot/body
+charge on collection. No object semantics change in this verification pass.
+
+Fresh 400-helper runs below use a full minute without competing build/test
+processes before the batch, plus the same before/during/after admission scan.
+Load is the one/five/fifteen-minute average immediately before and after each
+run; RSS is decimal MB and wall time is seconds. No row overlaps a detected
+peer build/test/compiler process, and no measured row in this batch is excluded.
+
+| Round | Jobs | RSS | Wall | Load before → after |
+| --- | ---: | ---: | ---: | --- |
+| 0 | 1 | 94.5 | 2.79 | 1.60/3.02/4.59 → 1.87/3.05/4.59 |
+| 0 | 2 | 104.1 | 3.29 | 1.87/3.05/4.59 → 1.80/3.02/4.57 |
+| 0 | 4 | 140.9 | 2.76 | 1.80/3.02/4.57 → 1.80/3.02/4.57 |
+| 0 | 8 | 187.4 | 3.04 | 1.80/3.02/4.57 → 1.90/3.02/4.56 |
+| 1 | 1 | 95.2 | 2.70 | 1.90/3.02/4.56 → 1.82/2.98/4.54 |
+| 1 | 2 | 100.6 | 3.29 | 1.82/2.98/4.54 → 1.76/2.95/4.52 |
+| 1 | 4 | 134.4 | 2.95 | 1.76/2.95/4.52 → 1.76/2.95/4.52 |
+| 1 | 8 | 182.0 | 2.84 | 1.76/2.95/4.52 → 1.78/2.93/4.50 |
+| 2 | 1 | 91.8 | 2.76 | 1.78/2.93/4.50 → 1.78/2.93/4.50 |
+| 2 | 2 | 104.4 | 3.31 | 1.78/2.93/4.50 → 1.87/2.94/4.49 |
+| 2 | 4 | 138.5 | 2.72 | 1.87/2.94/4.49 → 1.88/2.92/4.48 |
+| 2 | 8 | 180.4 | 2.80 | 1.88/2.92/4.48 → 1.89/2.90/4.46 |
+
+Median RSS is **94.5/104.1/138.5/182.0 MB**, and median wall time is
+2.76/3.29/2.76/2.84 s. The fresh eight/one ratio is **1.927**, with paired
+ratios 1.984/1.913/1.966: the 1.15 target remains missed. This is confirmation
+on the final base, not a replacement for the earlier controlled before/after
+comparison. All twelve JavaScript outputs and inline maps match each other
+and the controlled comparison. Every run compiles/publishes 400 helpers,
+with zero per-task fallbacks; pooled runs initialize exactly 400 helpers.
+Contexts and evaluations remain 401/402/404/408 and 2810/2004/2008/2016.
+Median steps are 16729/18337/18469/18598.
+
+The 200-helper chain (`--entry chain.n3`, otherwise identical flags and
+source root) has three roots per helper: 600 registrations, matching the
+smaller lifetime fixture. Its previously missing eight-job measurements are
+now admitted, with an independent minute of idle admission before this batch:
+
+| Round | Jobs | RSS | Wall | Load before → after |
+| --- | ---: | ---: | ---: | --- |
+| 0 | 1 | 63.3 | 0.99 | 1.95/2.70/4.26 → 1.95/2.70/4.26 |
+| 0 | 8 | 125.2 | 0.96 | 1.95/2.70/4.26 → 2.12/2.72/4.26 |
+| 1 | 1 | 64.2 | 1.00 | 2.12/2.72/4.26 → 2.12/2.72/4.26 |
+| 1 | 8 | 119.4 | 1.07 | 2.12/2.72/4.26 → 2.12/2.72/4.26 |
+| 2 | 1 | 64.1 | 1.00 | 2.12/2.72/4.26 → 2.12/2.72/4.26 |
+| 2 | 8 | 121.0 | 1.00 | 2.12/2.72/4.26 → 2.03/2.69/4.24 |
+
+Median RSS is **64.1/121.0 MB** (1.889x); both wall medians are 1.00 s.
+Each run compiles/publishes 200 helpers with zero per-task fallbacks, with
+201/208 contexts, 1410/1016 evaluations and median 7821/8270 task steps.
+Output and inline maps match at both job counts. The final runtime counters complete the live/transient
+accounting for both chain sizes (medians, bytes in decimal MB; total admitted
+volume in decimal GB):
+
+| Helpers | Jobs | Last collected live | Managed at report | Peak managed | Total admitted |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 200 | 1 | 11.7 | 27.3 | 36.0 | 0.882 |
+| 200 | 8 | 47.2 | 72.9 | 82.3 | 1.085 |
+| 400 | 1 | 18.5 | 26.2 | 48.7 | 2.301 |
+| 400 | 2 | 26.3 | 33.9 | 63.8 | 3.066 |
+| 400 | 4 | 41.7 | 68.9 | 93.0 | 3.065 |
+| 400 | 8 | 67.6 | 106.9 | 143.7 | 3.108 |
+
+The final collected 600-registration diagnostic separates root ownership
+from those workload peaks. These are accounted bytes after explicit collection,
+alongside the independently reported shallow object-table and object bytes;
+the latter two are components/diagnostics, not additional amounts to add to
+the admission total:
+
+| Phase | Collected admission | Shallow table | Shallow objects |
+| --- | ---: | ---: | ---: |
+| Realm | 1,070,424 | 37,120 | 67,184 |
+| Warmed reader cache, no tasks | 1,823,232 | 158,304 | 69,088 |
+| One booted task | 3,109,770 | 158,304 | 209,440 |
+| Eight booted tasks | 14,137,184 | 773,872 | 1,191,904 |
+| Drop seven booted tasks | 5,131,418 | 810,736 | 209,440 |
+| One task, 600 registrations | 8,851,374 | 810,736 | 454,648 |
+| Eight tasks, 600 registrations | 40,377,420 | 1,088,296 | 2,581,416 |
+| Drop seven producers | 9,797,094 | 1,162,024 | 454,648 |
+| Drop parent and catalog | 5,258,908 | 1,162,024 | 69,088 |
+
+Dropping the seven producers releases **30,580,326 bytes** of admission.
+Seven booted tasks alone release 9,005,766 bytes; the remaining 21,574,560
+bytes reflect their catalog population beyond bootstrap in this fixture.
+The 4,200 extra roots' Map entries, four-field initializer slots and getter
+properties charge **8,601,600 + 8,601,600 + 2,150,400 = 19,353,600 bytes**.
+The remaining 2,220,960-byte difference includes getter captures, metadata,
+other backing stores and differences in table high-water charges. These
+conservative charges do not claim exact malloc sizes or an exhaustive
+allocator attribution. Eight populated tasks retain 5,178 plain objects,
+11,941 functions and 408 binding cells. After producer/parent release the
+object-kind counts return exactly to the one-task/warmed-no-task baselines;
+the shared reader cache and high-water table remain. The final no-task
+admission exceeds the initially warmed baseline by 3,435,676 bytes, while
+the table's shallow storage grows by 1,003,720 bytes. Segment reservations
+also conservatively cover future directory/free-list storage, explaining why
+these accounting measures differ. Frames remain one per task, 29 stack values,
+no native continuation and 1,312 shallow bytes at both registration counts.
+
+For the real 200-helper run, eight jobs have 35.5 MB more last-collected live
+admission, 46.3 MB more peak managed admission and 57.0 MB more RSS than one
+job. Those peaks need not coincide. Registration stores dominate the measured
+task-owned live premium, with bootstrap state, temporary descriptors,
+collection timing and allocator residency also contributing. Compiler data,
+executable code, stacks and allocator storage are outside these heap counters;
+the RSS/managed difference is not an exact allocator-residency estimate.
+The 1.15 target is still missed for this recorded reason, and existing
+light-cljs-552 tracks the private initializer-slot representation.
+
+The final engine run passes all **2,167 tests and seven doctests**, including
+the new payload admission/reclamation regression. All 56 evaluator tests pass
+with `--no-default-features --features bbp-macros,quickjs --lib bbp_evaluator::tests::`,
+covering the ordinary-object differential table, saved getters, registration
+order and once-per-task initializer behavior. Strict engine all-target Clippy
+retains the same eight library diagnostics and ninth test diagnostic described
+above; allowing only the three documented existing categories passes. These
+checks cover `6f2ed7bf`; subsequent edits in this verification are documentation.
 
 ### Single-thread speed
 
