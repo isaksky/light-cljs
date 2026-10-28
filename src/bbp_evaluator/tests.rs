@@ -3521,3 +3521,37 @@ fn flatten_retains_leaf_occurrences_and_metadata_across_collection() {
     }
     evaluator.release(function).unwrap();
 }
+
+#[test]
+fn stale_lazy_wakeups_do_not_resume_a_task_parked_on_a_new_dependency() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let cx = evaluator.cx().unwrap();
+    // The evaluator's command wait stands in for a newer dependency reached
+    // after the owner polled and consumed an earlier lazy settlement itself.
+    assert_eq!(cx.task.status(), big_boy_pants_js::TaskStatus::Waiting);
+    let submitted = Arc::new(AtomicUsize::new(0));
+    let count = submitted.clone();
+    let (reply, _outcome) = std::sync::mpsc::sync_channel(1);
+    shared.0.parked.lock().unwrap().insert(
+        cx.task.id(),
+        Parked {
+            step: evaluator.step(&cx),
+            reply,
+            submit: Arc::new(move |_, _| {
+                count.fetch_add(1, Ordering::Relaxed);
+            }),
+        },
+    );
+    shared.wake_tasks([cx.task.clone()]);
+    assert_eq!(submitted.load(Ordering::Relaxed), 0);
+    assert!(
+        shared
+            .0
+            .parked
+            .lock()
+            .unwrap()
+            .remove(&cx.task.id())
+            .is_some()
+    );
+}

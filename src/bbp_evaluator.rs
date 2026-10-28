@@ -953,7 +953,18 @@ impl BbpRuntime {
     }
     fn wake_tasks(&self, tasks: impl IntoIterator<Item = Task>) {
         for task in tasks {
-            let parked = self.0.parked.lock().unwrap().remove(&task.id());
+            let parked = {
+                let mut parked = self.0.parked.lock().unwrap();
+                // The owner may have polled the old settlement itself and
+                // reached a newer dependency before this wake was drained.
+                // Hold the registration lock while checking readiness, so
+                // that old notification cannot take a newer parked step.
+                if task.status() == big_boy_pants_js::TaskStatus::Ready {
+                    parked.remove(&task.id())
+                } else {
+                    None
+                }
+            };
             if let Some(Parked {
                 step,
                 reply,
