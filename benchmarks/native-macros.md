@@ -1834,3 +1834,89 @@ Validation on production source `9cd9f2ed`, macOS arm64, locked Rust/Cargo
   Engine-free all-target `--keep-going` retains the documented 623 diagnostics
   and six failed-target summaries in unsupported engine-dependent tests and
   benches. This is not an all-target strict-lint pass.
+
+### Isolated release comparison, before integration of the literal changes
+
+Locked release builds use the same toolchain and host above, Node 26.12.1,
+Babashka 1.12.218, thin LTO and one codegen unit. Native builds use
+`--no-default-features --features bbp-macros`; default builds use the real V8
+machine cache with `LIGHT_CLJS_V8_CACHE=require`. The engine package was cleaned
+between release trees. Production sources are `ba1bb3bd` before and `9cd9f2ed`
+after (documentation-only checkpoints do not change those sources). SHA-256:
+
+| Binary | SHA-256 |
+| --- | --- |
+| before native | `0270ee2e40b56be46093873180f04a553b0cfd77e885d76d2e658ad36dbdb421` |
+| before V8 | `c1535ccce586cb6f969dc37dd843313d0fdfc5b96185418a8edeb0ab603db100` |
+| after native | `c60b8eb08fde6e0bb432db6cfa6f47a1b8730c27a2cee2c19e18cb23369410ec` |
+| after V8 | `e724fe359f657296d9c6586227d56c82daea1e0bf1a0981eb1a5ea7d63ae0a09` |
+
+```sh
+bb benchmarks/native-macros-k.bb target/515-final-protocol \
+  --workload protocol --runs 9 --n 0,100,400,1600,6400 \
+  v8=target/515-v8-final v8-before=target/515-v8-before \
+  before=target/515-native-before native=target/515-native-final
+```
+
+The unchanged harness discards one warmup per binary/size, alternates backend
+order, and checks identical Node output for every fresh jobs-1/no-cache process.
+No local build or suite overlaps timing. One peer rustc was visible at launch
+and a peer V8 build at the end; load (1/5/15 minutes) was
+2.95/4.00/6.78 → 2.27/3.50/6.27, so this is not a fully serialized host run.
+Analysis median [min–max], ms; k uses the same-source after V8 column:
+
+| n | V8 after | native before | native after | k before | k after |
+| ---: | --- | --- | --- | ---: | ---: |
+| 0 | 24.6 [23.6–25.4] | 44.6 [42.8–47.1] | 45.6 [43.5–47.8] | – | – |
+| 100 | 29.3 [28.5–30.4] | 70.6 [66.5–76.0] | 68.4 [64.9–71.0] | 5.5 | 4.9 |
+| 400 | 32.5 [31.8–33.7] | 101.2 [97.2–103.6] | 94.6 [90.4–97.7] | 7.2 | 6.2 |
+| 1,600 | 41.4 [40.0–42.0] | 226.7 [220.9–229.3] | 199.7 [195.2–203.1] | 10.8 | 9.2 |
+| 6,400 | 66.6 [65.6–68.7] | 729.7 [714.5–736.8] | 625.7 [610.0–634.0] | 16.3 | 13.8 |
+
+The before V8 medians are 24.9/29.0/32.2/41.2/67.2 ms, consistent with the
+fresh after V8 control. Incremental native analysis falls about 12/13/15/15%.
+**The k <= ~4 target is still missed, including at n=400 and n=1,600.**
+
+Temporary counters on the after source give `resolve` 307,776/1,229,376 steps
+at n=1,600/6,400, versus 1,324,773/5,299,173 before. `declare` takes 252 steps
+at both sizes, versus 403,200/1,612,800. The new `coreLookup` takes
+216,170/864,170; its former `resolveCore` takes 335,985/1,343,985. The per-call
+core helper closure is gone. The core callback itself takes 411,200/1,644,800
+steps. Macro-body, root-Proxy, product-getter and `force` counts above are
+unchanged, as are the fixed-call member helper's 208,000/832,000 steps. Node
+outputs agree between both diagnostic binaries. Counts describe interpreted
+work, not native leaf CPU costs or latency.
+
+Fresh `/usr/bin/sample PID 3 1 -file FILE` profiles run serially on the before
+and after native binaries: n=1,600 repeats 256 calls, n=6,400 repeats 64 calls.
+Each pair's Node output agrees. These profiles have no counter instrumentation.
+No peer build/test/compiler appears in their process snapshots; launch load
+(1/5/15 minutes) ranges from 1.92/2.85/5.57 to 2.01/2.93/5.66. Main-thread
+sample totals are 2,196/2,189 before/after at n=1,600 and 2,222/2,200 at n=6,400.
+Top-of-stack counts, collapsed by symbol:
+
+| Frame | before 1,600 | after 1,600 | before 6,400 | after 6,400 |
+| --- | ---: | ---: | ---: | ---: |
+| `execute_budgeted` | 636 | 581 | 660 | 612 |
+| `Fault` drop glue | 113 | 112 | 117 | 126 |
+| `Value` drop glue | 52 | 56 | 50 | 60 |
+| SipHash `write` | 58 | 72 | 72 | 57 |
+| `lookup_cursor` | 54 | 43 | 50 | 39 |
+| `enter_constructor` | 46 | 49 | 49 | 52 |
+| Proxy `Operations::step` | 44 | 54 | 42 | 39 |
+| `start_conversion` | 41 | 48 | 45 | 41 |
+
+These are sample distributions, not per-operation costs. Faster code performs
+more work in the sample interval. Interpreter dispatch, root/property lookup,
+value/drop handling and call/constructor entry remain visible; the bytecode
+counts identify the unchanged root and fixed-call preparation work separately.
+
+The default V8 200k guard uses the unchanged seed-42 generated project and
+`/usr/bin/time -l BINARY release bench --no-cache --jobs 1 --stats`, three
+interleaved before/after rounds. Wall medians [range] are 7.68 [7.56–8.45] s
+before and 7.49 [7.38–7.58] s after; user CPU medians are 7.90 and 7.62 s.
+There is no slowdown. All six applications print the oracle's `484264`, and
+all generated main modules retain SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+No local build/test overlaps these timings; load (1/5/15 minutes) falls from
+3.68/3.20/5.62 to 2.48/2.95/5.39.
