@@ -1524,7 +1524,7 @@ pub enum FormOp {
     CompilerLiteral = 74,
     /// descriptor → payload.
     LiteralPayload = 75,
-    /// table declared-types v → implementation, null, or undefined for slow resolution.
+    /// snapshot version frontier v → implementation, null, or undefined for slow resolution.
     CljProtocolLookup = 76,
 }
 
@@ -1688,13 +1688,12 @@ impl FormOp {
             | FormOp::CljRangeCons
             | FormOp::CljSymbolNs => 2,
             FormOp::Get
-            | FormOp::CljProtocolLookup
             | FormOp::Assoc
             | FormOp::CljNthOr
             | FormOp::CljGet
             | FormOp::CljAssoc
             | FormOp::StructType => 3,
-            FormOp::CljInvoke => 4,
+            FormOp::CljInvoke | FormOp::CljProtocolLookup => 4,
         }
     }
 

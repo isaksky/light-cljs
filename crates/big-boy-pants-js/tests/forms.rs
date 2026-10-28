@@ -1901,21 +1901,26 @@ fn protocol_lookup_requires_declared_types_and_keeps_host_resolution_outside_the
           let table = __rt.assoc(__rt.assoc(__rt.map(), R, 'record'), 'object', 'object');
           table = __rt.assoc(__rt.assoc(table, '_', 'default'), 'number', 'number');
           const check = (ok, what) => { if (!ok) throw new Error(what); };
-          check(__rt.cljProtocolLookup(table, declared, r) === 'record', 'exact type');
-          check(__rt.cljProtocolLookup(table, declared, t) === 'object', 'struct object before default');
-          check(__rt.cljProtocolLookup(table, declared, 2) === 'number', 'primitive exact');
-          check(__rt.cljProtocolLookup(table, declared, 's') === 'default', 'primitive ignores object');
-          check(__rt.cljProtocolLookup(table, declared, __rt.structNew(sameName)) === undefined, 'type identity');
-          check(__rt.cljProtocolLookup(table, __rt.map(), r) === undefined, 'declaration before exact entry');
+          const lookup = (table, declared, x) => __rt.cljProtocolLookup(__rt.vector(1, 10, table, declared), 1, 10, x);
+          const stale = __rt.vector(1, 10, null, null);
+          check(__rt.cljProtocolLookup(null, 1, 10, r) === undefined, 'cold table');
+          check(__rt.cljProtocolLookup(stale, 2, 10, r) === undefined, 'version before lookup');
+          check(__rt.cljProtocolLookup(stale, 1, 9, r) === undefined, 'frontier before lookup');
+          check(lookup(table, declared, r) === 'record', 'exact type');
+          check(lookup(table, declared, t) === 'object', 'struct object before default');
+          check(lookup(table, declared, 2) === 'number', 'primitive exact');
+          check(lookup(table, declared, 's') === 'default', 'primitive ignores object');
+          check(lookup(table, declared, __rt.structNew(sameName)) === undefined, 'type identity');
+          check(lookup(table, __rt.map(), r) === undefined, 'declaration before exact entry');
           const host = { get __lightNativeType() { throw new Error('host getter'); } };
-          check(__rt.cljProtocolLookup(table, declared, host) === undefined, 'host slow path');
-          check(__rt.cljProtocolLookup(table, declared, Promise.resolve(1)) === undefined, 'Promise slow path');
+          check(lookup(table, declared, host) === undefined, 'host slow path');
+          check(lookup(table, declared, Promise.resolve(1)) === undefined, 'Promise slow path');
           table = __rt.dissoc(table, 'object');
-          check(__rt.cljProtocolLookup(table, declared, t) === 'default', 'struct default');
+          check(lookup(table, declared, t) === 'default', 'struct default');
           table = __rt.dissoc(table, '_');
-          check(__rt.cljProtocolLookup(table, declared, t) === null, 'missing struct');
-          check(__rt.cljProtocolLookup(table, declared, null) === null, 'missing primitive');
-          check(__rt.cljProtocolLookup(__rt.assoc(table, 'null', 'nil'), declared, undefined) === 'nil', 'nullish key');
+          check(lookup(table, declared, t) === null, 'missing struct');
+          check(lookup(table, declared, null) === null, 'missing primitive');
+          check(lookup(__rt.assoc(table, 'null', 'nil'), declared, undefined) === 'nil', 'nullish key');
           return true;
         }"#,
         &[],

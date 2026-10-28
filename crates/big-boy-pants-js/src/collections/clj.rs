@@ -1174,8 +1174,9 @@ pub(crate) fn dispatch(heap: &Heap, table: &Value, v: &Value) -> Result<Value> {
     Ok(super::get(heap, table.clone(), Value::String(JsString::from("_")))?.unwrap_or(Value::Null))
 }
 
-/// The common task-local protocol lookup after the caller has checked its
-/// table's version and source frontier. `declared` is a SameValueZero map of
+/// The common task-local protocol lookup. A snapshot is the persistent vector
+/// [version, frontier, table, declared-types], or null before the first build.
+/// Its version/frontier must match before any lookup. `declared` is a SameValueZero map of
 /// the struct types whose declarations this task has installed. An unknown
 /// struct must return to JavaScript to demand its declaration before resolving
 /// any extension bundles. Host objects likewise keep their property/Promise
@@ -1183,15 +1184,31 @@ pub(crate) fn dispatch(heap: &Heap, table: &Value, v: &Value) -> Result<Value> {
 /// it cannot call user code, allocate adapters, or retain a heap borrow.
 pub(crate) fn protocol_lookup(
     heap: &Heap,
-    table: &Value,
-    declared: &Value,
+    snapshot: &Value,
+    version: &Value,
+    frontier: &Value,
     v: &Value,
 ) -> Result<Value> {
+    if matches!(snapshot, Value::Null | Value::Undefined) {
+        return Ok(Value::Undefined);
+    }
+    let snapshot = super::vector_body(heap, snapshot)?;
+    if snapshot.get(0).as_ref() != Some(version) || snapshot.get(1).as_ref() != Some(frontier) {
+        return Ok(Value::Undefined);
+    }
+    let table = snapshot.get(2).ok_or(CollectionError::IndexOutOfBounds {
+        index: 2,
+        count: snapshot.len(),
+    })?;
+    let declared = snapshot.get(3).ok_or(CollectionError::IndexOutOfBounds {
+        index: 3,
+        count: snapshot.len(),
+    })?;
     let Some(key) = dispatch_key(heap, v) else {
         return Ok(Value::Undefined);
     };
     let is_struct = matches!(key, Value::Object(_));
-    if is_struct && super::get(heap, declared.clone(), key.clone())?.is_none() {
+    if is_struct && super::get(heap, declared, key.clone())?.is_none() {
         return Ok(Value::Undefined);
     }
     if let Some(found) = super::get(heap, table.clone(), key)? {

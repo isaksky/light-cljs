@@ -13,13 +13,13 @@ const decl = (() => {
   // declaration probes. This map belongs to the task, just like views/tables.
   let declared = __rt.map();
   let order = 0, frontier = Infinity, version = 0;
-  const table = (key, protocol) => {
+  const table = (key, name, arity) => {
     let t = tables.get(key);
-    if (t === undefined) tables.set(key, t = {protocol, entries: [], map: null, version: -1, frontier: NaN});
+    if (t === undefined) tables.set(key, t = {protocol: protocolOf(name, arity), entries: [], map: null, snapshot: null, version: -1, frontier: NaN});
     return t;
   };
   const protocolOf = (name, arity) => arity === 0 ? name : name.slice(0, name.lastIndexOf('/'));
-  const methodTable = (name, arity) => table(name + '\u0000' + arity, protocolOf(name, arity));
+  const methodTable = (name, arity) => table(name + '\u0000' + arity, name, arity);
   // Core types that an extension names: the native form kinds.
   const coreKeys = new Map();
   const keyOf = target => {
@@ -99,6 +99,7 @@ const decl = (() => {
       .sort((a, b) => a.overlay - b.overlay || a.order - b.order);
     for (const e of visible) map = __rt.assoc(map, e.key, e.fn);
     t.map = map; t.promise=__rt.getOr(map,'js/Promise',undefined);t.version = version; t.frontier = frontier;
+    t.snapshot = __rt.vector(version, frontier, map, declared);
   };
   // A struct of a type this task has not declared yet (a published value
   // another task made): demand the type's declaration, its product of the
@@ -112,10 +113,8 @@ const decl = (() => {
     return true;
   };
   const resolve = (t, x) => {
-    if (t.version === version && t.frontier === frontier) {
-      const m = __rt.cljProtocolLookup(t.map, declared, x);
-      if (m !== undefined) return m;
-    }
+    const cached = __rt.cljProtocolLookup(t.snapshot, version, frontier, x);
+    if (cached !== undefined) return cached;
     // Demand an unknown type before building the protocol's pending bundles:
     // declaration effects, errors and dependency waits keep their order.
     declare(x);
