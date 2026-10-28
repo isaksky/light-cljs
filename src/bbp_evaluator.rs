@@ -75,6 +75,65 @@ fn validate_js_object_payload(payload: &Datum) -> Result<(), EvalError> {
 }
 
 pub type BridgeStats = crate::compile_stats::NativeBridgeCall;
+
+/// The legacy bridge gives newly constructed scalars the latest equal scalar
+/// argument's provenance. Keep native occurrence identities during evaluation;
+/// apply this call-local compatibility rule only when exporting scalar leaves.
+#[derive(Eq, PartialEq, Hash)]
+enum ScalarKey {
+    Nil,
+    Boolean(bool),
+    Number(u64),
+    String(Arc<[u16]>),
+}
+impl ScalarKey {
+    fn of(data: &Datum) -> Option<Self> {
+        let number = |n: f64| {
+            Self::Number(if n.is_nan() {
+                f64::NAN.to_bits()
+            } else {
+                n.to_bits()
+            })
+        };
+        Some(match data.kind() {
+            D::Nil => Self::Nil,
+            D::Boolean(b) => Self::Boolean(*b),
+            D::Integer(n) => number(*n as f64),
+            D::Double(n) => number(*n),
+            D::Ratio {
+                numerator,
+                denominator,
+            } => number(*numerator as f64 / *denominator as f64),
+            D::Character(c) => Self::String(Arc::from([*c])),
+            D::String(s) => Self::String(s.clone()),
+            _ => return None,
+        })
+    }
+}
+
+fn scalar_origins(call: &Form) -> HashMap<ScalarKey, Datum> {
+    let mut origins = HashMap::new();
+    let mut pending: Vec<_> = call
+        .children()
+        .into_iter()
+        .skip(1)
+        .rev()
+        .map(|f| f.data())
+        .collect();
+    while let Some(data) = pending.pop() {
+        if let Some(key) = ScalarKey::of(&data) {
+            origins.insert(key, data.clone());
+        }
+        // Legacy decoding visits children in order, then metadata.
+        pending.extend(data.metadata());
+        pending.extend(data.compiler_literal_data());
+        if let D::Collection { children, .. } = data.kind() {
+            pending.extend(children.iter().rev().cloned());
+        }
+    }
+    origins
+}
+
 struct Imported {
     data: Datum,
     occurrence: WeakHandle,
@@ -435,12 +494,23 @@ impl Bridge {
         self.environment = Some((data.clone(), s.persist(value)));
         Ok(value)
     }
+    #[cfg(test)]
     fn export<'s>(
         &mut self,
         s: &Scope<'s>,
         v: Local<'s>,
         depth: usize,
         remaining: &mut usize,
+    ) -> Result<Datum, EvalError> {
+        self.export_with_origins(s, v, depth, remaining, &HashMap::new())
+    }
+    fn export_with_origins<'s>(
+        &mut self,
+        s: &Scope<'s>,
+        v: Local<'s>,
+        depth: usize,
+        remaining: &mut usize,
+        origins: &HashMap<ScalarKey, Datum>,
     ) -> Result<Datum, EvalError> {
         self.poll()?;
         if let Some(data) = s
@@ -451,7 +521,10 @@ impl Bridge {
         {
             self.charge(data, depth, remaining)?;
             self.stats.reused += 1;
-            return Ok(data.clone());
+            return Ok(ScalarKey::of(data)
+                .and_then(|key| origins.get(&key))
+                .unwrap_or(data)
+                .clone());
         }
         if depth == 0 || *remaining == 0 {
             return Err(error("form conversion limit exceeded"));
@@ -484,7 +557,8 @@ impl Bridge {
                 .into_iter()
                 .find(|kind| tag == literal_tag(*kind))
                 .ok_or_else(|| error("invalid compiler literal tag"))?;
-                let payload = self.export(s, payload, depth - 1, remaining)?;
+                let payload =
+                    self.export_with_origins(s, payload, depth - 1, remaining, origins)?;
                 if kind == L::JsObject {
                     validate_js_object_payload(&payload)?;
                 }
@@ -507,7 +581,7 @@ impl Bridge {
                 };
                 let children = values
                     .into_iter()
-                    .map(|x| self.export(s, x, depth - 1, remaining))
+                    .map(|x| self.export_with_origins(s, x, depth - 1, remaining, origins))
                     .collect::<Result<Vec<_>, _>>()?;
                 D::Collection {
                     kind: match k {
@@ -533,7 +607,16 @@ impl Bridge {
         };
         let mut data = Datum::new(kind);
         if let Some(m) = s.form_meta(v) {
-            data = data.with_metadata(self.export(s, m, depth - 1, remaining)?);
+            data = data.with_metadata(self.export_with_origins(
+                s,
+                m,
+                depth - 1,
+                remaining,
+                origins,
+            )?);
+        } else if let Some(original) = ScalarKey::of(&data).and_then(|key| origins.get(&key)) {
+            self.stats.reused += 1;
+            return Ok(original.clone());
         }
         self.stats.exported += 1;
         Ok(data)
@@ -2614,11 +2697,12 @@ impl MacroEvaluator for BbpEvaluator {
         let v = self.cx()?.values.borrow().get(&id.index).unwrap().clone();
         let data = self.host_scope(|s| {
             self.with_bridge(|b| {
-                b.export(
+                b.export_with_origins(
                     s,
                     s.local(&v).map_err(error)?,
                     limits.depth,
                     &mut limits.nodes.clone(),
+                    &scalar_origins(call),
                 )
             })
         })?;

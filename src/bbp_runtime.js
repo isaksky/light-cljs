@@ -426,8 +426,11 @@ const native = (() => {
   };
   const list = a => { let v = __rt.formList(); for(let i=a.length-1;i>=0;i--) v=__rt.formConj(v,a[i]); return v; };
   const vector = a => { let v=__rt.formVector();for(const x of a)v=__rt.formConj(v,x);return v; };
-  const map = a => { let v=__rt.formMap();for(let i=0;i<a.length;i+=2)v=__rt.formAssoc(v,a[i],a[i+1]);return v; };
-  const arrayMap = a => __rt.formArrayMap(vector(a));
+  // Macro traversal is observable in generated operand and property order.
+  // Select the legacy hash paths while retaining native persistent storage.
+  const ordered = x => __rt.formReaderCollection(x);
+  const map = a => { let v=ordered(__rt.formMap());for(let i=0;i<a.length;i+=2)v=__rt.formAssoc(v,a[i],a[i+1]);return v; };
+  const arrayMap = a => ordered(__rt.formArrayMap(vector(a)));
   const literalMap = a => a.length<=16?arrayMap(a):map(a);
   // Native bootstrap for the calls the small Rust js-obj builder declines.
   // Match compiler_core_macros.cljs: partition drops an odd trailing form;
@@ -470,13 +473,13 @@ const native = (() => {
     result.push(object);
     return list(result);
   };
-  const set = a => { let v=__rt.formSet();for(const x of a)v=__rt.formConj(v,x);return v; };
+  const set = a => { let v=ordered(__rt.formSet());for(const x of a)v=__rt.formConj(v,x);return v; };
   // A set literal with members that are not constants rejects duplicates.
   // Reader-distinct constants retain every position after lowering.
   const counted = (v, n, message) => { if (__rt.formCount(v) !== n) throw new Error(message); return v; };
   const literalSet = a => counted(set(a), a.length, 'Duplicate key');
-  const constantSet = a => __rt.formLiteralSet(vector(a));
-  const constantMap = a => __rt.formLiteralMap(vector(a));
+  const constantSet = a => ordered(__rt.formLiteralSet(vector(a)));
+  const constantMap = a => ordered(__rt.formLiteralMap(vector(a)));
   const arity = n => { throw new Error('Invalid arity: ' + n); };
   const gensym = (...args) => {
     if (args.length > 1) return arity(args.length);
@@ -1754,9 +1757,9 @@ const native = (() => {
     },
     registerReaderNamespace:name=>createNs(__rt.cljSymbol(val(name))), addReaderDefinitions:()=>null,
     PersistentVector:{EMPTY:__rt.formVector()}, PersistentArrayMap:{EMPTY:arrayMap([])}, List:{EMPTY:__rt.formList()},
-    PersistentHashSet:{EMPTY:__rt.formSet()},
-    Keyword:{}, Symbol:{}, PersistentHashMap:{EMPTY:__rt.formMap(), fromArrays:(ks,vs)=>{
-      let m=__rt.formMap();for(let i=0;i<ks.length;i++)m=__rt.cljAssoc(m,ks[i],vs[i]);return m;
+    PersistentHashSet:{EMPTY:ordered(__rt.formSet())},
+    Keyword:{}, Symbol:{}, PersistentHashMap:{EMPTY:ordered(__rt.formMap()), fromArrays:(ks,vs)=>{
+      let m=ordered(__rt.formMap());for(let i=0;i<ks.length;i++)m=__rt.cljAssoc(m,ks[i],vs[i]);return m;
     }}, EmptyList:{},
   };
   currentNamespace=createNs(__rt.cljSymbol('cljs.user'));

@@ -4651,6 +4651,132 @@ fn assert_native_matches_legacy(source: &str, expected: &str) {
     assert_eq!(native, legacy, "{source}");
 }
 
+/// Compare the complete emission, including source positions and names, under
+/// both macro backends. A namespace exercises the task-local bridge at 1/4 jobs.
+fn assert_backend_emission(source: &str) {
+    use light_cljs::application::{ApplicationOptions, OptimizationLevel};
+    let root = temp_dir::TempDir::new("native-output-parity");
+    std::fs::write(root.join("app.cljs"), format!("(ns app)\n{source}")).unwrap();
+    let build = |native, jobs| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut warnings = Vec::new();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut warnings,
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mapped: Vec<_> = [
+            OptimizationLevel::None,
+            OptimizationLevel::Prepare,
+            OptimizationLevel::Advanced,
+        ]
+        .into_iter()
+        .map(|optimize| {
+            light_cljs::prepare_application(
+                &program,
+                ApplicationOptions {
+                    optimize,
+                    ..Default::default()
+                },
+            )
+            .emit_js_mapped()
+        })
+        .collect();
+        (
+            emit_js(&program),
+            mapped,
+            warnings
+                .into_iter()
+                .map(|w| (w.kind, w.message, w.source_index, w.span))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let reference = build(false, 1);
+    for jobs in [1, 4] {
+        let native = build(true, jobs);
+        assert_eq!(native.0, reference.0, "JavaScript, jobs {jobs}: {source}");
+        assert_eq!(native.2, reference.2, "warnings, jobs {jobs}: {source}");
+        for (level, (a, b)) in native.1.iter().zip(&reference.1).enumerate() {
+            assert_eq!(
+                a.0, b.0,
+                "optimized JavaScript, level {level}, jobs {jobs}: {source}"
+            );
+            if a.1 != b.1 {
+                let first =
+                    a.0.lines()
+                        .enumerate()
+                        .skip(a.0.lines().count().saturating_sub(100))
+                        .flat_map(|(line, text)| {
+                            (0..=text.encode_utf16().count())
+                                .map(move |column| (line as u32, column as u32))
+                        })
+                        .find(|&(line, column)| {
+                            a.1.original(line, column) != b.1.original(line, column)
+                        });
+                panic!(
+                    "source map, level {level}, jobs {jobs}: {source}\nfirst difference {:?}",
+                    first.map(|(line, column)| (
+                        line,
+                        column,
+                        a.1.original(line, column),
+                        b.1.original(line, column)
+                    ))
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_hash_collection_emission_matches_legacy() {
+    for constructor in [
+        "(into {} props)",
+        "(apply hash-map (mapcat identity props))",
+        "(into (array-map) props)",
+    ] {
+        assert_backend_emission(&format!(
+            r#"
+          (defmacro object [props]
+            (let [props {constructor}]
+              (cons 'js* (cons (str "({{" (apply str (interpose "," (repeat (count props) "~{{}}:~{{}}"))) "}})")
+                               (mapcat identity props)))))
+          (let [trace (js/Array.) record (fn [x] (.push trace x) x)
+                o (object [["width" (record "width")] ["height" (record "height")]
+                           ["children" (record "children")] ["x" (record "x")]
+                           ["id" (record "id")] ["data-mapping" (record "data-mapping")]
+                           ["transform" (record "transform")] ["data-colors" (record "data-colors")]
+                           ["y" (record "y")] ["ref" (record "ref")]])]
+            (js/console.log (js/JSON.stringify trace) (js/JSON.stringify (js/Object.keys o))))"#
+        ));
+    }
+    assert_backend_emission(
+        r#"
+      (defmacro members [] (list 'quote (vec (set (range 12)))))
+      (js/console.log (pr-str (members)))"#,
+    );
+}
+
+#[test]
+fn native_generated_scalar_mappings_match_legacy() {
+    for source in [
+        "(defmacro add-one [x] (list '+ x 1)) (js/console.log (add-one 1))",
+        r#"(defmacro strings [a b] (list 'str (str a) b)) (js/console.log (strings "[" "]"))"#,
+        "(defmacro keywords [x] (list 'quote (keyword (name x)))) (js/console.log (keywords :same))",
+    ] {
+        assert_backend_emission(source);
+    }
+}
+
 /// A macro-local JavaScript array `a` and `t`, which records its operand
 /// in `a` and returns it: operand effects in evaluation order.
 const TRACE: &str = "a (js/Array.) t (fn [x] (.push a x) x)";

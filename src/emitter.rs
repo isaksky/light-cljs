@@ -3154,8 +3154,10 @@ impl<'a> Emitter<'a> {
             // task's runtime object for it.
             self.output.push_str(match empty {
                 EmptyCollection::Vector => "__rt.formVector()",
-                EmptyCollection::Map => "__rt.formLiteralMap(__rt.formVector())",
-                EmptyCollection::Set => "__rt.formSet()",
+                EmptyCollection::Map => {
+                    "__rt.formReaderCollection(__rt.formLiteralMap(__rt.formVector()))"
+                }
+                EmptyCollection::Set => "__rt.formReaderCollection(__rt.formSet())",
                 EmptyCollection::List => "__rt.formList()",
             });
             return;
@@ -3267,12 +3269,24 @@ impl<'a> Emitter<'a> {
             if constructor == Composite::HashMap {
                 // A hash-map literal evaluates every key before any value
                 // (`mapFromArrays`): two flat operand lists, then the map.
-                self.output.push_str("__rt.cljZipMap(__rt.formList(");
+                self.output
+                    .push_str("__rt.formReaderCollection(__rt.cljZipMap(__rt.formList(");
                 items(self, &mut (0..count).step_by(2));
                 self.output.push_str("), __rt.formList(");
                 items(self, &mut (1..count).step_by(2));
-                self.output.push_str("))");
+                self.output.push_str(")))");
                 return;
+            }
+            let ordered = matches!(
+                constructor,
+                Composite::ArrayMap
+                    | Composite::Set
+                    | Composite::CheckedSet
+                    | Composite::LiteralMap
+                    | Composite::LiteralSet
+            );
+            if ordered {
+                self.output.push_str("__rt.formReaderCollection(");
             }
             // Dynamic set literals reject equal members after every operand
             // has run. Constant literals retain their positional storage.
@@ -3306,6 +3320,9 @@ impl<'a> Emitter<'a> {
             }
             if let Some((expected, _)) = check {
                 write!(self.output, ", {expected})").unwrap();
+            }
+            if ordered {
+                self.output.push(')');
             }
             return;
         }
@@ -4054,13 +4071,18 @@ impl<'a> Emitter<'a> {
             }
             (C::Vector, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formVector", false, ""),
             (C::List, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formList", false, ""),
-            (C::HashSet, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formSet", false, ""),
+            (C::HashSet, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => {
+                ("__rt.formReaderCollection(", "formSet", false, ")")
+            }
             (C::HashMap, n) if n <= NATIVE_CONSTRUCTOR_LIMIT && n % 2 == 0 => {
-                ("", "formMap", false, "")
+                ("__rt.formReaderCollection(", "formMap", false, ")")
             }
-            (C::ArrayMap, n) if n <= NATIVE_CONSTRUCTOR_LIMIT && n % 2 == 0 => {
-                ("__rt.formArrayMap(", "formVector", false, ")")
-            }
+            (C::ArrayMap, n) if n <= NATIVE_CONSTRUCTOR_LIMIT && n % 2 == 0 => (
+                "__rt.formReaderCollection(__rt.formArrayMap(",
+                "formVector",
+                false,
+                "))",
+            ),
             (C::Concat, 2) => ("", "cljConcat", false, ""),
             // `(concat a b c …)`: one flat operand list, so a wide call
             // nests no deeper than a narrow one.
