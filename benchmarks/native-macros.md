@@ -2382,22 +2382,27 @@ identical JavaScript and complete source maps at jobs 1 and 4. All four generate
 applications print the independent Babashka oracle's `484264` for `42 3`.
 
 The default V8 guard compares immutable release binaries from `01175afc` and
-production source `a027c933` in this worker's isolated worktree. Mac arm64,
+production source `ca2ba2e2` in this worker's isolated worktree. Mac arm64,
 Homebrew Rust/Cargo 1.99.1, Node 26.12.1, Babashka 1.12.218, locked dependencies,
-three Cargo build jobs, and `LIGHT_CLJS_V8_CACHE=require` were used. Three pairs
-alternate before/after order (before-after, after-before, before-after), using
+three Cargo build jobs, and `LIGHT_CLJS_V8_CACHE=require` were used. Six retained
+pairs balance before/after order (before-after, after-before, before-after;
+after-before, before-after, after-before), using
 the same generated project and `/usr/bin/time -l BINARY release bench --jobs 1
 --no-cache`. A Perl exec wrapper bounds each invocation at 600 seconds; Node,
 hashing, generation and binary compilation are outside timing. Filesystem caches
-are retained, with no discarded runs. No local or peer build/test overlaps timing.
+are retained. The first three clean pairs had overlapping ranges and a 2.4%
+median difference, so three more clean pairs were added. Three intervening pairs
+overlapped a peer build and are excluded. No local or peer build/test overlaps
+the twelve retained measurements; each clean block starts after 40 quiet seconds.
 
 | Default V8 | Wall runs, s | Median wall, s | Median user+system, s | Median peak RSS, MiB |
 | --- | --- | ---: | ---: | ---: |
-| Before | 7.19, 7.08, 7.01 | 7.08 | 7.60 | 1,051.6 |
-| After | 7.06, 7.06, 7.20 | 7.06 | 7.57 | 1,014.8 |
+| Before | 7.44, 7.70, 7.64, 7.01, 7.09, 6.94 | 7.27 | 7.72 | 1,029.3 |
+| After | 7.82, 8.00, 7.38, 6.98, 6.97, 6.91 | 7.18 | 7.70 | 1,035.0 |
 
-The wall ratio is 0.997x, with overlapping ranges: no demonstrated slowdown.
-Load averages are 6.51/8.67/8.49 before and 2.73/6.73/7.75 after (1/5/15 minutes).
-All six main modules retain SHA-256
+The wall ratio is 0.988x, with overlapping ranges: no demonstrated slowdown.
+Load averages in the two retained blocks are 2.12/5.17/6.39 → 2.41/4.78/6.17
+and 1.50/3.20/5.18 → 1.57/2.98/5.00 (1/5/15 minutes).
+All twelve retained main modules retain SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`;
-all six Node executions print `484264`. The application runtime is unchanged.
+all twelve retained Node executions print `484264`. The application runtime is unchanged.

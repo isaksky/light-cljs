@@ -2817,3 +2817,9 @@ native-only all-integration-test attempts encounter the existing missing legacy
 features off that evaluator is an empty enum; its implementation and the
 affected evaluation tests are byte-unchanged from `01175afc`. These are explicit
 configuration/lint limitations, not passing broad native/engine-free checks.
+
+The final default V8 guard has six clean, alternating-order pairs: median wall
+time is 7.27 s before and 7.18 s after (0.988x), with overlapping ranges. All
+twelve retained outputs keep the same module hash and print `484264`. The
+[benchmark record](../benchmarks/native-macros.md) lists every retained run and
+the three intervening pairs excluded for peer-build overlap.
