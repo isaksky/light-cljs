@@ -1043,19 +1043,25 @@ default V8 is identical. Build both with `LIGHT_CLJS_V8_CACHE=require
 CARGO_BUILD_JOBS=3 cargo build --locked --release --bin light-cljs`, restoring
 the final source after the baseline build. Run the same seed-42 generated
 project with `/usr/bin/time -lp BINARY release bench --no-cache --stats --jobs 1`.
-The first admitted pair is below (seconds and decimal MB). Both processes
-have no detected competing build/test/compiler before, during or after; idle
-admission requires ten seconds. Later pairs interrupted by restarted peer
-tests are excluded, including the whole pair when only one side overlaps.
+The three admitted pairs below use alternating pair order, reversing the
+middle pair (seconds and decimal MB). Every process has no detected competing
+build/test/compiler before, during or after; idle admission requires ten
+seconds. Six interrupted attempts are excluded, including the whole pair
+when only one side overlaps. All three accepted pairs are retained.
 
 | Pair | Version | Wall | RSS | Load before → after |
 | --- | --- | ---: | ---: | --- |
 | 0 | Before | 7.12 | 1061.8 | 2.87/6.04/7.98 → 2.72/5.95/7.94 |
 | 0 | After | 7.02 | 1063.3 | 2.72/5.95/7.94 → 2.58/5.87/7.90 |
+| 1 | Before | 7.20 | 1076.1 | 2.51/4.74/6.36 → 2.39/4.68/6.33 |
+| 1 | After | 7.24 | 1107.3 | 2.50/4.82/6.41 → 2.51/4.74/6.36 |
+| 2 | Before | 7.04 | 1058.5 | 2.66/4.51/6.20 → 2.52/4.45/6.17 |
+| 2 | After | 7.10 | 1107.0 | 2.52/4.45/6.17 → 2.44/4.37/6.12 |
 
-This admitted pair shows **no observed V8 slowdown** (after/before 0.986).
-It is one pair, not a repeated median or a statistical bound. Generated
-JavaScript is byte-identical (SHA-256
+Wall medians are **7.12 s before / 7.10 s after** (0.997x), showing no observed
+build-time slowdown. Individual after/before ratios are 0.986/1.006/1.009;
+wall ranges overlap at 7.04–7.20 / 7.02–7.24 s. RSS medians are
+1061.8/1107.0 MB. All six generated JavaScript outputs are byte-identical (SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`).
 
 ### Single-thread speed
