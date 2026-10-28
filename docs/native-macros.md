@@ -3143,3 +3143,28 @@ Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
 The final rebase onto master `01175afc` is a no-op; only documentation changes
 follow production source `390d1e0c`, so the recorded checks cover the final
 source, test and build inputs.
+
+### Discarded named dispatcher scope (2026-10-28)
+
+Native named dispatchers are parenthesized function expressions, including
+when their value is discarded in statement position. A bare fixed multi-arity
+dispatcher was parsed as a JavaScript declaration, hoisting its name into the
+enclosing function. The regression checks that binding before and after the
+discarded expression for fixed, variadic and mixed-arity functions. It derives
+the local identifier from analysis and installs the scope probes after raw-JS
+hygiene, then runs the legacy emission in QuickJS and native emission in BBP.
+The pre-fix native case fails with `Error: hoisted`; all corrected cases pass.
+
+Production commit `3647597b` rebases the memoize work onto master `c31d1b97`.
+The additive test/documentation conflicts retain both changes. The native
+selector merge keeps `CljWithExportedMeta = 91`, assigning `FnApplyNull = 92`
+and `FnApplyReceiver = 93`; all 94 selectors remain ordered and distinct.
+No native-only code enters `src/js_runtime.js` or the default emission path.
+
+On macOS arm64, Homebrew Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218,
+`LIGHT_CLJS_STRESS_SEEDS=12 CARGO_BUILD_JOBS=3 cargo test --locked
+--no-default-features --features bbp-macros,quickjs --lib --test bbp_macros
+--test bbp_proxy_has --test bbp_reader -- --test-threads=3` passes 367 library,
+138 macro, two Proxy and twelve reader tests, retaining two existing ignored
+stress cases. The earlier pre-rebase macro run was interrupted when master
+advanced; these complete results replace it.
