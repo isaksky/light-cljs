@@ -2528,6 +2528,10 @@ fn form_step(
     instr: Instr,
 ) -> Result<Flow, Fault> {
     if let Instr::FormOp(op) = instr
+        && matches!(
+            op,
+            super::instr::FormOp::CljCallMember | super::instr::FormOp::CljReadRoot
+        )
         && native::start_compiler_access(state, heap, op)?
     {
         return Ok(Flow::Next);
