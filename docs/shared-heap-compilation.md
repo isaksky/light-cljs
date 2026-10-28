@@ -9,6 +9,9 @@ at, and the conditions under which the bet pays off. Measurements are from
 `298325f8` on the 24-core Mac (Apple M3 Ultra VM). They are listed under
 "Method and reproduction".
 
+For the integrated pool's October 28 evidence and remaining limits, see
+[final deferred-pool acceptance](#final-deferred-pool-acceptance-light-cljs-481-october-28-2026).
+
 ## Summary
 
 Each light-cljs compile runs a large amount of JavaScript: user macros,
@@ -1447,6 +1450,143 @@ row, with process scans every 100 ms during execution. Load is the
 one/five/fifteen-minute average immediately before and after each row.
 RSS is `/usr/bin/time -l`'s maximum resident set size in decimal MB, rather
 than its separate peak-footprint counter or native heap admission accounting.
+
+#### Accepted release results
+
+Two attempts at the final native 200k/jobs-8 cell overlapped light-cljs-551's
+build and then rustfmt. Both are excluded and that cell was retried; all
+**48 accepted rows** have no detected competing process during execution.
+Medians below use all three accepted samples per cell. Each native build
+compiles and publishes 57 helpers (200k) or 400 (chain), with zero per-task
+fallbacks, exactly its serial count. The generated project's helpers are
+initialized by the coordinator, so its legacy `pool.worker-initializations`
+counter is zero; native helper publication counts cover the whole runtime.
+
+| Workload | Jobs | Wall s | Wall / 1 | RSS MB | RSS / 1 | Helper inits | Task contexts |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 200k | 1 | 33.42 | 1.000 | 1347.4 | 1.000 | 57 | 58 |
+| 200k | 2 | 22.24 | 0.665 | 1480.3 | 1.099 | 57 | 59 |
+| 200k | 4 | 17.68 | 0.529 | 1563.1 | 1.160 | 57 | 61 |
+| 200k | 8 | 19.33 | 0.578 | 1738.3 | 1.290 | 57 | 65 |
+| chain | 1 | 2.58 | 1.000 | 89.5 | 1.000 | 400 | 401 |
+| chain | 2 | 3.07 | 1.190 | 98.2 | 1.097 | 400 | 402 |
+| chain | 4 | 2.65 | 1.027 | 128.0 | 1.430 | 400 | 404 |
+| chain | 8 | 2.64 | 1.023 | 167.4 | 1.870 | 400 | 408 |
+
+The default V8 comparison uses the same commit, inputs, optimization, map flags
+and budgets. It is read-only compatibility/performance evidence:
+
+| Workload | Jobs | V8 wall s | V8 wall / 1 | V8 RSS MB | V8 RSS / 1 | Native / V8 wall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 200k | 1 | 7.21 | 1.000 | 1171.9 | 1.000 | 4.64 |
+| 200k | 2 | 5.99 | 0.831 | 1267.4 | 1.082 | 3.71 |
+| 200k | 4 | 5.09 | 0.706 | 1467.0 | 1.252 | 3.47 |
+| 200k | 8 | 5.22 | 0.724 | 1687.3 | 1.440 | 3.70 |
+| chain | 1 | 0.18 | 1.000 | 98.8 | 1.000 | 14.33 |
+| chain | 2 | 0.17 | 0.944 | 105.8 | 1.071 | 18.06 |
+| chain | 4 | 0.14 | 0.778 | 117.6 | 1.190 | 18.93 |
+| chain | 8 | 0.14 | 0.778 | 177.9 | 1.801 | 18.86 |
+
+Raw accepted samples pair the two backends for display. Each load cell is
+that row's own before → after one/five/fifteen-minute average; native/V8
+execution order is reversed in round 1 as described above.
+
+**400-helper chain** (wall seconds / RSS decimal MB):
+
+| Round | Jobs | Native s / MB | Native load before → after | V8 s / MB | V8 load before → after |
+| ---: | ---: | ---: | --- | ---: | --- |
+| 0 | 1 | 2.58 / 89.5 | 2.67/2.66/3.75 → 2.67/2.66/3.75 | 0.19 / 101.0 | 2.71/2.67/3.74 → 2.71/2.67/3.74 |
+| 0 | 2 | 3.06 / 98.2 | 2.59/2.64/3.72 → 2.54/2.63/3.71 | 0.18 / 106.4 | 2.31/2.58/3.68 → 2.31/2.58/3.68 |
+| 0 | 4 | 3.09 / 128.0 | 2.10/2.53/3.65 → 2.26/2.55/3.65 | 0.14 / 121.7 | 2.14/2.52/3.62 → 2.14/2.52/3.62 |
+| 0 | 8 | 2.64 / 167.4 | 2.35/2.55/3.62 → 2.48/2.57/3.62 | 0.15 / 174.2 | 2.41/2.55/3.60 → 2.41/2.55/3.60 |
+| 1 | 1 | 2.57 / 90.3 | 2.09/2.32/3.25 → 2.09/2.31/3.24 | 0.18 / 98.8 | 2.29/2.36/3.28 → 2.29/2.36/3.28 |
+| 1 | 2 | 3.07 / 97.6 | 1.85/2.24/3.20 → 1.78/2.22/3.18 | 0.17 / 105.8 | 1.91/2.27/3.22 → 1.91/2.27/3.22 |
+| 1 | 4 | 2.65 / 122.7 | 1.97/2.24/3.17 → 1.97/2.24/3.17 | 0.14 / 117.6 | 2.04/2.26/3.19 → 2.04/2.26/3.19 |
+| 1 | 8 | 2.63 / 167.4 | 1.81/2.17/3.11 → 1.81/2.17/3.11 | 0.14 / 177.9 | 1.69/2.16/3.12 → 1.69/2.16/3.12 |
+| 2 | 1 | 2.59 / 88.8 | 2.28/2.23/2.93 → 2.34/2.25/2.93 | 0.18 / 96.1 | 2.13/2.20/2.90 → 2.13/2.20/2.90 |
+| 2 | 2 | 3.07 / 99.2 | 2.03/2.18/2.89 → 2.59/2.29/2.92 | 0.17 / 102.1 | 2.42/2.27/2.90 → 2.42/2.27/2.90 |
+| 2 | 4 | 2.62 / 135.8 | 2.20/2.22/2.88 → 2.43/2.27/2.89 | 0.14 / 116.3 | 3.09/2.41/2.94 → 3.09/2.41/2.94 |
+| 2 | 8 | 2.66 / 167.4 | 3.16/2.45/2.94 → 3.16/2.45/2.94 | 0.14 / 179.8 | 2.90/2.42/2.92 → 2.90/2.42/2.92 |
+
+**Seed-42 200k project** (wall seconds / RSS decimal MB):
+
+| Round | Jobs | Native s / MB | Native load before → after | V8 s / MB | V8 load before → after |
+| ---: | ---: | ---: | --- | ---: | --- |
+| 0 | 1 | 33.42 / 1348.1 | 2.42/2.55/3.59 → 2.30/2.49/3.52 | 7.21 / 1171.9 | 2.26/2.48/3.50 → 2.16/2.45/3.49 |
+| 0 | 2 | 22.01 / 1489.4 | 1.99/2.40/3.46 → 1.92/2.35/3.41 | 5.99 / 1276.4 | 1.86/2.32/3.39 → 2.03/2.35/3.39 |
+| 0 | 4 | 17.78 / 1563.1 | 1.87/2.31/3.36 → 2.22/2.35/3.35 | 5.12 / 1467.0 | 2.19/2.34/3.34 → 2.26/2.35/3.33 |
+| 0 | 8 | 20.22 / 1738.3 | 2.14/2.32/3.31 → 2.56/2.41/3.32 | 5.23 / 1695.8 | 2.39/2.38/3.30 → 2.44/2.39/3.30 |
+| 1 | 1 | 33.24 / 1335.7 | 1.90/2.15/3.07 → 1.82/2.10/3.02 | 7.12 / 1183.1 | 1.69/2.13/3.09 → 1.89/2.16/3.09 |
+| 1 | 2 | 22.24 / 1480.3 | 2.01/2.13/3.00 → 2.22/2.17/2.99 | 5.97 / 1267.4 | 1.91/2.12/3.01 → 1.92/2.11/3.00 |
+| 1 | 4 | 17.57 / 1572.4 | 2.34/2.21/2.98 → 2.56/2.26/2.98 | 5.06 / 1484.7 | 2.62/2.26/3.01 → 2.49/2.23/3.00 |
+| 1 | 8 | 19.33 / 1782.3 | 2.21/2.21/2.94 → 2.51/2.28/2.95 | 5.20 / 1687.3 | 2.55/2.27/2.98 → 2.43/2.25/2.97 |
+| 2 | 1 | 34.20 / 1347.4 | 2.61/2.38/2.90 → 2.89/2.47/2.92 | 7.23 / 1171.4 | 2.74/2.46/2.90 → 2.60/2.43/2.89 |
+| 2 | 2 | 22.24 / 1466.1 | 2.59/2.44/2.89 → 2.52/2.43/2.87 | 5.99 / 1265.0 | 2.44/2.42/2.86 → 2.33/2.39/2.85 |
+| 2 | 4 | 17.68 / 1562.1 | 2.51/2.43/2.86 → 2.64/2.47/2.86 | 5.09 / 1466.0 | 2.50/2.45/2.84 → 2.62/2.47/2.85 |
+| 2 | 8 | 18.88 / 1720.4 | 2.95/2.62/2.87 → 3.19/2.68/2.88 | 5.22 / 1669.8 | 2.92/2.65/2.87 → 2.85/2.63/2.86 |
+
+#### Identity and remaining memory premium
+
+All JavaScript bytes match across jobs, rounds and backends for each workload.
+Full artifacts including inline maps match across jobs/rounds within each
+backend. The chain's maps also match across backends. The 200k native and V8
+maps have identical versions, 570 sources and 41,923 names, but different
+`mappings` fields; cross-backend map equality is not claimed. SHA-256 of
+JavaScript before the map directive and of decoded map JSON:
+
+| Workload / backend | JavaScript SHA-256 | Map SHA-256 |
+| --- | --- | --- |
+| chain / both | `c2ebe9d42d3969bcd71bdca71d371258e3068e7d24120dac3e724f7b3f909d2e` | `7e50d7f53e4f44c6af60f3ef61faccfba25bb940208db0b5ba1c146d4900a96d` |
+| 200k / native | `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e` | `4e949e4fbb402d0b102fa235421ea72e2ec631838a2bc007794bafdb36a7f6ef` |
+| 200k / V8 | `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e` | `1df5168955f2fa051dc347787f3845b9d04a13d99e7f56b2b3a52189f807facb` |
+
+Executing the emitted native 200k module with `main('42', '3')` and the
+independent generated `bb oracle.bb 42 3` both prints **484264**. Identical
+JavaScript gives the same application to every accepted row.
+
+At eight jobs the generated project's median wall is **0.578x** serial
+(1.73x speedup) and RSS is **1.290x**. The chain's wall is **1.023x** and RSS
+**1.870x**. Both miss near-serial RSS. Paired eight/one RSS ratios are
+1.289/1.334/1.277 for 200k and 1.870/1.853/1.885 for the chain.
+Native source factories compiled remain 742 (200k) and 401 (chain) at every
+N; contexts grow from 58→65 and 401→408. At four/eight jobs the chain records
+median 103/110 task steps queued from completion wakeups, so the returned-wakeup
+path is exercised by this workload. All helper values publish once.
+
+Native heap counters (medians) describe admission and collection, separately
+from process RSS; their peaks and collection times need not coincide:
+
+| Workload | Jobs | Last collected live MB | Managed at report MB | Peak managed MB | Total admitted GB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 200k | 1 | 246.4 | 380.3 | 473.7 | 7.615 |
+| 200k | 2 | 337.2 | 556.1 | 669.8 | 7.892 |
+| 200k | 4 | 642.3 | 817.8 | 982.6 | 8.441 |
+| 200k | 8 | 1120.5 | 1282.9 | 1606.8 | 9.475 |
+| chain | 1 | 18.0 | 36.9 | 42.9 | 2.121 |
+| chain | 2 | 25.1 | 49.4 | 55.4 | 2.658 |
+| chain | 4 | 38.5 | 59.3 | 79.4 | 2.664 |
+| chain | 8 | 65.4 | 89.8 | 120.6 | 2.699 |
+
+The remaining contributors are those isolated by light-cljs-508/552 above:
+task-owned ordinary root registries, getters/captures and bootstrap state,
+plus heap-table high-water storage. Temporary property population, collection
+timing and allocator residency also affect peaks. Compiler IR/data, executable
+code and stacks are outside native admission counters; subtracting them from
+RSS does not measure allocator overhead. The current ratios confirm that
+premium; no distinct new retained-memory cause is isolated, so no additional
+memory follow-up is filed.
+
+Separate eight-job `/usr/bin/sample PID 3 1 -mayDie` runs show collapsed
+chain top-of-stack counts of 11,471 semaphore timed waits, 4,137 condition
+waits, 466 VM `execute_budgeted`, 123 SipHash writes, 93 property
+`lookup_cursor`, 83 `Heap::mark_and_sweep`, 63 `Heap::allocate_accounted` and
+53 `OrdinaryObject::push`. The 200k sample records 13,296 condition waits,
+1,137 mutex waits, 365 VM dispatch, 239 memmoves, 117 GC, 81 allocation and
+74 ordinary-property insertion samples. These are thread stacks, not CPU
+percentages or retained-byte attribution. Peer light-cljs-551 macro tests are
+active: load is 5.28/3.32/2.99 before/after the chain, then
+5.28/3.32/2.99 → 5.93/3.63/3.11 for 200k. These profiling runs are excluded
+from the timing/RSS tables.
 
 ### Single-thread speed
 
