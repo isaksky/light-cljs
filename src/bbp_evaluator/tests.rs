@@ -3386,3 +3386,71 @@ fn published_reader_js_tags_keep_builtin_identity_across_tasks_and_gc() {
         );
     });
 }
+
+#[test]
+fn published_flatten_worklists_survive_owner_drop_gc_and_deep_trees() {
+    let options = EvaluatorOptions {
+        poll_budget: 100_000_000,
+        timeout: std::time::Duration::from_secs(60),
+        ..Default::default()
+    };
+    let shared = BbpRuntime::new(&options).unwrap();
+    let owner = shared.evaluator().unwrap();
+    let id = owner
+        .evaluate_unit(
+            "rt => {
+        let tree = 7;
+        for (let i = 0; i < 3000; i++) tree = __rt.formVector(tree);
+        return rt.core.flatten(__rt.formVector(1, tree, 9));
+    }",
+        )
+        .unwrap();
+    let worklist = owner.cx().unwrap().values.borrow()[&id.index].clone();
+    shared.0.runtime.publish(&worklist).unwrap();
+    let peers = [shared.evaluator().unwrap(), shared.evaluator().unwrap()];
+    let arguments = peers.each_ref().map(|peer| {
+        let argument = peer.id().unwrap();
+        peer.request(1, argument, worklist.clone()).unwrap();
+        argument
+    });
+    drop(owner);
+    shared.0.runtime.collect().unwrap();
+    for (peer, argument) in peers.iter().zip(arguments) {
+        let f = peer
+            .evaluate_unit("rt => xs => __rt.cljNth(xs, 1)")
+            .unwrap();
+        let result = peer.call(f, &[argument]).unwrap();
+        assert!(matches!(
+            peer.cx().unwrap().values.borrow()[&result.index].view(),
+            ValueView::Number(7.0)
+        ));
+        shared.0.runtime.collect().unwrap();
+        let f = peer.evaluate_unit("rt => xs => __rt.cljCount(xs)").unwrap();
+        let result = peer.call(f, &[argument]).unwrap();
+        assert!(matches!(
+            peer.cx().unwrap().values.borrow()[&result.index].view(),
+            ValueView::Number(3.0)
+        ));
+    }
+    assert!(shared.0.runtime.heap_stats().peak_managed_bytes <= options.memory_limit);
+}
+
+#[test]
+fn flatten_of_infinite_empty_branches_obeys_the_aggregate_poll_budget() {
+    let shared = BbpRuntime::new(&EvaluatorOptions {
+        poll_budget: 100_000,
+        timeout: std::time::Duration::from_secs(60),
+        ..Default::default()
+    })
+    .unwrap();
+    let evaluator = shared.evaluator().unwrap();
+    let error = evaluator
+        .evaluate_unit(
+            "rt => {
+        const repeat = self => __rt.lazySeq(() => __rt.cljCons(__rt.formVector(), self(self)));
+        return __rt.cljFirst(rt.core.flatten(repeat(repeat)));
+    }",
+        )
+        .unwrap_err();
+    assert!(error.0.contains("poll budget"), "{error}");
+}
