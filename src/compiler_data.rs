@@ -323,6 +323,10 @@ struct Forms {
 pub struct Form {
     forms: Arc<Forms>,
     id: FormId,
+    // Native values retain exact occurrences. Only compiler import uses the
+    // legacy scalar-position view, without replacing a Datum or its span.
+    #[cfg(feature = "bbp-macros")]
+    compiler_spans: Option<Arc<std::collections::HashMap<FormId, SourceSpan>>>,
 }
 impl Form {
     /// Leaf provenance must not pin the surrounding syntax arena: interned
@@ -342,6 +346,13 @@ impl Form {
             FormId(0),
         );
         Arc::get_mut(&mut leaf.forms).unwrap().expansions = self.expansions().to_vec();
+        #[cfg(feature = "bbp-macros")]
+        if let Some(span) = self.compiler_spans.as_ref().and_then(|s| s.get(&self.id)) {
+            leaf.compiler_spans = Some(Arc::new(std::collections::HashMap::from([(
+                FormId(0),
+                span.clone(),
+            )])));
+        }
         leaf
     }
     pub(crate) fn from_parts(
@@ -360,6 +371,8 @@ impl Form {
                 expansions: vec![],
             }),
             id,
+            #[cfg(feature = "bbp-macros")]
+            compiler_spans: None,
         }
     }
     /// Construct a form directly from owned data, without a host or source reader.
@@ -419,6 +432,8 @@ impl Form {
         self.forms.nodes.get(id.0).map(|_| Self {
             forms: self.forms.clone(),
             id,
+            #[cfg(feature = "bbp-macros")]
+            compiler_spans: self.compiler_spans.clone(),
         })
     }
     pub fn data(&self) -> Datum {
@@ -426,6 +441,22 @@ impl Form {
     }
     pub fn span(&self) -> SourceSpan {
         self.forms.spans[self.id.0].clone()
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn compiler_span(&self) -> SourceSpan {
+        self.compiler_spans
+            .as_ref()
+            .and_then(|s| s.get(&self.id))
+            .cloned()
+            .unwrap_or_else(|| self.span())
+    }
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn with_compiler_spans(
+        mut self,
+        spans: std::collections::HashMap<FormId, SourceSpan>,
+    ) -> Self {
+        self.compiler_spans = (!spans.is_empty()).then(|| Arc::new(spans));
+        self
     }
     pub fn children(&self) -> Vec<Self> {
         match &self.node().kind {

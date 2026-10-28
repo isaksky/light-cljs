@@ -2372,3 +2372,32 @@ workspace. The error signature matches the earlier runs, and the test and
 manifest blobs are identical to master `14d74136`. These remain full-suite
 limitations, not passing full suites. Later commits change only this evidence;
 production code and checked test sources remain those at `6df98796`.
+
+## Exact emission and default V8 guard, October 28, 2026 (557)
+
+The five difference classes and final JS/map hashes are recorded in
+[`docs/native-macros.md`](../docs/native-macros.md#exact-nativev8-emission-light-cljs-557-2026-10-28).
+Native and V8 `app.render`, and the seed-42 generated 200k project, now emit
+identical JavaScript and complete source maps at jobs 1 and 4. All four generated
+applications print the independent Babashka oracle's `484264` for `42 3`.
+
+The default V8 guard compares immutable release binaries from `01175afc` and
+production source `a027c933` in this worker's isolated worktree. Mac arm64,
+Homebrew Rust/Cargo 1.99.1, Node 26.12.1, Babashka 1.12.218, locked dependencies,
+three Cargo build jobs, and `LIGHT_CLJS_V8_CACHE=require` were used. Three pairs
+alternate before/after order (before-after, after-before, before-after), using
+the same generated project and `/usr/bin/time -l BINARY release bench --jobs 1
+--no-cache`. A Perl exec wrapper bounds each invocation at 600 seconds; Node,
+hashing, generation and binary compilation are outside timing. Filesystem caches
+are retained, with no discarded runs. No local or peer build/test overlaps timing.
+
+| Default V8 | Wall runs, s | Median wall, s | Median user+system, s | Median peak RSS, MiB |
+| --- | --- | ---: | ---: | ---: |
+| Before | 7.19, 7.08, 7.01 | 7.08 | 7.60 | 1,051.6 |
+| After | 7.06, 7.06, 7.20 | 7.06 | 7.57 | 1,014.8 |
+
+The wall ratio is 0.997x, with overlapping ranges: no demonstrated slowdown.
+Load averages are 6.51/8.67/8.49 before and 2.73/6.73/7.75 after (1/5/15 minutes).
+All six main modules retain SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`;
+all six Node executions print `484264`. The application runtime is unchanged.

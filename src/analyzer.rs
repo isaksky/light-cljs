@@ -12090,6 +12090,9 @@ impl Analyzer<'_> {
         let id = NodeId(self.syntax.nodes.len());
         self.syntax.to_mut().nodes.push(crate::Node {
             kind,
+            #[cfg(feature = "bbp-macros")]
+            span: form.compiler_span().bytes(),
+            #[cfg(not(feature = "bbp-macros"))]
             span: form.span().bytes(),
         });
         self.generated.resize(id.0, None);

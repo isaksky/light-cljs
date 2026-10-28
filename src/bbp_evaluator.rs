@@ -523,10 +523,7 @@ impl Bridge {
         {
             self.charge(data, depth, remaining)?;
             self.stats.reused += 1;
-            return Ok(ScalarKey::of(data)
-                .and_then(|key| origins.get(&key))
-                .unwrap_or(data)
-                .clone());
+            return Ok(data.clone());
         }
         if depth == 0 || *remaining == 0 {
             return Err(error("form conversion limit exceeded"));
@@ -652,6 +649,40 @@ impl Bridge {
         }
         self.forms.insert(form.data().identity(), form.clone());
         Ok(())
+    }
+
+    fn compiler_spans(&self, result: Form, origins: &HashMap<ScalarKey, Datum>) -> Form {
+        let mut spans = HashMap::new();
+        let mut pending = vec![result.clone()];
+        while let Some(form) = pending.pop() {
+            let data = form.data();
+            if let Some(key) = ScalarKey::of(&data) {
+                if matches!(data.kind(), D::Keyword(_))
+                    && !self.imports.contains_key(&data.identity())
+                {
+                    continue;
+                }
+                if let Some(original) = origins
+                    .get(&key)
+                    .and_then(|d| self.forms.get(&d.identity()))
+                {
+                    let span = original.compiler_span();
+                    if span.bytes() != form.span().bytes() {
+                        spans.insert(form.id(), span);
+                    }
+                }
+                continue;
+            }
+            // An unchanged imported collection restores its complete subtree,
+            // just as legacy canonical export does. Do not alias its leaves.
+            if self.imports.contains_key(&data.identity()) {
+                continue;
+            }
+            pending.extend(form.children());
+            pending.extend(form.metadata());
+            pending.extend(form.node().compiler_payload.and_then(|id| form.at(id)));
+        }
+        result.with_compiler_spans(spans)
     }
 }
 
@@ -2701,6 +2732,7 @@ impl MacroEvaluator for BbpEvaluator {
         self.check(id)?;
         let started = std::time::Instant::now();
         let v = self.cx()?.values.borrow().get(&id.index).unwrap().clone();
+        let origins = scalar_origins(call);
         let data = self.host_scope(|s| {
             self.with_bridge(|b| {
                 b.export_with_origins(
@@ -2708,12 +2740,14 @@ impl MacroEvaluator for BbpEvaluator {
                     s.local(&v).map_err(error)?,
                     limits.depth,
                     &mut limits.nodes.clone(),
-                    &scalar_origins(call),
+                    &origins,
                 )
             })
         })?;
-        let result =
-            self.with_bridge(|b| Form::from_bridge_expansion(data, call, origin, &b.forms));
+        let result = self.with_bridge(|b| {
+            let result = Form::from_bridge_expansion(data, call, origin, &b.forms);
+            b.compiler_spans(result, &origins)
+        });
         self.note(|s| s.nanos += started.elapsed().as_nanos());
         Ok(result)
     }
