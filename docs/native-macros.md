@@ -2345,3 +2345,16 @@ integrated source. Median wall time is 7.05 s before and 7.08 s after (1.0043x,
 when a peer suite started. The difference is within the observed variation.
 Emitted JavaScript is byte-identical, and Node and the Babashka oracle both
 print `484264`.
+
+### Integration with the reviewed sequence implementation
+
+The flatten branch was rebased onto master `a4e173db`, dropping its older
+copies of light-cljs-546 in favor of the final reviewed implementation.
+The eleven flatten, queue-view and lazy-reader commits apply without conflicts;
+the queue/record equality, counted range, `IStack` and `nthrest` fixes remain
+intact. On rebased source `da76220f`, the combined native/QuickJS library, CLI,
+macro, reader and Proxy selection passes all 492 tests (one normally ignored)
+with `LIGHT_CLJS_STRESS_SEEDS=12` and three test workers. This includes both
+the flatten and expanded sequence-predicate differential tables at jobs
+1/2/4/8. Compiler/engine formatting, JavaScript syntax and direct runtime checks
+also pass. Further integration checks are recorded below when complete.
