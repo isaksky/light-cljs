@@ -192,6 +192,33 @@ Clippy passes strictly. Engine-free all-target lint cannot compile unchanged
 benchmark support that calls legacy-only evaluator methods. Compiler and engine
 format checks cover the final content.
 
+Review fixes at `8cd5e55e`, rebased onto `730a770f`, extend the differential
+matrix through saved `str` calls under `with-redefs`. All ten literal tests and
+14 reader/Proxy tests pass with native and QuickJS enabled. All 177 final native
+evaluator/macro/reader/Proxy tests pass with `LIGHT_CLJS_STRESS_SEEDS=12`; the
+matrix compares exact emitted output at jobs 1/2/4/8. Both final native Penpot
+commands repeat the exact `core.isList` diagnostic above, with every documented
+budget and all five read-only roots. They take 227.39 s (`app.main`) and
+221.08 s (`app.render`); the existing light-cljs-546 remains the next boundary.
+
+The rebased engine passes all 2,158 tests and seven doctests. Those results remain
+valid after the compiler-only coercion fix because engine sources, dependencies
+and corpus inputs are unchanged. Fresh full V8 and QuickJS runs pass 2,131/2,132
+and 2,054/2,055 tests respectively. Both fail only
+`playground_crate_checks_for_wasm32`: the pinned wasm Cargo resolves the nested
+playground crate into `/Users/admin/src/light-cljs/Cargo.toml`'s workspace.
+The temporary read-only ClojureScript symlink uses revision
+`a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e` and is removed after verification.
+These runs use macOS arm64, Homebrew Rust/Cargo 1.99.1, Node 26.12.1, three build
+jobs, three native/engine test workers and eight legacy nextest slots.
+
+Fresh default/QuickJS all-target and engine-free library/CLI Clippy pass strictly.
+Engine-free all-target lint retains the same missing legacy evaluator methods in
+unchanged `benches/support/levels.rs`. Strict engine Clippy retains the same nine
+diagnostics; allowing only the three categories listed above passes the engine
+and final native targets. Both Rust format checks pass, with no source lint
+suppressions and no native-only changes to `src/js_runtime.js`.
+
 ### Key-value reduction (light-cljs-518)
 
 Native `reduce-kv` invokes `(rf accumulator key value)` on the resumable task
