@@ -7262,6 +7262,20 @@ fn compiler_literal_operations_match_quickjs_at_every_pool_size() {
             "(hash x)",
         ),
         (
+            "instant without offset",
+            r#"#inst "2024-01-02T03:04:05.000""#.into(),
+            None,
+            r#"(let [z '#inst "2024-01-02T03:04:05.000Z"]
+                 [(= x z) (= (hash x) (hash z)) (get {x :found} z)])"#,
+        ),
+        (
+            "instant with offset",
+            r#"#inst "2024-01-02T04:04:05.000+01:00""#.into(),
+            None,
+            r#"(let [z '#inst "2024-01-02T03:04:05.000"]
+                 [(= x z) (= (hash x) (hash z)) (get {x :found} z)])"#,
+        ),
+        (
             "uuid",
             r#"#uuid "123E4567-E89B-12D3-A456-426614174000""#.into(),
             None,
@@ -7279,7 +7293,7 @@ fn compiler_literal_operations_match_quickjs_at_every_pool_size() {
         // Date's default text and zone are host dependent. Compare conversion
         // against the represented Date in each engine; readable literal text
         // would fail this check. Every other kind compares the exact strings.
-        let strings = if label == "instant" {
+        let strings = if label.starts_with("instant") {
             r#"[(= (s x) (js* "String(new Date(1704164645000))"))
                 (= (str x) (js* "String(new Date(1704164645000))"))
                 (= (with-redefs [str (fn [& _] :replacement)] (s x))
@@ -7299,6 +7313,13 @@ fn compiler_literal_operations_match_quickjs_at_every_pool_size() {
              (binding [*print-level* 2 *print-length* 1] (p [x]))
              (binding [*print-readably* false] (p x)) (print-str x)
              (with-redefs [str (fn [& _] :replacement)] (p x))
+             (with-redefs [object? (fn [_] false)] (p x))
+             (with-redefs [object? (fn [_] true)] (p x))
+             (with-redefs [string? (fn [_] false)] (p x))
+             (try (with-redefs [object? (fn [_] (throw (js/Error. "object? called")))] (p x))
+                  (catch :default _ :predicate-called))
+             (try (with-redefs [string? (fn [_] (throw (js/Error. "string? called")))] (p x))
+                  (catch :default _ :predicate-called))
              [(o x) (a x) (sequential? x) (vector? x) (map? x) (string? x) (number? x)]
              (pr-str-with-opts [x] {{:readably true :alt-impl
                (fn [v w opts] (if (identical? v x)

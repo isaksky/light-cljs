@@ -589,6 +589,12 @@ const native = (() => {
     for(let i=0;i<pairs.length;i+=2)Object.defineProperty(object,pairs[i],{value:val(pairs[i+1]),writable:true,enumerable:true,configurable:true});
     return String(object);
   };
+  const literalIsObject = x => {
+    if(__rt.formName(x)!=='js-object')return false;
+    const pairs=literalObjectFields(x);
+    for(let i=0;i<pairs.length;i+=2)if(pairs[i]==='constructor')return val(pairs[i+1])===Object;
+    return true;
+  };
   const printWriterImpl = (value,writer,options,skipMetadata=false) => {
     const x=val(value);
     if(x==null)return write(writer,'nil');
@@ -609,7 +615,7 @@ const native = (() => {
       if(tag==='regex')return write(writer,'#\"'+regexValue(x).source+'\"');
       if(tag==='js-array')return printSequential(writer,printWriter,'#js [',' ',']',options,payload);
       if(tag==='js-object'){
-        if(!core.isObject(x))return write(writer,'#object[Object '+literalObjectString(x)+']');
+        if(!literalIsObject(x))return write(writer,'#object[Object '+literalObjectString(x)+']');
         write(writer,'#js ');
         const pairs=literalObjectFields(x);
         return printSequential(writer,(entry,w,o)=>{
@@ -1426,12 +1432,7 @@ const native = (() => {
     mod:(n,d)=>{n=val(n);d=val(d);return ((n%d)+d)%d;},
     numericEqual:(...xs)=>xs.length!==0&&core.equal(...xs),
     isArray:x=>{x=val(x);return __rt.formKind(x)==='compiler-literal'?__rt.formName(x)==='js-array':Array.isArray(x);},
-    isObject:x=>{x=val(x);const kind=__rt.formKind(x);if(kind==='compiler-literal'){
-      if(__rt.formName(x)!=='js-object')return false;
-      const pairs=literalObjectFields(x);
-      for(let i=0;i<pairs.length;i+=2)if(pairs[i]==='constructor')return val(pairs[i+1])===Object;
-      return true;
-    }return kind===null&&!__rt.cljIsAtom(x)&&x!=null&&x.constructor===Object;},
+    isObject:x=>{x=val(x);const kind=__rt.formKind(x);return kind==='compiler-literal'?literalIsObject(x):kind===null&&!__rt.cljIsAtom(x)&&x!=null&&x.constructor===Object;},
     isNumber:x=>typeof val(x)==='number', isFloat:x=>typeof val(x)==='number', isDouble:x=>typeof val(x)==='number',
     isInfinite:x=>val(x)===Infinity||val(x)===-Infinity,
     exInfo:(m,d)=>new Error(val(m)),

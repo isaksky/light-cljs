@@ -255,7 +255,12 @@ fn top<const N: usize>(ops: &[Value]) -> Result<[Value; N], Fault> {
 }
 
 /// Execute one collection intrinsic or builder instruction.
-pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(), Fault> {
+pub(crate) fn step(
+    state: &mut VmState,
+    heap: &Heap,
+    host: &mut dyn crate::Host,
+    instr: Instr,
+) -> Result<(), Fault> {
     let caller = state.diag.task;
     match instr {
         Instr::NewVector(n) => {
@@ -373,7 +378,7 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
         | Instr::NewFormSet(_)
         | Instr::NewStruct(_)
         | Instr::NewFormMap(_)
-        | Instr::FormOp(_) => return form_step(state, heap, instr),
+        | Instr::FormOp(_) => return form_step(state, heap, host, instr),
         _ => return Err(Fault::Internal("not a collection intrinsic")),
     }
     Ok(())
@@ -384,7 +389,12 @@ pub(crate) fn step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(),
 /// then the instruction realizes it and executes again instead of
 /// completing (light-cljs-479; [`crate::collections::lazy`]), whatever
 /// result or failure it computed past the request.
-fn form_step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(), Fault> {
+fn form_step(
+    state: &mut VmState,
+    heap: &Heap,
+    host: &mut dyn crate::Host,
+    instr: Instr,
+) -> Result<(), Fault> {
     if instr == Instr::FormOp(FormOp::CljCoreResolver) {
         let [resolver] = top(state.operands())?;
         super::dispatch::callee(heap, &resolver)?;
@@ -407,7 +417,7 @@ fn form_step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(), Fault
     // A request left by an embedder's comparison is not this instruction's.
     let _ = lazy::take_request();
     let _ = lazy::take_cycle();
-    let made = form_value(heap, instr, ops);
+    let made = form_value(heap, host, instr, ops);
     if lazy::take_cycle() {
         let _ = lazy::take_request();
         return Err(Fault::RangeError(
@@ -421,7 +431,12 @@ fn form_step(state: &mut VmState, heap: &Heap, instr: Instr) -> Result<(), Fault
 }
 
 /// The value of one form instruction on its operands `ops`.
-fn form_value(heap: &Heap, instr: Instr, ops: &[Value]) -> Result<Value, Fault> {
+fn form_value(
+    heap: &Heap,
+    host: &mut dyn crate::Host,
+    instr: Instr,
+    ops: &[Value],
+) -> Result<Value, Fault> {
     Ok(match instr {
         Instr::NewFormList(_) => form::new_list(heap, ops)?,
         Instr::NewFormSet(_) => form::new_set(heap, ops)?,
@@ -442,7 +457,7 @@ fn form_value(heap: &Heap, instr: Instr, ops: &[Value]) -> Result<Value, Fault> 
                 .collect();
             form::new_map(heap, &entries)?
         }
-        Instr::FormOp(op) => form_op(heap, op, ops.to_vec())?,
+        Instr::FormOp(op) => form_op(heap, host, op, ops.to_vec())?,
         _ => return Err(Fault::Internal("not a form intrinsic")),
     })
 }
@@ -466,13 +481,18 @@ impl From<clj::CljError> for Fault {
 /// One `FormOp` on its operands (oldest first, exactly [`FormOp::arity`]).
 /// An operation that needs a lazy sequence realized records the request
 /// ([`crate::collections::lazy::request`]) and returns a placeholder.
-fn form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Fault> {
+fn form_op(
+    heap: &Heap,
+    host: &mut dyn crate::Host,
+    op: FormOp,
+    args: Vec<Value>,
+) -> Result<Value, Fault> {
     if op == FormOp::AtomAux {
         return atom::auxiliary(heap, args[0].clone(), |v| v).map_err(Fault::from);
     }
     match clj_op(heap, op, &args) {
         Ok(Some(result)) => Ok(result),
-        Ok(None) => Ok(strict_form_op(heap, op, args)?),
+        Ok(None) => Ok(strict_form_op(heap, host, op, args)?),
         Err(clj::CljError::Realize(lazy)) => {
             crate::collections::lazy::request(lazy);
             Ok(Value::Undefined)
@@ -540,7 +560,12 @@ fn clj_op(heap: &Heap, op: FormOp, args: &[Value]) -> Result<Option<Value>, clj:
 }
 
 /// A strict `__rt.form*` operation ([`crate::collections::form`]).
-fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, CollectionError> {
+fn strict_form_op(
+    heap: &Heap,
+    host: &mut dyn crate::Host,
+    op: FormOp,
+    args: Vec<Value>,
+) -> Result<Value, CollectionError> {
     use crate::value::string::FixedText;
     static RECORD: FixedText = FixedText::new("record");
     static OCCURRENCE: FixedText = FixedText::new("occurrence");
@@ -549,7 +574,11 @@ fn strict_form_op(heap: &Heap, op: FormOp, args: Vec<Value>) -> Result<Value, Co
     Ok(match op {
         FormOp::Keyword => form::new_named_from_values(heap, FormKind::Keyword, arg(), arg())?,
         FormOp::Symbol => form::new_named_from_values(heap, FormKind::Symbol, arg(), arg())?,
-        FormOp::CompilerLiteral => form::new_compiler_literal(heap, &arg(), &arg())?,
+        FormOp::CompilerLiteral => {
+            form::new_compiler_literal_with_zone(heap, &arg(), &arg(), || {
+                super::date::zone(heap, host)
+            })?
+        }
         FormOp::LiteralPayload => form::compiler_literal(heap, &arg())?.1,
         FormOp::LiteralMap => form::literal_from_sequence(heap, &arg(), false)?,
         FormOp::LiteralSet => form::literal_from_sequence(heap, &arg(), true)?,
@@ -714,7 +743,7 @@ mod tests {
             (occurrence, "occurrence"),
         ] {
             let Value::String(first) =
-                strict_form_op(&heap, FormOp::Kind, vec![value.clone()]).unwrap()
+                strict_form_op(&heap, &mut NoHost, FormOp::Kind, vec![value.clone()]).unwrap()
             else {
                 panic!("expected kind string")
             };
@@ -722,7 +751,7 @@ mod tests {
             let used = heap.byte_budget().used();
             for _ in 0..100 {
                 let Value::String(next) =
-                    strict_form_op(&heap, FormOp::Kind, vec![value.clone()]).unwrap()
+                    strict_form_op(&heap, &mut NoHost, FormOp::Kind, vec![value.clone()]).unwrap()
                 else {
                     panic!("expected kind string")
                 };

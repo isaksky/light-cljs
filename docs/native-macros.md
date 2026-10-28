@@ -119,8 +119,12 @@ Normalized object fields retain positional storage at every size; imported
 compiler maps retain their legacy traversal view without replacing their payload.
 Object predicates observe an own `constructor` field. Literal `str` uses the
 represented value's conversion, including array joining and object coercion.
-Saved `str` functions retain that conversion under `with-redefs`; object
-printing also uses object coercion independently of a rebound `str`.
+Saved `str` functions retain that conversion under `with-redefs`; literal
+printing uses private classification and coercion independently of rebound
+`object?`, `string?` and `str` vars. Textual instant descriptors select the
+runtime's immutable host zone before canonicalizing local date-time payloads.
+Hostless Scope construction selects and freezes UTC; explicit offsets do not
+depend on the local zone. Original payloads remain unchanged.
 Date's default string and time zone remain engine/host dependent.
 The compiler reader still rejects metadata directly on a `#js` source literal;
 metadata on surrounding forms, payloads and API-created descriptors is retained.

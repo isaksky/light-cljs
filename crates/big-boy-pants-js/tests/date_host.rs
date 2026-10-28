@@ -57,6 +57,78 @@ fn date_host_clock_and_zone() {
 }
 
 #[test]
+fn textual_instant_literals_select_the_host_zone_before_canonicalizing() {
+    for zone in [
+        TimeZone::UTC,
+        TimeZone::fixed_offset_seconds(3600).unwrap(),
+        TimeZone::named("Europe/Paris").unwrap(),
+    ] {
+        for text in [
+            "2024-01-02T03:04:05",
+            "2024-07-02T03:04:05",
+            "2024-01-02T03:04:05Z",
+            "2024-01-02T03:04:05+01:00",
+        ] {
+            let runtime = Runtime::new();
+            let mut host = SimTimeHost::new(0.0, zone);
+            let source = format!(
+                r#"const text = '{text}';
+                const a = __rt.formCompilerLiteral('instant', text);
+                const time = Date.parse(text);
+                const b = __rt.formCompilerLiteral('instant', text);
+                const c = __rt.formCompilerLiteral('instant', time);
+                let map = __rt.formMap();
+                for (let i = 0; i < 20; i++) map = __rt.formAssoc(map, i, i);
+                map = __rt.formAssoc(map, a, 'found');
+                __rt.formLiteralPayload(a) === text &&
+                __rt.formEquals(a, b) && __rt.formEquals(a, c) &&
+                __rt.formHash(a) === __rt.formHash(b) &&
+                __rt.formHash(a) === __rt.formHash(c) &&
+                __rt.formGet(map, b, null) === 'found' &&
+                __rt.formGet(map, c, null) === 'found';"#
+            );
+            assert_eq!(
+                evaluate(&runtime, &mut host, &source),
+                ValueView::Bool(true),
+                "{zone:?}, {text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn hostless_textual_instant_literals_freeze_the_runtime_utc_default() {
+    let runtime = Runtime::new();
+    let literal = runtime.scope(|s| {
+        let payload = s.primitive(big_boy_pants_js::Primitive::String(
+            "2024-01-02T03:04:05".into(),
+        ));
+        let literal = s.new_compiler_literal("instant".into(), payload).unwrap();
+        s.persist(literal)
+    });
+    runtime.publish(&literal).unwrap();
+    runtime.collect().unwrap();
+    let mut host = SimTimeHost::new(0.0, TimeZone::fixed_offset_seconds(3600).unwrap());
+    assert_eq!(
+        evaluate(
+            &runtime,
+            &mut host,
+            "Date.parse('2024-01-02T03:04:05') === 1704164645000"
+        ),
+        ValueView::Bool(true)
+    );
+    runtime.scope(|s| {
+        let payload = s.primitive(big_boy_pants_js::Primitive::String(
+            "2024-01-02T03:04:05".into(),
+        ));
+        let again = s.new_compiler_literal("instant".into(), payload).unwrap();
+        let literal = s.local(&literal).unwrap();
+        assert!(s.form_equals(literal, again));
+        assert_eq!(s.form_hash(literal), s.form_hash(again));
+    });
+}
+
+#[test]
 fn date_string_named_zone_formats() {
     let runtime = Runtime::new();
     let mut host = SimTimeHost::new(0.0, TimeZone::named("Europe/Paris").unwrap());

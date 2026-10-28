@@ -1323,6 +1323,19 @@ pub(crate) fn new_compiler_literal(
     tag: &Value,
     payload: &Value,
 ) -> Result<Value, CollectionError> {
+    new_compiler_literal_with_zone(heap, tag, payload, || {
+        crate::vm::date::zone(heap, &mut crate::host::NoHost)
+    })
+}
+
+/// Resolve the runtime zone only when a textual instant needs local time.
+/// Hostless construction selects and freezes the same UTC default as Date.
+pub(crate) fn new_compiler_literal_with_zone(
+    heap: &Heap,
+    tag: &Value,
+    payload: &Value,
+    resolve_zone: impl FnOnce() -> crate::host::TimeZone,
+) -> Result<Value, CollectionError> {
     let Value::String(tag) = tag else {
         return Err(wrong(heap, "compiler literal tag", tag));
     };
@@ -1378,12 +1391,11 @@ pub(crate) fn new_compiler_literal(
                 loop {
                     if let Some(result) = parser.advance(4096) {
                         break result.map_or(f64::NAN, |date| {
-                            date.time(
-                                heap.date_zone
-                                    .get()
-                                    .copied()
-                                    .unwrap_or(crate::host::TimeZone::UTC),
-                            )
+                            date.time(if date.is_local {
+                                resolve_zone()
+                            } else {
+                                crate::host::TimeZone::UTC
+                            })
                         });
                     }
                 }

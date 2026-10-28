@@ -3985,7 +3985,7 @@ fn apply_action(
                 state.push(value);
             }
             let depth = state.natives.len();
-            super::intrinsics::step(state, heap, instr)?;
+            super::intrinsics::step(state, heap, host, instr)?;
             if state.natives.len() > depth
                 && let Some(NativeFrame {
                     state: NativeState::Realize(realize),
