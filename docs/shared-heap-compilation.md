@@ -1118,6 +1118,16 @@ saved-state bytes. The former four-property charge of 2,048 bytes is replaced
 by the fixed 64-byte payload charge, saving 1,984 accounted bytes per slot
 before small differences in interned keys/runtime storage.
 
+A separate eight-job `/usr/bin/sample PID 3 1 -mayDie` run of the after
+executable records collapsed top-of-stack counts of 10,976
+`semaphore_timedwait_trap`, 3,834 `__psynch_cvwait`, 465 `execute_budgeted`,
+271 `__ulock_wait`, 125 SipHash writes, 107 VM-fault drops, 70
+`Heap::mark_and_sweep`, 60 `lookup_cursor`, 51 `Heap::allocate_accounted`
+and 34 `OrdinaryObject::push`. Peer compiler tests are active, and load is
+**19.00/15.63/11.58** before and after. These are observed thread stacks,
+not CPU percentages or retained-byte attribution. This sampled build's
+wall/RSS is excluded from the quiet comparisons.
+
 Correctness is checked independently of timing/RSS. Native-only
 `LIGHT_CLJS_STRESS_SEEDS=12 CARGO_BUILD_JOBS=3 cargo test --locked
 --no-default-features --features bbp-macros --test bbp_macros -- --test-threads=3`
