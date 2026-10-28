@@ -1963,6 +1963,75 @@ fn bootstrap_namespace_macros_match_quickjs() {
 }
 
 #[test]
+fn defmulti_metadata_maps_match_quickjs_at_every_pool_size() {
+    let root = temp_dir::TempDir::new("native-defmulti-metadata");
+    for (label, width, additions) in [
+        ("nested metadata with doc", 1, r#""new" {:custom true}"#),
+        ("eight keys with override", 8, "{:k0 99}"),
+        ("nine keys without additions", 9, ""),
+        ("ten keys without additions", 10, ""),
+    ] {
+        let entries = (0..width)
+            .map(|i| format!(":k{i} {i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        std::fs::write(
+            root.join("macros.cljs"),
+            format!(
+                r#"(ns macros)
+              (defmacro declare-multi [name]
+                (list 'cljs.core/defmulti
+                  (with-meta name (with-meta '{{{entries}}} {{:marker true}}))
+                  {additions} 'identity))"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("app.cljs"),
+            r#"(ns app (:require [macros :refer [declare-multi]]))
+               (declare-multi choose)
+               (defmethod choose :x [_] 42)
+               (js/console.log (pr-str [(choose :x)
+                 (meta (meta #'choose)) (get (meta #'choose) :k0)
+                 (get (meta #'choose) :doc) (get (meta #'choose) :custom)]))"#,
+        )
+        .unwrap();
+        let build = |native, jobs| {
+            let mut host = MacroHost::new();
+            if native {
+                host.use_native_macros();
+            }
+            let mut warnings = Vec::new();
+            let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+                "app",
+                &[root.path().to_path_buf()],
+                &mut host,
+                Default::default(),
+                &mut warnings,
+                light_cljs::compiler::EntryRecorders {
+                    slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("{label}, native {native}, jobs {jobs}: {e}"));
+            (emit_js(&program), warnings)
+        };
+        let reference = build(true, 1);
+        let output = program_output(&reference.0);
+        assert!(output.starts_with("[42 "), "{label}: {output}");
+        for jobs in [1, 2, 4, 8] {
+            assert_eq!(reference, build(true, jobs), "{label}, jobs {jobs}");
+            #[cfg(feature = "quickjs")]
+            {
+                let legacy = build(false, jobs);
+                assert_eq!(output, program_output(&legacy.0), "{label}, jobs {jobs}");
+                assert_eq!(reference, legacy, "{label}, jobs {jobs}");
+            }
+        }
+    }
+}
+
+#[test]
 fn wide_js_obj_bootstrap_matches_quickjs_at_every_pool_size() {
     let pairs = |n: usize| {
         (0..n)
@@ -2051,8 +2120,15 @@ fn wide_js_obj_bootstrap_matches_quickjs_at_every_pool_size() {
     ];
     let root = temp_dir::TempDir::new("native-wide-js-obj");
     std::fs::write(
+        root.join("colder.cljs"),
+        r#"(ns colder)
+        (defn finish [x]
+          (aget (js-obj "form" x "a" 1 "b" 2 "c" 3 "d" 4 "e" 5 "f" 6 "g" 7 "h" 8) "form"))"#,
+    )
+    .unwrap();
+    std::fs::write(
         root.join("cold.cljs"),
-        r#"(ns cold)
+        r#"(ns cold (:require [colder]))
         (defn touch [seen label value] (.push seen label) value)
         (defn wrap [x]
           (let [seen (js/Array.) before (touch seen "before" nil)
@@ -2061,7 +2137,7 @@ fn wide_js_obj_bootstrap_matches_quickjs_at_every_pool_size() {
                 after (touch seen "after" nil)]
             (if (and (= (vec seen) ["before" "key" "value" "after"])
                      (identical? x (aget object "form")))
-              (aget object "form") (throw (js/Error. "replayed operands or lost occurrence")))))"#,
+              (colder/finish (aget object "form")) (throw (js/Error. "replayed operands or lost occurrence")))))"#,
     )
     .unwrap();
     let observations = rows
@@ -2104,6 +2180,7 @@ fn wide_js_obj_bootstrap_matches_quickjs_at_every_pool_size() {
             host.use_native_macros();
         }
         let mut warnings = Vec::new();
+        let mut stats = light_cljs::CompileStats::new();
         let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
             "app",
             &[root.path().to_path_buf()],
@@ -2112,6 +2189,7 @@ fn wide_js_obj_bootstrap_matches_quickjs_at_every_pool_size() {
             &mut warnings,
             light_cljs::compiler::EntryRecorders {
                 slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
                 #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
                 perturbation: native.then_some(light_cljs::scheduler::Perturbation {
                     seed,
@@ -2125,6 +2203,10 @@ fn wide_js_obj_bootstrap_matches_quickjs_at_every_pool_size() {
             },
         )
         .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        if native && jobs > 1 {
+            assert!(stats.native_helpers.contexts_lent > 0, "{stats:?}");
+            assert!(stats.native_helpers.contexts_borrowed > 0, "{stats:?}");
+        }
         (emit_js(&program), warnings)
     };
     let reference = build(true, 1, 0);

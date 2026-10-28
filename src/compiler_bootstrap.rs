@@ -412,6 +412,10 @@ fn elidable_map_environment(
 // suffixes (crate::generated_names::BOOTSTRAP_SCOPE). No disk artifact,
 // source hash ambiguity or mutable JS state is retained.
 static UNITS: std::sync::OnceLock<[BootstrapUnit; 2]> = std::sync::OnceLock::new();
+// Every bootstrap uses the same immutable builder code. A lent task keeps
+// one cached handle even when a new host binds another bootstrap to it.
+#[cfg(feature = "bbp-macros")]
+static NATIVE_JS_OBJ: std::sync::OnceLock<CodeIdentity> = std::sync::OnceLock::new();
 fn compile(source: &str, host: &mut MacroHost) -> Result<BootstrapUnit, String> {
     let syntax = crate::parse(source).map_err(|e| e.to_string())?;
     let program = crate::analyze_with_macros(source, &syntax, host).map_err(|e| {
@@ -663,7 +667,9 @@ impl MacroHost {
                 bootstrap.functions.insert(
                     name.into(),
                     CompiledMacro {
-                        function: MacroFunction::NativeJsObj(CodeIdentity::next()),
+                        function: MacroFunction::NativeJsObj(
+                            *NATIVE_JS_OBJ.get_or_init(CodeIdentity::next),
+                        ),
                         definition: definitions(&[name])?
                             .remove("macro-js-obj")
                             .ok_or("missing bootstrap declaration macro-js-obj")?,
