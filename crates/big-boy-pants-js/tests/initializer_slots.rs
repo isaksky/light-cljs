@@ -107,6 +107,87 @@ fn slots_reject_publication_and_foreign_reads_and_writes() {
 }
 
 #[test]
+fn slots_reject_invalid_operands_without_mutation() {
+    let rt = Runtime::new();
+    let code = compile_script(
+        "invalid slot operands",
+        r#"
+        const unit = {unit: 1}, name = {name: 2}, value = {value: 3};
+        const slot = __rt.initializerSlot(unit, name);
+        __rt.initializerSlotSet(slot, 2, 3);
+        __rt.initializerSlotSet(slot, 3, value);
+        __rt.initializerSlotSet(slot, 4, true);
+        const expected = [unit, name, 3, value, true];
+
+        function rejects(operation, label) {
+            let caught = false;
+            try {
+                operation();
+            } catch (error) {
+                if (!(error instanceof TypeError)) throw 'expected TypeError: ' + label;
+                caught = true;
+            }
+            for (let field = 0; field < 5; field++) {
+                if (!Object.is(__rt.initializerSlotGet(slot, field), expected[field])) {
+                    throw 'mutated field ' + field + ': ' + label;
+                }
+            }
+            if (!caught) throw 'accepted invalid operand: ' + label;
+        }
+
+        const receivers = [undefined, null, false, true, 0, NaN, 'slot', Symbol('slot'),
+                            1n, {}, [], () => 0, __rt.formVector(1)];
+        for (let i = 0; i < receivers.length; i++) {
+            const receiver = receivers[i];
+            rejects(() => __rt.initializerSlotGet(receiver, 0), 'get receiver ' + i);
+            rejects(() => __rt.initializerSlotSet(receiver, 3, 7), 'set receiver ' + i);
+        }
+
+        const fields = [undefined, null, false, true, '0', '2', '3', '4', Symbol('field'),
+                        2n, {}, Object(2), -1, 0.5, 2.5, 4.5, 5, 256, NaN,
+                        Infinity, -Infinity];
+        for (let i = 0; i < fields.length; i++) {
+            const field = fields[i];
+            rejects(() => __rt.initializerSlotGet(slot, field), 'get field ' + i);
+            rejects(() => __rt.initializerSlotSet(slot, field, 0), 'set field ' + i);
+        }
+        for (const field of [0, 1]) {
+            rejects(() => __rt.initializerSlotSet(slot, field, {}), 'readonly field ' + field);
+        }
+
+        // 256 would wrap to state 0 if the range guard were removed.
+        const states = [256, -256, -1, 4, 255, 1.5, NaN, Infinity, -Infinity,
+                        undefined, null, false, true, '0', '1', 1n, Symbol('state'),
+                        {}, Object(1)];
+        for (let i = 0; i < states.length; i++) {
+            rejects(() => __rt.initializerSlotSet(slot, 2, states[i]), 'state ' + i);
+        }
+        const flags = [undefined, null, 0, 1, NaN, '', 'false', 'true', 0n,
+                       Symbol('defined'), {}, Object(false)];
+        for (let i = 0; i < flags.length; i++) {
+            rejects(() => __rt.initializerSlotSet(slot, 4, flags[i]), 'defined ' + i);
+        }
+
+        // Rejected operations leave the slot usable with every valid state and flag.
+        for (const state of [0, 1, 2, 3]) {
+            if (__rt.initializerSlotSet(slot, 2, state) !== state ||
+                __rt.initializerSlotGet(slot, 2) !== state) throw 'valid state rejected';
+        }
+        for (const defined of [false, true]) {
+            if (__rt.initializerSlotSet(slot, 4, defined) !== defined ||
+                __rt.initializerSlotGet(slot, 4) !== defined) throw 'valid flag rejected';
+        }
+        __rt.initializerSlotSet(slot, 3, value) === value
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        complete(rt.spawn(&code, &[]).unwrap().run().unwrap()).view(),
+        ValueView::Bool(true)
+    );
+}
+
+#[test]
 fn slot_bodies_are_charged_to_the_aggregate_byte_limit() {
     let rt = runtime(2 << 20);
     let code = compile_script(
