@@ -3194,3 +3194,16 @@ engine-test diagnostics; all-target checks pass allowing only `deprecated`,
 `-D warnings`, as does native production lint. Engine-free all-target lint
 retains the unsupported legacy-dependent fixture errors. No assertions, test
 skips or source lint suppressions were changed.
+
+Three quiet alternating-order V8 release pairs compare the saved handoff
+binary with fresh production source `3647597b`, using the same seed-42 200k
+fixture and `release bench --jobs 1 --no-cache`. Median wall time is
+**7.15 s before and 7.14 s after** (0.9986x), with ranges 7.15–7.27 and
+7.13–7.16 s. Median user+system CPU is 7.67/7.65 s and maximum RSS is
+1,045.2/1,039.3 MiB. The difference is within run variation. Before/after
+process snapshots contain no overlapping builds, tests or compilers; load
+falls from 3.53/6.59/6.04 to 2.42/5.87/5.80.
+
+All six main modules are byte-identical to the saved output, retaining SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+Every Node run and the independent Babashka oracle print `484264` for `42 3`.
