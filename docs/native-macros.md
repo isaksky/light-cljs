@@ -3207,3 +3207,27 @@ falls from 3.53/6.59/6.04 to 2.42/5.87/5.80.
 All six main modules are byte-identical to the saved output, retaining SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
 Every Node run and the independent Babashka oracle print `484264` for `42 3`.
+
+Fresh native-only release and default V8 release binaries use the five absolute
+read-only Penpot roots and every documented budget, with `--compile --esm
+--optimize none --no-cache --stats`. **`app.render` builds natively at jobs 1
+and 4, and both outputs now match the fresh V8 jobs-1 output byte for byte.**
+All three 12,680,976-byte modules pass Node syntax checks and retain SHA-256
+`d352af3a2bb2d35f1447f3d4fc6592de609dc30e92c3424f7321afc607a8d9a3`.
+The integrated metadata/traversal fixes from master account for the change
+from the earlier native-only hash; the dispatcher scope correction does not
+change application emission.
+
+**`app.main` still does not build natively.** At jobs 1 it exits 1 with exactly
+the `app/plugins/flags.cljs:37:3` / `app.util.object/add-properties!` TypeError
+quoted in “Penpot progression and remaining boundary” above, including
+definition `app/util/object.cljc:151:1` and bytes `1094..1786`. The callable-map
+JavaScript `.call` interop remains the existing light-cljs-558 follow-up; no new
+pellet is filed. This failing run takes 12.97 s wall, 12.43 s user, 0.48 s
+system and 396,673,024 bytes maximum RSS. There is no native main output to
+compare or successful native/V8 main-build timing claim.
+
+All final checks cover production source `3647597b`; subsequent commits change
+only this verification text. Master remains `c31d1b97`, so the final rebase is
+a no-op and the recorded checks remain valid. The temporary pinned
+ClojureScript source symlink is removed after verification.
