@@ -8137,7 +8137,7 @@ fn native_raw_callable_collections_match_quickjs() {
           (defmulti dispatch (fn [x & more] x))
           (defmethod dispatch :ok [x & more] (cold [x (vec more)]))
           (def memo (memoize (fn [x] (cold x))))
-          (def map-call (js* "~{}.call" {}))
+          (def map-call @(atom (js* "~{}.call" {})))
           (defn attempt [f] (try (pr-str (f)) (catch :default e (.-message e))))
           (defn inspect [f xs]
             (let [args (reduce (fn [a x] (js* "~{}.push(~{})" a x) a) (js/Array.) xs)]
