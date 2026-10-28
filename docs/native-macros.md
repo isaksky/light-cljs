@@ -2902,3 +2902,13 @@ the VM continuation before installing the result. The cache remains in the
 aggregate heap budget, is rooted through its function, and becomes collectible
 when the function is discarded. No native-only behavior was added to the legacy
 JavaScript runtime or the default engine path.
+
+The same property macro next required `zipmap`. Its native implementation starts
+with an array map, associates keys with Clojure equality, promotes through the
+existing map implementation, and stops at the shorter input. It sequences keys
+before values and advances both tails after each pair, including the final
+pair. Differential coverage checks duplicate structural keys and their retained
+metadata, nil/false values, larger maps, unequal/empty inputs, first-class calls
+and exact lazy realization effects. The pooled memoize fixture now obtains its
+metadata through `zipmap` over a lazy value stream; the cold helper suspends
+inside that stream without repeating any callback or generated-name effect.

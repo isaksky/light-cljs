@@ -1574,6 +1574,15 @@ const native = (() => {
     dissoc:(m,...ks)=>each((m,k)=>__rt.cljDissoc(m,k),m,ks),
     conj:(...a)=>a.length===0?__rt.formVector():each((m,x)=>__rt.cljConj(m,x),a[0],a.slice(1)),
     merge:(...xs)=>xs.some(truth)?xs.reduce((left,right)=>val(right)==null?left:__rt.cljConj(truth(left)?left:arrayMap([]),right)):null,
+    zipmap:(keys,values)=>{
+      let result=arrayMap([]), ks=__rt.cljSeq(keys), vs=__rt.cljSeq(values);
+      while(ks!==null&&vs!==null){
+        result=__rt.cljAssoc(result,__rt.cljFirst(ks),__rt.cljFirst(vs));
+        // Advance both, in order, even when the keys have just ended.
+        ks=__rt.cljNext(ks);vs=__rt.cljNext(vs);
+      }
+      return result;
+    },
     disj:(s,...xs)=>each((s,x)=>__rt.cljDisj(s,x),s,xs),
     contains:(c,k)=>__rt.cljContains(c,k),
     keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,0))));}

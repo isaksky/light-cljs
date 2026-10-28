@@ -4900,6 +4900,28 @@ fn memoize_uses_argument_equality_and_caches_falsey_results() {
 }
 
 #[test]
+fn native_zipmap_matches_legacy_collection_and_realization_semantics() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+          (let [key (with-meta [1] {:first true})
+                duplicate (zipmap [key '(1)] [nil false])
+                many (zipmap (range 20) (range 100 120))
+                events (atom [])
+                step (fn step [tag xs]
+                  (lazy-seq (do (swap! events conj [tag (count xs)])
+                               (if (seq xs) (cons (first xs) (step tag (rest xs))) nil))))
+                a (zipmap (step :keys [:a]) (step :vals [10 20 30]))
+                b (zipmap (step :empty []) (step :unused [40]))
+                z zipmap]
+            (list 'quote [(z nil nil) (z [:a :b] [1]) (z [:a] [1 2])
+                          (count duplicate) (get duplicate [1]) (meta (first (keys duplicate)))
+                          (mapv (fn [i] (get many i)) (range 20)) a b @events])))
+          (js/console.log (pr-str (probe)))"#,
+        "[{} {:a 1} {:a 1} 1 false {:first true} [100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119] {:a 10} {} [[:keys 1] [:vals 3] [:keys 0] [:vals 2] [:empty 0] [:unused 1]]]\n",
+    );
+}
+
+#[test]
 fn memoize_rejects_task_owned_captures_keys_and_results() {
     for body in [
         "(let [state (js/Array.)] (memoize (fn [x] (.push state x))))",
@@ -4981,9 +5003,10 @@ fn memoize_shares_results_and_once_only_effects_across_tasks_and_cold_helpers() 
           (def make-sym
             (memoize (fn [x]
               (swap! events conj [:before x *tag*])
-              (let [value (leaf x)]
+              (let [attrs (zipmap [:key :tag] (lazy-seq (cons (leaf x) (list *tag*))))
+                    value (:key attrs)]
                 (swap! events conj [:after value *tag*])
-                (with-meta (gensym "property") {:key value :tag *tag*})))))
+                (with-meta (gensym "property") attrs)))))
           (def alias make-sym)
           (defmacro probe [tag]
             (binding [*tag* tag]
