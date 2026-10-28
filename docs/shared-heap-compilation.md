@@ -980,6 +980,13 @@ retains the same eight library diagnostics and ninth test diagnostic described
 above; allowing only the three documented existing categories passes. These
 checks cover `6f2ed7bf`; subsequent edits in this verification are documentation.
 
+On this rebased base, native-only `LIGHT_CLJS_STRESS_SEEDS=12 CARGO_BUILD_JOBS=3
+cargo test --locked --no-default-features --features bbp-macros --test bbp_macros
+-- --test-threads=3` passes all **112 tests in 510.45 s**. Both
+`native_pool_builds_match_one_slot_under_seeded_scheduling_stress` and
+`effect_lanes_keep_one_slot_atom_effects_under_seeded_scheduling_stress` pass;
+this replaces the earlier one-seed-only final-protocol result.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
