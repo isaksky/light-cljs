@@ -2406,3 +2406,33 @@ and 1.50/3.20/5.18 → 1.57/2.98/5.00 (1/5/15 minutes).
 All twelve retained main modules retain SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`;
 all twelve retained Node executions print `484264`. The application runtime is unchanged.
+
+### Review-fix guard (production source `bdfead5c`)
+
+The metadata-identity and BigInteger-origin corrections retain every 557 JS/map
+hash above at jobs 1/4. The final V8 guard uses the same generated seed-42 200k
+project, host, toolchain and locked default-feature release settings. The saved
+immutable before binary is from `01175afc`; the after binary is rebuilt after
+the review fixes. Their SHA-256 values are:
+
+| Binary | SHA-256 |
+| --- | --- |
+| Before | `b2d26e80a56dc91bc3f15ebad73b7a654cae6bbf382ac14249a5a8d17537ee36` |
+| After | `1661a77d861d1d693ec5071b8ae9fb48c478e20d26d055edac1150c43951eb4c` |
+
+Three retained pairs use after-before, before-after, after-before order and
+`/usr/bin/time -l BINARY release bench --jobs 1 --no-cache`. No local or peer
+Cargo build or test suite overlaps these measurements. The first attempted
+before-after pair is excluded because peer formatting and desktop activity
+briefly overlap its start. The retained runs use filesystem caches as they
+stand; Node executions and hashing occur outside timing.
+
+| Default V8 | Wall runs, s | Median wall, s | Median user+system, s | Median peak RSS, MiB |
+| --- | --- | ---: | ---: | ---: |
+| Before | 7.01, 7.05, 7.09 | 7.05 | 7.56 | 1,030.5 |
+| After | 7.09, 7.02, 7.05 | 7.05 | 7.57 | 1,020.1 |
+
+The wall ratio is **1.000x**, with overlapping ranges: no demonstrated slowdown.
+Every retained module keeps SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`;
+all six Node invocations print the independent Babashka oracle's `484264`.

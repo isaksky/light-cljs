@@ -2845,7 +2845,7 @@ that string, at jobs 1/4 and all three optimization levels. Both review findings
 are reproduced by the new regressions on the handoff code before the fixes.
 
 Fresh release builds of `bdfead5c` retain every JS/map hash above for both
-workloads at jobs 1/4. All eight files pass Node's syntax check; all four
+workloads at jobs 1/4. All eight JavaScript outputs pass Node's syntax check; all four
 generated modules print the Babashka oracle's `484264`. The six parity and
 metadata-identity fixtures pass against V8. Combined native/QuickJS validation
 with twelve stress seeds passes all 522 library, macro, reader, proxy and cache
@@ -2853,3 +2853,26 @@ tests, with the two existing ignored cases. The final engine run passes 2,181
 tests and five doctests. Strict engine Clippy still reports the same eight
 library/nine test diagnostics; engine and combined all-target checks pass with
 only the three established diagnostic categories allowed.
+
+Final native-only validation with twelve seeds passes 127 macro, 12 reader
+and two proxy tests, retaining the existing ignored large-project case. Full
+default V8 nextest passes 2,133 tests (109 skipped); full QuickJS-only nextest
+passes 2,056 (108 skipped). Each has only the existing
+`playground_crate_checks_for_wasm32` workspace failure, with the same diagnostic
+and unchanged test/manifests as `01175afc`. Default and QuickJS all-target
+Clippy pass strictly. Engine-free library/binary Clippy passes strictly;
+all-target Clippy retains the existing evaluator-example missing `print` and
+`evaluate` APIs and `tests/execution.rs:1772` unused-enumeration diagnostic.
+Those sources are unchanged from `01175afc`. Both formatter checks pass.
+
+The default-suite and strict-Clippy results remain valid after the final
+undefined-metadata correction: that delta changes only the optional native
+engine, native-gated macro tests and documentation. The final native and
+combined runs, engine tests and checks above cover that correction directly.
+
+The final default V8 timing guard retains three quiet alternating-order pairs:
+median wall time is **7.05 s before and 7.05 s after** (1.000x), with overlapping
+ranges. All six modules retain SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`
+and print `484264`. The [benchmark record](../benchmarks/native-macros.md)
+contains the retained measurements and excluded first pair.
