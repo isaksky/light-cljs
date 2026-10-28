@@ -1184,7 +1184,9 @@ pub(crate) fn dispatch(heap: &Heap, table: &Value, v: &Value) -> Result<Value> {
 /// the struct types whose declarations this task has installed. An unknown
 /// struct must return to JavaScript to demand its declaration before resolving
 /// any extension bundles. Host objects likewise keep their property/Promise
-/// resolution there. This leaf reads only persistent maps and native values;
+/// resolution there. Arrays also need that Promise probe when the table has
+/// a Promise extension: their mutable prototype can inherit Promise.prototype.
+/// This leaf reads only persistent maps and native values;
 /// it cannot call user code, allocate adapters, or retain a heap borrow.
 pub(crate) fn protocol_lookup(
     heap: &Heap,
@@ -1212,6 +1214,11 @@ pub(crate) fn protocol_lookup(
         index: 2,
         count: snapshot.len(),
     })?;
+    if matches!(&key, Value::String(name) if name == "array")
+        && super::get(heap, table.clone(), Value::String("js/Promise".into()))?.is_some()
+    {
+        return Ok(Value::Undefined);
+    }
     let declared = snapshot.get(3).ok_or(CollectionError::IndexOutOfBounds {
         index: 3,
         count: snapshot.len(),

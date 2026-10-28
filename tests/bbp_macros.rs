@@ -4928,6 +4928,60 @@ fn native_protocol_lookup_keeps_bindings_call_order_and_frontiers_at_all_pool_si
             "[[7 7] 7 [\"get\" \"arg\"] 99]\n",
         ),
         (HELPER_FRONTIER, "[[1 10] [2 10] 2 10]\n"),
+        // Promise prototype extensions precede array/object/default entries on
+        // both the cold lookup and every lookup of the warmed table.
+        (
+            r#"(defprotocol P (p [x]))
+               (extend-protocol P
+                 array (p [_] :array) object (p [_] :object)
+                 default (p [_] :default) js/Promise (p [_] :promise))
+               (defmacro probe []
+                 (let [a (js/Object.setPrototypeOf (js/Array.) (.-prototype js/Promise))
+                       promise (js/Promise.resolve 1) o (js-obj)
+                       po (js/Object.setPrototypeOf (js-obj) (.-prototype js/Promise))
+                       plain (js/Array.)]
+                   [[(p a) (p a) (p a)] [(p promise) (p promise) (p promise)]
+                    [(p o) (p o) (p o)] [(p po) (p po) (p po)]
+                    [(p plain) (p plain) (p plain)] [(p 1) (p 1)]]))
+               (js/console.log (pr-str (probe)))"#,
+            "[[:promise :promise :promise] [:promise :promise :promise] [:object :object :object] [:promise :promise :promise] [:array :array :array] [:default :default]]\n",
+        ),
+        (
+            r#"(defprotocol P (p [x]))
+               (extend-protocol P default (p [_] :default) js/Promise (p [_] :promise))
+               (defmacro probe []
+                 (let [a (js/Object.setPrototypeOf (js/Array.) (.-prototype js/Promise))]
+                   [(p a) (p a) (p a)]))
+               (js/console.log (pr-str (probe)))"#,
+            "[:promise :promise :promise]\n",
+        ),
+        // A table snapshot cannot freeze a host array's mutable prototype.
+        (
+            r#"(defprotocol P (p [x]))
+               (extend-protocol P array (p [_] :array) js/Promise (p [_] :promise))
+               (defmacro probe []
+                 (let [a (js/Array.) before [(p a) (p a)]]
+                   (js/Object.setPrototypeOf a (.-prototype js/Promise))
+                   (let [during [(p a) (p a) (p a)]]
+                     (js/Object.setPrototypeOf a (.-prototype js/Array))
+                     [before during [(p a) (p a)]])))
+               (js/console.log (pr-str (probe)))"#,
+            "[[:array :array] [:promise :promise :promise] [:array :array]]\n",
+        ),
+        // Installing a Promise extension invalidates an existing array snapshot.
+        (
+            r#"(defprotocol P (p [x]))
+               (extend-protocol P array (p [_] :array) object (p [_] :object))
+               (defn install [] (extend-type js/Promise P (p [_] :promise)))
+               (defmacro probe []
+                 (let [a (js/Object.setPrototypeOf (js/Array.) (.-prototype js/Promise))
+                       promise (js/Promise.resolve 1) o (js-obj)
+                       before [(p a) (p a) (p promise) (p promise) (p o) (p o)]]
+                   (install)
+                   [before [(p a) (p a) (p a)] [(p promise) (p promise)] [(p o) (p o)]]))
+               (js/console.log (pr-str (probe)))"#,
+            "[[:array :array :object :object :object :object] [:promise :promise :promise] [:promise :promise] [:object :object]]\n",
+        ),
         (
             r#"(defprotocol P (p [x]))
                (deftype T []) (deftype U [] P (p [_] :own))

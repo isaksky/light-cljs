@@ -1915,6 +1915,16 @@ fn protocol_lookup_requires_declared_types_and_keeps_host_resolution_outside_the
           const host = { get __lightNativeType() { throw new Error('host getter'); } };
           check(lookup(table, declared, host) === undefined, 'host slow path');
           check(lookup(table, declared, Promise.resolve(1)) === undefined, 'Promise slow path');
+          const array = [];
+          table = __rt.assoc(table, 'array', 'array');
+          check(lookup(table, declared, array) === 'array', 'array without Promise extension');
+          const promises = __rt.assoc(table, 'js/Promise', 'promise');
+          check(lookup(promises, declared, array) === undefined, 'array Promise probe before exact entry');
+          Object.setPrototypeOf(array, Promise.prototype);
+          check(lookup(promises, declared, array) === undefined, 'array with Promise prototype');
+          check(lookup(__rt.dissoc(promises, 'array'), declared, array) === undefined, 'array Promise probe before default');
+          check(lookup(promises, declared, r) === 'record', 'Promise extension keeps struct fast path');
+          check(lookup(promises, declared, 2) === 'number', 'Promise extension keeps primitive fast path');
           const direct = __rt.vector(1, 10, table, declared, true);
           check(__rt.cljProtocolLookup(direct, 1, 10, r) === 'record', 'direct override');
           check(__rt.cljProtocolLookup(direct, 1, 10, t) === null, 'builtins precede object/default');
