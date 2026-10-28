@@ -1563,3 +1563,38 @@ still match byte-for-byte, and the mapped application prints `484264`.
 Integrated binary SHA-256 values: native
 `451ad00567e940aac22a2764f95dc40072f69f88cc53de197b8f92fa72cea44d`,
 default V8 `bef3cbfed9ae0829c45ca7949cc450a2a3de68505096ec26d1fd1a575ae00167`.
+
+### Final repair verification
+
+The production source is `097d9a78`, rebased onto `730a770f`, with the same
+Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218 toolchain. Feature
+variants ran sequentially with three Cargo build jobs. Default V8 used
+`LIGHT_CLJS_V8_CACHE=require`; the pinned ClojureScript source was linked
+read-only for the checks.
+
+- Default and QuickJS-only full nextest runs at `-j 8` finish with
+  2,131/2,054 passes and one failure each: the unchanged nested-worktree
+  playground Cargo workspace check. Both error blocks match their saved
+  baselines exactly. These full runs are reused across the rebase and worker
+  fix: the base's engine, bridge and emitter changes affect native forms only,
+  the write publication is feature-gated, and the added tests require native
+  features. Fresh default all-target strict Clippy still passes.
+- Final native-only `--lib --test bbp_macros -j 4 --no-fail-fast`, with
+  `LIGHT_CLJS_STRESS_SEEDS=12`: 372 pass, including all 97 macro tests and both
+  scheduling/effect-lane stress tests. The same 27 native-only library failures
+  remain, with identical failed names and panic payloads to the saved baseline.
+  The new worker publication, generated-write and reify preparation cases pass.
+- Native plus QuickJS, `--lib --test bbp_macros -j 4 --no-fail-fast`, with one
+  stress seed: all 449 tests pass, with one normally ignored test. This covers
+  native/QuickJS differential behavior, native pools, shared multimethods,
+  dynamic core replacement, binding/restoration, retention and artifact/cache
+  behavior on the integrated tree.
+- Formatting and default all-target strict Clippy pass. Native combined
+  all-target strict Clippy retains the same eight engine diagnostics; allowing
+  only `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+  `clippy::byte_char_slices` passes. Engine-free library/binary strict Clippy
+  passes. Its unsupported engine-dependent all-target tests/benches retain
+  baseline failures: the complete error-header frequencies and location sets
+  match the saved unchanged-base `--keep-going` log (623 errors, 626 location
+  lines). No source suppressions, assertion changes or new skipped tests were
+  introduced.
