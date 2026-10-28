@@ -1813,3 +1813,24 @@ Validation on production source `9cd9f2ed`, macOS arm64, locked Rust/Cargo
   `__lightCompileUnit`/`__lightBuildService`, and the explicit QuickJS-required
   reader error. With `bbp-macros,quickjs`, all 351 library tests pass, with one
   existing ignored test.
+- The complete `bbp-macros,quickjs` run, with `--lib --test bbp_macros --test
+  bbp_reader --test bbp_proxy_has --test compiler_cache` and 12 stress seeds,
+  passes 477 tests (351 library, 100 differential macros, 10 readers, two proxy
+  and 14 cache tests), with the same one ignored library test.
+- Engine `cargo test --locked -p big-boy-pants-js --all-targets` passes all
+  2,161 tests; its five doctests pass. Compiler and engine formatting pass.
+- Full default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, pinned ClojureScript
+  source link, `--no-fail-fast -j 8`) gives 2,132 passes and one failure.
+  QuickJS-only nextest gives 2,055 passes and the same one failure. Both are
+  `playground_crate_checks_for_wasm32`: Cargo associates the nested playground
+  manifest with the main checkout's workspace. The complete error signature
+  matches the documented baseline; the test, manifest and build script are
+  unchanged. No tests or assertions were weakened or skipped for this run.
+- Strict default all-target Clippy and engine-free library/binary Clippy pass.
+  Native/QuickJS and engine strict Clippy retain eight library/nine engine-test
+  diagnostics on existing expressions. Both all-target runs pass allowing only
+  `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+  `clippy::byte_char_slices` after `-D warnings`; there are no source suppressions.
+  Engine-free all-target `--keep-going` retains the documented 623 diagnostics
+  and six failed-target summaries in unsupported engine-dependent tests and
+  benches. This is not an all-target strict-lint pass.
