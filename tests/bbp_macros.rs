@@ -8056,6 +8056,7 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
             "(with-meta (seq (js/Array. 1 2)) {:tag true})",
         ),
         ("cons", "(cons 1 [])"),
+        ("cons-nil", "(cons 1 nil)"),
         ("cons-view", "(cons 1 (seq [2 3]))"),
         ("cons-view-rest", "(rest (cons 1 (seq [2 3])))"),
         ("cons-vector-rest", "(rest (cons 1 [2 3]))"),
@@ -8078,6 +8079,10 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
         ("keys", "(keys {:a 1})"),
         ("vals", "(vals {:a 1})"),
         ("concat", "(concat '(1) '(2))"),
+        ("concat-unary", "(concat (seq [1 2]))"),
+        ("concat-unary-seq", "(seq (concat (seq [1 2])))"),
+        ("concat-empty-left", "(seq (concat nil (seq [1 2])))"),
+        ("concat-variadic", "(seq (concat nil nil (seq [1 2])))"),
         ("concat-empty", "(concat)"),
         ("concat-seq", "(seq (concat '(1) '(2)))"),
         ("concat-rest", "(rest (concat '(1) '(2)))"),
@@ -8099,6 +8104,11 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
         ("list-marker", "(ListMarker.)"),
         ("plain-marker", "(PlainMarker.)"),
         ("pending-marker", "(PendingMarker.)"),
+        ("declared-counted", "(DeclaredCounted.)"),
+        ("extended-counted", "(ExtendedCounted.)"),
+        ("overlay-counted", "(OverlayCounted.)"),
+        ("extended-pending", "(ExtendedPending.)"),
+        ("printer-marker", "(PrinterMarker.)"),
         ("seq-marker", "(SeqMarker.)"),
         ("sequential-marker", "(SequentialMarker.)"),
         ("coll-marker", "(CollMarker.)"),
@@ -8117,6 +8127,13 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
       (deftype ListMarker [] IList)
       (deftype PlainMarker [])
       (deftype PendingMarker [] IPending (-realized? [_] false))
+      (deftype DeclaredCounted [] ICounted (-count [_] 1))
+      (deftype ExtendedCounted [])
+      (extend-type ExtendedCounted ICounted (-count [_] 1))
+      (deftype OverlayCounted [])
+      (deftype ExtendedPending [] IPending (-realized? [_] false))
+      (extend-type ExtendedPending ICounted (-count [_] 1))
+      (deftype PrinterMarker [] IPrintWithWriter (-pr-writer [_ _ _] nil))
       (deftype SeqMarker [] ISeq (-first [_] 1) (-rest [_] '()))
       (deftype SequentialMarker [] ISequential)
       (deftype CollMarker [] ICollection (-conj [this _] this))
@@ -8129,6 +8146,10 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
       (deftype MutableMarker [^:mutable x] IList)
       (extend-type string IList)
       (extend-type List IList)
+      (extend-type PersistentVector IStack (-peek [_] :vector-override) (-pop [this] this))
+      (extend-type string IStack (-peek [_] :string-override) (-pop [this] this))
+      (extend-type nil IStack (-peek [_] :nil-stack) (-pop [_] nil))
+      (extend-type default IStack (-peek [_] :default-stack) (-pop [this] this))
       (def cached [(seq [1 2]) (seq {:a 1}) (seq #{1}) (seq "ab")
                    (cons 1 (lazy-seq '(2))) (ListMarker.)])
       (defn load-sequences [] cached)
@@ -8137,6 +8158,9 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
       (deftype StackMarker [value seen] IStack
         (-peek [_] (swap! seen conj :peek) (peek-demanded value))
         (-pop [this] this))
+      (defn equiv-demanded [x] x)
+      (deftype EquivMarker [value seen] IEquiv
+        (-equiv [_ other] (swap! seen conj :equiv) (= (equiv-demanded value) (.-value other))))
       (defn classify [x]
         (let [l list? s seq? q sequential? c coll? v vector? e map-entry?]
           [[(list? x) (seq? x) (sequential? x) (coll? x) (vector? x) (map-entry? x)]
@@ -8145,9 +8169,45 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
     "#,
     )
     .unwrap();
-    std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker PlainMarker PendingMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker MutableMarker StackMarker load-sequences classify demanded]]))
+    let regressions = r#"[
+      (let [c concat] [(identical? input (seq (concat input)))
+                      (identical? input (seq (c input)))
+                      (identical? input (seq (apply c [input])))
+                      (identical? input (seq (concat nil input)))])
+      (let [s (with-meta (seq [1 2]) {:concat true}) c concat]
+        (mapv (fn [result] [(identical? s (seq result)) (classify (seq result)) (meta (seq result))])
+          [(concat s) (c s) (apply c [s]) (concat nil s) (c nil s) (apply c [nil s])
+           (concat nil nil s) (c nil nil s) (apply c [nil nil s])]))
+      (let [p peek pp -peek check (fn [x] [(peek x) (p x) (apply p [x])
+                                          (-peek x) (pp x) (apply pp [x])])]
+        (mapv check [nil (cons 1 nil) [1 2] "stack" (PlainMarker.) () '(1 2)
+                     cljs.core.PersistentQueue.EMPTY]))
+      (let [a (js/Array. 1 2) s (seq a) m {:cursor true} t (with-meta s m)
+            before [(identical? s (with-meta s nil)) (identical? t (with-meta t m))]
+            _ (set! (.-length a) 0) exhausted (with-meta t {:empty true})]
+        [before (some? exhausted) (meta exhausted) (seq? exhausted) (count exhausted) (nil? (seq exhausted))])
+      (mapv (fn [reverse]
+        (let [seen (js/Array.) a (js* "Object.defineProperty([1,2],1,{get(){~{}.push('tail');throw new Error('tail');}})" seen)
+              s (seq a) result (try (if reverse (= '(9 0) s) (= s '(9 0)))
+                                   (catch :default e (.-message e)))]
+          [result (into [] seen)])) [false true])
+      (mapv (fn [reverse]
+        (let [seen (js/Array.) a (js* "Object.defineProperty(new Array(200000),0,{get(){~{}.push('head');throw new Error('head');}})" seen)
+              s (seq a) result (try (if reverse (= '(1) s) (= s '(1)))
+                                   (catch :default e (.-message e)))]
+          [result (into [] seen)])) [false true])
+      (let [seen (js/Array.) a (js* "Object.defineProperty([1,2],0,{get(){~{}.push('head');return 1;}})" seen) s (seq a)]
+        [(= s s) (into [] seen)])
+      (let [seen (js/Array.) a (js* "(()=>{const a=new Array(200000);a[0]=1;Object.defineProperty(a,1,{get(){~{}.push('tail');throw new Error('tail');}});return a;})()" seen)
+            b (js* "(()=>{const a=new Array(200000);a[0]=9;return a;})()") left (seq a) right (seq b)]
+        [(= left right) (= right left) (into [] seen)])
+      (let [seen (atom []) a (array (EquivMarker. 1 seen)) s (seq a) other (list (EquivMarker. 1 seen))]
+        [(= s other) (= other s) @seen])
+      [(count (DeclaredCounted.)) (count (ExtendedCounted.)) (count (OverlayCounted.))]]"#;
+    std::fs::write(root.path().join("macros.cljs"), format!(r#"(ns macros (:require [values :refer [ListMarker PlainMarker PendingMarker DeclaredCounted ExtendedCounted OverlayCounted ExtendedPending PrinterMarker SeqMarker SequentialMarker CollMarker VectorMarker EntryMarker AllMarkers RecordMarker MutableMarker StackMarker EquivMarker load-sequences classify demanded]]))
       (defmacro probe [input]
         (let [seen (atom []) unforced (lazy-seq (swap! seen conj :unexpected) (throw (js/Error. "forced")))
+              _ (extend-type OverlayCounted ICounted (-count [_] 1))
               forced (lazy-seq '(1)) _ (first forced)
               table [{table}]
               result (mapv (fn [[label x]] [label (classify x)]) table)
@@ -8171,7 +8231,8 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
                         [(= (seq [1 2]) '(1 2)) (= (seq "ab") '("a" "b"))
                          (= (hash (seq [1 2])) (hash '(1 2)))
                          (get {{(seq [1 2]) :found}} '(1 2))
-                         (meta (with-meta (seq [1 2]) {{:tag true}}))]])))"#)).unwrap();
+                         (meta (with-meta (seq [1 2]) {{:tag true}}))]
+                        {regressions}])))"#)).unwrap();
     for name in ["a", "b"] {
         std::fs::write(
             root.path().join(format!("{name}.cljs")),
@@ -8222,7 +8283,7 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
                     ..Default::default()
                 },
             )
-            .unwrap_or_else(|e| panic!("native={native}, jobs={jobs}: {e}"));
+            .unwrap_or_else(|e| panic!("marker={marker}, native={native}, jobs={jobs}: {e}"));
             if native {
                 assert!(stats.native_helpers.published > 0, "{stats:?}");
                 assert_eq!(stats.native_helpers.per_task, 0, "{stats:?}");

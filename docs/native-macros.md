@@ -86,8 +86,9 @@ immutable/mutable types, records and host marker extensions at jobs 1/2/4/8.
 Each of the six default marker extensions is compared too, including unmasked
 types and types declaring only a partition-one protocol. Builtin negative
 markers and partition-zero declarations block host/default fallback. Mask
-membership comes from visible declaration entries and overlays, so later
-extensions are not retained in a type's layout.
+membership comes from the original declaration's task-local type information;
+later extension bundles and overlays install direct markers without changing
+that declaration's mask.
 Demanded helpers publish without task-local copies; a cold helper in a lazy
 thunk resumes without replaying its effect. The table also checks metadata,
 equality, hashing and source input. Engine coverage retains occurrences and
@@ -101,6 +102,22 @@ retaining the original mutable array rather than taking a snapshot. Their
 classification, metadata, traversal and direct equality/hash observations match
 the legacy runtime; these cursors remain task-owned. Emitted application code
 and `src/js_runtime.js` are unchanged.
+
+Unary `concat` and binary `concat` with an exhausted left operand preserve the
+actual operand sequence, including its marker, metadata and identity. Variadic
+`concat` still traverses its final operand. `cons` onto nil constructs a List,
+so its stack operations and explicit List extensions observe the List type.
+Array cursor equality compares elements incrementally, preserves identity and
+count shortcuts, and stops before reading getters after a mismatch. Element
+comparisons can demand helpers and suspend through the ordinary callback path.
+Cursor metadata copying returns the same cursor for identical metadata and
+preserves an existing view when its backing array has become exhausted.
+`peek` honors explicit core-type and host IStack extensions while retaining
+builtin precedence over defaults. Map entries keep their own dispatch identity.
+The `-peek` protocol entry dispatches nil extensions separately from public
+`peek`, which returns nil for nil. The source differential table covers these
+review regressions, including large array cursors and exact getter/equality
+effects, at jobs 1/2/4/8 under each default collection marker extension.
 
 Fresh native-only debug builds at `db3d9740`, rebased onto `7004c99b`, on macOS
 arm64 with Homebrew Rust/Cargo 1.99.1 pass the former `core.isList` failure and the next small service gap,

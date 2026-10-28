@@ -122,6 +122,13 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
         _ => None,
     };
     let receiver_kind = form::kind(heap, &form::unwrap(heap, receiver.clone()));
+    // Public peek bypasses nil dispatch. Other receivers can have explicit
+    // IStack extensions, including core collections and primitive strings.
+    let peek_adapter = op == FormOp::CljPeek
+        && !matches!(
+            form::unwrap(heap, receiver.clone()),
+            Value::Null | Value::Undefined
+        );
     let array_adapter = receiver_kind.is_none()
         && matches!(form::unwrap(heap, receiver.clone()), Value::Object(_))
         && matches!(
@@ -139,7 +146,10 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
                 | FormOp::CljPeek
         );
     if builtin_marker == Some(true)
-        || (builtin_marker.is_none() && !array_adapter && receiver_kind != Some(FormKind::Struct))
+        || (builtin_marker.is_none()
+            && !array_adapter
+            && !peek_adapter
+            && receiver_kind != Some(FormKind::Struct))
     {
         return Ok(false);
     }

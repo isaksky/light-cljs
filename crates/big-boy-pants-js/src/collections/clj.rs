@@ -319,7 +319,7 @@ pub(crate) fn peek(heap: &Heap, v: &Value) -> Result<Value> {
 
 /// The head of `v` with realized lazy sequences followed, and its shape.
 fn head(heap: &Heap, v: &Value) -> Result<(Value, Shape)> {
-    let head = form::realized_head(heap, v.clone(), &mut lazy::Visited::default())?;
+    let head = form::sequence_head(heap, v.clone(), &mut lazy::Visited::default())?;
     let shape = shape(heap, &head);
     Ok((head, shape))
 }
@@ -611,7 +611,7 @@ pub(crate) fn next(heap: &Heap, v: &Value) -> Result<Value> {
 /// lazy or cons sequence, a cons sequence whose tail is `coll`, unrealized.
 pub(crate) fn cons(heap: &Heap, x: &Value, coll: &Value) -> Result<Value> {
     let rest = match shape(heap, coll) {
-        Shape::Nil => Value::Null,
+        Shape::Nil => return Ok(form::new_list(heap, std::slice::from_ref(x))?),
         Shape::Form(FormKind::List | FormKind::Cons | FormKind::Lazy, _) => coll.clone(),
         _ => seq(heap, coll)?,
     };
@@ -622,7 +622,16 @@ pub(crate) fn cons(heap: &Heap, x: &Value, coll: &Value) -> Result<Value> {
 /// The concatenation of `colls`, always a LazySeq, including empty and
 /// entirely finite inputs.
 fn concat_onto(heap: &Heap, colls: &[Value]) -> Result<Value> {
-    let colls = form::new_list(heap, colls)?;
+    // Variadic concat traverses every operand, including the final one.
+    // A terminal nil keeps that behavior distinct from unary/binary concat,
+    // whose final operand is returned without rebuilding its sequence.
+    let colls = if colls.len() > 2 {
+        let mut operands = colls.to_vec();
+        operands.push(Value::Null);
+        form::new_list(heap, &operands)?
+    } else {
+        form::new_list(heap, colls)?
+    };
     Ok(form::new_lazy_concat(heap, colls)?)
 }
 
@@ -634,6 +643,9 @@ fn concat_onto(heap: &Heap, colls: &[Value]) -> Result<Value> {
 pub(crate) fn concat_step(heap: &Heap, colls: &Value) -> Result<Value> {
     let colls = sequential_items(heap, "concat", colls)?;
     for (i, coll) in colls.iter().enumerate() {
+        if i + 1 == colls.len() {
+            return Ok(coll.clone());
+        }
         let (head, shape) = head(heap, coll)?;
         let (items, start, tail, chunked) = match &shape {
             Shape::Nil => continue,
@@ -1186,6 +1198,9 @@ pub(crate) fn dispatch_key(heap: &Heap, v: &Value) -> Option<Value> {
                     }
                     FormBody::List(_) if f.is_list() => key_string(8),
                     FormBody::List(_) => Value::String(JsString::from("sequence")),
+                    FormBody::Vector(_) if f.is_map_entry() => {
+                        Value::String(JsString::from("map-entry"))
+                    }
                     FormBody::Vector(_) => key_string(9),
                     FormBody::Map(_) => key_string(10),
                     FormBody::Set(_) => key_string(11),

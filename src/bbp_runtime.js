@@ -181,11 +181,13 @@ const decl = (() => {
   // PersistentVector`); never a host tag or `default`.
   const directKinds = new Set(['keyword', 'symbol', 'vector', 'map', 'set']);
   const sequenceKinds = __rt.map('list','list','empty-list','empty-list','sequence','sequence');
+  const vectorKinds = __rt.map('vector','vector','map-entry','map-entry');
   const directKey = x => {
     const ty = __rt.structTypeOf(x);
     if (ty !== null) return ty;
     const value = __rt.formValue(x), kind = __rt.formKind(value);
     if (kind === 'list') return __rt.cljDispatch(sequenceKinds,value);
+    if (kind === 'vector') return __rt.cljDispatch(vectorKinds,value);
     if (kind !== null) return directKinds.has(kind) ? kind : null;
     if (value instanceof Promise) return 'js/Promise';
     return value !== null && typeof value === 'object' ? value.__lightNativeType ?? null : null;
@@ -203,13 +205,9 @@ const decl = (() => {
     if (owned || ownedKinds.has(kind) || __rt.cljIsAtom(x)
         || kind==='compiler-literal' && __rt.formName(value)==='queue') return false;
     const ty=directKey(x);
-    if (views.get(ty)?.record) return false;
-    // Read membership at this declaration frontier, including overlays. Do
-    // not retain a later extension's mask in a shared type's layout.
-    if (ty!==null) for (const t of tables.values()) {
-      if (t.marker && partition0.has(t.protocol)
-          && t.entries.some(e=>e.key===ty && (e.overlay>0 || e.order<=frontier))) return false;
-    }
+    // Only the original declaration installs a mask. Later extend-type
+    // bundles and overlays add direct markers without changing that mask.
+    if (views.get(ty)?.mask0) return false;
     return satisfies(key,x);
   };
   // Owned core implementations precede object/default extensions. Explicit
@@ -298,9 +296,10 @@ const decl = (() => {
   // object a struct's interop reads.
   const type = (fields, specs, view, mutable, ty, fieldMembers) => {
     const record = __rt.formKind(__rt.structNew(ty)) === 'record';
+    const mask0 = record || specs.some(([name, arity]) => arity === 0 && partition0.has(name));
     // Keep one compiler-munged member per declared field: multiple fields
     // may share a member, and property enumeration may reorder names.
-    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), mutable, record});
+    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), mutable, record, mask0});
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
       view.__lightNativeType = ty;
@@ -478,9 +477,7 @@ const native = (() => {
     const cursor = arraySeqs.get(x), array = Array.isArray(val(x));
     if (cursor !== undefined || array) {
       switch (op) {
-        case 'formEquals': if (cursor !== undefined) return (a,b) =>
-          core.isSequential(a) && core.isSequential(b) && __rt.formEquals(
-            arraySeqs.has(a)?list(arr(a)):a,arraySeqs.has(b)?list(arr(b)):b); break;
+        case 'formEquals': if (cursor !== undefined) return equalArraySeq; break;
         case 'formHash': if (cursor !== undefined) return x => __rt.formHash(list(arr(x))); break;
         case 'cljSeq': return reduceSeqOf;
         case 'cljFirst': return firstOf;
@@ -488,12 +485,13 @@ const native = (() => {
         case 'cljNext': return nextOf;
         case 'cljCount': return () => cursor === undefined ? val(x).length : Math.max(0,cursor.array.length-cursor.index);
         case 'cljMeta': return () => cursor?.meta ?? null;
-        case 'cljWithMeta': if (cursor !== undefined) return (x,m) => arraySeq(cursor.array,cursor.index,m); break;
+        case 'cljWithMeta': if (cursor !== undefined) return (x,m) =>
+          val(cursor.meta) === val(m) ? x : copyArraySeq(cursor.array,cursor.index,m); break;
       }
     }
     if ((op==='formEquals'||op==='formHash') && __rt.formKind(x)===null) return null;
     switch (op) {
-      case 'cljPeek': return decl.coreLookup(table,x,record);
+      case 'cljPeek': return decl.coreLookup(table,x,stackValue(x));
       case 'cljIsList': return x => decl.predicate('IList',x,cursor!==undefined||multi.is(x));
       case 'cljIsSeq': return x => cursor!==undefined || val(x)!=null && decl.predicate('ISeq',x,multi.is(x));
       case 'cljIsSequential': return x => cursor!==undefined || decl.predicate('ISequential',x,multi.is(x));
@@ -1064,11 +1062,38 @@ const native = (() => {
   // Array cursors retain the original storage and check its current length
   // on advancement. Reducers can replace, append or remove unvisited items.
   const arraySeqs = new WeakMap();
-  const arraySeq = (array, index, meta = null) => {
-    if (index >= array.length) return null;
+  // Metadata copying preserves an existing view even if its storage shrank.
+  const copyArraySeq = (array, index, meta) => {
     const cursor = {};
     arraySeqs.set(cursor, {array, index, meta});
     return cursor;
+  };
+  const arraySeq = (array, index) => index >= array.length ? null : copyArraySeq(array,index,null);
+  const equalArraySeq = (a,b) => {
+    if (!core.isSequential(a) || !core.isSequential(b)) return false;
+    const counted = x => {
+      const kind = __rt.formKind(val(x));
+      return arraySeqs.has(x) || kind === 'list' || kind === 'vector'
+        || decl.predicate('ICounted',x);
+    };
+    if (counted(a) && counted(b) && val(__rt.cljCount(a)) !== val(__rt.cljCount(b))) return false;
+    let left = seqOf(a), right = seqOf(b);
+    while (left !== null) {
+      if (right === null || !__rt.formEquals(firstOf(left),firstOf(right))) return false;
+      left = nextOf(left); right = nextOf(right);
+    }
+    return right === null;
+  };
+  const stackValue = x => {
+    const kind = __rt.formKind(val(x));
+    return kind === 'vector' || (kind === 'list' || kind === 'cons') && __rt.cljIsList(x)
+      || kind === 'compiler-literal' && __rt.formName(val(x)) === 'queue';
+  };
+  const peekProtocol = x => {
+    const builtin = stackValue(x), method = decl.coreLookup(coreTables.cljPeek,x,builtin);
+    if (method !== null) return method(x);
+    if (builtin) return __rt.cljPeek(x);
+    throw new Error('No protocol method IStack/-peek defined for this value');
   };
   const reduceSeqOf = x => {
     const cursor = arraySeqs.get(x);
@@ -1446,7 +1471,7 @@ const native = (() => {
     nth:(x,n,...d)=>d.length?__rt.cljNthOr(x,n,d[0]):__rt.cljNth(x,n),
     count:x=>__rt.cljCount(x),
     seq, isEmpty:x=>__rt.cljSeq(x)===null,
-    rest:x=>__rt.cljRest(x), next:x=>__rt.cljNext(x), peek:x=>__rt.cljPeek(x), peekProtocol:x=>__rt.cljPeek(x),
+    rest:x=>__rt.cljRest(x), next:x=>__rt.cljNext(x), peek:x=>__rt.cljPeek(x), peekProtocol,
     cons:(x,xs)=>__rt.cljCons(x,xs), concat:(...xs)=>__rt.cljConcatAll(list(xs)),
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),
     apply:(f,...xs)=>invoke(f,...xs.slice(0,-1),...arr(xs[xs.length-1])),

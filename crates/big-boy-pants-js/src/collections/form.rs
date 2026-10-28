@@ -1878,7 +1878,17 @@ pub(crate) fn realized_head(
     v: Value,
     visited: &mut lazy::Visited,
 ) -> Result<Value, SeqError> {
-    realized_head_with(heap, v, visited, false)
+    realized_head_with(heap, v, visited, false, false)
+}
+
+/// Follow lazy cells for sequence operations, retaining the terminal value's
+/// occurrence. Returning an operand sequence must preserve its exact identity.
+pub(crate) fn sequence_head(
+    heap: &Heap,
+    v: Value,
+    visited: &mut lazy::Visited,
+) -> Result<Value, SeqError> {
+    realized_head_with(heap, v, visited, false, true)
 }
 
 /// Follow lazy cells for language protocol dispatch, retaining record
@@ -1888,7 +1898,7 @@ pub(crate) fn protocol_head(
     v: Value,
     visited: &mut lazy::Visited,
 ) -> Result<Value, SeqError> {
-    realized_head_with(heap, v, visited, true)
+    realized_head_with(heap, v, visited, true, false)
 }
 
 fn realized_head_with(
@@ -1896,12 +1906,13 @@ fn realized_head_with(
     v: Value,
     visited: &mut lazy::Visited,
     protocols: bool,
+    occurrence: bool,
 ) -> Result<Value, SeqError> {
     let mut v = v;
     loop {
-        let (u, f) = resolve(heap, v);
+        let (u, f) = resolve(heap, v.clone());
         let Some(cell) = f.as_ref().and_then(|(_, f)| f.lazy_cell()) else {
-            return Ok(u);
+            return Ok(if occurrence { v } else { u });
         };
         if !visited.enter(cell) {
             return Err(SeqError::Cycle);
