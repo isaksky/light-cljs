@@ -524,8 +524,6 @@ pub(crate) struct OrdinaryObject {
     /// Key to position in `entries`; present once there are more than
     /// [`INDEX_THRESHOLD`] entries.
     index: Option<HashMap<PropertyKey, u32>>,
-    /// `[[NumberData]]` / `[[StringData]]` / `[[SymbolData]]`, initialized before allocation.
-    primitive_data: Option<PrimitiveData>,
     /// `[[ErrorData]]`: independent of properties and prototype changes.
     error_data: bool,
     /// Arguments exotic brand, independent of user properties/prototype.
@@ -533,6 +531,16 @@ pub(crate) struct OrdinaryObject {
     /// Cold internal state stays boxed so allocation frames do not grow with
     /// each new language feature (in particular on 64 KiB VM workers).
     internal: Option<Box<InternalSlots>>,
+    /// Specialized built-in payloads do not enlarge every ordinary object,
+    /// function and binding cell through the HeapObject enum.
+    data: Option<Box<ObjectData>>,
+    reservation: crate::heap::budget::ByteReservation,
+}
+
+#[derive(Debug, Default)]
+struct ObjectData {
+    /// `[[NumberData]]` / `[[StringData]]` / `[[SymbolData]]`.
+    primitive_data: Option<PrimitiveData>,
     /// Intl.Locale's immutable internal record; contains no heap edges.
     locale_data: Option<Box<crate::intl::tag::LanguageTag>>,
 
@@ -556,7 +564,6 @@ pub(crate) struct OrdinaryObject {
     intl_service: Option<Box<IntlServiceSlots>>,
     segmenter: Option<Box<crate::intl::segmenter::Data>>,
     duration_format: Option<Box<crate::intl::duration_format::DurationFormat>>,
-    reservation: crate::heap::budget::ByteReservation,
 }
 
 #[derive(Debug, Default)]
@@ -586,16 +593,23 @@ impl OrdinaryObject {
                 + boxed(&internal.engine_error)
         });
         internal
-            + boxed(&self.locale_data)
-            + boxed(&self.number_format)
-            + boxed(&self.iterator)
-            + boxed(&self.plural_rules)
-            + boxed(&self.collator)
-            + boxed(&self.date_time_format)
-            + boxed(&self.list_format)
-            + boxed(&self.intl_service)
-            + boxed(&self.segmenter)
-            + boxed(&self.duration_format)
+            + self.data.as_deref().map_or(0, |data| {
+                std::mem::size_of_val(data)
+                    + boxed(&data.locale_data)
+                    + boxed(&data.number_format)
+                    + boxed(&data.iterator)
+                    + boxed(&data.plural_rules)
+                    + boxed(&data.collator)
+                    + boxed(&data.date_time_format)
+                    + boxed(&data.list_format)
+                    + boxed(&data.intl_service)
+                    + boxed(&data.segmenter)
+                    + boxed(&data.duration_format)
+            })
+    }
+
+    fn data_mut(&mut self) -> &mut ObjectData {
+        self.data.get_or_insert_with(Default::default)
     }
 
     pub(crate) fn with_regexp_iterator(
@@ -616,11 +630,11 @@ impl OrdinaryObject {
         mut self,
         data: crate::intl::display_names::DisplayNames,
     ) -> Self {
-        self.intl_service = Some(Box::new(IntlServiceSlots::DisplayNames(data)));
+        self.data_mut().intl_service = Some(Box::new(IntlServiceSlots::DisplayNames(data)));
         self
     }
     pub(crate) fn display_names(&self) -> Option<&crate::intl::display_names::DisplayNames> {
-        match self.intl_service.as_deref() {
+        match self.data.as_deref()?.intl_service.as_deref() {
             Some(IntlServiceSlots::DisplayNames(data)) => Some(data),
             _ => None,
         }
@@ -630,36 +644,36 @@ impl OrdinaryObject {
         mut self,
         data: crate::intl::duration_format::DurationFormat,
     ) -> Self {
-        self.duration_format = Some(Box::new(data));
+        self.data_mut().duration_format = Some(Box::new(data));
         self
     }
     pub(crate) fn duration_format(&self) -> Option<&crate::intl::duration_format::DurationFormat> {
-        self.duration_format.as_deref()
+        self.data.as_deref()?.duration_format.as_deref()
     }
 
     pub(crate) fn with_segmenter(mut self, data: crate::intl::segmenter::Data) -> Self {
-        self.segmenter = Some(Box::new(data));
+        self.data_mut().segmenter = Some(Box::new(data));
         self
     }
     pub(crate) fn segmenter(&mut self) -> Option<&mut crate::intl::segmenter::Data> {
-        self.segmenter.as_deref_mut()
+        self.data.as_deref_mut()?.segmenter.as_deref_mut()
     }
     pub(crate) fn with_list_format(mut self, data: crate::intl::list_format::ListFormat) -> Self {
-        self.list_format = Some(Box::new(data));
+        self.data_mut().list_format = Some(Box::new(data));
         self
     }
 
     pub(crate) fn list_format(&self) -> Option<&crate::intl::list_format::ListFormat> {
-        self.list_format.as_deref()
+        self.data.as_deref()?.list_format.as_deref()
     }
 
     pub(crate) fn with_iterator(mut self, data: crate::vm::native::iterator::Data) -> Self {
-        self.iterator = Some(Box::new(data));
+        self.data_mut().iterator = Some(Box::new(data));
         self
     }
 
     pub(crate) fn iterator(&mut self) -> Option<&mut crate::vm::native::iterator::Data> {
-        self.iterator.as_deref_mut()
+        self.data.as_deref_mut()?.iterator.as_deref_mut()
     }
 
     /// An empty, extensible object with a null prototype, owned by `owner`
@@ -683,27 +697,10 @@ impl OrdinaryObject {
             entries: Vec::new(),
             shape: None,
             index: None,
-            primitive_data: None,
             error_data: false,
             arguments_data: false,
             internal: None,
-            locale_data: None,
-
-            date_value: None,
-            regexp: None,
-
-            number_format: None,
-            number_format_bound: None,
-            iterator: None,
-
-            plural_rules: None,
-            collator: None,
-            date_time_format: None,
-            list_format: None,
-
-            intl_service: None,
-            segmenter: None,
-            duration_format: None,
+            data: None,
         }
     }
 
@@ -713,16 +710,18 @@ impl OrdinaryObject {
     /// frozen object carries them.
     pub(crate) fn stand_in(&self) -> Option<OrdinaryObject> {
         let internal = self.internal.is_some()
-            || self.locale_data.is_some()
-            || self.number_format.is_some()
-            || self.iterator.is_some()
-            || self.plural_rules.is_some()
-            || self.collator.is_some()
-            || self.date_time_format.is_some()
-            || self.list_format.is_some()
-            || self.intl_service.is_some()
-            || self.segmenter.is_some()
-            || self.duration_format.is_some();
+            || self.data.as_ref().is_some_and(|data| {
+                data.locale_data.is_some()
+                    || data.number_format.is_some()
+                    || data.iterator.is_some()
+                    || data.plural_rules.is_some()
+                    || data.collator.is_some()
+                    || data.date_time_format.is_some()
+                    || data.list_format.is_some()
+                    || data.intl_service.is_some()
+                    || data.segmenter.is_some()
+                    || data.duration_format.is_some()
+            });
         (!internal).then(|| OrdinaryObject {
             owner: self.owner,
             intrinsic: self.intrinsic,
@@ -730,12 +729,17 @@ impl OrdinaryObject {
             extensible: self.extensible,
             entries: self.entries.clone(),
             index: self.index.clone(),
-            primitive_data: self.primitive_data.clone(),
             error_data: self.error_data,
             arguments_data: self.arguments_data,
-            date_value: self.date_value,
-            regexp: self.regexp.clone(),
-            number_format_bound: self.number_format_bound.clone(),
+            data: self.data.as_ref().map(|data| {
+                Box::new(ObjectData {
+                    primitive_data: data.primitive_data.clone(),
+                    date_value: data.date_value,
+                    regexp: data.regexp.clone(),
+                    number_format_bound: data.number_format_bound.clone(),
+                    ..Default::default()
+                })
+            }),
             ..OrdinaryObject::with_budget(self.budget.clone(), None)
         })
     }
@@ -780,47 +784,47 @@ impl OrdinaryObject {
 
     /// Initialize a wrapper before publishing its identity to the heap.
     pub(crate) fn with_primitive_data(mut self, data: PrimitiveData) -> OrdinaryObject {
-        self.primitive_data = Some(data);
+        self.data_mut().primitive_data = Some(data);
         self
     }
 
     /// A wrapper's internal data, independent of its JavaScript prototype.
     pub(crate) fn primitive_data(&self) -> Option<&PrimitiveData> {
-        self.primitive_data.as_ref()
+        self.data.as_deref()?.primitive_data.as_ref()
     }
 
     pub(crate) fn with_locale_data(mut self, data: crate::intl::tag::LanguageTag) -> Self {
-        self.locale_data = Some(Box::new(data));
+        self.data_mut().locale_data = Some(Box::new(data));
         self
     }
 
     pub(crate) fn locale_data(&self) -> Option<&crate::intl::tag::LanguageTag> {
-        self.locale_data.as_deref()
+        self.data.as_deref()?.locale_data.as_deref()
     }
 
     pub(crate) fn with_regexp(
         mut self,
         compiled: std::sync::Arc<crate::regexp::object::Compiled>,
     ) -> Self {
-        self.regexp = Some(compiled);
+        self.data_mut().regexp = Some(compiled);
         self
     }
 
     pub(crate) fn regexp(&self) -> Option<&std::sync::Arc<crate::regexp::object::Compiled>> {
-        self.regexp.as_ref()
+        self.data.as_deref()?.regexp.as_ref()
     }
 
     pub(crate) fn with_relative_time_format(
         mut self,
         data: crate::intl::relative_time_format::RelativeTimeFormat,
     ) -> Self {
-        self.intl_service = Some(Box::new(IntlServiceSlots::RelativeTimeFormat(data)));
+        self.data_mut().intl_service = Some(Box::new(IntlServiceSlots::RelativeTimeFormat(data)));
         self
     }
     pub(crate) fn relative_time_format(
         &self,
     ) -> Option<&crate::intl::relative_time_format::RelativeTimeFormat> {
-        match self.intl_service.as_deref() {
+        match self.data.as_deref()?.intl_service.as_deref() {
             Some(IntlServiceSlots::RelativeTimeFormat(data)) => Some(data),
             _ => None,
         }
@@ -829,14 +833,14 @@ impl OrdinaryObject {
         mut self,
         data: crate::intl::plural_rules::PluralRules,
     ) -> Self {
-        self.plural_rules = Some(Box::new(data));
+        self.data_mut().plural_rules = Some(Box::new(data));
         self
     }
     pub(crate) fn with_date_time_format(
         mut self,
         data: crate::intl::date_time_format::DateTimeFormat,
     ) -> Self {
-        self.date_time_format = Some(Box::new(DateTimeFormatSlots {
+        self.data_mut().date_time_format = Some(Box::new(DateTimeFormatSlots {
             options: data,
             bound: None,
         }));
@@ -845,58 +849,72 @@ impl OrdinaryObject {
     pub(crate) fn date_time_format(
         &self,
     ) -> Option<&crate::intl::date_time_format::DateTimeFormat> {
-        self.date_time_format.as_ref().map(|s| &s.options)
+        self.data
+            .as_deref()?
+            .date_time_format
+            .as_ref()
+            .map(|s| &s.options)
     }
     pub(crate) fn date_time_format_bound(&self) -> Option<&Value> {
-        self.date_time_format
+        self.data
+            .as_deref()?
+            .date_time_format
             .as_ref()
             .and_then(|s| s.bound.as_ref())
     }
     pub(crate) fn set_date_time_format_bound(&mut self, value: Value) {
-        self.date_time_format
+        self.data_mut()
+            .date_time_format
             .as_mut()
             .expect("checked DateTimeFormat receiver")
             .bound = Some(value);
     }
     pub(crate) fn with_collator(mut self, data: crate::intl::collator::Collator) -> Self {
-        self.collator = Some(Box::new(CollatorSlots {
+        self.data_mut().collator = Some(Box::new(CollatorSlots {
             options: data,
             bound: None,
         }));
         self
     }
     pub(crate) fn collator(&self) -> Option<&crate::intl::collator::Collator> {
-        self.collator.as_ref().map(|slots| &slots.options)
+        self.data
+            .as_deref()?
+            .collator
+            .as_ref()
+            .map(|slots| &slots.options)
     }
     pub(crate) fn collator_bound(&self) -> Option<&Value> {
-        self.collator
+        self.data
+            .as_deref()?
+            .collator
             .as_ref()
             .and_then(|slots| slots.bound.as_ref())
     }
     pub(crate) fn set_collator_bound(&mut self, value: Value) {
-        self.collator
+        self.data_mut()
+            .collator
             .as_mut()
             .expect("Collator receiver checked")
             .bound = Some(value);
     }
     pub(crate) fn plural_rules(&self) -> Option<&crate::intl::plural_rules::PluralRules> {
-        self.plural_rules.as_deref()
+        self.data.as_deref()?.plural_rules.as_deref()
     }
     pub(crate) fn with_number_format(
         mut self,
         data: crate::intl::number_format::NumberFormat,
     ) -> Self {
-        self.number_format = Some(Box::new(data));
+        self.data_mut().number_format = Some(Box::new(data));
         self
     }
     pub(crate) fn number_format(&self) -> Option<&crate::intl::number_format::NumberFormat> {
-        self.number_format.as_deref()
+        self.data.as_deref()?.number_format.as_deref()
     }
     pub(crate) fn number_format_bound(&self) -> Option<&Value> {
-        self.number_format_bound.as_ref()
+        self.data.as_deref()?.number_format_bound.as_ref()
     }
     pub(crate) fn set_number_format_bound(&mut self, value: Value) {
-        self.number_format_bound = Some(value);
+        self.data_mut().number_format_bound = Some(value);
     }
 
     pub(crate) fn with_error_data(mut self) -> Self {
@@ -943,18 +961,18 @@ impl OrdinaryObject {
 
     /// Initialize Date's own slot before publishing its heap identity.
     pub(crate) fn with_date_value(mut self, time: f64) -> Self {
-        self.date_value = Some(time);
+        self.data_mut().date_value = Some(time);
         self
     }
 
     pub(crate) fn date_value(&self) -> Option<f64> {
-        self.date_value
+        self.data.as_deref()?.date_value
     }
 
     /// Caller validates the brand, ownership and intrinsic mutation boundary.
     pub(crate) fn set_date_value(&mut self, time: f64) {
-        debug_assert!(self.date_value.is_some());
-        self.date_value = Some(time);
+        debug_assert!(self.date_value().is_some());
+        self.data_mut().date_value = Some(time);
     }
 
     /// The `[[Prototype]]`: an object, or `None` for null.
@@ -1392,29 +1410,8 @@ impl Trace for OrdinaryObject {
                 iterator.trace(visit);
             }
         }
-        if let Some(segmenter) = &self.segmenter {
-            segmenter.trace(visit);
-        }
-        if let Some(iterator) = &self.iterator {
-            iterator.trace(visit);
-        }
-        if let Some(PrimitiveData::Symbol(symbol)) = &self.primitive_data {
-            visit(crate::heap::gc::TraceEdge::Symbol(symbol.identity()));
-        }
-        // Other primitive data and DateValue have no heap edges.
-        // locale_data owns Rust strings and also contains no heap edges.
-        // NumberFormat options own strings/static data; the cached bound
-        // callable is a heap edge, including its cycle back to this object.
-        if let Some(bound) = &self.number_format_bound {
-            bound.trace(visit);
-        }
-        // Immutable Intl options contain no heap edges. Cached bound
-        // functions form traced cycles through their receivers.
-        if let Some(bound) = self.date_time_format_bound() {
-            bound.trace(visit);
-        }
-        if let Some(bound) = self.collator_bound() {
-            bound.trace(visit);
+        if let Some(data) = &self.data {
+            data.trace(visit);
         }
         if let Some(error) = self.engine_error() {
             error.trace(visit);
@@ -1433,13 +1430,50 @@ impl Trace for OrdinaryObject {
     }
 }
 
+impl Trace for ObjectData {
+    fn trace(&self, visit: &mut dyn FnMut(crate::heap::gc::TraceEdge)) {
+        if let Some(segmenter) = &self.segmenter {
+            segmenter.trace(visit);
+        }
+        if let Some(iterator) = &self.iterator {
+            iterator.trace(visit);
+        }
+        if let Some(PrimitiveData::Symbol(symbol)) = &self.primitive_data {
+            visit(crate::heap::gc::TraceEdge::Symbol(symbol.identity()));
+        }
+        // Options, DateValue, RegExp code and other wrapper data have no
+        // heap edges. Cached bound callables form cycles with their receiver.
+        if let Some(bound) = &self.number_format_bound {
+            bound.trace(visit);
+        }
+        if let Some(bound) = self
+            .date_time_format
+            .as_ref()
+            .and_then(|s| s.bound.as_ref())
+        {
+            bound.trace(visit);
+        }
+        if let Some(bound) = self.collator.as_ref().and_then(|s| s.bound.as_ref()) {
+            bound.trace(visit);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn primitive_wrapper_slots_stay_compact_for_small_workers() {
-        // These slots occur inline in every ordinary object. Growing them
-        // over their original 16 bytes overflows existing 64 KiB VM paths.
+        // Keep wrapper metadata small even in its optional payload: larger
+        // construction temporaries have overflowed 64 KiB VM paths.
         assert!(std::mem::size_of::<super::PrimitiveData>() <= 16);
+    }
+
+    #[test]
+    fn specialized_object_slots_do_not_enlarge_every_heap_object() {
+        // HeapObject is the allocation size for functions, cells and forms
+        // too. Optional built-in payloads previously inflated it to 304 bytes
+        // on 64-bit targets, multiplying each task's bootstrap/catalog cost.
+        assert!(std::mem::size_of::<crate::heap::HeapObject>() <= 192);
     }
 
     use super::*;

@@ -2932,7 +2932,9 @@ fn concurrent_catalog_task_memory() {
             rt.heap_stats().last_live_bytes
         };
         report("realm");
+        let realm = rt.heap_usage().objects;
         let parent = shared.evaluator().unwrap();
+        eprintln!("{count} boot task: {:?}", parent.cx().unwrap().task.stats());
         report("one boot");
         let boots = (0..7)
             .map(|_| shared.evaluator().unwrap())
@@ -2952,6 +2954,10 @@ fn concurrent_catalog_task_memory() {
             })
             .collect::<Vec<_>>();
         parent.install_catalog(0, &registrations).unwrap();
+        eprintln!(
+            "{count} catalog task: {:?}",
+            parent.cx().unwrap().task.stats()
+        );
         report("one catalog");
         let one = rt.heap_usage().objects;
         let mut children = Vec::new();
@@ -2968,6 +2974,7 @@ fn concurrent_catalog_task_memory() {
         assert_eq!(rt.heap_usage().objects, one);
         drop(parent);
         report("drop parent");
+        assert_eq!(rt.heap_usage().objects, realm);
     }
 }
 
