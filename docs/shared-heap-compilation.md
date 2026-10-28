@@ -673,11 +673,14 @@ Neither is allocator residency or process RSS, and their difference from RSS
 must not be presented as an exact allocator-overhead measurement.
 
 The `concurrent_catalog_task_memory` test isolates root sources on one runtime:
-collect the realm, boot one/eight tasks, drop the seven extra tasks, install
+collect the realm, warm the shared reader-tag cache and drop its task, then
+boot one/eight tasks, drop the seven extra tasks, install
 600/1,200 root registrations in the remaining task, spawn seven producers,
 then drop them and the parent. Collections occur at every boundary. The
 ordinary-object counts return exactly to the one-task counts after dropping
-the producers, and to the realm counts after dropping the parent. This is a
+the producers, and to the warmed no-task counts after dropping the parent.
+The runtime intentionally retains 13 pure reader-tag functions and their form.
+This is a
 lifetime regression and a diagnostic fixture, not a timing/RSS gate:
 
 ```sh
@@ -685,26 +688,28 @@ CARGO_BUILD_JOBS=3 cargo test --locked --no-default-features \
   --features bbp-macros --lib concurrent_catalog_task_memory -- --nocapture
 ```
 
-Before the layout changes (`a1d5685c`) and after (`5540e100`), collected
-accounted bytes in this fixture are:
+On integration base `bbd5d97b`, before the layout changes (release code
+`8da03981`) and after (`713d5982`), collected accounted bytes in this fixture
+are below. Both runs use the fixture's shared-reader-cache warmup.
 
 | Root source / phase | Before bytes | After bytes |
 | --- | ---: | ---: |
-| Realm only, initially | 1,152,448 | 1,070,032 |
-| One booted task | 3,193,460 | 2,939,852 |
-| Eight booted tasks | 14,578,840 | 13,126,888 |
-| One task, 600 registrations | 9,237,968 | 8,681,456 |
-| Eight tasks, 600 registrations each | 42,535,532 | 39,367,124 |
-| One task, 1,200 registrations | 13,263,480 | 12,404,568 |
-| Eight tasks, 1,200 registrations each | 70,589,124 | 65,707,116 |
+| Realm only, initially | 1,153,008 | 1,070,424 |
+| No tasks, warmed reader cache | 1,863,072 | 1,778,136 |
+| One booted task | 3,201,084 | 2,943,612 |
+| Eight booted tasks | 14,588,816 | 13,123,592 |
+| One task, 600 registrations | 9,245,592 | 8,685,216 |
+| Eight tasks, 600 registrations each | 42,545,508 | 39,363,828 |
+| One task, 1,200 registrations | 13,271,104 | 12,408,328 |
+| Eight tasks, 1,200 registrations each | 70,633,956 | 65,738,676 |
 
-Each parked task has one frame, 28 stack values, no native continuation, and
-1,296 shallow saved-state bytes at both registration counts. This excludes
+Each parked task has one frame, 29 stack values, no native continuation, and
+1,312 shallow saved-state bytes at both registration counts. This excludes
 vector capacity, dependency logs and compiler bookkeeping. Eight booted tasks
-retain 7,088 functions and 376 binding cells; eight 1,200-registration tasks
-retain 16,688 functions and 9,858 plain objects. All object-kind counts are
+retain 7,133 functions and 392 binding cells; eight 1,200-registration tasks
+retain 16,733 functions and 9,858 plain objects. All object-kind counts are
 unchanged by the layout reduction. Their shallow heap-object storage falls
-from 8,769,184 to 3,923,056 bytes; total collected admission falls 6.9%.
+from 8,790,768 to 3,932,712 bytes; total collected admission falls 6.9%.
 
 The largest measured live task cost remains ordinary registration state,
 not saved VM frames. Each root has a task-owned `roots` Map entry, a four-field
@@ -713,9 +718,9 @@ conservative backing-store charges are 2,048, 4 × 512 and 512 bytes per root,
 before the getter's captures and heap-object metadata. At eight tasks and
 1,200 roots these three stores alone account for 44,236,800 bytes. These are
 admission charges, not measured malloc sizes. The final realm-only phase
-still retains object-table high-water storage: 5,209,044/6,726,724 accounted
-bytes after the 600/1,200 fixtures, with all task functions and catalog vectors
-collected. Registry population also allocates temporary descriptor objects;
+still retains object-table high-water storage: 5,213,812/6,766,348 accounted
+bytes after the 600/1,200 fixtures, with all task-owned functions and catalog
+vectors collected. Registry population also allocates temporary descriptor objects;
 automatic collection and allocator residency contribute to the transient peak.
 
 On the compact-storage tree `5540e100` (later documentation changes only),
