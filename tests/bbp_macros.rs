@@ -6341,6 +6341,92 @@ fn native_pool_builds_match_one_slot_under_seeded_scheduling_stress() {
     }
 }
 
+/// Opt-in acceptance on generated projects too large for the ordinary suite.
+/// Supply LIGHT_CLJS_STRESS_SOURCE_ROOTS (platform path list) and
+/// LIGHT_CLJS_STRESS_ENTRY; LIGHT_CLJS_STRESS_SEEDS defaults to 12.
+#[cfg(debug_assertions)]
+#[test]
+#[ignore = "requires generated source roots and entry; see docs/shared-heap-compilation.md"]
+fn native_large_project_matches_one_slot_under_seeded_scheduling_stress() {
+    use light_cljs::application::OptimizationLevel;
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    use light_cljs::scheduler::{Perturbation, Slots};
+
+    let roots = std::env::split_paths(
+        &std::env::var_os("LIGHT_CLJS_STRESS_SOURCE_ROOTS").expect("source roots required"),
+    )
+    .collect::<Vec<_>>();
+    let entry = std::env::var("LIGHT_CLJS_STRESS_ENTRY").expect("entry required");
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .map(|n| n.parse::<u64>().expect("seed count must be an integer"))
+        .unwrap_or(12);
+    assert!(seeds > 0);
+    let build = |jobs, perturbation| {
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        host.limits.expansions = 10_000_000;
+        host.limits.generated_nodes = 1_000_000_000;
+        host.evaluator_options.memory_limit = 2 << 30;
+        host.evaluator_options.timeout = std::time::Duration::from_secs(3600);
+        host.evaluator_options.poll_budget = 100_000_000_000;
+        let mut stats = light_cljs::CompileStats::new();
+        let mut warnings = Vec::new();
+        let (program, sources) = analyze_namespace_entry_recorded(
+            &entry,
+            &roots,
+            &mut host,
+            Default::default(),
+            &mut warnings,
+            EntryRecorders {
+                slots: Slots::new(jobs).unwrap(),
+                perturbation,
+                stats: Some(&mut stats),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("{entry}, jobs {jobs}: {error}"));
+        let urls = sources
+            .iter()
+            .map(|(path, _)| path.to_string_lossy())
+            .collect::<Vec<_>>();
+        let files = urls
+            .iter()
+            .zip(&sources)
+            .map(|(url, (_, text))| light_cljs::source_map::SourceFile { url, text })
+            .collect::<Vec<_>>();
+        let outputs = [OptimizationLevel::None, OptimizationLevel::Advanced].map(|level| {
+            let (js, mapping) = light_cljs::prepare_application(
+                &program,
+                light_cljs::application::ApplicationOptions::new(level),
+            )
+            .emit_js_mapped();
+            (js, mapping.to_json(None, &files, true))
+        });
+        let helpers = stats.native_helpers;
+        (
+            outputs,
+            warnings,
+            (helpers.compiled, helpers.published, helpers.per_task),
+        )
+    };
+    let reference = build(1, None);
+    eprintln!("{entry}: serial helpers {:?}", reference.2);
+    for seed in 1..=seeds {
+        for jobs in [1, 2, 4, 8] {
+            let actual = build(
+                jobs,
+                Some(Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+            );
+            // Avoid dumping multi-megabyte outputs if a comparison fails.
+            assert!(actual == reference, "{entry}, seed {seed}, jobs {jobs}");
+            eprintln!("{entry}: seed {seed}, jobs {jobs}: JS/maps/warnings/helpers identical");
+        }
+    }
+}
+
 /// The effect-lane fixtures (`tests/fixtures/native-lanes`,
 /// docs/compiler-concurrency.md, "Effect lanes (light-cljs-480)"): each
 /// entry, whether it needs `--cache-blocker counter.macros`, and what its

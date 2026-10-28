@@ -1320,6 +1320,57 @@ both configurations, with no source suppressions. Runtime code is
 `674a1b58`, based on `b3ef562c`; these checks cover that code, with subsequent
 changes confined to tests/documentation as identified above.
 
+### Final deferred-pool acceptance (light-cljs-481, October 28, 2026)
+
+This acceptance measures the integrated deferred-unit implementation; the
+coordinator's top-level passes remain serial. The native backend uses one
+compilation-owned runtime across the pool, shared helper factories and
+dependency cells, parked/lent task contexts, completion wakeups and source-order
+effect lanes. The default remains V8 plus QuickJS.
+
+The release compiler at `a629b7e4` cannot build Penpot `app.main`. Using the
+five absolute read-only source roots and all budgets in the
+[Penpot reproduction](native-macros.md#penpot-reproduction-light-cljs-507509-2026-10-26),
+with `--entry app.main --jobs 1 --optimize none --no-cache --stats`, the exact
+first error is:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro expansion: while expanding mf/defc: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro rumext.v2/defc: big-boy-pants-js: Error: unsupported operation: native macro runtime core.isList; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:334:1 (bytes 522..819)
+```
+
+The fallback workloads are the seed-42 generated 200k project (199,129
+nonblank lines, 450 worker namespaces) and the eight-namespace, 400-helper
+chain specified above. Neither input is checked in. Generate the larger
+project with:
+
+```sh
+bb benchmarks/generated-project/generate.bb target/generated-200k --seed 42 --lines 200k
+```
+
+The opt-in test
+`native_large_project_matches_one_slot_under_seeded_scheduling_stress` in
+`tests/bbp_macros.rs` compares each of twelve seeds at jobs 1/2/4/8 with an
+unperturbed one-job reference. It compares full JavaScript and serialized
+source maps, including source contents, at both `none` and `advanced`, plus
+warnings and compiled/published/per-task helper counts. The perturbation
+randomizes job-boundary delays, batches and steals. It uses the generated
+project's macro limits and 2-GiB aggregate budget, and requires an explicit
+fixture so ordinary test runs do not generate large inputs. Reproduce with:
+
+```sh
+LIGHT_CLJS_STRESS_SOURCE_ROOTS="$PWD/target/generated-200k/src:$PWD/target/generated-200k/macros" \
+LIGHT_CLJS_STRESS_ENTRY=workload.main LIGHT_CLJS_STRESS_SEEDS=12 \
+CARGO_BUILD_JOBS=3 CARGO_PROFILE_TEST_OPT_LEVEL=3 CARGO_PROFILE_TEST_DEBUG=0 \
+cargo test --locked --no-default-features --features bbp-macros --test bbp_macros \
+  native_large_project_matches_one_slot_under_seeded_scheduling_stress \
+  -- --ignored --exact --nocapture --test-threads=1
+```
+
+For the chain, use the same command with
+`LIGHT_CLJS_STRESS_SOURCE_ROOTS="$PWD/target/catalog-chain-400"` and
+`LIGHT_CLJS_STRESS_ENTRY=chain.n7`. Test optimization changes speed only;
+debug assertions and the scheduler's debug-only perturbation remain enabled.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
