@@ -232,6 +232,7 @@ mod compiler_access;
 pub(crate) use compiler_access::start as start_compiler_access;
 mod core_protocol;
 pub(crate) use core_protocol::start as start_core_protocol;
+pub(crate) use core_protocol::start_member as start_form_member;
 
 pub(crate) use builtin_leaf::try_builtin_leaf;
 mod collator;

@@ -59,6 +59,9 @@ const decl = (() => {
       // their raw JavaScript and `this-as` still see the original receiver.
       const entry = object || direct || arity === 0 ? fn : (x, ...args) => fn.call(x, x, ...args);
       methodTable(name, n).entries.push({order, overlay, key, fn: entry});
+      if (name === 'IFn/-invoke' && info !== undefined) {
+        info.ifn.set(arity, [fn, variadic]);
+      }
       if (!object) continue;
       let arities = objectArities.get(name);
       if (arities === undefined) objectArities.set(name, arities = new Set());
@@ -299,7 +302,7 @@ const decl = (() => {
     const mask0 = record || specs.some(([name, arity]) => arity === 0 && partition0.has(name));
     // Keep one compiler-munged member per declared field: multiple fields
     // may share a member, and property enumeration may reorder names.
-    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), mutable, record, mask0});
+    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), ifn: new Map(), mutable, record, mask0});
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
       view.__lightNativeType = ty;
@@ -307,6 +310,24 @@ const decl = (() => {
     }
     extend(ty, specs);
     return mutable ? view : ty;
+  };
+  const callable = x => {
+    declare(x);
+    return views.get(__rt.structTypeOf(x))?.ifn.size > 0;
+  };
+  const invokeIFn = (x, args) => {
+    declare(x);
+    const entries = views.get(__rt.structTypeOf(x))?.ifn;
+    let fixed = null, rest = null, count = 0;
+    for (const [n, spec] of entries ?? []) {
+      if (spec[1] != null) rest = spec[0];
+      else { count++; fixed = spec[0]; }
+    }
+    const exact = entries?.get(args.length + 1);
+    const method = rest ? exact?.[0] ?? rest : count === 1 ? fixed : exact?.[0];
+    if (method == null) throw new Error('Invalid arity: ' + args.length);
+    const receiver = rest && count > 0 && exact === undefined ? rest : x;
+    return method.call(receiver, receiver, ...args);
   };
   // The struct a struct view, or an object inheriting from one, stands for.
   const viewStructs = new WeakMap();
@@ -384,6 +405,7 @@ const decl = (() => {
     return info?.mutable && info.record ? info : null;
   };
   return {extend, method, satisfies, implementsDirectly, predicate, type, viewOf, register, enter, leave, coreKeys, mutableRecord,
+    callable, invokeIFn,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
     coreMethod:resolveCore,
@@ -517,6 +539,11 @@ const native = (() => {
     cljPeek:decl.coreTable('IStack/-peek',1), cljCount:decl.coreTable('ICounted/-count',1), cljNext:decl.coreTable('INext/-next',1),
   };
   __rt.cljCoreResolver((op, x, throughLazy) => {
+    if (op === 'jsCall' || op === 'jsApply') {
+      const value = val(x), kind = __rt.formKind(value);
+      if ((kind === 'struct' || kind === 'record') && !multi.is(value) && !decl.callable(value)) return undefined;
+      return op === 'jsCall' ? rawCall : rawApply;
+    }
     if(op==='cljWithExportedMeta')op='cljWithMeta';
     const record = __rt.formKind(x) === 'record', table = coreTables[op];
     const cursor = arraySeqs.get(x), array = Array.isArray(val(x));
@@ -621,9 +648,20 @@ const native = (() => {
     const value=val(f),kind=__rt.formKind(value);
     if(kind==='struct'&&__rt.formName(__rt.structTypeOf(value))==='cljs.core/MultiFn')
       return globalThis.__lightNativeRuntime.core.invokeMulti(value,args);
+    if(kind==='struct'||kind==='record')return decl.invokeIFn(value,args);
     if(kind!=='vector'&&kind!=='map'&&kind!=='set'&&kind!=='keyword'&&kind!=='symbol')return value.call(null,...args);
     if(kind!=='vector'&&(args.length<1||args.length>2))arity(args.length);
     return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null,args.length);
+  };
+  // Match legacy collection members, including their ignored receiver operand.
+  // These methods capture no task-owned state and retain the native receiver.
+  const rawCall = function(_, ...args) {
+    return globalThis.__lightNativeRuntime.core.invoke(this,...args);
+  };
+  const rawApply = function(_, args) {
+    const values = Array.from(args), value = __rt.formValue(this), kind = __rt.formKind(value);
+    const ifn = (kind === 'struct' || kind === 'record') && __rt.formName(__rt.structTypeOf(value)) !== 'cljs.core/MultiFn';
+    return this.call(null,...(ifn && values.length > 20 ? [...values.slice(0,20),values.slice(20)] : values));
   };
   // memoize calls its callback through Clojure apply, whose fixed function
   // receiver is the function itself. Native variadic dispatchers preserve

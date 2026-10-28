@@ -8117,6 +8117,106 @@ fn native_map_entry_calls_match_legacy() {
 }
 
 #[test]
+fn native_raw_callable_collections_match_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defmacro m [] (let [f {"x" "y"}] (js* "~{}.call(null, 'x')" f)))
+           (js/console.log (m))"#,
+        "y\n",
+    );
+    let root = temp_dir::TempDir::new("native-raw-callables");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers (:require [clojure.string :as str]))
+          (def events (atom []))
+          (defn cold [x] (swap! events conj x) x)
+          (defrecord Callable [value] IFn (-invoke [this x] (cold [value x])))
+          (defmulti dispatch (fn [x & more] x))
+          (defmethod dispatch :ok [x & more] (cold [x (vec more)]))
+          (def memo (memoize (fn [x] (cold x))))
+          (defn attempt [f] (try (f) (catch :default e (.-message e))))
+          (defn inspect [f xs]
+            (let [args (reduce (fn [a x] (js* "~{}.push(~{})" a x) a) (js/Array.) xs)]
+              [(attempt (fn [] (apply f xs)))
+               (attempt (fn [] (js* "~{}.call(null, ...~{})" f args)))
+               (attempt (fn [] (js* "~{}['apply'](null, ~{})" f args)))
+               (attempt (fn [] (js* "Function.prototype.call.call(~{}.call, ~{}, null, ...~{})" f f args)))
+               (try (js* "~{}(...~{})" f args) (catch :default e :not-js-callable))
+               (try (js* "Function.prototype.call.call(~{}, null, ...~{})" f args) (catch :default e :not-js-callable))]))
+          (defmacro probe []
+            (let [inner (with-meta [:same] {:tag true}) m {:nil nil :false false :inner inner}
+                  lone (js/String.fromCharCode 55296) utf {lone inner}
+                  cases [[m [:nil]] [m [:false]] [m [:missing :default]] [m []] [m [:a :b :c]]
+                         [#{nil false :ok} [false]] [#{:ok} [:missing :default]]
+                         [[nil false :ok] [1]] [[nil] [3]] [[1] [0 :ignored :extra]]
+                         [(first {:a false}) [1]] [(first {:a false}) [2 :default]]
+                         [:k [{:k false}]] [:k [{} :default]] ['k [{'k nil}]] ['k [{} :default]]
+                         [(->Callable :record) [:x]] [dispatch [:ok :tail]] [memo [:memo]] [utf [lone]]]
+                  values (mapv (fn [[f args]] (inspect f args)) cases)]
+              (list 'quote [values (str/escape "àéx" {"à" "a" "é" "e"})
+                            (identical? inner (js* "~{}.call(null, 'inner')" {"inner" inner}))
+                            (meta (js* "~{}.apply(null, [~{}])" utf lone)) @events])))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [helpers :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [helpers :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/value b/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0);
+    let output = program_output(&reference);
+    assert!(output.contains("\"aex\" true {:tag true}"), "{output}");
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(reference, build(false, jobs, 0), "QuickJS jobs {jobs}");
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed),
+                "jobs {jobs}, seed {seed}"
+            );
+        }
+    }
+}
+
+#[test]
 fn native_callable_objects_keep_the_legacy_call_abi() {
     assert_native_matches_legacy(
         r#"(defmacro m []

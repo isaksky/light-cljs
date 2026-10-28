@@ -8,7 +8,11 @@ use crate::heap::{
     gc::{Trace, TraceEdge},
 };
 use crate::value::Value;
+use crate::value::string::FixedText;
 use crate::vm::instr::{FormOp, Instr};
+
+static CALL: FixedText = FixedText::new("call");
+static APPLY: FixedText = FixedText::new("apply");
 
 #[derive(Debug)]
 pub(super) struct State {
@@ -18,6 +22,56 @@ pub(super) struct State {
     receiver: Value,
     through_lazy: bool,
     called: bool,
+    member: Option<&'static str>,
+}
+
+/// Native forms keep their identity at raw JavaScript call/apply reads. The
+/// task's adapter supplies the member; resolving a user type may suspend.
+pub(crate) fn start_member(
+    state: &mut VmState,
+    heap: &Heap,
+    receiver: &Value,
+    key: &crate::vm::property::Key,
+) -> Result<bool, Fault> {
+    let Some(resolver) = state.core_resolver.clone() else {
+        return Ok(false);
+    };
+    let crate::vm::property::Key::Name(name) = key else {
+        return Ok(false);
+    };
+    let member = if CALL.matches(name) {
+        "jsCall"
+    } else if APPLY.matches(name) {
+        "jsApply"
+    } else {
+        return Ok(false);
+    };
+    if !matches!(
+        form::kind(heap, &form::unwrap(heap, receiver.clone())),
+        Some(
+            FormKind::Vector
+                | FormKind::Map
+                | FormKind::Set
+                | FormKind::Keyword
+                | FormKind::Symbol
+                | FormKind::Struct
+        )
+    ) {
+        return Ok(false);
+    }
+    push_native(
+        state,
+        NativeState::CoreProtocol(State {
+            op: FormOp::CljCoreResolver,
+            operands: vec![],
+            resolver,
+            receiver: receiver.clone(),
+            through_lazy: false,
+            called: true,
+            member: Some(member),
+        }),
+    )?;
+    Ok(true)
 }
 
 pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<bool, Fault> {
@@ -184,6 +238,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
             receiver,
             through_lazy,
             called: false,
+            member: None,
         }),
     )?;
     Ok(true)
@@ -202,7 +257,7 @@ impl State {
                 callee: self.resolver.clone(),
                 this: Value::Undefined,
                 args: [
-                    Value::String(self.op.intrinsic().into()),
+                    Value::String(self.member.unwrap_or(self.op.intrinsic()).into()),
                     self.receiver.clone(),
                     Value::Bool(self.through_lazy),
                     Value::Undefined,

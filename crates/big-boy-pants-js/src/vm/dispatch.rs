@@ -1220,6 +1220,9 @@ fn property_step(
         }
         Instr::GetField(i) => {
             let base = state.pop()?;
+            if native::start_form_member(state, heap, &base, &named_property(code, i)?.key)? {
+                return Ok(Flow::Next);
+            }
             let read = property::read_named(
                 heap,
                 state.diag.task,
@@ -1272,6 +1275,9 @@ fn property_step(
             let key = state.pop()?;
             let base = state.pop()?;
             let key = property::element_key(&base, &key, false)?;
+            if native::start_form_member(state, heap, &base, &key)? {
+                return Ok(Flow::Next);
+            }
             let read = property::read(heap, state.diag.task, &base, &key)?;
             super::native::read_result(state, read, base)?;
         }
@@ -1667,6 +1673,9 @@ fn property_read_step(
     }
     if let Instr::GetField(i) = instr {
         let base = state.pop()?;
+        if native::start_form_member(state, heap, &base, &named_property(code, i)?.key)? {
+            return Ok(Flow::Next);
+        }
         let read = property::read_named(
             heap,
             state.diag.task,
@@ -1689,6 +1698,9 @@ fn property_read_step(
         _ => return Err(Fault::Internal("invalid property read instruction")),
     };
     let base = state.pop()?;
+    if native::start_form_member(state, heap, &base, &key)? {
+        return Ok(Flow::Next);
+    }
     let read = property::read(heap, state.diag.task, &base, &key)?;
     native::read_result(state, read, base)?;
     Ok(Flow::Next)
