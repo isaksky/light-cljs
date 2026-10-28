@@ -949,7 +949,10 @@ impl BbpRuntime {
     /// that parked there ([`BbpEvaluator::park_until_woken`]); a task its
     /// owner still runs itself is not parked and is left to it.
     fn wake(&self, wakeups: big_boy_pants_js::Wakeups) {
-        for task in wakeups.into_runnable() {
+        self.wake_tasks(wakeups.into_runnable());
+    }
+    fn wake_tasks(&self, tasks: impl IntoIterator<Item = Task>) {
+        for task in tasks {
             let parked = self.0.parked.lock().unwrap().remove(&task.id());
             if let Some(Parked {
                 step,
@@ -1448,6 +1451,11 @@ impl BbpEvaluator {
                     .map_err(error)?
                 }
             };
+            // Lazy once-cells settle inside VM steps, independently of host
+            // dependency completion. Their readers need the same pool handoff
+            // as helper readers, including when the realizer parked in a cold
+            // protocol/helper call before finishing the thunk.
+            self.shared.wake_tasks(self.runtime.take_lazy_wakeups());
             {
                 let mut graph = self.shared.0.graph.lock().unwrap();
                 for key in cx.task.dependency_log().edges() {

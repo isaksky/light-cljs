@@ -3401,7 +3401,8 @@ fn published_flatten_worklists_survive_owner_drop_gc_and_deep_trees() {
             "rt => {
         let tree = 7;
         for (let i = 0; i < 3000; i++) tree = __rt.formVector(tree);
-        return rt.core.flatten(__rt.formVector(1, tree, 9));
+        const queue = __rt.formCompilerLiteral('queue', __rt.formVector(1, tree, 9));
+        return rt.core.flatten(queue);
     }",
         )
         .unwrap();
@@ -3444,13 +3445,79 @@ fn flatten_of_infinite_empty_branches_obeys_the_aggregate_poll_budget() {
     })
     .unwrap();
     let evaluator = shared.evaluator().unwrap();
-    let error = evaluator
+    let function = evaluator
         .evaluate_unit(
-            "rt => {
+            "rt => () => {
+        __rt.effect(65534, 0);
         const repeat = self => __rt.lazySeq(() => __rt.cljCons(__rt.formVector(), self(self)));
         return __rt.cljFirst(rt.core.flatten(repeat(repeat)));
     }",
         )
-        .unwrap_err();
+        .unwrap();
+    // Leave enough VM slices to enter the walk, while making the poll budget
+    // win deterministically over the independent heap and wall-clock limits.
+    while shared.0.control.remaining_polls() > 16 {
+        shared.0.control.poll().unwrap();
+    }
+    let error = evaluator.call(function, &[]).unwrap_err();
     assert!(error.0.contains("poll budget"), "{error}");
+    assert_eq!(shared.0.counters.cleanups.load(Ordering::Relaxed), 1);
+    assert_eq!(shared.0.control.remaining_polls(), 0);
+    assert!(
+        shared.evaluator().is_err(),
+        "a peer shares the spent budget"
+    );
+}
+
+#[test]
+fn flatten_retains_leaf_occurrences_and_metadata_across_collection() {
+    use crate::{
+        bbp_evaluator::BbpEvaluator,
+        compiler_data::{Datum, DatumKind, ExpansionOrigin, Name, Source},
+        evaluator::{EvaluatorOptions, MacroEvaluator},
+    };
+    let evaluator = BbpEvaluator::new(EvaluatorOptions::default()).unwrap();
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let source = "(fn [form env x] (first (flatten x)))";
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    let function = evaluator
+        .evaluate_unit(&crate::emitter::emit_js_unit(&program))
+        .unwrap();
+    let call = host
+        .read_compiler_form(&Source::new("flatten.cljs", "(same [[^{:m 1} leaf]])"))
+        .unwrap()
+        .unwrap();
+    let original = call.children()[1].children()[0].children()[0].clone();
+    let environment = Datum::new(DatumKind::Collection {
+        kind: crate::CollectionKind::Map,
+        children: Box::new([]),
+    });
+    for i in 0..2 {
+        let result = host
+            .expand_javascript(
+                &evaluator,
+                function,
+                &call,
+                &environment,
+                ExpansionOrigin {
+                    macro_name: Name::new(None, "same"),
+                    call: call.span(),
+                    definition: None,
+                    helpers: vec![],
+                },
+            )
+            .unwrap();
+        assert!(std::ptr::eq(result.data().kind(), original.data().kind()));
+        assert_eq!(result.span().source().name(), "flatten.cljs");
+        assert_eq!(result.span().bytes(), original.span().bytes());
+        assert!(std::ptr::eq(
+            result.metadata().unwrap().data().kind(),
+            original.metadata().unwrap().data().kind(),
+        ));
+        assert_eq!(host.native_macro_calls()[i].exported, 0);
+        assert_eq!(host.native_macro_calls()[i].reused, 1);
+        evaluator.collect_garbage();
+    }
+    evaluator.release(function).unwrap();
 }

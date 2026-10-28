@@ -8692,24 +8692,27 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
         ("map-entry", "(first (seq {:a [1]}))"),
         ("set-view", "(seq #{[1] [2]})"),
         ("string-view", "(seq \"ab\")"),
-        ("array-view", "(seq (js/Array. [1] [2]))"),
+        ("array-view", "(seq (array [1] [2]))"),
         (
             "chunked",
-            "[(seq (vec (range 40))) (range 3) (chunk-cons (array-chunk (js/Array. [40] [41])) '([42]))]",
+            "[(seq (vec (range 40))) (range 3) (let [b (chunk-buffer 2)] (chunk-append b [40]) (chunk-append b [41]) (chunk-cons (chunk b) '([42])))]",
         ),
         ("lazy", "(lazy-seq (list [1] (lazy-seq '([2] 3))))"),
         ("user-seqable", "(Branch. [[1] '(2)] (atom []))"),
         ("late-marker", "(LateBranch. [[1] '(2)])"),
         ("user-seq", "(UserSeq. '([1] [2]) (atom []))"),
         ("nonsequential-seqable", "(NotSequential.)"),
-        ("queue", "(conj cljs.core.PersistentQueue.EMPTY [1] '(2))"),
+        // Queue literals are opaque compiler descriptors: EMPTY is exposed,
+        // while ordinary queue conj is outside that constructor boundary.
+        ("queue", "cljs.core.PersistentQueue.EMPTY"),
     ];
     let table = rows
         .iter()
         .map(|(label, value)| {
             format!(
-                r#"[:{label} (try (let [x {value} f flatten]
-          [(pr-str (vec (flatten x))) (pr-str (vec (f x))) (pr-str (vec (apply f [x])))])
+                r#"[:{label} (try (let [x {value} f flatten
+          render (fn [xs] (pr-str (mapv (fn [leaf] (if (array? leaf) [:array (vec leaf)] leaf)) xs)))]
+          [(render (flatten x)) (render (f x)) (render (apply f [x]))])
           (catch :default e (throw (js/Error. (str "{label}: " (.-message e))))))]"#
             )
         })
@@ -8759,6 +8762,7 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
               leaf (with-meta 'leaf {{:tag :retained}}) leaves (flatten [[leaf input]])
               unforced (lazy-seq (throw (js/Error. "unreachable")))
               kept (NotSequential.)
+              array-leaf (js/Array. 6 7)
               cold-trace (atom []) cold-tree (flatten [(lazy-seq (swap! cold-trace conj :cold) (list (cold 9)))])
               cold-before @cold-trace cold-first (first cold-tree) cold-again (first cold-tree)]
           (list 'quote [table
@@ -8773,7 +8777,8 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
              (identical? input (second leaves)) (meta (second leaves))
              (= leaves (list leaf input)) (= (hash leaves) (hash (list leaf input)))
              (get {{leaves :found}} (list leaf input))]
-            [(identical? kept (first (flatten [kept]))) (vec (flatten kept))]
+            [(identical? kept (first (flatten [kept]))) (vec (flatten kept))
+             (identical? array-leaf (first (flatten [array-leaf]))) (vec (first (flatten [array-leaf]))) ]
             [cold-before cold-first cold-again @cold-trace]
             (vec (flatten (loop [n 180 x :deep] (if (zero? n) x (recur (dec n) [x])))))])))
       "#)).unwrap();
@@ -8816,65 +8821,17 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
     let reference = build(false, 1);
     let expected = program_output(&reference);
     assert!(
-        expected.contains(":mixed [\"[1 2 3 nil {:a 4} #{5} \\\"ab\\\" #js [6 7]]\""),
+        expected.contains(":mixed [\"[1 2 3 nil {:a 4} #{5} \\\"ab\\\" [:array [6 7]]]\""),
         "{expected}"
     );
     for jobs in [1, 2, 4, 8] {
         let js = build(true, jobs);
         assert_eq!(program_output(&js), expected, "jobs={jobs}");
         assert_eq!(js, reference, "jobs={jobs}");
+        if jobs != 1 {
+            let legacy = build(false, jobs);
+            assert_eq!(program_output(&legacy), expected, "legacy jobs={jobs}");
+            assert_eq!(legacy, reference, "legacy jobs={jobs}");
+        }
     }
-}
-
-#[test]
-fn flatten_retains_leaf_occurrences_and_metadata_across_collection() {
-    use light_cljs::{
-        bbp_evaluator::BbpEvaluator,
-        compiler_data::{Datum, DatumKind, ExpansionOrigin, Name, Source},
-        evaluator::{EvaluatorOptions, MacroEvaluator},
-    };
-    let evaluator = BbpEvaluator::new(EvaluatorOptions::default()).unwrap();
-    let mut host = MacroHost::new();
-    host.use_native_macros();
-    let source = "(fn [form env x] (first (flatten x)))";
-    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    let function = evaluator
-        .evaluate_unit(&light_cljs::emitter::emit_js_unit(&program))
-        .unwrap();
-    let call = host
-        .read_compiler_form(&Source::new("flatten.cljs", "(same [[^{:m 1} leaf]])"))
-        .unwrap()
-        .unwrap();
-    let original = call.children()[1].children()[0].children()[0].clone();
-    let environment = Datum::new(DatumKind::Collection {
-        kind: light_cljs::CollectionKind::Map,
-        children: Box::new([]),
-    });
-    for i in 0..2 {
-        let result = host
-            .expand_javascript(
-                &evaluator,
-                function,
-                &call,
-                &environment,
-                ExpansionOrigin {
-                    macro_name: Name::new(None, "same"),
-                    call: call.span(),
-                    definition: None,
-                    helpers: vec![],
-                },
-            )
-            .unwrap();
-        assert!(std::ptr::eq(result.data().kind(), original.data().kind()));
-        assert_eq!(result.span().source().name(), "flatten.cljs");
-        assert_eq!(result.span().bytes(), original.span().bytes());
-        assert!(std::ptr::eq(
-            result.metadata().unwrap().data().kind(),
-            original.metadata().unwrap().data().kind(),
-        ));
-        assert_eq!(host.native_macro_calls()[i].exported, 0);
-        assert_eq!(host.native_macro_calls()[i].reused, 1);
-        evaluator.collect_garbage();
-    }
-    evaluator.release(function).unwrap();
 }

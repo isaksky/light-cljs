@@ -1796,6 +1796,29 @@ rest of a chain at once and stay linear, while `=` and `hash` of an unrealized
 sequence of `k` cells and `n` elements read `O(k * n)` elements. Chunked
 sources realize 32 elements a cell.
 
+`flatten` (light-cljs-551) walks `ISequential` branches depth-first and keeps
+the original nonsequential leaves, including nil, maps, sets, strings and
+arrays. A nonsequential root produces an empty lazy sequence. Native list,
+vector, cons, lazy and positional/chunked views use their sequence markers;
+user sequential types obtain their children through `ISeqable` and `ISeq`.
+Compiler queue descriptors expose an unchunked sequence over their positional
+payload. Retained leaves keep their occurrence identity and metadata.
+
+The traversal uses an immutable list of sibling sequences rather than recursive
+host calls. Its lazy thunks capture pure functions and persistent worklists,
+so helpers can publish them and protocol/helper demands can park without replay.
+Construction checks the root and prepares its children, matching the legacy
+`rest(tree-seq ...)`: `mapcat`'s bounded argument count reads ahead four mapped
+children, or a full source chunk, without walking those children. Later reads
+share the engine's lazy once-cells, including the existing exception/retry,
+rooting, GC and aggregate-budget contracts above.
+
+Lazy settlements also enqueue the engine's woken readers through the compiler
+pool's existing task handoff. A published traversal can demand a cold user-type
+declaration or helper while another resumable task waits on it, then wake that
+reader after the thunk completes. The source-macro table compares applications
+and effects with QuickJS at jobs 1/2/4/8, including that shared user branch.
+
 ### Memory limit
 
 `--macro-memory-limit N` (default 64 MiB; `:macro-memory-limit` in a build) is
