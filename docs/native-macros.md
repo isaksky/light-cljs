@@ -1824,6 +1824,22 @@ attempt's realizer as an opaque task identity; the compiler retains that wait
 only until settlement. This keeps a later realizer's shared-atom access from
 waiting behind the earlier reader that needs its result.
 
+Both documented Penpot entries now pass `core.flatten`. With the five absolute
+read-only roots, `--jobs 1 --no-cache` and every budget in the reproduction below,
+`app.render` and `app.main` both exit 1 at this identical next diagnostic:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/render_wasm/api/enums.cljs:15:25: macro expansion: while expanding cljs.core/js-obj: big-boy-pants-js: unsupported operation: bootstrap macro js-obj (bytes 712..738)
+```
+
+The shim's `app.common.render-wasm.enums/serializers` generates a wide `js-obj`.
+The Rust bootstrap expander deliberately declines more than eight pairs, and
+the native backend has no bootstrap fallback for that call. A nine-pair
+`--compile --text` probe repeats the error; the unchanged V8 compiler emits
+an application whose ninth property reads as `9` in Node. This is a different
+bootstrap-expansion boundary, tracked by light-cljs-553. Native Penpot
+compilation remains incomplete there; research was unchanged.
+
 ### Memory limit
 
 `--macro-memory-limit N` (default 64 MiB; `:macro-memory-limit` in a build) is
