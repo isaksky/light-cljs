@@ -8780,14 +8780,16 @@ fn flatten_sequence_tree_table_matches_quickjs_at_all_jobs() {
              (= leaves (list leaf input)) (= (hash leaves) (hash (list leaf input)))
              (get {{leaves :found}} (list leaf input))]
             [(identical? kept (first (flatten [kept]))) (vec (flatten kept))
-             (identical? array-leaf (first (flatten [array-leaf]))) (vec (first (flatten [array-leaf]))) ]
+             (identical? array-leaf (first (flatten [array-leaf]))) (vec (first (flatten [array-leaf])))
+             (let [literal (get input :array) xs (flatten [literal])]
+               [(identical? literal (first xs)) (pr-str (vec xs)) (vec (flatten literal))])]
             [cold-before cold-first cold-again @cold-trace]
             (vec (flatten (loop [n 180 x :deep] (if (zero? n) x (recur (dec n) [x])))))])))
       "#)).unwrap();
     for name in ["a", "b"] {
         std::fs::write(
             root.path().join(format!("{name}.cljs")),
-            format!("(ns {name} (:require [macros :refer [probe]])) (def result (probe ^{{:source true}} {{:k [1]}}))"),
+            format!("(ns {name} (:require [macros :refer [probe]])) (def result (probe ^{{:source true}} {{:k [1] :array #js [1 [2]]}}))"),
         ).unwrap();
     }
     std::fs::write(
