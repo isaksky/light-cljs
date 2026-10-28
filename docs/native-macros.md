@@ -83,6 +83,11 @@ No predicate realizes a lazy value or classifies a sequence by its elements.
 builtin marker checks and the existing resumable declaration adapter for user
 markers. The source differential table covers direct, saved and `apply` calls,
 immutable/mutable types, records and host marker extensions at jobs 1/2/4/8.
+Each of the six default marker extensions is compared too, including unmasked
+types and types declaring only a partition-one protocol. Builtin negative
+markers and partition-zero declarations block host/default fallback. Mask
+membership comes from visible declaration entries and overlays, so later
+extensions are not retained in a type's layout.
 Demanded helpers publish without task-local copies; a cold helper in a lazy
 thunk resumes without replaying its effect. The table also checks metadata,
 equality, hashing and source input. Engine coverage retains occurrences and
@@ -97,8 +102,8 @@ classification, metadata, traversal and direct equality/hash observations match
 the legacy runtime; these cursors remain task-owned. Emitted application code
 and `src/js_runtime.js` are unchanged.
 
-Fresh native-only debug builds at `243da6ef`, macOS arm64, Homebrew Rust/Cargo
-1.99.1, pass both the former `core.isList` failure and the next small service gap,
+Fresh native-only debug builds at `db3d9740`, rebased onto `7004c99b`, on macOS
+arm64 with Homebrew Rust/Cargo 1.99.1 pass the former `core.isList` failure and the next small service gap,
 `core.peek`. The latter now observes supported persistent stacks without
 realizing other sequence kinds and dispatches user IStack methods through the
 existing resumable adapter. Its differential includes direct, saved, `apply`
@@ -113,20 +118,51 @@ with this identical first different diagnostic:
 light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro expansion: while expanding mf/defc: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/shapes/text/fo_text.cljs:17:1: macro rumext.v2/defc: big-boy-pants-js: Error: unsupported operation: native macro runtime core.flatten; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/rumext/v2.cljs:334:1 (bytes 522..819)
 ```
 
-The probes take 190.87 s (`app.render`) and 203.21 s (`app.main`). Neither
+The probes take 186.32 s (`app.render`) and 189.11 s (`app.main`). Neither
 entry completes natively; research is unchanged. The recursive traversal
 service is tracked separately by light-cljs-551. Before adding `peek`, both
 entries reached its identical unsupported-service diagnostic at the same source
 location, in 187.40 s and 187.05 s respectively.
 
-The final source passes all 180 selected evaluator/macro/reader/Proxy tests with
+The final source passes all 181 selected evaluator/macro/reader/Proxy tests with
 `LIGHT_CLJS_STRESS_SEEDS=12`, three build jobs and three nextest slots. All
-2,165 engine tests and seven doctests pass on the same code. The predicate and
+2,166 engine tests and seven doctests pass on the same code. With both native and
+QuickJS enabled, the library, CLI and macro/reader/Proxy targets pass all 483
+tests (one existing ignored test). The predicate and
 peek source table matches QuickJS byte for byte at jobs 1/2/4/8. Engine strict
 Clippy retains nine baseline diagnostics (eight for the native compiler's
 engine dependency); allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks`
-and `clippy::byte_char_slices` passes engine all-target and native library/CLI
+and `clippy::byte_char_slices` passes engine and native combined all-target
 checks. No source suppressions were added.
+
+The default V8 and QuickJS-only full nextest runs pass 2,132 and 2,055 tests
+respectively; each fails only the documented `playground_crate_checks_for_wasm32`
+environment check. The pinned wasm Cargo assigns this worktree's excluded
+playground crate to `/Users/admin/src/light-cljs/Cargo.toml`'s workspace before
+checking source. These results are reused after the final native mask changes
+and guarded-lookup rebase: legacy emitter/runtime paths and dependency inputs
+are unchanged. Default and QuickJS all-target Clippy pass strictly, as do
+engine-free library/CLI checks. Engine-free all-target lint retains the existing
+benchmark support errors for unavailable legacy evaluator methods. Compiler and
+engine format checks cover the integrated source. The read-only ClojureScript
+symlink uses `a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e` and is removed afterward.
+
+The default-feature V8 200k build was timed before compiler changes at
+`bbd5d97b` and after integration at `db3d9740`. Generate the fixture with
+`bb benchmarks/generated-project/generate.bb target/g200k --seed 42 --lines 200k`,
+build the release CLI with `LIGHT_CLJS_V8_CACHE=require`, then run
+`/usr/bin/time -l <saved-cli> release bench --no-cache` from `target/g200k`
+(default jobs 1). Three quiet paired runs give median wall time 7.03 s before
+and 7.08 s after (+0.7%); ranges are 6.95–7.18 s and 6.93–7.14 s. Median
+user+system CPU is 7.57 s and 7.60 s, and median peak RSS rounds to 1,019 MiB
+for both. An earlier pair was discarded because its process snapshot showed a
+peer rustc build; all three retained pairs have clean before/after snapshots.
+All six outputs have SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`;
+Node and the fixture's Babashka oracle both print `484264` for inputs 42 and 3.
+The host is macOS 15.7.3, Apple M3 Ultra (Virtual), 24 logical CPUs and 32 GiB
+RAM, with Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218. No native/V8
+Penpot speed ratio is reported because neither native entry finishes.
 
 ### Explicit compiler literal forms (light-cljs-535)
 
