@@ -2932,6 +2932,11 @@ fn concurrent_catalog_task_memory() {
             rt.heap_stats().last_live_bytes
         };
         report("realm");
+        // Reader tag functions are intentionally memoized on the shared
+        // runtime by the first boot. Include that world-owned cache in the
+        // no-task baseline while still checking exact task/catalog release.
+        drop(shared.evaluator().unwrap());
+        report("warm realm");
         let realm = rt.heap_usage().objects;
         let parent = shared.evaluator().unwrap();
         eprintln!("{count} boot task: {:?}", parent.cx().unwrap().task.stats());
