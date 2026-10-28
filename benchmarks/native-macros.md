@@ -1765,3 +1765,51 @@ Cargo build jobs and the same toolchain and pinned ClojureScript input above.
   error-header frequencies and location sets: 623 diagnostics plus six failed
   target summaries. These unsupported engine-dependent tests and benches do
   not introduce any new diagnostic in this repair.
+
+## Guarded native protocol table lookup (light-cljs-515), October 27, 2026
+
+The starting revision is `ba1bb3bd`, including the resumable struct core-protocol
+dispatch delivered after the earlier 501 measurements. A fresh same-source
+default V8/native-only release pair gives baseline k = 6.4/7.5/11.6/16.6 at
+n = 100/400/1,600/6,400 in an initial five-round run. These numbers replace any
+assumption that the earlier 501 ratios still describe this base.
+
+Temporary interpreter counters attribute executed primitive-run instructions
+and individual slow/native dispatch steps to their active executable. They are
+diagnostic counts, not timings, and the instrumentation is absent from the
+committed engine and all latency/profile binaries. At n = 1,600, four unchanged
+`churn` calls execute 1,324,773 steps in `decl.resolve`, 403,200 in `declare`,
+401,600 in the core-protocol callback and 335,985 in `resolveCore`. Repeated
+compiler-root reads also execute 576,000 steps in the Proxy getter, 288,000 in
+the bundle-product getter and 224,498 in `force`. The macro body itself accounts
+for 2,064,180 steps. At n = 6,400 these become 5,299,173 / 1,612,800 /
+1,606,400 / 1,343,985 / 2,304,000 / 1,152,000 / 896,498 / 8,256,180.
+This attributes the largest resolver/probe cost separately from root reads and
+the caller's call preparation; native-stack sampling alone cannot do that.
+
+The change stores a table's version, frontier, implementation map and installed
+struct types in an immutable native vector. `cljProtocolLookup` checks the live
+guards and selects a known type/primitive entry in one bounded leaf. An unknown
+type or host object, or a stale snapshot, retains the existing JavaScript path,
+including declaration demand before pending extension installation. Direct
+snapshots select only type overrides for built-in record operations. The core
+resolver binds table identities once without demanding declarations, removing
+per-call helper closures and repeated table-key/name resolution. Dynamic root
+and `.call` reads remain at their original sites. The existing protocol fixtures
+and cross-backend expectations are unchanged.
+
+Validation on production source `9cd9f2ed`, macOS arm64, locked Rust/Cargo
+1.99.1, three build jobs and three test threads:
+
+- `LIGHT_CLJS_STRESS_SEEDS=12 cargo test --locked --no-default-features
+  --features bbp-macros --test bbp_macros --test bbp_reader --test bbp_proxy_has`:
+  98 macro, 10 reader and two proxy tests pass. The existing protocol fixtures
+  and the new jobs 1/2/4/8 binding/call/frontier matrix are green.
+- An additional native-only `--lib` run gives 276 passes and 27 failures in
+  engine-dependent bootstrap, compiler-service and reader tests. Rebuilding
+  the starting `ba1bb3bd` sources in this worktree gives the same 276/27 and
+  failing test set; captured error payloads match after normalizing allocated
+  `SourceId`s. Examples are unsupported bootstrap `hash-map`/`defmulti`, native
+  `__lightCompileUnit`/`__lightBuildService`, and the explicit QuickJS-required
+  reader error. With `bbp-macros,quickjs`, all 351 library tests pass, with one
+  existing ignored test.

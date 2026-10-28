@@ -1417,9 +1417,8 @@ of a product, or a dispatch on one of its protocols, demands its unit with
 shared.
 
 Each protocol method's implementations are an engine dispatch table: a
-SameValueZero persistent map from a dispatch key to the method, read by
-native lookup in Rust, so table selection reads no JavaScript property and runs no
-user equality. The key of a struct is its type's identity; of a native form its
+SameValueZero persistent map from a dispatch key to the method. Its native map
+lookup in Rust invokes no user equality or getters. The key of a struct is its type's identity; of a native form its
 kind (`"keyword"`, `"symbol"`, `"list"`, `"vector"`, `"map"`, `"set"`); of a
 primitive `"null"`, `"boolean"`, `"number"` or `"string"`; then `"function"`,
 `"array"`, and `"_"` for `default`. A JavaScript object (a mutable type's
@@ -1435,9 +1434,9 @@ pending protocol extensions; waits, failures and their effects keep their order.
 Known structs select their type, then `object`, then `default`. The direct
 snapshot for built-in record operations selects only a type override, retaining
 the record builtin ahead of object/default extensions. Core resolver table
-identities are bound once without demanding their declarations. The snapshots
-retain neither a caller's operands nor dynamic compiler-root values; binding,
-replacement and `.call` reads still occur at each call site.
+identities are bound once without demanding their declarations. The lookup does
+not memoize calls or compiler-root reads: binding, replacement and `.call` reads
+still occur at each call site.
 
 Fixed native protocol implementations take their hidden receiver explicitly;
 the dispatcher calls their entry directly (light-cljs-501). The receiver stays
