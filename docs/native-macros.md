@@ -2405,3 +2405,42 @@ two runs contain no peer builds, tests or compiler measurements. A later
 pair was discarded when a peer V8 measurement started. This comparison has
 one accepted pair. Emitted JavaScript is byte-identical, and both executables'
 applications and the Babashka oracle print `484264`.
+
+### Exception retries and pooled-reader review fixes
+
+The source differential now retries a throwing descendant under completed
+`ISeqable` and user `ISeq` parents. Before the fix, the native parent counter
+was `2` against QuickJS's `1`, and the successful user sequence callbacks
+repeated on retry. Per-node lazy walk cells retain those completed expansions;
+all retry results and effects now match QuickJS at jobs 1/2/4/8.
+
+Linked native cons worklists replace copying list prepends. The publication,
+owner-drop and GC regression tests both 5,000- and 10,000-level trees under the
+64 MiB managed-heap limit and a 30-second bound per depth. Admitted allocation
+is 68,600,656 and 118,380,570 bytes respectively (1.73x when depth doubles).
+The deterministic pooled-reader regression forces a later realizer to park
+inside a cold helper's initializer, then lends an earlier reader's lane. It
+exposed a loan that expired when the temporary initializer entry ended. The
+loan now follows the enclosing root activity through later shared-atom access.
+Both tasks are resubmitted by actual pool wakeups, with one helper compilation
+and exactly one thunk effect and atom increment.
+
+Source `070a3ab3`, rebased onto master `653a5052`, passes all 361 active combined
+native/QuickJS library tests (one ignored), all 61 native-only evaluator tests,
+and the full flatten differential again. Before the rebase, the complete
+native selection passes 196 tests and the combined selection passes 492 tests
+with twelve stress seeds; all 2,180 engine tests and seven doctests pass.
+The rebase adds an optional release stress feature, equivalent cfg gates for
+the tested debug and ordinary release configurations, an ignored generated
+project test and documentation. It changes no active production code or
+dependency versions for these checks, so the full seeded/engine results are
+reused after inspecting that delta. Formatting, JavaScript syntax and direct
+runtime checks pass.
+
+Both rebuilt native Penpot entries pass flatten and reproduce the exact wide
+`js-obj` diagnostic above, with the five absolute read-only roots, every budget,
+`--jobs 1 --no-cache`. `app.render` takes 202.18 seconds and `app.main` 205.73
+seconds while native stress checks run concurrently. These results are reused
+across the equivalent cfg-only rebase; research is unchanged. Neither entry
+completes, and light-cljs-553 remains the existing follow-up for that different
+bootstrap gap.
