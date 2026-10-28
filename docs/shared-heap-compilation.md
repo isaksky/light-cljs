@@ -1024,6 +1024,18 @@ introduced by the heap statistics or object layout. Engine-free library/binary
 strict Clippy still passes. This broader baseline is recorded explicitly;
 the all-target check is not claimed to pass and no source suppression is added.
 
+A separate final eight-job, 400-helper `/usr/bin/sample PID 3 1 -mayDie`
+on `6f2ed7bf` records collapsed top-of-stack counts: 11,306
+`semaphore_timedwait_trap`, 4,144 `__psynch_cvwait`, 477 `execute_budgeted`,
+137 SipHash writes, 119 VM-fault drops, 83 `Heap::mark_and_sweep`, 74
+`lookup_cursor`, 59 `OrdinaryObject::push` and 54 `Heap::allocate_accounted`.
+This sample deliberately records the final executable while peer tests are
+active: load changes from **6.88/6.82/7.54 to 6.97/6.83/7.54**, with competing
+processes observed before, during and after. These are observed thread stacks,
+not CPU percentages, retained-byte attribution or a quiet before/after speed
+comparison. The sampled build's JavaScript and inline map match the admitted
+chain outputs. Its timing/RSS is excluded from the quiet measurement tables.
+
 ### Single-thread speed
 
 `target/release/big-boy-pants-js` on a script, compared with Node 26 with
