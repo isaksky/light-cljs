@@ -6099,8 +6099,8 @@ impl<'a> Emitter<'a> {
                 // runtime just to construct its immutable rest argument.
                 writeln!(
                     self.output,
-                    "((args) => {{ let rest = __rt.formList(); for (let i = args.length - 1; i >= {}; i--) rest = __rt.formConj(rest, args[i]); return rest; }})(arguments));",
-                    method.params.len()
+                    "((args) => {{ if (args.length <= {}) return null; let rest = __rt.formList(); for (let i = args.length - 1; i >= {}; i--) rest = __rt.formConj(rest, args[i]); return rest; }})(arguments));",
+                    method.params.len(), method.params.len()
                 )
                 .unwrap();
             } else {

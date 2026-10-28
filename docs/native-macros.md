@@ -2895,6 +2895,8 @@ properties. Differential coverage includes receiver reads, zero/variadic
 calls, invalid arities, cold helpers and sequence application across the
 20-argument boundary. The GC retention test roots only the memoized function;
 its cached result has only a weak witness until the consumer retrieves it.
+The native variadic dispatcher supplies nil for an empty rest argument,
+matching the legacy `fnRest` behavior instead of constructing an empty list.
 
 Ordinary native callbacks use consuming-task runtime reads and shareable arity
 dispatchers, including inline callbacks passed through first-class constructors.
