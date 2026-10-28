@@ -569,8 +569,9 @@ pub(crate) struct FormObject {
     /// indices. Vector-producing updates and `with-meta` clear this flag.
     map_entry: bool,
     /// A positional sequence view (IndexedSeq, map/set/string seq), rather
-    /// than an IList. Its list body still supplies structural value semantics.
-    sequence_view: bool,
+    /// than an IList. Some(true) is counted; Some(false) is uncounted.
+    /// Its list body still supplies structural value semantics.
+    sequence_view: Option<bool>,
     /// Runtime reader collections use legacy hash traversal for seq as well as
     /// printing. Keep their actual hash storage through every persistent update.
     reader_traversal: bool,
@@ -590,7 +591,7 @@ impl FormObject {
             body,
             meta,
             map_entry: false,
-            sequence_view: false,
+            sequence_view: None,
             reader_traversal: false,
             sorted: false,
             hash: OnceLock::new(),
@@ -674,9 +675,16 @@ impl FormObject {
     }
 
     pub(crate) fn is_list(&self) -> bool {
-        !self.sequence_view
+        self.sequence_view.is_none()
             && (matches!(&self.body, FormBody::List(_))
                 || matches!(&self.body, FormBody::Cons(c) if c.kind == lazy::ConsKind::Cons))
+    }
+
+    pub(crate) fn sequence_counted(&self) -> bool {
+        self.sequence_view.unwrap_or_else(|| {
+            matches!(&self.body, FormBody::List(_) | FormBody::Vector(_))
+                || matches!(&self.body, FormBody::Cons(c) if c.kind == lazy::ConsKind::ChunkedSeq)
+        })
     }
 
     pub(crate) fn meta(&self) -> Option<&Value> {
@@ -1170,10 +1178,14 @@ pub(crate) fn new_list(heap: &Heap, items: &[Value]) -> Result<Value, Collection
 
 /// A nonempty positional sequence, with list equality and hashing but no
 /// IList marker. Empty sequence tails use the ordinary EmptyList instead.
-pub(crate) fn new_sequence(heap: &Heap, items: &[Value]) -> Result<Value, CollectionError> {
+pub(crate) fn new_sequence(
+    heap: &Heap,
+    items: &[Value],
+    counted: bool,
+) -> Result<Value, CollectionError> {
     let body = FormBody::List(PVector::try_from_values(heap, items)?);
     let mut object = FormObject::new(body, None);
-    object.sequence_view = !items.is_empty();
+    object.sequence_view = (!items.is_empty()).then_some(counted);
     alloc(heap, object, items)
 }
 
@@ -1190,7 +1202,8 @@ pub(crate) fn sequence_view(heap: &Heap, value: &Value) -> Result<Value, Collect
         _ => return Err(wrong(heap, "positional sequence", &source)),
     };
     let mut object = FormObject::new(body, None);
-    object.sequence_view = !matches!(&object.body, FormBody::List(items) if items.len() == 0);
+    object.sequence_view =
+        (!matches!(&object.body, FormBody::List(items) if items.len() == 0)).then_some(false);
     alloc(heap, object, std::slice::from_ref(&source))
 }
 
@@ -1204,9 +1217,14 @@ pub(crate) fn list_sharing(
     items: PVector,
     source: &Value,
 ) -> Result<Value, CollectionError> {
-    let sequence_view = items.len() != 0
-        && form_object(heap, source)
-            .is_some_and(|f| f.sequence_view || f.kind() == FormKind::Vector);
+    let sequence_view = (items.len() != 0)
+        .then(|| {
+            form_object(heap, source).and_then(|f| {
+                f.sequence_view
+                    .or_else(|| (f.kind() == FormKind::Vector).then_some(true))
+            })
+        })
+        .flatten();
     let body = FormBody::List(items);
     let mut object = FormObject::new(body, None);
     object.sequence_view = sequence_view;
@@ -1858,7 +1876,7 @@ pub(crate) fn cons_sharing(
         kind,
     };
     let mut object = FormObject::new(FormBody::Cons(body), None);
-    object.sequence_view = form_object(heap, source).is_some_and(|f| f.sequence_view);
+    object.sequence_view = form_object(heap, source).and_then(|f| f.sequence_view);
     alloc(heap, object, std::slice::from_ref(source))
 }
 

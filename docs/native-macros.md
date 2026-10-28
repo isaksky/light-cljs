@@ -110,6 +110,9 @@ so its stack operations and explicit List extensions observe the List type.
 Array cursor equality compares elements incrementally, preserves identity and
 count shortcuts, and stops before reading getters after a mismatch. Element
 comparisons can demand helpers and suspend through the ordinary callback path.
+The immutable sequence-view tag also retains countedness: indexed views and
+finite integer ranges use the count shortcut, while hash-map, set, key, value
+and floating range views do not. Metadata and shared tails retain that tag.
 Cursor metadata copying returns the same cursor for identical metadata and
 preserves an existing view when its backing array has become exhausted.
 `peek` honors explicit core-type and host IStack extensions while retaining

@@ -349,16 +349,33 @@ pub(crate) fn realized_seq(heap: &Heap, v: &Value) -> Result<Value> {
             FormBody::Vector(items) => vector_seq(heap, items, v),
             _ => Ok(v.clone()),
         },
-        _ => list_or_nil(heap, &collection_items(heap, "seq", v)?.unwrap_or_default()),
+        _ => list_or_nil(
+            heap,
+            &collection_items(heap, "seq", v)?.unwrap_or_default(),
+            copied_sequence_counted(heap, v),
+        ),
     }
 }
 
 /// A new list of `items`, or `nil` when there are none.
-fn list_or_nil(heap: &Heap, items: &[Value]) -> Result<Value> {
+fn list_or_nil(heap: &Heap, items: &[Value], counted: bool) -> Result<Value> {
     if items.is_empty() {
         Ok(Value::Null)
     } else {
-        Ok(form::new_sequence(heap, items)?)
+        Ok(form::new_sequence(heap, items, counted)?)
+    }
+}
+
+/// Indexed and array/sorted-map views are counted; hash-map, set and record
+/// views are not. This follows the source kind, never its elements.
+fn copied_sequence_counted(heap: &Heap, value: &Value) -> bool {
+    match shape(heap, value) {
+        Shape::Form(_, f) => match f.body() {
+            FormBody::Map(form::FormMap::Positional(_)) => true,
+            FormBody::Map(_) | FormBody::Set(_) | FormBody::Struct(_) => false,
+            _ => true,
+        },
+        _ => true,
     }
 }
 
@@ -477,7 +494,7 @@ pub(crate) fn seq(heap: &Heap, v: &Value) -> Result<Value> {
     }
     match collection_items(heap, "seq", &own)? {
         None => Ok(Value::Null),
-        Some(items) => list_or_nil(heap, &items),
+        Some(items) => list_or_nil(heap, &items, copied_sequence_counted(heap, &own)),
     }
 }
 
@@ -588,7 +605,11 @@ pub(crate) fn rest(heap: &Heap, v: &Value) -> Result<Value> {
     }
     match tail(heap, "rest", &v)? {
         Tail::Shared(items, source) => Ok(form::list_sharing(heap, items, &source)?),
-        Tail::Copied(items) => Ok(form::new_sequence(heap, &items)?),
+        Tail::Copied(items) => Ok(form::new_sequence(
+            heap,
+            &items,
+            copied_sequence_counted(heap, &v),
+        )?),
     }
 }
 
@@ -603,7 +624,7 @@ pub(crate) fn next(heap: &Heap, v: &Value) -> Result<Value> {
     match tail(heap, "next", &v)? {
         Tail::Shared(items, _) if items.len() == 0 => Ok(Value::Null),
         Tail::Shared(items, source) => Ok(form::list_sharing(heap, items, &source)?),
-        Tail::Copied(items) => list_or_nil(heap, &items),
+        Tail::Copied(items) => list_or_nil(heap, &items, copied_sequence_counted(heap, &v)),
     }
 }
 
@@ -1197,7 +1218,11 @@ pub(crate) fn dispatch_key(heap: &Heap, v: &Value) -> Option<Value> {
                         Value::String(JsString::from("empty-list"))
                     }
                     FormBody::List(_) if f.is_list() => key_string(8),
-                    FormBody::List(_) => Value::String(JsString::from("sequence")),
+                    FormBody::List(_) => Value::String(JsString::from(if f.sequence_counted() {
+                        "sequence"
+                    } else {
+                        "uncounted-sequence"
+                    })),
                     FormBody::Vector(_) if f.is_map_entry() => {
                         Value::String(JsString::from("map-entry"))
                     }
@@ -1207,6 +1232,8 @@ pub(crate) fn dispatch_key(heap: &Heap, v: &Value) -> Option<Value> {
                     FormBody::Lazy(_) => Value::String(JsString::from("lazy-seq")),
                     FormBody::Cons(_) => Value::String(JsString::from(if f.is_list() {
                         "cons"
+                    } else if !f.sequence_counted() {
+                        "uncounted-sequence"
                     } else {
                         "sequence"
                     })),

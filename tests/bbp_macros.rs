@@ -8201,6 +8201,11 @@ fn sequence_predicate_table_matches_quickjs_at_all_jobs() {
       (let [seen (js/Array.) a (js* "(()=>{const a=new Array(200000);a[0]=1;Object.defineProperty(a,1,{get(){~{}.push('tail');throw new Error('tail');}});return a;})()" seen)
             b (js* "(()=>{const a=new Array(200000);a[0]=9;return a;})()") left (seq a) right (seq b)]
         [(= left right) (= right left) (into [] seen)])
+      (mapv (fn [other]
+        (let [seen (js/Array.) a (js* "Object.defineProperty(new Array(200000),0,{get(){~{}.push('head');return 1;}})" seen)
+              result (= (seq a) other)] [result (into [] seen)]))
+        [(seq [1]) (seq (vec (range 33))) (seq (apply hash-map (range 34)))
+         (seq #{1}) (keys {:a 1}) (vals {:a 1}) (range 2) (repeat 2 1) (seq "a")])
       (let [seen (atom []) a (array (EquivMarker. 1 seen)) s (seq a) other (list (EquivMarker. 1 seen))]
         [(= s other) (= other s) @seen])
       [(count (DeclaredCounted.)) (count (ExtendedCounted.)) (count (OverlayCounted.))]]"#;

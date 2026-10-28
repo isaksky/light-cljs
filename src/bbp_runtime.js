@@ -180,7 +180,7 @@ const decl = (() => {
   // type instance's type, or a core collection's native kind (`extend-type
   // PersistentVector`); never a host tag or `default`.
   const directKinds = new Set(['keyword', 'symbol', 'vector', 'map', 'set']);
-  const sequenceKinds = __rt.map('list','list','empty-list','empty-list','sequence','sequence');
+  const sequenceKinds = __rt.map('list','list','empty-list','empty-list','sequence','sequence','uncounted-sequence','sequence');
   const vectorKinds = __rt.map('vector','vector','map-entry','map-entry');
   const directKey = x => {
     const ty = __rt.structTypeOf(x);
@@ -1069,11 +1069,11 @@ const native = (() => {
     return cursor;
   };
   const arraySeq = (array, index) => index >= array.length ? null : copyArraySeq(array,index,null);
+  const countedKinds = __rt.map('list',true,'empty-list',true,'sequence',true,'vector',true,'map-entry',true,'map',true,'set',true);
   const equalArraySeq = (a,b) => {
     if (!core.isSequential(a) || !core.isSequential(b)) return false;
     const counted = x => {
-      const kind = __rt.formKind(val(x));
-      return arraySeqs.has(x) || kind === 'list' || kind === 'vector'
+      return arraySeqs.has(x) || __rt.cljDispatch(countedKinds,x)
         || decl.predicate('ICounted',x);
     };
     if (counted(a) && counted(b) && val(__rt.cljCount(a)) !== val(__rt.cljCount(b))) return false;
@@ -1275,7 +1275,9 @@ const native = (() => {
     for (; k < 32 && (step > 0 ? x < end : step < 0 ? x > end : true); k++) { __rt.builderConj(b, x); x += step; }
     if (k === 0) return __rt.formList();
     const next = x;
-    return __rt.cljRangeCons(__rt.freeze(b), lazy(() => self(self, next, end, step)));
+    const result = __rt.cljRangeCons(__rt.freeze(b), lazy(() => self(self, next, end, step)));
+    return step !== 0 && Number.isInteger(start) && Number.isInteger(end) && Number.isInteger(step)
+      ? result : __rt.formSequence(result);
   };
   const partitionFrom = (self, n, step, c) => lazy(() => {
     const s = seqOf(c);
