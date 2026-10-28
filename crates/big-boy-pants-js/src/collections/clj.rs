@@ -366,13 +366,13 @@ fn list_or_nil(heap: &Heap, items: &[Value], counted: bool) -> Result<Value> {
     }
 }
 
-/// Indexed and array/sorted-map views are counted; hash-map, set and record
+/// Indexed, record and array/sorted-map views are counted; hash-map and set
 /// views are not. This follows the source kind, never its elements.
 fn copied_sequence_counted(heap: &Heap, value: &Value) -> bool {
     match shape(heap, value) {
         Shape::Form(_, f) => match f.body() {
             FormBody::Map(form::FormMap::Positional(_)) => true,
-            FormBody::Map(_) | FormBody::Set(_) | FormBody::Struct(_) => false,
+            FormBody::Map(_) | FormBody::Set(_) => false,
             _ => true,
         },
         _ => true,

@@ -2446,7 +2446,7 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
         &rt,
         r#"function make() {
       const list=__rt.formList(1,2), view=__rt.cljSeq(__rt.formVector(1,2));
-      const map=__rt.cljSeq(__rt.formMap('a',1)), string=__rt.cljSeq('ab');
+      const map=__rt.cljSeq(__rt.formMap('a',1,'b',2)), string=__rt.cljSeq('ab');
       const meta=__rt.formMap('kept',true);
       const lazy=__rt.lazySeq(()=>{throw new Error('predicate realized a lazy value');});
       const cons=__rt.cljCons(0,lazy);
@@ -2482,6 +2482,10 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
       if(__rt.cljSeq(v)!==v||__rt.cljSeq(l)!==l)throw new Error('unchanged identity');
       if(__rt.cljSeq(__rt.cljConcatAll(__rt.formList(v)))!==v||__rt.cljSeq(__rt.cljConcat(null,v))!==v)throw new Error('concat operand identity');
       if(__rt.cljPeek(__rt.cljCons(1,null))!==1)throw new Error('nil cons is a List');
+      const counted=__rt.map('list',true,'empty-list',true,'sequence',true);
+      for(const i of [0,1,3,4,7])if(__rt.cljDispatch(counted,at(i))!==true)throw new Error('counted view '+i);
+      for(const x of [m,__rt.cljRest(m),__rt.cljNext(m),__rt.cljWithMeta(m,__rt.formMap())])
+        if(__rt.cljDispatch(counted,x)!==null)throw new Error('uncounted map view');
       if(__rt.cljSeq(at(6))!==at(6)||__rt.cljSeq(at(7))!==at(7))throw new Error('cons occurrence identity');
       const front=__rt.cljCons(0,meta);
       if(__rt.cljRest(front)!==meta||__rt.cljIsList(__rt.cljRest(front)))throw new Error('cons tail identity/kind');
