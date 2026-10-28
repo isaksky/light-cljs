@@ -2396,6 +2396,96 @@ The commits after `da76220f` change documentation only; all these results
 cover the same production source and test inputs. Neither the legacy emitter
 nor `src/js_runtime.js` differs from master.
 
+The rebuilt default V8 release compiler was timed against the saved
+`e28daa30` executable on the same seed-42 200k fixture, using
+`release bench --jobs 1 --no-cache`. One quiet pair takes 7.06 s before and
+6.89 s after (0.9759x); CPU time is 7.49 s and 7.40 s, with peak RSS
+1,015.02 MiB and 1,040.08 MiB. Process checks before, between and after these
+two runs contain no peer builds, tests or compiler measurements. A later
+pair was discarded when a peer V8 measurement started. This comparison has
+one accepted pair. Emitted JavaScript is byte-identical, and both executables'
+applications and the Babashka oracle print `484264`.
+
+### Exception retries and pooled-reader review fixes
+
+The source differential now retries a throwing descendant under completed
+`ISeqable` and user `ISeq` parents. Before the fix, the native parent counter
+was `2` against QuickJS's `1`, and the successful user sequence callbacks
+repeated on retry. Per-node lazy walk cells retain those completed expansions;
+all retry results and effects now match QuickJS at jobs 1/2/4/8.
+
+Linked native cons worklists replace copying list prepends. The publication,
+owner-drop and GC regression tests both 5,000- and 10,000-level trees under the
+64 MiB managed-heap limit and a 30-second bound per depth. Admitted allocation
+is 68,600,656 and 118,380,570 bytes respectively (1.73x when depth doubles).
+The deterministic pooled-reader regression forces a later realizer to park
+inside a cold helper's initializer, then lends an earlier reader's lane. It
+exposed a loan that expired when the temporary initializer entry ended. The
+loan now follows the enclosing root activity through later shared-atom access.
+Both tasks are resubmitted by actual pool wakeups, with one helper compilation
+and exactly one thunk effect and atom increment.
+
+Source `070a3ab3`, rebased onto master `653a5052`, passes all 361 active combined
+native/QuickJS library tests (one ignored), all 61 native-only evaluator tests,
+and the full flatten differential again. Before the rebase, the complete
+native selection passes 196 tests and the combined selection passes 492 tests
+with twelve stress seeds; all 2,180 engine tests and seven doctests pass.
+The rebase adds an optional release stress feature, equivalent cfg gates for
+the tested debug and ordinary release configurations, an ignored generated
+project test and documentation. It changes no active production code or
+dependency versions for these checks, so the full seeded/engine results are
+reused after inspecting that delta. Formatting, JavaScript syntax and direct
+runtime checks pass.
+
+Both rebuilt native Penpot entries pass flatten and reproduce the exact wide
+`js-obj` diagnostic above, with the five absolute read-only roots, every budget,
+`--jobs 1 --no-cache`. `app.render` takes 202.18 seconds and `app.main` 205.73
+seconds while native stress checks run concurrently. These results are reused
+across the equivalent cfg-only rebase; research is unchanged. Neither entry
+completes, and light-cljs-553 remains the existing follow-up for that different
+bootstrap gap.
+
+Fresh full default V8 and QuickJS-only nextest runs on the rebased source pass
+2,133 and 2,056 tests respectively. Each fails only the existing
+`playground_crate_checks_for_wasm32`: Rust/Cargo 1.99.0 resolves the excluded
+worktree playground crate to the main checkout's workspace and rejects it
+before compiling source. The diagnostic matches the prior baseline, and the
+playground manifests and check are unchanged.
+
+Default V8 and QuickJS-only strict all-target Clippy pass. Combined native and
+QuickJS all-target Clippy passes with only the existing engine categories
+`deprecated`, `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`
+allowed; strict combined and engine checks retain their eight library and nine
+all-target baseline diagnostics. Native selected-target Clippy passes with
+those categories allowed. Engine-free strict library/binary Clippy passes;
+its all-target check retains the unchanged legacy evaluator API errors in
+examples, benches and tests. No source lint suppressions were added.
+Checks use macOS arm64, Homebrew Rust/Cargo 1.99.1, Node 26.12.1, three Cargo
+build jobs, three native/engine test workers and eight nextest slots. The wasm
+check uses the installed 1.99.0 toolchain with `CARGO_HOME=/Users/admin/.cargo`.
+The ClojureScript source symlink pointed at pinned `a5e94c98` during checks and
+was removed afterwards.
+
+Three quiet, interleaved pairs compare the saved pre-review default V8 release
+executable with the rebuilt review-fix source on the seed-42 200k fixture,
+using `release bench --jobs 1 --no-cache`. Median wall time is 7.24 seconds
+before and 7.17 seconds after (0.9903x); ranges are 7.17–7.40 and 7.12–7.26
+seconds. Median user+system CPU is 7.78 and 7.66 seconds, and median peak RSS is
+1,019.0 and 1,004.6 MiB. The difference is smaller than the observed variation.
+Process snapshots before and after every accepted run contain no peer builds,
+tests or compiler measurements. An initial guard refused to start while peer
+tests were active. All six emitted applications are byte-identical, with
+SHA-256 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`;
+Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
+
+The final rebase onto master `6cd56b89` adds only the `nthrest` source
+differential. On `66525b00` that table passes in both combined native/QuickJS
+and native-only configurations at jobs 1/2/4/8. Final formatting and combined
+all-target lint pass with the same baseline engine categories allowed. No
+production code, dependency or benchmark input changed in this test-only
+rebase, so the complete suites, Penpot reproductions and timings above remain
+valid. Subsequent changes only record this verification.
+
 ## Wide native object bootstrap (light-cljs-553, 2026-10-28)
 
 The native backend now expands `js-obj` calls beyond eight pairs. The small
@@ -2514,92 +2604,34 @@ All six outputs are byte-identical with SHA-256
 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
 Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
 
-The rebuilt default V8 release compiler was timed against the saved
-`e28daa30` executable on the same seed-42 200k fixture, using
-`release bench --jobs 1 --no-cache`. One quiet pair takes 7.06 s before and
-6.89 s after (0.9759x); CPU time is 7.49 s and 7.40 s, with peak RSS
-1,015.02 MiB and 1,040.08 MiB. Process checks before, between and after these
-two runs contain no peer builds, tests or compiler measurements. A later
-pair was discarded when a peer V8 measurement started. This comparison has
-one accepted pair. Emitted JavaScript is byte-identical, and both executables'
-applications and the Babashka oracle print `484264`.
+### Verification
 
-### Exception retries and pooled-reader review fixes
+The combined native/QuickJS library and `bbp_macros` suites pass 363 and 122
+tests respectively, retaining their two existing ignored stress cases.
+Native-only `bbp_macros` passes 120 tests (one existing ignored generated
+project case); all 61 native evaluator tests pass. Both configurations use
+`LIGHT_CLJS_STRESS_SEEDS=12`, `CARGO_BUILD_JOBS=3` and three test workers.
 
-The source differential now retries a throwing descendant under completed
-`ISeqable` and user `ISeq` parents. Before the fix, the native parent counter
-was `2` against QuickJS's `1`, and the successful user sequence callbacks
-repeated on retry. Per-node lazy walk cells retain those completed expansions;
-all retry results and effects now match QuickJS at jobs 1/2/4/8.
+Full default V8 nextest passes 2,133 tests and QuickJS-only nextest passes
+2,056, each failing only `playground_crate_checks_for_wasm32`. The exact
+baseline remains Rust/Cargo 1.99.0 rejecting the worktree playground crate as
+belonging to the main checkout workspace before compiling Rust. The test,
+playground manifests and script are unchanged. Both full commands use
+`--locked -j 8 --no-fail-fast`; default V8 uses `LIGHT_CLJS_V8_CACHE=require`.
+The pinned WASM command uses `LIGHT_CLJS_CARGO` with its installed 1.99.0
+`RUSTC`, library path and `CARGO_HOME=/Users/admin/.cargo`.
 
-Linked native cons worklists replace copying list prepends. The publication,
-owner-drop and GC regression tests both 5,000- and 10,000-level trees under the
-64 MiB managed-heap limit and a 30-second bound per depth. Admitted allocation
-is 68,600,656 and 118,380,570 bytes respectively (1.73x when depth doubles).
-The deterministic pooled-reader regression forces a later realizer to park
-inside a cold helper's initializer, then lends an earlier reader's lane. It
-exposed a loan that expired when the temporary initializer entry ended. The
-loan now follows the enclosing root activity through later shared-atom access.
-Both tasks are resubmitted by actual pool wakeups, with one helper compilation
-and exactly one thunk effect and atom increment.
+Default V8 and QuickJS-only strict all-target Clippy pass. Combined strict
+Clippy retains eight unchanged engine-library diagnostics. Combined all-target
+and native selected-target Clippy pass allowing only `deprecated`,
+`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` after
+`-D warnings`. Engine-free strict library/binary Clippy passes; its all-target
+check fails on unchanged `examples/evaluator.rs:15` calling unavailable
+`Evaluator::print` and `Evaluator::evaluate`. No source lint suppressions were
+added. Rust formatting, native runtime JavaScript syntax and the direct
+JavaScript runtime tests pass.
 
-Source `070a3ab3`, rebased onto master `653a5052`, passes all 361 active combined
-native/QuickJS library tests (one ignored), all 61 native-only evaluator tests,
-and the full flatten differential again. Before the rebase, the complete
-native selection passes 196 tests and the combined selection passes 492 tests
-with twelve stress seeds; all 2,180 engine tests and seven doctests pass.
-The rebase adds an optional release stress feature, equivalent cfg gates for
-the tested debug and ordinary release configurations, an ignored generated
-project test and documentation. It changes no active production code or
-dependency versions for these checks, so the full seeded/engine results are
-reused after inspecting that delta. Formatting, JavaScript syntax and direct
-runtime checks pass.
-
-Both rebuilt native Penpot entries pass flatten and reproduce the exact wide
-`js-obj` diagnostic above, with the five absolute read-only roots, every budget,
-`--jobs 1 --no-cache`. `app.render` takes 202.18 seconds and `app.main` 205.73
-seconds while native stress checks run concurrently. These results are reused
-across the equivalent cfg-only rebase; research is unchanged. Neither entry
-completes, and light-cljs-553 remains the existing follow-up for that different
-bootstrap gap.
-
-Fresh full default V8 and QuickJS-only nextest runs on the rebased source pass
-2,133 and 2,056 tests respectively. Each fails only the existing
-`playground_crate_checks_for_wasm32`: Rust/Cargo 1.99.0 resolves the excluded
-worktree playground crate to the main checkout's workspace and rejects it
-before compiling source. The diagnostic matches the prior baseline, and the
-playground manifests and check are unchanged.
-
-Default V8 and QuickJS-only strict all-target Clippy pass. Combined native and
-QuickJS all-target Clippy passes with only the existing engine categories
-`deprecated`, `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`
-allowed; strict combined and engine checks retain their eight library and nine
-all-target baseline diagnostics. Native selected-target Clippy passes with
-those categories allowed. Engine-free strict library/binary Clippy passes;
-its all-target check retains the unchanged legacy evaluator API errors in
-examples, benches and tests. No source lint suppressions were added.
-Checks use macOS arm64, Homebrew Rust/Cargo 1.99.1, Node 26.12.1, three Cargo
-build jobs, three native/engine test workers and eight nextest slots. The wasm
-check uses the installed 1.99.0 toolchain with `CARGO_HOME=/Users/admin/.cargo`.
-The ClojureScript source symlink pointed at pinned `a5e94c98` during checks and
-was removed afterwards.
-
-Three quiet, interleaved pairs compare the saved pre-review default V8 release
-executable with the rebuilt review-fix source on the seed-42 200k fixture,
-using `release bench --jobs 1 --no-cache`. Median wall time is 7.24 seconds
-before and 7.17 seconds after (0.9903x); ranges are 7.17–7.40 and 7.12–7.26
-seconds. Median user+system CPU is 7.78 and 7.66 seconds, and median peak RSS is
-1,019.0 and 1,004.6 MiB. The difference is smaller than the observed variation.
-Process snapshots before and after every accepted run contain no peer builds,
-tests or compiler measurements. An initial guard refused to start while peer
-tests were active. All six emitted applications are byte-identical, with
-SHA-256 `1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`;
-Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
-
-The final rebase onto master `6cd56b89` adds only the `nthrest` source
-differential. On `66525b00` that table passes in both combined native/QuickJS
-and native-only configurations at jobs 1/2/4/8. Final formatting and combined
-all-target lint pass with the same baseline engine categories allowed. No
-production code, dependency or benchmark input changed in this test-only
-rebase, so the complete suites, Penpot reproductions and timings above remain
-valid. Subsequent changes only record this verification.
+Checks use Homebrew Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218.
+The ClojureScript source link points at pinned `a5e94c98` during verification
+and is removed for hand-back. Production source and tests are unchanged since
+`f7f9aef0`; subsequent commits record these results and reuse the checks.
