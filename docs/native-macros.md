@@ -3125,3 +3125,21 @@ JavaScript syntax checks, retaining SHA-256
 There is still no native main output or native/V8 main-build performance
 comparison. These repeated Penpot runs establish build behavior, with no new
 performance claim while a peer suite is active.
+
+Three quiet interleaved pairs compare the saved pre-fix V8 release binary
+(`f7c9e901` source, unchanged through `5ac614f6`) with the rebuilt `390d1e0c`
+production source on the same seed-42 200k fixture, using
+`release bench --jobs 1 --no-cache`. Median wall time is 7.15 s before and
+7.11 s after (0.9944x); ranges are 7.04–7.25 and 7.03–7.12 s. Median
+user+system CPU is 7.63 and 7.57 s, and median maximum RSS is 1,055.8 and
+1,029.0 MiB. The wall-time difference is within the observed variation.
+Before/after process checks for all six accepted runs find no overlapping
+builds, tests or compiler measurements; earlier preflight attempts stopped
+before timing when a peer suite or build started.
+
+All six emitted applications are byte-identical, retaining SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+Node and the Babashka oracle both print `484264` for inputs `42` and `3`.
+The final rebase onto master `01175afc` is a no-op; only documentation changes
+follow production source `390d1e0c`, so the recorded checks cover the final
+source, test and build inputs.
