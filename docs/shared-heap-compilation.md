@@ -1398,6 +1398,9 @@ unit tests** pass in 4.20 seconds and all **114 ordinary native macro tests**
 pass with twelve stress seeds and two test threads in 207.43 seconds (the
 large-fixture test remains opt-in). The release feature's macro test-target
 Clippy passes allowing only the same three existing engine categories.
+The release-feature chain matrix also passes all **49 builds** in 867.51
+seconds, with `(compiled, published, per-task) = (400, 400, 0)` throughout and
+identical JavaScript/full maps at both optimization levels, warnings included.
 Compiler and engine format checks and default all-target strict Clippy pass.
 Native test-target strict Clippy retains the eight existing engine-library
 diagnostics; allowing only `deprecated`, `chunks_exact_to_as_chunks` and
