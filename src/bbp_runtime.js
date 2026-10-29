@@ -518,7 +518,11 @@ const native = (() => {
   };
   __rt.cljCoreResolver((op, x, throughLazy) => {
     if(op==='cljWithExportedMeta')op='cljWithMeta';
-    const record = __rt.formKind(x) === 'record', table = coreTables[op];
+    const kind = __rt.formKind(x);
+    // The engine also offers sorted-map-by maps (and `=` with one) here.
+    const sorted = sortedBy.methods[op];
+    if (sorted !== undefined && kind === 'map' && __rt.formSortedComparator(x) !== null) return sorted;
+    const record = kind === 'record', table = coreTables[op];
     const cursor = arraySeqs.get(x), array = Array.isArray(val(x));
     if (cursor !== undefined || array) {
       switch (op) {
@@ -625,6 +629,83 @@ const native = (() => {
     if(kind!=='vector'&&(args.length<1||args.length>2))arity(args.length);
     return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null,args.length);
   };
+  // sorted-map-by (light-cljs-561). The engine retains the comparator and
+  // sorted entries; ordering runs here, on the task VM, so a comparator can
+  // demand a helper and park. Calls follow the legacy runtime: fnComparator
+  // takes a number result as the order, otherwise a truthy result is less
+  // and the reversed call decides greater; a binary search compares
+  // (entry key, key), then one more call tests the found position. Defined
+  // after `invoke`: capturing it before its initialization would box it in a
+  // task-owned binding cell and keep lazy callbacks from publishing.
+  const sortedBy = (() => {
+    const order = (f, x, y) => {
+      const r = invoke(f, x, y), n = val(r);
+      if (typeof n === 'number') return n;
+      return truth(r) ? -1 : truth(invoke(f, y, x)) ? 1 : 0;
+    };
+    const key = (m, i) => __rt.formSortedEntry(m, i, 0);
+    const position = (m, f, k) => {
+      let lo = 0, hi = __rt.formCount(m);
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (order(f, key(m, mid), k) < 0) lo = mid + 1; else hi = mid;
+      }
+      return lo;
+    };
+    const found = (m, f, i, k) => i < __rt.formCount(m) && order(f, key(m, i), k) === 0;
+    const index = (m, k) => {
+      const f = __rt.formSortedComparator(m), i = position(m, f, k);
+      return found(m, f, i, k) ? i : -1;
+    };
+    // An equal key keeps the stored key; an equal value keeps the map.
+    const assoc = (m, k, v) => {
+      const f = __rt.formSortedComparator(m), i = position(m, f, k);
+      if (!found(m, f, i, k)) return __rt.formSortedInsert(m, i, k, v);
+      return __rt.formEquals(__rt.formSortedEntry(m, i, 1), v) ? m : __rt.formSortedReplace(m, i, v);
+    };
+    const lookup = (m, k, d) => { const i = index(m, k); return i < 0 ? d : __rt.formSortedEntry(m, i, 1); };
+    const entries = (m, x) => {
+      for (let s = __rt.cljSeq(x); s !== null; s = __rt.cljNext(s)) {
+        const e = __rt.cljFirst(s);
+        m = assoc(m, __rt.formNth(e, 0), __rt.formNth(e, 1));
+      }
+      return m;
+    };
+    // Legacy conj of a pair, map or record; the leaf reports anything else.
+    const conj = (m, x) => {
+      const item = val(x), kind = __rt.formKind(item);
+      if (kind === 'vector' && __rt.formCount(item) === 2) return assoc(m, __rt.formNth(item, 0), __rt.formNth(item, 1));
+      if (kind === 'map' || kind === 'record') return entries(m, x);
+      return __rt.cljConj(__rt.formArrayMap(__rt.formVector()), x);
+    };
+    // Legacy map equality: equal counts, then each left entry, in its seq
+    // order, is found in the right map (by its comparator when it has one)
+    // and the found value is compared first. A struct's -equiv on the left
+    // never reaches this method.
+    const equals = (a, b) => {
+      const left = val(a), right = val(b);
+      if (__rt.formKind(left) !== 'map' || __rt.formKind(right) !== 'map') return false;
+      if (__rt.formCount(left) !== __rt.formCount(right)) return false;
+      const custom = __rt.formSortedComparator(right) !== null, missing = {};
+      for (let s = __rt.cljSeq(left); s !== null; s = __rt.cljNext(s)) {
+        const e = __rt.cljFirst(s), other = custom ? lookup(right, __rt.formNth(e, 0), missing) : __rt.cljGet(right, __rt.formNth(e, 0), missing);
+        if (other === missing || !__rt.formEquals(other, __rt.formNth(e, 1))) return false;
+      }
+      return true;
+    };
+    const methods = {
+      cljGet2: (m, k) => lookup(m, k, null), cljGet: lookup,
+      cljContains: (m, k) => index(m, k) >= 0, cljAssoc: assoc,
+      cljDissoc: (m, k) => { const i = index(m, k); return i < 0 ? m : __rt.formSortedRemove(m, i); },
+      cljConj: conj, formEquals: equals,
+    };
+    const create = (f, kvs) => {
+      let m = __rt.formSortedMapBy(f);
+      for (let i = 0; i < kvs.length; i += 2) m = assoc(m, kvs[i], i + 1 < kvs.length ? kvs[i + 1] : null);
+      return m;
+    };
+    return {create, methods};
+  })();
   // memoize calls its callback through Clojure apply, whose fixed function
   // receiver is the function itself. Native variadic dispatchers preserve
   // applyTo's null receiver in immutable engine metadata, so they can publish
@@ -1592,6 +1673,20 @@ const native = (() => {
     list:(...a)=>list(a), vector:(...a)=>vector(a), hashMap:(...a)=>map(a), hashSet:(...a)=>set(a), set:x=>set(arr(x)), vec:x=>vector(arr(x)),
     arrayMap:(...a)=>{ if (a.length % 2) throw new Error('No value supplied for key'); return arrayMap(a); },
     sortedMap:(...a)=>__rt.formSortedMap(vector(a)),
+    sortedMapBy:(f,...a)=>sortedBy.create(f,a),
+    compare:(...a)=>a.length===2?__rt.formCompare(a[0],a[1]):arity(a.length),
+    // Keep emitter.rs's publishable `comparator` constructor equivalent.
+    comparator:f=>(x,y)=>truth(invoke(f,x,y))?-1:truth(invoke(f,y,x))?1:0,
+    // Vectors and sorted maps reverse their elements or entries; an
+    // IReversible extension wins, as in the legacy runtime.
+    rseq:x=>{
+      const v=val(x),kind=__rt.formKind(v),builtin=kind==='vector'||kind==='map'&&!__rt.cljIsEditable(v);
+      const method=decl.coreMethod('IReversible/-rseq',1,x,builtin);
+      if(method!==null)return method(x);
+      if(!builtin)throw new Error('No protocol method IReversible.-rseq defined for this value');
+      const items=arr(x).slice().reverse();
+      return items.length?__rt.formSequence(vector(items)):null;
+    },
     isSorted:x=>__rt.formKind(val(x))==='map'&&!__rt.cljIsEditable(x),
     seqToMap:value=>{
       if (__rt.cljNext(value) === null) return seq(value) === null ? arrayMap([]) : __rt.cljFirst(value);

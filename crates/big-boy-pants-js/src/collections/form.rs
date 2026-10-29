@@ -95,7 +95,10 @@
 //!   `hashUnorderedColl` of the entries.
 //!   A sorted destination uses comparator-based key lookup. As in the legacy
 //!   runtime, compare-equal keys such as `NaN` and `1` need not hash alike,
-//!   and equality between sorted and hash maps can be directional.
+//!   and equality between sorted and hash maps can be directional. A
+//!   `sorted-map-by` destination needs its comparator, which only the task
+//!   runtime calls: structural equality reports
+//!   [`CollectionError::Unsupported`] instead of looking a key up in it.
 //! * Sets are equal with the same count and an equal member in the other
 //!   for every member of one; the hash is `hashUnorderedColl` of the
 //!   members. A set never equals a map, list or vector.
@@ -282,7 +285,9 @@
 //! supported (not claimed): keyword and symbol names whose spelling does
 //! not split back (rejected, see "Names"), and a runtime keyword whose
 //! stored spelling differs from its namespace and name (the runtime's
-//! one-argument `(keyword "a/b/c")`); custom sorted-map comparators and sorted sets, seq views of
+//! one-argument `(keyword "a/b/c")`); comparator calls for `sorted-map-by`
+//! maps (their positional leaves edit entries at positions the task runtime
+//! computes; see "sorted-map-by" below) and sorted sets, seq views of
 //! maps, sets and strings, user hashing or equality
 //! (`IHash`/`IEquiv`) of structs,
 //! interned or cached keyword identity, characters as a separate kind (a
@@ -575,9 +580,13 @@ pub(crate) struct FormObject {
     /// Runtime reader collections use legacy hash traversal for seq as well as
     /// printing. Keep their actual hash storage through every persistent update.
     reader_traversal: bool,
-    /// A default-comparator sorted map. Its positional storage is already
-    /// sorted, never promotes, and is not an editable collection.
+    /// A sorted map. Its positional storage is already sorted, never
+    /// promotes, and is not an editable collection.
     sorted: bool,
+    /// A `sorted-map-by` map's comparator function (an edge). Only the task
+    /// runtime calls it: engine leaves that would compare its keys raise
+    /// [`CollectionError::Unsupported`] instead of using the default order.
+    comparator: Option<Value>,
     /// [`hash`] of this value, computed once (metadata-independent). An
     /// interior cache, not an edge or part of the value: readers of the
     /// frozen body may race to set it, and every writer stores the same
@@ -594,6 +603,7 @@ impl FormObject {
             sequence_view: None,
             reader_traversal: false,
             sorted: false,
+            comparator: None,
             hash: OnceLock::new(),
         }
     }
@@ -612,6 +622,7 @@ impl FormObject {
             sequence_view: self.sequence_view,
             reader_traversal: self.reader_traversal,
             sorted: self.sorted,
+            comparator: self.comparator.clone(),
             hash,
         }
     }
@@ -621,11 +632,25 @@ impl FormObject {
         let mut object = FormObject::new(body, self.meta.clone());
         object.reader_traversal = self.reader_traversal;
         object.sorted = self.sorted;
+        object.comparator = self.comparator.clone();
         object
     }
 
     pub(crate) fn is_sorted(&self) -> bool {
         self.sorted
+    }
+
+    /// A `sorted-map-by` map's comparator (`None` for every other value).
+    pub(crate) fn comparator(&self) -> Option<&Value> {
+        self.comparator.as_ref()
+    }
+
+    /// Engine leaves cannot call a custom comparator; the task runtime does.
+    fn custom_order(&self, what: &'static str) -> Result<(), CollectionError> {
+        match self.comparator {
+            Some(_) => Err(CollectionError::Unsupported(what)),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn kind(&self) -> FormKind {
@@ -751,6 +776,9 @@ impl Trace for FormObject {
         }
         if let Some(meta) = &self.meta {
             meta.trace(visit);
+        }
+        if let Some(comparator) = &self.comparator {
+            comparator.trace(visit);
         }
     }
 }
@@ -1114,6 +1142,153 @@ pub(crate) fn sorted_map_from_sequence(
     let mut object = FormObject::new(FormBody::Map(map), None);
     object.sorted = true;
     alloc(heap, object, std::slice::from_ref(items))
+}
+
+// ---- sorted-map-by ----
+//
+// A `sorted-map-by` map keeps its comparator as an edge and its entries in
+// sorted positional storage. The task runtime orders keys by calling the
+// comparator on its VM (so a call can demand a helper and park); these
+// leaves only read or edit an entry at a position the runtime computed.
+// Leaves that would compare its keys themselves report `Unsupported`.
+
+const SORTED_BY_LEAF: &str = "native sorted-map-by key lookup outside the task runtime";
+const SORTED_BY_EQUALITY: &str = "native nested equality with a sorted-map-by map";
+
+/// An empty `sorted-map-by` map ordered by `comparator`. The comparator is
+/// not called here; the runtime reports a non-callable one when it first
+/// compares two keys, as the legacy runtime does.
+pub(crate) fn sorted_map_by(heap: &Heap, comparator: &Value) -> Result<Value, CollectionError> {
+    let mut object = FormObject::new(FormBody::Map(FormMap::Positional(PVector::default())), None);
+    object.sorted = true;
+    object.comparator = Some(comparator.clone());
+    alloc(heap, object, std::slice::from_ref(comparator))
+}
+
+/// A `sorted-map-by` map's comparator, or null for every other value.
+pub(crate) fn sorted_comparator(heap: &Heap, v: &Value) -> Value {
+    form_object(heap, v)
+        .and_then(|f| f.comparator.clone())
+        .unwrap_or(Value::Null)
+}
+
+fn sorted_by_pairs(
+    heap: &Heap,
+    map: &Value,
+) -> Result<(Arc<FormObject>, PVector), CollectionError> {
+    let f = form_object(heap, map)
+        .filter(|f| f.comparator.is_some())
+        .ok_or_else(|| wrong(heap, "sorted-map-by map", map))?;
+    let FormBody::Map(FormMap::Positional(pairs)) = f.body() else {
+        unreachable!("sorted map storage")
+    };
+    let pairs = pairs.clone();
+    Ok((f, pairs))
+}
+
+/// An entry position `< bound` of a sorted-by map.
+fn sorted_index(index: &Value, bound: usize) -> Result<usize, CollectionError> {
+    let index = index_from_value(index)?;
+    if index >= bound {
+        return Err(CollectionError::IndexOutOfBounds {
+            index,
+            count: bound,
+        });
+    }
+    Ok(index)
+}
+
+/// The key (`part` 0) or value (`part` 1) of a sorted-by map's entry `index`.
+pub(crate) fn sorted_entry(
+    heap: &Heap,
+    map: &Value,
+    index: &Value,
+    part: &Value,
+) -> Result<Value, CollectionError> {
+    let (_, pairs) = sorted_by_pairs(heap, map)?;
+    let i = sorted_index(index, pairs.len() / 2)?;
+    let part = match part {
+        Value::Number(n) if *n == 0.0 => 0,
+        Value::Number(n) if *n == 1.0 => 1,
+        other => return Err(wrong(heap, "entry part 0 or 1", other)),
+    };
+    Ok(pairs.get(i * 2 + part).unwrap())
+}
+
+/// A new entry inserted at position `index` (`<= count`), keeping the
+/// comparator and metadata.
+pub(crate) fn sorted_insert(
+    heap: &Heap,
+    map: &Value,
+    index: &Value,
+    key: &Value,
+    value: &Value,
+) -> Result<Value, CollectionError> {
+    let (f, pairs) = sorted_by_pairs(heap, map)?;
+    let i = sorted_index(index, pairs.len() / 2 + 1)?;
+    let mut items = pairs.to_vec();
+    items.splice(i * 2..i * 2, [key.clone(), value.clone()]);
+    let body = FormBody::Map(FormMap::Positional(PVector::try_from_values(heap, &items)?));
+    alloc(
+        heap,
+        f.updated(body),
+        &[map.clone(), key.clone(), value.clone()],
+    )
+}
+
+/// Entry `index` with another value; its key is retained.
+pub(crate) fn sorted_replace(
+    heap: &Heap,
+    map: &Value,
+    index: &Value,
+    value: &Value,
+) -> Result<Value, CollectionError> {
+    let (f, pairs) = sorted_by_pairs(heap, map)?;
+    let i = sorted_index(index, pairs.len() / 2)?;
+    let body = FormBody::Map(FormMap::Positional(pairs.try_set(
+        heap,
+        i * 2 + 1,
+        value.clone(),
+    )?));
+    alloc(heap, f.updated(body), &[map.clone(), value.clone()])
+}
+
+/// The map without entry `index`.
+pub(crate) fn sorted_remove(
+    heap: &Heap,
+    map: &Value,
+    index: &Value,
+) -> Result<Value, CollectionError> {
+    let (f, pairs) = sorted_by_pairs(heap, map)?;
+    let i = sorted_index(index, pairs.len() / 2)?;
+    let mut items = pairs.to_vec();
+    items.drain(i * 2..i * 2 + 2);
+    let body = FormBody::Map(FormMap::Positional(PVector::try_from_values(heap, &items)?));
+    alloc(heap, f.updated(body), std::slice::from_ref(map))
+}
+
+/// A sorted-by map with the same comparator and order over `items`, the
+/// alternating keys and values of `map`'s entries after realization.
+pub(crate) fn sorted_rebuilt(
+    heap: &Heap,
+    map: &Value,
+    items: &[Value],
+) -> Result<Value, CollectionError> {
+    let (f, _) = sorted_by_pairs(heap, map)?;
+    let body = FormBody::Map(FormMap::Positional(PVector::try_from_values(heap, items)?));
+    let mut parts = items.to_vec();
+    parts.push(map.clone());
+    alloc(heap, f.updated(body), &parts)
+}
+
+/// `compare` with the default sorted-map order: -1, 0 or 1, or the
+/// default comparison's errors.
+pub(crate) fn compare(heap: &Heap, a: &Value, b: &Value) -> Result<Value, CollectionError> {
+    Ok(Value::Number(match compare_keys(heap, a, b)? {
+        std::cmp::Ordering::Less => -1.0,
+        std::cmp::Ordering::Equal => 0.0,
+        std::cmp::Ordering::Greater => 1.0,
+    }))
 }
 
 // ---- Construction ----
@@ -2214,6 +2389,7 @@ pub(crate) fn get(
         && f.sorted
         && let FormBody::Map(FormMap::Positional(pairs)) = f.body()
     {
+        f.custom_order(SORTED_BY_LEAF)?;
         let (i, exists) = sorted_position(heap, pairs, key)?;
         return Ok(exists.then(|| pairs.get(i + 1).unwrap()));
     }
@@ -2245,6 +2421,7 @@ pub(crate) fn assoc(
     let parts = [coll.clone(), key.clone(), value.clone()];
     match &f.body {
         FormBody::Map(map) => match if f.sorted {
+            f.custom_order(SORTED_BY_LEAF)?;
             sorted_assoc(heap, map, key, value)?
         } else {
             map_assoc(heap, map, key, value)?
@@ -2281,6 +2458,7 @@ pub(crate) fn dissoc(heap: &Heap, map: &Value, key: &Value) -> Result<Value, Col
         return Err(wrong(heap, "form map", map));
     };
     if f.sorted {
+        f.custom_order(SORTED_BY_LEAF)?;
         let FormMap::Positional(pairs) = body else {
             unreachable!("sorted map storage")
         };
@@ -2580,7 +2758,9 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
         /// Lookup stops at the first equal key, even when its value differs.
         /// A source trie already knows the query's hash; a positional source
         /// computes it only when this step runs and the destination needs it.
-        Lookup(Value, Option<Value>, bool, FormMap, Option<u64>, bool),
+        /// The last flag marks a `sorted-map-by` destination, whose
+        /// comparator only the task runtime can call.
+        Lookup(Value, Option<Value>, bool, FormMap, Option<u64>, bool, bool),
         /// The rest of two sequences, compared element by element so that
         /// an unequal element ends the comparison before a tail is
         /// realized (light-cljs-479).
@@ -2627,28 +2807,34 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
         Decided(bool),
         Expand((ObjectId, ObjectId), Vec<Step>),
     }
-    let map_steps =
-        |p: &FormMap, q: &FormMap, values: bool, source_sorted: bool, target_sorted: bool| {
-            let mut steps = Vec::with_capacity(p.len());
-            let mut entry = |h, k: &Value, v: &Value| {
-                steps.push(Step::Lookup(
-                    k.clone(),
-                    values.then(|| v.clone()),
-                    source_sorted || !p.positional(),
-                    q.clone(),
-                    h,
-                    target_sorted,
-                ));
-            };
-            match p {
-                FormMap::Hashed(map) => map.for_each_hashed(|h, k, v| entry(Some(h), k, v)),
-                FormMap::Positional(_) => p.for_each(|k, v| entry(None, k, v)),
-            }
-            // All-of goals pop last-first; lookup and value comparison must
-            // short-circuit in the source's traversal order.
-            steps.reverse();
-            steps
+    let map_steps = |p: &FormMap,
+                     q: &FormMap,
+                     values: bool,
+                     source_sorted: bool,
+                     target: Option<&FormObject>| {
+        let (target_sorted, target_custom) =
+            target.map_or((false, false), |y| (y.sorted, y.comparator.is_some()));
+        let mut steps = Vec::with_capacity(p.len());
+        let mut entry = |h, k: &Value, v: &Value| {
+            steps.push(Step::Lookup(
+                k.clone(),
+                values.then(|| v.clone()),
+                source_sorted || !p.positional(),
+                q.clone(),
+                h,
+                target_sorted,
+                target_custom,
+            ));
         };
+        match p {
+            FormMap::Hashed(map) => map.for_each_hashed(|h, k, v| entry(Some(h), k, v)),
+            FormMap::Positional(_) => p.for_each(|k, v| entry(None, k, v)),
+        }
+        // All-of goals pop last-first; lookup and value comparison must
+        // short-circuit in the source's traversal order.
+        steps.reverse();
+        steps
+    };
     let mut equal: HashSet<(ObjectId, ObjectId)> = HashSet::new();
     let mut unequal: HashSet<(ObjectId, ObjectId)> = HashSet::new();
     // Pairs being expanded: met again inside their own expansion (only
@@ -2742,13 +2928,13 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
                 if p.len() != q.len() {
                     return Outcome::Decided(false);
                 }
-                Outcome::Expand((ia, ib), map_steps(p, q, false, false, false))
+                Outcome::Expand((ia, ib), map_steps(p, q, false, false, None))
             }
             (FormBody::Map(p), FormBody::Map(q)) => {
                 if p.len() != q.len() {
                     return Outcome::Decided(false);
                 }
-                Outcome::Expand((ia, ib), map_steps(p, q, true, x.sorted, y.sorted))
+                Outcome::Expand((ia, ib), map_steps(p, q, true, x.sorted, Some(&y)))
             }
             // Records of the same type with equal fields and extension
             // entries; a deftype only to itself (decided above).
@@ -2806,7 +2992,12 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
                             });
                         }
                     },
-                    Some(Step::Lookup(key, value, reverse_value, target, h, sorted)) => {
+                    Some(Step::Lookup(key, value, reverse_value, target, h, sorted, custom)) => {
+                        if custom {
+                            // Top-level `=` with a sorted-map-by operand runs
+                            // in the task runtime; nested lookups cannot.
+                            return Err(CollectionError::Unsupported(SORTED_BY_EQUALITY));
+                        }
                         if sorted {
                             let FormMap::Positional(pairs) = target else {
                                 unreachable!("sorted map storage")

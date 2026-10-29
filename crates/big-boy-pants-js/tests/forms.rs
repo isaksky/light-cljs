@@ -133,6 +133,106 @@ fn default_sorted_maps_keep_order_identity_and_metadata_across_tasks_and_gc() {
     assert!(weak.iter().all(|w| !w.is_live()));
 }
 
+/// A sorted-map-by map (light-cljs-561) retains its comparator through
+/// positional edits, metadata, realization, publication and GC. The leaves
+/// never call it; leaves that would compare its keys raise instead.
+#[test]
+fn sorted_by_maps_retain_their_comparator_across_edits_publication_and_gc() {
+    let rt = Runtime::new();
+    let made = call(
+        &rt,
+        r#"function make(){
+        const cmp=(a,b)=>b-a, meta=__rt.formMap('map',true), value=__rt.formVector('kept');
+        let m=__rt.formWithMeta(__rt.formSortedMapBy(cmp),meta);
+        if(__rt.formSortedComparator(m)!==cmp||__rt.formSortedComparator(__rt.formMap())!==null)throw new Error('comparator');
+        m=__rt.formSortedInsert(m,0,1,'one');
+        m=__rt.formSortedInsert(m,0,3,value);
+        m=__rt.formSortedInsert(m,1,2,'two');
+        const replaced=__rt.formSortedReplace(m,2,'ONE'), removed=__rt.formSortedRemove(m,1);
+        for(const x of [m,replaced,removed])
+          if(__rt.formSortedComparator(x)!==cmp||__rt.formMeta(x)!==meta||__rt.cljIsEditable(x))throw new Error('retained');
+        if(__rt.formSortedEntry(m,0,0)!==3||__rt.formSortedEntry(m,0,1)!==value||__rt.formSortedEntry(replaced,2,1)!=='ONE'
+          ||__rt.formSortedEntry(replaced,2,0)!==1||__rt.formCount(removed)!==2||__rt.formSortedEntry(removed,1,0)!==1)throw new Error('entries');
+        const first=__rt.cljFirst(__rt.cljSeq(m));
+        if(__rt.formNth(first,0)!==3||__rt.formKeys(m)===null)throw new Error('seq order');
+        for(const [f,message] of [[()=>__rt.formGet(m,1,null),'unsupported operation: native sorted-map-by key lookup outside the task runtime'],
+                                  [()=>__rt.formAssoc(m,4,4),'unsupported operation: native sorted-map-by key lookup outside the task runtime'],
+                                  [()=>__rt.formEquals(__rt.formVector(m),__rt.formVector(replaced)),'unsupported operation: native nested equality with a sorted-map-by map']])
+          try{f();throw new Error('accepted');}catch(e){if(e.message!==message)throw new Error(message+': '+e.message);}
+        // Identical operands and lookups into another map need no comparator.
+        if(!__rt.formEquals(__rt.formVector(m),__rt.formVector(m))||!__rt.formEquals(m,__rt.formMap(1,'one',2,'two',3,value)))throw new Error('equality');
+        const lazy=__rt.lazySeq(()=>__rt.formList('a'));
+        const realized=__rt.cljRealizeAll(__rt.formSortedInsert(m,3,0,lazy));
+        if(__rt.formSortedComparator(realized)!==cmp||__rt.formKind(__rt.formSortedEntry(realized,3,1))!=='list'
+          ||__rt.formSortedEntry(realized,0,0)!==3||__rt.formMeta(realized)!==meta)throw new Error('realized');
+        return __rt.formVector(m,value,meta);
+    }"#,
+        &[],
+    );
+    let (map, weak) = rt.scope(|s| {
+        let v = s.local(&made).unwrap();
+        (
+            s.persist(s.form_nth(v, 0).unwrap()),
+            [1, 2].map(|i| s.downgrade(s.form_nth(v, i).unwrap())),
+        )
+    });
+    rt.publish(&map).unwrap();
+    drop(made);
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| w.is_live()));
+    let result = call(
+        &rt,
+        r#"function read(m){
+        const cmp=__rt.formSortedComparator(m);
+        if(cmp(1,2)!==1||__rt.formSortedEntry(m,2,1)!=='one')throw new Error('published comparator');
+        const n=__rt.formSortedInsert(m,3,0,'zero');
+        if(__rt.formSortedComparator(n)!==cmp||__rt.formCount(n)!==4)throw new Error('consumer edit');
+        return true;
+    }"#,
+        &[&map],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+    drop(map);
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| !w.is_live()));
+    // Publication walks the comparator: a task-owned capture is rejected.
+    let captured = call(
+        &rt,
+        "function make(){const seen=[];return __rt.formSortedInsert(__rt.formSortedMapBy((a,b)=>{seen.push(a);return a-b;}),0,1,2);}",
+        &[],
+    );
+    let err = rt.publish(&captured).unwrap_err();
+    let PublishError::NotShareable { path, found, .. } = &err else {
+        panic!("{err:?}")
+    };
+    assert_eq!(path.steps()[0], PathStep::NativeEdge(0), "{err}");
+    assert_eq!(*found, "array", "{err}");
+    // Positions the runtime computes are checked like vector indices.
+    for (src, expected) in [
+        (
+            "function f(){return __rt.formSortedEntry(__rt.formSortedMapBy(null),0,0);}",
+            CollectionError::IndexOutOfBounds { index: 0, count: 0 },
+        ),
+        (
+            "function f(){return __rt.formSortedInsert(__rt.formSortedMapBy(null),1,0,0);}",
+            CollectionError::IndexOutOfBounds { index: 1, count: 1 },
+        ),
+        (
+            "function f(){return __rt.formSortedRemove(__rt.formMap(),0);}",
+            CollectionError::WrongType {
+                expected: "sorted-map-by map",
+                found: "form map",
+            },
+        ),
+    ] {
+        assert_eq!(
+            failure(&rt, src).kind(),
+            VmErrorKind::Collection(expected),
+            "{src}"
+        );
+    }
+}
+
 #[test]
 fn default_sorted_maps_preserve_semantics_when_realized() {
     let rt = Runtime::new();

@@ -1575,6 +1575,8 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
         Set(bool),
         Map(bool),
         SortedMap,
+        /// A sorted-map-by map: realization keeps its comparator and order.
+        SortedMapBy,
         CompilerLiteral(JsString),
     }
     enum Work {
@@ -1632,7 +1634,9 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                         (Rebuild::Set(set.positional()), members)
                     }
                     FormBody::Map(map) => (
-                        if f.is_sorted() {
+                        if f.comparator().is_some() {
+                            Rebuild::SortedMapBy
+                        } else if f.is_sorted() {
                             Rebuild::SortedMap
                         } else {
                             Rebuild::Map(map.positional())
@@ -1701,6 +1705,9 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                         Rebuild::SortedMap => {
                             let pairs = form::new_vector(heap, &new_children)?;
                             form::sorted_map_from_sequence(heap, &pairs)?
+                        }
+                        Rebuild::SortedMapBy => {
+                            form::sorted_rebuilt(heap, &original, &new_children)?
                         }
                         Rebuild::Map(false) => {
                             let entries: Vec<(Value, Value)> = new_children

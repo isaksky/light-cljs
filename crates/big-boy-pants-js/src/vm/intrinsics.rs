@@ -122,6 +122,10 @@
 //! | `formPrintItems(m)` | `form_op` | map/record entries or set members in legacy printer order, retaining key identity | wrong type |
 //! | `formReaderCollection(m)` | `form_op` | map/set with legacy seq traversal retained through updates, sharing storage | wrong type |
 //! | `formSortedMap(pairs)` | `form_op` | default-comparator sorted map from alternating operands; odd trailing key has nil value | wrong type; incomparable keys |
+//! | `formSortedMapBy(cmp)` | `form_op` | empty sorted-map-by map retaining `cmp`, which only the task runtime calls | – |
+//! | `formSortedComparator(v)` | `form_op` | a sorted-map-by map's comparator, else `null` | – |
+//! | `formSortedEntry(m, i, part)`, `formSortedInsert(m, i, k, v)`, `formSortedReplace(m, i, v)`, `formSortedRemove(m, i)` | `form_op` | read or edit sorted-map-by entry `i` at a position the runtime computed (insert allows `i == count`); updates keep the comparator and metadata | `WrongType`, `InvalidIndex`, `IndexOutOfBounds` |
+//! | `formCompare(a, b)` | `form_op` | -1, 0 or 1 in the default sorted-map order | incomparable keys |
 //! | `formEquals(a, b)`, `formHash(v)` | `form_op` | value equality (boolean) and the light-cljs runtime's 32-bit hash (number) | – |
 //! | `formMeta(v)` | `form_op` | the form's metadata map, or `null` | – |
 //! | `formWithMeta(v, m)` | `form_op` | a symbol, list, vector or map with metadata `m` (a form map or `null`); `v` itself for the same `m` | `WrongType` |
@@ -238,6 +242,9 @@ impl From<CollectionError> for Fault {
             CollectionError::OutOfMemory => Fault::OutOfMemory("heap object table exhausted"),
             CollectionError::CannotCompare(message) => Fault::Error(message),
             CollectionError::CannotCompareValues(values) => Fault::Compare(values),
+            CollectionError::Unsupported(what) => {
+                Fault::Error(format!("unsupported operation: {what}"))
+            }
             other => Fault::Collection(other),
         }
     }
@@ -674,6 +681,28 @@ fn strict_form_op(
         FormOp::ArrayMap => form::array_map_from_sequence(heap, &arg())?,
         FormOp::Sequence => form::sequence_view(heap, &arg())?,
         FormOp::SortedMap => form::sorted_map_from_sequence(heap, &arg())?,
+        FormOp::SortedMapBy => form::sorted_map_by(heap, &arg())?,
+        FormOp::SortedComparator => form::sorted_comparator(heap, &arg()),
+        FormOp::SortedEntry => {
+            let (m, i, part) = (arg(), arg(), arg());
+            form::sorted_entry(heap, &m, &i, &part)?
+        }
+        FormOp::SortedInsert => {
+            let (m, i, k, v) = (arg(), arg(), arg(), arg());
+            form::sorted_insert(heap, &m, &i, &k, &v)?
+        }
+        FormOp::SortedReplace => {
+            let (m, i, v) = (arg(), arg(), arg());
+            form::sorted_replace(heap, &m, &i, &v)?
+        }
+        FormOp::SortedRemove => {
+            let (m, i) = (arg(), arg());
+            form::sorted_remove(heap, &m, &i)?
+        }
+        FormOp::Compare => {
+            let (a, b) = (arg(), arg());
+            form::compare(heap, &a, &b)?
+        }
         FormOp::Kind => {
             let v = arg();
             match form::kind(heap, &v) {

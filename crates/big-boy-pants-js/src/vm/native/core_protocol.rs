@@ -74,7 +74,17 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
     {
         receiver = args[1].clone();
     }
-    if op == FormOp::CljInvoke {
+    // A sorted-map-by map orders its keys with a comparator only the task's
+    // runtime calls: its lookups, updates and `=` go to the resolver too.
+    let sorted_by = |v: &Value| {
+        form::form_object(heap, &form::unwrap(heap, v.clone()))
+            .is_some_and(|f| f.comparator().is_some())
+    };
+    // A sorted-map-by map called as a function: a lookup in that map.
+    let invoked_map = op == FormOp::CljInvoke
+        && sorted_by(&args[0])
+        && matches!(args[3], Value::Number(1.0 | 2.0));
+    if op == FormOp::CljInvoke && !invoked_map {
         if !matches!(
             form::kind(heap, &form::unwrap(heap, args[0].clone())),
             Some(FormKind::Keyword | FormKind::Symbol)
@@ -147,10 +157,33 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
                 | FormOp::CljList
                 | FormOp::CljPeek
         );
+    // `=` offers a sorted-map-by right operand to the resolver unless a
+    // struct's -equiv on the left takes precedence. Operand order is kept.
+    let receiver_sorted = matches!(
+        op,
+        FormOp::CljGet
+            | FormOp::CljGet2
+            | FormOp::CljContains
+            | FormOp::CljAssoc
+            | FormOp::CljDissoc
+            | FormOp::CljConj
+            | FormOp::CljInvoke
+            | FormOp::Equals
+    ) && receiver_kind == Some(FormKind::Map)
+        && sorted_by(&receiver);
+    let right_sorted = !receiver_sorted
+        && op == FormOp::Equals
+        && receiver_kind != Some(FormKind::Struct)
+        && sorted_by(&args[1]);
+    if right_sorted {
+        receiver = args[1].clone();
+    }
+    let sorted_receiver = receiver_sorted || right_sorted;
     if builtin_marker == Some(true)
         || (builtin_marker.is_none()
             && !array_adapter
             && !peek_adapter
+            && !sorted_receiver
             && receiver_kind != Some(FormKind::Struct))
     {
         return Ok(false);
@@ -164,7 +197,9 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
     }
     let mut operands = args.to_vec();
     if op == FormOp::CljInvoke {
-        operands.swap(0, 1);
+        if !invoked_map {
+            operands.swap(0, 1);
+        }
         op = if operands[3] == Value::Number(1.0) {
             FormOp::CljGet2
         } else {

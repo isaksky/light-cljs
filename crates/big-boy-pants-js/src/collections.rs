@@ -221,6 +221,9 @@ pub enum CollectionError {
     /// Formatting is deferred to bounded VM steps. The opaque operands are
     /// inspected only while rooted by the initiating instruction/native frame.
     CannotCompareValues(ComparisonOperands),
+    /// An engine leaf cannot perform this operation (it would have to call
+    /// a `sorted-map-by` comparator); a catchable `Error` in JavaScript.
+    Unsupported(&'static str),
 }
 
 /// Operands of a rejected default comparison. Host diagnostics deliberately
@@ -257,6 +260,7 @@ impl fmt::Display for CollectionError {
             CollectionError::CannotCompareValues(v) => {
                 write!(f, "Cannot compare {} to {}", v.0.type_name(), v.1.type_name())
             }
+            CollectionError::Unsupported(what) => write!(f, "unsupported operation: {what}"),
         }
     }
 }

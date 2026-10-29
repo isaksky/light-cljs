@@ -303,6 +303,13 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::PrintItems),
     form_op(FormOp::ReaderCollection),
     form_op(FormOp::SortedMap),
+    form_op(FormOp::SortedMapBy),
+    form_op(FormOp::SortedComparator),
+    form_op(FormOp::SortedEntry),
+    form_op(FormOp::SortedInsert),
+    form_op(FormOp::SortedReplace),
+    form_op(FormOp::SortedRemove),
+    form_op(FormOp::Compare),
 ];
 
 const fn form_op(op: FormOp) -> Intrinsic {

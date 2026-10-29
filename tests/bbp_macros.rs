@@ -1361,6 +1361,267 @@ fn keep_helpers_publish_and_resume_at_seeded_pool_sizes() {
 }
 
 #[test]
+fn native_sorted_map_by_matches_quickjs() {
+    for (body, expected) in [
+        (
+            // instaparse's negative-listener table: (atom (sorted-map-by >)).
+            r#"(let [a (atom (sorted-map-by >))]
+                 (swap! a assoc 1 [:x]) (swap! a update 1 conj :y) (swap! a assoc 3 [:z] 2 [:w])
+                 (let [before @a [i ls] (first @a)] (swap! a dissoc i)
+                   [before i ls @a (pos? (count @a)) (peek (get @a 1))]))"#,
+            "[{3 [:z], 2 [:w], 1 [:x :y]} 3 [:z] {2 [:w], 1 [:x :y]} true :y]",
+        ),
+        (
+            r#"(let [m (sorted-map-by > 1 :a 3 :c 2 :b)]
+                 [m (keys m) (vals m) (first m) (count m) (seq m) (rseq m) (get m 2) (get m 5 :none)
+                  (m 3) (m 9 :d) (contains? m 1) (contains? m 7) (assoc m 0 :z) (assoc m 2 :B)
+                  (dissoc m 3) (dissoc m 9) (conj m [5 :e]) (conj m {4 :d 0 :y}) (into m [[7 :g] [6 :f]])
+                  (merge m {0 :m} nil) (reduce-kv (fn [a k v] (conj a k v)) [] m)
+                  (reduce (fn [a e] (conj a (key e) (val e))) [] m) (into [] m)
+                  (sorted? m) (map? m) (pr-str m) (str m) (identical? m (assoc m 2 :b))])"#,
+            concat!(
+                "[{3 :c, 2 :b, 1 :a} (3 2 1) (:c :b :a) [3 :c] 3 ([3 :c] [2 :b] [1 :a]) ([1 :a] [2 :b] [3 :c]) ",
+                ":b :none :c :d true false {3 :c, 2 :b, 1 :a, 0 :z} {3 :c, 2 :B, 1 :a} {2 :b, 1 :a} ",
+                "{3 :c, 2 :b, 1 :a} {5 :e, 3 :c, 2 :b, 1 :a} {4 :d, 3 :c, 2 :b, 1 :a, 0 :y} ",
+                "{7 :g, 6 :f, 3 :c, 2 :b, 1 :a} {3 :c, 2 :b, 1 :a, 0 :m} [3 :c 2 :b 1 :a] [3 :c 2 :b 1 :a] ",
+                "[[3 :c] [2 :b] [1 :a]] true true \"{3 :c, 2 :b, 1 :a}\" \"{3 :c, 2 :b, 1 :a}\" true]"
+            ),
+        ),
+        (
+            // User comparators returning numbers or booleans, compare and
+            // comparator. Compare-equal keys keep the first key.
+            r#"(let [by-count (fn [a b] (- (count a) (count b)))
+                     squares (fn [a b] (< (* a a) (* b b)))]
+                 [(sorted-map-by by-count "aaa" 1 "b" 2 "cc" 3 "d" 4)
+                  (sorted-map-by squares -2 :x 1 :y 2 :z)
+                  (sorted-map-by compare :b 2 :a 1 nil 0 :c/a 3)
+                  (sorted-map-by (comparator <) 3 :c 1 :a 2 :b)
+                  (sorted-map-by #(compare %2 %1) "a" 1 "b" 2 "c" 3)
+                  (sorted-map-by (fn [a b] (if (< a b) true false)) 2 :b 1 :a)
+                  (sorted-map-by < 2 :b 1)
+                  (sorted-map-by >) (count (sorted-map-by >)) (seq (sorted-map-by >))
+                  (rseq (sorted-map-by >)) (first (sorted-map-by >)) (get (sorted-map-by >) 1)
+                  ((comparator >) 1 2) ((comparator >) 2 1) ((comparator >) 1 1)
+                  (compare 1 2) (compare "b" "a") (compare [1 2] [1 2]) (compare nil 1) (compare :a :a)
+                  (:b (sorted-map-by compare :a 1 :b 2)) (:z (sorted-map-by compare :a 1) :none)])"#,
+            concat!(
+                "[{\"b\" 4, \"cc\" 3, \"aaa\" 1} {1 :y, -2 :z} {nil 0, :a 1, :b 2, :c/a 3} {1 :a, 2 :b, 3 :c} ",
+                "{\"c\" 3, \"b\" 2, \"a\" 1} {1 :a, 2 :b} {1 nil, 2 :b} {} 0 nil nil nil nil 1 -1 0 -1 1 0 -1 0 2 :none]"
+            ),
+        ),
+        (
+            // Metadata, equality and hashing.
+            r#"(let [m (with-meta (sorted-map-by > 1 2 3 4) {:tag 1})
+                     by-count (sorted-map-by (fn [a b] (compare (count a) (count b))) "ab" 1)]
+                 [(meta (assoc m 5 6)) (meta (dissoc m 1)) (meta (conj m [0 0])) (meta (with-meta m nil))
+                  (= m {1 2 3 4}) (= {1 2 3 4} m) (= m (sorted-map-by < 3 4 1 2)) (= m (sorted-map 1 2 3 4))
+                  (= (sorted-map 1 2 3 4) m) (= m (sorted-map-by > 1 2 3 5)) (= m (sorted-map-by > 1 2))
+                  (= m [[3 4] [1 2]]) (= nil (sorted-map-by >)) (= (sorted-map-by >) {}) (= {} (sorted-map-by >))
+                  (= by-count {"cd" 1}) (= {"cd" 1} by-count)
+                  (= (sorted-map-by > 1 (sorted-map-by > 2 3)) {1 {2 3}})
+                  (= {1 {2 3}} (sorted-map-by > 1 (sorted-map-by > 2 3)))
+                  (= (hash m) (hash {1 2 3 4})) (not= m {1 2})])"#,
+            "[{:tag 1} {:tag 1} {:tag 1} nil true true true true true false false false false true true false true true true true true]",
+        ),
+        (
+            // Exact comparator calls, in the legacy runtime's order.
+            r#"(let [log (atom [])
+                     cmp (fn [a b] (swap! log conj [a b]) (compare a b))
+                     m (sorted-map-by cmp 3 :c 1 :a 2 :b 5 :e)
+                     built @log _ (reset! log [])
+                     results [(get m 2) (contains? m 4) (m 5) (assoc m 0 :z) (assoc m 3 :c) (dissoc m 1)
+                              (conj m [4 :d]) (= m {1 :a 2 :b 3 :c 5 :e}) (= {1 :a 2 :b 3 :c 5 :e} m)]]
+                 [built results @log])"#,
+            concat!(
+                "[[[3 1] [3 1] [3 2] [1 2] [3 2] [2 5] [3 5]] [:b false :e {0 :z, 1 :a, 2 :b, 3 :c, 5 :e} ",
+                "{1 :a, 2 :b, 3 :c, 5 :e} {2 :b, 3 :c, 5 :e} {1 :a, 2 :b, 3 :c, 4 :d, 5 :e} true true] ",
+                // get, contains?, invoke, assoc (new), assoc (same value), dissoc, conj,
+                "[[3 2] [2 2] [1 2] [2 2] [3 4] [5 4] [5 4] [3 5] [5 5] [5 5] [3 0] [2 0] [1 0] [1 0] ",
+                "[3 3] [2 3] [3 3] [3 1] [2 1] [1 1] [1 1] [3 4] [5 4] [5 4] ",
+                // then = with the sorted map on the right only: each key of the left.
+                "[3 1] [2 1] [1 1] [1 1] [3 2] [2 2] [1 2] [2 2] [3 3] [2 3] [3 3] [3 5] [5 5] [5 5]]]"
+            ),
+        ),
+        (
+            // Comparator failures propagate; catch and finally both run.
+            r#"(let [seen (atom [])
+                     boom (fn [a b] (throw (js/Error. (str "boom " a " " b))))
+                     message (fn [f] (try (f) (catch :default e (.-message e)) (finally (swap! seen conj :finally))))]
+                 [(message #(sorted-map-by boom 1 2 3 4))
+                  (message #(assoc (sorted-map-by boom 1 2) 3 4))
+                  (message #(get (sorted-map-by boom 1 2) 3))
+                  (count (sorted-map-by boom 1 2))
+                  (message #(sorted-map-by compare 1 :a "x" :b))
+                  (message #(sorted-map-by compare :a 1 'b 2))
+                  (try (sorted-map-by 1 2 3 4 5) (catch :default e :not-callable))
+                  (message #(rseq '(1 2))) (message #(rseq {1 2}))
+                  @seen])"#,
+            concat!(
+                "[\"boom 1 3\" \"boom 1 3\" \"boom 1 3\" 1 \"Cannot compare 1 to x\" \"Cannot compare different types\" ",
+                ":not-callable \"No protocol method IReversible.-rseq defined for this value\" ",
+                "\"No protocol method IReversible.-rseq defined for this value\" ",
+                "[:finally :finally :finally :finally :finally :finally :finally]]"
+            ),
+        ),
+        (
+            r#"[(rseq [1 2 3]) (rseq []) (rseq (sorted-map 1 2 3 4)) (rseq (with-meta [1 2] {:m 1}))
+                (meta (rseq (with-meta [1 2] {:m 1}))) (sorted? (sorted-map-by >)) (sorted? {})]"#,
+            "[(3 2 1) nil ([3 4] [1 2]) (2 1) nil true false]",
+        ),
+    ] {
+        let source = format!("(defmacro m [] (list 'quote {body})) (js/console.log (pr-str (m)))");
+        assert_native_matches_legacy(&source, &format!("{expected}\n"));
+    }
+}
+
+/// Engine-internal structural equality cannot call a comparator, so a
+/// sorted-map-by map compared inside another collection is an explicit,
+/// catchable boundary (the legacy runtime compares it). Identical operands
+/// still short-circuit, and sorted sets remain unsupported natively.
+#[test]
+fn native_sorted_map_by_boundaries_are_explicit() {
+    let source = r#"(defmacro m []
+        (let [message (fn [f] (try (f) (catch :default e (.-message e))))
+              a (sorted-map-by > 1 2) b (sorted-map-by > 1 2)]
+          (list 'quote [(message #(= [a] [b])) (message #(= {:k a} {:k b})) (= [a] [a]) (= a b)
+                        (message #(sorted-set-by > 1 2))])))
+        (js/console.log (pr-str (m)))"#;
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    let nested = "unsupported operation: native nested equality with a sorted-map-by map";
+    assert_eq!(
+        program_output(&emit_js(&program)),
+        format!(
+            "[\"{nested}\" \"{nested}\" true true \"unsupported operation: native macro runtime core.sortedSetBy\"]\n"
+        )
+    );
+}
+
+/// Comparator calls run on the expanding task: a published comparator that
+/// demands a cold helper parks mid-search and resumes without replay, and a
+/// published sorted-map-by value keeps its published comparator.
+#[test]
+fn sorted_map_by_helpers_publish_and_resume_at_seeded_pool_sizes() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-sorted-map-by");
+    for (file, source) in [
+        (
+            "parts.cljs",
+            r#"(ns parts)
+            (def ^:dynamic *seen* nil)
+            (defn note [x] (when *seen* (swap! *seen* conj x)))
+            (def weight (do (note :weight-ready) (fn [s] (count s))))
+            (defn by-weight [a b]
+              (note [:cmp a b])
+              (let [r (compare (weight a) (weight b))] (note [:order r]) r))
+            (defn descending [a b] (compare b a))
+            (def table (do (note :table-ready) (sorted-map-by descending 1 :a 3 :c)))
+            (defmacro probe []
+              (binding [*seen* (atom [])]
+                (let [m (sorted-map-by by-weight "ccc" 3 "a" 1 "bb" 2)
+                      m (assoc m "dd" 4)
+                      t (assoc table 2 :b)
+                      a (atom (sorted-map-by >))]
+                  (swap! a assoc 1 [:x] 2 [:y])
+                  (list 'quote [m (get m "zz") (rseq m) t (keys t) (contains? t 3) (= t {1 :a 2 :b 3 :c})
+                                @a @*seen*]))))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [parts :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [parts :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/value b/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                stats: Some(&mut stats),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        if native {
+            // weight is read only inside by-weight, so its cold wait parks a
+            // comparator call mid-search; the other helpers are read by the
+            // expansion itself. Nothing is reconstructed per task.
+            let helpers = &stats.native_helpers;
+            assert_eq!(helpers.published, 5, "jobs {jobs}, seed {seed}");
+            assert_eq!(helpers.per_task, 0, "jobs {jobs}, seed {seed}");
+            assert!(helpers.waits >= 5, "jobs {jobs}, seed {seed}: {helpers:?}");
+        }
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0);
+    // The first expansion (a) initializes weight between a comparator call's
+    // log entries, exactly once, and table when the expansion first reads
+    // it; b reads both warm. Equal weights keep the first key ("bb").
+    let log = [
+        r#"[:cmp "ccc" "a"] :weight-ready [:order 1] [:cmp "ccc" "a"] [:order 1]"#,
+        r#"[:cmp "ccc" "bb"] [:order 1] [:cmp "a" "bb"] [:order -1] [:cmp "ccc" "bb"] [:order 1]"#,
+        r#"[:cmp "bb" "dd"] [:order 0] [:cmp "a" "dd"] [:order -1] [:cmp "bb" "dd"] [:order 0]"#,
+        r#":table-ready [:cmp "bb" "zz"] [:order 0] [:cmp "a" "zz"] [:order -1] [:cmp "bb" "zz"] [:order 0]"#,
+    ]
+    .join(" ");
+    let warm = log
+        .replace(" :weight-ready", "")
+        .replace(":table-ready ", "");
+    let value = |log| {
+        format!(
+            r#"[{{"a" 1, "bb" 4, "ccc" 3}} 4 (["ccc" 3] ["bb" 4] ["a" 1]) {{3 :c, 2 :b, 1 :a}} (3 2 1) true true {{2 [:y], 1 [:x]}} [{log}]]"#
+        )
+    };
+    assert_eq!(
+        program_output(&reference),
+        format!("[{} {}]\n", value(&log), value(&warm))
+    );
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(reference, build(false, jobs, 0), "legacy, jobs {jobs}");
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed),
+                "jobs {jobs}, seed {seed}"
+            );
+        }
+    }
+}
+
+#[test]
 fn native_printing_matches_quickjs_for_every_native_value_kind() {
     // One differential table covers constructed values and imported reader
     // occurrences. Compare emitted strings too: Node's stdout replaces lone
@@ -3241,10 +3502,10 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
             "(defmacro lazy-result [] (take 3 (cycle [1 2]))) (lazy-result)",
             "unsupported operation: native macro runtime core.cycle",
         ),
-        // Custom sorted comparators and transients remain unsupported.
+        // Sorted sets (by a comparator too) and transients remain unsupported.
         (
-            "(defmacro sorted [] (sorted-map-by > 1 2)) (sorted)",
-            "unsupported operation: native macro runtime core.sortedMapBy",
+            "(defmacro sorted [] (sorted-set-by > 1 2)) (sorted)",
+            "unsupported operation: native macro runtime core.sortedSetBy",
         ),
         (
             "(defmacro edit [] (transient [])) (edit)",
@@ -8625,14 +8886,20 @@ fn native_transducer_call_shapes_match_legacy() {
         assert_native_matches_legacy(&source, &expected);
     }
 
-    // Default sorted maps now preserve the noneditable reducer contract.
-    // Sorted sets remain an explicit unsupported boundary.
+    // Sorted maps, default or by a comparator, preserve the noneditable
+    // reducer contract. Sorted sets remain an explicit unsupported boundary.
     for (target, input, expected, operation) in [
         (
             "(sorted-map :a 1)",
             "[[:b 2]]",
             "[{:a 1, :b 2} {:a 1} {:a 1}]\n",
             "sortedMap",
+        ),
+        (
+            "(sorted-map-by compare :a 1)",
+            "[[:b 2]]",
+            "[{:a 1, :b 2} {:a 1} {:a 1}]\n",
+            "sortedMapBy",
         ),
         (
             "(sorted-set 1)",
@@ -8653,7 +8920,7 @@ fn native_transducer_call_shapes_match_legacy() {
             program_output(&light_cljs::compile(&source).unwrap()),
             expected
         );
-        if operation == "sortedMap" {
+        if operation == "sortedMap" || operation == "sortedMapBy" {
             assert_native_matches_legacy(&source, expected);
             continue;
         }

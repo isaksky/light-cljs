@@ -1562,11 +1562,25 @@ pub enum FormOp {
     FnApplyReceiver = 93,
     /// collection → persistent stack without its head (`cljPop`).
     CljPop = 94,
+    /// comparator → empty sorted-map-by map (`formSortedMapBy`).
+    SortedMapBy = 95,
+    /// v → its sorted-map-by comparator, or null (`formSortedComparator`).
+    SortedComparator = 96,
+    /// map index part → entry key (part 0) or value (part 1) (`formSortedEntry`).
+    SortedEntry = 97,
+    /// map index key value → map with the entry inserted at index (`formSortedInsert`).
+    SortedInsert = 98,
+    /// map index value → map with entry index's value replaced (`formSortedReplace`).
+    SortedReplace = 99,
+    /// map index → map without entry index (`formSortedRemove`).
+    SortedRemove = 100,
+    /// a b → -1, 0 or 1 by the default sorted-map order (`formCompare`).
+    Compare = 101,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 95] = [
+    pub const ALL: [FormOp; 102] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1662,6 +1676,13 @@ impl FormOp {
         FormOp::FnApplyNull,
         FormOp::FnApplyReceiver,
         FormOp::CljPop,
+        FormOp::SortedMapBy,
+        FormOp::SortedComparator,
+        FormOp::SortedEntry,
+        FormOp::SortedInsert,
+        FormOp::SortedReplace,
+        FormOp::SortedRemove,
+        FormOp::Compare,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1679,6 +1700,8 @@ impl FormOp {
             | FormOp::Sequence
             | FormOp::CljPeek
             | FormOp::CljPop
+            | FormOp::SortedMapBy
+            | FormOp::SortedComparator
             | FormOp::AtomAux
             | FormOp::CljCoreResolver
             | FormOp::LiteralPayload
@@ -1755,6 +1778,8 @@ impl FormOp {
             | FormOp::RecordFromMap
             | FormOp::CljDispatch
             | FormOp::CljChunkCons
+            | FormOp::SortedRemove
+            | FormOp::Compare
             | FormOp::CljSymbolNs => 2,
             FormOp::Get
             | FormOp::InitializerSlotSet
@@ -1763,8 +1788,13 @@ impl FormOp {
             | FormOp::CljNthOr
             | FormOp::CljGet
             | FormOp::CljAssoc
+            | FormOp::SortedEntry
+            | FormOp::SortedReplace
             | FormOp::StructType => 3,
-            FormOp::CljInvoke | FormOp::CljProtocolLookup | FormOp::CljRangeCons => 4,
+            FormOp::CljInvoke
+            | FormOp::CljProtocolLookup
+            | FormOp::CljRangeCons
+            | FormOp::SortedInsert => 4,
         }
     }
 
@@ -1782,6 +1812,13 @@ impl FormOp {
             FormOp::Sequence => "formSequence",
             FormOp::CljPeek => "cljPeek",
             FormOp::CljPop => "cljPop",
+            FormOp::SortedMapBy => "formSortedMapBy",
+            FormOp::SortedComparator => "formSortedComparator",
+            FormOp::SortedEntry => "formSortedEntry",
+            FormOp::SortedInsert => "formSortedInsert",
+            FormOp::SortedReplace => "formSortedReplace",
+            FormOp::SortedRemove => "formSortedRemove",
+            FormOp::Compare => "formCompare",
             FormOp::CljCoreResolver => "cljCoreResolver",
             FormOp::CljGet2 => "cljGet2",
             FormOp::Keyword => "formKeyword",

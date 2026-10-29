@@ -585,6 +585,17 @@ Sorted maps, shared seq views of lists, and the compiler `Datum` bridge
 docs carry a runnable example. Tests: `tests/forms.rs`, `collections::form::tests`,
 `collections::clj::tests`, `form_edges_retain`/`form_edges_reclaim`.
 
+A `sorted-map-by` map (light-cljs-561) is a sorted positional map with one
+more edge, its comparator: traced by GC, walked by publication as `.edge(0)`
+and kept by metadata changes, updates and realization. The engine never calls
+it. `formSortedEntry/Insert/Replace/Remove` read or edit an entry at a position
+the light-cljs task runtime computed by calling the comparator on its own VM
+(so a call can park on a helper dependency like any other JavaScript); leaves
+that would compare its keys themselves (`formGet`, `formAssoc`, `formDissoc`
+and structural equality looking a key up in it) raise a catchable
+`unsupported operation` error, and the core-protocol frame offers its clj
+lookups, updates and `=` to the task's resolver instead.
+
 Lazy sequences (light-cljs-479, `crate::collections::lazy`) are a form kind
 whose body is a once-realized cell: a dependency cell local to a value. A clj
 operation that meets an unrealized cell does not complete; its instruction
