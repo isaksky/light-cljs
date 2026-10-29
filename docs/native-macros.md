@@ -4122,3 +4122,28 @@ ClojureScript pin `a5e94c98` and `CARGO_BUILD_JOBS=4`, at `d2f2306a`
   (9.14 s, 11.98 s user, 498,565,120 bytes) is byte-identical to the
   default V8 release build (2.00 s), SHA-256 `d352af3a…a8d9a3` over
   12,680,976 bytes of JavaScript.
+
+#### Review-fix round 1 (2026-10-29)
+
+The review of the bundle found three defects, each now a row of
+`native_member_precedence_table_matches_quickjs` that failed before its
+fix: forcing a protocol's bundles for a table build installed them for
+every type (`other-type-dispatch`; forcing and installing are now
+separate, as described above); Clojure `apply` without a declared arity
+passed `null` instead of the callable as the call's first operand
+(`apply-operand-method`, `apply-operand-field`); and a host object
+carrying a `__lightNativeType` property aborted compiled interop
+(`host-type-tag`).
+
+Verification at `9ca6998f` (master `0ad2514f`), same toolchain: combined
+`bbp-macros,quickjs` with `LIGHT_CLJS_STRESS_SEEDS=12` passes the library's
+368 tests and `bbp_macros`' 168, native-only `bbp_macros` 166 (one ignored
+each); engine all-targets 2,196 and seven doctests; default V8 nextest
+2,133 (240.8 s; only the worktree `playground_crate_checks_for_wasm32`
+diagnostic fails); Clippy and formatting as before. Five alternating 200k
+pairs against a fresh master release build, load average 4–9 from peers:
+median **7.28 s on master and 7.36 s on the branch** (ranges 7.25–8.73 and
+7.28–7.63 s), all ten outputs byte-identical. Penpot `app.render` native at
+jobs 1 (14.06 s wall, 411,074,560 bytes maximum RSS) and jobs 4 (9.56 s,
+499,302,400 bytes) is byte-identical to V8 (2.11 s), SHA-256
+`d352af3a…a8d9a3`.
