@@ -2682,7 +2682,7 @@ fn native_struct_integrity_matches_own_descriptors() {
     }"#,
     )
     .unwrap();
-    let mut task = rt.spawn(&code, &[]).unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
     let result = complete(task.run().unwrap());
     assert_eq!(
         result.string().map(|s| s.to_string_lossy()).as_deref(),
