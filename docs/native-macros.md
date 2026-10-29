@@ -3529,3 +3529,33 @@ zero-, one-, two-, three-argument and variadic overloads. Separate regressions
 cover borrowed record/type members, direct-entry receivers and `recur`, and
 ordinary JavaScript function scalar arguments. These compare complete emitted
 applications with QuickJS; the matrix exercises jobs 1/2/4/8 with twelve seeds.
+
+#### Review-fix verification
+
+Final production source `a6ea5148` (tested tree `bc10da48`, master `8771ed4f`)
+passes the native-only `bbp_macros` integration test with
+`LIGHT_CLJS_STRESS_SEEDS=12` and eight test threads: 141 passed, one existing
+ignored stress case. The native `bbp_evaluator` library selection passes 63
+tests, including cross-task raw member identity. The combined
+`bbp-macros,quickjs` run of the same test passes 143 with the same ignored case,
+including the twelve-seed jobs 1/2/4/8 raw-call matrix, direct IFn apply
+entries and borrowed record/type members. Engine sources are unchanged since
+the complete engine run above, so that result is reused.
+
+Full default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, `--locked -j 8
+--no-fail-fast`, pinned ClojureScript `a5e94c98`) passes 2,133 tests in
+216.0 s and fails only `playground_crate_checks_for_wasm32` with the unchanged
+worktree/main-checkout workspace-discovery diagnostic. Strict default
+all-target Clippy passes.
+
+Three alternating pairs compare a fresh default release build of master
+`8771ed4f` with the branch on the seed-42 200k fixture, using `release bench
+--no-cache` while one peer native test run (three threads) was active. Wall
+time is 7.76/7.75/7.63 s before and 7.79/7.65/7.65 s after (medians 7.75 and
+7.65 s); maximum RSS is 1,020–1,046 MiB for both. Emitted output trees are
+identical.
+
+A fresh native-only release with all five absolute read-only roots and every
+budget reproduces the exact `app.main` CSS `keep` failure above at jobs 1
+(17.6 s wall, 389 MiB maximum RSS). The post-fix native `app.render` output
+remains byte-identical to the V8 hash above. light-cljs-560 owns the next gap.
