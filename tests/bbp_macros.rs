@@ -972,6 +972,96 @@ fn partition_all_helpers_publish_and_resume_with_buffered_values() {
     }
 }
 
+/// Penpot's style macros build a `keep` transducer in a helper and pass it to
+/// `into`. The published helpers resume cold under seeded scheduling, and
+/// each application gets its own keep-indexed counter.
+#[test]
+fn keep_helpers_publish_and_resume_at_seeded_pool_sizes() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-keep");
+    for (file, source) in [
+        (
+            "parts.cljs",
+            r#"(ns parts)
+            (def xf (comp (keep (fn [x] (when-not (= x :skip) x)))
+                          (keep-indexed (fn [i x] (when (even? i) [i x])))))
+            (defn step [a x] (conj a x))
+            (defmacro probe [] (list 'quote [(into [] xf [1 nil 2 :skip false 3])
+                                             (transduce xf (completing step) [] [nil :a :b :c])]))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [parts :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [parts :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/value b/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                stats: Some(&mut stats),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        if native {
+            assert_eq!(
+                stats.native_helpers.published, 2,
+                "jobs {jobs}, seed {seed}"
+            );
+            assert_eq!(stats.native_helpers.per_task, 0, "jobs {jobs}, seed {seed}");
+            assert!(stats.native_helpers.waits >= 2, "jobs {jobs}, seed {seed}");
+        }
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0);
+    let value = "[[[0 1] [2 false]] [[0 :a] [2 :c]]]";
+    assert_eq!(program_output(&reference), format!("[{value} {value}]\n"));
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(reference, build(false, jobs, 0), "legacy, jobs {jobs}");
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed),
+                "jobs {jobs}, seed {seed}"
+            );
+        }
+    }
+}
+
 #[test]
 fn native_printing_matches_quickjs_for_every_native_value_kind() {
     // One differential table covers constructed values and imported reader
@@ -8094,6 +8184,60 @@ fn native_transducer_call_shapes_match_legacy() {
                   (error ((partition-by identity) (completing conj)) [[] 1 2])
                   (error ((filter identity) (completing conj)) [[] 1 2])])"#,
             "[:ok \"Invalid arity: 0\" \"Invalid arity: 0\" \"Invalid arity: 3\" \"Invalid arity: 0\" \"Invalid arity: 3\" \"Invalid arity: 4\" \"Invalid arity: 0\" \"Invalid arity: 2\" \"Invalid arity: 5\" \"Invalid arity: 0\" \"Invalid arity: 3\" \"Invalid arity: 3\" \"Invalid arity: 3\"]",
+        ),
+        // keep and keep-indexed transducers, lowered and as core values.
+        (
+            r#"(let [k keep ki keep-indexed]
+                 [(into [] (keep identity) [nil false 0 1])
+                  (into [] (k identity) [nil false 0 1])
+                  (into [] (keep-indexed (fn [i x] (if (odd? i) nil [i x]))) xs)
+                  (into [] (ki (fn [i x] (if (even? i) i nil))) xs)
+                  (into [] (comp (keep (fn [x] (if (odd? x) (* 10 x) nil))) (filter some?)) xs)
+                  (into [] (comp (partition-by odd?) (keep (fn [p] (if (odd? (first p)) (count p) nil)))) xs)
+                  (into [] (keep (fn [x] (if (= x 2) false nil))) xs)
+                  (into [] (keep identity) nil) (into #{} (keep identity) [nil])
+                  (transduce (keep identity) (completing conj (fn [r] (conj r :done))) [] [nil 1])
+                  (transduce (k (fn [x] (if (odd? x) x nil))) + xs)])"#,
+            "[[false 0 1] [false 0 1] [[0 1] [2 2] [4 3]] [0 2 4] [10 10 30 30] [2 2] [false] [] #{} [1 :done] 8]",
+        ),
+        (
+            r#"(let [log (js/Array.)
+                       rf (fn ([r] (.push log "done") r)
+                            ([r x] (.push log (str "s" x)) (if (= x 3) (reduced (conj r x)) (conj r x))))
+                       a (transduce (keep (fn [x] (.push log (str "k" x)) (if (odd? x) x nil))) rf [] xs)
+                       b (transduce (keep-indexed (fn [i x] (.push log (str "i" i)) (if (odd? x) x nil))) rf [] xs)
+                       c (transduce (comp (keep identity) (mapcat (fn [x] [x x]))) rf [] [nil 3 nil])]
+                 [a b c (.join log ",")])"#,
+            "[[1 1 3] [1 1 3] [3] \"k1,s1,k1,s1,k2,k3,s3,done,i0,s1,i1,s1,i2,i3,s3,done,s3,done\"]",
+        ),
+        (
+            r#"(let [xf (keep-indexed (fn [i x] (if (even? i) [i x] nil))) rf (completing conj)
+                       a (xf rf) b (xf rf) a0 (a) b0 (b)
+                       a1 (a a0 :x) b1 (b b0 :y) a2 (a a1 :z) b2 (b b1 :w) a3 (a a2 :v)
+                       f ((keep identity) rf)]
+                 [(a a3) (b b2) (into [] xf [:p :q :r]) (into [] xf [:p :q :r])
+                  (f) (f [:r]) (f [] nil) (f [] false)])"#,
+            "[[[0 :x] [2 :v]] [[0 :y]] [[0 :p] [2 :r]] [[0 :p] [2 :r]] [] [:r] [] [false]]",
+        ),
+        (
+            r#"(let [seen (js/Array.) s (keep (fn [x] (.push seen x) (if (odd? x) x nil)) '(1 2 3 4))
+                       before (.-length seen) a (first s) n (.-length seen)
+                       chunk (js/Array.) c (keep (fn [x] (.push chunk x) (if (odd? x) x nil)) (vec (range 40)))
+                       c1 (first c) cn (.-length chunk)]
+                 [before a n (vec s) (vec seen) c1 cn (count c) (.-length chunk)
+                  (vec (keep identity [nil false 0])) (vec (keep identity nil))
+                  (vec (keep-indexed (fn [i x] (if x i nil)) [nil false 0]))])"#,
+            "[0 1 1 [1 3] [1 2 3 4] 1 32 20 40 [false 0] [] [2]]",
+        ),
+        (
+            r#"(let [error (fn [f a] (try (apply f a) :ok (catch :default e (.-message e))))]
+                 [(error keep []) (error keep [identity nil nil])
+                  (error keep-indexed []) (error keep-indexed [identity nil nil])
+                  (error ((keep identity) (completing conj)) [[] 1 2])
+                  (error ((keep-indexed identity) (completing conj)) [[] 1 2])
+                  (error into [[] (keep (fn [x] (throw (js/Error. (str "boom" x))))) [1]])
+                  (error into [[] (keep-indexed (fn [i x] (throw (js/Error. (str "boom" i))))) [1]])])"#,
+            "[\"Invalid arity: 0\" \"Invalid arity: 3\" \"Invalid arity: 0\" \"Invalid arity: 3\" \"Invalid arity: 3\" \"Invalid arity: 3\" \"boom1\" \"boom0\"]",
         ),
     ] {
         let source = format!(

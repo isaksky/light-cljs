@@ -1476,6 +1476,15 @@ const native = (() => {
   };
   const mapTransform = f => rf => (...a) => a.length < 2 ? invoke(rf, ...a) : prepareInvoke(rf)(a[0], invoke(f, ...a.slice(1)));
   const filterTransform = f => rf => reducing(rf, (result, x) => truth(invoke(f, x)) ? invoke(rf, result, x) : result);
+  // keep and keep-indexed drop nil results only (false is kept). The index
+  // cell belongs to the reducer, so every application counts from zero.
+  const keepTransform = (f, indexed) => rf => {
+    let i = -1;
+    return reducing(rf, (result, x) => {
+      const v = indexed ? invoke(f, ++i, x) : invoke(f, x);
+      return val(v) == null ? result : invoke(rf, result, v);
+    });
+  };
   const mapcatTransform = f => rf => (...a) => {
     if (a.length < 2) return invoke(rf, ...a);
     let result = a[0];
@@ -1679,14 +1688,10 @@ const native = (() => {
     realized:x=>__rt.cljRealized(x),
     mapSeq:(...a)=>a.length===0?lazy(()=>null):a.length===1?mapTransform(a[0]):a.length===2?mapOne(mapOne,a[0],a[1]):mapMany(mapMany,a[0],list(a.slice(1))),
     mapIndexed:(f,c)=>mapIndexedFrom(mapIndexedFrom,f,c,0),
-    keepIndexed:(...a)=>{
-      if(a.length===2)return keepIndexedFrom(keepIndexedFrom,a[0],a[1],0);
-      if(a.length!==1)return arity(a.length);
-      const f=a[0];
-      return rf=>{let i=-1;return reducing(rf,(result,input)=>{const v=invoke(f,++i,input);return val(v)==null?result:invoke(rf,result,v);});};
-    },
+    keepIndexed:(...a)=>a.length===1?keepTransform(a[0],true):a.length===2?keepIndexedFrom(keepIndexedFrom,a[0],a[1],0):arity(a.length),
     filter:(...a)=>a.length===1?filterTransform(a[0]):a.length===2?select(select,a[0],a[1],0):arity(a.length),
-    remove:(...a)=>a.length===1?filterTransform(x=>!truth(invoke(a[0],x))):a.length===2?select(select,a[0],a[1],1):arity(a.length), keep:(f,c)=>select(select,f,c,2),
+    remove:(...a)=>a.length===1?filterTransform(x=>!truth(invoke(a[0],x))):a.length===2?select(select,a[0],a[1],1):arity(a.length),
+    keep:(...a)=>a.length===1?keepTransform(a[0],false):a.length===2?select(select,a[0],a[1],2):arity(a.length),
     mapcat:(...a)=>a.length===0?arity(0):a.length===1?mapcatTransform(a[0]):catSeqs(catSeqs,core.mapSeq(...a)),
     flatten:x=>flattenFrom(flattenFrom,__rt.cljIsSequential(x)?__rt.cljCons(flattenChildren(flattenWalk,x),null):null),
     partitionBy:(...a)=>a.length===1?partitionByTransform(a[0]):a.length===2?partitionByFrom(partitionByFrom,a[0],a[1]):arity(a.length),

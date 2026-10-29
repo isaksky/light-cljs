@@ -4278,6 +4278,28 @@ impl<'a> Emitter<'a> {
                 throw new Error('Invalid arity: ' + a.length);
             }"#
             }
+            // Only nil results are dropped; false is kept.
+            C::Keep => {
+                r#"f => rf => (...a) => {
+                if (a.length === 0) return invoke(rf);
+                if (a.length === 1) return invoke(rf, a[0]);
+                if (a.length !== 2) throw new Error('Invalid arity: ' + a.length);
+                const v = invoke(f, a[1]);
+                return __rt.formValue(v) == null ? a[0] : invoke(rf, a[0], v);
+            }"#
+            }
+            C::KeepIndexed => {
+                r#"f => rf => {
+                let i = -1;
+                return (...a) => {
+                    if (a.length === 0) return invoke(rf);
+                    if (a.length === 1) return invoke(rf, a[0]);
+                    if (a.length !== 2) throw new Error('Invalid arity: ' + a.length);
+                    const v = invoke(f, ++i, a[1]);
+                    return __rt.formValue(v) == null ? a[0] : invoke(rf, a[0], v);
+                };
+            }"#
+            }
             C::MapSeq => {
                 r#"f => rf => (...a) => {
                 if (a.length < 2) return invoke(rf, ...a);
