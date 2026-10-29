@@ -3524,3 +3524,20 @@ project with a peer worker active (load about 3.5-4.2): median wall time is
 user+system CPU 8.21/8.14 s and maximum RSS 1,036/1,054 MiB, within run
 variation. All six outputs keep SHA-256 `1a75bc87b26f3121…` and print `484264`
 for `42 3`.
+
+Review-fix verification (nested equality, value direction, `conj`, nil
+comparators, `comparator` helper publication and `rseq` dispatch), same
+toolchain, at `3c2c878c` on master `ba7f0c89`: the engine all-target suite
+passes 2,184 tests (run before the new engine test, which passes on its own;
+the only later engine change is one field's visibility); combined
+native/QuickJS library and `bbp_macros` pass 367 and 146 tests and native-only
+`bbp_macros` passes 144 (one ignored each), with `LIGHT_CLJS_STRESS_SEEDS=12`;
+full default V8 nextest passes 2,133 of 2,134 (the same worktree
+`playground_crate_checks_for_wasm32` diagnostic); formatting, strict V8 and
+QuickJS Clippy and the allowed-category engine and native Clippy pass (strict
+engine Clippy keeps its nine baseline diagnostics). The default V8 release
+binary does not contain the engine or `src/bbp_runtime.js`; three
+`release bench --no-cache` runs on the seed-42 200k project take 7.53-7.58 s
+wall (a peer test run active) and keep SHA-256 `1a75bc87b26f3121…`. Penpot
+`app.render` at jobs 1 builds natively in 14.64 s (425 MB peak memory) and
+byte for byte matches a fresh V8 release build (2.25 s), SHA-256 `d352af3a…`.
