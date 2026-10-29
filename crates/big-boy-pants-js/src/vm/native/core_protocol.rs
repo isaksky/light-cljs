@@ -32,10 +32,6 @@ pub(super) struct State {
     /// A presence probe (`in`, `Reflect.has`): the result is whether the
     /// resolver supplied the member, which is never called.
     presence: bool,
-    /// A compiled direct call's callee preparation (`cljCallMember`): the
-    /// resolver may prefer the type's declared IFn entries to a member
-    /// named `call`, as the legacy compiler's inferred direct calls do.
-    direct: bool,
     /// Set for a sorted-map-by comparison: the instruction to run again.
     retry: Option<Box<Retry>>,
 }
@@ -51,7 +47,7 @@ pub(crate) fn start_member(
     form: Value,
     key: &crate::vm::property::Key,
 ) -> Result<(), Fault> {
-    start_named(state, form, key, false, false)
+    start_named(state, form, key, false)
 }
 
 /// Whether the task's resolver supplies the member `key` of `form`
@@ -61,17 +57,7 @@ pub(crate) fn start_presence(
     form: Value,
     key: &crate::vm::property::Key,
 ) -> Result<(), Fault> {
-    start_named(state, form, key, true, false)
-}
-
-/// The member a compiled direct call of the form `form` invokes
-/// (`cljCallMember`, op `jsDirectMember`).
-pub(crate) fn start_direct_member(
-    state: &mut VmState,
-    form: Value,
-    key: &crate::vm::property::Key,
-) -> Result<(), Fault> {
-    start_named(state, form, key, false, true)
+    start_named(state, form, key, true)
 }
 
 fn start_named(
@@ -79,7 +65,6 @@ fn start_named(
     form: Value,
     key: &crate::vm::property::Key,
     presence: bool,
-    direct: bool,
 ) -> Result<(), Fault> {
     let (Some(resolver), crate::vm::property::Key::Name(name)) = (state.core_resolver.clone(), key)
     else {
@@ -101,7 +86,6 @@ fn start_named(
             called: true,
             member: Some(Value::String(name.clone())),
             presence,
-            direct,
             retry: None,
         }),
     )
@@ -161,7 +145,6 @@ pub(crate) fn start_sorted_equality(
             called: false,
             member: None,
             presence: false,
-            direct: false,
             retry: Some(Box::new(Retry {
                 instr,
                 operands,
@@ -383,7 +366,6 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
             called: false,
             member: None,
             presence: false,
-            direct: false,
             retry: None,
         }),
     )?;
@@ -479,7 +461,6 @@ impl State {
                 args: [
                     Value::String(
                         match self.member {
-                            Some(_) if self.direct => "jsDirectMember",
                             Some(_) => "jsMember",
                             None => self.op.intrinsic(),
                         }

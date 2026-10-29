@@ -9255,10 +9255,12 @@ fn native_borrowed_apply_reads_call_before_arguments() {
 
 /// Within one declaration the IFn `call`/`apply` adapters win over `Object`
 /// methods of those names (the legacy installer writes them last); a later
-/// `extend-type` `Object` method replaces them for `.call` and callbacks,
-/// while a compiled direct call still enters the declared IFn entries (the
-/// legacy compiler's inferred arity call); a type with only `Object`
-/// methods uses them everywhere.
+/// `extend-type` `Object` method, once compiled interop has demanded it,
+/// replaces them for every call that reads `call`: `.call`, callbacks and
+/// compiled direct calls, whose callee may arrive through a parameter
+/// (legacy `(f x)` is `f.call(null, x)`); Clojure `apply` keeps the
+/// declared arity entry. A type with only `Object` methods uses them
+/// everywhere. docs/native-macros.md, "Member precedence: one rule".
 #[test]
 fn native_ifn_object_member_precedence_matches_legacy() {
     assert_native_matches_legacy(
@@ -9267,14 +9269,109 @@ fn native_ifn_object_member_precedence_matches_legacy() {
            (deftype L [] IFn (-invoke [_ x] :ifn))
            (extend-type L Object (call [_ ignored x] :late))
            (deftype F [foo toString] Object (foo [_] :method))
+           (deftype R [] Object (call [_ ignored x] :original) IFn (-invoke [_ x] :ifn))
+           (extend-type R Object (call [_ ignored x] :re-extended))
            (defmacro m []
-             (let [t (T.) u (U.) l (L.) f (F. :field (fn [] "field-string"))]
+             (let [t (T.) u (U.) l (L.) f (F. :field (fn [] "field-string")) r (R.)]
                (list 'quote [(t 1) (.call t nil 1) (mapv t [1]) (js* "~{}.apply(null, [1])" t) (.apply t nil (js/Array.of 1)) (apply t [1])
                              (u 1) (.call u nil 1) (mapv u [1])
                              (l 1) (.call l nil 1) (mapv l [1]) (update {:k 1} :k l) (apply l [1])
+                             ((fn [g] (g 1)) l) (l 1) ((fn [g] (g 1 2)) l)
+                             (r 1) (.call r nil 1) (mapv r [1]) ((fn [g] (g 1)) r) (r 1) (apply r [1])
                              (.-foo f) (js* "~{}.foo" f) (js/String f) (js* "`${~{}}`" f)])))
            (js/console.log (pr-str (m)))"#,
-        "[:ifn :ifn [:ifn] :ifn :ifn :ifn :object :object [:object] :ifn :late [:late] {:k :late} :ifn :field :field \"field-string\" \"field-string\"]\n",
+        "[:ifn :ifn [:ifn] :ifn :ifn :ifn :object :object [:object] :ifn :late [:late] {:k :late} :ifn :late :late :late :ifn :re-extended [:re-extended] :re-extended :re-extended :ifn :field :field \"field-string\" \"field-string\"]\n",
+    );
+}
+
+/// The member precedence rule (docs/native-macros.md, "Member precedence:
+/// one rule") as a table against QuickJS. Each row is a kind of type: an
+/// IFn declaration, IFn with `Object` `call`/`apply` in the same
+/// declaration, `Object` only, a first `Object` extension, one demanded
+/// through an inheriting object, `Object` re-extensions with and without
+/// IFn, another protocol's extension rewriting the `Object` methods, a
+/// record field named `call`, `Object.prototype` members, and an extension
+/// after the macro's frontier. Each row reads every consumer cold, demands
+/// the extensions (compiled interop, or the other protocol's dispatch),
+/// then reads them warm: compiled direct calls with a literal callee and
+/// through a parameter at two counts, a callback, Clojure `apply`, raw
+/// `call`/`apply`, a `call` member borrowed with an ordinary object
+/// receiver, presence, string and number conversion, and warm only the
+/// compiled `.call`/`.apply`, which demand themselves.
+#[test]
+fn native_member_precedence_table_matches_quickjs() {
+    assert_native_matches_legacy(
+        r#"(deftype D [] IFn (-invoke [_ x] [:d-ifn x]))
+           (deftype DO [] Object (call [_ _ x] [:do-object x]) (apply [_ _ xs] :do-object-apply) IFn (-invoke [_ x] [:do-ifn x]))
+           (deftype O [] Object (call [_ _ x] [:o-object x]) (apply [_ _ xs] :o-object-apply))
+           (deftype E [] IFn (-invoke [_ x] [:e-ifn x]))
+           (extend-type E Object (call [_ _ x] [:e-ext x]) (apply [_ _ xs] :e-ext-apply))
+           (deftype C [] IFn (-invoke [_ x] [:c-ifn x]))
+           (extend-type C Object (call [_ _ x] [:c-ext x]))
+           (deftype RE [] Object (call [_ _ x] [:re-object x]) IFn (-invoke [_ x] [:re-ifn x]))
+           (extend-type RE Object (call [_ _ x] [:re-ext x]))
+           (deftype OE [] Object (call [_ _ x] [:oe-object x]))
+           (extend-type OE Object (call [_ _ x] [:oe-ext x]))
+           (deftype X [] Object (call [_ _ x] [:x-object x]) IFn (-invoke [_ x] [:x-ifn x]))
+           (extend-type X ILookup (-lookup ([_ k] k) ([_ k nf] k)))
+           (defrecord F [call] IFn (-invoke [_ x] [:f-ifn x]))
+           (extend-type F Object (call [_ _ x] [:f-ext x]) (toString [_] "f-ext"))
+           (deftype N [])
+           (extend-type N Object (valueOf [_] 42) (toString [_] "n-ext"))
+           (deftype Z [] IFn (-invoke [_ x] [:z-ifn x]))
+           (defmacro table []
+             (let [try* (fn [f] (try (let [r (f)] (if (js* "~{} === undefined" r) :undefined r))
+                                     (catch :default e (keyword (.-name e)))))
+                   cold (fn [v] (mapv try* [#(v 1) #((fn [g] (g 1)) v) #((fn [g] (g 1 2)) v) #(mapv v [1]) #(apply v [1])
+                                            #(js* "~{}.call(null, 1)" v) #(js* "~{}.apply(null, [1])" v)
+                                            #(js* "Function.prototype.call.call(~{}.call, {}, null, 1)" v)
+                                            #(js* "'call' in ~{}" v) #(js* "String(~{})" v) #(js* "~{} + 1" v)]))
+                   warm (fn [v] (into (cold v) (mapv try* [#(.call v nil 1) #(.apply v nil (js/Array.of 1))])))
+                   row (fn [label v demand] (let [before (cold v)] (demand) [label before (warm v)]))
+                   interop (fn [v] #(.-zz v))]
+               (list 'quote
+                     [(row :ifn-declaration (D.) (interop (D.)))
+                      (row :same-declaration (DO.) (interop (DO.)))
+                      (row :object-declaration (O.) (interop (O.)))
+                      (row :first-extension (E.) (interop (E.)))
+                      (row :inherited-demand (C.) (interop (js/Object.create (C.))))
+                      (row :re-extension (RE.) (interop (RE.)))
+                      (row :object-re-extension (OE.) (interop (OE.)))
+                      (row :other-protocol (X.) #(get (X.) :k))
+                      (row :field (->F (fn [& xs] (into [:f-field] xs))) (interop (->F nil)))
+                      (row :object-prototype (N.) (interop (N.)))
+                      (row :after-frontier (Z.) (interop (Z.)))])))
+           (js/console.log (pr-str (table)))
+           (extend-type Z Object (call [_ _ x] [:z-ext x]))"#,
+        concat!(
+            "[[:ifn-declaration [[:d-ifn 1] [:d-ifn 1] [:d-ifn 1] [[:d-ifn 1]] [:d-ifn 1] [:d-ifn 1] [:d-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:d-ifn 1] [:d-ifn 1] [:d-ifn 1] [[:d-ifn 1]] [:d-ifn 1] [:d-ifn 1] [:d-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\" [:d-ifn 1] [:d-ifn 1]]] ",
+            "[:same-declaration [[:do-ifn 1] [:do-ifn 1] [:do-ifn 1] [[:do-ifn 1]] [:do-ifn 1] [:do-ifn 1] [:do-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:do-ifn 1] [:do-ifn 1] [:do-ifn 1] [[:do-ifn 1]] [:do-ifn 1] [:do-ifn 1] [:do-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\" [:do-ifn 1] [:do-ifn 1]]] ",
+            "[:object-declaration [[:o-object 1] [:o-object 1] [:o-object 1] [[:o-object 1]] [:o-object 1] [:o-object 1] :o-object-apply [:o-object 1] true \"[object Object]\" \"[object Object]1\"] [[:o-object 1] [:o-object 1] [:o-object 1] [[:o-object 1]] [:o-object 1] [:o-object 1] :o-object-apply [:o-object 1] true \"[object Object]\" \"[object Object]1\" [:o-object 1] :o-object-apply]] ",
+            "[:first-extension [[:e-ifn 1] [:e-ifn 1] [:e-ifn 1] [[:e-ifn 1]] [:e-ifn 1] [:e-ifn 1] [:e-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:e-ext 1] [:e-ext 1] [:e-ext 1] [[:e-ext 1]] [:e-ifn 1] [:e-ext 1] :e-ext-apply [:e-ext 1] true \"[object Object]\" \"[object Object]1\" [:e-ext 1] :e-ext-apply]] ",
+            "[:inherited-demand [[:c-ifn 1] [:c-ifn 1] [:c-ifn 1] [[:c-ifn 1]] [:c-ifn 1] [:c-ifn 1] [:c-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:c-ext 1] [:c-ext 1] [:c-ext 1] [[:c-ext 1]] [:c-ifn 1] [:c-ext 1] [:c-ext 1] [:c-ext 1] true \"[object Object]\" \"[object Object]1\" [:c-ext 1] [:c-ext 1]]] ",
+            "[:re-extension [[:re-ifn 1] [:re-ifn 1] [:re-ifn 1] [[:re-ifn 1]] [:re-ifn 1] [:re-ifn 1] [:re-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:re-ext 1] [:re-ext 1] [:re-ext 1] [[:re-ext 1]] [:re-ifn 1] [:re-ext 1] [:re-ext 1] [:re-ext 1] true \"[object Object]\" \"[object Object]1\" [:re-ext 1] [:re-ext 1]]] ",
+            "[:object-re-extension [[:oe-object 1] [:oe-object 1] [:oe-object 1] [[:oe-object 1]] [:oe-object 1] [:oe-object 1] :TypeError [:oe-object 1] true \"[object Object]\" \"[object Object]1\"] [[:oe-ext 1] [:oe-ext 1] [:oe-ext 1] [[:oe-ext 1]] [:oe-ext 1] [:oe-ext 1] :TypeError [:oe-ext 1] true \"[object Object]\" \"[object Object]1\" [:oe-ext 1] :TypeError]] ",
+            "[:other-protocol [[:x-ifn 1] [:x-ifn 1] [:x-ifn 1] [[:x-ifn 1]] [:x-ifn 1] [:x-ifn 1] [:x-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:x-object 1] [:x-object 1] [:x-object 1] [[:x-object 1]] [:x-ifn 1] [:x-object 1] [:x-object 1] [:x-object 1] true \"[object Object]\" \"[object Object]1\" [:x-object 1] [:x-object 1]]] ",
+            "[:field [[:f-field nil 1] [:f-field nil 1] [:f-field nil 1 2] [[:f-field nil 1]] [:f-ifn 1] [:f-field nil 1] [:f-field nil 1] [:f-field nil 1] true \"[object Object]\" \"[object Object]1\"] [[:f-field nil 1] [:f-field nil 1] [:f-field nil 1 2] [[:f-field nil 1]] [:f-ifn 1] [:f-field nil 1] [:f-field nil 1] [:f-field nil 1] true \"f-ext\" \"f-ext1\" [:f-field nil 1] [:f-field nil 1]]] ",
+            "[:object-prototype [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"[object Object]\" \"[object Object]1\"] [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"n-ext\" 43 :TypeError :TypeError]] ",
+            "[:after-frontier [[:z-ifn 1] [:z-ifn 1] [:z-ifn 1] [[:z-ifn 1]] [:z-ifn 1] [:z-ifn 1] [:z-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:z-ifn 1] [:z-ifn 1] [:z-ifn 1] [[:z-ifn 1]] [:z-ifn 1] [:z-ifn 1] [:z-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\" [:z-ifn 1] [:z-ifn 1]]]]\n",
+        ),
+    );
+}
+
+/// A raw `js*` member read observes only what compiled interop has
+/// installed: a cold read keeps the IFn adapter, `.call` demands the
+/// `Object` extension, and the next raw read sees it (light-cljs-566).
+#[test]
+fn native_raw_call_preserves_object_extension_demand_order() {
+    assert_native_matches_legacy(
+        r#"(deftype L [] IFn (-invoke [_ x] :ifn))
+           (extend-type L Object (call [_ ignored x] :late))
+           (defmacro m []
+             (let [l (L.)]
+               (list 'quote [(js* "~{}.call(null, 1)" l) (.call l nil 1) (js* "~{}.call(null, 1)" l)])))
+           (js/console.log (pr-str (m)))"#,
+        "[:ifn :late :late]\n",
     );
 }
 

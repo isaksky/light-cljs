@@ -64,6 +64,9 @@ const decl = (() => {
     if (key === 'js/Promise' && specs.some(spec => spec[0].startsWith('Object/')))
       throw new Error('unsupported operation: native Promise Object extension');
     const overlay = order === 0 ? ++overlays : 0, info = views.get(key);
+    // An installation into a declared type after its declaration: it
+    // rewrites the type's Object methods over its IFn adapters (`objectWins`).
+    if (info !== undefined && !info.declaring) info.installs.push({order, overlay});
     for (const [name, arity, fn, , variadic, member, direct] of specs) {
       const object = name.startsWith('Object/');
       const n = object && variadic != null ? -1 : arity;
@@ -254,27 +257,12 @@ const decl = (() => {
     if (t.version !== version || t.frontier !== frontier) build(t);
     return __rt.getOr(t.map, ty, null);
   };
-  // The tables of the `Object` methods installed as `member` of the type
-  // `info` describes, built at the current frontier: building one installs
-  // the visible extension bundles, which may add methods to `member`.
-  const settle = (info, member) => {
-    const names = info.members.get(member);
-    let seen;
-    do {
-      seen = names.length;
-      for (const name of names) {
-        for (const n of objectArities.get(name) ?? []) implementation(name, n, info.ty);
-        implementation(name, -1, info.ty);
-      }
-    } while (names.length !== seen);
-    return names;
-  };
   // A call of the JavaScript member `member` of the type `info` describes,
   // with receiver `x`: the method of the last group (by source name, in the
   // order first extended) with an implementation visible at the frontier,
   // whose overload is selected as the legacy `installMethods` does.
   const objectInvoke = (info, member, x, args) => {
-    const names = settle(info, member);
+    const names = info.members.get(member);
     for (let i = names.length - 1; i >= 0; i--) {
       const name = names[i];
       let only = null, count = 0, exact = null;
@@ -299,10 +287,6 @@ const decl = (() => {
   const objectMember = (info, name, member) => {
     if (info.names.has(name)) return;
     info.names.add(name);
-    // The legacy installer writes a declaration's Object methods before its
-    // IFn call/apply adapters, so those adapters win within the declaration;
-    // a later extension's Object method named call/apply replaces them.
-    if ((member === 'call' || member === 'apply') && !info.declaring) info.callables[member] = 'object';
     const names = info.members.get(member);
     if (names !== undefined) { names.push(name); return; }
     info.members.set(member, [name]);
@@ -318,9 +302,9 @@ const decl = (() => {
     // may share a member, and property enumeration may reorder names.
     // Raw call/apply use the type's declared IFn entries. Protocol extensions
     // do not replace those entries or install JavaScript callable members.
+    // `installs` are the later installations into the type (`extend`).
     const ifn = specs.filter(s=>s[0]==='IFn/-invoke').map(s=>[s[1],s[2],s[4]!=null,s[3]??s[2]]);
-    const callables = ifn.length > 0 ? {call: 'ifn', apply: 'ifn'} : {};
-    const info = {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, callables, declaring: true, mutable, record, mask0};
+    const info = {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, installs: [], declaring: true, mutable, record, mask0};
     views.set(ty, info);
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
@@ -365,11 +349,12 @@ const decl = (() => {
   };
   // Clojure apply reads the direct invoke slot first. Its receiver differs
   // from an overloaded .call's variadic fallback, and recur retains it.
+  // Without one it calls the `call` member the precedence rule selects.
   const applyIFn = (x, args) => {
     if (args.length <= 20) {
       const entry = ifnMethods(x).findLast(([n]) => n === args.length + 1);
       if (entry !== undefined) return entry[3].call(x, x, ...args);
-      return invokeIFn(x,args);
+      return globalThis.__lightNativeRuntime.core.invokeStruct(x,args);
     }
     return x.apply(null,args);
   };
@@ -378,12 +363,43 @@ const decl = (() => {
     declare(s);
     const info = views.get(__rt.structTypeOf(s));
     if (info === undefined) throw new Error('unsupported operation: JavaScript interop with a native struct of an undeclared type');
-    // Install the Object extensions registered up to the frontier first:
-    // a type's members and call/apply precedence never depend on what ran
-    // before, as `build` does for protocol tables.
-    const pending = extensions.get('Object');
-    if (pending !== undefined) for (const b of pending) { if (b.order > frontier) break; if (!installing.includes(b)) force(b); }
     return info;
+  };
+  // Whether the type `info` describes has an Object method installed as
+  // the member `member` and visible at the frontier.
+  const hasObjectMember = (info, member) => {
+    const names = info.members.get(member);
+    return names !== undefined && names.some(name => implementation(name, -1, info.ty) != null
+      || [...(objectArities.get(name) ?? [])].some(n => implementation(name, n, info.ty) != null));
+  };
+  // Rule 2 of docs/native-macros.md, "Member precedence: one rule": whether
+  // a struct's member `member` is its type's Object method rather than its
+  // IFn adapter. Every installation into a type writes the Object methods
+  // it has so far, and only the declaration writes IFn adapters after them,
+  // so the adapters win only while no later installation is visible.
+  const objectWins = (info, member) => hasObjectMember(info, member)
+    && (info.ifn.length === 0 || member !== 'call' && member !== 'apply'
+      || info.installs.some(e => e.overlay > 0 || e.order <= frontier));
+  // The legacy runtime's compiled-interop demand (`declarationReceiver`):
+  // install the Object extension bundles registered up to the frontier for
+  // the type of `x` (a struct, an object inheriting from one, or a mutable
+  // type's instance), in source order. Nothing else installs them, so a raw
+  // member read, a call or a presence check sees only what is installed.
+  const objectBundles = [];
+  const demandObject = x => {
+    if (objectBundles.length === 0) return;
+    const s = structOf(x);
+    let ty = __rt.structTypeOf(s);
+    if (ty === null) {
+      if (s === null || typeof s !== 'object' || __rt.formKind(s) !== null || __rt.cljIsAtom(s)) return;
+      ty = s.__lightNativeType;
+      if (ty === undefined) return;
+    } else declare(s);
+    const own = '@' + __rt.formName(ty);
+    for (const {b, selector} of objectBundles) {
+      if (b.order > frontier) break;
+      if ((selector === null || selector === '_' || selector === 'object' || selector === own) && !installing.includes(b)) force(b);
+    }
   };
   // The struct an object inheriting from one (`Object.create`) stands for.
   // The struct an object inheriting from one (`Object.create`) stands for,
@@ -415,7 +431,9 @@ const decl = (() => {
       if (old !== undefined && 'value' in old) continue;
       globalThis.__lightInstallCompilerProduct(name, () => { force(b); return b.products[name]; }, b);
     }
-    for (const [protocol] of indices) {
+    for (const [protocol, selector = null] of indices) {
+      // Object extensions are installed by demand only (`demandObject`).
+      if (protocol === 'Object') { objectBundles.push({b, selector}); continue; }
       let list = extensions.get(protocol);
       if (list === undefined) extensions.set(protocol, list = []);
       list.push(b);
@@ -457,7 +475,7 @@ const decl = (() => {
     const info = views.get(x.__lightNativeType);
     return info?.mutable && info.record ? info : null;
   };
-  return {extend, method, satisfies, implementsDirectly, predicate, type, structInfo, memberFunction, register, enter, leave, coreKeys, mutableRecord,
+  return {extend, method, satisfies, implementsDirectly, predicate, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
     callable, invokeIFn, applyIFn, callMember, borrowedIFn,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
@@ -600,7 +618,6 @@ const native = (() => {
   };
   __rt.cljCoreResolver((op, x, throughLazy, name) => {
     if (op === 'jsMember') return jsMember(x, name);
-    if (op === 'jsDirectMember') return jsDirectMember(x, name);
     if(op==='cljWithExportedMeta')op='cljWithMeta';
     const kind = __rt.formKind(x);
     // The engine also offers sorted-map-by maps (and `=` with one, also
@@ -767,24 +784,19 @@ const native = (() => {
     if (kind !== 'struct' && kind !== 'record')
       return name === 'call' ? rawCalls.get(kind) : name === 'apply' ? rawApplies.get(kind) : undefined;
     if (multi.is(value)) return name === 'call' ? rawMultiCall : name === 'apply' ? rawApplies.get('struct') : inherited(name);
-    const info = decl.structInfo(value);
-    if (info.members.has(name) && info.callables[name] !== 'ifn') return decl.memberFunction(info, name);
-    if (name === 'call') return decl.callable(value) ? decl.callMember(value) ?? rawIFnCall : undefined;
-    if (name === 'apply') return decl.callable(value) ? rawIFnApply : undefined;
-    return inherited(name);
+    return structMember(value, name);
   };
-  // A compiled direct call `(f x)` prepares its callee's member as the legacy
-  // compiler does, which calls a declared IFn arity method directly when it
-  // knows the type and `.call` otherwise: a struct with declared IFn methods
-  // and no `call` field enters them, whatever Object method is named call.
-  const jsDirectMember = (x, name) => {
-    const value = val(x), kind = __rt.formKind(value);
-    if ((kind === 'struct' || kind === 'record') && !multi.is(value)) {
-      const info = decl.structInfo(value), field = info.fieldMembers.lastIndexOf(name);
-      if (field !== -1) return __rt.structField(value, info.fields[field]);
-      if (decl.callable(value)) return decl.callMember(value) ?? rawIFnCall;
-    }
-    return jsMember(x, name);
+  // Rules 2 and 3 of docs/native-macros.md, "Member precedence: one rule",
+  // for a struct or record (the engine answers rule 1, its own properties):
+  // its type's Object method, unless the IFn call/apply adapters win
+  // (`decl.objectWins`), then what a legacy instance inherits from
+  // Object.prototype. Every consumer of a struct's member reads it here.
+  const structMember = (value, name) => {
+    const info = decl.structInfo(value);
+    if (decl.objectWins(info, name)) return decl.memberFunction(info, name);
+    if (info.ifn.length > 0 && name === 'call') return decl.callMember(value) ?? rawIFnCall;
+    if (info.ifn.length > 0 && name === 'apply') return rawIFnApply;
+    return inherited(name);
   };
   // `String(struct)` converts through the engine: the struct's Object
   // toString method, else Object.prototype's (a legacy record has no
@@ -1806,11 +1818,12 @@ const native = (() => {
     isIFn:x=>core.isFn(x)||multi.is(x)||['keyword','symbol','vector','map','set'].includes(__rt.formKind(val(x)))||decl.satisfies('IFn',x),
     invokeMulti:(m,args)=>multi.dispatch(m,args),
     invokeIFn:(x,args)=>decl.invokeIFn(x,args),
-    // Legacy `(f x)` is `f.call(null, x)`: a `call` field or Object method
-    // shadows the declared IFn methods, which are otherwise entered directly.
+    // Legacy `(f x)` is `f.call(null, x)`: a `call` field or the Object
+    // method the precedence rule selects shadows the declared IFn methods,
+    // which are otherwise entered directly (as their adapter would).
     invokeStruct:(x,args)=>{
-      const info=decl.structInfo(x), objectCall=info.members.has('call')&&info.callables.call!=='ifn';
-      if(!info.fieldMembers.includes('call')&&!objectCall){
+      const info=decl.structInfo(x);
+      if(!info.fieldMembers.includes('call')&&!decl.objectWins(info,'call')){
         if(decl.callable(x))return decl.invokeIFn(x,args);
         throw new TypeError('undefined is not a function');
       }
@@ -2167,7 +2180,7 @@ const native = (() => {
     // Inspect data properties without running an unsupported entry's getter.
     // Units keep that getter's access at the original expression site.
     nativeCoreBinding:name=>Object.getOwnPropertyDescriptor(core,name),
-    nativeInterop:interop,declarationReceiver:x=>x,
+    nativeInterop:interop,declarationReceiver:x=>{decl.demandObject(x);return x;},
     protocol:name=>Object.freeze({name}),
     protocolMethod:(key,name,arities,viaMetadata)=>decl.method(key,name,arities,viaMetadata===true),
     protocolPredicate:(protocol,key,x,direct)=>direct?decl.implementsDirectly(key,x):decl.satisfies(key,x),
@@ -2369,7 +2382,7 @@ for(let serial=1;;serial++){
         }else{
           const products=__rt.nth(entry,1), extensions=__rt.nth(entry,2), names=[], indices=[];
           for(let i=0;i<__rt.count(products);i++)names.push(__rt.nth(products,i));
-          for(let i=0;i<__rt.count(extensions);i++)indices.push([__rt.nth(__rt.nth(extensions,i),0)]);
+          for(let i=0;i<__rt.count(extensions);i++)indices.push([__rt.nth(__rt.nth(extensions,i),0),__rt.nth(__rt.nth(extensions,i),1)]);
           decl.register(names,indices,__rt.nth(entry,3),__rt.nth(entry,4),__rt.nth(entry,5));
         }
       }

@@ -97,13 +97,18 @@ impl BbpEvaluator {
                                     .iter()
                                     .map(|name| text(s, name))
                                     .collect::<Result<Vec<_>, _>>()?;
-                                // Native declaration dispatch uses only the protocol
-                                // from each extension index, just like decl.register.
+                                // Native declaration dispatch uses the protocol and
+                                // selector of each extension index (decl.register):
+                                // an `Object` extension is installed per type.
                                 let indices = bundle
                                     .extensions
                                     .iter()
-                                    .map(|(protocol, _, _)| {
-                                        s.new_vector(&[text(s, protocol)?]).map_err(error)
+                                    .map(|(protocol, selector, _)| {
+                                        let selector = match selector {
+                                            Some(selector) => text(s, selector)?,
+                                            None => s.primitive(Primitive::Null),
+                                        };
+                                        s.new_vector(&[text(s, protocol)?, selector]).map_err(error)
                                     })
                                     .collect::<Result<Vec<_>, EvalError>>()?;
                                 s.new_vector(&[

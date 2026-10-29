@@ -3910,6 +3910,9 @@ exercise it.
   `cljCallMember` preparation now asks the resolver with `jsDirectMember`).
   A type's pending `Object` extension bundles are installed before any
   member lookup, so precedence never depends on what ran before.
+  (Superseded by "Member precedence: one rule" below: the direct-call
+  bypass and the eager installation were both wrong, and the `apply`
+  quirk was a demand-order artefact.)
 - **Record slots override colliding fields.** `__meta`, `__extmap` and
   `__hash` resolve before a field of the same member name, as the legacy
   constructor's later assignments do; keys stay deduplicated.
@@ -3975,3 +3978,91 @@ re-tested with the engine forms suite), master `a335bcef`:
   RegExp `Atom(NotShareable)` error above (light-cljs-563) at jobs 1
   (95.51 s wall, 91.55 s user, 704,135,168 bytes) and jobs 4 (53.86 s,
   64.11 s user, 875,790,336 bytes).
+
+### Member precedence: one rule (light-cljs-565 to 570, 2026-10-29)
+
+Rounds 2 and 3 fixed precedence one call path at a time, and the fourth
+review found four more paths that disagreed (565–568). Each fix had
+assumed something about the legacy runtime that QuickJS does not do: the
+legacy compiler emits no inferred arity call in compile-time units (`(f x)`
+is always `f.call(null, x)`), and it installs an `Object` extension only
+when compiled interop demands it, never eagerly. Probing QuickJS cell by
+cell gives one rule, which every path now follows.
+
+**The rule.** The member `name` of a struct `x` of type `T`, read at the
+compiler frontier `F`, is the first of:
+
+1. **Own properties**: a record's `__meta`, `__extmap` or `__hash` slot,
+   then the last field whose munged member name is `name`.
+2. **The last write to `name` by an installation into `T` visible at
+   `F`.** `T`'s installations are its declaration and each of its extension
+   bundles, in the order they are installed. Each installation writes every
+   `Object` method `T` has so far (under its munged member name) and then,
+   if it declares IFn methods, the `call` and `apply` adapters. So within a
+   declaration the IFn adapters beat its own `Object` `call`/`apply`, and
+   once any later installation into `T` is visible, an `Object` `call`/`apply`
+   beats the adapters, whether that installation re-extends `call` or, as
+   the legacy installer does, extends some other protocol and rewrites the
+   accumulated `Object` methods.
+3. **`Object.prototype`**: what a legacy instance inherits (`toString`,
+   `valueOf`, `hasOwnProperty`, …; not `constructor`).
+
+Otherwise the member is `undefined`.
+
+**When an extension is installed (lazy demand).** A declaration is
+installed when its type is declared. An `Object` extension bundle is
+installed only when compiled interop on a value of `T` demands it: the
+receiver of `(.m x)`, `(.-m x)`, `(.call x …)` or `(.apply x …)`, or of an
+object inheriting from such a value, which the emitter wraps in
+`declarationReceiver`. That installs every bundle registered up to `F`
+whose selector is `T`, `object`, `default` or none, in source order. A raw
+`js*` read, a direct call, a callback, a presence check or a ToPrimitive
+conversion demands nothing and sees what is already installed. An
+extension of another protocol is installed when that protocol is
+dispatched. Leaving the frontier hides an installation whose bundle is
+after it, as the legacy journal undoes its patches.
+
+**Who reads the member.** Every consumer reads the one member the rule
+gives, with nothing chosen at the call site:
+
+| Consumer | Reads |
+| --- | --- |
+| Compiled direct call `(f a)`, `((fn [g] (g a)) f)` | `f.call`, called with `null` |
+| Runtime invocation (`mapv`, `update`, `reduce` callbacks, `invoke`) | `f.call` |
+| Compiled `(.call f …)`, `(.apply f …)` | demand, then `f.call`, `f.apply` |
+| Raw `js*` read, `in`, `Reflect.has`, ToPrimitive | `f[name]`, no demand |
+| Clojure `apply` | the declared IFn arity entry for the count if there is one, else `f.call` |
+| Borrowed adapter (`Function.prototype.call.call(m, r, …)`) | the member `m`, run with receiver `r` |
+
+Clojure `apply` is the one consumer that reads past the rule: like the
+legacy `cljs$core$IFn$_invoke$arity$n` entries, which only an IFn
+declaration writes, a declared arity wins over any `call` member. A
+borrowed member runs as the legacy one would with a foreign receiver: an
+`Object` method dispatches on its declaring type with the receiver (or the
+struct the receiver inherits from); the adapter of a single variadic IFn
+method is that method itself, so it runs with any receiver; the fixed and
+overloaded IFn adapters dispatch on the receiver's own IFn methods and
+throw a catchable `TypeError` for a receiver that has none (the legacy
+error text differs).
+
+**One place.** `decl.objectWins` alone decides between an `Object` method
+and the IFn adapters. The runtime's `structMember` applies rules 2 and 3
+with it for every engine property read of a struct (the engine answers
+rule 1 from the struct's own properties first): raw reads, presence,
+conversions, the compiled direct call's `cljCallMember` preparation (an
+ordinary property read again; the `jsDirectMember` resolver op is gone)
+and compiled `.call`/`.apply`. `invokeStruct` (callbacks, `invoke`, and
+Clojure `apply` without a declared arity) applies the same predicate
+before entering the IFn methods directly. `declarationReceiver` is the
+only place that installs an `Object` extension.
+
+**Boundary.** The native runtime builds a non-`Object` protocol's dispatch
+table for all types at once, so it installs that protocol's extension
+bundles for every type the first time any value is dispatched on it, where
+the legacy runtime installs them per type. Under rule 2 that is
+observable only for a type whose declaration has both IFn methods and an
+`Object` `call`/`apply`, extended with another protocol that is first
+dispatched on a different type: native then answers the `Object` method
+earlier than legacy does. An IFn extension (`extend-type T IFn`) installs
+no `call`/`apply` member natively; QuickJS answers the same in every probed
+cell (it does not install it before demand either).
