@@ -4160,3 +4160,26 @@ median **7.28 s on master and 7.36 s on the branch** (ranges 7.25–8.73 and
 jobs 1 (14.06 s wall, 411,074,560 bytes maximum RSS) and jobs 4 (9.56 s,
 499,302,400 bytes) is byte-identical to V8 (2.11 s), SHA-256
 `d352af3a…a8d9a3`.
+
+#### Review-fix round 2 (2026-10-29)
+
+Round 1 activated a pending bundle only through the type whose members it
+could change, so a dispatch on another type or value the same bundle
+names left it inactive. A pending bundle is now activated by any matching
+selector, and its protocols' lookups bypass the cache while it is pending
+(see "When an extension is installed" above). The six selector rows of the
+table differed from QuickJS before this fix; the mixed-bundle,
+product-demand and several-bundle rows are new coverage.
+
+Verification at `05224182` (master `0ad2514f`), same toolchain: combined
+`bbp-macros,quickjs` with `LIGHT_CLJS_STRESS_SEEDS=12` passes the library's
+368 tests and `bbp_macros`' 168, native-only `bbp_macros` 166 (one ignored
+each); engine all-targets 2,196 and seven doctests; default V8 nextest
+2,133 (212.0 s; only the worktree `playground_crate_checks_for_wasm32`
+diagnostic fails); Clippy and formatting as before. Five alternating 200k
+pairs against a fresh master release build, load average about 2–4:
+median **7.06 s on master and 7.08 s on the branch** (ranges 7.01–7.11 and
+7.06–7.12 s), all ten outputs byte-identical. Penpot `app.render` native at
+jobs 1 (13.45 s wall, 414,318,592 bytes maximum RSS) and jobs 4 (9.24 s,
+515,801,088 bytes) is byte-identical to V8 (2.08 s), SHA-256
+`d352af3a…a8d9a3`.
