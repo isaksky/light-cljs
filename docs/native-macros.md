@@ -4019,10 +4019,13 @@ whose selector is `T`, `object`, `default` or none, in source order. A raw
 `js*` read, a direct call, a callback, a presence check or a ToPrimitive
 conversion demands nothing and sees what is already installed. A
 bundle extending another protocol `P` is installed when `P` is dispatched
-on a value whose type one of the bundle's `P` selectors names (the same
-selector test), or when the bundle is demanded otherwise (one of its
-products, or an `Object` demand it matches); installing a bundle installs
-everything in it, for every type it extends. Leaving the frontier hides an
+on any value one of the bundle's `P` selectors matches: a type it extends
+(a struct type or a core collection type), the value's JavaScript type
+(`string`, `object`, …), `default`, or a target with no type name, which
+matches every value. It is also installed when it is demanded otherwise
+(one of its products, or an `Object` demand it matches). Installing a
+bundle installs everything in it, for every type it extends, whichever
+selector demanded it. Leaving the frontier hides an
 installation whose bundle is after it, as the legacy journal undoes its
 patches.
 
@@ -4030,13 +4033,23 @@ The native runtime builds a protocol's dispatch table for all types at
 once, which forces every registered bundle of that protocol. Forcing is
 not installing: a bundle forced only for a table build stays inactive
 until the demand above happens, and its `Object` methods and its rewrite
-of rule 2 stay invisible meanwhile (`decl.activate`, `decl.demandFor`). A
-type with such a pending bundle leaves the protocol lookup cache's
-declared set, so every dispatch on it takes the slow path that performs
-the demand; once all its pending bundles are active it returns to the
-cache. Pending bundles are tracked only where they can change a member: a
-bundle with `Object` methods, or a type whose IFn adapters compete with an
-`Object` `call`/`apply`.
+of rule 2 stay invisible meanwhile (`decl.activate`, `decl.demandFor`).
+While a bundle is pending, the tables of every protocol it indexes keep no
+lookup cache, so every dispatch of those protocols, on any value, takes
+the slow path that performs the demand; activation restores the cache.
+Bundles are tracked as pending only when they can change a member: a
+bundle with `Object` methods, or one extending a type whose IFn adapters
+compete with an `Object` `call`/`apply`.
+
+`native_member_precedence_table_matches_quickjs` reaches a bundle every
+way against QuickJS: dispatch on another type of a bundle extending
+several types, and on its own type; selectors naming a struct type, a core
+collection type (`PersistentVector`), `string`, `object`, `default` and a
+target with no type name; product demand after an unrelated dispatch has
+forced the bundle; `Object` methods in a bundle with another protocol,
+reached by a dispatch on another type (still invisible), then by the
+matching dispatch, or by an `Object` demand; and several bundles
+extending one type, each installed by its own protocol.
 
 **Who reads the member.** Every consumer reads the one member the rule
 gives, with nothing chosen at the call site:

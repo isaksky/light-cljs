@@ -68,19 +68,29 @@ const decl = (() => {
     // rewrites the type's Object methods over its IFn adapters (`objectWins`).
     // Installed by a bundle that only a protocol table build forced (for
     // every type at once), it stays inactive until the legacy runtime would
-    // have installed it: a demand of one of the bundle's protocols for a
-    // type its selectors name (`demandFor`). Only installations that can
-    // change a member are tracked: Object methods, or a type whose IFn
-    // adapters compete with an Object call/apply. Until then the type
-    // leaves `declared`, so every dispatch on it takes the slow path that
-    // demands.
+    // have installed the bundle (`activate`): a demand of one of its
+    // protocols for any value one of its selectors matches (`demandFor`),
+    // a product demand or an Object demand. Activation installs the whole
+    // bundle, for every target. The bundle records the dispatch keys it
+    // extends per protocol, to match its `@type` selectors. A bundle is
+    // pending, and its protocols' dispatch skips the lookup cache so that
+    // every dispatch can demand, only while it holds an installation that
+    // can change a member: Object methods, or a type whose IFn adapters
+    // compete with an Object call/apply.
     const bundle = installing[installing.length - 1];
-    const lazy = bundle !== undefined && !bundle.active && info !== undefined && !info.mutable && !info.declaring;
-    if (lazy && (specs.some(spec => spec[0].startsWith('Object/'))
+    const forced = bundle !== undefined && !bundle.active;
+    if (forced) for (const [name, arity] of specs) {
+      const protocol = name.startsWith('Object/') ? 'Object' : protocolOf(name, arity);
+      let keys = (bundle.keys ??= new Map()).get(protocol);
+      if (keys === undefined) bundle.keys.set(protocol, keys = new Set());
+      keys.add(key);
+    }
+    const lazy = forced && info !== undefined && !info.mutable && !info.declaring;
+    if (lazy && !pendingBundles.has(bundle) && (specs.some(spec => spec[0].startsWith('Object/'))
         || info.ifn.length > 0 && (info.members.has('call') || info.members.has('apply')))) {
-      if (info.pending.size === 0) declared = __rt.dissoc(declared, key);
-      info.pending.add(bundle);
-      (bundle.targets ??= new Set()).add(info);
+      pendingBundles.add(bundle);
+      for (const protocol of new Set(bundle.indices.map(([p]) => p)))
+        pendingProtocols.set(protocol, (pendingProtocols.get(protocol) ?? 0) + 1);
     }
     const from = lazy ? bundle : null;
     if (info !== undefined && !info.declaring) info.installs.push({order, overlay, bundle: from});
@@ -102,15 +112,19 @@ const decl = (() => {
     return null;
   };
   const bundles = [], installing = [];
+  // Inactive bundles whose installations can change a member, and how many
+  // of them index each protocol: that protocol's tables keep no lookup
+  // cache meanwhile (`build`).
+  const pendingBundles = new Set(), pendingProtocols = new Map();
   // A bundle's installations become active (visible to member reads and
   // precedence) once the legacy runtime would have installed it.
   const activate = b => {
     if (b.active) return;
     b.active = true;
-    if (b.targets === undefined) return;
-    for (const info of b.targets) {
-      info.pending.delete(b);
-      if (info.pending.size === 0) declared = __rt.assoc(declared, info.ty, true);
+    if (!pendingBundles.delete(b)) return;
+    for (const protocol of new Set(b.indices.map(([p]) => p))) {
+      const n = pendingProtocols.get(protocol) - 1;
+      if (n === 0) pendingProtocols.delete(protocol); else pendingProtocols.set(protocol, n);
     }
     version++;
   };
@@ -150,8 +164,10 @@ const decl = (() => {
       .sort((a, b) => a.overlay - b.overlay || a.order - b.order);
     for (const e of visible) map = __rt.assoc(map, e.key, e.fn);
     t.map = map; t.promise=__rt.getOr(map,'js/Promise',undefined);t.version = version; t.frontier = frontier;
-    t.snapshot = __rt.vector(version, frontier, map, declared);
-    t.directSnapshot = __rt.vector(version, frontier, map, declared, true);
+    // A pending bundle of this protocol may need any dispatch to demand it.
+    const cached = !pendingProtocols.has(t.protocol);
+    t.snapshot = cached ? __rt.vector(version, frontier, map, declared) : null;
+    t.directSnapshot = cached ? __rt.vector(version, frontier, map, declared, true) : null;
   };
   // A struct of a type this task has not declared yet (a published value
   // another task made): demand the type's declaration, its product of the
@@ -337,7 +353,7 @@ const decl = (() => {
     // do not replace those entries or install JavaScript callable members.
     // `installs` are the later installations into the type (`extend`).
     const ifn = specs.filter(s=>s[0]==='IFn/-invoke').map(s=>[s[1],s[2],s[4]!=null,s[3]??s[2]]);
-    const info = {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, installs: [], pending: new Set(), declaring: true, mutable, record, mask0};
+    const info = {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, installs: [], declaring: true, mutable, record, mask0};
     views.set(ty, info);
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
@@ -426,16 +442,20 @@ const decl = (() => {
   // type's instance), in source order. Nothing else installs them, so a raw
   // member read, a call or a presence check sees only what is installed.
   const objectBundles = [];
-  // The legacy demand of `protocol` for the struct `x`: activate its type's
-  // pending bundles with an index of that protocol whose selector names the
-  // type (or object, default, nothing), registered up to the frontier.
+  // The legacy demand of `protocol` for the value `x`: activate every
+  // pending bundle registered up to the frontier with an index of that
+  // protocol whose selector matches `x` as the legacy runtime's does (none,
+  // default, the value's JavaScript type, or a type the bundle extends for
+  // the protocol that `x` belongs to).
   const selects = (selector, own) => selector === null || selector === '_' || selector === 'object' || selector === own;
   const demandFor = (protocol, x) => {
-    const ty = __rt.structTypeOf(x), info = ty === null ? undefined : views.get(ty);
-    if (info === undefined || info.pending.size === 0) return;
-    const own = '@' + __rt.formName(ty);
-    for (const b of [...info.pending])
-      if (b.order <= frontier && b.indices.some(([p, s]) => p === protocol && selects(s, own))) activate(b);
+    if (pendingBundles.size === 0) return;
+    const value = __rt.formValue(x), key = directKey(x);
+    const native = value == null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+    for (const b of [...pendingBundles])
+      if (b.order <= frontier && b.indices.some(([p, s]) => p === protocol
+          && (s === null || s === '_' || s === native || s.startsWith('@') && key !== null && b.keys?.get(protocol)?.has(key) === true)))
+        activate(b);
   };
   const demandObject = x => {
     if (objectBundles.length === 0) return;

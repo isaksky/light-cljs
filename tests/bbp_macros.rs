@@ -9335,6 +9335,50 @@ fn native_member_precedence_table_matches_quickjs() {
            (defrecord AF [call] IFn (-invoke [_] :af-ifn))
            (deftype H [])
            (extend-type H Object (zz [_] :h))
+           (deftype SX [] Object (call [_ _ x] [:sx-object x]) IFn (-invoke [_ x] [:sx-ifn x]))
+           (deftype SY [])
+           (defprotocol PS (ps [_]))
+           (extend-protocol PS SX (ps [_] :sx) SY (ps [_] :sy))
+           (deftype SZ [] Object (call [_ _ x] [:sz-object x]) IFn (-invoke [_ x] [:sz-ifn x]))
+           (defprotocol PZ (pz [_]))
+           (extend-protocol PZ SZ (pz [_] :sz) SY (pz [_] :sy))
+           (deftype TS [] Object (call [_ _ x] [:ts-object x]) IFn (-invoke [_ x] [:ts-ifn x]))
+           (defprotocol PT (pt [_]))
+           (extend-protocol PT TS (pt [_] :ts) string (pt [_] :string))
+           (deftype TO [] Object (call [_ _ x] [:to-object x]) IFn (-invoke [_ x] [:to-ifn x]))
+           (defprotocol PO (po [_]))
+           (extend-protocol PO TO (po [_] :to) object (po [_] :object))
+           (deftype TD [] Object (call [_ _ x] [:td-object x]) IFn (-invoke [_ x] [:td-ifn x]))
+           (defprotocol PD (pd [_]))
+           (extend-protocol PD TD (pd [_] :td) default (pd [_] :default))
+           (deftype TP [] Object (call [_ _ x] [:tp-object x]) IFn (-invoke [_ x] [:tp-ifn x]))
+           (deftype UP [])
+           (defprotocol PR (pr-it [_]))
+           (do (def tp-marker :marker) (extend-type TP PR (pr-it [_] :tp)))
+           (extend-type UP PR (pr-it [_] :up))
+           (deftype M [] IFn (-invoke [_ x] [:m-ifn x]))
+           (deftype MY [])
+           (defprotocol PM (pm [_]))
+           (extend-type M PM (pm [_] :m) Object (toString [_] "m-late"))
+           (extend-type MY PM (pm [_] :my))
+           (deftype MO [] IFn (-invoke [_ x] [:mo-ifn x]))
+           (deftype MOY [])
+           (defprotocol PMO (pmo [_]))
+           (extend-type MO PMO (pmo [_] :mo) Object (toString [_] "mo-late"))
+           (extend-type MOY PMO (pmo [_] :moy))
+           (deftype TV [] Object (call [_ _ x] [:tv-object x]) IFn (-invoke [_ x] [:tv-ifn x]))
+           (defprotocol PV (pv [_]))
+           (extend-protocol PV TV (pv [_] :tv) PersistentVector (pv [_] :vector))
+           (deftype TN [] Object (call [_ _ x] [:tn-object x]) IFn (-invoke [_ x] [:tn-ifn x]))
+           (deftype TNY [])
+           (def tny-alias TNY)
+           (defprotocol PN (pn [_]))
+           (extend-protocol PN TN (pn [_] :tn) tny-alias (pn [_] :tny))
+           (deftype W [])
+           (defprotocol P1 (p1 [_]))
+           (defprotocol P2 (p2 [_]))
+           (extend-type W P1 (p1 [_] :w1) Object (toString [_] "w-one"))
+           (extend-type W P2 (p2 [_] :w2) Object (valueOf [_] 7))
            (defmacro table []
              (let [try* (fn [f] (try (let [r (f)] (if (js* "~{} === undefined" r) :undefined r))
                                      (catch :default e (keyword (.-name e)))))
@@ -9343,7 +9387,10 @@ fn native_member_precedence_table_matches_quickjs() {
                                             #(js* "Function.prototype.call.call(~{}.call, {}, null, 1)" v)
                                             #(js* "'call' in ~{}" v) #(js* "String(~{})" v) #(js* "~{} + 1" v)]))
                    warm (fn [v] (into (cold v) (mapv try* [#(.call v nil 1) #(.apply v nil (js/Array.of 1))])))
-                   row (fn [label v demand] (let [before (cold v)] (demand) [label before (warm v)]))
+                   row (fn [label v & demands]
+                         (let [before (cold v) mids (mapv (fn [d] (d) (cold v)) (butlast demands))]
+                           ((last demands))
+                           (into [label before] (conj mids (warm v)))))
                    interop (fn [v] #(.-zz v))]
                (list 'quote
                      [(row :ifn-declaration (D.) (interop (D.)))
@@ -9362,6 +9409,17 @@ fn native_member_precedence_table_matches_quickjs() {
                       (row :apply-operand-field (->AF (fn [self x] [:af-field (record? self) x])) (interop (->AF nil)))
                       (row :host-type-tag (js* "({__lightNativeType: 1, call(_, x) { return x + 1; }})")
                            (interop (js* "({__lightNativeType: 1})")))
+                      (row :shared-bundle-other-type (SX.) #(ps (SY.)))
+                      (row :shared-bundle-own-type (SZ.) #(pz (SZ.)))
+                      (row :shared-bundle-string-selector (TS.) #(pt "s"))
+                      (row :shared-bundle-object-selector (TO.) #(po (js-obj)))
+                      (row :shared-bundle-default-selector (TD.) #(pd 1))
+                      (row :shared-bundle-core-type-selector (TV.) #(pv [1]))
+                      (row :shared-bundle-unnamed-target-selector (TN.) #(pn (TNY.)))
+                      (row :product-demand (TP.) #(pr-it (UP.)) #(identity tp-marker))
+                      (row :mixed-bundle-dispatch (M.) #(pm (MY.)) #(pm (M.)))
+                      (row :mixed-bundle-object-demand (MO.) #(pmo (MOY.)) (interop (MO.)))
+                      (row :several-bundles-one-type (W.) #(p1 (W.)) #(p2 (W.)))
                       (row :after-frontier (Z.) (interop (Z.)))])))
            (js/console.log (pr-str (table)))
            (extend-type Z Object (call [_ _ x] [:z-ext x]))"#,
@@ -9381,6 +9439,17 @@ fn native_member_precedence_table_matches_quickjs() {
             "[:apply-operand-method [:ap-ifn :ap-ifn :ap-ifn [:ap-ifn] :ap-ifn :ap-ifn :ap-ifn :TypeError true \"[object Object]\" \"[object Object]1\"] [[:ap-ext false 1] [:ap-ext false 1] [:ap-ext false 1] [[:ap-ext false 1]] [:ap-ext true 1] [:ap-ext false 1] [:ap-ext false 1] [:ap-ext false 1] true \"[object Object]\" \"[object Object]1\" [:ap-ext false 1] [:ap-ext false 1]]] ",
             "[:apply-operand-field [[:af-field false 1] [:af-field false 1] [:af-field false 1] [[:af-field false 1]] [:af-field true 1] [:af-field false 1] [:af-field false 1] [:af-field false 1] true \"[object Object]\" \"[object Object]1\"] [[:af-field false 1] [:af-field false 1] [:af-field false 1] [[:af-field false 1]] [:af-field true 1] [:af-field false 1] [:af-field false 1] [:af-field false 1] true \"[object Object]\" \"[object Object]1\" [:af-field false 1] [:af-field false 1]]] ",
             "[:host-type-tag [2 2 2 [2] 2 2 :TypeError 2 true \"[object Object]\" \"[object Object]1\"] [2 2 2 [2] 2 2 :TypeError 2 true \"[object Object]\" \"[object Object]1\" 2 :TypeError]] ",
+            "[:shared-bundle-other-type [[:sx-ifn 1] [:sx-ifn 1] [:sx-ifn 1] [[:sx-ifn 1]] [:sx-ifn 1] [:sx-ifn 1] [:sx-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:sx-object 1] [:sx-object 1] [:sx-object 1] [[:sx-object 1]] [:sx-ifn 1] [:sx-object 1] [:sx-object 1] [:sx-object 1] true \"[object Object]\" \"[object Object]1\" [:sx-object 1] [:sx-object 1]]] ",
+            "[:shared-bundle-own-type [[:sz-ifn 1] [:sz-ifn 1] [:sz-ifn 1] [[:sz-ifn 1]] [:sz-ifn 1] [:sz-ifn 1] [:sz-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:sz-object 1] [:sz-object 1] [:sz-object 1] [[:sz-object 1]] [:sz-ifn 1] [:sz-object 1] [:sz-object 1] [:sz-object 1] true \"[object Object]\" \"[object Object]1\" [:sz-object 1] [:sz-object 1]]] ",
+            "[:shared-bundle-string-selector [[:ts-ifn 1] [:ts-ifn 1] [:ts-ifn 1] [[:ts-ifn 1]] [:ts-ifn 1] [:ts-ifn 1] [:ts-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:ts-object 1] [:ts-object 1] [:ts-object 1] [[:ts-object 1]] [:ts-ifn 1] [:ts-object 1] [:ts-object 1] [:ts-object 1] true \"[object Object]\" \"[object Object]1\" [:ts-object 1] [:ts-object 1]]] ",
+            "[:shared-bundle-object-selector [[:to-ifn 1] [:to-ifn 1] [:to-ifn 1] [[:to-ifn 1]] [:to-ifn 1] [:to-ifn 1] [:to-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:to-object 1] [:to-object 1] [:to-object 1] [[:to-object 1]] [:to-ifn 1] [:to-object 1] [:to-object 1] [:to-object 1] true \"[object Object]\" \"[object Object]1\" [:to-object 1] [:to-object 1]]] ",
+            "[:shared-bundle-default-selector [[:td-ifn 1] [:td-ifn 1] [:td-ifn 1] [[:td-ifn 1]] [:td-ifn 1] [:td-ifn 1] [:td-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:td-object 1] [:td-object 1] [:td-object 1] [[:td-object 1]] [:td-ifn 1] [:td-object 1] [:td-object 1] [:td-object 1] true \"[object Object]\" \"[object Object]1\" [:td-object 1] [:td-object 1]]] ",
+            "[:shared-bundle-core-type-selector [[:tv-ifn 1] [:tv-ifn 1] [:tv-ifn 1] [[:tv-ifn 1]] [:tv-ifn 1] [:tv-ifn 1] [:tv-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:tv-object 1] [:tv-object 1] [:tv-object 1] [[:tv-object 1]] [:tv-ifn 1] [:tv-object 1] [:tv-object 1] [:tv-object 1] true \"[object Object]\" \"[object Object]1\" [:tv-object 1] [:tv-object 1]]] ",
+            "[:shared-bundle-unnamed-target-selector [[:tn-ifn 1] [:tn-ifn 1] [:tn-ifn 1] [[:tn-ifn 1]] [:tn-ifn 1] [:tn-ifn 1] [:tn-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:tn-object 1] [:tn-object 1] [:tn-object 1] [[:tn-object 1]] [:tn-ifn 1] [:tn-object 1] [:tn-object 1] [:tn-object 1] true \"[object Object]\" \"[object Object]1\" [:tn-object 1] [:tn-object 1]]] ",
+            "[:product-demand [[:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] [[:tp-ifn 1]] [:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] [[:tp-ifn 1]] [:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] [[:tp-ifn 1]] [:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\" [:tp-ifn 1] [:tp-ifn 1]]] ",
+            "[:mixed-bundle-dispatch [[:m-ifn 1] [:m-ifn 1] [:m-ifn 1] [[:m-ifn 1]] [:m-ifn 1] [:m-ifn 1] [:m-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:m-ifn 1] [:m-ifn 1] [:m-ifn 1] [[:m-ifn 1]] [:m-ifn 1] [:m-ifn 1] [:m-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:m-ifn 1] [:m-ifn 1] [:m-ifn 1] [[:m-ifn 1]] [:m-ifn 1] [:m-ifn 1] [:m-ifn 1] :TypeError true \"m-late\" \"m-late1\" [:m-ifn 1] [:m-ifn 1]]] ",
+            "[:mixed-bundle-object-demand [[:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] [[:mo-ifn 1]] [:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] [[:mo-ifn 1]] [:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] [[:mo-ifn 1]] [:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] :TypeError true \"mo-late\" \"mo-late1\" [:mo-ifn 1] [:mo-ifn 1]]] ",
+            "[:several-bundles-one-type [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"[object Object]\" \"[object Object]1\"] [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"w-one\" \"w-one1\"] [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"w-one\" 8 :TypeError :TypeError]] ",
             "[:after-frontier [[:z-ifn 1] [:z-ifn 1] [:z-ifn 1] [[:z-ifn 1]] [:z-ifn 1] [:z-ifn 1] [:z-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:z-ifn 1] [:z-ifn 1] [:z-ifn 1] [[:z-ifn 1]] [:z-ifn 1] [:z-ifn 1] [:z-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\" [:z-ifn 1] [:z-ifn 1]]]]\n",
         ),
     );
