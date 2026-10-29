@@ -717,31 +717,31 @@ const native = (() => {
   };
   const rawApplies = new Map([...families,'struct'].map(k=>[k,canonicalMember(k+'-apply',()=>rawApplyMember(false))]));
   const rawIFnApply = canonicalMember('ifn-apply',()=>rawApplyMember(true));
-  // A native form's named member, as raw JavaScript reads it: the engine
-  // defers every such read here with the form itself as the receiver, so a
-  // form is one object in both worlds and no call boundary converts anything.
-  // A struct answers its declared fields (the last field munged to a member
-  // wins, as the legacy constructor's assignments do), a record's slots, its
-  // Object methods and then its IFn call/apply adapters; the collection
-  // families, keywords, symbols and multimethods answer call/apply only.
+  // A native form's named member, as raw JavaScript reads it: a form is one
+  // object in both worlds and no call boundary converts anything. The
+  // engine itself answers a struct's fields and record slots (its own data
+  // properties, so reflection agrees with reads) and defers every other
+  // named read here with the form as the receiver, including ToPrimitive's
+  // valueOf/toString. A struct answers its Object methods, then its IFn
+  // call/apply adapters, then what a legacy instance inherits from
+  // Object.prototype; the collection families, keywords, symbols and
+  // multimethods answer call/apply only.
   const jsMember = (x, name) => {
     const value = val(x), kind = __rt.formKind(value);
     if (kind !== 'struct' && kind !== 'record')
       return name === 'call' ? rawCalls.get(kind) : name === 'apply' ? rawApplies.get(kind) : undefined;
     if (multi.is(value)) return name === 'call' ? rawMultiCall : name === 'apply' ? rawApplies.get('struct') : undefined;
-    const info = decl.structInfo(value), field = info.fieldMembers.lastIndexOf(name);
-    if (field !== -1) return __rt.structField(value, info.fields[field]);
-    if (info.record && (name === '__meta' || name === '__extmap' || name === '__hash')) return name === '__meta' ? __rt.cljMeta(value) : null;
+    const info = decl.structInfo(value);
     if (info.members.has(name)) return decl.memberFunction(info, name);
     if (name === 'call') return decl.callable(value) ? decl.callMember(value) ?? rawIFnCall : undefined;
     if (name === 'apply') return decl.callable(value) ? rawIFnApply : undefined;
-    return undefined;
+    const inherited = name === 'constructor' ? undefined : Object.prototype[name];
+    return typeof inherited === 'function' ? inherited : undefined;
   };
-  // `String(struct)`: its Object toString method, else the plain object text.
-  const structString = x => {
-    const toString = jsMember(x, 'toString');
-    return typeof toString === 'function' ? String(toString.call(val(x))) : '[object Object]';
-  };
+  // `String(struct)` converts through the engine: the struct's Object
+  // toString method, else Object.prototype's (a legacy record has no
+  // toString either).
+  const structString = x => String(val(x));
   // memoize calls its callback through Clojure apply, whose fixed function
   // receiver is the function itself. Native variadic dispatchers preserve
   // applyTo's null receiver in immutable engine metadata, so they can publish
@@ -1014,7 +1014,7 @@ const native = (() => {
   // In particular their identity can publish without retaining a task's JS
   // runtime. Calls enter the consuming task's runtime through its global.
   const multi = (() => {
-    const ty=__rt.structType('cljs.core/MultiFn',__rt.formVector('name','dispatch_fn','default_dispatch_val','hierarchy','method_table','prefer_table','method_cache','cached_hierarchy','__method_state','__prefer_state'),false);
+    const ty=__rt.structType('cljs.core/MultiFn',__rt.formVector('name','dispatch_fn','default_dispatch_val','hierarchy','method_table','prefer_table','method_cache','cached_hierarchy','__method_state','__prefer_state'),false,null);
     const is=x=>{const t=__rt.structTypeOf(val(x));return t!==null&&__rt.formName(t)==='cljs.core/MultiFn';};
     const field=(m,k)=>__rt.structField(val(m),k);
     const text=x=>printStr(x);
@@ -1676,11 +1676,15 @@ const native = (() => {
     isIFn:x=>core.isFn(x)||multi.is(x)||['keyword','symbol','vector','map','set'].includes(__rt.formKind(val(x)))||decl.satisfies('IFn',x),
     invokeMulti:(m,args)=>multi.dispatch(m,args),
     invokeIFn:(x,args)=>decl.invokeIFn(x,args),
-    // Legacy `(f x)` is `f.call(null, x)`: a struct without IFn methods may
-    // still carry a `call` field or Object method.
+    // Legacy `(f x)` is `f.call(null, x)`: a `call` field or Object method
+    // shadows the declared IFn methods, which are otherwise entered directly.
     invokeStruct:(x,args)=>{
-      if(decl.callable(x))return decl.invokeIFn(x,args);
-      const call=jsMember(x,'call');
+      const info=decl.structInfo(x);
+      if(!info.fieldMembers.includes('call')&&!info.members.has('call')){
+        if(decl.callable(x))return decl.invokeIFn(x,args);
+        throw new TypeError('undefined is not a function');
+      }
+      const call=x.call;
       if(typeof call!=='function')throw new TypeError('undefined is not a function');
       return call.call(x,null,...args);
     },
@@ -1688,7 +1692,9 @@ const native = (() => {
     nativeApplyArgs:args=>{
       args=val(args);
       const kind=__rt.formKind(args);
-      return kind==='vector'||kind==='list'||kind==='cons'||kind==='lazy-seq'||kind==='map'||kind==='set'||kind==='record'
+      // A record is an array-like object to the legacy adapters (no
+      // Symbol.iterator): Array.from reads its length member, if any.
+      return kind==='vector'||kind==='list'||kind==='cons'||kind==='lazy-seq'||kind==='map'||kind==='set'
         ?arr(args):Array.from(args);
     },
     makeHierarchy:multi.makeHierarchy,getGlobalHierarchy:multi.getGlobalHierarchy,isa:multi.isa,

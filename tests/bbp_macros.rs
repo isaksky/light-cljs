@@ -8506,6 +8506,240 @@ fn native_js_call_and_apply_read_struct_fields() {
     );
 }
 
+/// Host coercion of a struct goes through the engine's ToPrimitive: an
+/// Object `toString`/`valueOf` method, else `Object.prototype`'s, as for a
+/// legacy instance; a record's `toString` prints it.
+#[test]
+fn native_struct_host_coercions_match_legacy() {
+    assert_native_matches_legacy(
+        r#"(deftype T [x] Object (toString [_] x))
+           (defmacro m []
+             (let [t (T. "ok")]
+               [(js/String t) (str "s:" t) (js* "`${~{}}`" t) (js* "'' + ~{}" t) (.toString t)]))
+           (js/console.log (pr-str (m)))"#,
+        "[\"ok\" \"s:ok\" \"ok\" \"ok\" \"ok\"]\n",
+    );
+    assert_native_matches_legacy(
+        r#"(deftype N [v] Object (valueOf [_] v))
+           (defmacro m []
+             (let [n (N. 41)]
+               [(js/Number n) (js* "1 + ~{}" n) (js* "~{} > 40" n) (.valueOf n)]))
+           (js/console.log (pr-str (m)))"#,
+        "[41 42 true 41]\n",
+    );
+    assert_native_matches_legacy(
+        r#"(deftype P [x])
+           (defmacro m []
+             (let [p (P. 1)]
+               [(js/String p) (js* "`${~{}}`" p) (identical? (js* "~{}.valueOf()" p) p) (js/isNaN (js/Number p))]))
+           (js/console.log (pr-str (m)))"#,
+        "[\"[object Object]\" \"[object Object]\" true true]\n",
+    );
+    assert_native_matches_legacy(
+        r#"(defrecord R [x])
+           (defmacro m []
+             (let [r (->R 1)]
+               [(js/String r) (.toString r) (js* "`${~{}}`" r)]))
+           (js/console.log (pr-str (m)))"#,
+        "[\"[object Object]\" \"[object Object]\" \"[object Object]\"]\n",
+    );
+}
+
+/// A struct's fields are its own enumerable data properties, under their
+/// munged member names (the last colliding field wins, as the legacy
+/// constructor's assignments do); a record also has its three slots. The
+/// legacy runtime's own `cljs$lang$protocol_mask$…` slots are its internal
+/// bookkeeping, not fields, and are filtered on both backends.
+#[test]
+fn native_struct_reflection_matches_legacy() {
+    const KEYS: &str = "(fn [names] (vec (remove (fn [k] (.startsWith k \"cljs$lang$\")) names)))";
+    assert_native_matches_legacy(
+        &format!(
+            r#"(deftype T [a-b a_b])
+           (defmacro m []
+             (let [t (T. 1 2) keys-of {KEYS}]
+               [(keys-of (js/Object.keys t)) (.-a_b t) (js* "~{{}}.a_b" t) (js* "'a-b' in ~{{}}" t)]))
+           (js/console.log (pr-str (m)))"#
+        ),
+        "[[\"a_b\"] 2 2 false]\n",
+    );
+    assert_native_matches_legacy(
+        &format!(
+            r#"(deftype U [x y])
+           (defmacro m []
+             (let [u (U. 3 4) d (js/Object.getOwnPropertyDescriptor u "y") keys-of {KEYS}]
+               [(keys-of (js/Object.keys u)) (.-value (js/Object.getOwnPropertyDescriptor u "x"))
+                [(.-enumerable d) (.-writable d) (.-configurable d)]
+                (nil? (js/Object.getOwnPropertyDescriptor u "z"))
+                (js* "'x' in ~{{}}" u) (js* "'z' in ~{{}}" u) (nil? (js* "~{{}}.length" u))]))
+           (js/console.log (pr-str (m)))"#
+        ),
+        "[[\"x\" \"y\"] 3 [true true true] true true false true]\n",
+    );
+    assert_native_matches_legacy(
+        &format!(
+            r#"(deftype U [x y])
+           (defmacro m []
+             (let [o (js/Object.assign (js-obj) (U. 3 4)) keys-of {KEYS}]
+               [(.-x o) (.-y o) (keys-of (js/Object.keys o))]))
+           (js/console.log (pr-str (m)))"#
+        ),
+        "[3 4 [\"x\" \"y\"]]\n",
+    );
+    assert_native_matches_legacy(
+        &format!(
+            r#"(defrecord R [x])
+           (defmacro m []
+             (let [r (->R 5) rx (map->R {{:x 6 :y 7}}) keys-of {KEYS}]
+               [(keys-of (js/Object.keys r)) (.-__meta r) (.-__extmap r) (.-__hash r)
+                (.-__extmap rx) (.-x rx) (keys-of (js/Object.getOwnPropertyNames rx))]))
+           (js/console.log (pr-str (m)))"#
+        ),
+        "[[\"x\" \"__meta\" \"__extmap\" \"__hash\"] nil nil nil {:y 7} 6 [\"x\" \"__meta\" \"__extmap\" \"__hash\"]]\n",
+    );
+}
+
+/// A field named `call` shadows the declared IFn methods for every
+/// invocation path, as the legacy `f.call(null, ...)` does.
+#[test]
+fn native_struct_call_fields_override_ifn_in_callbacks() {
+    assert_native_matches_legacy(
+        r#"(deftype T [call] IFn (-invoke [_ x] :ifn))
+           (defrecord C [] IFn (-invoke [_ x] :ifn))
+           (defmacro m []
+             (let [t (T. (fn [ignored x] [:field ignored x])) c (->C)]
+               (list 'quote
+                 [(t 1) (mapv t [2]) (update {:k 3} :k t) (.call t nil 4) (map t [5]) (reduce (fn [acc x] (t x)) nil [6])
+                  (c 1) (mapv c [2]) (update {:k 3} :k c)])))
+           (js/console.log (pr-str (m)))"#,
+        "[[:field nil 1] [[:field nil 2]] {:k [:field nil 3]} [:field nil 4] ([:field nil 5]) [:field nil 6] :ifn [:ifn] {:k :ifn}]\n",
+    );
+}
+
+/// The raw `.apply` adapters read their argument object as the legacy
+/// `Array.from` does: a record is array-like, not a sequence, so only a
+/// `length` member supplies arguments.
+#[test]
+fn native_raw_apply_record_arguments_match_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defrecord Args [x])
+           (deftype L [length])
+           (defmacro m []
+             (let [f {[:x 1] :hit} n (fn [& xs] (count xs))
+                   attempt (fn [thunk] (try (thunk) (catch :default e (.-message e))))]
+               [(attempt #(js* "~{}.apply(null, ~{})" f (->Args 1)))
+                (attempt #(.apply f nil (->Args 1)))
+                (attempt #(.apply :k nil (->Args 1)))
+                (attempt #(js* "~{}.apply(null, ~{})" n (->Args 1)))
+                (attempt #(js* "~{}.apply(null, ~{})" n (L. 1)))
+                (attempt #(.apply n nil (L. 3)))
+                (attempt #(.apply f nil [[:x 1]]))]))
+           (js/console.log (pr-str (m)))"#,
+        "[\"Invalid arity: 0\" \"Invalid arity: 0\" \"Invalid arity: 0\" 0 1 3 :hit]\n",
+    );
+}
+
+/// The four host-interop paths above against QuickJS at jobs 1/2/4/8 with
+/// the struct types declared by a cold helper namespace, so the resolver
+/// suspends inside ToPrimitive, raw `.apply` and callback invocation.
+#[test]
+fn native_struct_host_interop_matches_quickjs_at_every_pool_size() {
+    let root = temp_dir::TempDir::new("native-struct-host-interop");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+          (defn cold [x] x)
+          (deftype T [x] Object (toString [_] (str "T" x)))
+          (defrecord R [x])
+          (deftype L [length])
+          (deftype C [call] IFn (-invoke [_ y] :ifn))
+          (defmacro probe []
+            (let [t (T. (cold 1)) r (->R (cold 2)) l (L. (cold 1)) c (C. (fn [_ y] [:field y]))
+                  n (fn [& xs] (count xs))
+                  keys-of (fn [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$")) names)))
+                  attempt (fn [thunk] (try (thunk) (catch :default e (.-message e))))]
+              (list 'quote [(js/String t) (js* "`${~{}}`" t) (js/String r)
+                            (keys-of (js/Object.keys r)) (js* "'x' in ~{}" r) (.-x (js/Object.assign (js-obj) r))
+                            (attempt #(js* "~{}.apply(null, ~{})" {[:x 2] :hit} r))
+                            (attempt #(.apply n nil l))
+                            (mapv c [3]) (c 4) (update {:k 5} :k c)])))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [helpers :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [helpers :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/value b/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed| {
+        let mut host = MacroHost::new();
+        let mut stats = light_cljs::CompileStats::default();
+        if native {
+            host.use_native_macros();
+        }
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        if native {
+            assert!(stats.native_helpers.waits > 0, "{stats:?}");
+        }
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0);
+    let expected = "[\"T1\" \"T1\" \"[object Object]\" [\"x\" \"__meta\" \"__extmap\" \"__hash\"] true 2 \"Invalid arity: 0\" 1 [[:field 3]] [:field 4] {:k [:field 5]}]";
+    assert_eq!(
+        program_output(&reference),
+        format!("[{expected} {expected}]\n")
+    );
+    #[cfg(feature = "quickjs")]
+    let legacy_reference = build(false, 1, 0);
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            legacy_reference,
+            build(false, jobs, 0),
+            "QuickJS jobs {jobs}"
+        );
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed),
+                "jobs {jobs}, seed {seed}"
+            );
+        }
+    }
+    #[cfg(feature = "quickjs")]
+    assert_eq!(reference, legacy_reference);
+}
+
 /// One table for raw `.call`/`.apply`: every receiver kind, operand kind and
 /// access form against QuickJS, plus member-lookup/operand order across cold
 /// helper demands, at every pool size and stress seed.

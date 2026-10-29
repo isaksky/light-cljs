@@ -135,7 +135,7 @@
 //! | `formArrayMap(pairs)` | `form_op ArrayMap` | insertion-ordered map from alternating operands; equal keys keep the first key and last value | wrong type; odd operand count |
 //! | `formDisj(s, x)` | `form_op` | new set without the member equal to `x` (absent: `s`) | `WrongType` |
 //!
-//! | `structType(name, fields, record)` | `form_op` | a new struct type (light-cljs-478; [`crate::collections::form`], "Structs") | `WrongType` |
+//! | `structType(name, fields, record, members)` | `form_op` | a new struct type (light-cljs-478; [`crate::collections::form`], "Structs"); `members` the fields' JavaScript member names, or `null` for the field names | `WrongType` |
 //! | `structNew(type, v1, …)` | `new_struct n` | a struct of `type` with these field values (missing: `undefined`) | `WrongType` |
 //! | `structField(s, name)` | `form_op` | the field named `name` | `WrongType`, `MissingKey` |
 //! | `structTypeOf(v)` | `form_op` | a struct's type, or `null` | – |
@@ -736,8 +736,8 @@ fn strict_form_op(
             form::disj(heap, &s, &m)?
         }
         FormOp::StructType => {
-            let (name, fields, record) = (arg(), arg(), arg());
-            form::new_type(heap, &name, &fields, &record)?
+            let (name, fields, record, members) = (arg(), arg(), arg(), arg());
+            form::new_type(heap, &name, &fields, &record, &members)?
         }
         FormOp::StructField => {
             let (s, name) = (arg(), arg());
@@ -840,6 +840,7 @@ mod tests {
             &Value::String(JsString::from("R")),
             &vector,
             &Value::Bool(true),
+            &Value::Null,
         )
         .unwrap();
         let record = form::new_struct(&heap, &ty, &[]).unwrap();

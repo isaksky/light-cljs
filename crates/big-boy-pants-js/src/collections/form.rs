@@ -238,8 +238,15 @@
 //!
 //! A *struct type* (`FormKind::Type`, `formKind` `"type"`) is the identity of
 //! a ClojureScript `deftype` or `defrecord` without mutable fields: its
-//! qualified name, its field names and whether it is a record, made by
-//! `__rt.structType(name, fieldNames, record)`; each call is a new identity.
+//! qualified name, its field names, whether it is a record and the
+//! JavaScript member name of each field (`null`: the field names), made by
+//! `__rt.structType(name, fieldNames, record, memberNames)`; each call is a
+//! new identity. A struct is the same object in JavaScript: its fields are
+//! its own enumerable data properties under their member names (the last
+//! field with a member name wins, as a constructor's assignments do), a
+//! record also has `__meta`, `__extmap` and `__hash`, and its other named
+//! members come from the task's core-protocol resolver
+//! (`crate::vm::property`, `Deferred::Form`).
 //! A *struct* (`FormKind::Struct`; `formKind` `"record"` or `"struct"`) is
 //! an instance: its type, its field values in order and, for a record, an
 //! extension map with structural keys. Structs are immutable and
@@ -480,6 +487,8 @@ pub(crate) struct TypeInfo {
     /// The field names as the source spells them (`my-field`): a record's
     /// keyword keys.
     pub(crate) fields: Box<[JsString]>,
+    /// Each field's JavaScript member name (`my_field`), one per field.
+    pub(crate) members: Box<[JsString]>,
     pub(crate) record: bool,
 }
 
@@ -1490,13 +1499,16 @@ pub(crate) fn compiler_literal(
 // ---- Structs (light-cljs-478) ----
 
 /// A new struct type named `name` (a string) with the field names of the
-/// form vector or list `fields` (strings), a record when `record` is true.
-/// Each call makes a new identity.
+/// form vector or list `fields` (strings), a record when `record` is true,
+/// and the fields' JavaScript member names `members` (strings, one per
+/// field; `null`/`undefined` for the field names). Each call makes a new
+/// identity.
 pub(crate) fn new_type(
     heap: &Heap,
     name: &Value,
     fields: &Value,
     record: &Value,
+    members: &Value,
 ) -> Result<Value, CollectionError> {
     let Value::String(name) = name else {
         return Err(wrong(heap, "string type name", name));
@@ -1512,9 +1524,26 @@ pub(crate) fn new_type(
         };
         names.push(field.import(heap).ok_or(CollectionError::HeapLimit)?);
     }
+    let members = match unwrap(heap, members.clone()) {
+        Value::Null | Value::Undefined => names.clone(),
+        members => {
+            let mut out = Vec::new();
+            for member in sequential(heap, &members)?.to_vec() {
+                let Value::String(member) = member else {
+                    return Err(wrong(heap, "string member name", &member));
+                };
+                out.push(member.import(heap).ok_or(CollectionError::HeapLimit)?);
+            }
+            if out.len() != names.len() {
+                return Err(wrong(heap, "one member name per field", &members));
+            }
+            out
+        }
+    };
     let info = TypeInfo {
         name,
         fields: names.into_boxed_slice(),
+        members: members.into_boxed_slice(),
         record: matches!(record, Value::Bool(true)),
     };
     alloc(
@@ -1522,6 +1551,54 @@ pub(crate) fn new_type(
         FormObject::new(FormBody::Type(Arc::new(info)), None),
         &[],
     )
+}
+
+/// The JavaScript own property `name` of the struct `f`: the value of the
+/// last field whose member name it is, or a record's `__meta`, `__extmap`
+/// or `__hash` slot (`null` when absent, as a fresh legacy record's are).
+pub(crate) fn struct_own_property(f: &FormObject, name: &JsString) -> Option<Value> {
+    let FormBody::Struct(s) = f.body() else {
+        return None;
+    };
+    if let Some(i) = s
+        .info
+        .members
+        .iter()
+        .rposition(|member| member.code_units() == name.code_units())
+    {
+        return Some(s.fields.get(i).unwrap_or(Value::Undefined));
+    }
+    if !s.info.record {
+        return None;
+    }
+    if name == &JsString::from("__meta") {
+        Some(f.meta().cloned().unwrap_or(Value::Null))
+    } else if name == &JsString::from("__extmap") {
+        Some(s.ext.clone().unwrap_or(Value::Null))
+    } else if name == &JsString::from("__hash") {
+        Some(Value::Null)
+    } else {
+        None
+    }
+}
+
+/// The JavaScript own keys of the struct `f`, in a legacy constructor's
+/// assignment order: each distinct member name at its first field's
+/// position, then a record's three slots.
+pub(crate) fn struct_own_keys(f: &FormObject) -> Vec<JsString> {
+    let FormBody::Struct(s) = f.body() else {
+        return Vec::new();
+    };
+    let mut keys: Vec<JsString> = Vec::new();
+    for member in s.info.members.iter() {
+        if !keys.iter().any(|k| k.code_units() == member.code_units()) {
+            keys.push(member.clone());
+        }
+    }
+    if s.info.record {
+        keys.extend(["__meta", "__extmap", "__hash"].map(JsString::from));
+    }
+    keys
 }
 
 /// The type of a struct type form.

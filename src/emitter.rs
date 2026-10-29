@@ -7242,9 +7242,15 @@ impl<'a> Emitter<'a> {
             .map(|f| quoted(f))
             .collect::<Vec<_>>()
             .join(", ");
+        // The fields' JavaScript member names: the struct's own properties.
+        let member_names = members[..fields.len()]
+            .iter()
+            .map(|m| quoted(m))
+            .collect::<Vec<_>>()
+            .join(", ");
         let index = self.native_types.len();
         self.native_types.push(format!(
-            "__rt.structType({}, __rt.formVector({names}), {record})",
+            "__rt.structType({}, __rt.formVector({names}), {record}, __rt.formVector({member_names}))",
             quoted(&name)
         ));
         write!(self.output, " }}, {mutable}, __lightUnitType{index}, ").unwrap();

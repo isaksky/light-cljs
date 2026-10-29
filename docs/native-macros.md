@@ -3504,3 +3504,58 @@ CPU 7.58/7.65 s, maximum RSS 1,017–1,038 and 1,010–1,058 MiB, load average
 2.7–4.8 with no other builds running. An earlier three-pair set under a
 peer's load average of about 4.5 (7.76/8.18 s medians) is superseded. All
 sixteen outputs keep SHA-256 prefix `1a75bc87b26f3121`.
+
+### Review-fix round 1: host interop of structs (2026-10-29)
+
+The first review found that deleting the views also deleted what they gave
+host code: ToPrimitive coercion, field reflection, and two callable paths
+that differed from the legacy runtime. All five fixes stay inside the
+invariant: the engine and the member read own every conversion, no call
+boundary does.
+
+- **Fields are the engine's own properties.** `__rt.structType` takes a
+  fourth argument, the fields' JavaScript member names (the emitter passes
+  the munged names; `null` means the field names). A struct's fields are its
+  own enumerable, writable, configurable data properties under those names
+  (the last field munged to a name wins, as the legacy constructor's
+  assignments do), and a record also has `__meta`, `__extmap` (the extension
+  map or `null`) and `__hash` (`null`). Reads, `in`,
+  `Object.getOwnPropertyDescriptor`, `Object.keys`/`getOwnPropertyNames`,
+  `Object.assign` and for-in all agree, without the resolver. The legacy
+  runtime additionally lists its own `cljs$lang$protocol_mask$partition0$`
+  and `…1$` bookkeeping slots on every instance; those are not fields and
+  are not modelled, so the differential reflection tests filter `cljs$lang$`
+  keys on both backends.
+- **Conversions go through the member read too.** `Deferred::Form` now
+  applies to ToPrimitive's `valueOf`/`toString` lookups as well as ordinary
+  reads, and a struct's resolver answers an `Object` method, then its IFn
+  `call`/`apply` adapters, then what a legacy instance inherits from
+  `Object.prototype` (`toString`, `valueOf`; not `constructor`). So
+  `(js/String t)`, template literals and `1 + n` use a deftype's declared
+  `toString`/`valueOf`, a methodless struct converts to `[object Object]`
+  and `NaN`, and a record (which has no legacy `toString`) likewise.
+- **A `call` field shadows IFn everywhere.** `invokeStruct` reads the
+  struct's `call` member as JavaScript would when a field or `Object`
+  method named `call` exists, so `mapv`, `update`, `reduce` callbacks and
+  direct calls agree; otherwise it enters the declared IFn entries directly.
+- **Record `.apply` arguments are array-like.** `nativeApplyArgs` no longer
+  expands a record as a sequence: as in the legacy adapters' `Array.from`, a
+  record (no `Symbol.iterator`) supplies arguments only through a `length`
+  member, so `f.apply(null, record)` reports `Invalid arity: 0`.
+- **Built-in-initiated reads are tested.** The engine forms test
+  `native_form_builtin_member_reads_resume_without_replay` reads `length`
+  through `Array.from` and `Reflect.get` and `toString` through `String`,
+  with the resolver parking on a distinct dependency per read, collection
+  between waits and a 64 KiB resumption, counting exactly one resolution per
+  read, and a throwing resolver whose error reaches the JavaScript `catch`;
+  it also checks struct reflection without a resolver.
+
+Differential tests against QuickJS: `native_struct_host_coercions_match_legacy`,
+`native_struct_reflection_matches_legacy`,
+`native_struct_call_fields_override_ifn_in_callbacks` and
+`native_raw_apply_record_arguments_match_quickjs` reproduce the review's
+scenarios (each failed before its fix), and
+`native_struct_host_interop_matches_quickjs_at_every_pool_size` runs all four
+paths with the types declared by a cold helper namespace at jobs 1/2/4/8
+under every stress seed, so the resolver suspends inside ToPrimitive, raw
+`.apply` and callback invocation.

@@ -84,7 +84,7 @@ fn call_members_keep_early_reads_receivers_and_operands_across_waits() {
       if(operands!==0||log.join(',')!=='get,arg')throw new Error('ordering');
       for(const v of [__rt.formVector(1),__rt.formMap(),__rt.formSet(),__rt.formKeyword(null,'k'),__rt.formSymbol(null,'s')])
         if(!__rt.cljCallable(v)||(__rt.formKind(v)!=='keyword'&&!__rt.cljCallable(__rt.cljWithMeta(v,__rt.formMap('tag',true)))))throw new Error('callable form');
-      const T=__rt.structType('cljs.core/MultiFn',__rt.formVector(),false), m=__rt.structNew(T);
+      const T=__rt.structType('cljs.core/MultiFn',__rt.formVector(),false, null), m=__rt.structNew(T);
       const entry=function(_,x){return this===m?x:0;};
       if(__rt.cljCallMember(m,entry)!==entry)throw new Error('multimethod entry');
       return true;

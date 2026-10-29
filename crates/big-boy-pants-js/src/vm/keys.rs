@@ -213,6 +213,9 @@ struct Raw {
     /// An array's or allocated String wrapper's virtual `length`.
     length: bool,
     named: Vec<(PropertyKey, bool)>,
+    /// A struct's field member names and record slots: enumerable own
+    /// data properties the key table never interned.
+    virtual_names: Vec<JsString>,
     /// Virtual keys already charged before they were listed.
     charge: ByteReservation,
     precharged: usize,
@@ -421,10 +424,13 @@ fn collect(heap: &Heap, object: &HeapObject, task: TaskId) -> Result<Raw, Fault>
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => Err(Fault::Internal(
             "a function's keys are read from its property record",
         )),
+        HeapObject::Form(f) => Ok(Raw {
+            virtual_names: crate::collections::form::struct_own_keys(f),
+            ..Raw::default()
+        }),
         HeapObject::Vector(_)
         | HeapObject::Map(_)
         | HeapObject::Occurrence(_)
-        | HeapObject::Form(_)
         | HeapObject::Builder(_)
         | HeapObject::Cell(_)
         | HeapObject::Atom(_)
@@ -453,7 +459,7 @@ fn order(heap: &Heap, raw: Raw, filter: KeyFilter) -> Result<ChargedKeys, Fault>
     let wanted = |enumerable: bool| filter == KeyFilter::All || enumerable;
     // Every key not charged while it was collected, plus `length`.
     let mut charge = raw.charge;
-    let listed = raw.elements.len() + raw.named.len() + 1;
+    let listed = raw.elements.len() + raw.named.len() + raw.virtual_names.len() + 1;
     charge.merge(reserve_elements(
         heap,
         listed.saturating_sub(raw.precharged),
@@ -468,6 +474,10 @@ fn order(heap: &Heap, raw: Raw, filter: KeyFilter) -> Result<ChargedKeys, Fault>
             enumerable: false,
         });
     }
+    names.extend(raw.virtual_names.into_iter().map(|name| OwnKey {
+        key: Key::Name(name),
+        enumerable: true,
+    }));
     for (key, enumerable) in raw.named {
         let Some(name) = heap.keys().name(key) else {
             if filter == KeyFilter::All

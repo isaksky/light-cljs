@@ -389,7 +389,7 @@ fn map_to_record_preserves_positional_extensions() {
     let result = call(
         &rt,
         r#"function check() {
-        const R = __rt.structType('example/R', __rt.formVector('x'), true);
+        const R = __rt.structType('example/R', __rt.formVector('x'), true, null);
         const x = __rt.formKeyword(null, 'x');
         const m = __rt.formLiteralMap(__rt.formVector('a', 1, x, 0, 'a', 2, 'z', 3));
         const r = __rt.recordFromMap(R, m), entries = __rt.cljSeq(r);
@@ -453,7 +453,7 @@ fn record_extensions_publish_and_trace_map_identity_and_metadata() {
     let made = call(
         &rt,
         r#"function make() {
-        const R = __rt.structType('example/R', __rt.formVector('x'), true);
+        const R = __rt.structType('example/R', __rt.formVector('x'), true, null);
         const meta = __rt.formMap('tag', __rt.formVector('kept'));
         const ext = __rt.formWithMeta(__rt.formLiteralMap(__rt.formVector('a', 1, 'a', 2)), meta);
         const r = __rt.structNew(R, 0, null, ext);
@@ -493,7 +493,7 @@ fn record_extensions_publish_and_trace_map_identity_and_metadata() {
     let bad = call(
         &rt,
         r#"function make() {
-        const R = __rt.structType('example/R', __rt.formVector('x'), true);
+        const R = __rt.structType('example/R', __rt.formVector('x'), true, null);
         const ext = __rt.formWithMeta(__rt.formLiteralMap(__rt.formVector('a', 1, 'a', 2)), __rt.formMap('hidden', {}));
         return __rt.structNew(R, 0, null, ext);
     }"#,
@@ -1927,9 +1927,9 @@ fn protocol_lookup_requires_declared_types_and_keeps_host_resolution_outside_the
     let result = call(
         &rt,
         r#"function f() {
-          const R = __rt.structType('ns/R', __rt.formVector(), true);
-          const T = __rt.structType('ns/T', __rt.formVector(), false);
-          const sameName = __rt.structType('ns/T', __rt.formVector(), false);
+          const R = __rt.structType('ns/R', __rt.formVector(), true, null);
+          const T = __rt.structType('ns/T', __rt.formVector(), false, null);
+          const sameName = __rt.structType('ns/T', __rt.formVector(), false, null);
           const r = __rt.structNew(R), t = __rt.structNew(T);
           let declared = __rt.assoc(__rt.assoc(__rt.map(), R, true), T, true);
           let table = __rt.assoc(__rt.assoc(__rt.map(), R, 'record'), 'object', 'object');
@@ -1987,8 +1987,8 @@ fn structs_follow_record_semantics_dispatch_by_type_identity_and_publish() {
     let made = call(
         &rt,
         "function make() {
-           const R = __rt.structType('my.ns/R', __rt.formVector('a', 'b'), true);
-           const T = __rt.structType('my.ns/T', __rt.formVector('x'), false);
+           const R = __rt.structType('my.ns/R', __rt.formVector('a', 'b'), true, null);
+           const T = __rt.structType('my.ns/T', __rt.formVector('x'), false, null);
            const r = __rt.structNew(R, 1, __rt.formVector(2));
            const a = __rt.formKeyword(null, 'a'), c = __rt.formKeyword(null, 'c');
            const check = (ok, what) => { if (!ok) throw new Error(what); };
@@ -2058,7 +2058,7 @@ fn structs_follow_record_semantics_dispatch_by_type_identity_and_publish() {
 fn core_protocol_callbacks_resume_across_collection_without_entering_key_comparison() {
     let rt = Runtime::new();
     let code = compile_function(r#"function f() {
-      const T=__rt.structType('T',__rt.formVector('n'),false);
+      const T=__rt.structType('T',__rt.formVector('n'),false, null);
       const a=__rt.structNew(T,7), b=__rt.structNew(T,7);
       let calls=0;
       __rt.cljCoreResolver((op,x)=> {
@@ -2084,7 +2084,7 @@ fn core_protocol_callbacks_resume_across_collection_without_entering_key_compari
       catch(e){if(e.message!=='lookup'||calls!==3)throw e;}
       // A resolver's missing entry falls back to record operations without
       // redispatch; that path can itself realize a lazy sequence.
-      const R=__rt.structType('R',__rt.formVector('x'),true);
+      const R=__rt.structType('R',__rt.formVector('x'),true, null);
       if(__rt.cljCount(__rt.structNew(R,1))!==1)throw new Error('fallback');
       const r1=__rt.structNew(R,7), r2=__rt.structNew(R,7);
       if(__rt.cljCount(__rt.formMap(r1,1,r2,2))!==1||__rt.cljCount(__rt.formSet(r1,r2))!==1||calls!==3)throw new Error('record keys');
@@ -2120,7 +2120,7 @@ fn core_protocol_callbacks_resume_across_collection_without_entering_key_compari
 fn lazy_struct_sequence_callbacks_survive_collection_and_small_stack_resumption() {
     let code = compile_function(
         r#"function f(record) {
-      const T=__rt.structType('T',__rt.formVector('n'),record);
+      const T=__rt.structType('T',__rt.formVector('n'),record,null);
       let calls=0;
       __rt.cljCoreResolver((op,x,lazy)=>{
         __rt.need(90,1);
@@ -2180,7 +2180,7 @@ fn realized_lazy_records_publish_the_receiver_retained_for_protocol_dispatch() {
     let lazy = call(
         &rt,
         r#"function f(){
-      const R=__rt.structType('R',__rt.formVector('n'),true);
+      const R=__rt.structType('R',__rt.formVector('n'),true, null);
       const r=__rt.formWithMeta(__rt.structNew(R,3),__rt.formMap('hidden',{}));
       const s=__rt.lazySeq(()=>r);
       __rt.cljSeq(s);
@@ -2201,7 +2201,7 @@ fn shared_lazy_records_check_retained_receivers_during_realization() {
         r#"function make(bad) {
       return __rt.lazySeq(()=>{
         __rt.need(94,1);
-        const R=__rt.structType('R',__rt.formVector('n'),true);
+        const R=__rt.structType('R',__rt.formVector('n'),true, null);
         const hidden=bad?{}:__rt.formVector(8);
         return __rt.formWithMeta(__rt.structNew(R,3),__rt.formMap('hidden',hidden));
       });
@@ -2316,12 +2316,76 @@ fn raw_form_members_resume_resolution_and_calls_without_changing_identity() {
     }
 }
 
+/// Built-ins read a form's named members through `Action::FormMember`:
+/// `Array.from` and `Reflect.get` read `length`, `String` reads `toString`
+/// through ToPrimitive (a string hint tries it first). The resolver suspends and
+/// resumes without replaying a read, under collection and a small-stack
+/// resumption, and its exception propagates to the JavaScript catch. A
+/// struct's fields are the engine's own data properties: reads, presence,
+/// descriptors and keys agree without a resolver.
+#[test]
+fn native_form_builtin_member_reads_resume_without_replay() {
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function f() {
+      const T=__rt.structType('ns/T',__rt.formVector('a-b','a_b','call'),false,__rt.formVector('a_b','a_b','call'));
+      const s=__rt.structNew(T,1,2,null), m=__rt.formMap('x',false);
+      const d=Object.getOwnPropertyDescriptor(s,'a_b');
+      if(s.a_b!==2||!('a_b' in s)||('z' in s)||s.call!==null||Object.keys(s).join()!=='a_b,call'
+         ||d.value!==2||!d.enumerable||!d.writable||Object.getOwnPropertyDescriptor(s,'z')!==undefined
+         ||Object.assign({},s).a_b!==2)
+        throw new Error('struct reflection');
+      let resolutions=0;
+      __rt.cljCoreResolver((op,x,_,name)=>{
+        if(op!=='jsMember')throw new Error('op '+op);
+        resolutions++;
+        if(name==='boom')throw new Error('resolver boom');
+        if(name==='toString')return function(){return 'text:'+resolutions;};
+        if(name!=='length')return undefined;
+        __rt.need(920+resolutions,1);
+        return 2;
+      });
+      const fromMap=Array.from(m);
+      const got=Reflect.get(m,'length');
+      const text=String(s);
+      let caught=null;
+      try { Reflect.get(s,'boom'); } catch(e) { caught=e.message; }
+      return [fromMap.length, String(fromMap[0]), got, text, caught, resolutions].join('|');
+    }"#,
+    )
+    .unwrap();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    for _ in 0..2 {
+        let outcome = task.run().unwrap();
+        assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
+        rt.collect().unwrap();
+        let request = task.take_producer_requests().pop().unwrap();
+        let ready = rt.root(Primitive::Null);
+        task = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+            .unwrap()
+            .into_runnable()
+            .pop()
+            .unwrap();
+    }
+    let result = thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || complete(task.run().unwrap()))
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(
+        result.string().map(|s| s.to_string_lossy()).as_deref(),
+        Some("2|undefined|2|text:3|resolver boom|4")
+    );
+}
+
 #[test]
 fn missing_core_protocol_resolves_once_when_record_comparison_realizes_fields() {
     let rt = Runtime::new();
     let code = compile_function(
         r#"function f() {
-      const R=__rt.structType('R',__rt.formVector('x'),true);
+      const R=__rt.structType('R',__rt.formVector('x'),true, null);
       const a=__rt.structNew(R,__rt.lazySeq(()=>{__rt.need(92,1);return __rt.formList(7);}));
       const b=__rt.structNew(R,__rt.formList(7));
       let resolutions=0;

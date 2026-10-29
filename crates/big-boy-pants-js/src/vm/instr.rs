@@ -1762,9 +1762,11 @@ impl FormOp {
             | FormOp::Assoc
             | FormOp::CljNthOr
             | FormOp::CljGet
-            | FormOp::CljAssoc
-            | FormOp::StructType => 3,
-            FormOp::CljInvoke | FormOp::CljProtocolLookup | FormOp::CljRangeCons => 4,
+            | FormOp::CljAssoc => 3,
+            FormOp::CljInvoke
+            | FormOp::CljProtocolLookup
+            | FormOp::CljRangeCons
+            | FormOp::StructType => 4,
         }
     }
 

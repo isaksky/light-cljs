@@ -153,7 +153,7 @@
 
 use std::fmt;
 
-use crate::collections::object_name;
+use crate::collections::{form, object_name};
 use crate::heap::{Heap, HeapObject, ObjectId};
 use crate::ids::TaskId;
 use crate::object::array::{ArrayObject, array_index, number_index};
@@ -1064,17 +1064,27 @@ fn lookup_cursor(
                         Value::Object(inner) => Some(inner),
                         _ => None,
                     })),
-                    // A form's named members belong to the task's runtime
-                    // (an object inheriting from a form reads them too);
-                    // presence checks, symbol/index keys and conversions
-                    // see no properties.
-                    Visit::Other(HeapObject::Form(_))
-                        if matches!(mode, LookupMode::Read) && matches!(key, Key::Name(_)) =>
-                    {
-                        Ok(Lookup::Found(Read::Deferred(Deferred::Form {
-                            target: id,
-                            key: key.clone(),
-                        })))
+                    // A struct's fields are its own data properties; a
+                    // form's other named members (methods, callable
+                    // adapters, conversions) belong to the task's runtime,
+                    // for an object inheriting from a form too. Presence
+                    // checks see only the fields; symbol and index keys
+                    // nothing.
+                    Visit::Other(HeapObject::Form(f)) if let Key::Name(name) = key => {
+                        if let Some(value) = form::struct_own_property(f, name) {
+                            Ok(Lookup::Found(Read::Value(if has {
+                                Value::Undefined
+                            } else {
+                                value
+                            })))
+                        } else if has {
+                            Ok(Lookup::Next(None))
+                        } else {
+                            Ok(Lookup::Found(Read::Deferred(Deferred::Form {
+                                target: id,
+                                key: key.clone(),
+                            })))
+                        }
                     }
                     Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
                         Some(fault) => Err(fault),
@@ -2258,6 +2268,14 @@ fn own_property(
                 },
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     return Ok(Own::Function);
+                }
+                // A struct's fields are its own enumerable data properties.
+                Visit::Other(HeapObject::Form(f)) if let Key::Name(name) = key => {
+                    form::struct_own_property(f, name).map(|value| Property {
+                        value: if with_value { value } else { Value::Undefined },
+                        flags: PropertyFlags::DATA,
+                        accessor: None,
+                    })
                 }
                 Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
                     Some(fault) => return Err(fault),
