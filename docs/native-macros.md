@@ -3499,3 +3499,33 @@ to an application printing `true`, builds `app.render` byte-identically to
 the V8 output and hash above, and reproduces exactly the recorded `app.main`
 `keep` failure at jobs 1. `app.main` has no successful native build to compare;
 light-cljs-560 remains the focused follow-up.
+
+### Callable member identity and Clojure apply
+
+Clojure `apply` selects a declared IFn's direct invoke entry through twenty
+arguments. This preserves the receiver used by `this-as` and `recur`, including
+memoized IFn callbacks. Wider calls retain the legacy `.apply` array-tail ABI.
+Raw `.call` keeps its separate overloaded/variadic receiver rules; a borrowed
+variadic-only member retains its declaring implementation, while a fixed member
+dispatches on the supplied receiver.
+
+One runtime-owned atom canonicalizes raw members by collection family or native
+type identity, using only SameValueZero keys and compare-and-set. Extracting a
+member, publishing it and reading it in another task therefore keeps its
+identity, including after collection. Adapters resolve protocol machinery in
+the consuming task. Keyword, symbol, vector/map-entry, map, set and multimethod
+families retain the same distinct or shared member identities as QuickJS.
+
+Native `.-call`/`.-apply` reads and explicit `.call`/`.apply` calls retain the
+native receiver rather than constructing a struct view. Explicit method calls
+unwrap scalar occurrences at the JavaScript boundary while retaining native
+collection arguments. Ordinary JavaScript functions therefore receive primitive
+numbers, strings and booleans, and borrowed collection members keep their native
+receiver. The ordinary application/default emission path remains unchanged.
+
+The differential matrix includes Clojure `apply` for every callable kind,
+published member identities and pairwise family identities, and a deftype with
+zero-, one-, two-, three-argument and variadic overloads. Separate regressions
+cover borrowed record/type members, direct-entry receivers and `recur`, and
+ordinary JavaScript function scalar arguments. These compare complete emitted
+applications with QuickJS; the matrix exercises jobs 1/2/4/8 with twelve seeds.
