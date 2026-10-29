@@ -8267,6 +8267,23 @@ fn native_declared_ifn_calls_keep_own_implementations() {
 }
 
 #[test]
+fn native_ifn_apply_uses_direct_invoke_entries() {
+    assert_native_matches_legacy(
+        r#"(defrecord R [bias] IFn
+              (-invoke [this] [:fixed bias])
+              (-invoke [this x & xs] [(fn? this) x (vec xs)]))
+            (deftype Countdown [bias] IFn
+              (-invoke [this n] (if (pos? n) (recur (dec n)) bias)))
+            (defmacro m []
+              (let [f (->R 8) memo (memoize f) countdown (Countdown. 9) cached (memoize countdown)]
+                (list 'quote [(f 1 2 3) (apply f [1 2 3]) (memo 1 2 3)
+                              (apply countdown [2]) (cached 2)])))
+            (js/console.log (pr-str (m)))"#,
+        "[[true 1 [2 3]] [false 1 [2 3]] [false 1 [2 3]] 9 9]\n",
+    );
+}
+
+#[test]
 fn native_raw_callable_collections_match_quickjs() {
     assert_native_matches_legacy(
         r#"(defmacro m [] (let [f {"x" "y"}] (js* "~{}.call(null, 'x')" f)))
@@ -8307,6 +8324,7 @@ fn native_raw_callable_collections_match_quickjs() {
                          (nth xs 10) (nth xs 11) (nth xs 12) (nth xs 13) (nth xs 14)
                          (nth xs 15) (nth xs 16) (nth xs 17) (nth xs 18) (nth xs 19)
                          (nth xs 20) (nth xs 21) (nth xs 22) (nth xs 23) (nth xs 24)))))
+               (attempt (fn [] (apply f xs)))
                (attempt (fn [] (js* "~{}['apply'](null, ~{})" f args)))
                (attempt (fn [] (js* "~{}.apply(null, ~{})" f xs)))
                (attempt (fn [] (js* "~{}.apply(null, ~{})" f (apply list xs))))

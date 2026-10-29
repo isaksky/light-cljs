@@ -301,7 +301,7 @@ const decl = (() => {
     // may share a member, and property enumeration may reorder names.
     // Raw call/apply use the type's declared IFn entries. Protocol extensions
     // do not replace those entries or install JavaScript callable members.
-    const ifn = specs.filter(s=>s[0]==='IFn/-invoke').map(s=>[s[1],s[2],s[4]!=null]);
+    const ifn = specs.filter(s=>s[0]==='IFn/-invoke').map(s=>[s[1],s[2],s[4]!=null,s[3]??s[2]]);
     views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), ifn, mutable, record, mask0});
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
@@ -328,6 +328,16 @@ const decl = (() => {
     if (method == null) throw new Error('Invalid arity: ' + args.length);
     const receiver = rest && count > 0 && exact === null ? rest : x;
     return method.call(receiver, receiver, ...args);
+  };
+  // Clojure apply reads the direct invoke slot first. Its receiver differs
+  // from an overloaded .call's variadic fallback, and recur retains it.
+  const applyIFn = (x, args) => {
+    if (args.length <= 20) {
+      const entry = ifnMethods(x).findLast(([n]) => n === args.length + 1);
+      if (entry !== undefined) return entry[3].call(x, x, ...args);
+      return invokeIFn(x,args);
+    }
+    return x.apply(null,args);
   };
   // The struct a struct view, or an object inheriting from one, stands for.
   const viewStructs = new WeakMap();
@@ -405,7 +415,7 @@ const decl = (() => {
     return info?.mutable && info.record ? info : null;
   };
   return {extend, method, satisfies, implementsDirectly, predicate, type, viewOf, register, enter, leave, coreKeys, mutableRecord,
-    callable, invokeIFn,
+    callable, invokeIFn, applyIFn,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
     coreMethod:resolveCore,
@@ -674,8 +684,8 @@ const native = (() => {
   // without a mutable JavaScript arity property record.
   const applyArgs = (f,args) => {
     const value=val(f),kind=__rt.formKind(value);
-    if(kind!==null)return args.length>20 && (kind==='struct'||kind==='record')
-      && __rt.formName(__rt.structTypeOf(value))!=='cljs.core/MultiFn' ? value.apply(null,args) : invoke(f,...args);
+    if(kind!==null)return (kind==='struct'||kind==='record')
+      && __rt.formName(__rt.structTypeOf(value))!=='cljs.core/MultiFn' ? decl.applyIFn(value,args) : invoke(f,...args);
     if(value.cljs$lang$applyTo){
       return args.length<=value.cljs$lang$maxFixedArity
         ?value.call(null,...args):value.cljs$lang$applyTo(list(args));
@@ -1663,8 +1673,8 @@ const native = (() => {
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),
     apply:(f,...xs)=>{
       const args=[...xs.slice(0,-1),...arr(xs[xs.length-1])], kind=__rt.formKind(val(f));
-      return args.length>20 && (kind==='struct'||kind==='record') && !multi.is(f)
-        ? f.apply(null,args) : invoke(f,...args);
+      return (kind==='struct'||kind==='record') && !multi.is(f)
+        ? decl.applyIFn(val(f),args) : invoke(f,...args);
     },
     update:(value,key,f,...args)=>{const old=core.get(value,key);return core.assoc(value,key,invoke(f,old,...args));},
     assoc:(m,...xs)=>{for(let i=0;i<xs.length;i+=2)m=__rt.cljAssoc(m,xs[i],xs[i+1]);return m;},
