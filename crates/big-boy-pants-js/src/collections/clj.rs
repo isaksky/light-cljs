@@ -319,7 +319,8 @@ pub(crate) fn peek(heap: &Heap, v: &Value) -> Result<Value> {
 
 /// Persistent stack removal for the stacks [`peek`] observes, as the legacy
 /// runtime's `pop`: nil stays nil, a vector drops its last element (keeping
-/// metadata) and a list is its rest. Other sequence kinds are not realized.
+/// metadata), a queue drops its first element and a list is its rest. Other
+/// sequence kinds are not realized.
 pub(crate) fn pop(heap: &Heap, v: &Value) -> Result<Value> {
     let unsupported =
         || CljError::Operands("No protocol method IStack.-pop defined for this value");
@@ -337,6 +338,9 @@ pub(crate) fn pop(heap: &Heap, v: &Value) -> Result<Value> {
                     return Err(CljError::Operands("Can't pop empty vector"));
                 }
                 Ok(form::vector_pop(heap, &form::unwrap(heap, v.clone()))?)
+            }
+            FormBody::CompilerLiteral { tag, .. } if tag == "queue" => {
+                Ok(form::queue_pop(heap, &form::unwrap(heap, v.clone()))?)
             }
             _ => Err(unsupported()),
         },

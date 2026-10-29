@@ -2341,6 +2341,41 @@ pub(crate) fn vector_pop(heap: &Heap, coll: &Value) -> Result<Value, CollectionE
     alloc(heap, f.updated(body), std::slice::from_ref(coll))
 }
 
+/// `pop` of a queue literal: the queue without its first element, keeping
+/// its metadata. An empty queue is itself.
+pub(crate) fn queue_pop(heap: &Heap, coll: &Value) -> Result<Value, CollectionError> {
+    let expected = "queue literal";
+    let Some(f) = form_object(heap, coll) else {
+        return Err(wrong(heap, expected, coll));
+    };
+    let FormBody::CompilerLiteral {
+        tag,
+        payload,
+        scalar,
+    } = &f.body
+    else {
+        return Err(wrong(heap, expected, coll));
+    };
+    let Some(FormBody::Vector(items)) = form_object(heap, payload).map(|p| p.body.clone()) else {
+        return Err(wrong(heap, expected, coll));
+    };
+    if items.len() == 0 {
+        return Ok(coll.clone());
+    }
+    let rest = PVector::try_from_values(heap, &items.to_vec()[1..])?;
+    let rest = alloc(
+        heap,
+        FormObject::new(FormBody::Vector(rest), None),
+        std::slice::from_ref(payload),
+    )?;
+    let body = FormBody::CompilerLiteral {
+        tag: tag.clone(),
+        payload: rest.clone(),
+        scalar: scalar.clone(),
+    };
+    alloc(heap, f.updated(body), &[coll.clone(), rest])
+}
+
 /// `disj` of a set member by an equal value (absent: the set itself).
 pub(crate) fn disj(heap: &Heap, set: &Value, member: &Value) -> Result<Value, CollectionError> {
     let Some(f) = form_object(heap, set) else {

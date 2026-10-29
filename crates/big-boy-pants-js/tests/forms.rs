@@ -2525,6 +2525,11 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
                                 [v,'No protocol method IStack.-pop defined for this value'],
                                 [__rt.formVector(),"Can't pop empty vector"],[__rt.formList(),"Can't pop empty list"]])
         try { __rt.cljPop(x); throw new Error('accepted pop'); } catch(e) { if(e.message!==message)throw e; }
+      const queue=__rt.cljWithMeta(__rt.formCompilerLiteral('queue',__rt.formVector(1,2,3)),__rt.formMap('queue',true));
+      const dequeued=__rt.cljPop(queue), emptyQueue=__rt.formCompilerLiteral('queue',__rt.formVector());
+      if(__rt.cljPeek(dequeued)!==2||__rt.cljFirst(__rt.cljNext(__rt.cljSeq(dequeued)))!==3||__rt.cljPeek(queue)!==1
+        ||__rt.cljGet(__rt.cljMeta(dequeued),'queue',null)!==true||__rt.cljPop(emptyQueue)!==emptyQueue
+        ||__rt.cljSeq(__rt.cljPop(__rt.cljPop(dequeued)))!==null)throw new Error('queue pop');
       for(const i of [1,2,3,4,5,7])if(__rt.cljIsList(at(i)))throw new Error('non-list '+i);
       for(let i=0;i<8;i++)if(!__rt.cljIsSeq(at(i))||!__rt.cljIsSequential(at(i))||!__rt.cljIsColl(at(i)))throw new Error('sequence markers');
       if(__rt.cljSeq(v)!==v||__rt.cljSeq(l)!==l)throw new Error('unchanged identity');

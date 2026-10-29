@@ -1005,7 +1005,9 @@ fn native_pop_matches_quickjs_at_every_pool_size() {
                    (compile-concat ["a" "b" 'x "c" "d" "e"])
                    [(.-value (pop s)) (.-value (p s)) (.-value (apply p [s])) (.-value (-pop s))
                     (.-value (pp s)) @seen]
-                   (mapv (fn [x] (error pp x)) [nil "ab" {:a 1} (seq [1 2])])])))"#,
+                   (mapv (fn [x] (error pp x)) [nil "ab" {:a 1} (seq [1 2])])
+                   (let [e cljs.core.PersistentQueue.EMPTY m (with-meta e {:q true})]
+                     [(= e (pop e)) (meta (pop m)) (seq (pp e))])])))"#,
         ),
         (
             "a.cljs",
@@ -1060,7 +1062,8 @@ fn native_pop_matches_quickjs_at_every_pool_size() {
         program_output(&reference),
         format!(
             "[[{checked} {rejected}] [39 38 [] [1] [1] (2)] [\"ab\" x \"cde\"] \
-             [2 2 2 2 2 [:pop :pop :pop :pop :pop]] [{protocol}]] true\n"
+             [2 2 2 2 2 [:pop :pop :pop :pop :pop]] [{protocol}] \
+             [true {{:q true}} nil]] true\n"
         )
     );
     for jobs in [1, 2, 4, 8] {
