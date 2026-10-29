@@ -10,6 +10,11 @@
 ;; results.edn under :stats. Builds are cold: a binary whose cache is on by
 ;; default (light-cljs-328) gets --no-cache unless the extra flags name
 ;; --cache-dir.
+;; shadow-release-warm and shadow-compile-warm keep shadow's .shadow-cljs cache
+;; from the previous shadow job (run the cold job first); the other shadow jobs
+;; delete it. PENPOT_PORT selects another copy of research/penpot-light (from a
+;; worktree, the main checkout's), and PENPOT_FRONTEND another copy of research/penpot/frontend
+;; (for example an APFS clone of frontend/ and common/ next to each other).
 (require '[babashka.fs :as fs]
          '[babashka.process :as process]
          '[clojure.java.io :as io]
@@ -19,8 +24,8 @@
 (def output (some-> (first *command-line-args*) fs/absolutize))
 (when-not output (throw (ex-info "An output directory is required" {})))
 (fs/create-dirs output)
-(def port (fs/path repo "research/penpot-light"))
-(def frontend (fs/path repo "research/penpot/frontend"))
+(def port (if-let [p (System/getenv "PENPOT_PORT")] (fs/absolutize p) (fs/path repo "research/penpot-light")))
+(def frontend (if-let [f (System/getenv "PENPOT_FRONTEND")] (fs/absolutize f) (fs/path repo "research/penpot/frontend")))
 (def binary (or (System/getenv "LIGHT_CLJS_BINARY")
                 (str (fs/path repo "target/release/light-cljs"))))
 (def common [binary "--compile" "--esm"
@@ -34,7 +39,9 @@
            "main-advanced" ["app.main" "--optimize" "advanced" "--pseudo-names" "--elide-asserts"]
            "abnf" ["instaparse.abnf" "--optimize" "none"]
            "shadow-release" "release"
-           "shadow-compile" "compile"})
+           "shadow-compile" "compile"
+           "shadow-release-warm" "release"
+           "shadow-compile-warm" "compile"})
 (def selected (or (seq (rest *command-line-args*))
                   ["render" "main-none" "main-advanced" "shadow-release" "shadow-compile"]))
 (def extra-args (some-> (System/getenv "LIGHT_CLJS_EXTRA_ARGS") str/trim not-empty (str/split #"\s+")))
@@ -70,7 +77,7 @@
         command (if shadow?
                   ["clojure" "-M:dev:shadow-cljs" spec "main"]
                   (concat common roots ["--entry" (first spec)] (rest spec) no-cache extra-args))]
-    (when shadow?
+    (when (and shadow? (not (str/ends-with? job "-warm")))
       ;; These are generated compiler caches, never port sources.
       (fs/delete-tree (fs/path frontend ".shadow-cljs"))
       (fs/delete-if-exists (fs/path frontend "target/index.js")))

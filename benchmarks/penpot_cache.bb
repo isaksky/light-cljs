@@ -15,6 +15,7 @@
 ;;   resolution warm after adding a .cljs file shadowing a .cljc namespace
 ;;   advanced   --optimize advanced (penpot.bb main-advanced): cache off,
 ;;              populating, then warm
+;;   advanced-leaf  with advanced, then warm after the leaf edit (named only)
 ;;   watch      --watch: populating start, warm start, then STEPS saves of
 ;;              the leaf (LIGHT_CLJS_WATCH_STEPS, default 3) with peak RSS
 ;; Edit scenarios run on an APFS clone of the warm directory, so each round
@@ -23,6 +24,8 @@
 ;; with its wall, CPU, peak RSS, cache directory size, uptime load, output
 ;; SHA-256 and the report's counters. LIGHT_CLJS_BINARY selects an
 ;; immutable binary; a binary whose usage names --no-cache gets it for off.
+;; PENPOT_PORT selects another copy of the port (for example an APFS clone,
+;; so the edit scenarios leave research/penpot-light untouched).
 (require '[babashka.fs :as fs]
          '[babashka.process :as process]
          '[clojure.string :as str])
@@ -32,7 +35,7 @@
 (def rounds (some-> (second *command-line-args*) parse-long))
 (when-not (and output rounds) (throw (ex-info "Usage: OUTPUT-DIR ROUNDS [SCENARIO ...]" {})))
 (fs/create-dirs output)
-(def port (fs/path repo "research/penpot-light"))
+(def port (if-let [p (System/getenv "PENPOT_PORT")] (fs/absolutize p) (fs/path repo "research/penpot-light")))
 (def binary (or (System/getenv "LIGHT_CLJS_BINARY") (str (fs/path repo "target/release/light-cljs"))))
 (def limits ["--macro-expansions" "100000000" "--macro-nodes" "4000000000"
              "--macro-timeout-ms" "3600000" "--macro-memory-limit" "4000000000"
@@ -197,6 +200,8 @@
         (run "advanced-off" {:args args})
         (run "advanced-populate" {:cache advanced :args args})
         (run "advanced-warm" {:cache advanced :args args})
+        (when (selected "advanced-leaf")
+          (with-edit leaf (append-comment round) #(run "advanced-leaf" {:cache advanced :args args})))
         (fs/delete-tree advanced)))
     (when (selected "watch")
       (let [watch (fs/path output "cache-watch")]
