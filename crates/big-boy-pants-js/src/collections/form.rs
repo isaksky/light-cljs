@@ -2342,7 +2342,8 @@ pub(crate) fn vector_pop(heap: &Heap, coll: &Value) -> Result<Value, CollectionE
 }
 
 /// `pop` of a queue literal: the queue without its first element, keeping
-/// its metadata. An empty queue is itself.
+/// its metadata. An empty queue is itself. The vector payload may be wrapped
+/// in occurrences (an imported queue); the popped payload is a bare vector.
 pub(crate) fn queue_pop(heap: &Heap, coll: &Value) -> Result<Value, CollectionError> {
     let expected = "queue literal";
     let Some(f) = form_object(heap, coll) else {
@@ -2356,7 +2357,9 @@ pub(crate) fn queue_pop(heap: &Heap, coll: &Value) -> Result<Value, CollectionEr
     else {
         return Err(wrong(heap, expected, coll));
     };
-    let Some(FormBody::Vector(items)) = form_object(heap, payload).map(|p| p.body.clone()) else {
+    // Imported and compiler-literal payloads keep their occurrence wrapper.
+    let vector = unwrap(heap, payload.clone());
+    let Some(FormBody::Vector(items)) = form_object(heap, &vector).map(|p| p.body.clone()) else {
         return Err(wrong(heap, expected, coll));
     };
     if items.len() == 0 {

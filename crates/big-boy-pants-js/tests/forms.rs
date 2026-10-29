@@ -2577,6 +2577,51 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
     });
 }
 
+/// An imported queue keeps its payload's occurrence wrapper (the host bridge
+/// wraps every imported form), so `pop` and `peek` see through it, for empty
+/// and populated payloads, nested wrappers and a wrapped queue itself.
+#[test]
+fn queue_pop_accepts_occurrence_wrapped_payloads() {
+    let rt = Runtime::new();
+    let queues = rt.scope(|s| {
+        let n = |n: f64| s.primitive(Primitive::Number(n));
+        let populated = s.new_form_vector(&[n(1.0), n(2.0), n(3.0)]).unwrap();
+        let populated = s.new_occurrence(populated, at(1, 1)).unwrap();
+        let nested = s.new_occurrence(populated, at(1, 2)).unwrap();
+        let empty = s.new_form_vector(&[]).unwrap();
+        let empty = s.new_occurrence(empty, at(2, 1)).unwrap();
+        let queue = s.new_compiler_literal(js("queue"), populated).unwrap();
+        let wrapped = s.new_occurrence(queue, at(3, 1)).unwrap();
+        s.persist(
+            s.new_list(&[
+                queue,
+                s.new_compiler_literal(js("queue"), nested).unwrap(),
+                s.new_compiler_literal(js("queue"), empty).unwrap(),
+                wrapped,
+            ])
+            .unwrap(),
+        )
+    });
+    rt.publish(&queues).unwrap();
+    let result = call(
+        &rt,
+        r#"function f(queues){
+      const [queue,nested,empty,wrapped]=[0,1,2,3].map(i=>__rt.formNth(queues,i));
+      for(const q of [queue,nested,wrapped]){
+        const p=__rt.cljPop(q);
+        if(__rt.cljPeek(q)!==1||__rt.cljPeek(p)!==2||__rt.cljFirst(__rt.cljNext(__rt.cljSeq(p)))!==3)throw new Error('queue tail');
+        if(!__rt.formEquals(__rt.cljSeq(p),__rt.formList(2,3))||__rt.cljPeek(__rt.cljPop(p))!==3)throw new Error('queue elements');
+        if(__rt.cljSeq(__rt.cljPop(__rt.cljPop(p)))!==null)throw new Error('queue drained');
+      }
+      if(__rt.cljPop(empty)!==empty||__rt.cljPeek(empty)!==null||__rt.cljSeq(empty)!==null)throw new Error('empty queue');
+      if(__rt.cljPeek(__rt.cljPop(__rt.cljPop(__rt.cljPop(__rt.cljPop(queue)))))!==null)throw new Error('popped past empty');
+      return true;
+    }"#,
+        &[&queues],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
 #[test]
 fn compiler_queue_seq_is_unchunked_and_retains_payload_leaves_across_gc() {
     let rt = Runtime::new();
