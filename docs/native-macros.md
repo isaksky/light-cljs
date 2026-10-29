@@ -3444,3 +3444,63 @@ record through nested `Function.prototype.call`;
 `native_js_call_and_apply_read_struct_fields` reads fields from raw
 JavaScript receivers and operands. The engine forms test resolves `jsMember`
 for named and computed keys and suspends during both resolution and the call.
+
+### Penpot progression
+
+A fresh native-only release with the five absolute read-only roots and every
+documented budget builds `app.render` at jobs 1 (16.53 s wall, 15.57 s user,
+0.96 s system, 410,157,056 bytes maximum RSS) and jobs 4 (10.72 s wall,
+14.38 s user, 1.63 s system, 499,662,848 bytes). Both outputs
+(`app.render.js` and `chunks.json`, 12,687,975 bytes) are byte-identical to
+the fresh default V8 release build at jobs 1 (2.19 s wall, 431,702,016
+bytes), SHA-256
+`8f55b0bd762c81193e719bd146c68d75a8052dbf2c23de5eacade3e9ef15374e`.
+
+`app.main` passes the `clojure.string/escape` boundary and every later
+raw-call site, and stops at the ordered-collection gap light-cljs-561 owns
+(instaparse's `(atom (sorted-map-by >))`), the same first error master
+recorded for light-cljs-560. At jobs 1 (108.77 s wall, 103.84 s user, 4.94 s
+system, 700,235,776 bytes) and jobs 4 (54.79 s wall, 65.68 s user, 3.98 s
+system, 874,659,840 bytes) it exits 1 with exactly:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Error: unsupported operation: native macro runtime core.sortedMapBy; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:104:1 (bytes 5039..5064)
+```
+
+There is still no native `app.main` output to compare or main-build timing
+to claim. Research was not changed.
+
+### Verification
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 26.12.1, the read-only
+ClojureScript pin `a5e94c98` and `CARGO_BUILD_JOBS=4`, on the source of
+`5441c267` (the later commits change only documentation), master `ba7f0c89`:
+
+- Combined `bbp-macros,quickjs` `bbp_macros` passes 148 tests and the library
+  368 (one existing ignored stress case each), three test threads. The raw
+  call/apply matrix requires QuickJS-identical output at jobs 1/2/4/8.
+- Native-only `bbp_macros` passes 146 (one ignored) with
+  `LIGHT_CLJS_STRESS_SEEDS=12`; the native `bbp_evaluator` selection passes 63,
+  including cross-task raw member identity.
+- `cargo test --locked -p big-boy-pants-js --all-targets -- --test-threads=3`
+  passes all 2,184 engine tests, and the seven doctests pass.
+- Full default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, `-j 8
+  --no-fail-fast`) passes 2,133 tests in 214.3 s and fails only the unchanged
+  worktree `playground_crate_checks_for_wasm32` workspace-discovery diagnostic.
+- Compiler and engine formatting pass. Strict default all-target Clippy
+  passes. Native `bbp-macros,quickjs` all-target and engine all-target Clippy
+  pass allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+  `clippy::byte_char_slices` after `-D warnings`; strict engine Clippy keeps
+  only those baseline diagnostics. No source suppressions, skipped tests or
+  expected data were changed except the matrix's deleted boundary exceptions.
+
+No native-only code was added to `src/js_runtime.js`, and the default
+emitter path is unchanged. Five quiet alternating pairs (branch first)
+compare a fresh default V8 release build of master `ba7f0c89` (built from
+`git archive` in its own target directory) with the branch, on the seed-42
+200k fixture with `release bench --no-cache`: median wall time is **7.46 s
+before and 7.50 s after** (ranges 7.39–7.51 and 7.41–7.70 s), median user
+CPU 7.58/7.65 s, maximum RSS 1,017–1,038 and 1,010–1,058 MiB, load average
+2.7–4.8 with no other builds running. An earlier three-pair set under a
+peer's load average of about 4.5 (7.76/8.18 s medians) is superseded. All
+sixteen outputs keep SHA-256 prefix `1a75bc87b26f3121`.
