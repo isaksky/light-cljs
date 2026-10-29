@@ -3559,3 +3559,29 @@ scenarios (each failed before its fix), and
 paths with the types declared by a cold helper namespace at jobs 1/2/4/8
 under every stress seed, so the resolver suspends inside ToPrimitive, raw
 `.apply` and callback invocation.
+
+#### Review-fix round 1 verification
+
+On the same toolchain, at source `de5983ee` (master `ba7f0c89`, unchanged):
+
+- Combined `bbp-macros,quickjs` `bbp_macros` passes 153 tests and the library
+  368 (one ignored stress case each); native-only `bbp_macros` passes 151
+  (one ignored) with `LIGHT_CLJS_STRESS_SEEDS=12`, the native `bbp_evaluator`
+  selection 63; engine all-targets passes 2,185 tests and the seven doctests.
+- Default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, `-j 8 --no-fail-fast`,
+  pinned ClojureScript `a5e94c98`) passes 2,133 tests in 213.8 s and fails
+  only the unchanged worktree `playground_crate_checks_for_wasm32`
+  diagnostic. Strict default Clippy passes; native and engine all-target
+  Clippy pass with the three baseline categories allowed (strict engine
+  Clippy keeps them); compiler and engine formatting pass.
+- Five quiet alternating 200k pairs (branch first, load average about 3):
+  median wall time **6.97 s on master and 7.06 s on the branch** (ranges
+  6.94–7.13 and 7.01–7.34 s), median user CPU 7.15/7.22 s, maximum RSS
+  992–1,044 and 1,010–1,038 MiB, all ten outputs SHA-256 prefix
+  `1a75bc87b26f3121`.
+- Native `app.render` at jobs 1 (13.75 s wall, 13.21 s user, 409,075,712
+  bytes maximum RSS) and jobs 4 (9.37 s, 12.13 s user, 511,606,784 bytes)
+  stays byte-identical to the fresh V8 build (2.10 s), SHA-256
+  `8f55b0bd…374e` over 12,687,975 bytes. `app.main` still exits 1 with the
+  exact `core.sortedMapBy` error above at jobs 1 (94.26 s wall, 90.55 s user,
+  702,693,376 bytes) and jobs 4 (52.84 s, 63.14 s user, 901,103,616 bytes).
