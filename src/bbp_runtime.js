@@ -352,12 +352,16 @@ const decl = (() => {
   };
   // Clojure apply reads the direct invoke slot first. Its receiver differs
   // from an overloaded .call's variadic fallback, and recur retains it.
-  // Without one it calls the `call` member the precedence rule selects.
+  // Without one it calls the `call` member the precedence rule selects as
+  // legacy apply does, `f.call(f, ...args)`: the leading operand is the
+  // callable itself, not null.
   const applyIFn = (x, args) => {
     if (args.length <= 20) {
       const entry = ifnMethods(x).findLast(([n]) => n === args.length + 1);
       if (entry !== undefined) return entry[3].call(x, x, ...args);
-      return globalThis.__lightNativeRuntime.core.invokeStruct(x,args);
+      const call = x.call;
+      if (typeof call !== 'function') throw new TypeError('undefined is not a function');
+      return Reflect.apply(call, x, [x, ...args]);
     }
     return x.apply(null,args);
   };
