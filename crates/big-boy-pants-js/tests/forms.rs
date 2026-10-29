@@ -2545,7 +2545,7 @@ fn raw_form_members_resume_resolution_and_calls_without_changing_identity() {
       if(m.call!==undefined)throw new Error('unconfigured native member');
       let resolutions=0;
       __rt.cljCoreResolver((op,x,_,name)=>{
-        if((op!=='jsMember'&&op!=='jsDirectMember')||x!==m)throw new Error('member receiver');
+        if(op!=='jsMember'||x!==m)throw new Error('member receiver');
         resolutions++;
         if(name!=='call')return undefined;
         __rt.need(921,1);
@@ -2844,6 +2844,78 @@ fn native_form_member_presence_resolves_without_calling() {
     assert_eq!(
         result.string().map(|s| s.to_string_lossy()).as_deref(),
         Some("true,false,false,true,false|true,true,false,true,true,true,false|6")
+    );
+}
+
+/// The presence consumers that reach a form indirectly resume after the
+/// resolver parks without replaying it: `in` and `Reflect.has` forwarded
+/// by Proxies without a `has` trap (`HasResult`), and
+/// `Object.defineProperty` with a descriptor inheriting from a struct, which
+/// probes each descriptor field and reads only the present `get` member,
+/// never calling it. Every resolution parks on its own dependency with
+/// collection between waits; each probe and read resolves exactly once, the
+/// accessor keeps the resolved getter, and a resolver exception reaches the
+/// JavaScript catch from both consumers.
+#[test]
+fn native_form_presence_consumers_resume_without_replay() {
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function f() {
+      const T=__rt.structType('ns/T',__rt.formVector('x'),false,null);
+      const s=__rt.structNew(T,1), m=__rt.formMap('k',1);
+      let resolutions=0, getterCalls=0, boom=false, target=null;
+      const getter=function(){ getterCalls++; return this===target ? 'got' : 'wrong receiver'; };
+      __rt.cljCoreResolver((op,x,_,name)=>{
+        if(op!=='jsMember')throw new Error('op '+op);
+        resolutions++;
+        __rt.need(920+resolutions,1);
+        if(boom)throw new Error('presence boom');
+        if(name==='call'&&x===m)return function(){ throw new Error('presence must not call'); };
+        if(name==='get'&&x===s)return getter;
+        return undefined;
+      });
+      const proxy=new Proxy(m,{}), nested=new Proxy(new Proxy(s,{}),{});
+      const viaProxy=[Reflect.has(proxy,'call'), 'call' in proxy, Reflect.has(proxy,'zz'), Reflect.has(nested,'get'), 'x' in nested].join();
+      const probes=resolutions;
+      target={};
+      const returned=Object.defineProperty(target,'p',Object.create(s))===target;
+      const d=Object.getOwnPropertyDescriptor(target,'p');
+      const descriptor=[returned, typeof d.get, d.get===getter, d.set, d.enumerable, d.configurable, getterCalls, target.p, getterCalls].join();
+      const defined=resolutions-probes;
+      boom=true;
+      const caught=[];
+      try { Reflect.has(proxy,'call'); } catch(e) { caught.push(e.message); }
+      try { Object.defineProperty({},'q',Object.create(s)); } catch(e) { caught.push(e.message); }
+      return [viaProxy, probes, descriptor, defined, caught.join(','), resolutions].join('|');
+    }"#,
+    )
+    .unwrap();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    for _ in 0..13 {
+        let outcome = task.run().unwrap();
+        assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
+        rt.collect().unwrap();
+        let request = task.take_producer_requests().pop().unwrap();
+        let ready = rt.root(Primitive::Null);
+        task = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+            .unwrap()
+            .into_runnable()
+            .pop()
+            .unwrap();
+    }
+    let result = thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || complete(task.run().unwrap()))
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(
+        result.string().map(|s| s.to_string_lossy()).as_deref(),
+        Some(concat!(
+            "true,true,false,true,true|4|true,function,true,,false,false,0,got,1|7|",
+            "presence boom,presence boom|13"
+        ))
     );
 }
 
