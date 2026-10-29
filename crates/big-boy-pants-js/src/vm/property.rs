@@ -1929,7 +1929,7 @@ fn check_inherited(
                 });
             }
             Walk::Setter(setter) => return Ok(Chain::Setter(setter)),
-            Walk::ObjectPrototype => match realm.and_then(|r| Some(r.object_prototype)) {
+            Walk::ObjectPrototype => match realm.map(|r| r.object_prototype) {
                 Some(prototype) => id = prototype,
                 None => return Ok(Chain::Add),
             },
