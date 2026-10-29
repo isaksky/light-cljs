@@ -3521,12 +3521,29 @@ their conversion from the receiver at run time. A native callable (collection,
 keyword, symbol, multimethod or struct declaring IFn) keeps its native identity,
 and so do the operands of a call on it or on one of its shared members, which
 the member registry recognizes by identity. Every other receiver is ordinary
-interop: structs become struct views, so deftype and record fields or Object
-methods named `call`/`apply` and JavaScript objects with such members behave as
-in QuickJS, and ordinary JavaScript functions receive struct views as `this`
-and positional operands. Both paths unwrap scalar occurrences. The member is
-read before the operands are evaluated. The ordinary application/default
-emission path remains unchanged.
+interop: a struct receiver becomes a struct view, so deftype and record fields
+or Object methods named `call`/`apply` and JavaScript objects with such members
+behave as in QuickJS. Its operands pass unchanged, including native
+collections, except structs: each struct becomes one view for the whole call,
+shared with a struct receiver, so ordinary JavaScript functions can read its
+fields and `this === o` aliasing holds. A memoized function reached that way
+(for example through `Function.prototype.call`) maps a view back to its struct.
+Both paths unwrap scalar occurrences. The member is read before the operands
+are evaluated. The ordinary application/default emission path remains
+unchanged.
+
+Two existing struct boundaries remain: JavaScript code sees no fields on a
+native struct that reaches it by direct invocation or inside an `.apply`
+array, and a deftype or record field named `call` is not that struct's call
+protocol, so invoking the struct directly throws where QuickJS calls the
+field. `native_raw_call_apply_matrix_matches_quickjs` crosses every receiver
+kind (native callables, memoized functions, JavaScript functions and objects,
+deftypes and records with `call`/`apply` fields) with scalar, collection,
+struct and nil operands and with direct, `.call`, `.apply`, extracted-member and
+explicit `.` access. It also checks aliasing and receiver/getter/operand/
+invocation order across member replacement and cold helper demands. It requires
+QuickJS-identical output except the cells of those two boundaries, which it
+asserts exactly, at jobs 1/2/4/8 and every stress seed.
 
 The differential matrix includes Clojure `apply` for every callable kind,
 published member identities and pairwise family identities, and a deftype with
@@ -3584,3 +3601,25 @@ allowed it reports only the existing `unused_enumerate_index` in the unchanged
 take 8.23/8.03/7.93 s before and 8.26/7.95/7.93 s after (medians 8.03 and
 7.95 s, load average about 10 from one peer); master `8771ed4f` takes 8.12 s.
 Emitted output trees are identical across all three binaries.
+
+#### Native-callable-only operand conversion verification
+
+Production source `41334676` (master `8771ed4f`) converts operands only for
+the receiver kinds above. The new matrix fails on the previous source: a
+memoized function given a struct view aborted publication, and native
+collections handed to ordinary functions were rejected. The
+`bbp-macros,quickjs` `bbp_macros` run passes 146 tests and the native-only run
+with `LIGHT_CLJS_STRESS_SEEDS=12` passes 144, each with the existing ignored
+stress case; the native `bbp_evaluator` library selection passes 63. Isolated
+strict Clippy for `bbp-macros,quickjs` (baseline engine categories allowed)
+passes. The default build's inputs are unchanged by this round (the runtime is
+feature-gated): full default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, `-j 8
+--no-fail-fast`, pinned ClojureScript `a5e94c98`) passes 2,133 tests and fails
+only the unchanged `playground_crate_checks_for_wasm32` worktree
+workspace-discovery diagnostic. On the seed-42 200k fixture, three alternating
+`release bench --no-cache` pairs take 7.60/7.48/7.55 s on master and
+7.73/7.48/7.64 s on the branch (medians 7.55 and 7.64 s, load average about 5),
+with maximum RSS 1,010–1,032 MiB; emitted output trees are identical. A fresh
+native-only release at jobs 1 reproduces the exact `app.main` CSS `keep`
+failure above (17.3 s wall, 389 MiB maximum RSS) and builds `app.render`
+byte-identically to the V8 hash above.
