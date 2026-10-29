@@ -3411,7 +3411,8 @@ run precedes the final native argument-sequence and large-arity extension;
 the final twelve-seed matrix covers the affected extension and publication
 assertion. The engine's complete all-target suite passes 2,183 tests and all
 seven doctests, including collection during both raw-member resolution and
-its callback. Engine source, tests and build inputs are unchanged afterward.
+its callback. The subsequent optimized direct-call changes are covered again
+by the final memo callback verification below.
 
 Fresh native-only release runs with the five absolute read-only roots and all
 budgets build `app.render` and reproduce the exact CSS `keep` failure above
@@ -3471,3 +3472,30 @@ The callback registry is a compact task-owned array, preserving the existing
 use their declared call methods, including the JavaScript array tail beyond
 twenty arguments. Optimized direct calls through `cljCallMember` now use the
 same resumable native member resolver as ordinary property reads.
+
+Final production source `b56f3c51` passes the native-only integration selection
+with `LIGHT_CLJS_STRESS_SEEDS=12`, `CARGO_BUILD_JOBS=3`, `--locked` and three
+test threads: 62 `bbp_evaluator` tests, 139 `bbp_macros` tests, two
+`bbp_proxy_has` tests and twelve `bbp_reader` tests. The existing optional
+large-project stress case remains ignored. A combined native/QuickJS run
+passes all 367 library tests (one existing ignored case), all eight memoize
+tests, the twelve-seed raw-call matrix and the declared-IFn precedence test.
+The complete engine all-target suite again passes 2,183 tests and all seven
+doctests, including both ordinary property access and optimized direct calls
+in the suspended resolver regression.
+
+Compiler/engine formatting, native runtime syntax and direct JavaScript
+runtime assertions pass. Final native selected-target, combined all-target
+and engine all-target Clippy pass allowing only the three baseline categories
+listed above. Strict combined lint retains eight engine library diagnostics;
+strict engine lint retains eight library/nine test diagnostics. No new
+diagnostics or source suppressions were introduced. The earlier default V8
+and QuickJS full suites, strict lint and 200k timing comparison are reused:
+their default runtime, emitter, feature path and dependency inputs did not
+change.
+
+A final native-only release compiles the bare first-class `gensym` reproducer
+to an application printing `true`, builds `app.render` byte-identically to
+the V8 output and hash above, and reproduces exactly the recorded `app.main`
+`keep` failure at jobs 1. `app.main` has no successful native build to compare;
+light-cljs-560 remains the focused follow-up.
