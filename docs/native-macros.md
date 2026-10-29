@@ -4066,3 +4066,45 @@ dispatched on a different type: native then answers the `Object` method
 earlier than legacy does. An IFn extension (`extend-type T IFn`) installs
 no `call`/`apply` member natively; QuickJS answers the same in every probed
 cell (it does not install it before demand either).
+
+The engine tests `native_form_presence_consumers_resume_without_replay`
+(light-cljs-569: presence forwarded by Proxies without a `has` trap, and
+`Object.defineProperty` with a descriptor inheriting from a struct, with
+resolver waits, collection, exact resolution counts and exceptions) and
+`native_occurrence_writes_reject_without_engine_fault` plus the `__proto__`
+rows of `native_struct_inherited_writes_respect_frozen_fields`
+(light-cljs-570) cover the review's untested engine paths; each fails when
+its path is broken (the Proxy route answering false, the descriptor
+treating form presence as absent, the inherited walk stopping at the form,
+an engine fault in the occurrence store).
+
+#### Verification
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 26.12.1, the read-only
+ClojureScript pin `a5e94c98` and `CARGO_BUILD_JOBS=4`, at `d2f2306a`
+(master `0ad2514f`):
+
+- Combined `bbp-macros,quickjs` with `LIGHT_CLJS_STRESS_SEEDS=12`: the
+  library passes 368 tests and `bbp_macros` 168 (one ignored stress case
+  each); native-only `bbp_macros` passes 166 (one ignored). The new
+  precedence tests fail on master's runtime and engine.
+- `cargo test --locked -p big-boy-pants-js --all-targets` passes all 2,196
+  engine tests, and the seven doctests pass.
+- Default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, `-j 8
+  --no-fail-fast`) passes 2,133 tests in 213.4 s and fails only the
+  unchanged worktree `playground_crate_checks_for_wasm32` diagnostic.
+  Strict default Clippy passes; native `bbp-macros,quickjs` all-target and
+  engine all-target Clippy pass with the three baseline categories allowed
+  (strict engine Clippy keeps exactly those nine diagnostics); compiler and
+  engine formatting pass.
+- Five alternating 200k pairs (branch first) against a fresh default V8
+  release build of master `0ad2514f` (from `git archive`, its own target
+  directory), load average about 3–5 from peers: median wall time
+  **7.67 s on master and 7.70 s on the branch** (ranges 7.63–7.79 and
+  7.64–7.85 s), median user CPU 7.84/7.90 s, maximum RSS 1,015–1,056 and
+  1,008–1,040 MiB; all ten outputs are byte-identical.
+- Penpot `app.render` with the native-only release build at jobs 1
+  (13.50 s wall, 13.03 s user, 419,807,232 bytes maximum RSS) and jobs 4
+  (9.14 s, 11.98 s user, 498,565,120 bytes) is byte-identical to the
+  default V8 release build (2.00 s), SHA-256 `d352af3a…a8d9a3` over
+  12,680,976 bytes of JavaScript.
