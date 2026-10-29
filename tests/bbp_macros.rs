@@ -8330,13 +8330,20 @@ fn native_raw_callable_collections_match_quickjs() {
             (-invoke [this a b] [:fixed a b])
             (-invoke [this & xs]
               [(fn? this) (mapv (fn [x] (if (array? x) [:js-array (vec x)] x)) xs)]))
+          (deftype Many [value] IFn
+            (-invoke [this] [value :zero])
+            (-invoke [this a] [value :one a])
+            (-invoke [this a b] [value :two a b])
+            (-invoke [this a b c] [value :three a b c])
+            (-invoke [this a b c d & xs]
+              [(fn? this) a b c d (mapv (fn [x] (if (array? x) [:js-array (vec x)] x)) xs)]))
           (defmulti dispatch (fn [x & more] x))
           (defmethod dispatch :ok [x & more] (cold [x (vec more)]))
           (def memo (memoize (fn [x] (cold x))))
           (def map-call @(atom (js* "~{}.call" {})))
           (def members @(atom (mapv (fn [f] [f (.-call f) (.-apply f)])
-            [{} #{:ok} [:v] :k 'k (->Callable :record) (->Overloaded :overloaded)
-             (->Variadic :variadic) (->Mixed) dispatch memo])))
+            [{} #{:ok} [:v] (first {:entry true}) :k 'k (->Callable :record) (->Overloaded :overloaded)
+             (->Variadic :variadic) (->Mixed) (Many. :type) dispatch memo])))
           (defn attempt [f] (try (pr-str (f)) (catch :default e (.-message e))))
           (defn inspect [f xs]
             (let [args (reduce (fn [a x] (js* "~{}.push(~{})" a x) a) (js/Array.) xs)]
@@ -8372,6 +8379,8 @@ fn native_raw_callable_collections_match_quickjs() {
                          [(->Overloaded :overloaded) [:x :extra]] [(->Variadic :variadic) [:x :a :b]]
                          [(->Variadic :many) (vec (range 25))]
                          [(->Mixed) [:a :b]] [(->Mixed) [:one]] [(->Mixed) (vec (range 25))]
+                         [(Many. :type) []] [(Many. :type) [:a]] [(Many. :type) [:a :b]]
+                         [(Many. :type) [:a :b :c]] [(Many. :type) (vec (range 25))]
                          [dispatch [:ok :tail]] [memo [:memo]] [utf [lone]]]
                   values (mapv (fn [[f args]] (inspect f args)) cases)]
               (list 'quote [values (str/escape "àéx" {"à" "a" "é" "e"})
@@ -8380,6 +8389,8 @@ fn native_raw_callable_collections_match_quickjs() {
                             (meta (js* "~{}.apply(null, ~{})" utf lone))
                             (identical? inner (js* "~{}.call(~{}, null, 'inner')" map-call {"inner" inner}))
                             (mapv (fn [[f c a]] [(identical? c (.-call f)) (identical? a (.-apply f))]) members)
+                            (mapv (fn [[_ c a]] (mapv (fn [[_ d b]] [(identical? c d) (identical? a b)]) members)) members)
+                            [(.call m nil :false) (.apply m nil [:missing :default])]
                             @events])))"#,
         ),
         (

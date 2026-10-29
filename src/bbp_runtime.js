@@ -582,8 +582,7 @@ const native = (() => {
         if (!decl.callable(value)) return undefined;
         return op === 'jsCall' ? decl.callMember(value) ?? rawIFnCall : rawIFnApply;
       }
-      return op === 'jsCall' ? rawCalls.get(kind)
-        : rawApply;
+      return (op === 'jsCall' ? rawCalls : rawApplies).get(kind);
     }
     if(op==='cljWithExportedMeta')op='cljWithMeta';
     const record = __rt.formKind(x) === 'record', table = coreTables[op];
@@ -702,7 +701,8 @@ const native = (() => {
         || expected === 'vector' && __rt.cljIsMapEntry(this))) throw new Error('Invalid arity: -1');
     return globalThis.__lightNativeRuntime.core.invoke(this,...args);
   };
-  const rawCalls = new Map(['keyword','symbol','vector','map','set'].map(k=>[k,canonicalMember(k,()=>rawMember(k))]));
+  const families = ['keyword','symbol','vector','map','set'];
+  const rawCalls = new Map(families.map(k=>[k,canonicalMember(k,()=>rawMember(k))]));
   const rawMultiCall = canonicalMember('multi-call',()=>function(_, ...args) {
     return globalThis.__lightNativeRuntime.core.invokeMulti(this,args);
   });
@@ -714,8 +714,8 @@ const native = (() => {
     const values = globalThis.__lightNativeRuntime.core.nativeApplyArgs(args);
     return this.call(null,...(ifn && values.length > 20 ? [...values.slice(0,20),values.slice(20)] : values));
   };
-  const rawApply = canonicalMember('apply',()=>rawApplyMember(false)),
-    rawIFnApply = canonicalMember('ifn-apply',()=>rawApplyMember(true));
+  const rawApplies = new Map([...families,'struct'].map(k=>[k,canonicalMember(k+'-apply',()=>rawApplyMember(false))]));
+  const rawIFnApply = canonicalMember('ifn-apply',()=>rawApplyMember(true));
   // memoize calls its callback through Clojure apply, whose fixed function
   // receiver is the function itself. Native variadic dispatchers preserve
   // applyTo's null receiver in immutable engine metadata, so they can publish
