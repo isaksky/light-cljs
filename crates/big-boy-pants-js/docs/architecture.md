@@ -556,15 +556,19 @@ core-protocol resolver with `__rt.cljCoreResolver`. Core operations on structs
 first call that resolver and then its selected method through `CallArray`
 native frames. Both calls retain traced operands across suspension, collection
 and migration. A missing entry resumes the original leaf operation; lazy
-realization retains that resolution instead of running it again. Raw
-JavaScript member reads, `.call` and `.apply`, also consult this task's
-resolver for native callable form kinds, with operations `jsCall` and `jsApply`.
-The resolver returns the member itself; the original native receiver remains
-on the JavaScript operand stack. Forms retain their identity and are still
-JavaScript objects, so direct JavaScript calls reject them. Without a resolver,
-these members remain absent. Resolution uses the same traced continuation as
-protocol lookup and can suspend without replaying the read. The compiler's
-`cljCallMember` preparation uses this path before evaluating arguments too. Two-argument
+realization retains that resolution instead of running it again. A form is
+the same object in JavaScript and in the compiler's runtime: an ordinary
+property read of a named key on a form (`property::Deferred::Form`, reached
+by `GetField`/`GetElem`, the compiler's `cljCallMember` preparation and
+built-ins that read members such as `length`) also consults this task's
+resolver, with operation `jsMember` and the key as its fourth argument. The
+resolver returns the member itself; the original native receiver remains on
+the JavaScript operand stack, so `form.m(args)` calls with the form as
+`this`. Forms retain their identity and are never converted. Without a
+resolver, forms have no members; presence checks, symbol and index keys and
+ToPrimitive conversions never consult the resolver. Resolution uses the same
+traced continuation as protocol lookup and can suspend without replaying the
+read. Two-argument
 lookup has its own `cljGet2` selector. Sequence operations also resolve a struct
 exposed by a realized lazy wrapper; the resolver receives the realized receiver
 and a flag identifying that wrapper, while its callback retains the original

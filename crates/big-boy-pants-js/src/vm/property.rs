@@ -670,6 +670,9 @@ pub(crate) enum Read {
 
 /// A read that executes user code. Proxy reads retain the lookup object and
 /// key here; the caller supplies the original receiver just as for a getter.
+/// A native form's named member is answered by the task's core-protocol
+/// resolver (`crate::vm::native::core_protocol`), with the receiver unchanged:
+/// a form is the same object in JavaScript and in the compiler's runtime.
 #[derive(Clone, Debug)]
 pub(crate) enum Deferred {
     Getter(Value),
@@ -677,6 +680,9 @@ pub(crate) enum Deferred {
         target: ObjectId,
         key: Key,
         conversion: bool,
+    },
+    Form {
+        key: Key,
     },
 }
 
@@ -698,6 +704,7 @@ impl Deferred {
                 receiver,
                 conversion,
             },
+            Self::Form { key } => super::native::Action::FormMember { receiver, key },
         }
     }
 }
@@ -1045,6 +1052,23 @@ fn lookup_cursor(
                     }
                     Visit::Other(HeapObject::Promise(p)) => {
                         p.check_owner(task).map(|()| Lookup::Next(p.prototype()))
+                    }
+                    // An occurrence is transparent: the walk continues at
+                    // the object it wraps (a form's members, a plain
+                    // object's store).
+                    Visit::Other(HeapObject::Occurrence(o)) => Ok(Lookup::Next(match o.value {
+                        Value::Object(inner) => Some(inner),
+                        _ => None,
+                    })),
+                    // A form's named members belong to the task's runtime;
+                    // presence checks, symbol/index keys and conversions
+                    // see no properties.
+                    Visit::Other(HeapObject::Form(_))
+                        if matches!(mode, LookupMode::Read) && matches!(key, Key::Name(_)) =>
+                    {
+                        Ok(Lookup::Found(Read::Deferred(Deferred::Form {
+                            key: key.clone(),
+                        })))
                     }
                     Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
                         Some(fault) => Err(fault),

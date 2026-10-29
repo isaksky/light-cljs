@@ -3350,276 +3350,92 @@ default-build input: three alternating 200k pairs give median wall time
 6.96 s (master) and 6.99 s (branch). Native `app.render` at jobs 1 (13.39 s)
 and 4 (9.10 s) still matches a fresh V8 build, SHA-256 `d352af3a…a8d9a3`.
 
-## Raw JavaScript callable members (light-cljs-558, 2026-10-28)
+## One object in both worlds: raw JavaScript boundaries (light-cljs-558, 2026-10-29)
 
-Native maps, sets, vectors, map entries, keywords, symbols, IFn records and
-multimethods now expose their legacy `.call` and `.apply` behavior to raw
-JavaScript. Member reads enter the task's core resolver through traced native
-continuations, retaining the original collection as the receiver. They may
-suspend while declaring a cold type or helper without replaying the read or
-its arguments. No collection is converted to a JavaScript wrapper, and direct
-JavaScript calls to collection objects still throw, as in QuickJS. Calling
-their `.call` member through `Function.prototype.call` works; calling the
-collection itself through that intrinsic still rejects a non-function.
+Penpot's `app.main` stopped at `clojure.string/escape`, whose raw
+`cmap.call(null, ch)` invokes a native map. The first design (`.call`/`.apply`
+adapters chosen at the compiled call site) went through five review rounds,
+each fixing one boundary and breaking another. This section records why, and
+the invariant that replaces it.
 
-Adapters retain collection arities and defaults, nil/false results, map-entry
-bounds, exact UTF-16 keys, metadata and nested value identity. Declared IFn
-methods load in the consuming task and keep precedence over protocol extensions.
-Shared raw member functions
-and lazy callbacks resolve task-owned protocol machinery through the current
-runtime; that machinery is never captured in a published closure. Memoized
-functions retain ordinary JavaScript function call/apply behavior. The existing
-aggregate budget, publication validation and effect lanes remain in force.
+### Why patching call sites kept failing
 
-The regression matrix compares complete emitted applications with QuickJS at
-jobs 1/2/4/8 under twelve scheduling seeds. It includes the reduced map macro,
-real `clojure.string/escape`, first-class and published members, fixed,
-overloaded and variadic IFn records, cold helper demands, errors and missing
-receiver operands. An engine regression collects during member resolution and
-again during its callback, then resumes on a 64 KiB worker and checks identity
-and once-only resolution.
+A compiled `.call`/`.apply` site sees a receiver, a `this` operand and
+positional operands; it cannot know the callee's world. The callee may be an
+emitted ClojureScript function or a bootstrap core function (both read native
+structs), a native collection or IFn adapter (native operands), a `js*`
+function (reads fields as JavaScript properties), or a forwarder such as
+`Function.prototype.call` whose eventual callee is invisible. Any decision at
+the site is a finite list of callees; each round extended the list for one and
+broke another. Worse, the conversion it chose made a *different object* (a
+"struct view"), so `record?`, `identical?`, `this === o` aliasing and memo keys
+failed whenever a view reached ClojureScript code, and nothing could map it
+back, because every emitted function is a ClojureScript entry.
 
-`app.main` passes the former property-map escape and reaches a different
-native core gap. With the five absolute read-only roots and every documented
-budget, jobs 1 now reports:
+### The invariant
 
-```text
-light-cljs: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/debug/icons_preview.cljs:15:23: macro expansion: while expanding stl/css: /Users/admin/src/light-cljs/research/penpot-light/frontend/src/app/main/ui/debug/icons_preview.cljs:15:23: macro app.main.style/css: big-boy-pants-js: TypeError: undefined is not a function; definition /Users/admin/src/light-cljs/research/penpot-light/shims/app/main/style.cljs:42:1 (bytes 416..434)
-```
+**A native form is one object in both worlds, and no value is converted at any
+call boundary.** `.call`, `.apply`, direct invocation, method calls, `js*`
+operands and callbacks pass native forms unchanged (only occurrence provenance
+wrappers are unwrapped, as every intrinsic does); struct views no longer exist.
+Raw JavaScript reads a native form's members through the engine's property
+read, which defers to the task's runtime resolver exactly as collection
+`.call`/`.apply` did before: a struct answers its fields, record slots,
+`Object` methods and IFn `call`/`apply`; collections, keywords and symbols
+answer `call`/`apply`; everything else is `undefined`. Conversion therefore has
+one owner, the member read, and it is independent of who calls whom, how
+deeply a call is forwarded, or which world the callee belongs to.
 
-The CSS shim constructs `xform-css` with one-argument `keep`. Native `keep`
-currently implements only its collection form, producing a lazy sequence where
-`into` expects a transducer. `(into [] (keep identity) [nil false 0 1])` reproduces
-the TypeError in a native macro; V8 expands it to `[false 0 1]`. This separate
-missing transducer service is light-cljs-560, the only new follow-up. Research
-was not changed. `app.main` still has no native output to compare or successful
-native/V8 build timing claim.
+### Engine
 
-### Callable-boundary verification
+`property::lookup` reaching a `Form` object with a name key in an ordinary
+read returns `Read::Deferred(Deferred::Form)`; an occurrence wrapper continues
+the walk at the object it wraps. `read_result` (every `GetField`/`GetElem`,
+including the optimized direct call's `cljCallMember`) and the native
+`Action::FormMember` (built-ins that read `length`, `then`, …) push the traced
+core-protocol continuation with op `jsMember` and the key. It calls the task's
+resolver, which may suspend while declaring a cold type or demanding a helper
+without replaying the read, and delivers the member while the original
+receiver stays on the operand stack, so `o.m(args)` calls with `this === o`.
+Without a resolver the member is `undefined`. Presence checks (`in`), symbol
+and index keys, and ToPrimitive conversion lookups are unchanged: forms have no
+ordinary properties. The former `GetField` hooks and the `cljCallMember`
+special case are gone.
 
-Production source `4d60e13a` and the stronger publication assertion in
-`64f9b425` pass the final QuickJS/native callable matrix with twelve seeds at
-jobs 1/2/4/8. The matrix also covers native vector/list `.apply` arguments,
-string iteration and the IFn twenty-argument tail. The tail fixture records
-JavaScript array type and contents in a persistent marker before exporting its
-result. A separate native-only release macro stores the raw map member in an
-atom and successfully compiles an application printing `7`.
+### Runtime
 
-The combined native/QuickJS full selection passes 367 library, 139 macro, two
-Proxy and twelve reader tests, with two existing ignored stress cases. That
-run precedes the final native argument-sequence and large-arity extension;
-the final twelve-seed matrix covers the affected extension and publication
-assertion. The engine's complete all-target suite passes 2,183 tests and all
-seven doctests, including collection during both raw-member resolution and
-its callback. The subsequent optimized direct-call changes are covered again
-by the final memo callback verification below.
+The resolver's `jsMember(x, name)` answers for a struct or record, after
+declaring its type in this task: a declared field (the last field munged to
+that member wins, as the legacy constructor's assignments do), a record's
+`__meta`/`__extmap`/`__hash` slots, an `Object` method (one function per type
+and member, dispatching on the declaring type with `this` as receiver), then
+the IFn `call`/`apply` adapters of light-cljs-558's first rounds, whose
+identities one runtime-owned atom still canonicalizes by collection family or
+native type (SameValueZero keys and compare-and-set only). Collection,
+keyword, symbol and multimethod receivers keep their family members.
 
-Fresh native-only release runs with the five absolute read-only roots and all
-budgets build `app.render` and reproduce the exact CSS `keep` failure above
-for `app.main`, both at jobs 1. The native render output is byte-identical to
-the fresh default V8 release output: 12,680,976 bytes, SHA-256
-`d352af3a2bb2d35f1447f3d4fc6592de609dc30e92c3424f7321afc607a8d9a3`.
-Both pass Node syntax checks. There is still no native main output or
-successful native/V8 main-build timing or source-map comparison.
+`nativeInterop(x, member)` only unwraps occurrences. It still rejects explicit
+compiled interop with a non-struct native form (`(.-cnt m)`) except for `call`
+and `apply`; operands are never rejected or converted. Direct invocation of a
+struct without declared IFn methods falls back to its `call` member (a field or
+`Object` method), as legacy `f.call(null, …)` does, so the former "field named
+`call`" boundary is gone too. `str` and printing of a deftype use its
+`toString` `Object` method or `[object Object]`. `memoize` no longer maps
+anything back. Removed: `viewOf`, the view/struct maps, `nativeCallReceiver`,
+`nativeCallMethod`, the per-call operand classification and the member
+registry's self-keys. The emitted type constructor is now used only by mutable
+types.
 
-Full default V8 nextest passes 2,133 tests (253.4 s), and QuickJS-only passes
-2,056 (287.4 s). Each fails only `playground_crate_checks_for_wasm32` with the
-unchanged worktree/main-checkout workspace-discovery diagnostic. Both use
-`CARGO_BUILD_JOBS=3`, `--locked -j 8 --no-fail-fast`, the pinned read-only
-ClojureScript source `a5e94c98`, and the installed Rust/Cargo 1.99.0 WASM
-subprocess override with `CARGO_HOME=/Users/admin/.cargo`. The default run uses
-`LIGHT_CLJS_V8_CACHE=require`; QuickJS uses
-`--no-default-features --features quickjs`. Compiler checks otherwise use
-macOS arm64, Homebrew Rust/Cargo 1.99.1, Node 26.12.1 and Babashka 1.12.218.
+### Tests
 
-Strict V8 and QuickJS all-target Clippy pass. Engine strict lint reports the
-same eight library/nine test diagnostics in `deprecated`,
-`clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices`; all-target
-lint passes allowing only those categories after `-D warnings`. Engine-free
-library/binary strict lint passes. Its all-target command fails on the
-unchanged evaluator example's unavailable `Evaluator::print` and `evaluate`
-APIs. Compiler/engine formatting, native runtime syntax and direct JavaScript
-runtime checks pass. No source suppressions, skips or expected golden data
-were changed.
-
-Three quiet alternating-order pairs compare the saved default V8 release
-binary from master `8771ed4f` with rebuilt production source `4d60e13a`, on the
-same seed-42 200k fixture using `release bench --jobs 1 --no-cache`. Median
-wall time is **7.34 s before and 7.26 s after** (0.9891x); ranges are
-7.18–7.44 and 7.24–7.53 s. Median user+system CPU is 7.84/7.77 s and maximum
-RSS is 1,012.7/1,049.5 MiB. The differences are within run variation.
-Before/after process snapshots and process-name checks find no overlapping
-builds, tests or compiler measurements. All six outputs are byte-identical,
-retaining SHA-256
-`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
-Node and the independent Babashka oracle both print `484264` for `42 3`.
-There are no changes to `src/js_runtime.js`, the default emitter, manifests
-or dependency inputs.
-
-### First-class core callbacks in memoized functions
-
-Native `memoize` recognizes pristine bootstrap core callback identities before
-publishing its cache. The shared atom stores a stable callback index and the
-memo table; a cache miss resolves that index against the consuming task's
-original core callbacks. Bare and aliased `gensym`, `str` and `inc` therefore
-work without publishing their task-owned runtime captures. An original alias
-keeps its identity across `with-redefs`, while a replacement callback retains
-its own behavior. User functions and modified core functions still undergo
-the normal capture checks; mutable user captures are rejected.
-
-The callback registry is a compact task-owned array, preserving the existing
-4 MiB startup tests. Memo wrappers capture only the shared atom. IFn callbacks
-use their declared call methods, including the JavaScript array tail beyond
-twenty arguments. Optimized direct calls through `cljCallMember` now use the
-same resumable native member resolver as ordinary property reads.
-
-Final production source `b56f3c51` passes the native-only integration selection
-with `LIGHT_CLJS_STRESS_SEEDS=12`, `CARGO_BUILD_JOBS=3`, `--locked` and three
-test threads: 62 `bbp_evaluator` tests, 139 `bbp_macros` tests, two
-`bbp_proxy_has` tests and twelve `bbp_reader` tests. The existing optional
-large-project stress case remains ignored. A combined native/QuickJS run
-passes all 367 library tests (one existing ignored case), all eight memoize
-tests, the twelve-seed raw-call matrix and the declared-IFn precedence test.
-The complete engine all-target suite again passes 2,183 tests and all seven
-doctests, including both ordinary property access and optimized direct calls
-in the suspended resolver regression.
-
-Compiler/engine formatting, native runtime syntax and direct JavaScript
-runtime assertions pass. Final native selected-target, combined all-target
-and engine all-target Clippy pass allowing only the three baseline categories
-listed above. Strict combined lint retains eight engine library diagnostics;
-strict engine lint retains eight library/nine test diagnostics. No new
-diagnostics or source suppressions were introduced. The earlier default V8
-and QuickJS full suites, strict lint and 200k timing comparison are reused:
-their default runtime, emitter, feature path and dependency inputs did not
-change.
-
-A final native-only release compiles the bare first-class `gensym` reproducer
-to an application printing `true`, builds `app.render` byte-identically to
-the V8 output and hash above, and reproduces exactly the recorded `app.main`
-`keep` failure at jobs 1. `app.main` has no successful native build to compare;
-light-cljs-560 remains the focused follow-up.
-
-### Callable member identity and Clojure apply
-
-Clojure `apply` selects a declared IFn's direct invoke entry through twenty
-arguments. This preserves the receiver used by `this-as` and `recur`, including
-memoized IFn callbacks. Wider calls retain the legacy `.apply` array-tail ABI.
-Raw `.call` keeps its separate overloaded/variadic receiver rules; a borrowed
-variadic-only member retains its declaring implementation, while a fixed member
-dispatches on the supplied receiver.
-
-One runtime-owned atom canonicalizes raw members by collection family or native
-type identity, using only SameValueZero keys and compare-and-set. Extracting a
-member, publishing it and reading it in another task therefore keeps its
-identity, including after collection. Adapters resolve protocol machinery in
-the consuming task. Keyword, symbol, vector/map-entry, map, set and multimethod
-families retain the same distinct or shared member identities as QuickJS.
-
-Compiled `.-call`/`.-apply` reads and explicit `.call`/`.apply` calls choose
-their conversion from the receiver at run time. A native callable (collection,
-keyword, symbol, multimethod or struct declaring IFn) keeps its native identity,
-and so do the operands of a call on it or on one of its shared members, which
-the member registry recognizes by identity. Every other receiver is ordinary
-interop: a struct receiver becomes a struct view, so deftype and record fields
-or Object methods named `call`/`apply` and JavaScript objects with such members
-behave as in QuickJS. Its operands pass unchanged, including native
-collections, except structs: each struct becomes one view for the whole call,
-shared with a struct receiver, so ordinary JavaScript functions can read its
-fields and `this === o` aliasing holds. A memoized function reached that way
-(for example through `Function.prototype.call`) maps a view back to its struct.
-Both paths unwrap scalar occurrences. The member is read before the operands
-are evaluated. The ordinary application/default emission path remains
-unchanged.
-
-Two existing struct boundaries remain: JavaScript code sees no fields on a
-native struct that reaches it by direct invocation or inside an `.apply`
-array, and a deftype or record field named `call` is not that struct's call
-protocol, so invoking the struct directly throws where QuickJS calls the
-field. `native_raw_call_apply_matrix_matches_quickjs` crosses every receiver
-kind (native callables, memoized functions, JavaScript functions and objects,
-deftypes and records with `call`/`apply` fields) with scalar, collection,
-struct and nil operands and with direct, `.call`, `.apply`, extracted-member and
-explicit `.` access. It also checks aliasing and receiver/getter/operand/
-invocation order across member replacement and cold helper demands. It requires
-QuickJS-identical output except the cells of those two boundaries, which it
-asserts exactly, at jobs 1/2/4/8 and every stress seed.
-
-The differential matrix includes Clojure `apply` for every callable kind,
-published member identities and pairwise family identities, and a deftype with
-zero-, one-, two-, three-argument and variadic overloads. Separate regressions
-cover borrowed record/type members, direct-entry receivers and `recur`,
-ordinary JavaScript function scalar arguments, struct fields, Object methods and
-JavaScript object members named `call`/`apply`, and struct views passed to
-ordinary functions as receivers and operands. These compare complete emitted
-applications with QuickJS; the matrix exercises jobs 1/2/4/8 with twelve seeds.
-
-#### Review-fix verification
-
-Final production source `a6ea5148` (tested tree `bc10da48`, master `8771ed4f`)
-passes the native-only `bbp_macros` integration test with
-`LIGHT_CLJS_STRESS_SEEDS=12` and eight test threads: 141 passed, one existing
-ignored stress case. The native `bbp_evaluator` library selection passes 63
-tests, including cross-task raw member identity. The combined
-`bbp-macros,quickjs` run of the same test passes 143 with the same ignored case,
-including the twelve-seed jobs 1/2/4/8 raw-call matrix, direct IFn apply
-entries and borrowed record/type members. Engine sources are unchanged since
-the complete engine run above, so that result is reused.
-
-Full default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, `--locked -j 8
---no-fail-fast`, pinned ClojureScript `a5e94c98`) passes 2,133 tests in
-216.0 s and fails only `playground_crate_checks_for_wasm32` with the unchanged
-worktree/main-checkout workspace-discovery diagnostic. Strict default
-all-target Clippy passes.
-
-Three alternating pairs compare a fresh default release build of master
-`8771ed4f` with the branch on the seed-42 200k fixture, using `release bench
---no-cache` while one peer native test run (three threads) was active. Wall
-time is 7.76/7.75/7.63 s before and 7.79/7.65/7.65 s after (medians 7.75 and
-7.65 s); maximum RSS is 1,020–1,046 MiB for both. Emitted output trees are
-identical.
-
-A fresh native-only release with all five absolute read-only roots and every
-budget reproduces the exact `app.main` CSS `keep` failure above at jobs 1
-(17.6 s wall, 389 MiB maximum RSS). The post-fix native `app.render` output
-remains byte-identical to the V8 hash above. light-cljs-560 owns the next gap.
-
-#### Ordinary call/apply interop verification
-
-Production source `b7687e21` (master `8771ed4f`) restricts the raw adapters to
-native callables. The `bbp-macros,quickjs` `bbp_macros` run passes 145 tests
-and the native-only run with `LIGHT_CLJS_STRESS_SEEDS=12` passes 143, each with
-the existing ignored stress case; both new ordinary-interop rows fail on the
-previous source. Full default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`,
-`-j 8 --no-fail-fast`, pinned ClojureScript `a5e94c98`) passes 2,133 tests and
-fails only the unchanged `playground_crate_checks_for_wasm32` worktree
-workspace-discovery diagnostic. Strict default Clippy passes. Native strict
-Clippy reports only the engine baseline categories (eight diagnostics); with those categories
-allowed it reports only the existing `unused_enumerate_index` in the unchanged
-`tests/execution.rs`. On the seed-42 200k fixture, three alternating
-`release bench --no-cache` pairs against the pre-fix default release binary
-take 8.23/8.03/7.93 s before and 8.26/7.95/7.93 s after (medians 8.03 and
-7.95 s, load average about 10 from one peer); master `8771ed4f` takes 8.12 s.
-Emitted output trees are identical across all three binaries.
-
-#### Native-callable-only operand conversion verification
-
-Production source `41334676` (master `8771ed4f`) converts operands only for
-the receiver kinds above. The new matrix fails on the previous source: a
-memoized function given a struct view aborted publication, and native
-collections handed to ordinary functions were rejected. The
-`bbp-macros,quickjs` `bbp_macros` run passes 146 tests and the native-only run
-with `LIGHT_CLJS_STRESS_SEEDS=12` passes 144, each with the existing ignored
-stress case; the native `bbp_evaluator` library selection passes 63. Isolated
-strict Clippy for `bbp-macros,quickjs` (baseline engine categories allowed)
-passes. The default build's inputs are unchanged by this round (the runtime is
-feature-gated): full default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, `-j 8
---no-fail-fast`, pinned ClojureScript `a5e94c98`) passes 2,133 tests and fails
-only the unchanged `playground_crate_checks_for_wasm32` worktree
-workspace-discovery diagnostic. On the seed-42 200k fixture, three alternating
-`release bench --no-cache` pairs take 7.60/7.48/7.55 s on master and
-7.73/7.48/7.64 s on the branch (medians 7.55 and 7.64 s, load average about 5),
-with maximum RSS 1,010–1,032 MiB; emitted output trees are identical. A fresh
-native-only release at jobs 1 reproduces the exact `app.main` CSS `keep`
-failure above (17.3 s wall, 389 MiB maximum RSS) and builds `app.render`
-byte-identically to the V8 hash above.
+`native_raw_call_apply_matrix_matches_quickjs` now requires QuickJS-identical
+output for every cell (the two documented boundary exceptions are deleted) and
+adds plain emitted and core function receivers whose bodies assert `record?`
+and `identical?` on struct operands, at jobs 1/2/4/8 with cold helper waits
+under every stress seed. `native_object_call_and_apply_members_match_legacy`
+passes a struct as its own `Object` method operand through direct and
+forwarded calls; `native_borrowed_ifn_calls_match_legacy` forwards an IFn
+record through nested `Function.prototype.call`;
+`native_js_call_and_apply_read_struct_fields` reads fields from raw
+JavaScript receivers and operands. The engine forms test resolves `jsMember`
+for named and computed keys and suspends during both resolution and the call.

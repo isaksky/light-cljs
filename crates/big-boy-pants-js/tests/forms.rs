@@ -2276,17 +2276,19 @@ fn raw_form_members_resume_resolution_and_calls_without_changing_identity() {
       const m=__rt.formMap('x',false);
       if(m.call!==undefined)throw new Error('unconfigured native member');
       let resolutions=0;
-      __rt.cljCoreResolver((op,x)=>{
-        if(op!=='jsCall'||x!==m)throw new Error('member receiver');
+      __rt.cljCoreResolver((op,x,_,name)=>{
+        if(op!=='jsMember'||x!==m)throw new Error('member receiver');
         resolutions++;
+        if(name!=='call')return undefined;
         __rt.need(921,1);
         return function(_,key) {
           __rt.need(922,1);
           return this===m && __rt.formGet(this,key,true)===false;
         };
       });
+      const other=m.other;
       const member=m['call'];
-      return member.call(m,null,'x') && resolutions===1;
+      return other===undefined && member.call(m,null,'x') && resolutions===2;
     }"#
             .replace("m['call']", member_read),
         )

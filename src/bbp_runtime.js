@@ -9,7 +9,6 @@
 // declaration bundle's, and code run outside a bundle extends at order 0.
 // Internal identity bookkeeping uses SameValueZero maps and engine CAS only;
 // it never invokes user equality, effects, or publication-time task captures.
-// Each member is also its own key, so raw interop recognizes the adapters.
 const canonicalMember = (key, make) => {
   let candidate;
   for (;;) {
@@ -17,13 +16,9 @@ const canonicalMember = (key, make) => {
     const found = current === null ? undefined : __rt.getOr(current,key,undefined);
     if (found !== undefined) return found;
     if (candidate === undefined) candidate = make();
-    const next = __rt.assoc(__rt.assoc(current === null ? __rt.map() : current,key,candidate),candidate,true);
+    const next = __rt.assoc(current === null ? __rt.map() : current,key,candidate);
     if (Object.is(__rt.atomCas(rawMembersCell,current,next),current)) return candidate;
   }
-};
-const isRawMember = f => {
-  const members = __rt.atomLoad(rawMembersCell);
-  return typeof f === 'function' && members !== null && __rt.getOr(members,f,false) === true;
 };
 const decl = (() => {
   const tables = new Map(), extensions = new Map(), views = new Map(), frontiers = [];
@@ -299,8 +294,8 @@ const decl = (() => {
   };
   // The `Object` method `name`, installed as the JavaScript member
   // `member` of the type `info` describes from now on: a mutable type's
-  // instances inherit it, and struct views get it. Methods whose names
-  // munge alike share the member ([`objectInvoke`]).
+  // instances inherit it, and a struct answers it through `memberFunction`.
+  // Methods whose names munge alike share the member ([`objectInvoke`]).
   const objectMember = (info, name, member) => {
     if (info.names.has(name)) return;
     info.names.add(name);
@@ -310,8 +305,8 @@ const decl = (() => {
     if (info.mutable) info.view.prototype[member] = function (...a) { return objectInvoke(info, member, this, a); };
   };
   // A type: a native struct type, or with a mutable field the constructor
-  // of task-owned JavaScript instances. `view` constructs the JavaScript
-  // object a struct's interop reads.
+  // of task-owned JavaScript instances (`view`, unused for a struct type:
+  // a struct is its own JavaScript object, see `jsMember`).
   const type = (fields, specs, view, mutable, ty, fieldMembers) => {
     const record = __rt.formKind(__rt.structNew(ty)) === 'record';
     const mask0 = record || specs.some(([name, arity]) => arity === 0 && partition0.has(name));
@@ -320,7 +315,7 @@ const decl = (() => {
     // Raw call/apply use the type's declared IFn entries. Protocol extensions
     // do not replace those entries or install JavaScript callable members.
     const ifn = specs.filter(s=>s[0]==='IFn/-invoke').map(s=>[s[1],s[2],s[4]!=null,s[3]??s[2]]);
-    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), ifn, mutable, record, mask0});
+    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, mutable, record, mask0});
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
       view.__lightNativeType = ty;
@@ -371,26 +366,20 @@ const decl = (() => {
     }
     return x.apply(null,args);
   };
-  // The struct a struct view, or an object inheriting from one, stands for.
-  const viewStructs = new WeakMap();
-  const structOf = o => {
-    for (let p = o; p !== null && typeof p === 'object'; p = Object.getPrototypeOf(p)) {
-      const s = viewStructs.get(p);
-      if (s !== undefined) return s;
-    }
-    return o;
-  };
-  const viewOf = s => {
+  // The declaration of a struct's type in this task, demanded if cold.
+  const structInfo = s => {
     declare(s);
     const info = views.get(__rt.structTypeOf(s));
     if (info === undefined) throw new Error('unsupported operation: JavaScript interop with a native struct of an undeclared type');
-    const args = info.fields.map(f => __rt.structField(s, f));
-    if (info.record) args.push(__rt.cljMeta(s), null, null);
-    const v = new info.view(...args);
-    viewStructs.set(v, s);
-    // The receiver is the call's `this`; a view stands for its struct.
-    for (const member of info.members.keys()) v[member] = function (...a) { return objectInvoke(info, member, structOf(this), a); };
-    return v;
+    return info;
+  };
+  // The function a struct's JavaScript member `member` reads: one per type
+  // and member, dispatching on the declaring type with the call's `this`
+  // (the struct itself, or a borrowed receiver) as the method's receiver.
+  const memberFunction = (info, member) => {
+    let f = info.memberFunctions.get(member);
+    if (f === undefined) info.memberFunctions.set(member, f = function (...a) { return objectInvoke(info, member, __rt.formValue(this), a); });
+    return f;
   };
   const register = (names, indices, location, once, unit) => {
     const b = {order: bundles.length + 1, names, unit, location, state: 0, error: null, products: null,
@@ -446,8 +435,8 @@ const decl = (() => {
     const info = views.get(x.__lightNativeType);
     return info?.mutable && info.record ? info : null;
   };
-  return {extend, method, satisfies, implementsDirectly, predicate, type, viewOf, register, enter, leave, coreKeys, mutableRecord,
-    callable, invokeIFn, applyIFn, callMember, borrowedIFn, viewStruct:o=>viewStructs.get(o)??o,
+  return {extend, method, satisfies, implementsDirectly, predicate, type, structInfo, memberFunction, register, enter, leave, coreKeys, mutableRecord,
+    callable, invokeIFn, applyIFn, callMember, borrowedIFn,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
     coreMethod:resolveCore,
@@ -466,10 +455,15 @@ const decl = (() => {
 const native = (() => {
   let gensymScope = 0, gensymPrefix = '';
   const val = x => __rt.formValue(x);
-  const interop = x => {
+  // Compiled interop (`(.-m x)`, `(.m x a)`, operands of such calls): a
+  // native form is the same object in JavaScript, so nothing is converted;
+  // only occurrence provenance wrappers come off. Raw JavaScript reads a
+  // form's members through `jsMember` below. Explicit compiled interop with
+  // a non-struct form has no legacy meaning here except `call`/`apply`.
+  const interop = (x, member) => {
     const value = val(x), kind = __rt.formKind(value);
-    if (kind === 'struct' || kind === 'record') return decl.viewOf(value);
-    if (kind !== null) throw new Error('unsupported operation: JavaScript interop with native ' + kind + ' form');
+    if (member !== undefined && kind !== null && kind !== 'struct' && kind !== 'record' && member !== 'call' && member !== 'apply')
+      throw new Error('unsupported operation: JavaScript interop with native ' + kind + ' form');
     return value;
   };
   // Core operations are the engine's `__rt.clj*` intrinsics (light-cljs-477):
@@ -580,15 +574,8 @@ const native = (() => {
     cljWithMeta:decl.coreTable('IWithMeta/-with-meta',2), cljSeq:decl.coreTable('ISeqable/-seq',1),
     cljPeek:decl.coreTable('IStack/-peek',1), cljCount:decl.coreTable('ICounted/-count',1), cljNext:decl.coreTable('INext/-next',1),
   };
-  __rt.cljCoreResolver((op, x, throughLazy) => {
-    if (op === 'jsCall' || op === 'jsApply') {
-      const value = val(x), kind = __rt.formKind(value);
-      if ((kind === 'struct' || kind === 'record') && !multi.is(value)) {
-        if (!decl.callable(value)) return undefined;
-        return op === 'jsCall' ? decl.callMember(value) ?? rawIFnCall : rawIFnApply;
-      }
-      return (op === 'jsCall' ? rawCalls : rawApplies).get(kind);
-    }
+  __rt.cljCoreResolver((op, x, throughLazy, name) => {
+    if (op === 'jsMember') return jsMember(x, name);
     if(op==='cljWithExportedMeta')op='cljWithMeta';
     const record = __rt.formKind(x) === 'record', table = coreTables[op];
     const cursor = arraySeqs.get(x), array = Array.isArray(val(x));
@@ -693,7 +680,14 @@ const native = (() => {
     const value=val(f),kind=__rt.formKind(value);
     if(kind==='struct'&&__rt.formName(__rt.structTypeOf(value))==='cljs.core/MultiFn')
       return globalThis.__lightNativeRuntime.core.invokeMulti(value,args);
-    if(kind==='struct'||kind==='record')return globalThis.__lightNativeRuntime.core.invokeIFn(value,args);
+    if(kind==='struct'||kind==='record'){
+      if(decl.callable(value))return globalThis.__lightNativeRuntime.core.invokeIFn(value,args);
+      // Legacy `(f x)` is `f.call(null, x)`: a struct without IFn methods
+      // may still carry a `call` field or Object method.
+      const call=jsMember(value,'call');
+      if(typeof call!=='function')throw new TypeError('undefined is not a function');
+      return call.call(value,null,...args);
+    }
     if(kind!=='vector'&&kind!=='map'&&kind!=='set'&&kind!=='keyword'&&kind!=='symbol')return value.call(null,...args);
     if(kind!=='vector'&&(args.length<1||args.length>2))arity(args.length);
     return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null,args.length);
@@ -721,31 +715,30 @@ const native = (() => {
   };
   const rawApplies = new Map([...families,'struct'].map(k=>[k,canonicalMember(k+'-apply',()=>rawApplyMember(false))]));
   const rawIFnApply = canonicalMember('ifn-apply',()=>rawApplyMember(true));
-  // Compiled .call/.apply interop adapts only native callables: collections,
-  // keywords, symbols, MultiFns and IFn structs, plus the shared members
-  // above. They receive native operands. Every other receiver is ordinary
-  // interop: it and its struct operands are struct views (one per struct in
-  // the call, so aliasing holds), other operands pass unchanged.
-  const callableForm = x => {
+  // A native form's named member, as raw JavaScript reads it: the engine
+  // defers every such read here with the form itself as the receiver, so a
+  // form is one object in both worlds and no call boundary converts anything.
+  // A struct answers its declared fields (the last field munged to a member
+  // wins, as the legacy constructor's assignments do), a record's slots, its
+  // Object methods and then its IFn call/apply adapters; the collection
+  // families, keywords, symbols and multimethods answer call/apply only.
+  const jsMember = (x, name) => {
     const value = val(x), kind = __rt.formKind(value);
-    if (families.includes(kind)) return true;
-    return (kind === 'struct' || kind === 'record') && (multi.is(value) || decl.callable(value));
+    if (kind !== 'struct' && kind !== 'record')
+      return name === 'call' ? rawCalls.get(kind) : name === 'apply' ? rawApplies.get(kind) : undefined;
+    if (multi.is(value)) return name === 'call' ? rawMultiCall : name === 'apply' ? rawApplies.get('struct') : undefined;
+    const info = decl.structInfo(value), field = info.fieldMembers.lastIndexOf(name);
+    if (field !== -1) return __rt.structField(value, info.fields[field]);
+    if (info.record && (name === '__meta' || name === '__extmap' || name === '__hash')) return name === '__meta' ? __rt.cljMeta(value) : null;
+    if (info.members.has(name)) return decl.memberFunction(info, name);
+    if (name === 'call') return decl.callable(value) ? decl.callMember(value) ?? rawIFnCall : undefined;
+    if (name === 'apply') return decl.callable(value) ? rawIFnApply : undefined;
+    return undefined;
   };
-  const callReceiver = x => callableForm(x) ? val(x) : interop(x);
-  // Read the member before the operands are evaluated, as `r.call(...)` does.
-  const callMethod = (x, name) => {
-    const raw = callableForm(x), receiver = raw ? val(x) : interop(x), member = receiver[name];
-    const call = args => typeof member === 'function' ? Reflect.apply(member, receiver, args) : member(...args);
-    if (raw || isRawMember(receiver)) return (...args) => call(args.map(val));
-    const views = new Map(), kind = __rt.formKind(val(x));
-    if (kind === 'struct' || kind === 'record') views.set(val(x), receiver);
-    return (...args) => call(args.map(a => {
-      const value = val(a), kind = __rt.formKind(value);
-      if (kind !== 'struct' && kind !== 'record') return value;
-      let view = views.get(value);
-      if (view === undefined) views.set(value, view = decl.viewOf(value));
-      return view;
-    }));
+  // `String(struct)`: its Object toString method, else the plain object text.
+  const structString = x => {
+    const toString = jsMember(x, 'toString');
+    return typeof toString === 'function' ? String(toString.call(val(x))) : '[object Object]';
   };
   // memoize calls its callback through Clojure apply, whose fixed function
   // receiver is the function itself. Native variadic dispatchers preserve
@@ -907,7 +900,7 @@ const native = (() => {
       if(x.__extmap!=null)for(let s=seq(__rt.formPrintItems(x.__extmap));s!==null;s=__rt.cljNext(s))entries=__rt.formConj(entries,__rt.cljFirst(s));
       return printSequential(writer,(e,w,o)=>printSequential(w,printWriter,'',' ','',o,e),'#'+__rt.formName(record.ty).replaceAll('/','.')+'{',', ','}',options,entries);
     }
-    if(kind==='struct')return write(writer,'#object['+__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.')+' '+String(interop(x))+']');
+    if(kind==='struct')return write(writer,'#object['+__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.')+' '+structString(x)+']');
     if(kind===null&&(typeof x==='object'||typeof x==='function')){
       const ty=x.__lightNativeType;
       if(__rt.formKind(ty)==='type')return write(writer,typeof x==='function'?__rt.formName(ty):'#object['+__rt.formName(ty).replaceAll('/','.')+' '+String(x)+']');
@@ -1795,7 +1788,7 @@ const native = (() => {
       if(kind==='reduced'||__rt.cljIsAtom(x))return '[object Object]';
       if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}
       if(kind==='type')return __rt.formName(x);
-      if(kind==='struct'||kind==='record')return String(interop(x));
+      if(kind==='struct'||kind==='record')return structString(x);
       if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const {buffer,writer}=stringWriter();printWriterImpl(x,writer,null,true);flushWriter(writer);return buffer.text;}finally{core.printReadably=saved;}}return String(x);}).join('');},
     identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>c===multi.MultiFn?multi.is(x):__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.reduce((a,b)=>a+val(b),0), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
@@ -1826,8 +1819,6 @@ const native = (() => {
     },
     invokeMemoized:(cache,args)=>{
       lane(cache);
-      // Ordinary call/apply interop passes a struct view; it stands for its struct.
-      args=args.map(decl.viewStruct);
       const key=vector(args), state=__rt.atomLoad(cache), callback=__rt.formNth(state,0), table=__rt.formNth(state,1), adapted=__rt.formNth(state,2);
       // Presence is independent of the result: nil, false and undefined
       // are cached too. Keys use the native Clojure equality/hash contract.
@@ -2016,7 +2007,7 @@ const native = (() => {
     // Inspect data properties without running an unsupported entry's getter.
     // Units keep that getter's access at the original expression site.
     nativeCoreBinding:name=>Object.getOwnPropertyDescriptor(core,name),
-    nativeInterop:interop,nativeCallReceiver:callReceiver,nativeCallMethod:callMethod,declarationReceiver:x=>x,
+    nativeInterop:interop,declarationReceiver:x=>x,
     protocol:name=>Object.freeze({name}),
     protocolMethod:(key,name,arities,viaMetadata)=>decl.method(key,name,arities,viaMetadata===true),
     protocolPredicate:(protocol,key,x,direct)=>direct?decl.implementsDirectly(key,x):decl.satisfies(key,x),

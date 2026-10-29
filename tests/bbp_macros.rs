@@ -8295,8 +8295,10 @@ fn native_borrowed_ifn_calls_match_legacy() {
             (defmacro m []
               (let [a (->A) b (->B) c (->C) d (D.) e (->E) f (->F)
                     ac (.-call a) aa (.-apply a) cc (.-call c) dc (.-call d)
-                    ec (.-call e)]
+                    ec (.-call e) forward (.-call cc) forward2 (.-call forward)]
                 (list 'quote [(js* "Function.prototype.call.call(~{},~{},null,1,2)" ac b)
+                              (.call forward cc c nil 7) (.call forward2 forward cc c nil 8)
+                              (.call forward ac b nil 9) (.call forward2 forward aa b nil [10 11])
                               (js* "~{}.call(~{},null,1)" cc d)
                               (js* "~{}.call(~{},null,2)" dc c)
                               (js* "~{}.call(~{},null,[1,2])" aa b)
@@ -8306,7 +8308,7 @@ fn native_borrowed_ifn_calls_match_legacy() {
                               (identical? cc dc) (identical? ac (.-call b))
                               (identical? aa (.-apply d))])))
             (js/console.log (pr-str (m)))"#,
-        "[[:a [1 2]] [:d 1] [:c 2] [:b [1 2]] [:f [2]] [:a [1 2]] [:c 2] true false true]\n",
+        "[[:a [1 2]] [:c 7] [:c 8] [:a [9]] [:b [10 11]] [:d 1] [:c 2] [:b [1 2]] [:f [2]] [:a [1 2]] [:c 2] true false true]\n",
     );
 }
 
@@ -8454,13 +8456,14 @@ fn native_raw_callable_collections_match_quickjs() {
     }
 }
 
-/// Only native callables get the raw call/apply adapters: struct fields,
-/// Object methods and JavaScript object members named call or apply remain
-/// ordinary interop.
+/// Struct fields, Object methods and JavaScript object members named call or
+/// apply are ordinary members; a struct is its own Object method's operand,
+/// directly and through forwarded calls, with its identity intact.
 #[test]
 fn native_object_call_and_apply_members_match_legacy() {
     assert_native_matches_legacy(
-        r#"(deftype T [x] Object (call [_ n] (+ x n)) (apply [_ a b] [x a b]))
+        r#"(deftype T [x] Object (call [_ n] (+ x n)) (apply [_ a b] [x a b])
+             (same [this o] [(identical? this o) (.-x o)]))
            (deftype Fields [call apply])
            (defrecord Rec [call apply])
            (defmacro m []
@@ -8470,29 +8473,36 @@ fn native_object_call_and_apply_members_match_legacy() {
                [(.call t 2) (.apply t 6 7) (fn? (.-call t)) (fn? (.-apply t))
                 (.-call fs) (.-apply fs) (.-call r) (.-apply r)
                 (.call o 4) (vec (.apply o 8 9)) (fn? (.-call o))
-                (= (.-call o) (.-call (js* "({call: ~{}})" (.-call o))))]))
+                (= (.-call o) (.-call (js* "({call: ~{}})" (.-call o))))
+                (.same t t) (.call (.-same t) t t) (.apply (.-same t) t (js/Array.of t))
+                (.same t (T. 41)) (identical? (.-same t) (.-same t))
+                (js* "~{}.same.call(~{}, ~{})" t t t)]))
            (js/console.log (pr-str (m)))"#,
-        "[42 [40 6 7] true true 1 2 3 4 9 [5 8 9] true true]\n",
+        "[42 [40 6 7] true true 1 2 3 4 9 [5 8 9] true true [true 40] [true 40] [true 40] [false 41] true [true 40]]\n",
     );
 }
 
-/// Ordinary JavaScript functions invoked through call/apply see struct views,
-/// as receivers and as positional operands, like any other interop.
+/// Raw JavaScript functions and ClojureScript functions invoked through
+/// call/apply receive the same native struct: JavaScript reads its fields,
+/// ClojureScript keeps its identity and record status.
 #[test]
-fn native_js_call_and_apply_preserve_struct_views() {
+fn native_js_call_and_apply_read_struct_fields() {
     assert_native_matches_legacy(
         r#"(deftype T [x])
            (defrecord R [x])
            (defmacro m []
              (let [t (T. 7) r (->R 8)
                    f (js* "(function(o) { 'use strict'; return [this === null ? null : this.x, o.x]; })")
-                   g (js* "(function(a, b) { 'use strict'; return [this.x, a, b]; })")]
+                   g (js* "(function(a, b) { 'use strict'; return [this.x, a, b]; })")
+                   probe (fn [x] [(record? x) (identical? x r)])]
                [(vec (.call f nil t)) (vec (.call f t r)) (vec (.call f r t))
                 (vec (.apply g t (js/Array.of 1 2))) (vec (.apply g r (js/Array.of "a" nil)))
                 (.call (fn [y] (.-x y)) nil t) (.apply (fn [y z] (+ y z)) nil (js/Array.of 1 2))
-                (vec (.call (.-call f) f nil r))]))
+                (vec (.call (.-call f) f nil r))
+                (.call probe nil r) (.apply probe nil (js/Array.of r)) (.call (.-call probe) probe nil r)
+                (.call record? nil r) (.call identical? nil r r) (.call probe nil t)]))
            (js/console.log (pr-str (m)))"#,
-        "[[nil 7] [7 8] [8 7] [7 1 2] [8 \"a\" nil] 7 3 [nil 8]]\n",
+        "[[nil 7] [7 8] [8 7] [7 1 2] [8 \"a\" nil] 7 3 [nil 8] [true true] [true true] [true true] true true [false false]]\n",
     );
 }
 
@@ -8537,6 +8547,8 @@ fn native_raw_call_apply_matrix_matches_quickjs() {
                              ["keyword" :x] ["symbol" 'x] ["multi" mf]
                              ["ifn-record" (->Callable :rec)] ["ifn-type" (CallableType. :type)]
                              ["memo" memo] ["js-fn" js-fn] ["js-object" obj]
+                             ["plain-fn" (fn [v] [:plain (record? v) (identical? v st) v])]
+                             ["core-fn" identity] ["core-pred" record?]
                              ["deftype-fields" (Fields. "fields" call-field apply-field)]
                              ["record-fields" (->RecFields "rec-fields" call-field apply-field)]]]
               (vec (for [[rl f] receivers [ol v] operands
@@ -8653,8 +8665,23 @@ fn native_raw_call_apply_matrix_matches_quickjs() {
         "keyword struct extracted => 7",
         "ifn-record struct .apply => [:rec #helpers.R{:x 7}]",
         "memo struct extracted => [:memo #helpers.R{:x 7}]",
+        // A struct is one object in both worlds: raw JavaScript reads its
+        // fields however it arrives, and ClojureScript callables keep its
+        // identity however they are called.
+        "js-fn struct direct => [\"js\" \"nil\" \"x:7\"]",
         "js-fn struct .call => [\"js\" \"nil\" \"x:7\"]",
+        "js-fn struct .apply => [\"js\" \"nil\" \"x:7\"]",
         "js-fn coll .call => [\"js\" \"nil\" {:x :coll, x :sym}]",
+        "deftype-fields struct direct => [\"call-field\" \"tag:fields\" \"nil\" \"x:7\"]",
+        "record-fields struct .call => [\"call-field\" \"tag:rec-fields\" \"nil\" \"x:7\"]",
+        "plain-fn struct direct => [:plain true true #helpers.R{:x 7}]",
+        "plain-fn struct .call => [:plain true true #helpers.R{:x 7}]",
+        "plain-fn struct .apply => [:plain true true #helpers.R{:x 7}]",
+        "plain-fn struct extracted => [:plain true true #helpers.R{:x 7}]",
+        "plain-fn struct explicit-list => [:plain true true #helpers.R{:x 7}]",
+        "core-fn struct .call => #helpers.R{:x 7}",
+        "core-pred struct .apply => true",
+        "core-pred coll extracted => false",
         "alias .call => [true false]",
         "alias .call nil => [false true]",
         "alias fields => [true false]",
@@ -8664,33 +8691,13 @@ fn native_raw_call_apply_matrix_matches_quickjs() {
     }
     #[cfg(feature = "quickjs")]
     let legacy_reference = {
-        // Native structs are not JavaScript objects. Ordinary JavaScript code
-        // sees their fields through the views call/apply give their receiver
-        // and positional operands; a struct passed by direct invocation or in
-        // an apply array stays native, and a struct's call field is not its
-        // call protocol. Both boundaries predate raw call/apply adaptation.
-        let boundary = |native: &str, legacy: &str| {
-            let fields =
-                native.starts_with("deftype-fields ") || native.starts_with("record-fields ");
-            (native.contains(" struct direct => ") || native.contains(" struct .apply => "))
-                && native.replace("#helpers.R{:x 7}", "\"x:7\"") == legacy
-                || fields
-                    && native.ends_with(" direct => error")
-                    && legacy.starts_with(native.trim_end_matches("error"))
-                    && legacy.contains("[\"call-field\" ")
-        };
+        // Every cell matches QuickJS: no boundary converts a value.
         let legacy_reference = build(false, 1, 0);
         let legacy = program_output(&legacy_reference);
-        let mut boundaries = 0;
         let differences: Vec<_> = output
             .lines()
             .zip(legacy.lines())
             .filter(|(native, legacy)| native != legacy)
-            .filter(|(native, legacy)| {
-                let expected = boundary(native, legacy);
-                boundaries += usize::from(expected);
-                !expected
-            })
             .map(|(native, legacy)| format!("native {native}\nlegacy {legacy}"))
             .collect();
         assert!(
@@ -8698,9 +8705,6 @@ fn native_raw_call_apply_matrix_matches_quickjs() {
             "{}",
             differences.join("\n")
         );
-        // Per expansion: four ordinary receivers' struct direct/.apply cells,
-        // and the two field structs' remaining direct calls.
-        assert_eq!(boundaries, 2 * (4 * 2 + 2 * 3), "{output}");
         legacy_reference
     };
     let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")

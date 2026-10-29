@@ -8,11 +8,7 @@ use crate::heap::{
     gc::{Trace, TraceEdge},
 };
 use crate::value::Value;
-use crate::value::string::FixedText;
 use crate::vm::instr::{FormOp, Instr};
-
-static CALL: FixedText = FixedText::new("call");
-static APPLY: FixedText = FixedText::new("apply");
 
 #[derive(Debug)]
 pub(super) struct State {
@@ -22,56 +18,38 @@ pub(super) struct State {
     receiver: Value,
     through_lazy: bool,
     called: bool,
-    member: Option<&'static str>,
+    /// A raw JavaScript member read (`jsMember`): the member's name. The
+    /// resolver's result is the member itself, not a method to call.
+    member: Option<Value>,
 }
 
-/// Native forms keep their identity at raw JavaScript call/apply reads. The
-/// task's adapter supplies the member; resolving a user type may suspend.
+/// A native form is the same object in JavaScript and in the compiler's
+/// runtime: a named member read (`property::Deferred::Form`) asks the task's
+/// resolver for the member, keeping the form itself as the receiver. The
+/// resolver may suspend (declaring a cold type, demanding a helper) without
+/// replaying the read. Without a resolver a form has no members.
 pub(crate) fn start_member(
     state: &mut VmState,
-    heap: &Heap,
-    receiver: &Value,
+    receiver: Value,
     key: &crate::vm::property::Key,
-) -> Result<bool, Fault> {
-    let Some(resolver) = state.core_resolver.clone() else {
-        return Ok(false);
+) -> Result<(), Fault> {
+    let (Some(resolver), crate::vm::property::Key::Name(name)) = (state.core_resolver.clone(), key)
+    else {
+        state.push(Value::Undefined);
+        return Ok(());
     };
-    let crate::vm::property::Key::Name(name) = key else {
-        return Ok(false);
-    };
-    let member = if CALL.matches(name) {
-        "jsCall"
-    } else if APPLY.matches(name) {
-        "jsApply"
-    } else {
-        return Ok(false);
-    };
-    if !matches!(
-        form::kind(heap, &form::unwrap(heap, receiver.clone())),
-        Some(
-            FormKind::Vector
-                | FormKind::Map
-                | FormKind::Set
-                | FormKind::Keyword
-                | FormKind::Symbol
-                | FormKind::Struct
-        )
-    ) {
-        return Ok(false);
-    }
     push_native(
         state,
         NativeState::CoreProtocol(State {
             op: FormOp::CljCoreResolver,
             operands: vec![],
             resolver,
-            receiver: receiver.clone(),
+            receiver,
             through_lazy: false,
             called: true,
-            member: Some(member),
+            member: Some(Value::String(name.clone())),
         }),
-    )?;
-    Ok(true)
+    )
 }
 
 pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<bool, Fault> {
@@ -249,6 +227,9 @@ impl State {
         self.resolver.trace(visit);
         self.receiver.trace(visit);
         self.operands.iter().for_each(|value| value.trace(visit));
+        if let Some(member) = &self.member {
+            member.trace(visit);
+        }
     }
 
     pub(super) fn step(&mut self, input: Input) -> Result<Action, Fault> {
@@ -257,12 +238,18 @@ impl State {
                 callee: self.resolver.clone(),
                 this: Value::Undefined,
                 args: [
-                    Value::String(self.member.unwrap_or(self.op.intrinsic()).into()),
+                    Value::String(
+                        match self.member {
+                            Some(_) => "jsMember",
+                            None => self.op.intrinsic(),
+                        }
+                        .into(),
+                    ),
                     self.receiver.clone(),
                     Value::Bool(self.through_lazy),
-                    Value::Undefined,
+                    self.member.clone().unwrap_or(Value::Undefined),
                 ],
-                argc: 3,
+                argc: if self.member.is_some() { 4 } else { 3 },
             }),
             Input::CallResult(value) if self.called => Ok(Action::Return(value)),
             Input::CallResult(Value::Null | Value::Undefined) => Ok(Action::FormFallback {

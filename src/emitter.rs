@@ -3696,12 +3696,29 @@ impl<'a> Emitter<'a> {
     }
 
     /// This adapter is emitted only for the native compile-time runtime.
-    /// It unwraps scalar occurrences and rejects native collection interop.
+    /// It unwraps occurrences and converts nothing else: a native form is
+    /// the same object in JavaScript (docs/native-macros.md, light-cljs-558).
     fn interop_value(&mut self, value: ExprId) {
         if self.native_forms {
             self.rt(RuntimeName::export("nativeInterop"));
             self.output.push('(');
             self.value(value);
+            self.output.push(')');
+        } else {
+            self.value(value);
+        }
+    }
+
+    /// The receiver of a compiled member read or call, with the member's
+    /// name: explicit interop with a non-struct native form is rejected
+    /// there, except its `call`/`apply` members.
+    fn interop_receiver(&mut self, value: ExprId, member: &str) {
+        if self.native_forms {
+            self.rt(RuntimeName::export("nativeInterop"));
+            self.output.push('(');
+            self.value(value);
+            self.output.push_str(", ");
+            self.string_units(&member.encode_utf16().collect::<Vec<_>>());
             self.output.push(')');
         } else {
             self.value(value);
@@ -9031,23 +9048,13 @@ impl<'a> Emitter<'a> {
                 self.output.push(')');
             }
             ExprKind::Property { receiver, property } => {
-                // Native callables keep their identity for the engine's
-                // call/apply members; other receivers are ordinary interop.
-                if self.native_forms && matches!(property.as_str(), "call" | "apply") {
-                    self.rt(RuntimeName::export("nativeCallReceiver"));
-                    self.output.push('(');
-                    self.value(*receiver);
-                    self.output.push(')');
-                    self.member(property);
-                    return;
-                }
                 if self.demand_roots {
                     self.rt(RuntimeName::export("declarationReceiver"));
                     self.output.push('(');
                 } else {
                     self.output.push('(');
                 }
-                self.interop_value(*receiver);
+                self.interop_receiver(*receiver, property);
                 self.output.push(')');
                 self.member(property);
             }
@@ -9056,32 +9063,13 @@ impl<'a> Emitter<'a> {
                 method,
                 args,
             } => {
-                // The runtime chooses the operand conversion from the
-                // receiver: native callables and their shared members keep
-                // native operands, ordinary functions receive struct views.
-                if self.native_forms && matches!(method.as_str(), "call" | "apply") {
-                    self.rt(RuntimeName::export("nativeCallMethod"));
-                    self.output.push('(');
-                    self.value(*receiver);
-                    self.output.push_str(", \"");
-                    self.output.push_str(method);
-                    self.output.push_str("\")(");
-                    for (index, &arg) in args.iter().enumerate() {
-                        if index > 0 {
-                            self.output.push_str(", ");
-                        }
-                        self.value(arg);
-                    }
-                    self.output.push(')');
-                    return;
-                }
                 if self.demand_roots {
                     self.rt(RuntimeName::export("declarationReceiver"));
                     self.output.push('(');
                 } else {
                     self.output.push('(');
                 }
-                self.interop_value(*receiver);
+                self.interop_receiver(*receiver, method);
                 self.output.push(')');
                 self.member(method);
                 self.output.push('(');

@@ -315,6 +315,12 @@ pub(crate) enum Action {
         receiver: Value,
         conversion: bool,
     },
+    /// Read a native form's named member through the task's core-protocol
+    /// resolver and deliver it to this native (`property::Deferred::Form`).
+    FormMember {
+        receiver: Value,
+        key: property::Key,
+    },
     /// Execute a property instruction and deliver its result to this native.
     Instruction {
         instr: Instr,
@@ -3467,6 +3473,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::SimTimer { .. }
             | Action::SetProperty { .. }
             | Action::GetProperty { .. }
+            | Action::FormMember { .. }
             | Action::CreateDataProperty { .. }
             | Action::DefineProperty(_)
             | Action::Instruction { .. }
@@ -3805,6 +3812,20 @@ fn apply_action(
             )?;
             Ok(Flow::Next)
         }
+        Action::FormMember { receiver, key } => {
+            if state
+                .natives
+                .last()
+                .is_some_and(|frame| frame.state.catches())
+            {
+                state.push_handler(super::exception::HandlerKind::NativeCatch {
+                    native: state.natives.len() - 1,
+                })?;
+            }
+            set_awaiting(state, Awaiting::CallResult)?;
+            start_form_member(state, receiver, &key)?;
+            Ok(Flow::Next)
+        }
         Action::SetProperty {
             this,
             key,
@@ -4135,6 +4156,9 @@ pub(crate) fn read_result(
                 },
                 0,
             );
+        }
+        property::Read::Deferred(property::Deferred::Form { key }) => {
+            return start_form_member(state, this, &key);
         }
     }
     Ok(())
