@@ -1057,7 +1057,7 @@ fn native_pop_matches_quickjs_at_every_pool_size() {
     ]
     .join(" ");
     let rejected = vec![format!("[{unsupported} nil false false]"); 6].join(" ");
-    let protocol = vec!["\"No protocol method IStack/-pop defined for this value\""; 4].join(" ");
+    let protocol = ["\"No protocol method IStack/-pop defined for this value\""; 4].join(" ");
     assert_eq!(
         program_output(&reference),
         format!(
