@@ -3516,18 +3516,25 @@ identity, including after collection. Adapters resolve protocol machinery in
 the consuming task. Keyword, symbol, vector/map-entry, map, set and multimethod
 families retain the same distinct or shared member identities as QuickJS.
 
-Native `.-call`/`.-apply` reads and explicit `.call`/`.apply` calls retain the
-native receiver rather than constructing a struct view. Explicit method calls
-unwrap scalar occurrences at the JavaScript boundary while retaining native
-collection arguments. Ordinary JavaScript functions therefore receive primitive
-numbers, strings and booleans, and borrowed collection members keep their native
-receiver. The ordinary application/default emission path remains unchanged.
+Compiled `.-call`/`.-apply` reads and explicit `.call`/`.apply` calls choose
+their conversion from the receiver at run time. A native callable (collection,
+keyword, symbol, multimethod or struct declaring IFn) keeps its native identity,
+and so do the operands of a call on it or on one of its shared members, which
+the member registry recognizes by identity. Every other receiver is ordinary
+interop: structs become struct views, so deftype and record fields or Object
+methods named `call`/`apply` and JavaScript objects with such members behave as
+in QuickJS, and ordinary JavaScript functions receive struct views as `this`
+and positional operands. Both paths unwrap scalar occurrences. The member is
+read before the operands are evaluated. The ordinary application/default
+emission path remains unchanged.
 
 The differential matrix includes Clojure `apply` for every callable kind,
 published member identities and pairwise family identities, and a deftype with
 zero-, one-, two-, three-argument and variadic overloads. Separate regressions
-cover borrowed record/type members, direct-entry receivers and `recur`, and
-ordinary JavaScript function scalar arguments. These compare complete emitted
+cover borrowed record/type members, direct-entry receivers and `recur`,
+ordinary JavaScript function scalar arguments, struct fields, Object methods and
+JavaScript object members named `call`/`apply`, and struct views passed to
+ordinary functions as receivers and operands. These compare complete emitted
 applications with QuickJS; the matrix exercises jobs 1/2/4/8 with twelve seeds.
 
 #### Review-fix verification

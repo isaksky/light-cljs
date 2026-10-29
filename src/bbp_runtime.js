@@ -9,6 +9,7 @@
 // declaration bundle's, and code run outside a bundle extends at order 0.
 // Internal identity bookkeeping uses SameValueZero maps and engine CAS only;
 // it never invokes user equality, effects, or publication-time task captures.
+// Each member is also its own key, so raw interop recognizes the adapters.
 const canonicalMember = (key, make) => {
   let candidate;
   for (;;) {
@@ -16,9 +17,13 @@ const canonicalMember = (key, make) => {
     const found = current === null ? undefined : __rt.getOr(current,key,undefined);
     if (found !== undefined) return found;
     if (candidate === undefined) candidate = make();
-    const next = __rt.assoc(current === null ? __rt.map() : current,key,candidate);
+    const next = __rt.assoc(__rt.assoc(current === null ? __rt.map() : current,key,candidate),candidate,true);
     if (Object.is(__rt.atomCas(rawMembersCell,current,next),current)) return candidate;
   }
+};
+const isRawMember = f => {
+  const members = __rt.atomLoad(rawMembersCell);
+  return typeof f === 'function' && members !== null && __rt.getOr(members,f,false) === true;
 };
 const decl = (() => {
   const tables = new Map(), extensions = new Map(), views = new Map(), frontiers = [];
@@ -716,6 +721,26 @@ const native = (() => {
   };
   const rawApplies = new Map([...families,'struct'].map(k=>[k,canonicalMember(k+'-apply',()=>rawApplyMember(false))]));
   const rawIFnApply = canonicalMember('ifn-apply',()=>rawApplyMember(true));
+  // Compiled .call/.apply interop adapts only native callables: collections,
+  // keywords, symbols, MultiFns and IFn structs, plus the shared members
+  // above. Everything else is ordinary interop: struct views for receivers
+  // and operands, so struct fields and Object methods named call or apply,
+  // and JavaScript functions reading a struct argument, behave as legacy.
+  const callableForm = x => {
+    const value = val(x), kind = __rt.formKind(value);
+    if (families.includes(kind)) return true;
+    return (kind === 'struct' || kind === 'record') && (multi.is(value) || decl.callable(value));
+  };
+  const callReceiver = x => callableForm(x) ? val(x) : interop(x);
+  // Read the member before the operands are evaluated, as `r.call(...)` does.
+  const callMethod = (x, name) => {
+    const raw = callableForm(x), receiver = raw ? val(x) : interop(x), member = receiver[name];
+    const adapt = raw || isRawMember(receiver) ? val : interop;
+    return (...args) => {
+      args = args.map(a => adapt(a));
+      return typeof member === 'function' ? Reflect.apply(member, receiver, args) : member(...args);
+    };
+  };
   // memoize calls its callback through Clojure apply, whose fixed function
   // receiver is the function itself. Native variadic dispatchers preserve
   // applyTo's null receiver in immutable engine metadata, so they can publish
@@ -1983,7 +2008,7 @@ const native = (() => {
     // Inspect data properties without running an unsupported entry's getter.
     // Units keep that getter's access at the original expression site.
     nativeCoreBinding:name=>Object.getOwnPropertyDescriptor(core,name),
-    nativeInterop:interop,declarationReceiver:x=>x,
+    nativeInterop:interop,nativeCallReceiver:callReceiver,nativeCallMethod:callMethod,declarationReceiver:x=>x,
     protocol:name=>Object.freeze({name}),
     protocolMethod:(key,name,arities,viaMetadata)=>decl.method(key,name,arities,viaMetadata===true),
     protocolPredicate:(protocol,key,x,direct)=>direct?decl.implementsDirectly(key,x):decl.satisfies(key,x),

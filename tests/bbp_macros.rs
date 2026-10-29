@@ -8454,6 +8454,48 @@ fn native_raw_callable_collections_match_quickjs() {
     }
 }
 
+/// Only native callables get the raw call/apply adapters: struct fields,
+/// Object methods and JavaScript object members named call or apply remain
+/// ordinary interop.
+#[test]
+fn native_object_call_and_apply_members_match_legacy() {
+    assert_native_matches_legacy(
+        r#"(deftype T [x] Object (call [_ n] (+ x n)) (apply [_ a b] [x a b]))
+           (deftype Fields [call apply])
+           (defrecord Rec [call apply])
+           (defmacro m []
+             (let [t (T. 40) fs (Fields. 1 2) r (->Rec 3 4)
+                   o (js* "({offset: 5, call: function(n) { return this.offset + n; },
+                             apply: function(a, b) { return [this.offset, a, b]; }})")]
+               [(.call t 2) (.apply t 6 7) (fn? (.-call t)) (fn? (.-apply t))
+                (.-call fs) (.-apply fs) (.-call r) (.-apply r)
+                (.call o 4) (vec (.apply o 8 9)) (fn? (.-call o))
+                (= (.-call o) (.-call (js* "({call: ~{}})" (.-call o))))]))
+           (js/console.log (pr-str (m)))"#,
+        "[42 [40 6 7] true true 1 2 3 4 9 [5 8 9] true true]\n",
+    );
+}
+
+/// Ordinary JavaScript functions invoked through call/apply see struct views,
+/// as receivers and as positional operands, like any other interop.
+#[test]
+fn native_js_call_and_apply_preserve_struct_views() {
+    assert_native_matches_legacy(
+        r#"(deftype T [x])
+           (defrecord R [x])
+           (defmacro m []
+             (let [t (T. 7) r (->R 8)
+                   f (js* "(function(o) { 'use strict'; return [this === null ? null : this.x, o.x]; })")
+                   g (js* "(function(a, b) { 'use strict'; return [this.x, a, b]; })")]
+               [(vec (.call f nil t)) (vec (.call f t r)) (vec (.call f r t))
+                (vec (.apply g t (js/Array.of 1 2))) (vec (.apply g r (js/Array.of "a" nil)))
+                (.call (fn [y] (.-x y)) nil t) (.apply (fn [y z] (+ y z)) nil (js/Array.of 1 2))
+                (vec (.call (.-call f) f nil r))]))
+           (js/console.log (pr-str (m)))"#,
+        "[[nil 7] [7 8] [8 7] [7 1 2] [8 \"a\" nil] 7 3 [nil 8]]\n",
+    );
+}
+
 #[test]
 fn native_callable_objects_keep_the_legacy_call_abi() {
     assert_native_matches_legacy(

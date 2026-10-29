@@ -9031,10 +9031,13 @@ impl<'a> Emitter<'a> {
                 self.output.push(')');
             }
             ExprKind::Property { receiver, property } => {
+                // Native callables keep their identity for the engine's
+                // call/apply members; other receivers are ordinary interop.
                 if self.native_forms && matches!(property.as_str(), "call" | "apply") {
-                    self.output.push_str("(__rt.formValue(");
+                    self.rt(RuntimeName::export("nativeCallReceiver"));
+                    self.output.push('(');
                     self.value(*receiver);
-                    self.output.push_str("))");
+                    self.output.push(')');
                     self.member(property);
                     return;
                 }
@@ -9053,22 +9056,21 @@ impl<'a> Emitter<'a> {
                 method,
                 args,
             } => {
+                // The runtime chooses the operand conversion from the
+                // receiver: native callables and their shared members keep
+                // native operands, ordinary functions receive struct views.
                 if self.native_forms && matches!(method.as_str(), "call" | "apply") {
-                    self.output.push_str("(__rt.formValue(");
-                    self.value(*receiver);
-                    self.output.push_str("))");
-                    self.member(method);
+                    self.rt(RuntimeName::export("nativeCallMethod"));
                     self.output.push('(');
-                    // Callable members retain native collection operands,
-                    // while scalar occurrences cross this JS boundary as
-                    // their primitive values, just like ordinary interop.
+                    self.value(*receiver);
+                    self.output.push_str(", \"");
+                    self.output.push_str(method);
+                    self.output.push_str("\")(");
                     for (index, &arg) in args.iter().enumerate() {
                         if index > 0 {
                             self.output.push_str(", ");
                         }
-                        self.output.push_str("__rt.formValue(");
                         self.value(arg);
-                        self.output.push(')');
                     }
                     self.output.push(')');
                     return;
