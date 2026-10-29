@@ -1464,6 +1464,41 @@ fn native_sorted_map_by_matches_quickjs() {
             ),
         ),
         (
+            // Legacy mapConj: nil keeps the map; other values are sequences
+            // of vector entries, added in order with comparator calls.
+            r#"(let [log (atom [])
+                     cmp (fn [a b] (swap! log conj [a b]) (compare b a))
+                     m (sorted-map-by cmp 1 :a)
+                     message (fn [f] (try (f) (catch :default e (.-message e))))
+                     _ (reset! log [])
+                     results [(identical? m (conj m nil)) (conj m '()) (conj m '([2 :b] [3 :c]))
+                              (conj m (map (fn [k] [k (keyword (str k))]) [5 4])) (conj m (lazy-seq nil))
+                              (conj m {}) (conj m (sorted-map-by > 7 :g)) (conj m [9 :i] nil [8 :h]) (into m '([0 :z]))
+                              (message #(conj m '(1 2))) (message #(conj m (list [6 :f] :x)))]]
+                 [results @log])"#,
+            concat!(
+                "[[true {1 :a} {3 :c, 2 :b, 1 :a} {5 :5, 4 :4, 1 :a} {1 :a} {1 :a} {7 :g, 1 :a} {9 :i, 8 :h, 1 :a} {1 :a, 0 :z} ",
+                "\"Map conj requires vector entries\" \"Map conj requires vector entries\"] ",
+                "[[1 2] [1 2] [1 3] [2 3] [2 3] [1 5] [1 5] [1 4] [5 4] [1 4] [1 7] [1 7] ",
+                "[1 9] [1 9] [1 8] [9 8] [1 8] [1 0] [1 6] [1 6]]]"
+            ),
+        ),
+        (
+            // A nil comparator: entries are kept until two keys are compared,
+            // which raises a TypeError, as in the legacy runtime.
+            r#"(let [e (sorted-map-by nil) s (sorted-map-by nil 1 :a)
+                     type-error (fn [f] (try (f) (catch js/TypeError _ :type-error) (catch :default _ :other)))]
+                 [e (count e) (get e 1) (get e 1 :none) (contains? e 1) (assoc e 1 :a) (dissoc e 1) (e 1 :none)
+                  (conj e [2 :b]) (= e {}) (= {} e) s (count s) (seq s) (rseq s) (= s {1 :a})
+                  (type-error #(get s 1)) (type-error #(contains? s 1)) (type-error #(assoc s 2 :b))
+                  (type-error #(dissoc s 1)) (type-error #(s 1)) (type-error #(= {1 :a} s)) (type-error #(= [{1 :a}] [s]))
+                  (type-error #(sorted-map-by nil 1 :a 2 :b))])"#,
+            concat!(
+                "[{} 0 nil :none false {1 :a} {} :none {2 :b} true true {1 :a} 1 ([1 :a]) ([1 :a]) true ",
+                ":type-error :type-error :type-error :type-error :type-error :type-error :type-error :type-error]"
+            ),
+        ),
+        (
             r#"[(rseq [1 2 3]) (rseq []) (rseq (sorted-map 1 2 3 4)) (rseq (with-meta [1 2] {:m 1}))
                 (meta (rseq (with-meta [1 2] {:m 1}))) (sorted? (sorted-map-by >)) (sorted? {})]"#,
             "[(3 2 1) nil ([3 4] [1 2]) (2 1) nil true false]",
@@ -1508,6 +1543,32 @@ fn native_nested_sorted_map_by_equality_matches_quickjs() {
         "[false 6] [false 9] [[1 2] [2 2] [2 2] [1 1] [2 1] [1 1]]]\n"
     );
     assert_native_matches_legacy(source, expected);
+}
+
+/// `=` with a sorted-map-by map compares values in the left map's legacy
+/// direction: an array map's own value first, a hash or sorted map's found
+/// value first. An asymmetric -equiv shows which value's method runs.
+#[test]
+fn native_sorted_map_by_equality_direction_matches_quickjs() {
+    let source = r#"(def calls (atom []))
+        (deftype T [n] IEquiv (-equiv [_ other] (swap! calls conj [n (.-n other)]) (= n (inc (.-n other)))))
+        (defmacro m []
+          (let [run (fn [f] (reset! calls []) [(f) @calls])
+                by (fn [v] (sorted-map-by compare :k v))]
+            (list 'quote
+                  [(run #(= (array-map :k (T. 2)) (by (T. 1)))) (run #(= (by (T. 1)) (array-map :k (T. 2))))
+                   (run #(= (apply hash-map [:k (T. 2)]) (by (T. 1)))) (run #(= (by (T. 1)) (apply hash-map [:k (T. 2)])))
+                   (run #(= (sorted-map :k (T. 2)) (by (T. 1)))) (run #(= (by (T. 2)) (by (T. 1))))
+                   (run #(= {:k (T. 2)} (by (T. 1)))) (run #(= [(array-map :k (T. 2))] [(by (T. 1))]))
+                   (run #(= [(apply hash-map [:k (T. 2)])] [(by (T. 1))])) (run #(= [(by (T. 2))] [(by (T. 1))]))])))
+        (js/console.log (pr-str (m)))"#;
+    assert_native_matches_legacy(
+        source,
+        concat!(
+            "[[true [[2 1]]] [true [[2 1]]] [false [[1 2]]] [true [[2 1]]] [false [[1 2]]] [false [[1 2]]] ",
+            "[true [[2 1]]] [true [[2 1]]] [false [[1 2]]] [false [[1 2]]]]\n"
+        ),
+    );
 }
 
 /// sorted-set-by stays unsupported natively, with sorted-set.
@@ -1641,6 +1702,119 @@ fn sorted_map_by_helpers_publish_and_resume_at_seeded_pool_sizes() {
     let value = |log| {
         format!(
             r#"[true true true false {{"a" 1, "bb" 4, "ccc" 3}} 4 (["ccc" 3] ["bb" 4] ["a" 1]) {{3 :c, 2 :b, 1 :a}} (3 2 1) true true {{2 [:y], 1 [:x]}} [{log}]]"#
+        )
+    };
+    assert_eq!(
+        program_output(&reference),
+        format!("[{} {}]\n", value(&log), value(&warm))
+    );
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(reference, build(false, jobs, 0), "legacy, jobs {jobs}");
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed),
+                "jobs {jobs}, seed {seed}"
+            );
+        }
+    }
+}
+
+/// Native rseq dispatches IReversible: a user type's -rseq and an extension
+/// that overrides PersistentVector's reversal win over the built-in one, by
+/// direct, aliased and apply calls. The first -rseq call demands a cold
+/// helper, parks and resumes without replay at seeded jobs 1/2/4/8.
+#[test]
+fn native_rseq_protocol_dispatch_matches_quickjs() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-rseq-dispatch");
+    for (file, source) in [
+        (
+            "parts.cljs",
+            r#"(ns parts)
+            (def ^:dynamic *seen* nil)
+            (defn note [x] (when *seen* (swap! *seen* conj x)))
+            (def label (do (note :label-ready) (fn [xs] [:reversed xs])))
+            (deftype R [xs]
+              IReversible (-rseq [_] (note [:rseq xs]) (let [r (label (reverse xs))] (note [:done r]) (seq r))))
+            (extend-type PersistentVector
+              IReversible (-rseq [v] (note [:vector (count v)]) (list :vector-override (count v))))
+            (defmacro probe []
+              (binding [*seen* (atom [])]
+                (let [r (R. [1 2 3]) f rseq]
+                  (list 'quote [(rseq r) (f r) (apply rseq [r]) (rseq [1 2]) (f [1 2 3]) (apply rseq [[4]])
+                                (rseq (sorted-map 1 2 3 4)) @*seen*]))))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [parts :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [parts :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/value b/value]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut stats = light_cljs::CompileStats::default();
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                stats: Some(&mut stats),
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    limits: Some(light_cljs::scheduler::Limits {
+                        batch_jobs: 1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        if native {
+            // label is read only inside R's -rseq, so its cold wait parks
+            // the first protocol call. Nothing is reconstructed per task.
+            let helpers = &stats.native_helpers;
+            assert_eq!(helpers.per_task, 0, "jobs {jobs}, seed {seed}");
+            assert!(helpers.waits >= 1, "jobs {jobs}, seed {seed}: {helpers:?}");
+        }
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0);
+    // The first expansion (a) initializes label between the first -rseq
+    // call's two entries, exactly once; b reads it warm.
+    let log = [
+        "[:rseq [1 2 3]] :label-ready [:done [:reversed (3 2 1)]]",
+        "[:rseq [1 2 3]] [:done [:reversed (3 2 1)]] [:rseq [1 2 3]] [:done [:reversed (3 2 1)]]",
+        "[:vector 2] [:vector 3] [:vector 1]",
+    ]
+    .join(" ");
+    let warm = log.replace(" :label-ready", "");
+    let value = |log| {
+        format!(
+            "[(:reversed (3 2 1)) (:reversed (3 2 1)) (:reversed (3 2 1)) (:vector-override 2) (:vector-override 3) (:vector-override 1) ([3 4] [1 2]) [{log}]]"
         )
     };
     assert_eq!(
