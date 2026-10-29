@@ -8301,10 +8301,12 @@ fn native_borrowed_ifn_calls_match_legacy() {
                               (js* "~{}.call(~{},null,2)" dc c)
                               (js* "~{}.call(~{},null,[1,2])" aa b)
                               (js* "~{}.call(~{},null,1,2)" ec f)
+                              (.call ac b nil 1 2)
+                              (.call dc c nil 2)
                               (identical? cc dc) (identical? ac (.-call b))
                               (identical? aa (.-apply d))])))
             (js/console.log (pr-str (m)))"#,
-        "[[:a [1 2]] [:d 1] [:c 2] [:b [1 2]] [:f [2]] true false true]\n",
+        "[[:a [1 2]] [:d 1] [:c 2] [:b [1 2]] [:f [2]] [:a [1 2]] [:c 2] true false true]\n",
     );
 }
 
@@ -8454,6 +8456,20 @@ fn native_raw_callable_collections_match_quickjs() {
 
 #[test]
 fn native_callable_objects_keep_the_legacy_call_abi() {
+    assert_native_matches_legacy(
+        r#"(defmacro m [n text flag]
+              (let [f (js* "(function(n,s,b) { 'use strict'; return [this===null,typeof n,n,typeof s,s,typeof b,b]; })")]
+                (list 'quote (vec (.call f nil n text flag)))))
+            (js/console.log (pr-str (m 7 "x" false)))"#,
+        "[true \"number\" 7 \"string\" \"x\" \"boolean\" false]\n",
+    );
+    assert_native_matches_legacy(
+        r#"(defmacro m [n text flag]
+              (let [f (js* "(function(n,s,b) { 'use strict'; return [this===null,typeof n,n,typeof s,s,typeof b,b]; })")]
+                (list 'quote (vec (.apply f nil (js/Array.of n text flag))))))
+            (js/console.log (pr-str (m 7 "x" false)))"#,
+        "[true \"number\" 7 \"string\" \"x\" \"boolean\" false]\n",
+    );
     assert_native_matches_legacy(
         r#"(defmacro m []
             (let [f (js* "({offset: 1, call: function(_, x) { return this.offset + x; }})")

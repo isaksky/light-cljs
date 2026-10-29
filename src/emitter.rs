@@ -9059,7 +9059,17 @@ impl<'a> Emitter<'a> {
                     self.output.push_str("))");
                     self.member(method);
                     self.output.push('(');
-                    self.arguments(args);
+                    // Callable members retain native collection operands,
+                    // while scalar occurrences cross this JS boundary as
+                    // their primitive values, just like ordinary interop.
+                    for (index, &arg) in args.iter().enumerate() {
+                        if index > 0 {
+                            self.output.push_str(", ");
+                        }
+                        self.output.push_str("__rt.formValue(");
+                        self.value(arg);
+                        self.output.push(')');
+                    }
                     self.output.push(')');
                     return;
                 }
