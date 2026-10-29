@@ -9325,6 +9325,8 @@ fn native_member_precedence_table_matches_quickjs() {
            (deftype N [])
            (extend-type N Object (valueOf [_] 42) (toString [_] "n-ext"))
            (deftype Z [] IFn (-invoke [_ x] [:z-ifn x]))
+           (deftype H [])
+           (extend-type H Object (zz [_] :h))
            (defmacro table []
              (let [try* (fn [f] (try (let [r (f)] (if (js* "~{} === undefined" r) :undefined r))
                                      (catch :default e (keyword (.-name e)))))
@@ -9347,6 +9349,8 @@ fn native_member_precedence_table_matches_quickjs() {
                       (row :field (->F (fn [& xs] (into [:f-field] xs))) (interop (->F nil)))
                       (row :single-variadic (->S) (interop (->S)))
                       (row :object-prototype (N.) (interop (N.)))
+                      (row :host-type-tag (js* "({__lightNativeType: 1, call(_, x) { return x + 1; }})")
+                           (interop (js* "({__lightNativeType: 1})")))
                       (row :after-frontier (Z.) (interop (Z.)))])))
            (js/console.log (pr-str (table)))
            (extend-type Z Object (call [_ _ x] [:z-ext x]))"#,
@@ -9362,6 +9366,7 @@ fn native_member_precedence_table_matches_quickjs() {
             "[:field [[:f-field nil 1] [:f-field nil 1] [:f-field nil 1 2] [[:f-field nil 1]] [:f-ifn 1] [:f-field nil 1] [:f-field nil 1] [:f-field nil 1] true \"[object Object]\" \"[object Object]1\"] [[:f-field nil 1] [:f-field nil 1] [:f-field nil 1 2] [[:f-field nil 1]] [:f-ifn 1] [:f-field nil 1] [:f-field nil 1] [:f-field nil 1] true \"f-ext\" \"f-ext1\" [:f-field nil 1] [:f-field nil 1]]] ",
             "[:single-variadic [[:s 1] [:s 1] [:s 1 2] [[:s 1]] [:s 1] [:s 1] [:s 1] [:s 1] true \"[object Object]\" \"[object Object]1\"] [[:s 1] [:s 1] [:s 1 2] [[:s 1]] [:s 1] [:s 1] [:s 1] [:s 1] true \"[object Object]\" \"[object Object]1\" [:s 1] [:s 1]]] ",
             "[:object-prototype [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"[object Object]\" \"[object Object]1\"] [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"n-ext\" 43 :TypeError :TypeError]] ",
+            "[:host-type-tag [2 2 2 [2] 2 2 :TypeError 2 true \"[object Object]\" \"[object Object]1\"] [2 2 2 [2] 2 2 :TypeError 2 true \"[object Object]\" \"[object Object]1\" 2 :TypeError]] ",
             "[:after-frontier [[:z-ifn 1] [:z-ifn 1] [:z-ifn 1] [[:z-ifn 1]] [:z-ifn 1] [:z-ifn 1] [:z-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:z-ifn 1] [:z-ifn 1] [:z-ifn 1] [[:z-ifn 1]] [:z-ifn 1] [:z-ifn 1] [:z-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\" [:z-ifn 1] [:z-ifn 1]]]]\n",
         ),
     );

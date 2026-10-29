@@ -395,8 +395,10 @@ const decl = (() => {
     let ty = __rt.structTypeOf(s);
     if (ty === null) {
       if (s === null || typeof s !== 'object' || __rt.formKind(s) !== null || __rt.cljIsAtom(s)) return;
+      // A mutable type's instance carries its type's tag; any other host
+      // object, whatever it holds under that name, demands nothing.
       ty = s.__lightNativeType;
-      if (ty === undefined) return;
+      if (!views.get(ty)?.mutable) return;
     } else declare(s);
     const own = '@' + __rt.formName(ty);
     for (const {b, selector} of objectBundles) {
