@@ -2328,6 +2328,19 @@ pub(crate) fn conj(heap: &Heap, coll: &Value, value: Value) -> Result<Value, Col
     alloc(heap, f.updated(body), &parts)
 }
 
+/// `pop` of a form vector: the vector without its last element, keeping its
+/// metadata. An empty vector is out of bounds.
+pub(crate) fn vector_pop(heap: &Heap, coll: &Value) -> Result<Value, CollectionError> {
+    let Some(f) = form_object(heap, coll) else {
+        return Err(wrong(heap, "form vector", coll));
+    };
+    let FormBody::Vector(items) = &f.body else {
+        return Err(wrong(heap, "form vector", coll));
+    };
+    let body = FormBody::Vector(items.try_pop(heap)?);
+    alloc(heap, f.updated(body), std::slice::from_ref(coll))
+}
+
 /// `disj` of a set member by an equal value (absent: the set itself).
 pub(crate) fn disj(heap: &Heap, set: &Value, member: &Value) -> Result<Value, CollectionError> {
     let Some(f) = form_object(heap, set) else {

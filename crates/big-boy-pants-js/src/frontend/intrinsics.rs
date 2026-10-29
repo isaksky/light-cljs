@@ -299,6 +299,7 @@ pub(crate) const INTRINSICS: &[Intrinsic] = &[
     form_op(FormOp::CljIsMapEntry),
     form_op(FormOp::Sequence),
     form_op(FormOp::CljPeek),
+    form_op(FormOp::CljPop),
     form_op(FormOp::PrintItems),
     form_op(FormOp::ReaderCollection),
     form_op(FormOp::SortedMap),

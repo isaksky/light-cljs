@@ -317,6 +317,33 @@ pub(crate) fn peek(heap: &Heap, v: &Value) -> Result<Value> {
     }
 }
 
+/// Persistent stack removal for the stacks [`peek`] observes, as the legacy
+/// runtime's `pop`: nil stays nil, a vector drops its last element (keeping
+/// metadata) and a list is its rest. Other sequence kinds are not realized.
+pub(crate) fn pop(heap: &Heap, v: &Value) -> Result<Value> {
+    let unsupported =
+        || CljError::Operands("No protocol method IStack.-pop defined for this value");
+    match shape(heap, v) {
+        Shape::Nil => Ok(Value::Null),
+        Shape::Form(_, f) => match f.body() {
+            FormBody::List(items) if f.is_list() => {
+                if items.len() == 0 {
+                    return Err(CljError::Operands("Can't pop empty list"));
+                }
+                rest(heap, v)
+            }
+            FormBody::Vector(items) => {
+                if items.len() == 0 {
+                    return Err(CljError::Operands("Can't pop empty vector"));
+                }
+                Ok(form::vector_pop(heap, &form::unwrap(heap, v.clone()))?)
+            }
+            _ => Err(unsupported()),
+        },
+        _ => Err(unsupported()),
+    }
+}
+
 /// The head of `v` with realized lazy sequences followed, and its shape.
 fn head(heap: &Heap, v: &Value) -> Result<(Value, Shape)> {
     let head = form::sequence_head(heap, v.clone(), &mut lazy::Visited::default())?;

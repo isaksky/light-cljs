@@ -1560,11 +1560,13 @@ pub enum FormOp {
     FnApplyNull = 92,
     /// value → its Clojure apply receiver (itself or null).
     FnApplyReceiver = 93,
+    /// collection → persistent stack without its head (`cljPop`).
+    CljPop = 94,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 94] = [
+    pub const ALL: [FormOp; 95] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1659,6 +1661,7 @@ impl FormOp {
         FormOp::CljWithExportedMeta,
         FormOp::FnApplyNull,
         FormOp::FnApplyReceiver,
+        FormOp::CljPop,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1675,6 +1678,7 @@ impl FormOp {
             | FormOp::CljCallable
             | FormOp::Sequence
             | FormOp::CljPeek
+            | FormOp::CljPop
             | FormOp::AtomAux
             | FormOp::CljCoreResolver
             | FormOp::LiteralPayload
@@ -1777,6 +1781,7 @@ impl FormOp {
             FormOp::CljReadRoot => "cljReadRoot",
             FormOp::Sequence => "formSequence",
             FormOp::CljPeek => "cljPeek",
+            FormOp::CljPop => "cljPop",
             FormOp::CljCoreResolver => "cljCoreResolver",
             FormOp::CljGet2 => "cljGet2",
             FormOp::Keyword => "formKeyword",

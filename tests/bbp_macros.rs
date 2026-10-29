@@ -972,6 +972,104 @@ fn partition_all_helpers_publish_and_resume_with_buffered_values() {
     }
 }
 
+/// Persistent stack `pop`, as Penpot's style helper merges adjacent strings,
+/// with user IStack types, unsupported kinds and the protocol function.
+#[test]
+fn native_pop_matches_quickjs_at_every_pool_size() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-pop");
+    for (file, source) in [
+        (
+            "stack.cljs",
+            r#"(ns stack)
+            (deftype StackMarker [value seen] IStack
+              (-peek [_] value)
+              (-pop [_] (swap! seen conj :pop) (StackMarker. (dec value) seen)))
+            (defn compile-concat [parts]
+              (reduce (fn [acc p]
+                        (if (and (string? p) (string? (peek acc)))
+                          (conj (pop acc) (str (peek acc) p))
+                          (conj acc p)))
+                      [] parts))
+            (defmacro probe []
+              (let [p pop pp -pop seen (atom [])
+                    error (fn [f x] (try (f x) (catch :default e (.-message e))))
+                    check (fn [x] (let [r (error p x)] [r (meta r) (vector? r) (list? r)]))
+                    s (StackMarker. 3 seen)
+                    big (pop (vec (range 40)))]
+                (list 'quote
+                  [(mapv check [nil () '(1 2) [] [1 2] (with-meta [3 4] {:tag true})
+                                (with-meta '(3 4) {:tag true}) (first {:a 1}) (seq [1 2])
+                                (cons 1 '(2)) (lazy-seq '(1)) {:a 1} #{1} "ab"])
+                   [(count big) (peek big) (pop (pop [1 2])) (apply p [[1 2]]) (pp [1 2]) (pp '(1 2))]
+                   (compile-concat ["a" "b" 'x "c" "d" "e"])
+                   [(.-value (pop s)) (.-value (p s)) (.-value (apply p [s])) (.-value (-pop s))
+                    (.-value (pp s)) @seen]
+                   (mapv (fn [x] (error pp x)) [nil "ab" {:a 1} (seq [1 2])])])))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [stack :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [stack :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str a/value) (= a/value b/value))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let (program, _) = analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}: {e}"));
+        emit_js(&program)
+    };
+    let reference = build(true, 1);
+    let unsupported = "\"No protocol method IStack.-pop defined for this value\"";
+    let checked = [
+        "[nil nil false false]",
+        "[\"Can't pop empty list\" nil false false]",
+        "[(2) nil false true]",
+        "[\"Can't pop empty vector\" nil false false]",
+        "[[1] nil true false]",
+        "[[3] {:tag true} true false]",
+        "[(4) nil false true]",
+        "[[:a] nil true false]",
+    ]
+    .join(" ");
+    let rejected = vec![format!("[{unsupported} nil false false]"); 6].join(" ");
+    let protocol = vec!["\"No protocol method IStack/-pop defined for this value\""; 4].join(" ");
+    assert_eq!(
+        program_output(&reference),
+        format!(
+            "[[{checked} {rejected}] [39 38 [] [1] [1] (2)] [\"ab\" x \"cde\"] \
+             [2 2 2 2 2 [:pop :pop :pop :pop :pop]] [{protocol}]] true\n"
+        )
+    );
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(reference, build(false, jobs), "legacy, jobs {jobs}");
+        assert_eq!(reference, build(true, jobs), "jobs {jobs}");
+    }
+}
+
 /// Penpot's style macros build a `keep` transducer in a helper and pass it to
 /// `into`. The published helpers resume cold under seeded scheduling, and
 /// each application gets its own keep-indexed counter.

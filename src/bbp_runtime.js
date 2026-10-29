@@ -1170,6 +1170,22 @@ const native = (() => {
     if (builtin) return __rt.cljPeek(x);
     throw new Error('No protocol method IStack/-peek defined for this value');
   };
+  // An IStack/-pop extension, including one of a core stack, wins; the
+  // builtin leaf handles vectors and lists without realizing other sequences.
+  const popTable = decl.coreTable('IStack/-pop',1);
+  const popExtension = x => decl.coreLookup(popTable,x,stackValue(x));
+  const popProtocol = x => {
+    const method = popExtension(x);
+    if (method !== null) return method(x);
+    if (stackValue(x)) return __rt.cljPop(x);
+    throw new Error('No protocol method IStack/-pop defined for this value');
+  };
+  // Public pop leaves nil alone; the leaf reports other unsupported values.
+  const pop = x => {
+    if (val(x) == null) return null;
+    const method = popExtension(x);
+    return method !== null ? method(x) : __rt.cljPop(x);
+  };
   const reduceSeqOf = x => {
     const cursor = arraySeqs.get(x);
     if (cursor !== undefined) return cursor.index < cursor.array.length ? x : null;
@@ -1591,6 +1607,7 @@ const native = (() => {
     count:x=>__rt.cljCount(x),
     seq, isEmpty:x=>__rt.cljSeq(x)===null,
     rest:x=>__rt.cljRest(x), next:x=>__rt.cljNext(x), peek:x=>__rt.cljPeek(x), peekProtocol,
+    pop, popProtocol,
     cons:(x,xs)=>__rt.cljCons(x,xs), concat:(...xs)=>__rt.cljConcatAll(list(xs)),
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),
     apply:(f,...xs)=>invoke(f,...xs.slice(0,-1),...arr(xs[xs.length-1])),

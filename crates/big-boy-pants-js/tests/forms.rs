@@ -2518,6 +2518,13 @@ fn sequence_markers_preserve_occurrences_metadata_and_values_across_publication_
       if(__rt.cljPeek(l)!==1||__rt.cljPeek(__rt.formVector(1,2))!==2||__rt.cljPeek(__rt.formList())!==null)throw new Error('stack head');
       try { __rt.cljPeek(at(5)); throw new Error('accepted lazy stack'); }
       catch(e) { if(e.message!=='No protocol method IStack.-peek defined for this value')throw e; }
+      const popped=__rt.cljPop(__rt.cljWithMeta(__rt.formVector(1,2),__rt.formMap('kept',true)));
+      if(__rt.cljCount(__rt.cljPop(l))!==__rt.cljCount(l)-1||!__rt.cljIsList(__rt.cljPop(l))||__rt.cljPop(null)!==null
+        ||__rt.cljCount(popped)!==1||__rt.cljGet(__rt.cljMeta(popped),'kept',null)!==true)throw new Error('stack pop');
+      for(const [x,message] of [[at(5),'No protocol method IStack.-pop defined for this value'],
+                                [v,'No protocol method IStack.-pop defined for this value'],
+                                [__rt.formVector(),"Can't pop empty vector"],[__rt.formList(),"Can't pop empty list"]])
+        try { __rt.cljPop(x); throw new Error('accepted pop'); } catch(e) { if(e.message!==message)throw e; }
       for(const i of [1,2,3,4,5,7])if(__rt.cljIsList(at(i)))throw new Error('non-list '+i);
       for(let i=0;i<8;i++)if(!__rt.cljIsSeq(at(i))||!__rt.cljIsSequential(at(i))||!__rt.cljIsColl(at(i)))throw new Error('sequence markers');
       if(__rt.cljSeq(v)!==v||__rt.cljSeq(l)!==l)throw new Error('unchanged identity');
