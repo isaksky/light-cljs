@@ -1222,7 +1222,11 @@ fn native_pop_matches_quickjs_at_every_pool_size() {
 
 /// Penpot's style macros build a `keep` transducer in a helper and pass it to
 /// `into`. The published helpers resume cold under seeded scheduling, and
-/// each application gets its own keep-indexed counter.
+/// each application gets its own keep-indexed counter. Every keep and
+/// keep-indexed callback (transducer and lazy sequence arities) records its
+/// input, then demands a helper only it reads, then records the result: the
+/// first expansion suspends inside the callback mid-reduction, and the exact
+/// logs show no replayed, skipped or duplicated effects or indices.
 #[test]
 fn keep_helpers_publish_and_resume_at_seeded_pool_sizes() {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
@@ -1231,11 +1235,27 @@ fn keep_helpers_publish_and_resume_at_seeded_pool_sizes() {
         (
             "parts.cljs",
             r#"(ns parts)
-            (def xf (comp (keep (fn [x] (when-not (= x :skip) x)))
-                          (keep-indexed (fn [i x] (when (even? i) [i x])))))
-            (defn step [a x] (conj a x))
-            (defmacro probe [] (list 'quote [(into [] xf [1 nil 2 :skip false 3])
-                                             (transduce xf (completing step) [] [nil :a :b :c])]))"#,
+            (def ^:dynamic *seen* nil)
+            (def kept (do (when *seen* (swap! *seen* conj :kept-ready)) (fn [x] (when-not (= x :skip) x))))
+            (def pick (do (when *seen* (swap! *seen* conj :pick-ready)) (fn [i x] (when (even? i) [i x]))))
+            (def kept-seq (do (when *seen* (swap! *seen* conj :kept-seq-ready)) (fn [x] (when-not (= x :skip) x))))
+            (def pick-seq (do (when *seen* (swap! *seen* conj :pick-seq-ready)) (fn [i x] (when (odd? i) [i x]))))
+            (def xf (comp (keep (fn [x] (swap! *seen* conj [:keep x])
+                                  (let [r (kept x)] (swap! *seen* conj [:kept r]) r)))
+                          (keep-indexed (fn [i x] (swap! *seen* conj [:index i x])
+                                          (let [r (pick i x)] (swap! *seen* conj [:picked r]) r)))))
+            (defn step [a x] (swap! *seen* conj [:step x]) (conj a x))
+            (defmacro probe []
+              (binding [*seen* (atom [])]
+                (let [into-result (into [] xf [1 nil 2 :skip false 3])
+                      transduced (transduce xf (completing step) [] [nil :a :b :c])
+                      kept-items (vec (keep (fn [x] (swap! *seen* conj [:seq x])
+                                              (let [r (kept-seq x)] (swap! *seen* conj [:seq-kept r]) r))
+                                            [:skip 4 nil false 5]))
+                      indexed (vec (keep-indexed (fn [i x] (swap! *seen* conj [:seq-index i x])
+                                                   (let [r (pick-seq i x)] (swap! *seen* conj [:seq-picked r]) r))
+                                                 [:a :b :c :d]))]
+                  (list 'quote [into-result transduced kept-items indexed @*seen*]))))"#,
         ),
         (
             "a.cljs",
@@ -1281,18 +1301,48 @@ fn keep_helpers_publish_and_resume_at_seeded_pool_sizes() {
         )
         .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
         if native {
-            assert_eq!(
-                stats.native_helpers.published, 2,
-                "jobs {jobs}, seed {seed}"
-            );
-            assert_eq!(stats.native_helpers.per_task, 0, "jobs {jobs}, seed {seed}");
-            assert!(stats.native_helpers.waits >= 2, "jobs {jobs}, seed {seed}");
+            // kept, pick, kept-seq and pick-seq are read only inside keep and
+            // keep-indexed callbacks, so four of these cold waits suspend a
+            // callback mid-reduction (their initializer markers below show
+            // where); xf and step account for the others.
+            let helpers = &stats.native_helpers;
+            assert_eq!(helpers.published, 6, "jobs {jobs}, seed {seed}");
+            assert_eq!(helpers.per_task, 0, "jobs {jobs}, seed {seed}");
+            assert!(helpers.waits >= 6, "jobs {jobs}, seed {seed}: {helpers:?}");
         }
         emit_js(&program)
     };
     let reference = build(true, 1, 0);
-    let value = "[[[0 1] [2 false]] [[0 :a] [2 :c]]]";
-    assert_eq!(program_output(&reference), format!("[{value} {value}]\n"));
+    // Each callback logs its input before the helper demand and its result
+    // after it; nil is dropped, false kept, and indices advance only for
+    // kept items, from zero in each application. The first expansion (a)
+    // initializes each cold callback helper between those two entries, with
+    // its binding of *seen*; b reads the published helpers warm.
+    let log = [
+        "[:keep 1] :kept-ready [:kept 1] [:index 0 1] :pick-ready [:picked [0 1]]",
+        "[:keep nil] [:kept nil] [:keep 2] [:kept 2] [:index 1 2] [:picked nil]",
+        "[:keep :skip] [:kept nil] [:keep false] [:kept false] [:index 2 false] [:picked [2 false]]",
+        "[:keep 3] [:kept 3] [:index 3 3] [:picked nil]",
+        "[:keep nil] [:kept nil] [:keep :a] [:kept :a] [:index 0 :a] [:picked [0 :a]] [:step [0 :a]]",
+        "[:keep :b] [:kept :b] [:index 1 :b] [:picked nil]",
+        "[:keep :c] [:kept :c] [:index 2 :c] [:picked [2 :c]] [:step [2 :c]]",
+        "[:seq :skip] :kept-seq-ready [:seq-kept nil] [:seq 4] [:seq-kept 4] [:seq nil] [:seq-kept nil]",
+        "[:seq false] [:seq-kept false] [:seq 5] [:seq-kept 5]",
+        "[:seq-index 0 :a] :pick-seq-ready [:seq-picked nil] [:seq-index 1 :b] [:seq-picked [1 :b]]",
+        "[:seq-index 2 :c] [:seq-picked nil] [:seq-index 3 :d] [:seq-picked [3 :d]]",
+    ]
+    .join(" ");
+    let warm = ["kept", "pick", "kept-seq", "pick-seq"]
+        .iter()
+        .fold(log.clone(), |log, helper| {
+            log.replace(&format!(" :{helper}-ready"), "")
+        });
+    let value =
+        |log| format!("[[[0 1] [2 false]] [[0 :a] [2 :c]] [4 false 5] [[1 :b] [3 :d]] [{log}]]");
+    assert_eq!(
+        program_output(&reference),
+        format!("[{} {}]\n", value(&log), value(&warm))
+    );
     let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
         .ok()
         .and_then(|s| s.parse().ok())
