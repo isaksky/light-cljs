@@ -1628,8 +1628,7 @@ fn failure_roots_survive_an_exhausted_heap() {
     assert!(runtime.heap_stats().peak_managed_bytes <= options.memory_limit);
 }
 
-/// Function roots publish with either lowered operations or consuming-task
-/// runtime reads (light-cljs-521). Mutable user captures remain task-owned.
+/// Raw `.call`/`.apply` members resolve to canonical runtime-wide identities.
 #[test]
 fn raw_callable_members_keep_identity_across_tasks() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
@@ -1684,6 +1683,8 @@ fn raw_callable_members_keep_identity_across_tasks() {
     }
 }
 
+/// Function roots publish with either lowered operations or consuming-task
+/// runtime reads (light-cljs-521). Mutable user captures remain task-owned.
 #[test]
 fn memoized_functions_retain_shared_results_across_gc_and_release_their_cache() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
