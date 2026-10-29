@@ -59,11 +59,6 @@ const decl = (() => {
       // their raw JavaScript and `this-as` still see the original receiver.
       const entry = object || direct || arity === 0 ? fn : (x, ...args) => fn.call(x, x, ...args);
       methodTable(name, n).entries.push({order, overlay, key, fn: entry});
-      if (name === 'IFn/-invoke' && info !== undefined) {
-        // Keep the raw receiver ABI in the same source-frontier machinery.
-        methodTable(name, -arity - 1).entries.push({order, overlay, key, fn});
-        info.ifn.set(arity, variadic != null);
-      }
       if (!object) continue;
       let arities = objectArities.get(name);
       if (arities === undefined) objectArities.set(name, arities = new Set());
@@ -304,7 +299,10 @@ const decl = (() => {
     const mask0 = record || specs.some(([name, arity]) => arity === 0 && partition0.has(name));
     // Keep one compiler-munged member per declared field: multiple fields
     // may share a member, and property enumeration may reorder names.
-    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), ifn: new Map(), mutable, record, mask0});
+    // Raw call/apply use the type's declared IFn entries. Protocol extensions
+    // do not replace those entries or install JavaScript callable members.
+    const ifn = specs.filter(s=>s[0]==='IFn/-invoke').map(s=>[s[1],s[2],s[4]!=null]);
+    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), ifn, mutable, record, mask0});
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
       view.__lightNativeType = ty;
@@ -315,18 +313,14 @@ const decl = (() => {
   };
   const ifnMethods = x => {
     declare(x);
-    resolve(methodTable('IFn',0),x);
-    const ty = __rt.structTypeOf(x), methods = [];
-    for (const [n, variadic] of views.get(ty)?.ifn ?? []) {
-      const fn = implementation('IFn/-invoke', -n - 1, ty);
-      if (fn !== null) methods.push([n, fn, variadic]);
-    }
-    return methods;
+    return views.get(__rt.structTypeOf(x))?.ifn ?? [];
   };
   const callable = x => ifnMethods(x).length > 0;
   const invokeIFn = (x, args) => {
+    const methods=ifnMethods(x);
+    if(methods.length===0)throw new TypeError('undefined is not a function');
     let fixed = null, rest = null, exact = null, count = 0;
-    for (const [n, fn, variadic] of ifnMethods(x)) {
+    for (const [n, fn, variadic] of methods) {
       if (variadic) rest = fn;
       else { count++; fixed = fn; if (n === args.length + 1) exact = fn; }
     }

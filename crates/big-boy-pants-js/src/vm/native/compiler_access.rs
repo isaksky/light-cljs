@@ -21,7 +21,12 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
             let ty = form::type_of(heap, &callee);
             if ty != Value::Null && MULTIFN.matches(&form::name(heap, &ty)?.name) {
                 state.push(entry);
-            } else {
+            } else if !super::start_form_member(
+                state,
+                heap,
+                &callee,
+                &property::Key::Name(CALL.get()),
+            )? {
                 let read = property::read(
                     heap,
                     state.diag.task,

@@ -5465,12 +5465,13 @@ fn memoize_supports_first_class_core_callbacks() {
     );
     assert_native_matches_legacy(
         r#"(defrecord Callable [] IFn
+            (-invoke [this a b] [:fixed a b])
             (-invoke [this & xs] (mapv (fn [x] (if (array? x) [:tail (vec x)] x)) xs)))
           (defmacro m []
             (let [f (memoize (->Callable)) a (apply f (range 25)) b (apply f (range 25))]
-              (list 'quote [(count a) (last a) (identical? a b)])))
+              (list 'quote [(f :a :b) (f :one) (count a) (last a) (identical? a b)])))
           (js/console.log (pr-str (m)))"#,
-        "[21 [:tail [20 21 22 23 24]] true]\n",
+        "[[:a :b] [:one] 21 [:tail [20 21 22 23 24]] true]\n",
     );
 
     let root = temp_dir::TempDir::new("native-memoize-core-callbacks");
@@ -8237,6 +8238,35 @@ fn native_map_entry_calls_match_legacy() {
 }
 
 #[test]
+fn native_declared_ifn_calls_keep_own_implementations() {
+    let source = r#"(defrecord Callable [] IFn
+                      (-invoke [this] :zero)
+                      (-invoke [this a b] [:fixed a b]))
+                   (def before (->Callable))
+                   (extend-type Callable IFn
+                     (-invoke ([this & xs] [:late (vec xs)])))
+                   (defmacro m []
+                     (let [after (->Callable)
+                           probe (fn [f] [(f) (try (f :one) (catch :default e (.-message e))) (f :a :b)])]
+                       (list 'quote [(probe before) (probe after)])))
+                   (js/console.log (pr-str (m)))"#;
+    assert_native_matches_legacy(
+        source,
+        "[[:zero \"Invalid arity: 1\" [:fixed :a :b]] [:zero \"Invalid arity: 1\" [:fixed :a :b]]]\n",
+    );
+    assert_native_matches_legacy(
+        r#"(defrecord NotCallable [])
+           (extend-type NotCallable IFn (-invoke ([this & xs] xs)))
+           (defmacro m []
+             (let [f (->NotCallable)]
+               (list 'quote [(js* "typeof ~{}.call" f) (js* "typeof ~{}.apply" f)
+                             (try (js* "~{}.call(null, 1)" f) (catch :default e :not-callable))])))
+           (js/console.log (pr-str (m)))"#,
+        "[\"undefined\" \"undefined\" :not-callable]\n",
+    );
+}
+
+#[test]
 fn native_raw_callable_collections_match_quickjs() {
     assert_native_matches_legacy(
         r#"(defmacro m [] (let [f {"x" "y"}] (js* "~{}.call(null, 'x')" f)))
@@ -8254,6 +8284,10 @@ fn native_raw_callable_collections_match_quickjs() {
           (defrecord Overloaded [value] IFn (-invoke [this] value) (-invoke [this x] [value x]))
           (defrecord Variadic [value] IFn
             (-invoke [this x & xs] [value x (mapv (fn [y] (if (array? y) [:js-array (vec y)] y)) xs)]))
+          (defrecord Mixed [] IFn
+            (-invoke [this a b] [:fixed a b])
+            (-invoke [this & xs]
+              [(fn? this) (mapv (fn [x] (if (array? x) [:js-array (vec x)] x)) xs)]))
           (defmulti dispatch (fn [x & more] x))
           (defmethod dispatch :ok [x & more] (cold [x (vec more)]))
           (def memo (memoize (fn [x] (cold x))))
@@ -8262,7 +8296,17 @@ fn native_raw_callable_collections_match_quickjs() {
           (defn inspect [f xs]
             (let [args (reduce (fn [a x] (js* "~{}.push(~{})" a x) a) (js/Array.) xs)]
               [(attempt (fn [] (js* "~{}.call(null, ...~{})" f args)))
-               (attempt (fn [] (apply f xs)))
+               (attempt (fn []
+                 (case (count xs)
+                   0 (f)
+                   1 (f (first xs))
+                   2 (f (first xs) (second xs))
+                   3 (f (first xs) (second xs) (nth xs 2))
+                   25 (f (nth xs 0) (nth xs 1) (nth xs 2) (nth xs 3) (nth xs 4)
+                         (nth xs 5) (nth xs 6) (nth xs 7) (nth xs 8) (nth xs 9)
+                         (nth xs 10) (nth xs 11) (nth xs 12) (nth xs 13) (nth xs 14)
+                         (nth xs 15) (nth xs 16) (nth xs 17) (nth xs 18) (nth xs 19)
+                         (nth xs 20) (nth xs 21) (nth xs 22) (nth xs 23) (nth xs 24)))))
                (attempt (fn [] (js* "~{}['apply'](null, ~{})" f args)))
                (attempt (fn [] (js* "~{}.apply(null, ~{})" f xs)))
                (attempt (fn [] (js* "~{}.apply(null, ~{})" f (apply list xs))))
@@ -8281,6 +8325,7 @@ fn native_raw_callable_collections_match_quickjs() {
                          [(->Callable :record) [:x]] [(->Overloaded :overloaded) []] [(->Overloaded :overloaded) [:x]]
                          [(->Overloaded :overloaded) [:x :extra]] [(->Variadic :variadic) [:x :a :b]]
                          [(->Variadic :many) (vec (range 25))]
+                         [(->Mixed) [:a :b]] [(->Mixed) [:one]] [(->Mixed) (vec (range 25))]
                          [dispatch [:ok :tail]] [memo [:memo]] [utf [lone]]]
                   values (mapv (fn [[f args]] (inspect f args)) cases)]
               (list 'quote [values (str/escape "àéx" {"à" "a" "é" "e"})

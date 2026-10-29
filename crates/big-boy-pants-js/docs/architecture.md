@@ -563,7 +563,8 @@ The resolver returns the member itself; the original native receiver remains
 on the JavaScript operand stack. Forms retain their identity and are still
 JavaScript objects, so direct JavaScript calls reject them. Without a resolver,
 these members remain absent. Resolution uses the same traced continuation as
-protocol lookup and can suspend without replaying the read. Two-argument
+protocol lookup and can suspend without replaying the read. The compiler's
+`cljCallMember` preparation uses this path before evaluating arguments too. Two-argument
 lookup has its own `cljGet2` selector. Sequence operations also resolve a struct
 exposed by a realized lazy wrapper; the resolver receives the realized receiver
 and a flag identifying that wrapper, while its callback retains the original

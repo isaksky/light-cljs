@@ -3363,8 +3363,9 @@ their `.call` member through `Function.prototype.call` works; calling the
 collection itself through that intrinsic still rejects a non-function.
 
 Adapters retain collection arities and defaults, nil/false results, map-entry
-bounds, exact UTF-16 keys, metadata and nested value identity. IFn entries
-resolve at the consuming task's source frontier. Shared raw member functions
+bounds, exact UTF-16 keys, metadata and nested value identity. Declared IFn
+methods load in the consuming task and keep precedence over protocol extensions.
+Shared raw member functions
 and lazy callbacks resolve task-owned protocol machinery through the current
 runtime; that machinery is never captured in a published closure. Memoized
 functions retain ordinary JavaScript function call/apply behavior. The existing
