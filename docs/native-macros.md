@@ -3516,12 +3516,13 @@ boundary does.
 - **Fields are the engine's own properties.** `__rt.structType` takes a
   fourth argument, the fields' JavaScript member names (the emitter passes
   the munged names; `null` means the field names). A struct's fields are its
-  own enumerable, writable, configurable data properties under those names
-  (the last field munged to a name wins, as the legacy constructor's
-  assignments do), and a record also has `__meta`, `__extmap` (the extension
-  map or `null`) and `__hash` (`null`). Reads, `in`,
+  own enumerable data properties under those names (the last field munged to
+  a name wins, as the legacy constructor's assignments do), and a record also
+  has `__meta`, `__extmap` (the extension map or `null`) and `__hash`
+  (`null`) unless a field already took the name. Reads, `in`,
   `Object.getOwnPropertyDescriptor`, `Object.keys`/`getOwnPropertyNames`,
-  `Object.assign` and for-in all agree, without the resolver. The legacy
+  `Object.assign` and for-in all agree, without the resolver; round 2 below
+  makes the struct a frozen object. The legacy
   runtime additionally lists its own `cljs$lang$protocol_mask$partition0$`
   and `…1$` bookkeeping slots on every instance; those are not fields and
   are not modelled, so the differential reflection tests filter `cljs$lang$`
@@ -3585,3 +3586,52 @@ On the same toolchain, at source `de5983ee` (master `ba7f0c89`, unchanged):
   `8f55b0bd…374e` over 12,687,975 bytes. `app.main` still exits 1 with the
   exact `core.sortedMapBy` error above at jobs 1 (94.26 s wall, 90.55 s user,
   702,693,376 bytes) and jobs 4 (52.84 s, 63.14 s user, 901,103,616 bytes).
+
+### Review-fix round 2: a struct is a frozen object (2026-10-29)
+
+The second review found the remaining edges of "a struct is an ordinary
+object": conversion of multimethods, deletion and the integrity checks, and
+duplicated record slots. The model is now stated once and applied to every
+object operation: **a native form is a frozen object inheriting from
+`Object.prototype`**. For a struct, record or multimethod that means its
+fields are enumerable, non-writable, non-configurable own data properties;
+`Object.isFrozen`/`isSealed` are true and `isExtensible` false;
+`Object.freeze`/`seal`/`preventExtensions` return it unchanged; a strict
+write to a field is "cannot assign to read-only property", to anything else
+"cannot add property: the object is not extensible"; `delete` of a field is
+"cannot delete non-configurable property" (a missing key deletes as `true`);
+`Object.defineProperty` accepts only a compatible descriptor of a field and
+rejects additions; `Object.getPrototypeOf` is `Object.prototype`, so
+`instanceof Object` holds and `setPrototypeOf` to it is a no-op while any
+other prototype is rejected as not extensible. Collections, keywords and
+symbols are the same kind of object with no own properties. Every other
+named member (an `Object` method, the IFn `call`/`apply` adapters, and what
+a legacy instance inherits from `Object.prototype`, for multimethods too)
+still comes from the task's resolver, including for ToPrimitive, so `str`,
+`pr-str`, `js/String`, template interpolation and arithmetic coerce a
+multimethod to `[object Object]` as the legacy runtime does, and `pr-str`
+of a multimethod prints `#object[MultiFn …]` like the legacy constructor
+name. A record's `__meta`/`__extmap`/`__hash` slots appear once even when
+a field has one of those names.
+
+This is deliberately not the legacy runtime's mutable instance: writes,
+deletes, descriptor flags, the integrity queries and the prototype identity
+differ, and a multimethod exposes its two native state slots. Those cells,
+and only those, are listed with both results in
+`native_form_object_operations_match_quickjs`, one table of every object
+operation (get, set, has, delete, keys, names, entries, for-in, spread,
+assign, descriptors, define, the integrity checks and changes, prototype
+read and write, ToPrimitive through `String`, templates, `Number`, `str` and
+`pr-str`, `typeof`, `Array.isArray`, JSON) times every form kind (deftype,
+record, multimethod, map, vector, set, keyword, symbol, list) against
+QuickJS at jobs 1 and 4; the legacy `cljs$lang$` bookkeeping slots are
+filtered on both sides, and the collection cells the legacy runtime answers
+from a collection's internals are asserted as native snapshots. The engine
+tests `native_struct_integrity_matches_own_descriptors` (descriptors,
+delete, `Reflect.deleteProperty`, the freeze family, define, prototype,
+slot deduplication) and `native_form_toprimitive_member_reads_resume_without_replay`
+(string, number and default hints parking in both the resolver and the
+returned method on distinct dependencies, exactly one resolution per
+conversion, the form as receiver, a resolver exception reaching `catch`)
+cover the engine side; `native_multifn_host_coercions_match_legacy` the
+multimethod coercions. Each failed before its fix.

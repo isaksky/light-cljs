@@ -8569,12 +8569,12 @@ fn native_struct_reflection_matches_legacy() {
            (defmacro m []
              (let [u (U. 3 4) d (js/Object.getOwnPropertyDescriptor u "y") keys-of {KEYS}]
                [(keys-of (js/Object.keys u)) (.-value (js/Object.getOwnPropertyDescriptor u "x"))
-                [(.-enumerable d) (.-writable d) (.-configurable d)]
+                (.-enumerable d)
                 (nil? (js/Object.getOwnPropertyDescriptor u "z"))
                 (js* "'x' in ~{{}}" u) (js* "'z' in ~{{}}" u) (nil? (js* "~{{}}.length" u))]))
            (js/console.log (pr-str (m)))"#
         ),
-        "[[\"x\" \"y\"] 3 [true true true] true true false true]\n",
+        "[[\"x\" \"y\"] 3 true true true false true]\n",
     );
     assert_native_matches_legacy(
         &format!(
@@ -8637,6 +8637,378 @@ fn native_raw_apply_record_arguments_match_quickjs() {
            (js/console.log (pr-str (m)))"#,
         "[\"Invalid arity: 0\" \"Invalid arity: 0\" \"Invalid arity: 0\" 0 1 3 :hit]\n",
     );
+}
+
+/// A multimethod converts and prints as a legacy MultiFn instance does:
+/// through `str`, `pr-str`, `js/String`, template interpolation and
+/// arithmetic, while staying callable.
+#[test]
+fn native_multifn_host_coercions_match_legacy() {
+    let root = temp_dir::TempDir::new("native-multifn-coercions");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+          (defmulti mf identity)
+          (defmethod mf :default [x] x)
+          (defmacro probe []
+            (list 'quote [(str mf) (str "m:" mf) (pr-str mf) (js/String mf) (js* "`${~{}}`" mf) (js* "'' + ~{}" mf)
+                          (js/isNaN (js/Number mf)) (identical? (.valueOf mf) mf) (mf :still-callable)]))"#,
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [helpers :refer [probe]])) (js/console.log (pr-str (probe)))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(1).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}: {e}"));
+        emit_js(&program)
+    };
+    let native = build(true);
+    assert_eq!(
+        program_output(&native),
+        "[\"[object Object]\" \"m:[object Object]\" \"#object[MultiFn [object Object]]\" \"[object Object]\" \"[object Object]\" \"[object Object]\" true true :still-callable]\n"
+    );
+    #[cfg(feature = "quickjs")]
+    assert_eq!(native, build(false));
+}
+
+/// Every JavaScript object operation times every native form kind, against
+/// QuickJS. A struct, record or multimethod is a frozen object whose own
+/// properties are its fields: the cells where that differs from the
+/// legacy runtime's mutable instances (writes, deletes, descriptor flags,
+/// integrity queries, the prototype) are listed with both results; the
+/// legacy runtime's `cljs$lang$` bookkeeping slots are filtered on both
+/// sides. Collections, keywords and symbols expose no legacy internals:
+/// their comparable cells match and the rest are asserted natively.
+#[test]
+fn native_form_object_operations_match_quickjs() {
+    let root = temp_dir::TempDir::new("native-form-object-operations");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+          (deftype T [x y])
+          (defrecord R [x])
+          (defmulti mf identity)
+          (defn keys-of [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$")) names)))
+          (defn attempt [thunk]
+            (try (let [r (thunk)] (if (js* "~{} === undefined" r) :undefined r))
+                 (catch :default e (str "error: " (.-message e)))))
+          ;; Every cell reads a fresh value through raw JavaScript, and the
+          ;; mutating cells come last: a multimethod, keyword or symbol is one
+          ;; shared object, which the legacy runtime lets those cells change.
+          (defn ops [fresh json?]
+            (cond-> [["get-field" #(js* "~{}.x" (fresh))]
+                     ["get-missing" #(js* "~{}.zz" (fresh))]
+                     ["get-call" #(fn? (js* "~{}.call" (fresh)))]
+                     ["has-field" #(js* "'x' in ~{}" (fresh))]
+                     ["has-missing" #(js* "'zz' in ~{}" (fresh))]
+                     ["keys" #(keys-of (js* "Object.keys(~{})" (fresh)))]
+                     ["names" #(keys-of (js* "Object.getOwnPropertyNames(~{})" (fresh)))]
+                     ["entries" #(keys-of (js* "Object.entries(~{}).map(e => e[0])" (fresh)))]
+                     ["for-in" #(keys-of (js* "(function(o){ const ks=[]; for (const k in o) ks.push(k); return ks; })(~{})" (fresh)))]
+                     ["spread" #(keys-of (js* "Object.keys({...~{}})" (fresh)))]
+                     ["assign" #(keys-of (js* "Object.keys(Object.assign({}, ~{}))" (fresh)))]
+                     ["descriptor" #(let [d (js* "Object.getOwnPropertyDescriptor(~{}, 'x')" (fresh))]
+                                      (if d [(js* "~{}.value" d) (js* "~{}.writable" d) (js* "~{}.enumerable" d) (js* "~{}.configurable" d)] :none))]
+                     ["descriptor-missing" #(js* "Object.getOwnPropertyDescriptor(~{}, 'zz') === undefined" (fresh))]
+                     ["proto-object" #(js* "Object.getPrototypeOf(~{}) === Object.prototype" (fresh))]
+                     ["instanceof" #(js* "~{} instanceof Object" (fresh))]
+                     ["set-proto-same" #(js* "(function(o){ return Object.setPrototypeOf(o, Object.getPrototypeOf(o)) === o; })(~{})" (fresh))]
+                     ["string" #(js* "String(~{})" (fresh))]
+                     ["template" #(js* "`${~{}}`" (fresh))]
+                     ["str" #(str (fresh))]
+                     ["pr-str" #(pr-str (fresh))]
+                     ["number-nan" #(js* "isNaN(Number(~{}))" (fresh))]
+                     ["typeof" #(js* "typeof ~{}" (fresh))]
+                     ["array?" #(js* "Array.isArray(~{})" (fresh))]
+                     ["define-same" #(js* "(function(o){ return Object.defineProperty(o, 'x', {value: o.x}) === o; })(~{})" (fresh))]
+                     ["set-field" #(js* "(function(o){'use strict'; o.x = 9; return o.x;})(~{})" (fresh))]
+                     ["set-missing" #(js* "(function(o){'use strict'; o.zz = 9; return o.zz;})(~{})" (fresh))]
+                     ["set-sloppy" #(js* "(function(o){ o.zz = 9; return o.zz;})(~{})" (fresh))]
+                     ["delete-field" #(js* "(function(o){'use strict'; return delete o.x;})(~{})" (fresh))]
+                     ["delete-missing" #(js* "(function(o){'use strict'; return delete o.zz;})(~{})" (fresh))]
+                     ["define-new" #(js* "(function(o){ Object.defineProperty(o,'zz',{value:9}); return o.zz;})(~{})" (fresh))]
+                     ["frozen" #(js* "Object.isFrozen(~{})" (fresh))]
+                     ["sealed" #(js* "Object.isSealed(~{})" (fresh))]
+                     ["extensible" #(js* "Object.isExtensible(~{})" (fresh))]
+                     ["freeze" #(js* "(function(o){ return Object.freeze(o) === o; })(~{})" (fresh))]
+                     ["seal" #(js* "(function(o){ return Object.seal(o) === o; })(~{})" (fresh))]
+                     ["prevent" #(js* "(function(o){ return Object.preventExtensions(o) === o; })(~{})" (fresh))]]
+              json? (into [["json-keys" #(keys-of (js* "Object.keys(JSON.parse(JSON.stringify(~{})))" (fresh)))]
+                           ["json-x" #(js* "JSON.parse(JSON.stringify(~{})).x" (fresh))]])))
+          (defn table [kind fresh json?]
+            (mapv (fn [[label thunk]] (str kind " " label " => " (pr-str (attempt thunk)))) (ops fresh json?)))
+          (defmacro probe []
+            (list 'quote (vec (mapcat (fn [[kind fresh json?]] (table kind fresh json?))
+                                      [["type" #(T. 1 2) true] ["record" #(->R 1) true] ["multi" (fn [] mf) false]
+                                       ["map" #(hash-map :k 1) true] ["vector" #(vector 1) true] ["set" #(hash-set 1) true]
+                                       ["keyword" (fn [] :k) true] ["symbol" (fn [] 'k) true] ["list" #(list 1) true]]))))"#,
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [helpers :refer [probe]])) (doseq [line (probe)] (js/console.log line))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}: {e}"));
+        emit_js(&program)
+    };
+    let native = program_output(&build(true, 1));
+    assert_eq!(native, program_output(&build(true, 4)));
+    // A frozen object versus a legacy mutable instance (type, record,
+    // multimethod rows): native result, legacy result.
+    let frozen: &[(&str, &str, &str)] = &[
+        (
+            r#"type descriptor"#,
+            r#"[1 false true false]"#,
+            r#"[1 true true true]"#,
+        ),
+        (r#"type proto-object"#, r#"true"#, r#"false"#),
+        (
+            r#"type set-field"#,
+            r#""error: cannot assign to read-only property 'x'""#,
+            r#"9"#,
+        ),
+        (
+            r#"type set-missing"#,
+            r#""error: cannot add property 'zz': the object is not extensible""#,
+            r#"9"#,
+        ),
+        (
+            r#"type set-sloppy"#,
+            r#""error: cannot add property 'zz': the object is not extensible""#,
+            r#"9"#,
+        ),
+        (
+            r#"type delete-field"#,
+            r#""error: cannot delete non-configurable property 'x'""#,
+            r#"true"#,
+        ),
+        (
+            r#"type define-new"#,
+            r#""error: cannot add property 'zz': the object is not extensible""#,
+            r#"9"#,
+        ),
+        (r#"type frozen"#, r#"true"#, r#"false"#),
+        (r#"type sealed"#, r#"true"#, r#"false"#),
+        (r#"type extensible"#, r#"false"#, r#"true"#),
+        (
+            r#"record descriptor"#,
+            r#"[1 false true false]"#,
+            r#"[1 true true true]"#,
+        ),
+        (r#"record proto-object"#, r#"true"#, r#"false"#),
+        (
+            r#"record set-field"#,
+            r#""error: cannot assign to read-only property 'x'""#,
+            r#"9"#,
+        ),
+        (
+            r#"record set-missing"#,
+            r#""error: cannot add property 'zz': the object is not extensible""#,
+            r#"9"#,
+        ),
+        (
+            r#"record set-sloppy"#,
+            r#""error: cannot add property 'zz': the object is not extensible""#,
+            r#"9"#,
+        ),
+        (
+            r#"record delete-field"#,
+            r#""error: cannot delete non-configurable property 'x'""#,
+            r#"true"#,
+        ),
+        (
+            r#"record define-new"#,
+            r#""error: cannot add property 'zz': the object is not extensible""#,
+            r#"9"#,
+        ),
+        (r#"record frozen"#, r#"true"#, r#"false"#),
+        (r#"record sealed"#, r#"true"#, r#"false"#),
+        (r#"record extensible"#, r#"false"#, r#"true"#),
+        (
+            r#"multi keys"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy" "__method_state" "__prefer_state"]"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy"]"#,
+        ),
+        (
+            r#"multi names"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy" "__method_state" "__prefer_state"]"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy"]"#,
+        ),
+        (
+            r#"multi entries"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy" "__method_state" "__prefer_state"]"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy"]"#,
+        ),
+        (
+            r#"multi for-in"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy" "__method_state" "__prefer_state"]"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy"]"#,
+        ),
+        (
+            r#"multi spread"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy" "__method_state" "__prefer_state"]"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy"]"#,
+        ),
+        (
+            r#"multi assign"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy" "__method_state" "__prefer_state"]"#,
+            r#"["name" "dispatch_fn" "default_dispatch_val" "hierarchy" "method_table" "prefer_table" "method_cache" "cached_hierarchy"]"#,
+        ),
+        (r#"multi proto-object"#, r#"true"#, r#"false"#),
+        (
+            r#"multi define-same"#,
+            r#""error: cannot add property 'x': the object is not extensible""#,
+            r#"true"#,
+        ),
+        (
+            r#"multi set-field"#,
+            r#""error: cannot add property 'x': the object is not extensible""#,
+            r#""error: 'x' is read-only""#,
+        ),
+        (
+            r#"multi set-missing"#,
+            r#""error: cannot add property 'zz': the object is not extensible""#,
+            r#"9"#,
+        ),
+        (
+            r#"multi set-sloppy"#,
+            r#""error: cannot add property 'zz': the object is not extensible""#,
+            r#"9"#,
+        ),
+        (
+            r#"multi delete-field"#,
+            r#"true"#,
+            r#""error: could not delete property""#,
+        ),
+        (
+            r#"multi define-new"#,
+            r#""error: cannot add property 'zz': the object is not extensible""#,
+            r#"9"#,
+        ),
+        (r#"multi frozen"#, r#"true"#, r#"false"#),
+        (r#"multi sealed"#, r#"true"#, r#"false"#),
+        (r#"multi extensible"#, r#"false"#, r#"true"#),
+    ];
+    // Collection, keyword, symbol and list rows: only these cells carry no
+    // legacy internals and must match; the other cells are native snapshots.
+    let comparable = [
+        "get-missing",
+        "get-call",
+        "has-missing",
+        "delete-missing",
+        "descriptor-missing",
+        "typeof",
+        "array?",
+        "instanceof",
+        "set-proto-same",
+        "str",
+        "pr-str",
+    ];
+    #[cfg(feature = "quickjs")]
+    {
+        let legacy = program_output(&build(false, 1));
+        assert_eq!(
+            native.lines().count(),
+            legacy.lines().count(),
+            "{native}\n{legacy}"
+        );
+        let mut listed = 0;
+        let mut differences = Vec::new();
+        for (n, l) in native.lines().zip(legacy.lines()) {
+            let mut parts = n.splitn(3, ' ');
+            let (kind, op) = (parts.next().unwrap(), parts.next().unwrap());
+            let (nv, lv) = (
+                n.split_once(" => ").unwrap().1,
+                l.split_once(" => ").unwrap().1,
+            );
+            if matches!(kind, "type" | "record" | "multi") {
+                if let Some((_, fnv, flv)) = frozen
+                    .iter()
+                    .find(|(key, _, _)| *key == format!("{kind} {op}"))
+                {
+                    assert_eq!((nv, lv), (*fnv, *flv), "{kind} {op}");
+                    listed += 1;
+                } else if n != l {
+                    differences.push(format!("(\"{kind} {op}\", {nv:?}, {lv:?}),"));
+                }
+            } else if comparable.contains(&op) && n != l {
+                differences.push(format!("(\"{kind} {op}\", {nv:?}, {lv:?}),"));
+            }
+        }
+        assert!(
+            differences.is_empty(),
+            "unlisted differences:\n{}",
+            differences.join("\n")
+        );
+        assert_eq!(listed, frozen.len(), "every listed divergence occurs once");
+    }
+    // Native snapshots of the cells the legacy runtime answers from a
+    // collection's internals (its own `cnt`, `root`, ... slots).
+    for line in [
+        "map get-field => :undefined",
+        "map get-call => true",
+        "map has-field => false",
+        "map keys => []",
+        "map names => []",
+        "map descriptor => :none",
+        "map set-field => \"error: cannot add property 'x': the object is not extensible\"",
+        "map delete-field => true",
+        "map frozen => true",
+        "map extensible => false",
+        "map proto-object => true",
+        "map string => \"error: cannot convert object to primitive value\"",
+        "map str => \"{:k 1}\"",
+        "map json-keys => []",
+        "vector get-call => true",
+        "vector keys => []",
+        "keyword get-call => true",
+        "symbol get-call => true",
+        "list get-call => false",
+        "set typeof => \"object\"",
+        "type frozen => true",
+        "type str => \"[object Object]\"",
+        "multi string => \"[object Object]\"",
+    ] {
+        assert!(native.contains(line), "missing {line:?} in\n{native}");
+    }
 }
 
 /// The four host-interop paths above against QuickJS at jobs 1/2/4/8 with

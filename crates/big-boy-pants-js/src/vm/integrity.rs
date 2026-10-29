@@ -170,6 +170,10 @@ fn query(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<bool, Fau
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => {
             Err(Fault::Internal("a function reached the integrity read"))
         }
+        // A native form is a frozen object: a struct's fields are
+        // non-writable and non-configurable (`crate::vm::property`,
+        // `STRUCT_FIELD`) and nothing can be added.
+        HeapObject::Form(_) => Ok(true),
         // No properties and not extensible.
         _ => Ok(true),
     })
@@ -334,7 +338,8 @@ fn change(heap: &Heap, task: TaskId, v: &Value, level: Level) -> Result<(), Faul
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => {
             Err(Fault::Internal("a function reached the integrity change"))
         }
-        // Already frozen: no properties and not extensible.
+        // Already frozen: a native form, or no properties and not extensible.
+        HeapObject::Form(_) => Ok(()),
         _ => Ok(()),
     })
     .unwrap_or(Err(Fault::Internal("integrity argument was reclaimed")))

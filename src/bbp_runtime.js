@@ -726,17 +726,22 @@ const native = (() => {
   // call/apply adapters, then what a legacy instance inherits from
   // Object.prototype; the collection families, keywords, symbols and
   // multimethods answer call/apply only.
+  // What a legacy instance inherits from Object.prototype (toString,
+  // valueOf, ...): every struct, record and multimethod has them.
+  const inherited = name => {
+    const member = name === 'constructor' ? undefined : Object.prototype[name];
+    return typeof member === 'function' ? member : undefined;
+  };
   const jsMember = (x, name) => {
     const value = val(x), kind = __rt.formKind(value);
     if (kind !== 'struct' && kind !== 'record')
       return name === 'call' ? rawCalls.get(kind) : name === 'apply' ? rawApplies.get(kind) : undefined;
-    if (multi.is(value)) return name === 'call' ? rawMultiCall : name === 'apply' ? rawApplies.get('struct') : undefined;
+    if (multi.is(value)) return name === 'call' ? rawMultiCall : name === 'apply' ? rawApplies.get('struct') : inherited(name);
     const info = decl.structInfo(value);
     if (info.members.has(name)) return decl.memberFunction(info, name);
     if (name === 'call') return decl.callable(value) ? decl.callMember(value) ?? rawIFnCall : undefined;
     if (name === 'apply') return decl.callable(value) ? rawIFnApply : undefined;
-    const inherited = name === 'constructor' ? undefined : Object.prototype[name];
-    return typeof inherited === 'function' ? inherited : undefined;
+    return inherited(name);
   };
   // `String(struct)` converts through the engine: the struct's Object
   // toString method, else Object.prototype's (a legacy record has no
@@ -902,7 +907,8 @@ const native = (() => {
       if(x.__extmap!=null)for(let s=seq(__rt.formPrintItems(x.__extmap));s!==null;s=__rt.cljNext(s))entries=__rt.formConj(entries,__rt.cljFirst(s));
       return printSequential(writer,(e,w,o)=>printSequential(w,printWriter,'',' ','',o,e),'#'+__rt.formName(record.ty).replaceAll('/','.')+'{',', ','}',options,entries);
     }
-    if(kind==='struct')return write(writer,'#object['+__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.')+' '+structString(x)+']');
+    // The legacy MultiFn constructor is unqualified; user types print their qualified name.
+    if(kind==='struct')return write(writer,'#object['+(multi.is(x)?'MultiFn':__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.'))+' '+structString(x)+']');
     if(kind===null&&(typeof x==='object'||typeof x==='function')){
       const ty=x.__lightNativeType;
       if(__rt.formKind(ty)==='type')return write(writer,typeof x==='function'?__rt.formName(ty):'#object['+__rt.formName(ty).replaceAll('/','.')+' '+String(x)+']');

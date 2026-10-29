@@ -241,10 +241,12 @@
 //! qualified name, its field names, whether it is a record and the
 //! JavaScript member name of each field (`null`: the field names), made by
 //! `__rt.structType(name, fieldNames, record, memberNames)`; each call is a
-//! new identity. A struct is the same object in JavaScript: its fields are
-//! its own enumerable data properties under their member names (the last
-//! field with a member name wins, as a constructor's assignments do), a
-//! record also has `__meta`, `__extmap` and `__hash`, and its other named
+//! new identity. A struct is the same object in JavaScript, a frozen one:
+//! its fields are its own enumerable, non-writable, non-configurable data
+//! properties under their member names (the last field with a member name
+//! wins, as a constructor's assignments do; a record also has `__meta`,
+//! `__extmap` and `__hash` unless a field already took the name), it is
+//! not extensible, its prototype is `Object.prototype`, and its other named
 //! members come from the task's core-protocol resolver
 //! (`crate::vm::property`, `Deferred::Form`).
 //! A *struct* (`FormKind::Struct`; `formKind` `"record"` or `"struct"`) is
@@ -1596,7 +1598,11 @@ pub(crate) fn struct_own_keys(f: &FormObject) -> Vec<JsString> {
         }
     }
     if s.info.record {
-        keys.extend(["__meta", "__extmap", "__hash"].map(JsString::from));
+        for slot in ["__meta", "__extmap", "__hash"].map(JsString::from) {
+            if !keys.iter().any(|k| k.code_units() == slot.code_units()) {
+                keys.push(slot);
+            }
+        }
     }
     keys
 }

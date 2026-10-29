@@ -2332,7 +2332,7 @@ fn native_form_builtin_member_reads_resume_without_replay() {
       const s=__rt.structNew(T,1,2,null), m=__rt.formMap('x',false);
       const d=Object.getOwnPropertyDescriptor(s,'a_b');
       if(s.a_b!==2||!('a_b' in s)||('z' in s)||s.call!==null||Object.keys(s).join()!=='a_b,call'
-         ||d.value!==2||!d.enumerable||!d.writable||Object.getOwnPropertyDescriptor(s,'z')!==undefined
+         ||d.value!==2||!d.enumerable||d.writable||d.configurable||Object.getOwnPropertyDescriptor(s,'z')!==undefined
          ||Object.assign({},s).a_b!==2)
         throw new Error('struct reflection');
       let resolutions=0;
@@ -2377,6 +2377,117 @@ fn native_form_builtin_member_reads_resume_without_replay() {
     assert_eq!(
         result.string().map(|s| s.to_string_lossy()).as_deref(),
         Some("2|undefined|2|text:3|resolver boom|4")
+    );
+}
+
+/// A struct is a frozen object: its fields are enumerable, non-writable,
+/// non-configurable own properties, nothing can be added, deleted or
+/// redefined incompatibly, the integrity checks and `Object.freeze` family
+/// agree, its prototype is `Object.prototype`, and a record's slots are not
+/// duplicated by a field of the same name.
+#[test]
+fn native_struct_integrity_matches_own_descriptors() {
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function f() {
+      const T=__rt.structType('ns/R',__rt.formVector('x','__meta'),true,__rt.formVector('x','__meta'));
+      const s=__rt.structNew(T,1,null);
+      const out=[], attempt=thunk=>{ try { return String(thunk()); } catch(e) { return 'error: '+e.message; } };
+      const d=Object.getOwnPropertyDescriptor(s,'x');
+      out.push([d.value,d.writable,d.enumerable,d.configurable].join());
+      out.push(Object.keys(s).join());
+      out.push([Object.isFrozen(s),Object.isSealed(s),Object.isExtensible(s)].join());
+      out.push([Object.freeze(s)===s,Object.seal(s)===s,Object.preventExtensions(s)===s].join());
+      out.push([Reflect.deleteProperty(s,'x'),Reflect.deleteProperty(s,'zz')].join());
+      out.push(attempt(()=>{ return delete s.x; }));
+      out.push(attempt(()=>{ s.x=2; return s.x; }));
+      out.push(attempt(()=>{ s.zz=2; return s.zz; }));
+      out.push(attempt(()=>Object.defineProperty(s,'x',{value:1})===s));
+      out.push(attempt(()=>Object.defineProperty(s,'x',{value:2})));
+      out.push(attempt(()=>Object.defineProperty(s,'x',{get(){return 2;}})));
+      out.push(attempt(()=>Object.defineProperty(s,'zz',{value:2})));
+      out.push([Object.getPrototypeOf(s)===Object.prototype, s instanceof Object].join());
+      out.push(attempt(()=>Object.setPrototypeOf(s,Object.prototype)===s));
+      out.push(attempt(()=>Object.setPrototypeOf(s,null)));
+      out.push(['x' in s,'__meta' in s,'__extmap' in s,'zz' in s, s.x===1, s.__meta===null, s.__extmap===null, s.__hash===null].join());
+      return out.join('|');
+    }"#,
+    )
+    .unwrap();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    let result = complete(task.run().unwrap());
+    assert_eq!(
+        result.string().map(|s| s.to_string_lossy()).as_deref(),
+        Some(concat!(
+            "1,false,true,false|x,__meta,__extmap,__hash|true,true,false|true,true,true|false,true|",
+            "error: cannot delete non-configurable property 'x'|",
+            "error: cannot assign to read-only property 'x'|",
+            "error: cannot add property 'zz': the object is not extensible|",
+            "true|error: cannot define property 'x': it is neither writable nor configurable, so its value cannot change|",
+            "error: cannot define property 'x': it is not configurable, so its property kind cannot change|",
+            "error: cannot add property 'zz': the object is not extensible|",
+            "true,true|true|error: cannot set the prototype of a struct: it is not extensible|",
+            "true,true,true,false,true,true,true,true"
+        ))
+    );
+}
+
+/// ToPrimitive reads a form's `toString`/`valueOf` through
+/// `Action::FormMember`: the resolver and the method it returns both park
+/// on their own dependencies (collection between waits, a 64 KiB
+/// resumption), each conversion resolves exactly once with the form as the
+/// method's receiver, every hint (string, number, default) converts, and a
+/// resolver exception reaches the JavaScript catch.
+#[test]
+fn native_form_toprimitive_member_reads_resume_without_replay() {
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function f() {
+      const T=__rt.structType('ns/T',__rt.formVector('x'),false,null);
+      const s=__rt.structNew(T,7);
+      let resolutions=0, calls=0, receivers=0, boom=false;
+      __rt.cljCoreResolver((op,x,_,name)=>{
+        if(op!=='jsMember'||x!==s)throw new Error('receiver');
+        resolutions++;
+        if(boom)throw new Error('conversion boom');
+        if(name!=='toString'&&name!=='valueOf')return undefined;
+        __rt.need(920+resolutions,1);
+        return function(){ calls++; if(this===s)receivers++; __rt.need(940+calls,1); return name==='toString'?'text':41; };
+      });
+      const text=String(s);
+      const n=Number(s);
+      const t=`${s}`;
+      const sum=s+1;
+      boom=true;
+      let caught=null;
+      try { String(s); } catch(e) { caught=e.message; }
+      return [text,n,t,sum,caught,resolutions,calls,receivers].join('|');
+    }"#,
+    )
+    .unwrap();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    for _ in 0..8 {
+        let outcome = task.run().unwrap();
+        assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
+        rt.collect().unwrap();
+        let request = task.take_producer_requests().pop().unwrap();
+        let ready = rt.root(Primitive::Null);
+        task = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+            .unwrap()
+            .into_runnable()
+            .pop()
+            .unwrap();
+    }
+    let result = thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || complete(task.run().unwrap()))
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(
+        result.string().map(|s| s.to_string_lossy()).as_deref(),
+        Some("text|41|text|42|conversion boom|5|4|4")
     );
 }
 

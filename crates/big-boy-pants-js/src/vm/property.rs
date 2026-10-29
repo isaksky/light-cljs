@@ -508,6 +508,16 @@ fn primitive_prototype(heap: &Heap, base: &Value, key: &Key) -> Result<ObjectId,
     ))
 }
 
+/// A struct's field as a JavaScript property: a struct is a frozen object
+/// (`crate::collections::form`, "Structs"), so its fields are enumerable,
+/// non-writable and non-configurable, it is not extensible, and writes,
+/// deletes and defines fail as they do on any frozen object.
+const STRUCT_FIELD: PropertyFlags = PropertyFlags {
+    writable: false,
+    enumerable: true,
+    configurable: false,
+};
+
 /// The failure of an access to a heap object without an ordinary store.
 fn not_ordinary(object: &HeapObject, key: &Key, access: Access) -> Option<Fault> {
     match access {
@@ -1324,6 +1334,12 @@ fn store(
                 Key::Name(_) | Key::Symbol(_) => named(a.object_mut()),
             }
         }
+        // A frozen object: a field is read-only, anything else cannot be
+        // added (strict mode throws, sloppy mode ignores).
+        HeapObject::Form(f) => Ok(Stored::Rejected(match key {
+            Key::Name(name) if form::struct_own_property(f, name).is_some() => read_only(key),
+            _ => not_extensible(key),
+        })),
         other => Err(not_ordinary(other, key, Access::Write)
             .unwrap_or(Fault::Internal("a property write was not rejected"))),
     }
@@ -2130,6 +2146,25 @@ pub(crate) fn define_own_property(
             }
         }
         HeapObject::Function(_) | HeapObject::BoundFunction(_) => unsupported("a function"),
+        // A frozen object: a field accepts only a compatible descriptor
+        // (ValidateAndApplyPropertyDescriptor), nothing can be added.
+        HeapObject::Form(f) => match key {
+            Key::Name(name) => match form::struct_own_property(f, name) {
+                Some(value) => {
+                    let current = Property {
+                        value,
+                        flags: STRUCT_FIELD,
+                        accessor: None,
+                    };
+                    match crate::object::validate_and_apply(Some(&current), desc) {
+                        Ok(_) => Ok(()),
+                        Err(outcome) => defined(outcome, key),
+                    }
+                }
+                None => Err(not_extensible(key)),
+            },
+            _ => Err(not_extensible(key)),
+        },
         other => Err(Fault::TypeError(format!(
             "cannot define property '{key}' of a {}: it has no JavaScript properties",
             object_name(other)
@@ -2269,11 +2304,11 @@ fn own_property(
                 Visit::Other(HeapObject::Function(_) | HeapObject::BoundFunction(_)) => {
                     return Ok(Own::Function);
                 }
-                // A struct's fields are its own enumerable data properties.
+                // A struct's fields are its own frozen data properties.
                 Visit::Other(HeapObject::Form(f)) if let Key::Name(name) = key => {
                     form::struct_own_property(f, name).map(|value| Property {
                         value: if with_value { value } else { Value::Undefined },
-                        flags: PropertyFlags::DATA,
+                        flags: STRUCT_FIELD,
                         accessor: None,
                     })
                 }
@@ -2491,6 +2526,13 @@ fn delete_own(heap: &Heap, task: TaskId, id: ObjectId, key: &Key) -> Result<Dele
             check_write(&a.object, task)?;
             Ok(named(&mut a.object))
         }
+        // A struct's fields are non-configurable.
+        HeapObject::Form(f) => Ok(match key {
+            Key::Name(name) if form::struct_own_property(f, name).is_some() => {
+                DeleteOutcome::NonConfigurable
+            }
+            _ => DeleteOutcome::Absent,
+        }),
         other => match not_ordinary(other, key, Access::Delete) {
             Some(fault) => Err(fault),
             None => Ok(DeleteOutcome::Absent),

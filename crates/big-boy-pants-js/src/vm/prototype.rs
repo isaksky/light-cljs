@@ -96,6 +96,8 @@ pub(crate) fn get_prototype_of(
         Prototype(Option<ObjectId>),
         Function,
         Proxy,
+        /// A native form: `Object.prototype`, read outside the object lock.
+        ObjectPrototype,
     }
     if let Some(view) = heap.realm().get().and_then(|r| r.view(id)) {
         return Ok(view.prototype);
@@ -141,11 +143,18 @@ pub(crate) fn get_prototype_of(
             HeapObject::Function(_) | HeapObject::BoundFunction(_) => Ok(Step::Function),
             HeapObject::Proxy(_) => Ok(Step::Proxy),
             HeapObject::Builtin(f) => Ok(Step::Prototype(f.properties.prototype())),
+            // A struct is a frozen object inheriting from `Object.prototype`
+            // (`crate::collections::form`, "Structs"); its members resolve
+            // through the task's runtime (`property::Deferred::Form`).
+            HeapObject::Form(_) | HeapObject::Occurrence(_) => Ok(Step::ObjectPrototype),
             _ => Ok(Step::Prototype(None)),
         })
         .unwrap_or(Err(Fault::Internal("prototype target was reclaimed")))?;
     match step {
         Step::Prototype(prototype) => Ok(prototype),
+        Step::ObjectPrototype => {
+            Ok(crate::realm::intrinsics(heap).map(|realm| realm.object_prototype))
+        }
         Step::Function => function::inheritance_prototype(heap, id),
         Step::Proxy => get_prototype_of(
             heap,
