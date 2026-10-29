@@ -682,6 +682,7 @@ pub(crate) enum Deferred {
         conversion: bool,
     },
     Form {
+        target: ObjectId,
         key: Key,
     },
 }
@@ -704,7 +705,10 @@ impl Deferred {
                 receiver,
                 conversion,
             },
-            Self::Form { key } => super::native::Action::FormMember { receiver, key },
+            Self::Form { target, key } => super::native::Action::FormMember {
+                form: Value::Object(target),
+                key,
+            },
         }
     }
 }
@@ -1060,13 +1064,15 @@ fn lookup_cursor(
                         Value::Object(inner) => Some(inner),
                         _ => None,
                     })),
-                    // A form's named members belong to the task's runtime;
+                    // A form's named members belong to the task's runtime
+                    // (an object inheriting from a form reads them too);
                     // presence checks, symbol/index keys and conversions
                     // see no properties.
                     Visit::Other(HeapObject::Form(_))
                         if matches!(mode, LookupMode::Read) && matches!(key, Key::Name(_)) =>
                     {
                         Ok(Lookup::Found(Read::Deferred(Deferred::Form {
+                            target: id,
                             key: key.clone(),
                         })))
                     }

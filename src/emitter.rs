@@ -3696,8 +3696,9 @@ impl<'a> Emitter<'a> {
     }
 
     /// This adapter is emitted only for the native compile-time runtime.
-    /// It unwraps occurrences and converts nothing else: a native form is
-    /// the same object in JavaScript (docs/native-macros.md, light-cljs-558).
+    /// It unwraps occurrences and converts nothing else (a native form is
+    /// the same object in JavaScript, docs/native-macros.md, light-cljs-558),
+    /// rejecting explicit interop with a non-struct form.
     fn interop_value(&mut self, value: ExprId) {
         if self.native_forms {
             self.rt(RuntimeName::export("nativeInterop"));
@@ -3709,9 +3710,9 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// The receiver of a compiled member read or call, with the member's
-    /// name: explicit interop with a non-struct native form is rejected
-    /// there, except its `call`/`apply` members.
+    /// The receiver or an operand of a compiled member read or call, with
+    /// the member's name: a non-struct native form is rejected there, except
+    /// for `call`/`apply`, which apply a function to its operands.
     fn interop_receiver(&mut self, value: ExprId, member: &str) {
         if self.native_forms {
             self.rt(RuntimeName::export("nativeInterop"));
@@ -3725,12 +3726,17 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn interop_arguments(&mut self, args: &[ExprId]) {
+    /// The operands of a host call, or of a member call with the member's
+    /// name: those of `.call`/`.apply` pass through unchanged.
+    fn interop_arguments(&mut self, args: &[ExprId], member: Option<&str>) {
         for (index, &arg) in args.iter().enumerate() {
             if index > 0 {
                 self.output.push_str(", ");
             }
-            self.interop_value(arg);
+            match member {
+                Some(member) => self.interop_receiver(arg, member),
+                None => self.interop_value(arg),
+            }
         }
     }
 
@@ -9073,7 +9079,7 @@ impl<'a> Emitter<'a> {
                 self.output.push(')');
                 self.member(method);
                 self.output.push('(');
-                self.interop_arguments(args);
+                self.interop_arguments(args, Some(method));
                 self.output.push(')');
             }
             ExprKind::If { test, yes, no } => {
@@ -9289,7 +9295,7 @@ impl<'a> Emitter<'a> {
                 if matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_)) {
                     // A JS path is a host invocation and retains its final receiver.
                     self.output.push_str(")(");
-                    self.interop_arguments(args);
+                    self.interop_arguments(args, None);
                 } else {
                     self.output.push_str(").call(null");
                     if !args.is_empty() {

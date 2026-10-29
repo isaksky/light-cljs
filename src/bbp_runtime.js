@@ -373,12 +373,19 @@ const decl = (() => {
     if (info === undefined) throw new Error('unsupported operation: JavaScript interop with a native struct of an undeclared type');
     return info;
   };
+  // The struct an object inheriting from one (`Object.create`) stands for.
+  const structOf = o => {
+    for (let p = __rt.formValue(o); p !== null && typeof p === 'object'; p = Object.getPrototypeOf(p))
+      if (__rt.formKind(p) !== null) return p;
+    return o;
+  };
   // The function a struct's JavaScript member `member` reads: one per type
   // and member, dispatching on the declaring type with the call's `this`
-  // (the struct itself, or a borrowed receiver) as the method's receiver.
+  // (the struct itself, an object inheriting from it, or a borrowed
+  // receiver) as the method's receiver.
   const memberFunction = (info, member) => {
     let f = info.memberFunctions.get(member);
-    if (f === undefined) info.memberFunctions.set(member, f = function (...a) { return objectInvoke(info, member, __rt.formValue(this), a); });
+    if (f === undefined) info.memberFunctions.set(member, f = function (...a) { return objectInvoke(info, member, structOf(this), a); });
     return f;
   };
   const register = (names, indices, location, once, unit) => {
@@ -455,14 +462,16 @@ const decl = (() => {
 const native = (() => {
   let gensymScope = 0, gensymPrefix = '';
   const val = x => __rt.formValue(x);
-  // Compiled interop (`(.-m x)`, `(.m x a)`, operands of such calls): a
+  // Compiled interop (`(.-m x)`, `(.m x a)`, host calls, `instance?`): a
   // native form is the same object in JavaScript, so nothing is converted;
   // only occurrence provenance wrappers come off. Raw JavaScript reads a
   // form's members through `jsMember` below. Explicit compiled interop with
-  // a non-struct form has no legacy meaning here except `call`/`apply`.
+  // a non-struct form stays unsupported, as its legacy object layout is not
+  // modelled, except `.call`/`.apply`, which apply a function to operands
+  // that pass through unchanged.
   const interop = (x, member) => {
     const value = val(x), kind = __rt.formKind(value);
-    if (member !== undefined && kind !== null && kind !== 'struct' && kind !== 'record' && member !== 'call' && member !== 'apply')
+    if (kind !== null && kind !== 'struct' && kind !== 'record' && member !== 'call' && member !== 'apply')
       throw new Error('unsupported operation: JavaScript interop with native ' + kind + ' form');
     return value;
   };
@@ -680,14 +689,7 @@ const native = (() => {
     const value=val(f),kind=__rt.formKind(value);
     if(kind==='struct'&&__rt.formName(__rt.structTypeOf(value))==='cljs.core/MultiFn')
       return globalThis.__lightNativeRuntime.core.invokeMulti(value,args);
-    if(kind==='struct'||kind==='record'){
-      if(decl.callable(value))return globalThis.__lightNativeRuntime.core.invokeIFn(value,args);
-      // Legacy `(f x)` is `f.call(null, x)`: a struct without IFn methods
-      // may still carry a `call` field or Object method.
-      const call=jsMember(value,'call');
-      if(typeof call!=='function')throw new TypeError('undefined is not a function');
-      return call.call(value,null,...args);
-    }
+    if(kind==='struct'||kind==='record')return globalThis.__lightNativeRuntime.core.invokeStruct(value,args);
     if(kind!=='vector'&&kind!=='map'&&kind!=='set'&&kind!=='keyword'&&kind!=='symbol')return value.call(null,...args);
     if(kind!=='vector'&&(args.length<1||args.length>2))arity(args.length);
     return __rt.cljInvoke(f,args[0],args.length>1?args[1]:null,args.length);
@@ -1674,6 +1676,14 @@ const native = (() => {
     isIFn:x=>core.isFn(x)||multi.is(x)||['keyword','symbol','vector','map','set'].includes(__rt.formKind(val(x)))||decl.satisfies('IFn',x),
     invokeMulti:(m,args)=>multi.dispatch(m,args),
     invokeIFn:(x,args)=>decl.invokeIFn(x,args),
+    // Legacy `(f x)` is `f.call(null, x)`: a struct without IFn methods may
+    // still carry a `call` field or Object method.
+    invokeStruct:(x,args)=>{
+      if(decl.callable(x))return decl.invokeIFn(x,args);
+      const call=jsMember(x,'call');
+      if(typeof call!=='function')throw new TypeError('undefined is not a function');
+      return call.call(x,null,...args);
+    },
     borrowedIFn:(ty,overloaded,x,args)=>decl.borrowedIFn(ty,overloaded,x,args),
     nativeApplyArgs:args=>{
       args=val(args);

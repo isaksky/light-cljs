@@ -25,12 +25,13 @@ pub(super) struct State {
 
 /// A native form is the same object in JavaScript and in the compiler's
 /// runtime: a named member read (`property::Deferred::Form`) asks the task's
-/// resolver for the member, keeping the form itself as the receiver. The
+/// resolver for the member of `form` (the form found on the base's prototype
+/// chain, usually the base itself); the call's `this` stays the base. The
 /// resolver may suspend (declaring a cold type, demanding a helper) without
 /// replaying the read. Without a resolver a form has no members.
 pub(crate) fn start_member(
     state: &mut VmState,
-    receiver: Value,
+    form: Value,
     key: &crate::vm::property::Key,
 ) -> Result<(), Fault> {
     let (Some(resolver), crate::vm::property::Key::Name(name)) = (state.core_resolver.clone(), key)
@@ -44,7 +45,7 @@ pub(crate) fn start_member(
             op: FormOp::CljCoreResolver,
             operands: vec![],
             resolver,
-            receiver,
+            receiver: form,
             through_lazy: false,
             called: true,
             member: Some(Value::String(name.clone())),

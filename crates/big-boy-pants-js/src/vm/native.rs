@@ -318,7 +318,7 @@ pub(crate) enum Action {
     /// Read a native form's named member through the task's core-protocol
     /// resolver and deliver it to this native (`property::Deferred::Form`).
     FormMember {
-        receiver: Value,
+        form: Value,
         key: property::Key,
     },
     /// Execute a property instruction and deliver its result to this native.
@@ -3812,7 +3812,7 @@ fn apply_action(
             )?;
             Ok(Flow::Next)
         }
-        Action::FormMember { receiver, key } => {
+        Action::FormMember { form, key } => {
             if state
                 .natives
                 .last()
@@ -3823,7 +3823,7 @@ fn apply_action(
                 })?;
             }
             set_awaiting(state, Awaiting::CallResult)?;
-            start_form_member(state, receiver, &key)?;
+            start_form_member(state, form, &key)?;
             Ok(Flow::Next)
         }
         Action::SetProperty {
@@ -4157,8 +4157,8 @@ pub(crate) fn read_result(
                 0,
             );
         }
-        property::Read::Deferred(property::Deferred::Form { key }) => {
-            return start_form_member(state, this, &key);
+        property::Read::Deferred(property::Deferred::Form { target, key }) => {
+            return start_form_member(state, Value::Object(target), &key);
         }
     }
     Ok(())
