@@ -133,6 +133,39 @@ fn default_sorted_maps_keep_order_identity_and_metadata_across_tasks_and_gc() {
     assert!(weak.iter().all(|w| !w.is_live()));
 }
 
+/// Structural equality that meets a sorted-map-by map asks the task's
+/// resolver for that map comparison (light-cljs-561), once per comparison
+/// met and none after an earlier difference, and uses its answer; a resolver
+/// that offers no method leaves the comparison unsupported.
+#[test]
+fn nested_sorted_by_equality_asks_the_task_resolver_per_comparison() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function f(){
+        const log=[], v=(x,y)=>y===undefined?__rt.formVector(x):__rt.formVector(x,y);
+        const sorted=x=>__rt.formSortedInsert(__rt.formSortedMapBy(null),0,1,x);
+        const a=sorted('x'), b=sorted('x'), c=sorted('y'), plain=__rt.formArrayMap(__rt.formVector(1,'x'));
+        if(!__rt.formIsSortedBy(a)||__rt.formIsSortedBy(plain)||!__rt.formIsArrayMap(plain)||__rt.formIsArrayMap(a)||__rt.formIsArrayMap(__rt.formMap(1,'x')))throw new Error('predicates');
+        let offer=true;
+        __rt.cljCoreResolver((op,x)=>offer&&op==='formEquals'&&__rt.formIsSortedBy(x)?(l,r)=>{
+          log.push(l===plain?'plain':l===a?'a':'?');
+          return __rt.formSortedEntry(r,0,1)===(__rt.formIsSortedBy(l)?__rt.formSortedEntry(l,0,1):'x');
+        }:null);
+        const results=[__rt.formEquals(v(a,a),v(b,b)),__rt.formEquals(v(a),v(c)),__rt.formEquals(v(plain),v(b)),
+          __rt.formEquals(v(0,a),v(1,b)),__rt.formEquals(v(a),v(a)),__rt.formEquals(__rt.formMap(v(a),1),__rt.formMap(v(b),1))];
+        offer=false;
+        try{__rt.formEquals(v(a),v(b));throw new Error('answered');}
+        catch(e){if(e.message!=='unsupported operation: native nested equality with a sorted-map-by map')throw e;}
+        const got=JSON.stringify([results,log]);
+        if(got!=='[[true,false,true,false,true,true],["a","a","a","plain","a"]]')throw new Error(got);
+        return true;
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
 /// A sorted-map-by map (light-cljs-561) retains its comparator through
 /// positional edits, metadata, realization, publication and GC. The leaves
 /// never call it; leaves that would compare its keys raise instead.

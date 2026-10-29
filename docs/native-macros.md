@@ -3378,12 +3378,31 @@ mid-search; the saved continuation resumes without replaying earlier calls.
 The core-protocol frame offers `get` (two and three arguments), `contains?`,
 `assoc`, `dissoc`, `conj`, map invocation, keyword lookup and `=` with a
 sorted-map-by operand on either side to the task resolver, which runs those
-operations as above. Map equality follows the legacy `equiv-map`: equal counts,
-then each left entry, in seq order, is found in the right map (by its
-comparator when it has one) and the found value is compared first (the legacy
-runtime compares an array map's own value first; the resolver cannot tell
-array maps apart, which matters only to an asymmetric user `-equiv`). A
-struct's `-equiv` on the left still takes precedence. `seq`, `rseq`, `first`, `keys`,
+operations as above. A map whose comparator is nil is a sorted-map-by map too
+(`formIsSortedBy`): it keeps one entry and raises the legacy `TypeError` when
+two keys are compared. `conj` follows the legacy `mapConj`: nil returns the
+map, a pair is one entry, and any other value is a sequence of vector entries
+(a map, a record, a list, a lazy sequence) added in order, or `Map conj
+requires vector entries`. Map equality follows the legacy `equiv-map`: equal
+counts, then each left entry, in seq order, is found in the right map (by its
+comparator when it has one); an array map compares its own value first and a
+hash or sorted map the found value first (`formIsArrayMap`), which an
+asymmetric user `-equiv` observes. A struct's `-equiv` on the left still takes
+precedence.
+
+`=` that meets a sorted-map-by map *inside* other collections (a vector
+element, a map value, a set member, a hash-map key, a lazy-sequence item) as
+the side whose keys are looked up compares it on the task VM too. The engine's
+structural equality records that one map comparison as a request, like a lazy
+realization request; the instruction then runs the resolver's `=` for it in a
+core-protocol frame (its comparator may demand a cold helper and park) and
+executes again with every answer so far. Answers are taken in the order the
+comparisons are met, and a pair decided with one is not memoized, so every
+comparison met calls the comparator once, as each legacy `=` does, and none is
+repeated. Each new comparison re-executes the (effect-free) instruction, so `n`
+such comparisons in one instruction cost `O(n^2)` engine work. Without a task
+runtime (an embedder's `formEquals`) the comparison still raises `unsupported
+operation: native nested equality with a sorted-map-by map`. `seq`, `rseq`, `first`, `keys`,
 `vals`, `count`, `reduce`, `reduce-kv`, `into` sources, hashing, metadata and
 printing need no comparator and read the sorted storage directly. `sorted?`
 is true. Native `rseq` (new) reverses vectors, default sorted maps and
@@ -3394,20 +3413,17 @@ legacy errors, and `comparator` (new) returns the legacy -1/0/1 adapter; the
 emitter lowers a direct `comparator` call to a closure that captures no
 runtime object, so a comparator helper built with it can publish.
 
-Explicit boundaries: the engine's structural equality cannot call a
-comparator, so a sorted-map-by map that `=` meets *inside* another collection
-as the side it would look keys up in (a vector element, a map value of a hash
-map, a set member) raises the catchable `unsupported operation: native nested
-equality with a sorted-map-by map` (the legacy runtime compares it). Identical
-operands still short-circuit, and a sorted-map-by value nested in a
-sorted-map-by map is compared through the resolver. `sorted-set-by` stays an
+Explicit boundaries: `sorted-set-by` stays an
 explicit boundary together with default `sorted-set`, for which the native
 runtime has no sorted set storage yet (`unsupported operation: native macro
 runtime core.sortedSetBy`); the comparator machinery here could serve it once
 sorted sets exist. `subseq`/`rsubseq`, `find`, `empty`, `merge-with` and
 `update-in` remain unprovided native core functions for every map kind, and
 `conj` of a vector that is not a pair reports the existing native map-entry
-error (the legacy runtime takes its first two elements). Nothing was added to
+error (the legacy runtime takes its first two elements). The engine's pair
+memo can still skip a comparison legacy `=` repeats when a collection
+containing an already-compared *ordinary* pair is shared; with a sorted-map-by
+map inside, the pair is not memoized. Nothing was added to
 `src/js_runtime.js` or the default (V8) compile path.
 
 Tests: `native_sorted_map_by_matches_quickjs` compares emission and output with
@@ -3420,8 +3436,22 @@ and a sorted-map-by value with a published comparator, consumes them from two
 namespaces at jobs 1/2/4/8 under seeded scheduling (five published helpers, no
 per-task reconstruction) and matches QuickJS at each size; the first
 expansion's log shows the helper initializing inside one comparator call,
-exactly once. `native_sorted_map_by_boundaries_are_explicit` pins the nested
-equality and `sorted-set-by` errors. The engine test
+exactly once.
+
+Review fixes (same day): `native_nested_sorted_map_by_equality_matches_quickjs`
+compares nested equality (vectors, map values, sets, hash-map keys, lazy
+sequences, nesting, shared vectors, short-circuits, comparator failures) and
+the comparator call count of each with QuickJS. The seeded fixture adds a
+helper built by `(comparator heavier?)` whose predicate's cold demand parks
+inside a nested `=` (eight published helpers). `native_sorted_map_by_matches_quickjs`
+gains `conj` (nil, entry lists, lazy and mapped entry sequences, bad entries,
+with the call log) and nil-comparator rows;
+`native_sorted_map_by_equality_direction_matches_quickjs` pins the value
+direction with an asymmetric `-equiv`, top level and nested; and
+`native_rseq_protocol_dispatch_matches_quickjs` covers a user `IReversible`
+type and a `PersistentVector` override by direct, aliased and apply calls,
+with a cold helper demanded inside `-rseq`, at seeded jobs 1/2/4/8.
+`native_sorted_set_by_stays_an_explicit_boundary` pins `sorted-set-by`. The engine test
 `sorted_by_maps_retain_their_comparator_across_edits_publication_and_gc`
 covers the leaves, retention through publication and GC, the `.edge(0)`
 publication rejection, realization and the leaf errors.

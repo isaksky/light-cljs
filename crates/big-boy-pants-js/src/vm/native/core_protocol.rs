@@ -34,7 +34,7 @@ struct Retry {
     operands: Vec<Value>,
     /// The instruction's struct protocol already resolved: execute its leaf
     /// directly again, as a realization does.
-    pub(super) core_resolved: bool,
+    core_resolved: bool,
     answers: Vec<SortedEquality>,
 }
 
