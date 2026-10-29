@@ -1562,11 +1562,31 @@ pub enum FormOp {
     FnApplyReceiver = 93,
     /// collection → persistent stack without its head (`cljPop`).
     CljPop = 94,
+    /// comparator → empty sorted-map-by map (`formSortedMapBy`).
+    SortedMapBy = 95,
+    /// v → its sorted-map-by comparator, or null (`formSortedComparator`).
+    SortedComparator = 96,
+    /// map index part → entry key (part 0) or value (part 1) (`formSortedEntry`).
+    SortedEntry = 97,
+    /// map index key value → map with the entry inserted at index (`formSortedInsert`).
+    SortedInsert = 98,
+    /// map index value → map with entry index's value replaced (`formSortedReplace`).
+    SortedReplace = 99,
+    /// map index → map without entry index (`formSortedRemove`).
+    SortedRemove = 100,
+    /// a b → -1, 0 or 1 by the default sorted-map order (`formCompare`).
+    Compare = 101,
+    /// v → whether v is a sorted-map-by map, whatever its comparator,
+    /// nil included (`formIsSortedBy`).
+    IsSortedBy = 102,
+    /// v → whether v is a positional, unsorted map (an array or literal
+    /// map), which compares its own values first in `=` (`formIsArrayMap`).
+    IsArrayMap = 103,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 95] = [
+    pub const ALL: [FormOp; 104] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1662,6 +1682,15 @@ impl FormOp {
         FormOp::FnApplyNull,
         FormOp::FnApplyReceiver,
         FormOp::CljPop,
+        FormOp::SortedMapBy,
+        FormOp::SortedComparator,
+        FormOp::SortedEntry,
+        FormOp::SortedInsert,
+        FormOp::SortedReplace,
+        FormOp::SortedRemove,
+        FormOp::Compare,
+        FormOp::IsSortedBy,
+        FormOp::IsArrayMap,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1679,6 +1708,10 @@ impl FormOp {
             | FormOp::Sequence
             | FormOp::CljPeek
             | FormOp::CljPop
+            | FormOp::SortedMapBy
+            | FormOp::SortedComparator
+            | FormOp::IsSortedBy
+            | FormOp::IsArrayMap
             | FormOp::AtomAux
             | FormOp::CljCoreResolver
             | FormOp::LiteralPayload
@@ -1755,6 +1788,8 @@ impl FormOp {
             | FormOp::RecordFromMap
             | FormOp::CljDispatch
             | FormOp::CljChunkCons
+            | FormOp::SortedRemove
+            | FormOp::Compare
             | FormOp::CljSymbolNs => 2,
             FormOp::Get
             | FormOp::InitializerSlotSet
@@ -1762,10 +1797,13 @@ impl FormOp {
             | FormOp::Assoc
             | FormOp::CljNthOr
             | FormOp::CljGet
-            | FormOp::CljAssoc => 3,
+            | FormOp::CljAssoc
+            | FormOp::SortedEntry
+            | FormOp::SortedReplace => 3,
             FormOp::CljInvoke
             | FormOp::CljProtocolLookup
             | FormOp::CljRangeCons
+            | FormOp::SortedInsert
             | FormOp::StructType => 4,
         }
     }
@@ -1784,6 +1822,15 @@ impl FormOp {
             FormOp::Sequence => "formSequence",
             FormOp::CljPeek => "cljPeek",
             FormOp::CljPop => "cljPop",
+            FormOp::SortedMapBy => "formSortedMapBy",
+            FormOp::SortedComparator => "formSortedComparator",
+            FormOp::SortedEntry => "formSortedEntry",
+            FormOp::SortedInsert => "formSortedInsert",
+            FormOp::SortedReplace => "formSortedReplace",
+            FormOp::SortedRemove => "formSortedRemove",
+            FormOp::Compare => "formCompare",
+            FormOp::IsSortedBy => "formIsSortedBy",
+            FormOp::IsArrayMap => "formIsArrayMap",
             FormOp::CljCoreResolver => "cljCoreResolver",
             FormOp::CljGet2 => "cljGet2",
             FormOp::Keyword => "formKeyword",

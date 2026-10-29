@@ -601,6 +601,30 @@ Sorted maps, shared seq views of lists, and the compiler `Datum` bridge
 docs carry a runnable example. Tests: `tests/forms.rs`, `collections::form::tests`,
 `collections::clj::tests`, `form_edges_retain`/`form_edges_reclaim`.
 
+A `sorted-map-by` map (light-cljs-561) is a sorted positional map with one
+more edge, its comparator: traced by GC, walked by publication as `.edge(0)`
+and kept by metadata changes, updates and realization. The engine never calls
+it. `formSortedEntry/Insert/Replace/Remove` read or edit an entry at a position
+the light-cljs task runtime computed by calling the comparator on its own VM
+(so a call can park on a helper dependency like any other JavaScript); leaves
+that would compare its keys themselves (`formGet`, `formAssoc`, `formDissoc`)
+raise a catchable `unsupported operation` error, and the core-protocol frame
+offers its clj lookups, updates and `=` to the task's resolver instead.
+Structural equality that would look keys up in one records the map comparison
+as a request (`form::take_sorted_request`), as a lazy realization does: the
+form instruction starts a core-protocol frame that calls the resolver's `=`
+on the task VM and then executes the instruction again with the answers so
+far (`VmState::sorted_answers`, consumed in the order comparisons are met; a
+pair decided with one is not memoized), so no comparator call is repeated.
+The answers' buffer is admitted against the aggregate budget before it grows
+(`form::SortedAnswers`, a `GrowthCharge`). A request met inside a set
+comparison installs a native catch: an `Error` the call throws becomes a
+failed answer that makes the innermost enclosing set comparison unequal, as
+the legacy set `equiv` does; other throws propagate.
+Without a resolver the comparison raises the `unsupported operation` error.
+`formIsSortedBy` tells such a map apart also when its comparator is `null`;
+`formIsArrayMap` reports the value direction `=` uses for a left map.
+
 Lazy sequences (light-cljs-479, `crate::collections::lazy`) are a form kind
 whose body is a once-realized cell: a dependency cell local to a value. A clj
 operation that meets an unrealized cell does not complete; its instruction

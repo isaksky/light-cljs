@@ -233,6 +233,7 @@ pub(crate) use compiler_access::start as start_compiler_access;
 mod core_protocol;
 pub(crate) use core_protocol::start as start_core_protocol;
 pub(crate) use core_protocol::start_member as start_form_member;
+pub(crate) use core_protocol::start_sorted_equality;
 
 pub(crate) use builtin_leaf::try_builtin_leaf;
 mod collator;
@@ -403,6 +404,15 @@ pub(crate) enum Action {
     FormFallback {
         instr: Instr,
         operands: Vec<Value>,
+    },
+    /// Run a form instruction again with the task runtime's answers to its
+    /// `sorted-map-by` comparisons: as [`Action::FormFallback`] when its
+    /// struct protocol already resolved, else as [`Action::Resume`].
+    Retry {
+        instr: Instr,
+        operands: Vec<Value>,
+        answers: crate::collections::form::SortedAnswers,
+        fallback: bool,
     },
     /// Read a dependency in the task's world, suspending if it is pending.
     Need {
@@ -3494,6 +3504,7 @@ pub(crate) fn unwind(natives: &mut Vec<NativeFrame>, frame: usize) -> Result<(),
             | Action::ReturnPair(..)
             | Action::Await(_)
             | Action::Resume { .. }
+            | Action::Retry { .. }
             | Action::FormFallback { .. } => {
                 return Err("a native frame did not unwind from a failure");
             }
@@ -4003,25 +4014,66 @@ fn apply_action(
             }
             Ok(Flow::Resume(instr))
         }
-        Action::FormFallback { instr, operands } => {
+        Action::Retry {
+            instr,
+            operands,
+            answers,
+            fallback: false,
+        } => {
             state.natives.pop();
-            for value in operands {
-                state.push(value);
+            for v in operands {
+                state.push(v);
             }
-            let depth = state.natives.len();
-            super::intrinsics::step(state, heap, host, instr)?;
-            if state.natives.len() > depth
-                && let Some(NativeFrame {
-                    state: NativeState::Realize(realize),
-                    ..
-                }) = state.natives.last_mut()
-            {
-                realize.core_resolved = true;
-            }
-            Ok(Flow::Next)
+            // Taken by the instruction's next execution, which runs at once.
+            state.sorted_answers = answers;
+            Ok(Flow::Resume(instr))
+        }
+        Action::Retry {
+            instr,
+            operands,
+            answers,
+            fallback: true,
+        } => {
+            state.sorted_answers = answers;
+            form_fallback(state, heap, host, instr, operands)
+        }
+        Action::FormFallback { instr, operands } => {
+            form_fallback(state, heap, host, instr, operands)
         }
         Action::Unwind => Err(Fault::Internal("a native step unwound without a failure")),
     }
+}
+
+/// Execute a core operation's leaf directly ([`Action::FormFallback`]). A
+/// realization or sorted-map-by comparison it starts records that its
+/// protocol already resolved, so running it again does not resolve twice.
+fn form_fallback(
+    state: &mut VmState,
+    heap: &Heap,
+    host: &mut dyn Host,
+    instr: Instr,
+    operands: Vec<Value>,
+) -> Result<Flow, Fault> {
+    state.natives.pop();
+    for value in operands {
+        state.push(value);
+    }
+    let depth = state.natives.len();
+    super::intrinsics::step(state, heap, host, instr)?;
+    if state.natives.len() > depth {
+        match state.natives.last_mut() {
+            Some(NativeFrame {
+                state: NativeState::Realize(realize),
+                ..
+            }) => realize.core_resolved = true,
+            Some(NativeFrame {
+                state: NativeState::CoreProtocol(protocol),
+                ..
+            }) => core_protocol::mark_core_resolved(protocol),
+            _ => {}
+        }
+    }
+    Ok(Flow::Next)
 }
 
 /// Native boundaries receive exceptions after JavaScript's own catch/finally
@@ -4046,6 +4098,7 @@ pub(crate) fn catch(
         NativeState::MathSumPrecise(sum) if sum.catches() => sum.failed(exception),
         NativeState::Generator { failed, .. } => *failed = Some(exception),
         NativeState::Realize(realize) if realize.catches() => realize.failed(exception),
+        NativeState::CoreProtocol(protocol) if protocol.catches() => protocol.failed(exception),
         _ => return Err("invalid native catch"),
     }
     frame.awaiting = Awaiting::Nothing;
@@ -4327,6 +4380,7 @@ impl NativeState {
         match self {
             Self::Async(_) => true,
             Self::Realize(realize) => realize.catches(),
+            Self::CoreProtocol(protocol) => protocol.catches(),
             Self::AsyncGenerator(a) => a.catches(),
             Self::Disposal(disposal) => disposal.catches(),
             Self::Promise(promise) => promise.catches(),
@@ -4357,7 +4411,7 @@ impl NativeState {
             NativeState::ProxyCall(proxy) => proxy.step(heap, task, input),
             NativeState::RegExp(regexp) => regexp.step(heap, task, input),
             NativeState::Realize(realize) => realize.step(heap, task, input),
-            NativeState::CoreProtocol(protocol) => protocol.step(input),
+            NativeState::CoreProtocol(protocol) => protocol.step(heap, task, input),
             // Locale parsing descends into Intl helpers. Avoid reserving the
             // unrelated step_other temporaries on 64 KiB workers.
             NativeState::StringMethods(method) => method.step(heap, task, input),

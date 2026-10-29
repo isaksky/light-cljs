@@ -4408,6 +4408,9 @@ impl<'a> Emitter<'a> {
             C::Identity => "x => x",
             C::Constantly => "x => (...a) => x",
             C::Complement => "f => (...a) => !__rt.cljTruth(invoke(f, ...a))",
+            C::Comparator => {
+                "f => (x, y) => __rt.cljTruth(invoke(f, x, y)) ? -1 : __rt.cljTruth(invoke(f, y, x)) ? 1 : 0"
+            }
             C::Comp => {
                 r#"(...fs) => {
                 const n = fs.length;

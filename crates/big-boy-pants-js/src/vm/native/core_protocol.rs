@@ -1,13 +1,21 @@
 //! Core-protocol calls on native structs. Resolution belongs to the task's
 //! declaration frontier; shared forms, map keys and dependency tables never
 //! retain or execute it. Both resolution and the selected entry may suspend.
+//!
+//! The same frame answers a structural comparison of a map with a
+//! `sorted-map-by` map met inside a form instruction (light-cljs-561): the
+//! runtime's `=` for the sorted map runs on the task VM (its comparator may
+//! demand a helper and park), and the instruction executes again with the
+//! answer and every earlier one ([`start_sorted_equality`]).
 use super::{Action, Fault, Input, NativeState, VmState, push_native};
-use crate::collections::form::{self, FormKind};
+use crate::collections::form::{self, FormKind, SortedAnswers, SortedEquality, SortedRequest};
 use crate::heap::{
     Heap,
     gc::{Trace, TraceEdge},
 };
+use crate::ids::TaskId;
 use crate::value::Value;
+use crate::vm::exception::Exception;
 use crate::vm::instr::{FormOp, Instr};
 
 #[derive(Debug)]
@@ -21,6 +29,8 @@ pub(super) struct State {
     /// A raw JavaScript member read (`jsMember`): the member's name. The
     /// resolver's result is the member itself, not a method to call.
     member: Option<Value>,
+    /// Set for a sorted-map-by comparison: the instruction to run again.
+    retry: Option<Box<Retry>>,
 }
 
 /// A native form is the same object in JavaScript and in the compiler's
@@ -49,8 +59,82 @@ pub(crate) fn start_member(
             through_lazy: false,
             called: true,
             member: Some(Value::String(name.clone())),
+            retry: None,
         }),
     )
+}
+
+#[derive(Debug)]
+struct Retry {
+    instr: Instr,
+    operands: Vec<Value>,
+    /// The instruction's struct protocol already resolved: execute its leaf
+    /// directly again, as a realization does.
+    core_resolved: bool,
+    answers: SortedAnswers,
+    /// Met inside a set comparison: an `Error` the runtime's `=` throws is
+    /// caught and answers that the set comparison is unequal, as the legacy
+    /// set `equiv` does; anything else thrown propagates.
+    in_set: bool,
+    /// What the runtime's `=` threw (the native catch delivers it).
+    failed: Option<Exception>,
+}
+
+/// Ask the task runtime's `=` whether map `left` equals `sorted-map-by` map
+/// `right` for `instr`, whose `n` operands move into the new frame;
+/// `answers` are the comparisons it was already given.
+pub(crate) fn start_sorted_equality(
+    state: &mut VmState,
+    instr: Instr,
+    n: usize,
+    request: SortedRequest,
+    answers: SortedAnswers,
+) -> Result<(), Fault> {
+    let SortedRequest {
+        left,
+        right,
+        in_set,
+    } = request;
+    let resolver = state.core_resolver.clone().ok_or(Fault::Internal(
+        "sorted-map-by comparison without a runtime",
+    ))?;
+    let at = state
+        .operands()
+        .len()
+        .checked_sub(n)
+        .ok_or(Fault::Internal("operand stack underflow"))?;
+    let operands = state.operands()[at..].to_vec();
+    for _ in 0..n {
+        state.pop()?;
+    }
+    push_native(
+        state,
+        NativeState::CoreProtocol(State {
+            op: FormOp::Equals,
+            operands: vec![left, right.clone()],
+            resolver,
+            receiver: right,
+            through_lazy: false,
+            called: false,
+            member: None,
+            retry: Some(Box::new(Retry {
+                instr,
+                operands,
+                core_resolved: false,
+                answers,
+                in_set,
+                failed: None,
+            })),
+        }),
+    )
+}
+
+/// Mark a sorted-map-by comparison frame that a core operation's leaf
+/// started after its resolution (see [`Retry::core_resolved`]).
+pub(super) fn mark_core_resolved(state: &mut State) {
+    if let Some(retry) = &mut state.retry {
+        retry.core_resolved = true;
+    }
 }
 
 pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<bool, Fault> {
@@ -107,7 +191,17 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
     {
         receiver = args[1].clone();
     }
-    if op == FormOp::CljInvoke {
+    // A sorted-map-by map orders its keys with a comparator only the task's
+    // runtime calls: its lookups, updates and `=` go to the resolver too.
+    let sorted_by = |v: &Value| {
+        form::form_object(heap, &form::unwrap(heap, v.clone()))
+            .is_some_and(|f| f.comparator().is_some())
+    };
+    // A sorted-map-by map called as a function: a lookup in that map.
+    let invoked_map = op == FormOp::CljInvoke
+        && sorted_by(&args[0])
+        && matches!(args[3], Value::Number(1.0 | 2.0));
+    if op == FormOp::CljInvoke && !invoked_map {
         if !matches!(
             form::kind(heap, &form::unwrap(heap, args[0].clone())),
             Some(FormKind::Keyword | FormKind::Symbol)
@@ -180,10 +274,33 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
                 | FormOp::CljList
                 | FormOp::CljPeek
         );
+    // `=` offers a sorted-map-by right operand to the resolver unless a
+    // struct's -equiv on the left takes precedence. Operand order is kept.
+    let receiver_sorted = matches!(
+        op,
+        FormOp::CljGet
+            | FormOp::CljGet2
+            | FormOp::CljContains
+            | FormOp::CljAssoc
+            | FormOp::CljDissoc
+            | FormOp::CljConj
+            | FormOp::CljInvoke
+            | FormOp::Equals
+    ) && receiver_kind == Some(FormKind::Map)
+        && sorted_by(&receiver);
+    let right_sorted = !receiver_sorted
+        && op == FormOp::Equals
+        && receiver_kind != Some(FormKind::Struct)
+        && sorted_by(&args[1]);
+    if right_sorted {
+        receiver = args[1].clone();
+    }
+    let sorted_receiver = receiver_sorted || right_sorted;
     if builtin_marker == Some(true)
         || (builtin_marker.is_none()
             && !array_adapter
             && !peek_adapter
+            && !sorted_receiver
             && receiver_kind != Some(FormKind::Struct))
     {
         return Ok(false);
@@ -197,7 +314,9 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
     }
     let mut operands = args.to_vec();
     if op == FormOp::CljInvoke {
-        operands.swap(0, 1);
+        if !invoked_map {
+            operands.swap(0, 1);
+        }
         op = if operands[3] == Value::Number(1.0) {
             FormOp::CljGet2
         } else {
@@ -218,6 +337,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
             through_lazy,
             called: false,
             member: None,
+            retry: None,
         }),
     )?;
     Ok(true)
@@ -231,9 +351,80 @@ impl State {
         if let Some(member) = &self.member {
             member.trace(visit);
         }
+        if let Some(retry) = &self.retry {
+            retry.operands.iter().for_each(|value| value.trace(visit));
+            retry.answers.trace(visit);
+            if let Some(e) = &retry.failed {
+                e.value.trace(visit);
+            }
+        }
     }
 
-    pub(super) fn step(&mut self, input: Input) -> Result<Action, Fault> {
+    /// Whether a native catch must be installed around the runtime's `=`
+    /// (only for a comparison met inside a set comparison).
+    pub(super) fn catches(&self) -> bool {
+        self.called && self.retry.as_ref().is_some_and(|retry| retry.in_set)
+    }
+
+    /// The runtime's `=` threw (the native catch delivers it).
+    pub(super) fn failed(&mut self, exception: Exception) {
+        if let Some(retry) = &mut self.retry {
+            retry.failed = Some(exception);
+        }
+    }
+
+    /// Record `equal` as the next answer, charged before the buffer grows,
+    /// and execute the instruction again.
+    fn answer(&mut self, heap: &Heap, equal: Option<bool>) -> Result<Action, Fault> {
+        let mut retry = self
+            .retry
+            .take()
+            .ok_or(Fault::Internal("sorted-map-by answer without a retry"))?;
+        let answers = &mut retry.answers;
+        answers.charge.admit(
+            heap,
+            answers.items.len(),
+            std::mem::size_of::<SortedEquality>(),
+        )?;
+        answers.items.try_reserve(1).map_err(|_| Fault::HeapLimit)?;
+        answers.items.push(SortedEquality {
+            left: self.operands[0].clone(),
+            right: self.operands[1].clone(),
+            equal,
+        });
+        Ok(Action::Retry {
+            instr: retry.instr,
+            operands: retry.operands,
+            answers: retry.answers,
+            fallback: retry.core_resolved,
+        })
+    }
+
+    pub(super) fn step(
+        &mut self,
+        heap: &Heap,
+        task: TaskId,
+        input: Input,
+    ) -> Result<Action, Fault> {
+        if let Some(exception) = self.retry.as_mut().and_then(|retry| retry.failed.take()) {
+            // Legacy `catch (error) { if (error instanceof Error) return false; throw error; }`.
+            let prototype = crate::realm::intrinsics(heap)
+                .map(|intrinsics| Value::Object(intrinsics.error_prototype));
+            let error = match prototype {
+                Some(prototype) => crate::vm::prototype::instance_of_prototype(
+                    heap,
+                    task,
+                    &exception.value,
+                    &prototype,
+                )
+                .unwrap_or(false),
+                None => false,
+            };
+            if !error {
+                return Err(Fault::Rethrow(exception));
+            }
+            return self.answer(heap, None);
+        }
         match input {
             Input::Start => Ok(Action::CallArray {
                 callee: self.resolver.clone(),
@@ -252,13 +443,34 @@ impl State {
                 ],
                 argc: if self.member.is_some() { 4 } else { 3 },
             }),
-            Input::CallResult(value) if self.called => Ok(Action::Return(value)),
+            Input::CallResult(value) if self.called => {
+                if self.retry.is_none() {
+                    return Ok(Action::Return(value));
+                }
+                let equal = !matches!(value, Value::Null | Value::Undefined | Value::Bool(false));
+                self.answer(heap, Some(equal))
+            }
+            // The runtime must answer a sorted-map-by comparison: executing
+            // the instruction again without an answer would not end.
+            Input::CallResult(Value::Null | Value::Undefined) if self.retry.is_some() => {
+                Err(Fault::Error(
+                    "unsupported operation: native nested equality with a sorted-map-by map".into(),
+                ))
+            }
             Input::CallResult(Value::Null | Value::Undefined) => Ok(Action::FormFallback {
                 instr: Instr::FormOp(self.op),
                 operands: std::mem::take(&mut self.operands),
             }),
             Input::CallResult(method) => {
                 self.called = true;
+                // The array-call fast path installs no native catch.
+                if self.catches() {
+                    return Ok(Action::Call {
+                        callee: method,
+                        this: self.operands[0].clone(),
+                        args: self.operands.clone(),
+                    });
+                }
                 let mut args = [
                     Value::Undefined,
                     Value::Undefined,

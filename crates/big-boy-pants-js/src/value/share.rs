@@ -568,6 +568,10 @@ impl Children {
                 if let Some(meta) = form.meta() {
                     f(Step::Metadata, meta);
                 }
+                // A sorted-map-by map retains its comparator: `.edge(0)`.
+                if let Some(comparator) = form.comparator() {
+                    f(Step::NativeEdge(0), comparator);
+                }
             }
             Children::Lazy {
                 realized,

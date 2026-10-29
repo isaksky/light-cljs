@@ -518,8 +518,9 @@ Default-comparator `sorted-map` now constructs a persistent native map that
 keeps sorted traversal through `assoc`, `dissoc`, metadata, publication and GC,
 and remains noneditable. Supported comparable native keys are nil, numbers,
 booleans, exact UTF-16 strings, keywords, symbols and vectors of comparable
-keys. Custom sorted comparators, host-object keys and sorted sets remain
-unsupported. Incomparable keys raise catchable `Error`s with the legacy
+keys. Host-object keys and sorted sets remain unsupported; custom
+comparators (`sorted-map-by`) are described in light-cljs-561 below.
+Incomparable keys raise catchable `Error`s with the legacy
 operand-specific messages, including during construction, lookup, updates
 and equality; catch and finally both run. Map equality uses the destination
 map's comparator and preserves the source map's value-comparison direction.
@@ -3635,3 +3636,212 @@ returned method on distinct dependencies, exactly one resolution per
 conversion, the form as receiver, a resolver exception reaching `catch`)
 cover the engine side; `native_multifn_host_coercions_match_legacy` the
 multimethod coercions. Each failed before its fix.
+## Native sorted-map-by (light-cljs-561, 2026-10-29)
+
+`sorted-map-by` now builds a persistent native map ordered by an arbitrary
+comparator: core functions such as `>` and `compare`, user functions returning
+numbers or booleans, and `comparator` results. The engine stores the entries in
+sorted positional storage, as for default `sorted-map`, plus the comparator as
+one more edge. GC traces it, publication walks it (`.edge(0)`: a comparator
+capturing a task-owned object makes the map unpublishable and cannot enter an
+atom), and metadata changes, updates and full result realization keep it.
+
+The engine never calls the comparator. The task runtime (`src/bbp_runtime.js`)
+orders keys with the legacy runtime's `fnComparator` semantics: a number
+result is the order, otherwise a truthy result means less and the reversed
+call decides greater. Like the legacy `sortedPosition`/`sortedEntryIndex`, a
+binary search compares (entry key, query key) and one more call tests the
+found position, so lookups, `assoc`, `dissoc`, `conj`, `contains?`, invocation
+and construction make exactly the legacy calls in the legacy order (the
+differential table logs them). A compare-equal key keeps the stored key, and
+an equal value keeps the map. New `formSortedMapBy`, `formSortedComparator`
+and `formSortedEntry/Insert/Replace/Remove` leaves read or edit an entry only
+at the position the runtime computed. Comparator calls are ordinary JavaScript
+calls on the task VM, so a comparator can demand a cold helper and park
+mid-search; the saved continuation resumes without replaying earlier calls.
+
+The core-protocol frame offers `get` (two and three arguments), `contains?`,
+`assoc`, `dissoc`, `conj`, map invocation, keyword lookup and `=` with a
+sorted-map-by operand on either side to the task resolver, which runs those
+operations as above. A map whose comparator is nil is a sorted-map-by map too
+(`formIsSortedBy`): it keeps one entry and raises the legacy `TypeError` when
+two keys are compared. `conj` follows the legacy `mapConj`: nil returns the
+map, a pair is one entry, and any other value is a sequence of vector entries
+(a map, a record, a list, a lazy sequence) added in order, or `Map conj
+requires vector entries`. Map equality follows the legacy `equiv-map`: equal
+counts, then each left entry, in seq order, is found in the right map (by its
+comparator when it has one); an array map compares its own value first and a
+hash or sorted map the found value first (`formIsArrayMap`), which an
+asymmetric user `-equiv` observes. A struct's `-equiv` on the left still takes
+precedence.
+
+`=` that meets a sorted-map-by map *inside* other collections (a vector
+element, a map value, a set member, a hash-map key, a lazy-sequence item) as
+the side whose keys are looked up compares it on the task VM too. The engine's
+structural equality records that one map comparison as a request, like a lazy
+realization request; the instruction then runs the resolver's `=` for it in a
+core-protocol frame (its comparator may demand a cold helper and park) and
+executes again with every answer so far. Answers are taken in the order the
+comparisons are met, and a pair decided with one is not memoized, so every
+comparison met calls the comparator once, as each legacy `=` does, and none is
+repeated. Each new comparison re-executes the (effect-free) instruction, so `n`
+such comparisons in one instruction cost `O(n^2)` engine work. The retained
+answers are charged to the aggregate heap budget before their buffer grows
+(a denial is the catchable heap-limit error) and released with the frame that
+holds them, also on cancellation. Inside a set comparison, as the legacy set
+`equiv` catches an `Error` its lookups throw and answers false, the frame
+catches an `Error` the runtime's `=` (or its comparator) throws and the
+innermost enclosing set comparison is unequal; any other thrown value, and a
+throw outside a set comparison, propagates. Without a task
+runtime (an embedder's `formEquals`) the comparison still raises `unsupported
+operation: native nested equality with a sorted-map-by map`. `seq`, `rseq`, `first`, `keys`,
+`vals`, `count`, `reduce`, `reduce-kv`, `into` sources, hashing, metadata and
+printing need no comparator and read the sorted storage directly. `sorted?`
+is true. Native `rseq` (new) reverses vectors, default sorted maps and
+sorted-map-by maps, honors `IReversible/-rseq` extensions, and otherwise
+throws the legacy `No protocol method IReversible.-rseq defined for this
+value`. Native `compare` (new) is the default sorted-map order with its
+legacy errors, and `comparator` (new) returns the legacy -1/0/1 adapter; the
+emitter lowers a direct `comparator` call to a closure that captures no
+runtime object, so a comparator helper built with it can publish.
+
+Explicit boundaries: `sorted-set-by` stays an
+explicit boundary together with default `sorted-set`, for which the native
+runtime has no sorted set storage yet (`unsupported operation: native macro
+runtime core.sortedSetBy`); the comparator machinery here could serve it once
+sorted sets exist. `subseq`/`rsubseq`, `find`, `empty`, `merge-with` and
+`update-in` remain unprovided native core functions for every map kind, and
+`conj` of a vector that is not a pair reports the existing native map-entry
+error (the legacy runtime takes its first two elements). The engine's pair
+memo can still skip a comparison legacy `=` repeats when a collection
+containing an already-compared *ordinary* pair is shared; with a sorted-map-by
+map inside, the pair is not memoized. Nothing was added to
+`src/js_runtime.js` or the default (V8) compile path.
+
+Tests: `native_sorted_map_by_matches_quickjs` compares emission and output with
+QuickJS for instaparse's atom pattern, every operation above, user/core/
+`comparator`/`compare` comparators, metadata, equality in both directions,
+hashing, printing, `rseq`, comparator failures with catch/finally, and the exact
+comparator call log. `sorted_map_by_helpers_publish_and_resume_at_seeded_pool_sizes`
+publishes a comparator whose cold helper is read only inside comparator calls
+and a sorted-map-by value with a published comparator, consumes them from two
+namespaces at jobs 1/2/4/8 under seeded scheduling (five published helpers, no
+per-task reconstruction) and matches QuickJS at each size; the first
+expansion's log shows the helper initializing inside one comparator call,
+exactly once.
+
+Review fixes (same day): `native_nested_sorted_map_by_equality_matches_quickjs`
+compares nested equality (vectors, map values, sets, hash-map keys, lazy
+sequences, nesting, shared vectors, short-circuits, comparator failures) and
+the comparator call count of each with QuickJS. The seeded fixture adds a
+helper built by `(comparator heavier?)` whose predicate's cold demand parks
+inside a nested `=` (eight published helpers). `native_sorted_map_by_matches_quickjs`
+gains `conj` (nil, entry lists, lazy and mapped entry sequences, bad entries,
+with the call log) and nil-comparator rows;
+`native_sorted_map_by_equality_direction_matches_quickjs` pins the value
+direction with an asymmetric `-equiv`, top level and nested; and
+`native_rseq_protocol_dispatch_matches_quickjs` covers a user `IReversible`
+type and a `PersistentVector` override by direct, aliased and apply calls,
+with a cold helper demanded inside `-rseq`, at seeded jobs 1/2/4/8.
+`native_sorted_set_by_stays_an_explicit_boundary` pins `sorted-set-by`. The engine test
+`sorted_by_maps_retain_their_comparator_across_edits_publication_and_gc`
+covers the leaves, retention through publication and GC, the `.edge(0)`
+publication rejection, realization and the leaf errors.
+
+### Penpot progression and next boundary
+
+Fresh native-only release builds use the five absolute read-only roots and every
+documented budget with `--compile --esm --optimize none --no-cache --stats`, on
+macOS arm64 with a peer worker's tests running (load average about 4.5).
+
+On this branch (master plus this work), `app.main` still stops first at the
+`app/plugins/flags.cljs:37:3` `app.util.object/add-properties!` TypeError
+(definition `app/util/object.cljc:151:1`, bytes `1094..1786`), because
+light-cljs-558 is parked and unlanded: 13.25 s wall, 12.53 s user, 0.57 s
+system, 394,756,096 bytes maximum RSS at jobs 1.
+
+With `sol/native-558-559` (`1513442d`) merged into a throwaway local branch
+(deleted afterwards; none of its commits are on this branch), `app.main` passes
+abnf.cljc:129's `(atom (sorted-map-by >))` and **still does not build
+natively**. At jobs 1 and 4 the exact first different failure is:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Atom(NotShareable): atom operation: cannot publish: value[0].capture(1)[0]{:regexp}{:parsers}[0]{:regexp} is a task-owned object (owned by task#1), which is not shareable (in anonymous at instruction 9 [atom_cas @ byte 23], task#1, world#0) at source 1082:33
+```
+
+(`task#5` at jobs 4). instaparse's GLL trampoline pushes parse thunks onto its
+`stack` atom; they capture parser maps whose `:regexp` values native `re-pattern`
+made as task-owned JavaScript `RegExp` objects, which an atom cannot hold. That
+is a host-value shareability gap, not an ordered-collection one; it is filed as
+light-cljs-563. The failing runs take 100.63 s wall, 96.66 s user, 3.85 s system and
+705,150,976 bytes at jobs 1, and 57.13 s wall, 68.05 s user, 4.22 s system and
+910,442,496 bytes at jobs 4. There is no native main output to compare or
+successful main-build timing claim.
+
+`app.render` still builds natively at jobs 1 (14.11 s wall, 13.55 s user,
+410,779,648 bytes) and 4 (9.58 s wall, 12.45 s user, 511,672,320 bytes); both
+12,680,976-byte outputs pass `node --check` and match a fresh V8 jobs-1 build
+(master release binary) byte for byte, SHA-256
+`d352af3a2bb2d35f1447f3d4fc6592de609dc30e92c3424f7321afc607a8d9a3`.
+
+### Verification
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 24.22.1 and the
+read-only ClojureScript pin `a5e94c98`, on master `ba7f0c89`:
+
+- `cargo test --locked -p big-boy-pants-js --all-targets -- --test-threads=3`
+  passes all 2,184 engine tests; the engine doctests pass.
+- Combined native/QuickJS library and `bbp_macros` suites pass 367 and 143
+  tests (one existing ignored stress case each), with
+  `LIGHT_CLJS_STRESS_SEEDS=12`; native-only `bbp_macros` passes 141 (one ignored).
+- Full default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, `-j 8`) passes 2,133
+  tests and fails only the existing worktree `playground_crate_checks_for_wasm32`
+  workspace diagnostic.
+- Formatting passes. Strict all-target V8 and QuickJS Clippy pass; engine
+  all-target and combined native/QuickJS all-target Clippy pass allowing only
+  `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+  `clippy::byte_char_slices` after `-D warnings` (strict engine Clippy keeps the
+  eight library/nine library-test baseline diagnostics).
+
+Updated expectations: `unsupported_operations_are_explicit_and_do_not_fall_back`
+now pins `sorted-set-by` instead of `sorted-map-by` as unsupported, and
+`native_transducer_call_shapes_match_legacy` gains a `sorted-map-by` into-target
+row checked against QuickJS.
+
+The default build changes only native-only emission (`comparator` lowering).
+Three alternating pairs of default V8 release builds (master `ba7f0c89` before,
+this branch after) run `release bench --no-cache` on the seed-42 200k generated
+project with a peer worker active (load about 3.5-4.2): median wall time is
+**7.63 s before and 7.61 s after** (ranges 7.58–7.98 and 7.53–8.47 s), median
+user+system CPU 8.21/8.14 s and maximum RSS 1,036/1,054 MiB, within run
+variation. All six outputs keep SHA-256 `1a75bc87b26f3121…` and print `484264`
+for `42 3`.
+
+Review-fix verification (nested equality, value direction, `conj`, nil
+comparators, `comparator` helper publication and `rseq` dispatch), same
+toolchain, at `3c2c878c` on master `ba7f0c89`: the engine all-target suite
+passes 2,184 tests (run before the new engine test, which passes on its own;
+the only later engine change is one field's visibility); combined
+native/QuickJS library and `bbp_macros` pass 367 and 146 tests and native-only
+`bbp_macros` passes 144 (one ignored each), with `LIGHT_CLJS_STRESS_SEEDS=12`;
+full default V8 nextest passes 2,133 of 2,134 (the same worktree
+`playground_crate_checks_for_wasm32` diagnostic); formatting, strict V8 and
+QuickJS Clippy and the allowed-category engine and native Clippy pass (strict
+engine Clippy keeps its nine baseline diagnostics). The default V8 release
+binary does not contain the engine or `src/bbp_runtime.js`; three
+`release bench --no-cache` runs on the seed-42 200k project take 7.53-7.58 s
+wall (a peer test run active) and keep SHA-256 `1a75bc87b26f3121…`. Penpot
+`app.render` at jobs 1 builds natively in 14.64 s (425 MB peak memory) and
+byte for byte matches a fresh V8 release build (2.25 s), SHA-256 `d352af3a…`.
+
+Review round 2 (set-equality `Error` boundary, budget-charged answers, answers
+across a later lazy realization), at `61aa9ac2` on master `ba7f0c89`: engine
+all-target suite 2,188 passed; combined native/QuickJS library and `bbp_macros`
+367 and 146, native-only `bbp_macros` 144 (one ignored each,
+`LIGHT_CLJS_STRESS_SEEDS=12`); default V8 nextest 2,133 of 2,134 (the same
+worktree diagnostic); formatting and the same Clippy results as above. Three
+default V8 `release bench --no-cache` runs on the seed-42 200k project take
+7.63-7.69 s wall under peer load (load average 5.5-7.6), SHA-256
+`1a75bc87b26f3121…` unchanged; the default binary contains none of the changed
+code. Penpot `app.render` builds natively in 14.46 s and matches V8 byte for
+byte (`d352af3a…`).

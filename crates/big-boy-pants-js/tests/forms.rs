@@ -133,6 +133,274 @@ fn default_sorted_maps_keep_order_identity_and_metadata_across_tasks_and_gc() {
     assert!(weak.iter().all(|w| !w.is_live()));
 }
 
+/// Structural equality that meets a sorted-map-by map asks the task's
+/// resolver for that map comparison (light-cljs-561), once per comparison
+/// met and none after an earlier difference, and uses its answer; a resolver
+/// that offers no method leaves the comparison unsupported.
+#[test]
+fn nested_sorted_by_equality_asks_the_task_resolver_per_comparison() {
+    let rt = Runtime::new();
+    let result = call(
+        &rt,
+        r#"function f(){
+        const log=[], v=(x,y)=>y===undefined?__rt.formVector(x):__rt.formVector(x,y);
+        const sorted=x=>__rt.formSortedInsert(__rt.formSortedMapBy(null),0,1,x);
+        const a=sorted('x'), b=sorted('x'), c=sorted('y'), plain=__rt.formArrayMap(__rt.formVector(1,'x'));
+        if(!__rt.formIsSortedBy(a)||__rt.formIsSortedBy(plain)||!__rt.formIsArrayMap(plain)||__rt.formIsArrayMap(a)||__rt.formIsArrayMap(__rt.formMap(1,'x')))throw new Error('predicates');
+        let offer=true;
+        __rt.cljCoreResolver((op,x)=>offer&&op==='formEquals'&&__rt.formIsSortedBy(x)?(l,r)=>{
+          log.push(l===plain?'plain':l===a?'a':'?');
+          return __rt.formSortedEntry(r,0,1)===(__rt.formIsSortedBy(l)?__rt.formSortedEntry(l,0,1):'x');
+        }:null);
+        const results=[__rt.formEquals(v(a,a),v(b,b)),__rt.formEquals(v(a),v(c)),__rt.formEquals(v(plain),v(b)),
+          __rt.formEquals(v(0,a),v(1,b)),__rt.formEquals(v(a),v(a)),__rt.formEquals(__rt.formMap(v(a),1),__rt.formMap(v(b),1))];
+        offer=false;
+        try{__rt.formEquals(v(a),v(b));throw new Error('answered');}
+        catch(e){if(e.message!=='unsupported operation: native nested equality with a sorted-map-by map')throw e;}
+        const got=JSON.stringify([results,log]);
+        if(got!=='[[true,false,true,false,true,true],["a","a","a","plain","a"]]')throw new Error(got);
+        return true;
+    }"#,
+        &[],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+}
+
+/// The JavaScript (engine-internal resolver) for the answer-retention tests:
+/// `tree(d)` shares one vector per level, `[x x]`, over a sorted-map-by
+/// leaf, so comparing two such trees meets `2^d` sorted-map-by comparisons
+/// (each answer is retained until the instruction completes).
+const SORTED_TREES: &str = r#"
+        const leaf=()=>__rt.formSortedInsert(__rt.formSortedMapBy(null),0,1,'x');
+        const tree=d=>{let x=leaf();for(let i=0;i<d;i++)x=__rt.formVector(x,x);return x;};"#;
+
+/// Retained sorted-map-by answers are charged to the aggregate heap budget
+/// before their buffer grows: a comparison meeting thousands of them is
+/// denied with the catchable heap-limit error and stays under the limit.
+#[test]
+fn nested_sorted_by_answers_obey_heap_budget() {
+    use big_boy_pants_js::{HeapPolicy, VmLimits};
+    let policy = |bytes| HeapPolicy {
+        hard_limit_bytes: Some(bytes),
+        ..Default::default()
+    };
+    let realm = Runtime::try_with_heap_policy(VmLimits::default(), policy(usize::MAX / 2))
+        .unwrap()
+        .heap_stats()
+        .managed_bytes;
+    let limit = realm + (192 << 10);
+    let rt = Runtime::try_with_heap_policy(VmLimits::default(), policy(limit)).unwrap();
+    let src = format!(
+        r#"function f(){{{SORTED_TREES}
+        let calls=0;
+        __rt.cljCoreResolver((op,x)=>op==='formEquals'&&__rt.formIsSortedBy(x)?(l,r)=>{{calls++;return true;}}:null);
+        try{{__rt.formEquals(tree(13),tree(13));}}catch(e){{if(e==='heap byte limit exceeded'&&calls>256&&calls<8192)return true;throw e;}}
+        return false;
+    }}"#
+    );
+    assert_eq!(call(&rt, &src, &[]).view(), ValueView::Bool(true));
+    assert!(rt.heap_stats().peak_managed_bytes <= limit);
+}
+
+/// Cancelling a task parked with retained answers releases their charge at
+/// once.
+#[test]
+fn nested_sorted_by_answers_release_their_charge_on_cancellation() {
+    use big_boy_pants_js::{Budget, HeapPolicy, Host, HostCall, VmLimits};
+    struct Marker(bool);
+    impl Host for Marker {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(Primitive::Null)
+        }
+    }
+    let rt = Runtime::try_with_heap_policy(
+        VmLimits::default(),
+        HeapPolicy {
+            hard_limit_bytes: Some(16 << 20),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let answers = 1500;
+    let src = format!(
+        r#"function f(){{{SORTED_TREES}
+        let calls=0;
+        __rt.cljCoreResolver((op,x)=>op==='formEquals'&&__rt.formIsSortedBy(x)?(l,r)=>{{if(++calls==={answers})__rt.effect(7,0);return true;}}:null);
+        return __rt.formEquals(tree(11),tree(11));
+    }}"#
+    );
+    let code = compile_function(&src).unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut marker = Marker(false);
+    while !marker.0 {
+        assert!(matches!(
+            task.run_with(Budget::instructions(1000), &mut marker)
+                .unwrap(),
+            RunOutcome::Yielded
+        ));
+    }
+    rt.collect().unwrap();
+    let occupied = rt.heap_stats().managed_bytes;
+    let _ = task.cancel();
+    assert!(matches!(
+        task.run_with(Budget::instructions(1), &mut marker).unwrap(),
+        RunOutcome::Cancelled
+    ));
+    assert!(
+        occupied - rt.heap_stats().managed_bytes >= answers * 32,
+        "cancellation must release the retained answers' charge: {} -> {}",
+        occupied,
+        rt.heap_stats().managed_bytes
+    );
+}
+
+/// Answers taken before a lazy tail is realized survive the realization
+/// (and a collection while it waits): no comparison is asked again.
+#[test]
+fn nested_sorted_by_answers_survive_lazy_realization() {
+    use big_boy_pants_js::{Budget, Host, HostCall};
+    struct Marker(bool);
+    impl Host for Marker {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(Primitive::Null)
+        }
+    }
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function f(){
+        const log=[], sorted=x=>__rt.formSortedInsert(__rt.formSortedMapBy(null),0,1,x);
+        const a=sorted('x'), b=sorted('x'), c=sorted('y'), d=sorted('y');
+        __rt.cljCoreResolver((op,x)=>op==='formEquals'&&__rt.formIsSortedBy(x)?(l,r)=>{
+          log.push(l===a?'a':l===c?'c':'?');
+          return __rt.formSortedEntry(l,0,1)===__rt.formSortedEntry(r,0,1);
+        }:null);
+        const tail=__rt.lazySeq(()=>{log.push('thunk');__rt.effect(7,0);return __rt.formList(c);});
+        const equal=__rt.formEquals(__rt.cljCons(a,tail),__rt.formVector(b,d));
+        const got=JSON.stringify([equal,log]);
+        if(got!=='[true,["a","thunk","c"]]')throw new Error(got);
+        return true;
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut marker = Marker(false);
+    let outcome = loop {
+        match task.run_with(Budget::instructions(1), &mut marker).unwrap() {
+            RunOutcome::Yielded => {
+                if marker.0 {
+                    // Parked inside the thunk with one answer retained.
+                    rt.collect().unwrap();
+                    marker.0 = false;
+                }
+            }
+            other => break other,
+        }
+    };
+    assert_eq!(complete(outcome).view(), ValueView::Bool(true));
+}
+
+/// A sorted-map-by map (light-cljs-561) retains its comparator through
+/// positional edits, metadata, realization, publication and GC. The leaves
+/// never call it; leaves that would compare its keys raise instead.
+#[test]
+fn sorted_by_maps_retain_their_comparator_across_edits_publication_and_gc() {
+    let rt = Runtime::new();
+    let made = call(
+        &rt,
+        r#"function make(){
+        const cmp=(a,b)=>b-a, meta=__rt.formMap('map',true), value=__rt.formVector('kept');
+        let m=__rt.formWithMeta(__rt.formSortedMapBy(cmp),meta);
+        if(__rt.formSortedComparator(m)!==cmp||__rt.formSortedComparator(__rt.formMap())!==null)throw new Error('comparator');
+        m=__rt.formSortedInsert(m,0,1,'one');
+        m=__rt.formSortedInsert(m,0,3,value);
+        m=__rt.formSortedInsert(m,1,2,'two');
+        const replaced=__rt.formSortedReplace(m,2,'ONE'), removed=__rt.formSortedRemove(m,1);
+        for(const x of [m,replaced,removed])
+          if(__rt.formSortedComparator(x)!==cmp||__rt.formMeta(x)!==meta||__rt.cljIsEditable(x))throw new Error('retained');
+        if(__rt.formSortedEntry(m,0,0)!==3||__rt.formSortedEntry(m,0,1)!==value||__rt.formSortedEntry(replaced,2,1)!=='ONE'
+          ||__rt.formSortedEntry(replaced,2,0)!==1||__rt.formCount(removed)!==2||__rt.formSortedEntry(removed,1,0)!==1)throw new Error('entries');
+        const first=__rt.cljFirst(__rt.cljSeq(m));
+        if(__rt.formNth(first,0)!==3||__rt.formKeys(m)===null)throw new Error('seq order');
+        for(const [f,message] of [[()=>__rt.formGet(m,1,null),'unsupported operation: native sorted-map-by key lookup outside the task runtime'],
+                                  [()=>__rt.formAssoc(m,4,4),'unsupported operation: native sorted-map-by key lookup outside the task runtime'],
+                                  [()=>__rt.formEquals(__rt.formVector(m),__rt.formVector(replaced)),'unsupported operation: native nested equality with a sorted-map-by map']])
+          try{f();throw new Error('accepted');}catch(e){if(e.message!==message)throw new Error(message+': '+e.message);}
+        // Identical operands and lookups into another map need no comparator.
+        if(!__rt.formEquals(__rt.formVector(m),__rt.formVector(m))||!__rt.formEquals(m,__rt.formMap(1,'one',2,'two',3,value)))throw new Error('equality');
+        const lazy=__rt.lazySeq(()=>__rt.formList('a'));
+        const realized=__rt.cljRealizeAll(__rt.formSortedInsert(m,3,0,lazy));
+        if(__rt.formSortedComparator(realized)!==cmp||__rt.formKind(__rt.formSortedEntry(realized,3,1))!=='list'
+          ||__rt.formSortedEntry(realized,0,0)!==3||__rt.formMeta(realized)!==meta)throw new Error('realized');
+        return __rt.formVector(m,value,meta);
+    }"#,
+        &[],
+    );
+    let (map, weak) = rt.scope(|s| {
+        let v = s.local(&made).unwrap();
+        (
+            s.persist(s.form_nth(v, 0).unwrap()),
+            [1, 2].map(|i| s.downgrade(s.form_nth(v, i).unwrap())),
+        )
+    });
+    rt.publish(&map).unwrap();
+    drop(made);
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| w.is_live()));
+    let result = call(
+        &rt,
+        r#"function read(m){
+        const cmp=__rt.formSortedComparator(m);
+        if(cmp(1,2)!==1||__rt.formSortedEntry(m,2,1)!=='one')throw new Error('published comparator');
+        const n=__rt.formSortedInsert(m,3,0,'zero');
+        if(__rt.formSortedComparator(n)!==cmp||__rt.formCount(n)!==4)throw new Error('consumer edit');
+        return true;
+    }"#,
+        &[&map],
+    );
+    assert_eq!(result.view(), ValueView::Bool(true));
+    drop(map);
+    rt.collect().unwrap();
+    assert!(weak.iter().all(|w| !w.is_live()));
+    // Publication walks the comparator: a task-owned capture is rejected.
+    let captured = call(
+        &rt,
+        "function make(){const seen=[];return __rt.formSortedInsert(__rt.formSortedMapBy((a,b)=>{seen.push(a);return a-b;}),0,1,2);}",
+        &[],
+    );
+    let err = rt.publish(&captured).unwrap_err();
+    let PublishError::NotShareable { path, found, .. } = &err else {
+        panic!("{err:?}")
+    };
+    assert_eq!(path.steps()[0], PathStep::NativeEdge(0), "{err}");
+    assert_eq!(*found, "array", "{err}");
+    // Positions the runtime computes are checked like vector indices.
+    for (src, expected) in [
+        (
+            "function f(){return __rt.formSortedEntry(__rt.formSortedMapBy(null),0,0);}",
+            CollectionError::IndexOutOfBounds { index: 0, count: 0 },
+        ),
+        (
+            "function f(){return __rt.formSortedInsert(__rt.formSortedMapBy(null),1,0,0);}",
+            CollectionError::IndexOutOfBounds { index: 1, count: 1 },
+        ),
+        (
+            "function f(){return __rt.formSortedRemove(__rt.formMap(),0);}",
+            CollectionError::WrongType {
+                expected: "sorted-map-by map",
+                found: "form map",
+            },
+        ),
+    ] {
+        assert_eq!(
+            failure(&rt, src).kind(),
+            VmErrorKind::Collection(expected),
+            "{src}"
+        );
+    }
+}
+
 #[test]
 fn default_sorted_maps_preserve_semantics_when_realized() {
     let rt = Runtime::new();

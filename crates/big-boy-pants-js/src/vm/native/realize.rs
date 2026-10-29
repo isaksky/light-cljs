@@ -34,6 +34,9 @@ pub(crate) struct Realize {
     operands: Vec<Value>,
     /// This leaf already resolved its struct protocol before realization.
     pub(super) core_resolved: bool,
+    /// The task runtime's answers to the instruction's sorted-map-by
+    /// comparisons so far, given back when it executes again.
+    answers: form::SortedAnswers,
     /// The lazy form, which keeps the cell alive.
     lazy: Value,
     cell: Arc<LazyCell>,
@@ -54,12 +57,14 @@ impl Realize {
         instr: Instr,
         operands: Vec<Value>,
         lazy: Value,
+        answers: form::SortedAnswers,
     ) -> Option<Realize> {
         let cell = form::form_object(heap, &lazy)?.lazy_cell()?.clone();
         Some(Realize {
             instr,
             operands,
             core_resolved: false,
+            answers,
             lazy,
             cell,
             attempt: None,
@@ -85,15 +90,11 @@ impl Realize {
     }
 
     fn resume(&mut self) -> Action {
-        if self.core_resolved {
-            return Action::FormFallback {
-                instr: self.instr,
-                operands: std::mem::take(&mut self.operands),
-            };
-        }
-        Action::Resume {
+        Action::Retry {
             instr: self.instr,
             operands: std::mem::take(&mut self.operands),
+            answers: std::mem::take(&mut self.answers),
+            fallback: self.core_resolved,
         }
     }
 
@@ -315,6 +316,7 @@ impl Trace for Realize {
         for v in &self.operands {
             v.trace(visit);
         }
+        self.answers.trace(visit);
         if let Some(e) = &self.failed {
             e.value.trace(visit);
         }
@@ -349,6 +351,7 @@ pub(crate) fn start(
     instr: Instr,
     n: usize,
     lazy: Value,
+    answers: form::SortedAnswers,
 ) -> Result<(), Fault> {
     let ops = state.operands();
     let at = ops
@@ -356,7 +359,7 @@ pub(crate) fn start(
         .checked_sub(n)
         .ok_or(Fault::Internal("operand stack underflow"))?;
     let operands = ops[at..].to_vec();
-    let realize = Realize::new(heap, instr, operands, lazy).ok_or(Fault::Internal(
+    let realize = Realize::new(heap, instr, operands, lazy, answers).ok_or(Fault::Internal(
         "realization request for a value that is not lazy",
     ))?;
     let base = state.stack_len() - n;
