@@ -3389,8 +3389,9 @@ deeply a call is forwarded, or which world the callee belongs to.
 ### Engine
 
 `property::lookup` reaching a `Form` object with a name key in an ordinary
-read returns `Read::Deferred(Deferred::Form)`; an occurrence wrapper continues
-the walk at the object it wraps. `read_result` (every `GetField`/`GetElem`,
+read returns `Read::Deferred(Deferred::Form)` naming that form (the base
+itself, or the struct an `Object.create` object inherits from); an occurrence
+wrapper continues the walk at the object it wraps. `read_result` (every `GetField`/`GetElem`,
 including the optimized direct call's `cljCallMember`) and the native
 `Action::FormMember` (built-ins that read `length`, `then`, …) push the traced
 core-protocol continuation with op `jsMember` and the key. It calls the task's
@@ -3408,15 +3409,19 @@ The resolver's `jsMember(x, name)` answers for a struct or record, after
 declaring its type in this task: a declared field (the last field munged to
 that member wins, as the legacy constructor's assignments do), a record's
 `__meta`/`__extmap`/`__hash` slots, an `Object` method (one function per type
-and member, dispatching on the declaring type with `this` as receiver), then
+and member, dispatching on the declaring type with `this`, or the struct
+`this` inherits from, as receiver), then
 the IFn `call`/`apply` adapters of light-cljs-558's first rounds, whose
 identities one runtime-owned atom still canonicalizes by collection family or
 native type (SameValueZero keys and compare-and-set only). Collection,
 keyword, symbol and multimethod receivers keep their family members.
 
-`nativeInterop(x, member)` only unwraps occurrences. It still rejects explicit
-compiled interop with a non-struct native form (`(.-cnt m)`) except for `call`
-and `apply`; operands are never rejected or converted. Direct invocation of a
+`nativeInterop` only unwraps occurrences and converts nothing. It still
+rejects explicit compiled interop with a non-struct native form, whose legacy
+object layout is not modelled: as the receiver or an operand of a member read
+or call (`(.-cnt m)`, `(.push arr m)`), a host call (`(js/Object.keys v)`) or
+`instance?`. The exception is `.call`/`.apply`, which apply a function: their
+receiver and operands pass through unchanged. Direct invocation of a
 struct without declared IFn methods falls back to its `call` member (a field or
 `Object` method), as legacy `f.call(null, …)` does, so the former "field named
 `call`" boundary is gone too. `str` and printing of a deftype use its
