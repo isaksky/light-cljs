@@ -9351,11 +9351,6 @@ fn native_member_precedence_table_matches_quickjs() {
            (deftype TD [] Object (call [_ _ x] [:td-object x]) IFn (-invoke [_ x] [:td-ifn x]))
            (defprotocol PD (pd [_]))
            (extend-protocol PD TD (pd [_] :td) default (pd [_] :default))
-           (deftype TP [] Object (call [_ _ x] [:tp-object x]) IFn (-invoke [_ x] [:tp-ifn x]))
-           (deftype UP [])
-           (defprotocol PR (pr-it [_]))
-           (do (def tp-marker :marker) (extend-type TP PR (pr-it [_] :tp)))
-           (extend-type UP PR (pr-it [_] :up))
            (deftype M [] IFn (-invoke [_ x] [:m-ifn x]))
            (deftype MY [])
            (defprotocol PM (pm [_]))
@@ -9374,6 +9369,18 @@ fn native_member_precedence_table_matches_quickjs() {
            (def tny-alias TNY)
            (defprotocol PN (pn [_]))
            (extend-protocol PN TN (pn [_] :tn) tny-alias (pn [_] :tny))
+           (deftype HA [] Object (call [_ _ x] [:ha-object x]) IFn (-invoke [_ x] [:ha-ifn x]))
+           (defprotocol PHA (pha [_]))
+           (extend-protocol PHA HA (pha [_] :ha) array (pha [_] :array))
+           (deftype HT [] Object (call [_ _ x] [:ht-object x]) IFn (-invoke [_ x] [:ht-ifn x]))
+           (defprotocol PHT (pht [_]))
+           (extend-protocol PHT HT (pht [_] :ht) object (pht [_] :object))
+           (deftype HG [] Object (call [_ _ x] [:hg-object x]) IFn (-invoke [_ x] [:hg-ifn x]))
+           (defprotocol PHG (phg [_]))
+           (extend-protocol PHG HG (phg [_] :hg) object (phg [_] :object))
+           (deftype HP [] Object (call [_ _ x] [:hp-object x]) IFn (-invoke [_ x] [:hp-ifn x]))
+           (defprotocol PHP (php [_]))
+           (extend-protocol PHP HP (php [_] :hp) array (php [_] :array))
            (deftype W [])
            (defprotocol P1 (p1 [_]))
            (defprotocol P2 (p2 [_]))
@@ -9416,7 +9423,14 @@ fn native_member_precedence_table_matches_quickjs() {
                       (row :shared-bundle-default-selector (TD.) #(pd 1))
                       (row :shared-bundle-core-type-selector (TV.) #(pv [1]))
                       (row :shared-bundle-unnamed-target-selector (TN.) #(pn (TNY.)))
-                      (row :product-demand (TP.) #(pr-it (UP.)) #(identity tp-marker))
+                      (row :array-selector-tag-getter (HA.)
+                           #(pha (js* "Object.defineProperty([], '__lightNativeType', {get() { throw new Error('tag'); }})")))
+                      (row :typed-array-tag-getter (HT.)
+                           #(pht (js* "Object.defineProperty(new Uint8Array(1), '__lightNativeType', {get() { throw new Error('tag'); }})")))
+                      (row :arguments-tag-getter (HG.)
+                           #(phg (js* "(function () { return Object.defineProperty(arguments, '__lightNativeType', {get() { throw new Error('tag'); }}); })(1)")))
+                      (row :proxy-array-traps (HP.)
+                           #(php (js* "new Proxy([], {get(t, k, r) { if (k === '__lightNativeType') throw new Error('tag'); return Reflect.get(t, k, r); }, getPrototypeOf() { throw new Error('prototype'); }})")))
                       (row :mixed-bundle-dispatch (M.) #(pm (MY.)) #(pm (M.)))
                       (row :mixed-bundle-object-demand (MO.) #(pmo (MOY.)) (interop (MO.)))
                       (row :several-bundles-one-type (W.) #(p1 (W.)) #(p2 (W.)))
@@ -9446,7 +9460,10 @@ fn native_member_precedence_table_matches_quickjs() {
             "[:shared-bundle-default-selector [[:td-ifn 1] [:td-ifn 1] [:td-ifn 1] [[:td-ifn 1]] [:td-ifn 1] [:td-ifn 1] [:td-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:td-object 1] [:td-object 1] [:td-object 1] [[:td-object 1]] [:td-ifn 1] [:td-object 1] [:td-object 1] [:td-object 1] true \"[object Object]\" \"[object Object]1\" [:td-object 1] [:td-object 1]]] ",
             "[:shared-bundle-core-type-selector [[:tv-ifn 1] [:tv-ifn 1] [:tv-ifn 1] [[:tv-ifn 1]] [:tv-ifn 1] [:tv-ifn 1] [:tv-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:tv-object 1] [:tv-object 1] [:tv-object 1] [[:tv-object 1]] [:tv-ifn 1] [:tv-object 1] [:tv-object 1] [:tv-object 1] true \"[object Object]\" \"[object Object]1\" [:tv-object 1] [:tv-object 1]]] ",
             "[:shared-bundle-unnamed-target-selector [[:tn-ifn 1] [:tn-ifn 1] [:tn-ifn 1] [[:tn-ifn 1]] [:tn-ifn 1] [:tn-ifn 1] [:tn-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:tn-object 1] [:tn-object 1] [:tn-object 1] [[:tn-object 1]] [:tn-ifn 1] [:tn-object 1] [:tn-object 1] [:tn-object 1] true \"[object Object]\" \"[object Object]1\" [:tn-object 1] [:tn-object 1]]] ",
-            "[:product-demand [[:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] [[:tp-ifn 1]] [:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] [[:tp-ifn 1]] [:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] [[:tp-ifn 1]] [:tp-ifn 1] [:tp-ifn 1] [:tp-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\" [:tp-ifn 1] [:tp-ifn 1]]] ",
+            "[:array-selector-tag-getter [[:ha-ifn 1] [:ha-ifn 1] [:ha-ifn 1] [[:ha-ifn 1]] [:ha-ifn 1] [:ha-ifn 1] [:ha-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:ha-object 1] [:ha-object 1] [:ha-object 1] [[:ha-object 1]] [:ha-ifn 1] [:ha-object 1] [:ha-object 1] [:ha-object 1] true \"[object Object]\" \"[object Object]1\" [:ha-object 1] [:ha-object 1]]] ",
+            "[:typed-array-tag-getter [[:ht-ifn 1] [:ht-ifn 1] [:ht-ifn 1] [[:ht-ifn 1]] [:ht-ifn 1] [:ht-ifn 1] [:ht-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:ht-object 1] [:ht-object 1] [:ht-object 1] [[:ht-object 1]] [:ht-ifn 1] [:ht-object 1] [:ht-object 1] [:ht-object 1] true \"[object Object]\" \"[object Object]1\" [:ht-object 1] [:ht-object 1]]] ",
+            "[:arguments-tag-getter [[:hg-ifn 1] [:hg-ifn 1] [:hg-ifn 1] [[:hg-ifn 1]] [:hg-ifn 1] [:hg-ifn 1] [:hg-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:hg-object 1] [:hg-object 1] [:hg-object 1] [[:hg-object 1]] [:hg-ifn 1] [:hg-object 1] [:hg-object 1] [:hg-object 1] true \"[object Object]\" \"[object Object]1\" [:hg-object 1] [:hg-object 1]]] ",
+            "[:proxy-array-traps [[:hp-ifn 1] [:hp-ifn 1] [:hp-ifn 1] [[:hp-ifn 1]] [:hp-ifn 1] [:hp-ifn 1] [:hp-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:hp-object 1] [:hp-object 1] [:hp-object 1] [[:hp-object 1]] [:hp-ifn 1] [:hp-object 1] [:hp-object 1] [:hp-object 1] true \"[object Object]\" \"[object Object]1\" [:hp-object 1] [:hp-object 1]]] ",
             "[:mixed-bundle-dispatch [[:m-ifn 1] [:m-ifn 1] [:m-ifn 1] [[:m-ifn 1]] [:m-ifn 1] [:m-ifn 1] [:m-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:m-ifn 1] [:m-ifn 1] [:m-ifn 1] [[:m-ifn 1]] [:m-ifn 1] [:m-ifn 1] [:m-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:m-ifn 1] [:m-ifn 1] [:m-ifn 1] [[:m-ifn 1]] [:m-ifn 1] [:m-ifn 1] [:m-ifn 1] :TypeError true \"m-late\" \"m-late1\" [:m-ifn 1] [:m-ifn 1]]] ",
             "[:mixed-bundle-object-demand [[:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] [[:mo-ifn 1]] [:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] [[:mo-ifn 1]] [:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] [[:mo-ifn 1]] [:mo-ifn 1] [:mo-ifn 1] [:mo-ifn 1] :TypeError true \"mo-late\" \"mo-late1\" [:mo-ifn 1] [:mo-ifn 1]]] ",
             "[:several-bundles-one-type [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"[object Object]\" \"[object Object]1\"] [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"w-one\" \"w-one1\"] [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"w-one\" 8 :TypeError :TypeError]] ",

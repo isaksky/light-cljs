@@ -116,6 +116,9 @@ const decl = (() => {
   // of them index each protocol: that protocol's tables keep no lookup
   // cache meanwhile (`build`).
   const pendingBundles = new Set(), pendingProtocols = new Map();
+  // Mutable types (their instances are tagged host objects), and the Object
+  // extension selectors that name them.
+  const mutableTypes = new Set(), mutableSelectors = new Set();
   // A bundle's installations become active (visible to member reads and
   // precedence) once the legacy runtime would have installed it.
   const activate = b => {
@@ -164,6 +167,7 @@ const decl = (() => {
       .sort((a, b) => a.overlay - b.overlay || a.order - b.order);
     for (const e of visible) map = __rt.assoc(map, e.key, e.fn);
     t.map = map; t.promise=__rt.getOr(map,'js/Promise',undefined);t.version = version; t.frontier = frontier;
+    t.mutable = visible.some(e => mutableTypes.has(e.key));
     // A pending bundle of this protocol may need any dispatch to demand it.
     const cached = !pendingProtocols.has(t.protocol);
     t.snapshot = cached ? __rt.vector(version, frontier, map, declared) : null;
@@ -198,8 +202,14 @@ const decl = (() => {
     if(m===undefined)m = struct === null ? __rt.cljDispatch(t.map, x) : __rt.getOr(t.map, struct, undefined);
     if (m === undefined) {
       // A JavaScript object: a mutable type's instance, or a host object.
-      const ty = struct ?? (__rt.cljIsAtom(x)?undefined:x.__lightNativeType);
+      // Its tag is read only when the table extends a mutable type, the one
+      // case it can select; a host array (a Proxy of one too, which the
+      // engine gives no key) takes the array entry, as legacy `Array.isArray`
+      // does. No other host property is read.
+      const ty = struct ?? (__rt.cljIsAtom(x) || !t.mutable ? undefined : x.__lightNativeType);
+      if (ty !== undefined && struct === null) demandFor(t.protocol, x, ty);
       if (ty !== undefined) m = __rt.getOr(t.map, ty, undefined);
+      if (m === undefined && struct === null && Array.isArray(__rt.formValue(x))) m = __rt.getOr(t.map, 'array', undefined);
       if (m === undefined) m = __rt.getOr(t.map, 'object', undefined);
       if (m === undefined) m = __rt.getOr(t.map, '_', null);
     }
@@ -246,13 +256,18 @@ const decl = (() => {
   const directKinds = new Set(['keyword', 'symbol', 'vector', 'map', 'set']);
   const sequenceKinds = __rt.map('list','list','empty-list','empty-list','sequence','sequence','uncounted-sequence','sequence');
   const vectorKinds = __rt.map('vector','vector','map-entry','map-entry');
+  // The direct key of a native form that is not a struct, from the
+  // engine's form kind alone: no host object property is read.
+  const formKey = (value, kind) => {
+    if (kind === 'list') return __rt.cljDispatch(sequenceKinds,value);
+    if (kind === 'vector') return __rt.cljDispatch(vectorKinds,value);
+    return directKinds.has(kind) ? kind : null;
+  };
   const directKey = x => {
     const ty = __rt.structTypeOf(x);
     if (ty !== null) return ty;
     const value = __rt.formValue(x), kind = __rt.formKind(value);
-    if (kind === 'list') return __rt.cljDispatch(sequenceKinds,value);
-    if (kind === 'vector') return __rt.cljDispatch(vectorKinds,value);
-    if (kind !== null) return directKinds.has(kind) ? kind : null;
+    if (kind !== null) return formKey(value, kind);
     if (value instanceof Promise) return 'js/Promise';
     return value !== null && typeof value === 'object' ? value.__lightNativeType ?? null : null;
   };
@@ -284,8 +299,8 @@ const decl = (() => {
       if (m === undefined) {
         declare(x);
         if (t.version !== version || t.frontier !== frontier) build(t);
-        demandFor(t.protocol, x);
         const key = directKey(x);
+        demandFor(t.protocol, x, key);
         m = key === null ? null : __rt.getOr(t.map, key, null);
       }
     } else m = resolve(t, x);
@@ -359,6 +374,8 @@ const decl = (() => {
     if (mutable) {
       view.__lightNativeType = ty;
       view.prototype.__lightNativeType = ty;
+      mutableTypes.add(ty);
+      mutableSelectors.add('@' + __rt.formName(ty));
     }
     try { extend(ty, specs); } finally { info.declaring = false; }
     return mutable ? view : ty;
@@ -448,9 +465,13 @@ const decl = (() => {
   // default, the value's JavaScript type, or a type the bundle extends for
   // the protocol that `x` belongs to).
   const selects = (selector, own) => selector === null || selector === '_' || selector === 'object' || selector === own;
-  const demandFor = (protocol, x) => {
+  // It reads no host object's properties: a struct's type and a form's kind
+  // come from the engine; a mutable type instance's tag only from a caller
+  // that has read it already (`hostKey`), as dispatch does.
+  const demandFor = (protocol, x, hostKey = null) => {
     if (pendingBundles.size === 0) return;
-    const value = __rt.formValue(x), key = directKey(x);
+    const value = __rt.formValue(x), ty = __rt.structTypeOf(x), kind = __rt.formKind(value);
+    const key = ty !== null ? ty : kind !== null ? formKey(value, kind) : hostKey;
     const native = value == null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
     for (const b of [...pendingBundles])
       if (b.order <= frontier && b.indices.some(([p, s]) => p === protocol
@@ -458,13 +479,17 @@ const decl = (() => {
         activate(b);
   };
   const demandObject = x => {
-    if (objectBundles.length === 0) return;
+    // Once every Object bundle up to the frontier is installed there is
+    // nothing to demand, and the receiver is not inspected at all.
+    if (!objectBundles.some(({b}) => b.order <= frontier && (b.state !== 2 || !b.active))) return;
     const s = structOf(x);
     let ty = __rt.structTypeOf(s);
     if (ty === null) {
       if (s === null || typeof s !== 'object' || __rt.formKind(s) !== null || __rt.cljIsAtom(s)) return;
-      // A mutable type's instance carries its type's tag; any other host
-      // object, whatever it holds under that name, demands nothing.
+      // A mutable type's instance carries its type's tag, read only when an
+      // Object bundle names a mutable type; any other host object, whatever
+      // it holds under that name, demands nothing.
+      if (!objectBundles.some(({selector}) => mutableSelectors.has(selector))) return;
       ty = s.__lightNativeType;
       if (!views.get(ty)?.mutable) return;
     } else declare(s);

@@ -4022,8 +4022,11 @@ bundle extending another protocol `P` is installed when `P` is dispatched
 on any value one of the bundle's `P` selectors matches: a type it extends
 (a struct type or a core collection type), the value's JavaScript type
 (`string`, `object`, …), `default`, or a target with no type name, which
-matches every value. It is also installed when it is demanded otherwise
-(one of its products, or an `Object` demand it matches). Installing a
+matches every value. It is also installed by an `Object` demand it
+matches. (A bundle is also installed when one of its products is read, but
+the bundles that carry extension indices, `extend-type` and
+`extend-protocol`, have no products, so that path never reaches a pending
+bundle and is not exercised from source.) Installing a
 bundle installs everything in it, for every type it extends, whichever
 selector demanded it. Leaving the frontier hides an
 installation whose bundle is after it, as the legacy journal undoes its
@@ -4041,12 +4044,24 @@ Bundles are tracked as pending only when they can change a member: a
 bundle with `Object` methods, or one extending a type whose IFn adapters
 compete with an `Object` `call`/`apply`.
 
+Classifying the receiver for a demand reads no host object property, as
+the legacy demand reads only `constructor`: a struct's type and a form's
+kind come from the engine, the JavaScript type from `typeof` and
+`Array.isArray`. A mutable type instance's `__lightNativeType` tag is read
+only where it can select something: by dispatch when the protocol's table
+extends a mutable type, and by an `Object` demand when a registered
+`Object` bundle names one, and only while some `Object` bundle is still
+uninstalled. Dispatch on a host array a Proxy wraps (which the engine gives
+no key) takes the `array` entry, as legacy `Array.isArray` does.
+
 `native_member_precedence_table_matches_quickjs` reaches a bundle every
 way against QuickJS: dispatch on another type of a bundle extending
 several types, and on its own type; selectors naming a struct type, a core
 collection type (`PersistentVector`), `string`, `object`, `default` and a
-target with no type name; product demand after an unrelated dispatch has
-forced the bundle; `Object` methods in a bundle with another protocol,
+target with no type name; host receivers with a throwing
+`__lightNativeType` getter (an array, a typed array, an `arguments` object,
+and a Proxy of an array that also throws from `getPrototypeOf`) under
+`array` and `object` selectors; `Object` methods in a bundle with another protocol,
 reached by a dispatch on another type (still invisible), then by the
 matching dispatch, or by an `Object` demand; and several bundles
 extending one type, each installed by its own protocol.
@@ -4168,8 +4183,9 @@ could change, so a dispatch on another type or value the same bundle
 names left it inactive. A pending bundle is now activated by any matching
 selector, and its protocols' lookups bypass the cache while it is pending
 (see "When an extension is installed" above). The six selector rows of the
-table differed from QuickJS before this fix; the mixed-bundle,
-product-demand and several-bundle rows are new coverage.
+table differed from QuickJS before this fix; the mixed-bundle and
+several-bundle rows are new coverage. (Its product-demand row is removed
+in round 3: it never reached its extension bundle.)
 
 Verification at `05224182` (master `0ad2514f`), same toolchain: combined
 `bbp-macros,quickjs` with `LIGHT_CLJS_STRESS_SEEDS=12` passes the library's
