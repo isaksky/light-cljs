@@ -3454,3 +3454,20 @@ retaining SHA-256
 Node and the independent Babashka oracle both print `484264` for `42 3`.
 There are no changes to `src/js_runtime.js`, the default emitter, manifests
 or dependency inputs.
+
+### First-class core callbacks in memoized functions
+
+Native `memoize` recognizes pristine bootstrap core callback identities before
+publishing its cache. The shared atom stores a stable callback index and the
+memo table; a cache miss resolves that index against the consuming task's
+original core callbacks. Bare and aliased `gensym`, `str` and `inc` therefore
+work without publishing their task-owned runtime captures. An original alias
+keeps its identity across `with-redefs`, while a replacement callback retains
+its own behavior. User functions and modified core functions still undergo
+the normal capture checks; mutable user captures are rejected.
+
+The callback registry is a compact task-owned array, preserving the existing
+4 MiB startup tests. Memo wrappers capture only the shared atom. IFn callbacks
+use their declared call methods, including the JavaScript array tail beyond
+twenty arguments. Optimized direct calls through `cljCallMember` now use the
+same resumable native member resolver as ordinary property reads.
