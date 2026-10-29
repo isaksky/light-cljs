@@ -12,6 +12,8 @@ follows them, and [the head-to-head at
 
 The [October 27 regression check and repair](#default-v8-regression-check-october-27-2026)
 below records the later default-compiler regression and the restored timings.
+The [October 29 comparison at `0ad2514f`](#re-measured-at-0ad2514f-cached-and-uncached-october-29-2026),
+at the end, is the latest, with cached builds and leaf edits for both compilers.
 
 Reproduce, one project at a time and with no other heavy work running:
 
@@ -967,3 +969,161 @@ cargo clippy --locked --all-targets --no-default-features \
   --features bbp-macros,quickjs -- -D warnings -A deprecated \
   -A clippy::chunks_exact_to_as_chunks -A clippy::byte_char_slices
 ```
+
+## Re-measured at `0ad2514f`, cached and uncached (October 29, 2026)
+
+**Summary.** At its default (`--jobs 1`, the project's 2 GiB macro budget)
+light-cljs builds the 200k project uncached in 0.17x shadow-cljs's wall time
+(5.8x faster) at 0.27x its peak memory, and the 800k project in 0.21x the time
+(4.8x faster) at 0.54x the peak memory. With each compiler's cache populated
+and nothing changed, light takes 0.03x shadow's time at both sizes (1.0 s
+against 32 s, 4.8 s against 147 s) at 0.16x and 0.26x its peak memory; after
+one leaf edit 0.16x (200k) and 0.18x (800k). Light's output is 0.86x
+(200k) and 0.85x (800k) shadow's size after gzip. Since the October 23
+section: every output is byte-for-byte the same size and gzip as since
+`76c6366`; `--jobs 4` and `--jobs 8` are within 2% of October 23 in wall
+time; the one-job default now builds 800k (36.7 s, 4.01 GB; on October 23 it
+failed at the 64 MiB budget it was given, and at `76c6366` it took 67.9 s);
+shadow measured within 2%. New and worse: a leaf edit at `--jobs 4` or `8` is
+slower than at one job (37.1 and 44.5 s against 27.0 s at 800k), and the
+native macro backend builds both projects but 4.9x (200k) and 12.3x (800k)
+slower than the default backend at one job, with no gain from its cache.
+
+Setup. light-cljs master `0ad2514f`, the same immutable release binaries as
+the [Penpot section of this date](penpot-investigation.md#re-measured-against-shadow-cljs-cached-and-uncached-october-29-2026-at-0ad2514f)
+(default features, and native-only `--no-default-features --features
+bbp-macros`), shadow-cljs 3.5.3 with the generated `-Xmx8g`, Apple M3 Ultra
+(Virtual), 24 logical CPUs, 32 GiB, macOS 15.7.3, OpenJDK 25.0.2, Clojure CLI
+1.12.4.1618, Babashka 1.12.218, Node 24.22.1, Rust/Cargo 1.99.1. The machine
+was reserved, one job at a time. Projects from `generate.bb --seed 42 --lines
+200k|800k` (199,129 and 795,693 nonblank lines; 450 and 1,808 worker
+namespaces), under the worktree's ignored `target/`.
+
+```sh
+bb benchmarks/generated-project/compare.bb DIR --light BIN --runs 3 --warm-jvm 4 --leaf src/workload/babomhol.cljs   # 200k
+bb benchmarks/generated-project/compare.bb DIR --light BIN --runs 1 --leaf src/workload/babra.cljs                    # 800k
+# other light configurations: the same with --light-only and BIN a wrapper
+# script that appends --jobs 4 --macro-memory-limit 1073741824 (or --jobs 8
+# --macro-memory-limit 2147483648), or the native-only binary
+```
+
+`compare.bb` gained two minimal additions for this run: it records user CPU
+and the load average before every timed build, and `--leaf FILE` adds a
+leaf-edit scenario for each compiler: on the cache its cached scenario left,
+each run appends a different unused `defn` to `FILE` and rebuilds (FILE is
+restored afterwards). `workload.babomhol` (200k) and `workload.babra` (800k)
+are each required by one `workload.gN` namespace only. Uncached is light
+`--no-cache` and shadow with `.shadow-cljs` removed; cached is one untimed
+warm-up build into an empty cache, then the timed no-change rebuilds; shadow's
+cached builds still run Closure. Medians of 3 runs (200k, range in brackets)
+and 1 run (800k). The 1-minute load average before a timed build was 1.7-4.6
+for light and 2.2-7.1 for shadow (the JVM raises it while it runs).
+
+| Size | Build | light, default | shadow | light/shadow wall, peak memory |
+| --- | --- | --- | --- | --- |
+| 200k | uncached | 7.03 s (6.99-7.04), 7.1 s user, 1.071 GB | 40.70 s (38.79-40.84), 124.2 s user, 4.017 GB | 0.17, 0.27 |
+| 200k | cached, no change | 1.02 s (1.02-1.10), 0.9 s user, 0.525 GB | 32.43 s (31.75-32.59), 100.6 s user, 3.318 GB | 0.03, 0.16 |
+| 200k | cached, leaf edit | 5.14 s (5.13-5.34), 5.3 s user, 1.013 GB | 32.63 s (32.42-33.37), 103.1 s user, 3.128 GB | 0.16, 0.32 |
+| 800k | uncached | 36.67 s, 36.9 s user, 4.013 GB | 176.78 s, 418.2 s user, 7.416 GB | 0.21, 0.54 |
+| 800k | cached, no change | 4.76 s, 4.4 s user, 1.990 GB | 147.49 s, 312.9 s user, 7.591 GB | 0.03, 0.26 |
+| 800k | cached, leaf edit | 27.00 s, 30.0 s user, 3.650 GB | 147.69 s, 302.9 s user, 8.032 GB | 0.18, 0.45 |
+
+Shadow in one JVM at 200k (`--warm-jvm 4`, as a running shadow server):
+30.66 s, then 23.94, 24.24 and 25.04 s; light's uncached build is 0.29x its
+steady state. Uncached growth from 200k to 800k is 5.2x for light (5.5x at
+`76c6366`) and 4.3x for shadow.
+
+Output size, unchanged from `76c6366` for light and from the baseline for
+shadow:
+
+| Size | light bytes / gzip -9 | shadow bytes / gzip -9 | light/shadow raw, gzip |
+| --- | --- | --- | --- |
+| 200k | 3,456,905 / 860,671 | 4,067,637 / 1,002,909 | 0.85, 0.86 |
+| 800k | 13,396,492 / 3,302,076 | 15,710,764 / 3,894,315 | 0.85, 0.85 |
+
+Other light configurations, same scenarios (`--jobs N` with the October 23
+budgets; native is the native-only binary at the project's budget):
+
+| Size | Configuration | uncached | cached, no change | cached, leaf edit |
+| --- | --- | --- | --- | --- |
+| 200k | `--jobs 4`, 1 GiB | 5.07 s (4.99-5.09), 9.8 s user, 1.362 GB | 1.06 s, 0.568 GB | 5.54 s (5.54-5.66), 8.3 s user, 1.227 GB |
+| 200k | `--jobs 8`, 2 GiB | 5.09 s (5.08-5.18), 13.2 s user, 1.600 GB | 1.07 s, 0.574 GB | 5.87 s (5.70-5.91), 12.3 s user, 1.598 GB |
+| 200k | native, `--jobs 1` | 34.41 s (34.00-34.42), 32.6 s user, 1.291 GB | 35.76 s (35.62-35.79), 0.881 GB | 37.97 s (37.82-37.97), 35.6 s user, 1.299 GB |
+| 200k | native, `--jobs 4` | 17.90 s (17.71-18.11), 24.0 s user, 1.463 GB | 20.59 s (20.49-22.90), 1.106 GB | 22.83 s (22.75-22.83), 25.9 s user, 1.511 GB |
+| 800k | `--jobs 4`, 1 GiB | 27.68 s, 50.8 s user, 4.239 GB | 4.70 s, 1.996 GB | 37.14 s, 110.9 s user, 4.414 GB |
+| 800k | `--jobs 8`, 2 GiB | 27.36 s, 65.7 s user, 4.832 GB | 4.68 s, 2.041 GB | 44.45 s, 190.0 s user, 5.423 GB |
+| 800k | native, `--jobs 1` | 452.15 s, 412.5 s user, 4.799 GB | 477.49 s, 3.202 GB | 484.73 s, 438.5 s user, 5.038 GB |
+
+Against shadow, uncached: 0.12x the wall time at 200k and 0.16x at 800k with
+four or eight jobs. Four and eight jobs are equally fast at both sizes, so
+these rows are not evidence of many-core scaling.
+
+Correctness, coverage and performance, separately:
+
+- *Correctness.* For both compilers, every configuration and both backends,
+  the last uncached build's and the last leaf-edited build's output printed
+  the oracle's `484264` for input 42 and 3 iterations (`compare.bb` stops
+  otherwise) and passed `check-waste.bb --strict`; the no-change cached
+  builds' outputs were not checked separately. Light's outputs have the same size and gzip size
+  in every configuration; the last native 200k output (four jobs, leaf edit)
+  has SHA-256 `1a75bc87b26f3121...`, the default backend's 200k hash recorded
+  in docs/native-macros.md, so the native backend's output is byte-identical
+  to the default's there. The leaf edit adds an unused function, so edited
+  outputs equal the unedited ones.
+- *Coverage.* Both projects build in every configuration, on both backends.
+  On October 23 the one-job build failed at 800k only because that row was
+  given a 64 MiB macro budget; at the project's own budget it builds.
+- *Performance.* Light is faster than shadow, with less peak memory, in every
+  row on the default backend. The native backend is not yet competitive: at
+  one job it is 4.9x slower than the default backend at 200k (34.4 against
+  7.0 s) and 12.3x slower at 800k (452.2 against 36.7 s); its cached rebuild with no change is no faster
+  than an uncached build (35.8 against 34.4 s), whereas the default backend's
+  takes 1.0 s. A `--stats` pair at 200k shows why: the warm build reports
+  `cache.hits 0` and 569 misses, each "no artifact was published", although
+  the populating build published 569 artifacts (221 MB); it analyzes the
+  whole program again and only then reuses the stored output. Filed as
+  light-cljs-571.
+
+Against the October 23 section (`81f9837`) and, for the one-job default, the
+October 27 repair (`db78b7bb`, `release bench --no-cache`):
+
+| Build | before | October 29 | change |
+| --- | --- | --- | --- |
+| 200k light `--jobs 1`, uncached | 6.87 s, 1.087 GB (October 27) | 7.03 s, 1.071 GB | +2.3% wall |
+| 200k light `--jobs 4`, uncached | 5.03 s, 1.34 GB | 5.07 s, 1.362 GB | +0.8% |
+| 200k light `--jobs 8`, uncached | 5.18 s, 1.58 GB | 5.09 s, 1.600 GB | -1.7% |
+| 200k light, cached, `--jobs 4` / `8` | 1.04 / 1.02 s | 1.06 / 1.07 s | +2% / +5% |
+| 800k light `--jobs 1`, uncached | fails at 64 MiB; 67.9 s, 4.10 GB at `76c6366` | 36.67 s, 4.013 GB | -46% against `76c6366` |
+| 800k light `--jobs 4`, uncached | 27.20 s, 4.43 GB | 27.68 s, 4.239 GB | +1.8% |
+| 800k light `--jobs 8`, uncached | 27.57 s, 4.75 GB | 27.36 s, 4.832 GB | -0.8% |
+| 800k light cached, `--jobs 4` / `8` | 4.82 / 4.69 s | 4.70 / 4.68 s | -2% / 0% |
+| 200k shadow uncached / cached | 40.19 / 32.39 s | 40.70 / 32.43 s | +1.3% / +0.1% |
+| 800k shadow uncached / cached | 179.15 / 146.72 s | 176.78 / 147.49 s | -1.3% / +0.5% |
+
+Conclusions:
+
+1. **No default-backend regression since October 23**: every light row is
+   within about 2% of its earlier value (the 200k cached rebuild at eight jobs
+   +5%, 0.05 s), and output is unchanged. The one-job 800k build's halving is
+   relative to `76c6366` (October 22); it was not measured at its own budget
+   on October 23.
+2. **Cached rebuilds are where light leads most**: 0.03x shadow's time at both
+   sizes, because light reuses its stored output and shadow runs Closure
+   again. A leaf edit costs light 73% (200k) and 74% (800k) of an uncached
+   build, because every namespace that runs a source macro depends on every
+   earlier one (the coarse fallback noted under light-cljs-418).
+3. **A leaf edit with several jobs is slower than with one** (800k: 37.1 s at
+   four jobs and 44.5 s at eight against 27.0 s at one, with 3.7x and 6.3x the
+   user CPU). This is the cache-writing cost recorded on October 23 and filed
+   as light-cljs-461 (deferred): a build that records to the cache sends every
+   unit through the macro host.
+4. **The native backend builds both projects with output identical to the
+   default backend's but is much slower**, and grows faster than the program
+   (34.4 s to 452.2 s from 200k to 800k, 13.1x for 4x the code; one 800k
+   sample, started at a 1-minute load average of 4.6). Four jobs halve its
+   200k time (17.9 s). Its cache does not help yet (light-cljs-571), and
+   Penpot's `app.main` does not build on it (light-cljs-563, in the Penpot
+   section).
+
+Pellets light-cljs-563, 564 and 565 were still open when this ran; the user
+chose to measure master `0ad2514f` now rather than after them.

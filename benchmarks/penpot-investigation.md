@@ -1,7 +1,9 @@
 # Penpot compiler performance investigation — October 16–17, 2026
 
 See the [October 27 regression check and repair](#default-v8-regression-check-october-27-2026)
-for the later default-compiler slowdown and restored Penpot timings.
+for the later default-compiler slowdown and restored Penpot timings, and the
+[October 29 comparison with shadow-cljs, cached and uncached](#re-measured-against-shadow-cljs-cached-and-uncached-october-29-2026-at-0ad2514f)
+for the latest numbers.
 
 Latest validated production rerun (phase112): **21.97 s / 0.948 GB RSS** for
 main none, **28.24 s / 1.178 GB** for advanced, and **3.73 s / 0.498 GB** for
@@ -24,6 +26,170 @@ specialization experiment yielded only a 0.7% average timing reduction and was
 not promoted; [phase113](results/compiler-2026-10-16/penpot-phase113/README.md)
 records the controlled comparison. Further large gains are not established by
 the current profiling evidence.
+
+## Re-measured against shadow-cljs, cached and uncached (October 29, 2026, at `0ad2514f`)
+
+**Summary.** On Penpot, light-cljs at its default (`--jobs 1`) builds the dev
+build in 0.39x shadow-cljs's wall time (2.5x faster) at 0.38x its peak memory,
+and the release build in 0.25x the time (4.0x faster) at 0.28x the peak
+memory, with 0.77x the gzip size (23% smaller). With each compiler's cache
+populated and nothing changed, light takes 0.13x shadow's time for the dev
+build and 0.04x for the release build (1.4 s against 11.1 s and 36 s); after
+one leaf edit it takes 0.49x and 0.19x. Since the October 23 section light's
+output is byte-identical, its uncached wall time is 3-5% lower and its peak
+memory about 6% higher; shadow ran 3-8% faster than on October 23, so the
+uncached ratios barely moved (dev 2.49x to 2.54x faster, release 4.23x to
+4.01x). The October 23 section measured no cached builds, so the cached
+ratios are new. The native macro backend still cannot build `app.main`; it
+builds `app.render` with output identical to the default backend's.
+
+Setup. light-cljs master `0ad2514f`, one release binary (`cargo build --locked
+--release`, default features, V8 from the machine cache, thin LTO, one codegen
+unit) and one native-only release binary (`--no-default-features --features
+bbp-macros`), each copied to an immutable path. shadow-cljs 3.5.3 with the
+Penpot frontend's own JVM options (no `-Xmx`, so the JVM default, as in every
+earlier Penpot run). Apple M3 Ultra (Virtual), 24 logical CPUs, 32 GiB, macOS
+15.7.3, OpenJDK 25.0.2, Clojure CLI 1.12.4.1618, Babashka 1.12.218, Node
+24.22.1, Rust/Cargo 1.99.1 (Homebrew). The machine was reserved: one job at a
+time, nothing else running. The 1-minute load average before each round was
+1.7-7.7; shadow's JVM drives it up and the average lags, so the light builds
+right after a shadow job start at 4-6. The port is unchanged (996 files,
+`b36daf80...`, the October 17 fingerprint) and was not regenerated. Peak
+memory is the maximum resident set size from `/usr/bin/time -l`; GB is 1e9
+bytes. Medians of three rounds (range).
+
+Kits: `benchmarks/penpot.bb` with `LIGHT_CLJS_EXTRA_ARGS="--stats"` (as on
+October 23) for the uncached light builds and every shadow build;
+`benchmarks/penpot_cache.bb DIR 3 warm leaf advanced advanced-leaf` for light's
+cached builds. Two minimal kit changes made the cached and edited builds
+possible without touching the read-only research checkouts: `penpot.bb` gained
+`shadow-compile-warm` and `shadow-release-warm` (a shadow job that keeps
+`.shadow-cljs` from the job before it) and `PENPOT_PORT`/`PENPOT_FRONTEND`
+overrides; `penpot_cache.bb` gained `PENPOT_PORT` and an `advanced-leaf`
+scenario. Shadow ran on an APFS clone of `research/penpot/{frontend,common}`,
+light's cached and edited builds on an APFS clone of `research/penpot-light`;
+the edit is `penpot_cache.bb`'s leaf edit (a comment appended to
+`app.main.ui.workspace.palette`, which has one consumer), made the same way
+to the same file in shadow's clone and restored after each round. Light's
+uncached builds read the original port, so their output can be compared with
+earlier hashes; the clone's longer root paths make its output 156 bytes larger.
+Pellets light-cljs-563, 564 and 565 were still open; the user chose to
+measure master `0ad2514f` now rather than after them.
+
+| Build | Wall | User CPU | Peak memory | light/shadow wall, peak memory |
+| --- | --- | ---: | ---: | --- |
+| shadow `compile main` (dev), cold | 30.22 s (30.01-30.44) | 93.7 s | 2.275 GB | |
+| shadow `compile main`, warm, no change | 11.14 s (11.10-11.23) | 43.0 s | 2.104 GB | |
+| shadow `compile main`, warm, leaf edit | 11.16 s (11.00-11.18) | 44.8 s | 1.996 GB | |
+| light `main --optimize none`, `--no-cache` | 11.90 s (11.86-12.42) | 13.9 s | 0.873 GB | 0.39, 0.38 |
+| light `main --optimize none`, populating the cache | 14.42 s (14.29-14.43) | 16.0 s | 0.893 GB | |
+| light `main --optimize none`, warm, no change | 1.42 s (1.37-1.49) | 1.3 s | 0.570 GB | 0.13, 0.27 |
+| light `main --optimize none`, warm, leaf edit | 5.49 s (5.43-5.62) | 5.7 s | 0.852 GB | 0.49, 0.43 |
+| shadow `release main`, cold | 55.99 s (55.22-56.69) | 144.2 s | 3.939 GB | |
+| shadow `release main`, warm, no change | 35.94 s (35.79-36.14) | 106.3 s | 3.849 GB | |
+| shadow `release main`, warm, leaf edit | 36.99 s (35.58-37.22) | 103.1 s | 3.720 GB | |
+| light `main` advanced, `--no-cache` | 13.95 s (13.85-13.98) | 16.0 s | 1.095 GB | 0.25, 0.28 |
+| light `main` advanced, populating the cache | 16.14 s (16.01-16.18) | 17.7 s | 1.107 GB | |
+| light `main` advanced, warm, no change | 1.36 s (1.32-1.36) | 1.2 s | 0.542 GB | 0.04, 0.14 |
+| light `main` advanced, warm, leaf edit | 7.10 s (7.08-7.11) | 7.7 s | 0.994 GB | 0.19, 0.27 |
+
+Shadow reported `1209 files, 1189 compiled` cold and `5 compiled` warm with no
+change for `compile` (7 after the edit), and `1176 files, 916 compiled` cold,
+`0 compiled` warm and `2 compiled` after the edit for `release`: a warm
+release still runs Closure over the whole program, about 32 s of its 36 s.
+Light's warm build hits all 922 namespaces and reuses its stored output; the
+leaf edit misses 153 of 922 (the edited namespace and everything compiled
+after it that the coarse macro-dependency fallback ties to it). Populating the
+cache costs 21% (dev) and 16% (advanced) over an uncached build.
+
+Output size, raw bytes / `gzip -9` bytes, both release outputs with
+pseudo-names (neither is a production size), dev totals over every emitted
+JavaScript file:
+
+| Build | light | shadow | light/shadow raw, gzip |
+| --- | --- | --- | --- |
+| release / advanced | 24,646,495 / 2,741,041 | 32,917,432 / 3,560,980 (10 modules) | 0.75, 0.77 |
+| dev | 33,636,141 / 3,132,605 (one file) | 34,376,171 / 3,908,977 (1,220 files) | 0.98, 0.80 |
+
+Shadow's sizes vary by a few hundred bytes between rounds; light's do not.
+The scope difference recorded on October 23 still holds: shadow's `:main`
+build also builds `render`, `rasterizer` and `util-highlight`, and light's
+`app.main` includes the app's five lazy modules.
+
+Other light configurations, uncached, default backend (three rounds each,
+same kit and flags plus the ones named, `--macro-memory-limit` last wins):
+
+| Build | `--jobs 4`, 1 GiB | `--jobs 8`, 2 GiB |
+| --- | --- | --- |
+| `main --optimize none` | 7.26 s (7.26-7.39), 18.3 s user, 1.112 GB | 7.32 s (7.30-7.43), 21.7 s user, 1.421 GB |
+| `main` advanced | 9.46 s (9.33-9.57), 20.4 s user, 1.351 GB | 9.41 s (9.40-9.50), 23.7 s user, 1.721 GB |
+
+Against shadow these are 0.24x (dev) and 0.17x (release) the wall time. Eight
+jobs are no faster than four, as on October 23, so this is not evidence of
+many-core scaling: the build's remaining serial work bounds it.
+
+Native macro backend (native-only binary, `--stats`, one run each):
+
+| Build | Jobs | Result | Wall | User CPU | Peak memory |
+| --- | ---: | --- | ---: | ---: | ---: |
+| `main --optimize none` | 1 | fails | 94.20 s | 90.4 s | 0.701 GB |
+| `main` advanced | 1 | fails | 93.38 s | 89.9 s | 0.705 GB |
+| `main --optimize none` | 4 | fails | 53.70 s | 63.8 s | 0.884 GB |
+| `app.render --optimize none` | 1 | builds | 13.33 s | 12.8 s | 0.411 GB |
+| `app.render --optimize none` | 4 | builds | 9.00 s | 11.7 s | 0.509 GB |
+
+All three `app.main` runs stop at the same first failure (task number 7 at
+four jobs):
+
+```text
+light-cljs: .../research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: .../vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Atom(NotShareable): atom operation: cannot publish: value[0].capture(1)[0]{:regexp}{:parsers}[0]{:regexp} is a task-owned object (owned by task#1), which is not shareable (in anonymous at instruction 9 [atom_cas @ byte 23], task#1, world#0) at source 1126:33
+```
+
+This is instaparse's regular-expression parser stored in a compile-time atom,
+the boundary light-cljs-563 (shareable regex values) addresses; the brief for
+this run expected the later mutable-field `deftype` boundary of light-cljs-564,
+which is reached only on the unmerged light-cljs-558/563 branches. Both
+`app.render` outputs are 12,680,976 bytes with SHA-256 `d352af3a2bb2d35f...`,
+the default backend's `app.render` hash of October 23: the native backend's
+output is now byte-identical to the default backend's on this entry (it
+differed in 47 `reify` IDs and 16 property orders at `f7f9aef0`, docs/native-macros.md).
+
+Correctness, coverage and performance, separately:
+
+- *Correctness.* Every uncached default-backend output, at `--jobs` 1, 4 and
+  8, has the October 23 SHA-256 (`main-none` `dbf5cfcf91e48aaa`,
+  `main-advanced` `fe303824959337ac`). On the clone, the populating, warm and
+  leaf-edited builds' outputs equal the uncached build's of the same root
+  (`cebf1e2f2c14501a` dev, `9b1963dcd0986415` advanced; the edit is a
+  comment). Penpot was not bundled or run in a browser.
+- *Coverage.* `app.main` builds at every default-backend configuration;
+  natively only `app.render` builds (above).
+- *Performance.* Light is faster and smaller in peak memory than shadow in
+  every row. The largest differences are in cached builds, where shadow's
+  release build re-runs Closure; the smallest is the dev leaf edit (0.49x),
+  where light recompiles 153 namespaces for a one-namespace change.
+
+Against the October 23 section (`81f9837`), the same binary flags:
+
+| Build | October 23 | October 29 | change |
+| --- | --- | --- | --- |
+| light `main-none`, `--jobs 1` | 12.58 s, 0.819 GB | 11.90 s, 0.873 GB | -5.4% wall, +6.6% peak memory |
+| light `main-advanced`, `--jobs 1` | 14.41 s, 1.030 GB | 13.95 s, 1.095 GB | -3.2%, +6.3% |
+| light `main-none`, `--jobs 4` | 7.48 s, 1.095 GB | 7.26 s, 1.112 GB | -2.9%, +1.6% |
+| light `main-advanced`, `--jobs 4` | 9.73 s, 1.357 GB | 9.46 s, 1.351 GB | -2.8%, -0.4% |
+| light `main-none`, `--jobs 8` | 7.46 s, 1.432 GB | 7.32 s, 1.421 GB | -1.9%, -0.8% |
+| light `main-advanced`, `--jobs 8` | 9.81 s, 1.712 GB | 9.41 s, 1.721 GB | -4.1%, +0.5% |
+| shadow `compile` | 31.30 s, 2.210 GB | 30.22 s, 2.275 GB | -3.5%, +2.9% |
+| shadow `release` | 60.93 s, 4.225 GB | 55.99 s, 3.939 GB | -8.1%, -6.8% |
+
+Conclusions: nothing regressed in wall time; the one-job peak memory rose
+about 6% (0.82 to 0.87 GB dev, consistent across rounds; the October 27
+repair measured 0.85-0.87 GB with `--stats`), which is small and was not
+investigated here. Shadow's own 3-8% improvement against October 23 is
+machine variation (same version and options), which is why the ratios rather
+than light's absolute times are the comparison to quote. The default
+backend's Penpot numbers are where they were after the October 27 repair; the
+work since then (the native backend) shows here only as the native rows.
 
 ## Re-measured against shadow-cljs (October 23, 2026, at `81f9837`)
 
