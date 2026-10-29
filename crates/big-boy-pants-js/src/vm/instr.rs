@@ -1576,11 +1576,17 @@ pub enum FormOp {
     SortedRemove = 100,
     /// a b → -1, 0 or 1 by the default sorted-map order (`formCompare`).
     Compare = 101,
+    /// v → whether v is a sorted-map-by map, whatever its comparator,
+    /// nil included (`formIsSortedBy`).
+    IsSortedBy = 102,
+    /// v → whether v is a positional, unsorted map (an array or literal
+    /// map), which compares its own values first in `=` (`formIsArrayMap`).
+    IsArrayMap = 103,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 102] = [
+    pub const ALL: [FormOp; 104] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1683,6 +1689,8 @@ impl FormOp {
         FormOp::SortedReplace,
         FormOp::SortedRemove,
         FormOp::Compare,
+        FormOp::IsSortedBy,
+        FormOp::IsArrayMap,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1702,6 +1710,8 @@ impl FormOp {
             | FormOp::CljPop
             | FormOp::SortedMapBy
             | FormOp::SortedComparator
+            | FormOp::IsSortedBy
+            | FormOp::IsArrayMap
             | FormOp::AtomAux
             | FormOp::CljCoreResolver
             | FormOp::LiteralPayload
@@ -1819,6 +1829,8 @@ impl FormOp {
             FormOp::SortedReplace => "formSortedReplace",
             FormOp::SortedRemove => "formSortedRemove",
             FormOp::Compare => "formCompare",
+            FormOp::IsSortedBy => "formIsSortedBy",
+            FormOp::IsArrayMap => "formIsArrayMap",
             FormOp::CljCoreResolver => "cljCoreResolver",
             FormOp::CljGet2 => "cljGet2",
             FormOp::Keyword => "formKeyword",

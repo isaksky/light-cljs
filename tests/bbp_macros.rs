@@ -1474,33 +1474,63 @@ fn native_sorted_map_by_matches_quickjs() {
     }
 }
 
-/// Engine-internal structural equality cannot call a comparator, so a
-/// sorted-map-by map compared inside another collection is an explicit,
-/// catchable boundary (the legacy runtime compares it). Identical operands
-/// still short-circuit, and sorted sets remain unsupported natively.
+/// `=` comparing collections that hold sorted-map-by maps (as elements, map
+/// values, set members, hash-map keys or lazy-sequence items) asks the task
+/// runtime for each comparison with one, which calls the comparator in the
+/// legacy order: once per comparison met, none after an earlier difference.
 #[test]
-fn native_sorted_map_by_boundaries_are_explicit() {
+fn native_nested_sorted_map_by_equality_matches_quickjs() {
+    let source = r#"(def log (atom []))
+        (defn cmp [a b] (swap! log conj [a b]) (compare b a))
+        (defmacro m []
+          (let [a (sorted-map-by cmp 1 :a 2 :b) b (sorted-map-by cmp 2 :b 1 :a) c (sorted-map-by cmp 1 :a 2 :c)
+                x [a] y [b]
+                boom (sorted-map-by (fn [_ _] (throw (js/Error. "boom"))) 1 :a)
+                ;; Each result with the number of comparator calls it made.
+                run (fn [f] (reset! log []) [(try (f) (catch :default e (.-message e))) (count @log)])]
+            (list 'quote
+                  [(run #(= [a] [b])) (run #(= [a] [c])) (run #(= {:k a} {:k b})) (run #(= {:k a} {:k c}))
+                   (run #(= #{a} #{b})) (run #(= (list 1 a) [1 b])) (run #(= [0 a] [1 b]))
+                   (run #(= [{1 :a 2 :b}] [b])) (run #(= [b] [{1 :a 2 :b}])) (run #(= [(sorted-map 1 :a 2 :b)] [b]))
+                   (run #(get {[a] :found} [b])) (run #(contains? #{[a]} [b])) (run #(= (lazy-seq [a]) [b]))
+                   (run #(= [[a]] [[b]])) (run #(= [a a] [b b])) (run #(= [x x] [y y])) (run #(= [a] [a]))
+                   (run #(= [(sorted-map-by cmp 1 (sorted-map-by cmp 2 3))] [(sorted-map-by cmp 1 (sorted-map-by cmp 2 3))]))
+                   (run #(= [{1 :a}] [boom])) (run #(= [boom] [boom])) (run #(not= [a] [b])) (run #(= [a] [b] [c]))
+                   (do (reset! log []) (= [a] [b]) @log)])))
+        (js/console.log (pr-str (m)))"#;
+    // Each key of the left map is searched (two calls) and tested (one) in
+    // the right one; a difference stops the comparison, a sorted-map-by map
+    // on the left needs no comparator, and every comparison met calls the
+    // comparator again (12 for [a a] and for a shared [x x]).
+    let expected = concat!(
+        "[[true 6] [false 3] [true 6] [false 3] [true 6] [true 6] [false 0] [true 6] [true 0] [true 6] ",
+        "[:found 6] [true 6] [true 6] [true 6] [true 12] [true 12] [true 0] [true 4] [\"boom\" 0] [true 0] ",
+        "[false 6] [false 9] [[1 2] [2 2] [2 2] [1 1] [2 1] [1 1]]]\n"
+    );
+    assert_native_matches_legacy(source, expected);
+}
+
+/// sorted-set-by stays unsupported natively, with sorted-set.
+#[test]
+fn native_sorted_set_by_stays_an_explicit_boundary() {
     let source = r#"(defmacro m []
-        (let [message (fn [f] (try (f) (catch :default e (.-message e))))
-              a (sorted-map-by > 1 2) b (sorted-map-by > 1 2)]
-          (list 'quote [(message #(= [a] [b])) (message #(= {:k a} {:k b})) (= [a] [a]) (= a b)
-                        (message #(sorted-set-by > 1 2))])))
+        (let [message (fn [f] (try (f) (catch :default e (.-message e))))]
+          (list 'quote [(message #(sorted-set-by > 1 2))])))
         (js/console.log (pr-str (m)))"#;
     let mut host = MacroHost::new();
     host.use_native_macros();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    let nested = "unsupported operation: native nested equality with a sorted-map-by map";
     assert_eq!(
         program_output(&emit_js(&program)),
-        format!(
-            "[\"{nested}\" \"{nested}\" true true \"unsupported operation: native macro runtime core.sortedSetBy\"]\n"
-        )
+        "[\"unsupported operation: native macro runtime core.sortedSetBy\"]\n"
     );
 }
 
 /// Comparator calls run on the expanding task: a published comparator that
 /// demands a cold helper parks mid-search and resumes without replay, and a
-/// published sorted-map-by value keeps its published comparator.
+/// published sorted-map-by value keeps its published comparator. A helper
+/// that `comparator` builds publishes too, and its predicate's cold demand
+/// parks inside `=` comparing collections that hold sorted-map-by maps.
 #[test]
 fn sorted_map_by_helpers_publish_and_resume_at_seeded_pool_sizes() {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
@@ -1517,14 +1547,20 @@ fn sorted_map_by_helpers_publish_and_resume_at_seeded_pool_sizes() {
               (let [r (compare (weight a) (weight b))] (note [:order r]) r))
             (defn descending [a b] (compare b a))
             (def table (do (note :table-ready) (sorted-map-by descending 1 :a 3 :c)))
+            (def size (do (note :size-ready) (fn [s] (count s))))
+            (defn heavier? [a b] (note [:heavier a b]) (> (size a) (size b)))
+            (def by-heaviness (do (note :by-heaviness-ready) (comparator heavier?)))
             (defmacro probe []
               (binding [*seen* (atom [])]
-                (let [m (sorted-map-by by-weight "ccc" 3 "a" 1 "bb" 2)
+                (let [nested (= [{"bb" 1}] [(sorted-map-by by-heaviness "bb" 1)])
+                      m (sorted-map-by by-weight "ccc" 3 "a" 1 "bb" 2)
                       m (assoc m "dd" 4)
                       t (assoc table 2 :b)
                       a (atom (sorted-map-by >))]
                   (swap! a assoc 1 [:x] 2 [:y])
-                  (list 'quote [m (get m "zz") (rseq m) t (keys t) (contains? t 3) (= t {1 :a 2 :b 3 :c})
+                  (list 'quote [nested (= {:k [t]} {:k [(sorted-map-by descending 3 :c 1 :a 2 :b)]})
+                                (= #{t} #{(sorted-map-by descending 2 :b 1 :a 3 :c)}) (= [t] [(assoc t 4 :d)])
+                                m (get m "zz") (rseq m) t (keys t) (contains? t 3) (= t {1 :a 2 :b 3 :c})
                                 @a @*seen*]))))"#,
         ),
         (
@@ -1572,20 +1608,25 @@ fn sorted_map_by_helpers_publish_and_resume_at_seeded_pool_sizes() {
         .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
         if native {
             // weight is read only inside by-weight, so its cold wait parks a
-            // comparator call mid-search; the other helpers are read by the
-            // expansion itself. Nothing is reconstructed per task.
+            // comparator call mid-search; size is read only inside heavier?,
+            // the predicate of the by-heaviness helper `comparator` built,
+            // which first runs inside a nested `=`; the other helpers are
+            // read by the expansion itself. Nothing is reconstructed per task.
             let helpers = &stats.native_helpers;
-            assert_eq!(helpers.published, 5, "jobs {jobs}, seed {seed}");
+            assert_eq!(helpers.published, 8, "jobs {jobs}, seed {seed}");
             assert_eq!(helpers.per_task, 0, "jobs {jobs}, seed {seed}");
-            assert!(helpers.waits >= 5, "jobs {jobs}, seed {seed}: {helpers:?}");
+            assert!(helpers.waits >= 8, "jobs {jobs}, seed {seed}: {helpers:?}");
         }
         emit_js(&program)
     };
     let reference = build(true, 1, 0);
-    // The first expansion (a) initializes weight between a comparator call's
-    // log entries, exactly once, and table when the expansion first reads
-    // it; b reads both warm. Equal weights keep the first key ("bb").
+    // The first expansion (a) initializes size inside the first comparator
+    // call of the nested `=` (four calls: a two-call compare-equal order for
+    // the search and again for the found test), weight between a comparator
+    // call's log entries, exactly once, and table when the expansion first
+    // reads it; b reads them warm. Equal weights keep the first key ("bb").
     let log = [
+        r#":by-heaviness-ready [:heavier "bb" "bb"] :size-ready [:heavier "bb" "bb"] [:heavier "bb" "bb"] [:heavier "bb" "bb"]"#,
         r#"[:cmp "ccc" "a"] :weight-ready [:order 1] [:cmp "ccc" "a"] [:order 1]"#,
         r#"[:cmp "ccc" "bb"] [:order 1] [:cmp "a" "bb"] [:order -1] [:cmp "ccc" "bb"] [:order 1]"#,
         r#"[:cmp "bb" "dd"] [:order 0] [:cmp "a" "dd"] [:order -1] [:cmp "bb" "dd"] [:order 0]"#,
@@ -1593,11 +1634,13 @@ fn sorted_map_by_helpers_publish_and_resume_at_seeded_pool_sizes() {
     ]
     .join(" ");
     let warm = log
+        .replace(":by-heaviness-ready ", "")
+        .replace(" :size-ready", "")
         .replace(" :weight-ready", "")
         .replace(":table-ready ", "");
     let value = |log| {
         format!(
-            r#"[{{"a" 1, "bb" 4, "ccc" 3}} 4 (["ccc" 3] ["bb" 4] ["a" 1]) {{3 :c, 2 :b, 1 :a}} (3 2 1) true true {{2 [:y], 1 [:x]}} [{log}]]"#
+            r#"[true true true false {{"a" 1, "bb" 4, "ccc" 3}} 4 (["ccc" 3] ["bb" 4] ["a" 1]) {{3 :c, 2 :b, 1 :a}} (3 2 1) true true {{2 [:y], 1 [:x]}} [{log}]]"#
         )
     };
     assert_eq!(

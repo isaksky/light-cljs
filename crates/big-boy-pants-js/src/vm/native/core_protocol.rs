@@ -1,8 +1,14 @@
 //! Core-protocol calls on native structs. Resolution belongs to the task's
 //! declaration frontier; shared forms, map keys and dependency tables never
 //! retain or execute it. Both resolution and the selected entry may suspend.
+//!
+//! The same frame answers a structural comparison of a map with a
+//! `sorted-map-by` map met inside a form instruction (light-cljs-561): the
+//! runtime's `=` for the sorted map runs on the task VM (its comparator may
+//! demand a helper and park), and the instruction executes again with the
+//! answer and every earlier one ([`start_sorted_equality`]).
 use super::{Action, Fault, Input, NativeState, VmState, push_native};
-use crate::collections::form::{self, FormKind};
+use crate::collections::form::{self, FormKind, SortedEquality};
 use crate::heap::{
     Heap,
     gc::{Trace, TraceEdge},
@@ -18,6 +24,68 @@ pub(super) struct State {
     receiver: Value,
     through_lazy: bool,
     called: bool,
+    /// Set for a sorted-map-by comparison: the instruction to run again.
+    retry: Option<Box<Retry>>,
+}
+
+#[derive(Debug)]
+struct Retry {
+    instr: Instr,
+    operands: Vec<Value>,
+    /// The instruction's struct protocol already resolved: execute its leaf
+    /// directly again, as a realization does.
+    pub(super) core_resolved: bool,
+    answers: Vec<SortedEquality>,
+}
+
+/// Ask the task runtime's `=` whether map `left` equals `sorted-map-by` map
+/// `right` for `instr`, whose `n` operands move into the new frame;
+/// `answers` are the comparisons it was already given.
+pub(crate) fn start_sorted_equality(
+    state: &mut VmState,
+    instr: Instr,
+    n: usize,
+    left: Value,
+    right: Value,
+    answers: Vec<SortedEquality>,
+) -> Result<(), Fault> {
+    let resolver = state.core_resolver.clone().ok_or(Fault::Internal(
+        "sorted-map-by comparison without a runtime",
+    ))?;
+    let at = state
+        .operands()
+        .len()
+        .checked_sub(n)
+        .ok_or(Fault::Internal("operand stack underflow"))?;
+    let operands = state.operands()[at..].to_vec();
+    for _ in 0..n {
+        state.pop()?;
+    }
+    push_native(
+        state,
+        NativeState::CoreProtocol(State {
+            op: FormOp::Equals,
+            operands: vec![left, right.clone()],
+            resolver,
+            receiver: right,
+            through_lazy: false,
+            called: false,
+            retry: Some(Box::new(Retry {
+                instr,
+                operands,
+                core_resolved: false,
+                answers,
+            })),
+        }),
+    )
+}
+
+/// Mark a sorted-map-by comparison frame that a core operation's leaf
+/// started after its resolution (see [`Retry::core_resolved`]).
+pub(super) fn mark_core_resolved(state: &mut State) {
+    if let Some(retry) = &mut state.retry {
+        retry.core_resolved = true;
+    }
 }
 
 pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<bool, Fault> {
@@ -219,6 +287,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, mut op: FormOp) -> Result<
             receiver,
             through_lazy,
             called: false,
+            retry: None,
         }),
     )?;
     Ok(true)
@@ -229,6 +298,10 @@ impl State {
         self.resolver.trace(visit);
         self.receiver.trace(visit);
         self.operands.iter().for_each(|value| value.trace(visit));
+        if let Some(retry) = &self.retry {
+            retry.operands.iter().for_each(|value| value.trace(visit));
+            retry.answers.iter().for_each(|answer| answer.trace(visit));
+        }
     }
 
     pub(super) fn step(&mut self, input: Input) -> Result<Action, Fault> {
@@ -244,7 +317,29 @@ impl State {
                 ],
                 argc: 3,
             }),
-            Input::CallResult(value) if self.called => Ok(Action::Return(value)),
+            Input::CallResult(value) if self.called => {
+                let Some(mut retry) = self.retry.take() else {
+                    return Ok(Action::Return(value));
+                };
+                retry.answers.push(SortedEquality {
+                    left: self.operands[0].clone(),
+                    right: self.operands[1].clone(),
+                    equal: !matches!(value, Value::Null | Value::Undefined | Value::Bool(false)),
+                });
+                Ok(Action::Retry {
+                    instr: retry.instr,
+                    operands: retry.operands,
+                    answers: retry.answers,
+                    fallback: retry.core_resolved,
+                })
+            }
+            // The runtime must answer a sorted-map-by comparison: executing
+            // the instruction again without an answer would not end.
+            Input::CallResult(Value::Null | Value::Undefined) if self.retry.is_some() => {
+                Err(Fault::Error(
+                    "unsupported operation: native nested equality with a sorted-map-by map".into(),
+                ))
+            }
             Input::CallResult(Value::Null | Value::Undefined) => Ok(Action::FormFallback {
                 instr: Instr::FormOp(self.op),
                 operands: std::mem::take(&mut self.operands),

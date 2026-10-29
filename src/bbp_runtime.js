@@ -519,9 +519,10 @@ const native = (() => {
   __rt.cljCoreResolver((op, x, throughLazy) => {
     if(op==='cljWithExportedMeta')op='cljWithMeta';
     const kind = __rt.formKind(x);
-    // The engine also offers sorted-map-by maps (and `=` with one) here.
+    // The engine also offers sorted-map-by maps (and `=` with one, also
+    // nested in another comparison) here, whatever their comparator, nil too.
     const sorted = sortedBy.methods[op];
-    if (sorted !== undefined && kind === 'map' && __rt.formSortedComparator(x) !== null) return sorted;
+    if (sorted !== undefined && kind === 'map' && __rt.formIsSortedBy(x)) return sorted;
     const record = kind === 'record', table = coreTables[op];
     const cursor = arraySeqs.get(x), array = Array.isArray(val(x));
     if (cursor !== undefined || array) {
@@ -664,32 +665,36 @@ const native = (() => {
       return __rt.formEquals(__rt.formSortedEntry(m, i, 1), v) ? m : __rt.formSortedReplace(m, i, v);
     };
     const lookup = (m, k, d) => { const i = index(m, k); return i < 0 ? d : __rt.formSortedEntry(m, i, 1); };
-    const entries = (m, x) => {
+    // Legacy mapConj: nil leaves the map, a pair is one entry, and any other
+    // value is a sequence of vector entries (a map, a record, a list, a lazy
+    // sequence), each added in order. Other vectors keep the leaf's report.
+    const conj = (m, x) => {
+      if (x === null || x === undefined) return m;
+      const item = val(x), kind = __rt.formKind(item);
+      if (kind === 'vector' && __rt.formCount(item) === 2) return assoc(m, __rt.formNth(item, 0), __rt.formNth(item, 1));
+      if (kind === 'vector') return __rt.cljConj(__rt.formArrayMap(__rt.formVector()), x);
       for (let s = __rt.cljSeq(x); s !== null; s = __rt.cljNext(s)) {
         const e = __rt.cljFirst(s);
+        if (__rt.formKind(val(e)) !== 'vector') throw new Error('Map conj requires vector entries');
         m = assoc(m, __rt.formNth(e, 0), __rt.formNth(e, 1));
       }
       return m;
     };
-    // Legacy conj of a pair, map or record; the leaf reports anything else.
-    const conj = (m, x) => {
-      const item = val(x), kind = __rt.formKind(item);
-      if (kind === 'vector' && __rt.formCount(item) === 2) return assoc(m, __rt.formNth(item, 0), __rt.formNth(item, 1));
-      if (kind === 'map' || kind === 'record') return entries(m, x);
-      return __rt.cljConj(__rt.formArrayMap(__rt.formVector()), x);
-    };
     // Legacy map equality: equal counts, then each left entry, in its seq
-    // order, is found in the right map (by its comparator when it has one)
-    // and the found value is compared first. A struct's -equiv on the left
-    // never reaches this method.
+    // order, is found in the right map (by its comparator when it has one).
+    // An array map compares its own value first, a hash or sorted map the
+    // found value, as in legacy equiv-map. A struct's -equiv on the left
+    // never reaches this method. The engine asks it for nested comparisons
+    // with a sorted-map-by map too, and runs the instruction again.
     const equals = (a, b) => {
       const left = val(a), right = val(b);
       if (__rt.formKind(left) !== 'map' || __rt.formKind(right) !== 'map') return false;
       if (__rt.formCount(left) !== __rt.formCount(right)) return false;
-      const custom = __rt.formSortedComparator(right) !== null, missing = {};
+      const custom = __rt.formIsSortedBy(right), ownFirst = __rt.formIsArrayMap(left), missing = {};
       for (let s = __rt.cljSeq(left); s !== null; s = __rt.cljNext(s)) {
-        const e = __rt.cljFirst(s), other = custom ? lookup(right, __rt.formNth(e, 0), missing) : __rt.cljGet(right, __rt.formNth(e, 0), missing);
-        if (other === missing || !__rt.formEquals(other, __rt.formNth(e, 1))) return false;
+        const e = __rt.cljFirst(s), own = __rt.formNth(e, 1);
+        const other = custom ? lookup(right, __rt.formNth(e, 0), missing) : __rt.cljGet(right, __rt.formNth(e, 0), missing);
+        if (other === missing || !(ownFirst ? __rt.formEquals(own, other) : __rt.formEquals(other, own))) return false;
       }
       return true;
     };

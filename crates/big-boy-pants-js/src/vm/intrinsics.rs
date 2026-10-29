@@ -124,6 +124,8 @@
 //! | `formSortedMap(pairs)` | `form_op` | default-comparator sorted map from alternating operands; odd trailing key has nil value | wrong type; incomparable keys |
 //! | `formSortedMapBy(cmp)` | `form_op` | empty sorted-map-by map retaining `cmp`, which only the task runtime calls | – |
 //! | `formSortedComparator(v)` | `form_op` | a sorted-map-by map's comparator, else `null` | – |
+//! | `formIsSortedBy(v)` | `form_op` | whether `v` is a sorted-map-by map (also with a `null` comparator) | – |
+//! | `formIsArrayMap(v)` | `form_op` | whether `v` is a positional unsorted (array or literal) map, which `=` compares own value first | – |
 //! | `formSortedEntry(m, i, part)`, `formSortedInsert(m, i, k, v)`, `formSortedReplace(m, i, v)`, `formSortedRemove(m, i)` | `form_op` | read or edit sorted-map-by entry `i` at a position the runtime computed (insert allows `i == count`); updates keep the comparator and metadata | `WrongType`, `InvalidIndex`, `IndexOutOfBounds` |
 //! | `formCompare(a, b)` | `form_op` | -1, 0 or 1 in the default sorted-map order | incomparable keys |
 //! | `formEquals(a, b)`, `formHash(v)` | `form_op` | value equality (boolean) and the light-cljs runtime's 32-bit hash (number) | – |
@@ -424,7 +426,11 @@ pub(crate) fn step(
 /// unrealized lazy sequence, and the clj operations read sequences through:
 /// then the instruction realizes it and executes again instead of
 /// completing (light-cljs-479; [`crate::collections::lazy`]), whatever
-/// result or failure it computed past the request.
+/// result or failure it computed past the request. Likewise structural
+/// equality that compares a map with a `sorted-map-by` map asks the task
+/// runtime's `=` (which calls the comparator) for that comparison, and the
+/// instruction executes again with every answer it was given so far, so no
+/// comparator call is repeated (light-cljs-561).
 fn form_step(
     state: &mut VmState,
     heap: &Heap,
@@ -444,16 +450,20 @@ fn form_step(
         Instr::FormOp(op) => op.arity(),
         _ => return Err(Fault::Internal("not a form intrinsic")),
     };
-    let ops = state.operands();
-    let start = ops
+    let start = state
+        .operands()
         .len()
         .checked_sub(n)
         .ok_or(Fault::Internal("operand stack underflow"))?;
-    let ops = &ops[start..];
+    form::install_sorted_answers(std::mem::take(&mut state.sorted_answers));
+    let ops = &state.operands()[start..];
     // A request left by an embedder's comparison is not this instruction's.
     let _ = lazy::take_request();
     let _ = lazy::take_cycle();
+    let _ = form::take_sorted_request();
     let made = form_value(heap, host, instr, ops);
+    let answers = form::take_sorted_answers();
+    let sorted = form::take_sorted_request();
     if lazy::take_cycle() {
         let _ = lazy::take_request();
         return Err(Fault::RangeError(
@@ -461,7 +471,13 @@ fn form_step(
         ));
     }
     if let Some(pending) = lazy::take_request() {
-        return realize::start(heap, state, instr, n, pending);
+        return realize::start(heap, state, instr, n, pending, answers);
+    }
+    // Without a task runtime to ask, the comparison's failure stands.
+    if let Some((left, right)) = sorted
+        && state.core_resolver.is_some()
+    {
+        return super::native::start_sorted_equality(state, instr, n, left, right, answers);
     }
     state.replace(n, made?)
 }
@@ -683,6 +699,15 @@ fn strict_form_op(
         FormOp::SortedMap => form::sorted_map_from_sequence(heap, &arg())?,
         FormOp::SortedMapBy => form::sorted_map_by(heap, &arg())?,
         FormOp::SortedComparator => form::sorted_comparator(heap, &arg()),
+        FormOp::IsSortedBy => Value::Bool(
+            form::form_object(heap, &form::unwrap(heap, arg()))
+                .is_some_and(|f| f.comparator().is_some()),
+        ),
+        FormOp::IsArrayMap => Value::Bool(
+            form::form_object(heap, &form::unwrap(heap, arg())).is_some_and(|f| {
+                !f.is_sorted() && matches!(f.body(), form::FormBody::Map(m) if m.positional())
+            }),
+        ),
         FormOp::SortedEntry => {
             let (m, i, part) = (arg(), arg(), arg());
             form::sorted_entry(heap, &m, &i, &part)?
