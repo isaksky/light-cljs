@@ -9182,6 +9182,141 @@ fn native_multifn_host_coercions_match_legacy() {
     assert_eq!(native, build(false));
 }
 
+/// The legacy collection and MultiFn `.apply` adapters read the receiver's
+/// `call` member before realizing the array-like argument; the IFn adapter
+/// realizes first. A getter that replaces or throws shows the order.
+#[test]
+fn native_borrowed_apply_reads_call_before_arguments() {
+    let root = temp_dir::TempDir::new("native-borrowed-apply-order");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+          (defmulti mf identity)
+          (defmethod mf :default [x] x)
+          (defrecord C [] IFn (-invoke [_ x] [:c x]))
+          (defn attempt [thunk] (try (thunk) (catch :default e (str "error: " (.-message e)))))
+          (defn scene [log tag throwing]
+            (js* "(function(log, tag, throwing){
+               let selected = function(){ log.push('old'); return tag + ':old'; };
+               const receiver = { get call() { log.push('get'); if (throwing) throw new Error('no call'); return selected; } };
+               const args = { get length() { log.push('length');
+                                             selected = function(){ log.push('new'); return tag + ':new'; };
+                                             return 0; } };
+               return [receiver, args]; })(~{}, ~{}, ~{})" log tag throwing))
+          (defn run [adapter tag throwing]
+            (let [log (js/Array.) pair (scene log tag throwing) receiver (aget pair 0) args (aget pair 1)
+                  result (attempt #(js* "~{}.call(~{}, null, ~{})" adapter receiver args))]
+              [result (vec log)]))
+          (defmacro probe []
+            (list 'quote [(run (.-apply {:k 1}) "map" false) (run (.-apply [1]) "vector" false)
+                          (run (.-apply :k) "keyword" false) (run (.-apply mf) "multi" false)
+                          (run (.-apply (->C)) "ifn" false)
+                          (run (.-apply {:k 1}) "map" true) (run (.-apply (->C)) "ifn" true)]))"#,
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [helpers :refer [probe]])) (js/console.log (pr-str (probe)))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(1).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}: {e}"));
+        emit_js(&program)
+    };
+    let native = build(true);
+    assert_eq!(
+        program_output(&native),
+        concat!(
+            "[[\"map:old\" [\"get\" \"length\" \"old\"]] [\"vector:old\" [\"get\" \"length\" \"old\"]] ",
+            "[\"keyword:old\" [\"get\" \"length\" \"old\"]] [\"multi:old\" [\"get\" \"length\" \"old\"]] ",
+            "[\"ifn:new\" [\"length\" \"get\" \"new\"]] [\"error: no call\" [\"get\"]] [\"error: no call\" [\"length\" \"get\"]]]\n"
+        )
+    );
+    #[cfg(feature = "quickjs")]
+    assert_eq!(native, build(false));
+}
+
+/// Within one declaration the IFn `call`/`apply` adapters win over `Object`
+/// methods of those names (the legacy installer writes them last); a later
+/// `extend-type` `Object` method replaces them for `.call` and callbacks,
+/// while a compiled direct call still enters the declared IFn entries (the
+/// legacy compiler's inferred arity call); a type with only `Object`
+/// methods uses them everywhere.
+#[test]
+fn native_ifn_object_member_precedence_matches_legacy() {
+    assert_native_matches_legacy(
+        r#"(deftype T [] Object (call [_ ignored x] :object) (apply [_ ignored xs] :object-apply) IFn (-invoke [_ x] :ifn))
+           (deftype U [] Object (call [_ ignored x] :object))
+           (deftype L [] IFn (-invoke [_ x] :ifn))
+           (extend-type L Object (call [_ ignored x] :late))
+           (deftype F [foo toString] Object (foo [_] :method))
+           (defmacro m []
+             (let [t (T.) u (U.) l (L.) f (F. :field (fn [] "field-string"))]
+               (list 'quote [(t 1) (.call t nil 1) (mapv t [1]) (js* "~{}.apply(null, [1])" t) (.apply t nil (js/Array.of 1)) (apply t [1])
+                             (u 1) (.call u nil 1) (mapv u [1])
+                             (l 1) (.call l nil 1) (mapv l [1]) (update {:k 1} :k l) (apply l [1])
+                             (.-foo f) (js* "~{}.foo" f) (js/String f) (js* "`${~{}}`" f)])))
+           (js/console.log (pr-str (m)))"#,
+        "[:ifn :ifn [:ifn] :ifn :ifn :ifn :object :object [:object] :ifn :late [:late] {:k :late} :ifn :field :field \"field-string\" \"field-string\"]\n",
+    );
+}
+
+/// A record's `__meta`, `__extmap` and `__hash` slots override a field of
+/// the same member name (the legacy constructor assigns them last), with
+/// supplied metadata and extension maps, in reads and descriptors.
+#[test]
+fn native_record_slots_override_colliding_members() {
+    assert_native_matches_legacy(
+        r#"(defrecord R [__meta])
+           (defmacro m []
+             (let [keys-of (fn [names] (vec (remove (fn [k] (.startsWith k "cljs$lang$")) names)))
+                   r (->R 1) w (with-meta (->R 1) {:m 1}) x (map->R {:__meta 2 :y 3})]
+               [(.-__meta r) (.-__extmap r) (.-__hash r) (keys-of (js/Object.keys r))
+                (.-__meta w) (.-__meta x) (.-__extmap x)
+                (js* "Object.getOwnPropertyDescriptor(~{}, '__meta').value" w)]))
+           (js/console.log (pr-str (m)))"#,
+        "[nil nil nil [\"__meta\" \"__extmap\" \"__hash\"] {:m 1} nil {:y 3} {:m 1}]\n",
+    );
+}
+
+/// `in` and `Reflect.has` see a form's runtime members (callable adapters,
+/// declared `Object` methods, what it inherits from `Object.prototype`)
+/// without calling them, on the form and through an inheriting object.
+#[test]
+fn native_form_member_presence_matches_quickjs() {
+    assert_native_matches_legacy(
+        r#"(deftype T [x] Object (foo [_] 1))
+           (defrecord C [] IFn (-invoke [_ y] y))
+           (defmacro m []
+             (let [m {"x" "y"} t (T. 1) c (->C)]
+               [(js* "'call' in ~{}" m) (js* "'apply' in ~{}" [1]) (js* "'call' in ~{}" :k) (js* "'call' in ~{}" 'k)
+                (js* "'call' in ~{}" t) (js* "'apply' in ~{}" t) (js* "'call' in ~{}" c) (js* "'apply' in ~{}" c)
+                (js* "'foo' in ~{}" t) (js* "'toString' in ~{}" t) (js* "'valueOf' in ~{}" c) (js* "'zz' in ~{}" t)
+                (js* "'x' in Object.create(~{})" t) (js* "'foo' in Object.create(~{})" t) (js* "'zz' in Object.create(~{})" t)
+                (js* "Reflect.has(~{}, 'call')" m) (js* "Reflect.has(~{}, 'toString')" t) (js* "Reflect.has(~{}, 'foo')" t)
+                (js* "('call' in ~{}) ? ~{}.call(null, 'x') : 'missing'" m m)]))
+           (js/console.log (pr-str (m)))"#,
+        "[true true true true false false true true true true true false true true false true true true \"y\"]\n",
+    );
+}
+
 /// Every JavaScript object operation times every native form kind, against
 /// QuickJS. A struct, record or multimethod is a frozen object whose own
 /// properties are its fields: the cells where that differs from the
@@ -9213,6 +9348,14 @@ fn native_form_object_operations_match_quickjs() {
                      ["get-call" #(fn? (js* "~{}.call" (fresh)))]
                      ["has-field" #(js* "'x' in ~{}" (fresh))]
                      ["has-missing" #(js* "'zz' in ~{}" (fresh))]
+                     ["has-call" #(js* "'call' in ~{}" (fresh))]
+                     ["has-inherited" #(js* "'toString' in ~{}" (fresh))]
+                     ["child-get" #(js* "Object.create(~{}).x" (fresh))]
+                     ["child-has" #(js* "'x' in Object.create(~{})" (fresh))]
+                     ["child-has-inherited" #(js* "'toString' in Object.create(~{})" (fresh))]
+                     ["child-set-other" #(js* "(function(o){'use strict'; const c=Object.create(o); c.zz=9; return [c.zz, 'zz' in o].join();})(~{})" (fresh))]
+                     ["child-call" #(js* "(function(o, k){ const c=Object.create(o); return typeof c.call === 'function' ? c.call(null, k) : 'none'; })(~{}, ~{})" (fresh) :k)]
+                     ["child-define-field" #(js* "(function(o){ const c=Object.create(o); Object.defineProperty(c,'x',{value:9}); return [c.x, o.x].join(); })(~{})" (fresh))]
                      ["keys" #(keys-of (js* "Object.keys(~{})" (fresh)))]
                      ["names" #(keys-of (js* "Object.getOwnPropertyNames(~{})" (fresh)))]
                      ["entries" #(keys-of (js* "Object.entries(~{}).map(e => e[0])" (fresh)))]
@@ -9239,6 +9382,8 @@ fn native_form_object_operations_match_quickjs() {
                      ["delete-field" #(js* "(function(o){'use strict'; return delete o.x;})(~{})" (fresh))]
                      ["delete-missing" #(js* "(function(o){'use strict'; return delete o.zz;})(~{})" (fresh))]
                      ["define-new" #(js* "(function(o){ Object.defineProperty(o,'zz',{value:9}); return o.zz;})(~{})" (fresh))]
+                     ["child-set-field" #(js* "(function(o){'use strict'; const c=Object.create(o); c.x=9; return c.x;})(~{})" (fresh))]
+                     ["reflect-set-receiver" #(js* "Reflect.set(~{}, 'x', 9, {})" (fresh))]
                      ["frozen" #(js* "Object.isFrozen(~{})" (fresh))]
                      ["sealed" #(js* "Object.isSealed(~{})" (fresh))]
                      ["extensible" #(js* "Object.isExtensible(~{})" (fresh))]
@@ -9418,6 +9563,29 @@ fn native_form_object_operations_match_quickjs() {
         (r#"multi frozen"#, r#"true"#, r#"false"#),
         (r#"multi sealed"#, r#"true"#, r#"false"#),
         (r#"multi extensible"#, r#"false"#, r#"true"#),
+        (
+            r#"type child-set-field"#,
+            r#""error: cannot assign to read-only property 'x'""#,
+            r#"9"#,
+        ),
+        (r#"type reflect-set-receiver"#, r#"false"#, r#"true"#),
+        (
+            r#"record child-set-field"#,
+            r#""error: cannot assign to read-only property 'x'""#,
+            r#"9"#,
+        ),
+        (r#"record reflect-set-receiver"#, r#"false"#, r#"true"#),
+        (
+            r#"multi child-set-field"#,
+            r#"9"#,
+            r#""error: 'x' is read-only""#,
+        ),
+        (r#"multi reflect-set-receiver"#, r#"true"#, r#"false"#),
+        (
+            r#"multi child-call"#,
+            r#""error: undefined is not a function""#,
+            r#""error: No protocol method IMultiFn/-get-method defined for this value""#,
+        ),
     ];
     // Collection, keyword, symbol and list rows: only these cells carry no
     // legacy internals and must match; the other cells are native snapshots.
@@ -9433,6 +9601,12 @@ fn native_form_object_operations_match_quickjs() {
         "set-proto-same",
         "str",
         "pr-str",
+        "has-call",
+        "child-get",
+        "child-has",
+        "child-set-other",
+        "child-call",
+        "child-define-field",
     ];
     #[cfg(feature = "quickjs")]
     {
@@ -9503,6 +9677,20 @@ fn native_form_object_operations_match_quickjs() {
     }
 }
 
+/// A macro's argument is an occurrence-wrapped form: raw JavaScript reads,
+/// presence, calls, keys and `instanceof` treat it as the form (a write is
+/// the frozen-object rejection the sweep lists).
+#[test]
+fn native_occurrence_forms_behave_as_their_values() {
+    assert_native_matches_legacy(
+        r#"(defmacro m [r k]
+             [(js* "~{}.call(null, ~{})" r k) (js* "'call' in ~{}" r) (js* "'zz' in ~{}" r)
+              (js* "Object.keys(~{}).length" r) (js* "typeof ~{}" r) (js* "~{} instanceof Object" r) (count r)])
+           (js/console.log (pr-str (m {:k 1} :k)))"#,
+        "[1 true false 0 \"object\" true 1]\n",
+    );
+}
+
 /// The four host-interop paths above against QuickJS at jobs 1/2/4/8 with
 /// the struct types declared by a cold helper namespace, so the resolver
 /// suspends inside ToPrimitive, raw `.apply` and callback invocation.
@@ -9525,6 +9713,8 @@ fn native_struct_host_interop_matches_quickjs_at_every_pool_size() {
                   attempt (fn [thunk] (try (thunk) (catch :default e (.-message e))))]
               (list 'quote [(js/String t) (js* "`${~{}}`" t) (js/String r)
                             (keys-of (js/Object.keys r)) (js* "'x' in ~{}" r) (.-x (js/Object.assign (js-obj) r))
+                            (js* "'call' in ~{}" c) (js* "'call' in ~{}" r) (js* "'toString' in ~{}" t) (js* "'zz' in ~{}" t)
+                            (js* "Reflect.has(~{}, 'call')" c) (js* "'x' in Object.create(~{})" r)
                             (attempt #(js* "~{}.apply(null, ~{})" {[:x 2] :hit} r))
                             (attempt #(.apply n nil l))
                             (mapv c [3]) (c 4) (update {:k 5} :k c)])))"#,
@@ -9574,7 +9764,7 @@ fn native_struct_host_interop_matches_quickjs_at_every_pool_size() {
         emit_js(&program)
     };
     let reference = build(true, 1, 0);
-    let expected = "[\"T1\" \"T1\" \"[object Object]\" [\"x\" \"__meta\" \"__extmap\" \"__hash\"] true 2 \"Invalid arity: 0\" 1 [[:field 3]] [:field 4] {:k [:field 5]}]";
+    let expected = "[\"T1\" \"T1\" \"[object Object]\" [\"x\" \"__meta\" \"__extmap\" \"__hash\"] true 2 true false true false true true \"Invalid arity: 0\" 1 [[:field 3]] [:field 4] {:k [:field 5]}]";
     assert_eq!(
         program_output(&reference),
         format!("[{expected} {expected}]\n")
@@ -9706,7 +9896,15 @@ fn native_raw_call_apply_matrix_matches_quickjs() {
                  #(.call (.-call (push "receiver" memo)) memo (push "this" nil)
                          (cold log "arg" st)))
                (ordered "order keyword"
-                 #(. (push "receiver" :x) call (push "this" nil) (cold log "arg" st)))]))
+                 #(. (push "receiver" :x) call (push "this" nil) (cold log "arg" st)))
+               (let [o (getter log pause)]
+                 (ordered "order borrowed-apply"
+                   #(.call (.-apply {:k :hit}) o nil
+                           (js* "({get length(){ ~{}.push('length'); return 1; }, get 0(){ ~{}.push('index'); return 'k'; }})" log log))))
+               (let [o (getter log pause)]
+                 (ordered "order borrowed-ifn-apply"
+                   #(.call (.-apply (->Callable :rec)) o nil
+                           (js* "({get length(){ ~{}.push('length'); return 1; }, get 0(){ ~{}.push('index'); return 'k'; }})" log log))))]))
           (defmacro probe []
             (let [st (->R 7)]
               (list 'quote (-> (matrix st) (into (aliasing st)) (into (order st))))))"#,
@@ -9784,6 +9982,8 @@ fn native_raw_call_apply_matrix_matches_quickjs() {
         "alias .call nil => [false true]",
         "alias fields => [true false]",
         "order .call => [\"call\" true :k] [\"receiver\" \"get\" \"pause\" \"this\" \"replace\" \"arg\" \"call\"]",
+        "order borrowed-apply => [\"call\" true \"k\"] [\"get\" \"pause\" \"length\" \"index\" \"call\"]",
+        "order borrowed-ifn-apply => [\"call\" true \"k\"] [\"length\" \"index\" \"get\" \"pause\" \"call\"]",
     ] {
         assert!(output.contains(line), "missing {line:?} in\n{output}");
     }

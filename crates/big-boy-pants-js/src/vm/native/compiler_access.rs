@@ -21,9 +21,16 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
             let ty = form::type_of(heap, &callee);
             if ty != Value::Null && MULTIFN.matches(&form::name(heap, &ty)?.name) {
                 state.push(entry);
+            } else if form::kind(heap, &callee).is_some() {
+                // A native form's direct-call member comes from the task's
+                // resolver (`jsDirectMember`), which may prefer declared IFn
+                // entries to a member named `call`.
+                super::core_protocol::start_direct_member(
+                    state,
+                    callee,
+                    &property::Key::Name(CALL.get()),
+                )?;
             } else {
-                // A native form's member defers to the task's resolver
-                // (`property::Deferred::Form`), like any property read.
                 let read = property::read(
                     heap,
                     state.diag.task,

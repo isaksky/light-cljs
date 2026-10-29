@@ -397,8 +397,11 @@ impl State {
                 Ok(Action::Continue)
             }
             // HasProperty must still call traps on either the receiver
-            // or its prototype chain, through the resumable In path.
-            property::Presence::Proxy(_) => Ok(has_property(self.this.clone(), key)),
+            // or its prototype chain, or a native form's runtime, through
+            // the resumable In path.
+            property::Presence::Proxy(_) | property::Presence::Form { .. } => {
+                Ok(has_property(self.this.clone(), key))
+            }
         }
     }
 

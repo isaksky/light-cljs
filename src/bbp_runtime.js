@@ -299,6 +299,10 @@ const decl = (() => {
   const objectMember = (info, name, member) => {
     if (info.names.has(name)) return;
     info.names.add(name);
+    // The legacy installer writes a declaration's Object methods before its
+    // IFn call/apply adapters, so those adapters win within the declaration;
+    // a later extension's Object method named call/apply replaces them.
+    if ((member === 'call' || member === 'apply') && !info.declaring) info.callables[member] = 'object';
     const names = info.members.get(member);
     if (names !== undefined) { names.push(name); return; }
     info.members.set(member, [name]);
@@ -315,13 +319,15 @@ const decl = (() => {
     // Raw call/apply use the type's declared IFn entries. Protocol extensions
     // do not replace those entries or install JavaScript callable members.
     const ifn = specs.filter(s=>s[0]==='IFn/-invoke').map(s=>[s[1],s[2],s[4]!=null,s[3]??s[2]]);
-    views.set(ty, {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, mutable, record, mask0});
+    const callables = ifn.length > 0 ? {call: 'ifn', apply: 'ifn'} : {};
+    const info = {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, callables, declaring: true, mutable, record, mask0};
+    views.set(ty, info);
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
       view.__lightNativeType = ty;
       view.prototype.__lightNativeType = ty;
     }
-    extend(ty, specs);
+    try { extend(ty, specs); } finally { info.declaring = false; }
     return mutable ? view : ty;
   };
   const ifnMethods = x => {
@@ -334,6 +340,7 @@ const decl = (() => {
     if (rest === undefined) return null;
     const ty = __rt.structTypeOf(x), overloaded = methods.some(m=>!m[2]);
     return canonicalMember(ty,()=>__rt.fnApplyNull(function(...args) {
+      if (__rt.structTypeOf(this) === null) throw new TypeError('undefined is not a function');
       return globalThis.__lightNativeRuntime.core.borrowedIFn(ty,overloaded,this,args);
     }));
   };
@@ -371,9 +378,17 @@ const decl = (() => {
     declare(s);
     const info = views.get(__rt.structTypeOf(s));
     if (info === undefined) throw new Error('unsupported operation: JavaScript interop with a native struct of an undeclared type');
+    // Install the Object extensions registered up to the frontier first:
+    // a type's members and call/apply precedence never depend on what ran
+    // before, as `build` does for protocol tables.
+    const pending = extensions.get('Object');
+    if (pending !== undefined) for (const b of pending) { if (b.order > frontier) break; if (!installing.includes(b)) force(b); }
     return info;
   };
   // The struct an object inheriting from one (`Object.create`) stands for.
+  // The struct an object inheriting from one (`Object.create`) stands for,
+  // for its Object methods; the callable adapters take their receiver as
+  // is, like the legacy ones.
   const structOf = o => {
     for (let p = __rt.formValue(o); p !== null && typeof p === 'object'; p = Object.getPrototypeOf(p))
       if (__rt.formKind(p) !== null) return p;
@@ -585,6 +600,7 @@ const native = (() => {
   };
   __rt.cljCoreResolver((op, x, throughLazy, name) => {
     if (op === 'jsMember') return jsMember(x, name);
+    if (op === 'jsDirectMember') return jsDirectMember(x, name);
     if(op==='cljWithExportedMeta')op='cljWithMeta';
     const kind = __rt.formKind(x);
     // The engine also offers sorted-map-by maps (and `=` with one, also
@@ -709,16 +725,25 @@ const native = (() => {
   };
   const families = ['keyword','symbol','vector','map','set'];
   const rawCalls = new Map(families.map(k=>[k,canonicalMember(k,()=>rawMember(k))]));
+  // The IFn and MultiFn adapters take a struct receiver (their own or a
+  // borrowed one): any other receiver is a catchable TypeError, as a legacy
+  // adapter's failure is.
   const rawMultiCall = canonicalMember('multi-call',()=>function(_, ...args) {
+    if (__rt.structTypeOf(this) === null) throw new TypeError('undefined is not a function');
     return globalThis.__lightNativeRuntime.core.invokeMulti(this,args);
   });
   rawCalls.set('struct',rawMultiCall);
   const rawIFnCall = canonicalMember('ifn-call',()=>function(_, ...args) {
+    if (__rt.structTypeOf(this) === null) throw new TypeError('undefined is not a function');
     return globalThis.__lightNativeRuntime.core.invokeIFn(this,args);
   });
+  // The legacy collection and MultiFn adapters read `this.call` before
+  // realizing the arguments; the IFn adapter realizes them first.
   const rawApplyMember = ifn => function(_, args) {
+    const call = ifn ? undefined : this.call;
     const values = globalThis.__lightNativeRuntime.core.nativeApplyArgs(args);
-    return this.call(null,...(ifn && values.length > 20 ? [...values.slice(0,20),values.slice(20)] : values));
+    if (ifn) return this.call(null,...(values.length > 20 ? [...values.slice(0,20),values.slice(20)] : values));
+    return Reflect.apply(call, this, [null, ...values]);
   };
   const rawApplies = new Map([...families,'struct'].map(k=>[k,canonicalMember(k+'-apply',()=>rawApplyMember(false))]));
   const rawIFnApply = canonicalMember('ifn-apply',()=>rawApplyMember(true));
@@ -743,10 +768,23 @@ const native = (() => {
       return name === 'call' ? rawCalls.get(kind) : name === 'apply' ? rawApplies.get(kind) : undefined;
     if (multi.is(value)) return name === 'call' ? rawMultiCall : name === 'apply' ? rawApplies.get('struct') : inherited(name);
     const info = decl.structInfo(value);
-    if (info.members.has(name)) return decl.memberFunction(info, name);
+    if (info.members.has(name) && info.callables[name] !== 'ifn') return decl.memberFunction(info, name);
     if (name === 'call') return decl.callable(value) ? decl.callMember(value) ?? rawIFnCall : undefined;
     if (name === 'apply') return decl.callable(value) ? rawIFnApply : undefined;
     return inherited(name);
+  };
+  // A compiled direct call `(f x)` prepares its callee's member as the legacy
+  // compiler does, which calls a declared IFn arity method directly when it
+  // knows the type and `.call` otherwise: a struct with declared IFn methods
+  // and no `call` field enters them, whatever Object method is named call.
+  const jsDirectMember = (x, name) => {
+    const value = val(x), kind = __rt.formKind(value);
+    if ((kind === 'struct' || kind === 'record') && !multi.is(value)) {
+      const info = decl.structInfo(value), field = info.fieldMembers.lastIndexOf(name);
+      if (field !== -1) return __rt.structField(value, info.fields[field]);
+      if (decl.callable(value)) return decl.callMember(value) ?? rawIFnCall;
+    }
+    return jsMember(x, name);
   };
   // `String(struct)` converts through the engine: the struct's Object
   // toString method, else Object.prototype's (a legacy record has no
@@ -1771,8 +1809,8 @@ const native = (() => {
     // Legacy `(f x)` is `f.call(null, x)`: a `call` field or Object method
     // shadows the declared IFn methods, which are otherwise entered directly.
     invokeStruct:(x,args)=>{
-      const info=decl.structInfo(x);
-      if(!info.fieldMembers.includes('call')&&!info.members.has('call')){
+      const info=decl.structInfo(x), objectCall=info.members.has('call')&&info.callables.call!=='ifn';
+      if(!info.fieldMembers.includes('call')&&!objectCall){
         if(decl.callable(x))return decl.invokeIFn(x,args);
         throw new TypeError('undefined is not a function');
       }

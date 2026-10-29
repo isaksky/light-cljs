@@ -4274,6 +4274,10 @@ pub(crate) fn start_in(state: &mut VmState, heap: &Heap) -> Result<(), Fault> {
                 ))),
             )?;
         }
+        // A form's runtime member: present when the resolver supplies it.
+        property::Presence::Form { target, key } => {
+            core_protocol::start_presence(state, Value::Object(target), &key)?;
+        }
     }
     Ok(())
 }

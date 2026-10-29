@@ -339,7 +339,9 @@ impl DefineProperty {
                         continue;
                     }
                     property::Presence::Value(true) => self.present = true,
-                    property::Presence::Proxy(target) => {
+                    // A Proxy trap or a native form's runtime member: the
+                    // resumable In path decides.
+                    property::Presence::Proxy(target) | property::Presence::Form { target, .. } => {
                         self.checking_presence = true;
                         return Ok(DefineStep::Has {
                             this: Value::Object(target),

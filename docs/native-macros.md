@@ -3888,3 +3888,61 @@ light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/
 
 There is still no native `app.main` output to compare. Research was not
 changed.
+
+### Review-fix round 3: member precedence, evaluation order, inheritance (2026-10-29)
+
+The third review found five edges in the frozen-object model; the fixes keep
+the model and an adversarial pass over the same surface added the rows that
+exercise it.
+
+- **Apply adapters read `call` first.** The collection and multimethod
+  `.apply` adapters read `this.call` before realizing the array-like
+  argument, as the legacy adapters' `this.call(null, ...Array.from(args))`
+  does, so a getter that replaces or throws is observed in the legacy order;
+  the IFn adapter keeps realizing first.
+- **IFn adapters win over same-declaration `Object` members.** The legacy
+  installer writes a declaration's `Object` methods before its IFn
+  `call`/`apply` adapters, so within one declaration the adapters win for
+  `.call`, `.apply`, direct calls and callbacks; a later `extend-type`
+  `Object` method named `call` replaces the adapter for `.call` and runtime
+  callbacks, while a compiled direct call still enters the declared IFn
+  entries, as the legacy compiler's inferred arity call does (the engine's
+  `cljCallMember` preparation now asks the resolver with `jsDirectMember`).
+  A type's pending `Object` extension bundles are installed before any
+  member lookup, so precedence never depends on what ran before.
+- **Record slots override colliding fields.** `__meta`, `__extmap` and
+  `__hash` resolve before a field of the same member name, as the legacy
+  constructor's later assignments do; keys stay deduplicated.
+- **Presence sees runtime members.** `in` and `Reflect.has` (the resumable
+  probe) consult the resolver for a non-field name, never calling the
+  member, on the form and through an inheriting object; the probe may park
+  on a cold declaration. A leaf presence check (one that cannot run the
+  resolver) still sees only fields.
+- **Inherited writes honour frozen fields.** A write through an object
+  inheriting from a struct (`Object.create`) to a field name is rejected as
+  read-only, with a separate receiver too; other names continue at
+  `Object.prototype` and are added to the child.
+
+The adversarial pass also found and fixed: a borrowed IFn or multimethod
+adapter reached with a non-struct receiver now throws a catchable
+`TypeError` (the legacy adapters fail with their own error text, listed in
+the sweep) instead of an engine fault, and a write through an occurrence
+wrapper reports the frozen-object rejection. It confirmed, against QuickJS,
+that a field shadows an `Object` method and `Object.prototype.toString` of
+the same name, that an occurrence-wrapped macro argument reads, probes,
+calls and enumerates as its form, and that neither runtime lets an object
+inheriting from a collection call its `call` member (`Expected map`). Two
+legacy quirks are not modelled: a later `extend-type` `Object` method named
+`apply` does not replace the legacy IFn `apply` adapter (only `call` is
+tested), and a legacy record's keyword lookup of a field colliding with a
+slot returns the slot. Tests: `native_borrowed_apply_reads_call_before_arguments`,
+`native_ifn_object_member_precedence_matches_legacy`,
+`native_record_slots_override_colliding_members`,
+`native_form_member_presence_matches_quickjs`,
+`native_occurrence_forms_behave_as_their_values`, the engine's
+`native_struct_inherited_writes_respect_frozen_fields` and
+`native_form_member_presence_resolves_without_calling`, new sweep rows
+(`has-call`, `has-inherited`, `child-get/has/has-inherited/call/define-field/set-field/set-other`,
+`reflect-set-receiver`), the matrix's borrowed `.apply` order rows and the
+pool-size test's presence cells through a cold declaration. Each failed
+before its fix.

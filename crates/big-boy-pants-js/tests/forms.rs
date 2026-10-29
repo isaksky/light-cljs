@@ -2545,7 +2545,7 @@ fn raw_form_members_resume_resolution_and_calls_without_changing_identity() {
       if(m.call!==undefined)throw new Error('unconfigured native member');
       let resolutions=0;
       __rt.cljCoreResolver((op,x,_,name)=>{
-        if(op!=='jsMember'||x!==m)throw new Error('member receiver');
+        if((op!=='jsMember'&&op!=='jsDirectMember')||x!==m)throw new Error('member receiver');
         resolutions++;
         if(name!=='call')return undefined;
         __rt.need(921,1);
@@ -2659,7 +2659,9 @@ fn native_struct_integrity_matches_own_descriptors() {
     let code = compile_function(
         r#"function f() {
       const T=__rt.structType('ns/R',__rt.formVector('x','__meta'),true,__rt.formVector('x','__meta'));
-      const s=__rt.structNew(T,1,null);
+      // The record slot overrides the colliding field, as the legacy
+      // constructor's later assignment does.
+      const s=__rt.structNew(T,1,5);
       const out=[], attempt=thunk=>{ try { return String(thunk()); } catch(e) { return 'error: '+e.message; } };
       const d=Object.getOwnPropertyDescriptor(s,'x');
       out.push([d.value,d.writable,d.enumerable,d.configurable].join());
@@ -2756,6 +2758,92 @@ fn native_form_toprimitive_member_reads_resume_without_replay() {
     assert_eq!(
         result.string().map(|s| s.to_string_lossy()).as_deref(),
         Some("text|41|text|42|conversion boom|5|4|4")
+    );
+}
+
+/// An object inheriting from a struct (`Object.create`) cannot shadow a
+/// frozen field by assignment, as with any frozen prototype; other names are
+/// added to the child, and a write with a separate receiver fails too.
+#[test]
+fn native_struct_inherited_writes_respect_frozen_fields() {
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function f() {
+      const T=__rt.structType('ns/T',__rt.formVector('x'),false,null);
+      const s=__rt.structNew(T,1), child=Object.create(s), out=[];
+      const attempt=thunk=>{ try { return String(thunk()); } catch(e) { return 'error: '+e.message; } };
+      out.push(attempt(()=>{ child.x=2; return child.x; }));
+      out.push(attempt(()=>Reflect.set(child,'x',2)));
+      out.push(attempt(()=>Reflect.set(s,'x',2,{})));
+      out.push(attempt(()=>Reflect.set(child,'zz',1,{})));
+      out.push(attempt(()=>{ child.y=3; return child.y; }));
+      out.push([child.x, 'x' in child, Object.keys(child).join(), s.x].join());
+      const grandchild=Object.create(child);
+      out.push(attempt(()=>{ grandchild.x=4; return grandchild.x; }));
+      return out.join('|');
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let result = complete(task.run().unwrap());
+    assert_eq!(
+        result.string().map(|s| s.to_string_lossy()).as_deref(),
+        Some(concat!(
+            "error: cannot assign to read-only property 'x'|false|false|true|3|1,true,y,1|",
+            "error: cannot assign to read-only property 'x'"
+        ))
+    );
+}
+
+/// `in` and `Reflect.has` on a form consult the task's resolver for a
+/// member that is not a struct field (never calling it) and may park
+/// there; without a resolver only the fields exist. Through an inheriting
+/// object the probe reaches the form on the prototype chain.
+#[test]
+fn native_form_member_presence_resolves_without_calling() {
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function f() {
+      const T=__rt.structType('ns/T',__rt.formVector('x'),false,null);
+      const s=__rt.structNew(T,1), m=__rt.formMap('k',1), child=Object.create(s);
+      const before=['x' in s, 'call' in m, 'toString' in s, Reflect.has(s,'x'), Reflect.has(m,'call')].join();
+      let resolutions=0;
+      __rt.cljCoreResolver((op,x,_,name)=>{
+        if(op!=='jsMember')throw new Error('op '+op);
+        resolutions++;
+        __rt.need(920+resolutions,1);
+        if(name==='call'&&x===m)return function(){ throw new Error('presence must not call'); };
+        if(name==='toString')return function(){ throw new Error('presence must not call'); };
+        return undefined;
+      });
+      const after=['call' in m, 'toString' in s, 'zz' in s, Reflect.has(m,'call'), 'toString' in child, 'x' in child, 'zz' in child].join();
+      return before+'|'+after+'|'+resolutions;
+    }"#,
+    )
+    .unwrap();
+    let mut task = rt.spawn(&code, &[]).unwrap();
+    for _ in 0..6 {
+        let outcome = task.run().unwrap();
+        assert!(matches!(outcome, RunOutcome::Waiting(_)), "{outcome:?}");
+        rt.collect().unwrap();
+        let request = task.take_producer_requests().pop().unwrap();
+        let ready = rt.root(Primitive::Null);
+        task = rt
+            .complete(request.key(), request.producer(), Completion::Ready(&ready))
+            .unwrap()
+            .into_runnable()
+            .pop()
+            .unwrap();
+    }
+    let result = thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || complete(task.run().unwrap()))
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(
+        result.string().map(|s| s.to_string_lossy()).as_deref(),
+        Some("true,false,false,true,false|true,true,false,true,true,true,false|6")
     );
 }
 

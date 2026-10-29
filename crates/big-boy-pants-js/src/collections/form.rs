@@ -1849,33 +1849,29 @@ pub(crate) fn new_type(
     )
 }
 
-/// The JavaScript own property `name` of the struct `f`: the value of the
-/// last field whose member name it is, or a record's `__meta`, `__extmap`
-/// or `__hash` slot (`null` when absent, as a fresh legacy record's are).
+/// The JavaScript own property `name` of the struct `f`: a record's
+/// `__meta`, `__extmap` or `__hash` slot (`null` when absent, as a fresh
+/// legacy record's are; a legacy constructor assigns the slots after the
+/// fields, so a slot overrides a field of the same member name), else the
+/// value of the last field whose member name it is.
 pub(crate) fn struct_own_property(f: &FormObject, name: &JsString) -> Option<Value> {
     let FormBody::Struct(s) = f.body() else {
         return None;
     };
-    if let Some(i) = s
-        .info
+    if s.info.record {
+        if name == &JsString::from("__meta") {
+            return Some(f.meta().cloned().unwrap_or(Value::Null));
+        } else if name == &JsString::from("__extmap") {
+            return Some(s.ext.clone().unwrap_or(Value::Null));
+        } else if name == &JsString::from("__hash") {
+            return Some(Value::Null);
+        }
+    }
+    s.info
         .members
         .iter()
         .rposition(|member| member.code_units() == name.code_units())
-    {
-        return Some(s.fields.get(i).unwrap_or(Value::Undefined));
-    }
-    if !s.info.record {
-        return None;
-    }
-    if name == &JsString::from("__meta") {
-        Some(f.meta().cloned().unwrap_or(Value::Null))
-    } else if name == &JsString::from("__extmap") {
-        Some(s.ext.clone().unwrap_or(Value::Null))
-    } else if name == &JsString::from("__hash") {
-        Some(Value::Null)
-    } else {
-        None
-    }
+        .map(|i| s.fields.get(i).unwrap_or(Value::Undefined))
 }
 
 /// The JavaScript own keys of the struct `f`, in a legacy constructor's

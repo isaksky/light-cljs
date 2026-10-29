@@ -851,10 +851,19 @@ pub(crate) fn has_property(
 pub(crate) enum Presence {
     Value(bool),
     Proxy(ObjectId),
+    /// A native form's named member that is not a struct field: present
+    /// when the task's resolver supplies it (`Deferred::Form`).
+    Form {
+        target: ObjectId,
+        key: Key,
+    },
 }
 
 pub(crate) fn probe(heap: &Heap, task: TaskId, base: &Value, key: &Key) -> Result<Presence, Fault> {
     match lookup_cursor(heap, task, base, key, LookupMode::Probe, None)? {
+        LookupResult::Read(Some(Read::Deferred(Deferred::Form { target, key }))) => {
+            Ok(Presence::Form { target, key })
+        }
         LookupResult::Read(found) => Ok(Presence::Value(found.is_some())),
         LookupResult::Proxy(id) => Ok(Presence::Proxy(id)),
     }
@@ -1076,10 +1085,12 @@ fn lookup_cursor(
                     })),
                     // A struct's fields are its own data properties; a
                     // form's other named members (methods, callable
-                    // adapters, conversions) belong to the task's runtime,
-                    // for an object inheriting from a form too. Presence
-                    // checks see only the fields; symbol and index keys
-                    // nothing.
+                    // adapters, conversions, what it inherits from
+                    // Object.prototype) belong to the task's runtime, for an
+                    // object inheriting from a form too: reads, conversions
+                    // and the resumable presence probe (`in`, `Reflect.has`)
+                    // defer to it, a leaf presence check sees only the
+                    // fields, and symbol and index keys nothing.
                     Visit::Other(HeapObject::Form(f)) if let Key::Name(name) = key => {
                         if let Some(value) = form::struct_own_property(f, name) {
                             Ok(Lookup::Found(Read::Value(if has {
@@ -1087,7 +1098,7 @@ fn lookup_cursor(
                             } else {
                                 value
                             })))
-                        } else if has {
+                        } else if matches!(mode, LookupMode::Has) {
                             Ok(Lookup::Next(None))
                         } else {
                             Ok(Lookup::Found(Read::Deferred(Deferred::Form {
@@ -1340,6 +1351,8 @@ fn store(
             Key::Name(name) if form::struct_own_property(f, name).is_some() => read_only(key),
             _ => not_extensible(key),
         })),
+        // An occurrence wraps a form (or a scalar): nothing can be added.
+        HeapObject::Occurrence(_) => Ok(Stored::Rejected(not_extensible(key))),
         other => Err(not_ordinary(other, key, Access::Write)
             .unwrap_or(Fault::Internal("a property write was not rejected"))),
     }
@@ -1882,6 +1895,20 @@ fn check_inherited(
                     Visit::Other(HeapObject::Promise(p)) => {
                         p.check_owner(task).map(|()| Walk::Next(p.prototype()))
                     }
+                    // A form as a prototype: a struct's field is frozen, so
+                    // a shadowing write is rejected as on any frozen
+                    // prototype; other names continue at Object.prototype.
+                    // An occurrence continues at the object it wraps.
+                    Visit::Other(HeapObject::Form(f)) => match key {
+                        Key::Name(name) if form::struct_own_property(f, name).is_some() => {
+                            Err(read_only(key))
+                        }
+                        _ => Ok(Walk::ObjectPrototype),
+                    },
+                    Visit::Other(HeapObject::Occurrence(o)) => Ok(Walk::Next(match o.value {
+                        Value::Object(inner) => Some(inner),
+                        _ => None,
+                    })),
                     // Another kind as a prototype: one without JavaScript
                     // properties ends the walk.
                     Visit::Other(other) => match not_ordinary(other, key, Access::Read) {
@@ -1902,6 +1929,10 @@ fn check_inherited(
                 });
             }
             Walk::Setter(setter) => return Ok(Chain::Setter(setter)),
+            Walk::ObjectPrototype => match realm.and_then(|r| Some(r.object_prototype)) {
+                Some(prototype) => id = prototype,
+                None => return Ok(Chain::Add),
+            },
             Walk::Next(Some(prototype)) => id = prototype,
             Walk::Next(None) => return Ok(Chain::Add),
             // Continue at the store that has the function's own `key`, or
@@ -1943,6 +1974,8 @@ enum Walk {
     /// Continue at this prototype, or (`None`) stop: the receiver may add
     /// the property.
     Next(Option<ObjectId>),
+    /// Continue at `Object.prototype` (a native form's prototype).
+    ObjectPrototype,
     /// The object is a function (`crate::vm::function`).
     Function,
 }

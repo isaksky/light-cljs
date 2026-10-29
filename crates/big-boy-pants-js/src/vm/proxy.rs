@@ -223,6 +223,9 @@ enum Stage {
     Forward,
     TrapResult,
     GetResult,
+    /// A forwarded HasProperty answered by the resumable In path (a native
+    /// form's runtime member).
+    HasResult,
     Length,
     LengthValue,
     Element,
@@ -479,6 +482,13 @@ impl Operations {
                             return self.finish(Output::Boolean(value));
                         }
                         property::Presence::Proxy(id) => op.object = id,
+                        property::Presence::Form { target, key } => {
+                            op.phase = Stage::HasResult;
+                            return Ok(Progress::Action(super::native::has_property(
+                                Value::Object(target),
+                                key,
+                            )));
+                        }
                     }
                 }
                 let Some(p) = inspect(heap, task, op.object)? else {
@@ -797,6 +807,9 @@ impl Operations {
                 return self.finish(Output::Descriptor(out));
             }
             Stage::GetResult => return self.finish(Output::Value(result(input)?)),
+            Stage::HasResult => {
+                return self.finish(Output::Boolean(matches!(result(input)?, Value::Bool(true))));
+            }
             Stage::TargetExtensible => {
                 op.phase = Stage::CheckExtensible;
                 let target = op.proxy.as_ref().unwrap().target;
