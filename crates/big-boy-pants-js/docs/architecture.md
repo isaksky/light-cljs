@@ -564,9 +564,13 @@ built-ins that read members such as `length`) also consults this task's
 resolver, with operation `jsMember` and the key as its fourth argument. The
 resolver returns the member itself; the original native receiver remains on
 the JavaScript operand stack, so `form.m(args)` calls with the form as
-`this`. Forms retain their identity and are never converted. Without a
-resolver, forms have no members; presence checks, symbol and index keys and
-ToPrimitive conversions never consult the resolver. Resolution uses the same
+`this`. Forms retain their identity and are never converted. A struct's
+fields (under the member names its type declares) and a record's three
+slots are its own enumerable data properties, answered by the engine for
+reads, presence, descriptors and key enumeration without the resolver;
+ToPrimitive's `valueOf`/`toString` lookups defer like ordinary reads. Without
+a resolver, forms have no other members; symbol and index keys never consult
+it. Resolution uses the same
 traced continuation as protocol lookup and can suspend without replaying the
 read. Two-argument
 lookup has its own `cljGet2` selector. Sequence operations also resolve a struct
