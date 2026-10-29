@@ -8496,6 +8496,234 @@ fn native_js_call_and_apply_preserve_struct_views() {
     );
 }
 
+/// One table for raw `.call`/`.apply`: every receiver kind, operand kind and
+/// access form against QuickJS, plus member-lookup/operand order across cold
+/// helper demands, at every pool size and stress seed.
+#[test]
+fn native_raw_call_apply_matrix_matches_quickjs() {
+    let root = temp_dir::TempDir::new("native-raw-call-apply-matrix");
+    for (file, source) in [
+        (
+            "helpers.cljs",
+            r#"(ns helpers)
+          (defn cold [log tag x] (.push log tag) x)
+          (defrecord R [x])
+          (defrecord Callable [tag] IFn (-invoke [this v] [tag v]))
+          (deftype CallableType [tag] IFn (-invoke [this v] [tag v]))
+          (defmulti mf (fn [v] (cond (nil? v) :nil (number? v) :num (record? v) :rec :else :other)))
+          (defmethod mf :default [v] [:mf v])
+          (def memo (memoize (fn [v] [:memo v])))
+          (deftype Fields [tag call apply])
+          (defrecord RecFields [tag call apply])
+          (defn render [thunk]
+            (try (let [r (thunk)] (pr-str (if (array? r) (vec r) r)))
+                 (catch :default e "error")))
+          (defn matrix [st]
+            (let [d (js* "(function(o) { 'use strict';
+                       return o === null ? 'nil' : o === undefined ? 'undefined'
+                         : typeof o === 'object' && o.tag !== undefined ? 'tag:' + o.tag
+                         : typeof o === 'object' && o.x !== undefined ? 'x:' + o.x : o; })")
+                  js-fn (js* "(function(d) { return function() { 'use strict'; const xs = Array.from(arguments);
+                           return ['js', d(this), ...xs.map(d)]; }; })(~{})" d)
+                  call-field (js* "(function(d) { return function() { 'use strict'; const xs = Array.from(arguments);
+                           return ['call-field', d(this), ...xs.map(d)]; }; })(~{})" d)
+                  apply-field (js* "(function(d) { return function(t, xs) { 'use strict';
+                           return ['apply-field', d(this), d(t), ...(Array.isArray(xs) ? xs.map(d) : [d(xs)])]; }; })(~{})" d)
+                  obj (js* "({tag: 'obj', call: ~{}, apply: ~{}})" call-field apply-field)
+                  coll {:x :coll 'x :sym}
+                  operands [["scalar" 0] ["coll" coll] ["struct" st] ["nil" nil]]
+                  receivers [["map" (hash-map 0 :zero coll :coll-key st :struct-key nil :nil-key)]
+                             ["set" (hash-set 0 coll st nil)] ["vector" [:v0 :v1]]
+                             ["keyword" :x] ["symbol" 'x] ["multi" mf]
+                             ["ifn-record" (->Callable :rec)] ["ifn-type" (CallableType. :type)]
+                             ["memo" memo] ["js-fn" js-fn] ["js-object" obj]
+                             ["deftype-fields" (Fields. "fields" call-field apply-field)]
+                             ["record-fields" (->RecFields "rec-fields" call-field apply-field)]]]
+              (vec (for [[rl f] receivers [ol v] operands
+                         [al thunk] [["direct" #(f v)]
+                                     [".call" #(.call f nil v)]
+                                     [".apply" #(.apply f nil (js* "[~{}]" v))]
+                                     ["extracted" #(let [c (.-call f)] (.call c f nil v))]
+                                     ["explicit" #(. f call nil v)]
+                                     ["explicit-list" #(. f (call nil v))]]]
+                     (str rl " " ol " " al " => " (render thunk))))))
+          (defn aliasing [st]
+            (let [same (js* "(function() { 'use strict'; const xs = arguments; return [this === xs[0], xs[0] === xs[1]]; })")
+                  fields (Fields. "fields" same nil)]
+              [(str "alias .call => " (render #(.call same st st)))
+               (str "alias .call nil => " (render #(.call same nil st st)))
+               (str "alias fields => " (render #(.call fields fields)))
+               (str "alias extracted => " (render #(.call (.-call same) same st st)))]))
+          (defn getter [log pause]
+            (js* "(function(log, pause) {
+               const o = {tag: 'getter'};
+               let call = function(_, x) { log.push('call'); return ['call', this === o, x]; };
+               let apply = function(_, xs) { log.push('apply'); return ['apply', this === o, xs[0]]; };
+               Object.defineProperty(o, 'call', {get() { log.push('get'); pause(); return call; }});
+               Object.defineProperty(o, 'apply', {get() { log.push('get'); pause(); return apply; }});
+               o.replace = function() {
+                 log.push('replace');
+                 call = apply = function() { log.push('replacement'); return 'replacement'; };
+               };
+               return o;
+             })(~{}, ~{})" log pause))
+          (defn order [st]
+            (let [log (js/Array.)
+                  pause (fn [] (cold log "pause" nil))
+                  ordered (fn [label thunk]
+                            (.splice log 0)
+                            (let [result (render thunk)]
+                              (str label " => " result " " (pr-str (vec log)))))
+                  push (fn [tag x] (.push log tag) x)]
+              [(let [o (getter log pause)]
+                 (ordered "order .call"
+                   #(.call (push "receiver" o) (push "this" nil)
+                           (do (.replace o) (cold log "arg" :k)))))
+               (let [o (getter log pause)]
+                 (ordered "order .apply"
+                   #(.apply (push "receiver" o) (push "this" nil)
+                            (do (.replace o) (js* "[~{}]" (cold log "arg" :k))))))
+               (let [o (getter log pause)]
+                 (ordered "order explicit"
+                   #(. (push "receiver" o) call (push "this" nil)
+                       (do (.replace o) (cold log "arg" :k)))))
+               (ordered "order map"
+                 #(.call (push "receiver" {:k :hit}) (push "this" nil) (cold log "arg" :k)))
+               (ordered "order ifn-record"
+                 #(.apply (push "receiver" (->Callable :rec)) (push "this" nil)
+                          (js* "[~{}]" (cold log "arg" st))))
+               (ordered "order memo"
+                 #(.call (.-call (push "receiver" memo)) memo (push "this" nil)
+                         (cold log "arg" st)))
+               (ordered "order keyword"
+                 #(. (push "receiver" :x) call (push "this" nil) (cold log "arg" st)))]))
+          (defmacro probe []
+            (let [st (->R 7)]
+              (list 'quote (-> (matrix st) (into (aliasing st)) (into (order st))))))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [helpers :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [helpers :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (doseq [line (concat a/value b/value)] (js/console.log line))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs, seed| {
+        let mut host = MacroHost::new();
+        let mut stats = light_cljs::CompileStats::default();
+        if native {
+            host.use_native_macros();
+        }
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                stats: Some(&mut stats),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: native.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}, seed {seed}: {e}"));
+        // Helper calls in the receiver, getter and operands park on cold demands.
+        if native {
+            assert!(stats.native_helpers.waits > 0, "{stats:?}");
+        }
+        emit_js(&program)
+    };
+    let reference = build(true, 1, 0);
+    let output = program_output(&reference);
+    for line in [
+        "map coll .call => :coll-key",
+        "keyword struct extracted => 7",
+        "ifn-record struct .apply => [:rec #helpers.R{:x 7}]",
+        "memo struct extracted => [:memo #helpers.R{:x 7}]",
+        "js-fn struct .call => [\"js\" \"nil\" \"x:7\"]",
+        "js-fn coll .call => [\"js\" \"nil\" {:x :coll, x :sym}]",
+        "alias .call => [true false]",
+        "alias .call nil => [false true]",
+        "alias fields => [true false]",
+        "order .call => [\"call\" true :k] [\"receiver\" \"get\" \"pause\" \"this\" \"replace\" \"arg\" \"call\"]",
+    ] {
+        assert!(output.contains(line), "missing {line:?} in\n{output}");
+    }
+    #[cfg(feature = "quickjs")]
+    let legacy_reference = {
+        // Native structs are not JavaScript objects. Ordinary JavaScript code
+        // sees their fields through the views call/apply give their receiver
+        // and positional operands; a struct passed by direct invocation or in
+        // an apply array stays native, and a struct's call field is not its
+        // call protocol. Both boundaries predate raw call/apply adaptation.
+        let boundary = |native: &str, legacy: &str| {
+            let fields =
+                native.starts_with("deftype-fields ") || native.starts_with("record-fields ");
+            (native.contains(" struct direct => ") || native.contains(" struct .apply => "))
+                && native.replace("#helpers.R{:x 7}", "\"x:7\"") == legacy
+                || fields
+                    && native.ends_with(" direct => error")
+                    && legacy.starts_with(native.trim_end_matches("error"))
+                    && legacy.contains("[\"call-field\" ")
+        };
+        let legacy_reference = build(false, 1, 0);
+        let legacy = program_output(&legacy_reference);
+        let mut boundaries = 0;
+        let differences: Vec<_> = output
+            .lines()
+            .zip(legacy.lines())
+            .filter(|(native, legacy)| native != legacy)
+            .filter(|(native, legacy)| {
+                let expected = boundary(native, legacy);
+                boundaries += usize::from(expected);
+                !expected
+            })
+            .map(|(native, legacy)| format!("native {native}\nlegacy {legacy}"))
+            .collect();
+        assert!(
+            differences.is_empty() && output.lines().count() == legacy.lines().count(),
+            "{}",
+            differences.join("\n")
+        );
+        // Per expansion: four ordinary receivers' struct direct/.apply cells,
+        // and the two field structs' remaining direct calls.
+        assert_eq!(boundaries, 2 * (4 * 2 + 2 * 3), "{output}");
+        legacy_reference
+    };
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            legacy_reference,
+            build(false, jobs, 0),
+            "QuickJS jobs {jobs}"
+        );
+        for seed in 1..=seeds {
+            assert_eq!(
+                reference,
+                build(true, jobs, seed),
+                "jobs {jobs}, seed {seed}"
+            );
+        }
+    }
+}
+
 #[test]
 fn native_callable_objects_keep_the_legacy_call_abi() {
     assert_native_matches_legacy(

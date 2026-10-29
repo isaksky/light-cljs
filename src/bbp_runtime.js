@@ -447,7 +447,7 @@ const decl = (() => {
     return info?.mutable && info.record ? info : null;
   };
   return {extend, method, satisfies, implementsDirectly, predicate, type, viewOf, register, enter, leave, coreKeys, mutableRecord,
-    callable, invokeIFn, applyIFn, callMember, borrowedIFn,
+    callable, invokeIFn, applyIFn, callMember, borrowedIFn, viewStruct:o=>viewStructs.get(o)??o,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
     coreMethod:resolveCore,
@@ -723,9 +723,9 @@ const native = (() => {
   const rawIFnApply = canonicalMember('ifn-apply',()=>rawApplyMember(true));
   // Compiled .call/.apply interop adapts only native callables: collections,
   // keywords, symbols, MultiFns and IFn structs, plus the shared members
-  // above. Everything else is ordinary interop: struct views for receivers
-  // and operands, so struct fields and Object methods named call or apply,
-  // and JavaScript functions reading a struct argument, behave as legacy.
+  // above. They receive native operands. Every other receiver is ordinary
+  // interop: it and its struct operands are struct views (one per struct in
+  // the call, so aliasing holds), other operands pass unchanged.
   const callableForm = x => {
     const value = val(x), kind = __rt.formKind(value);
     if (families.includes(kind)) return true;
@@ -735,11 +735,17 @@ const native = (() => {
   // Read the member before the operands are evaluated, as `r.call(...)` does.
   const callMethod = (x, name) => {
     const raw = callableForm(x), receiver = raw ? val(x) : interop(x), member = receiver[name];
-    const adapt = raw || isRawMember(receiver) ? val : interop;
-    return (...args) => {
-      args = args.map(a => adapt(a));
-      return typeof member === 'function' ? Reflect.apply(member, receiver, args) : member(...args);
-    };
+    const call = args => typeof member === 'function' ? Reflect.apply(member, receiver, args) : member(...args);
+    if (raw || isRawMember(receiver)) return (...args) => call(args.map(val));
+    const views = new Map(), kind = __rt.formKind(val(x));
+    if (kind === 'struct' || kind === 'record') views.set(val(x), receiver);
+    return (...args) => call(args.map(a => {
+      const value = val(a), kind = __rt.formKind(value);
+      if (kind !== 'struct' && kind !== 'record') return value;
+      let view = views.get(value);
+      if (view === undefined) views.set(value, view = decl.viewOf(value));
+      return view;
+    }));
   };
   // memoize calls its callback through Clojure apply, whose fixed function
   // receiver is the function itself. Native variadic dispatchers preserve
@@ -1820,6 +1826,8 @@ const native = (() => {
     },
     invokeMemoized:(cache,args)=>{
       lane(cache);
+      // Ordinary call/apply interop passes a struct view; it stands for its struct.
+      args=args.map(decl.viewStruct);
       const key=vector(args), state=__rt.atomLoad(cache), callback=__rt.formNth(state,0), table=__rt.formNth(state,1), adapted=__rt.formNth(state,2);
       // Presence is independent of the result: nil, false and undefined
       // are cached too. Keys use the native Clojure equality/hash contract.
