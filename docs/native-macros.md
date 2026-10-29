@@ -3845,3 +3845,46 @@ default V8 `release bench --no-cache` runs on the seed-42 200k project take
 `1a75bc87b26f3121…` unchanged; the default binary contains none of the changed
 code. Penpot `app.render` builds natively in 14.46 s and matches V8 byte for
 byte (`d352af3a…`).
+
+#### Review-fix round 2 verification
+
+The branch merged master `a335bcef` (native sorted-map-by, light-cljs-561)
+in `9efd151e`; both sides add to the core-protocol frame state, the native
+module exports, the resolver, the runtime and this document, and the merge
+keeps both. On the same toolchain, at the merged source (`3ad3f198` differs
+only by a test lint fix):
+
+- Combined `bbp-macros,quickjs` `bbp_macros` passes 161 tests and the library
+  368 (one ignored stress case each); native-only `bbp_macros` passes 159
+  (one ignored) with `LIGHT_CLJS_STRESS_SEEDS=12`, the native `bbp_evaluator`
+  selection 63; engine all-targets passes 2,192 tests and the seven doctests.
+- Default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, `-j 8 --no-fail-fast`,
+  pinned ClojureScript `a5e94c98`) passes 2,133 tests in 216.5 s and fails
+  only the unchanged worktree `playground_crate_checks_for_wasm32`
+  diagnostic. Strict default Clippy passes; native and engine all-target
+  Clippy pass with the three baseline categories allowed (strict engine
+  Clippy keeps them); compiler and engine formatting pass.
+- Five alternating 200k pairs (branch first) against a fresh default V8
+  release build of master `a335bcef` (built from `git archive` in its own
+  target directory), load average about 5–7 from a peer: median wall time
+  **7.66 s on master and 7.64 s on the branch** (ranges 7.58–7.88 and
+  7.55–7.75 s), median user CPU 7.84/7.83 s, maximum RSS 1,032–1,076 and
+  1,012–1,064 MiB; all ten outputs keep SHA-256 prefix `1a75bc87b26f3121`.
+  Five quieter pairs against the earlier master `ba7f0c89` gave 7.20/7.25 s.
+- Native `app.render` at jobs 1 (14.84 s wall, 14.21 s user, 407,863,296
+  bytes maximum RSS) and jobs 4 (9.82 s, 12.81 s user, 518,946,816 bytes)
+  stays byte-identical to the fresh V8 build (2.35 s), SHA-256
+  `8f55b0bd…374e` over 12,687,975 bytes.
+
+With sorted-map-by native, `app.main` passes instaparse's grammar table
+and stops at the next gap, a compile-time atom holding `re-pattern`
+RegExps (light-cljs-563), at jobs 1 (102.21 s wall, 97.78 s user,
+702,808,064 bytes) and jobs 4 (56.88 s, 67.70 s user, 895,647,744 bytes),
+exiting 1 with exactly:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Atom(NotShareable): atom operation: cannot publish: value[0].capture(1)[0]{:regexp}{:parsers}[0]{:regexp} is a task-owned object (owned by task#1), which is not shareable (in anonymous at instruction 9 [atom_cas @ byte 23], task#1, world#0) at source 1088:33
+```
+
+There is still no native `app.main` output to compare. Research was not
+changed.
