@@ -972,8 +972,138 @@ fn partition_all_helpers_publish_and_resume_with_buffered_values() {
     }
 }
 
+/// `pop`/`peek` over imported stack receivers, as printed by the macro. The
+/// source reader lowers `#queue` to an `into` form, so this expands directly
+/// with actual queue descriptors (empty and populated), as the bridge test
+/// below does: the bridge wraps every imported payload in an occurrence.
+/// Imported vectors (with metadata) and lists ride along in the same call.
+fn imported_stack_pops(host: &mut MacroHost, native: bool) -> String {
+    use light_cljs::{
+        CollectionKind,
+        bbp_evaluator::BbpEvaluator,
+        compiler_data::{
+            CompilerLiteralKind, Datum, DatumKind, ExpansionOrigin, Form, Name, Origin, Source,
+        },
+        evaluator::MacroEvaluator,
+    };
+    let collection = |kind, items: Vec<Datum>| {
+        Datum::new(DatumKind::Collection {
+            kind,
+            children: items.into(),
+        })
+    };
+    let numbers = |items: &[i64]| {
+        collection(
+            CollectionKind::Vector,
+            items
+                .iter()
+                .map(|&n| Datum::new(DatumKind::Integer(n)))
+                .collect(),
+        )
+    };
+    let queue = |items: &[i64]| {
+        Datum::new(DatumKind::CompilerLiteral {
+            kind: CompilerLiteralKind::Queue,
+            payload: numbers(items),
+        })
+    };
+    let tagged = numbers(&[5, 6]).with_metadata(collection(
+        CollectionKind::Map,
+        vec![
+            Datum::new(DatumKind::Keyword(Name::new(None, "m"))),
+            Datum::new(DatumKind::Integer(1)),
+        ],
+    ));
+    let list = |items: &[i64]| {
+        collection(
+            CollectionKind::List,
+            items
+                .iter()
+                .map(|&n| Datum::new(DatumKind::Integer(n)))
+                .collect(),
+        )
+    };
+    let text =
+        "(probe [#queue [1 2 3] #queue [4] #queue []] [[1 2] ^{:m 1} [5 6] [] (3 4) () nil])";
+    let source = Source::new("stacks.cljs", text);
+    let call = Form::from_data(
+        collection(
+            CollectionKind::List,
+            vec![
+                Datum::new(DatumKind::Symbol(Name::new(None, "probe"))),
+                collection(
+                    CollectionKind::Vector,
+                    vec![queue(&[1, 2, 3]), queue(&[4]), queue(&[])],
+                ),
+                collection(
+                    CollectionKind::Vector,
+                    vec![
+                        numbers(&[1, 2]),
+                        tagged,
+                        numbers(&[]),
+                        list(&[3, 4]),
+                        list(&[]),
+                        Datum::new(DatumKind::Nil),
+                    ],
+                ),
+            ],
+        ),
+        source.span(0..text.len()).unwrap(),
+        Origin::Source,
+    );
+    let code = r#"(fn [form env queues stacks]
+      (let [p pop pp -pop
+            error (fn [f x] (try (f x) (catch :default e (.-message e))))]
+        (pr-str
+          [(mapv (fn [q] (let [r (p q) m (with-meta q {:q true})]
+                           [(peek q) (peek r) (seq r) (= r (pp q))
+                            (pr-str r) (pr-str (pop (pop r))) (meta (pop m)) (= q (pop r))]))
+                 queues)
+           (mapv (fn [x] (let [r (error p x)]
+                           [(pr-str r) (meta r) (vector? r) (list? r) (error peek x) (error pp x)]))
+                 stacks)])))"#;
+    let program = analyze_with_macros(code, &parse(code).unwrap(), host).unwrap();
+    let evaluator: Box<dyn MacroEvaluator> = if native {
+        Box::new(BbpEvaluator::new(host.evaluator_options.clone()).unwrap())
+    } else {
+        #[cfg(feature = "quickjs")]
+        {
+            Box::new(light_cljs::evaluator::Evaluator::new(host.evaluator_options.clone()).unwrap())
+        }
+        #[cfg(not(feature = "quickjs"))]
+        unreachable!("the legacy evaluator needs the quickjs feature")
+    };
+    let function = evaluator
+        .evaluate_unit(&light_cljs::emitter::emit_js_unit(&program))
+        .unwrap();
+    let result = host
+        .expand_javascript(
+            evaluator.as_ref(),
+            function,
+            &call,
+            &Datum::new(DatumKind::Collection {
+                kind: CollectionKind::Map,
+                children: Box::new([]),
+            }),
+            ExpansionOrigin {
+                macro_name: Name::new(None, "probe"),
+                call: call.span(),
+                definition: None,
+                helpers: vec![],
+            },
+        )
+        .unwrap_or_else(|e| panic!("native={native}: {e}"));
+    evaluator.release(function).unwrap();
+    match result.data().kind() {
+        DatumKind::String(text) => String::from_utf16(text).unwrap(),
+        other => panic!("native={native}: {other:?}"),
+    }
+}
+
 /// Persistent stack `pop`, as Penpot's style helper merges adjacent strings,
 /// with user IStack types, unsupported kinds and the protocol function.
+/// Imported receivers (queue descriptors, vectors with metadata, lists and
+/// nil) are checked at each pool size against QuickJS too.
 #[test]
 fn native_pop_matches_quickjs_at_every_pool_size() {
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
@@ -1041,9 +1171,25 @@ fn native_pop_matches_quickjs_at_every_pool_size() {
             },
         )
         .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}: {e}"));
-        emit_js(&program)
+        (emit_js(&program), imported_stack_pops(&mut host, native))
     };
-    let reference = build(true, 1);
+    let (reference, imported) = build(true, 1);
+    let queues = [
+        r##"[1 2 (2 3) true "#queue [2 3]" "#queue []" {:q true} false]"##,
+        r##"[4 nil nil true "#queue []" "#queue []" {:q true} false]"##,
+        r##"[nil nil nil true "#queue []" "#queue []" {:q true} true]"##,
+    ]
+    .join(" ");
+    let stacks = [
+        r##"["[1]" nil true false 2 [1]]"##,
+        r##"["[5]" {:m 1} true false 6 [5]]"##,
+        r##"["\"Can't pop empty vector\"" nil false false nil "Can't pop empty vector"]"##,
+        r##"["(4)" nil false true 3 (4)]"##,
+        r##"["\"Can't pop empty list\"" nil false false nil "Can't pop empty list"]"##,
+        r##"["nil" nil false false nil "No protocol method IStack/-pop defined for this value"]"##,
+    ]
+    .join(" ");
+    assert_eq!(imported, format!("[[{queues}] [{stacks}]]"));
     let unsupported = "\"No protocol method IStack.-pop defined for this value\"";
     let checked = [
         "[nil nil false false]",
@@ -1066,6 +1212,7 @@ fn native_pop_matches_quickjs_at_every_pool_size() {
              [true {{:q true}} nil]] true\n"
         )
     );
+    let reference = (reference, imported);
     for jobs in [1, 2, 4, 8] {
         #[cfg(feature = "quickjs")]
         assert_eq!(reference, build(false, jobs), "legacy, jobs {jobs}");
