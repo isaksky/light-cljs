@@ -3566,3 +3566,21 @@ A fresh native-only release with all five absolute read-only roots and every
 budget reproduces the exact `app.main` CSS `keep` failure above at jobs 1
 (17.6 s wall, 389 MiB maximum RSS). The post-fix native `app.render` output
 remains byte-identical to the V8 hash above. light-cljs-560 owns the next gap.
+
+#### Ordinary call/apply interop verification
+
+Production source `b7687e21` (master `8771ed4f`) restricts the raw adapters to
+native callables. The `bbp-macros,quickjs` `bbp_macros` run passes 145 tests
+and the native-only run with `LIGHT_CLJS_STRESS_SEEDS=12` passes 143, each with
+the existing ignored stress case; both new ordinary-interop rows fail on the
+previous source. Full default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`,
+`-j 8 --no-fail-fast`, pinned ClojureScript `a5e94c98`) passes 2,133 tests and
+fails only the unchanged `playground_crate_checks_for_wasm32` worktree
+workspace-discovery diagnostic. Strict default Clippy passes. Native strict
+Clippy reports only the engine baseline categories (eight diagnostics); with those categories
+allowed it reports only the existing `unused_enumerate_index` in the unchanged
+`tests/execution.rs`. On the seed-42 200k fixture, three alternating
+`release bench --no-cache` pairs against the pre-fix default release binary
+take 8.23/8.03/7.93 s before and 8.26/7.95/7.93 s after (medians 8.03 and
+7.95 s, load average about 10 from one peer); master `8771ed4f` takes 8.12 s.
+Emitted output trees are identical across all three binaries.
