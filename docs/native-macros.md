@@ -3231,3 +3231,100 @@ All final checks cover production source `3647597b`; subsequent commits change
 only this verification text. Master remains `c31d1b97`, so the final rebase is
 a no-op and the recorded checks remain valid. The temporary pinned
 ClojureScript source symlink is removed after verification.
+
+## Native keep transducer and stack pop (light-cljs-560, 2026-10-28)
+
+`keep` and `keep-indexed` now have native transducer arities. A direct
+one-argument call lowers to a publishable factory, as `filter`, `remove` and
+`partition-all` do; `keep-indexed` allocates its index cell when the factory is
+applied to a reducer, so every reducer counts from zero. The core-value
+adapters (`(let [k keep] (k f))`) share one `keepTransform`. Only nil results
+are dropped (false is kept), completion and initialization delegate to the
+downstream reducer, a reduced downstream result stops the reduction before the
+next input is read, and other arities report `Invalid arity: n` as the legacy
+runtime does. The lazy collection arities are unchanged.
+
+Penpot's `app.main.style/css-case` then reached `core.pop`: its
+`compile-concat` merges adjacent strings with `(conj (pop acc) ...)`. A new
+`cljPop` engine leaf handles the stacks `cljPeek` observes: nil stays nil, a
+vector drops its last element and keeps its metadata (a map entry pops to a
+plain vector), an IList list is its rest, and a queue literal drops its first
+element (an empty queue is itself). Empty vectors and lists throw the legacy
+`Can't pop empty vector`/`list` errors; other kinds, including sequence views,
+cons cells and lazy sequences, report `No protocol method IStack.-pop defined
+for this value` without being realized. The native `pop` and `-pop` core
+functions consult `IStack/-pop` extensions (including user types) before the
+leaf; public `pop` leaves nil alone.
+
+Differential source tests compare native and QuickJS emission:
+`native_transducer_call_shapes_match_legacy` gains keep/keep-indexed rows for
+nil filtering, composition with `partition-by`/`mapcat`/`filter`, callback and
+reducer effect order under reduced termination, independent reducer state,
+completion arities, lazy and chunked collection demand, arity and callback
+errors. `keep_helpers_publish_and_resume_at_seeded_pool_sizes` publishes a
+composed keep/keep-indexed helper and its step function, consumes them from two
+namespaces under seeded scheduling at jobs 1/2/4/8 (two published helpers, no
+per-task reconstruction, cold waits) and matches QuickJS at each size.
+`native_pop_matches_quickjs_at_every_pool_size` covers the Penpot merge,
+metadata, map entries, user IStack types, the protocol function, the empty
+queue and unsupported kinds at jobs 1/2/4/8; the engine forms test checks the
+leaf over published occurrences and a populated queue literal.
+
+### Penpot progression and next boundary
+
+light-cljs-558 has not landed on master yet, so the Penpot runs use a local,
+unpublished merge of `sol/native-558-559` (`bc10da48`) with this work; the
+branch itself contains only the keep/pop changes. Fresh native-only release
+builds use the five absolute read-only roots and every documented budget with
+`--compile --esm --optimize none --no-cache --stats`.
+
+`app.main` passes the `stl/css` keep transducer quoted in light-cljs-560, then
+`app.main.style/css-case` at `core.pop`, and **still does not build natively**.
+At jobs 1 and 4 it exits 1 with this exact first error:
+
+```text
+light-cljs: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro expansion: while expanding precompile-cljs-grammar: /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:129:21: macro instaparse.abnf/precompile-cljs-grammar: big-boy-pants-js: Error: unsupported operation: native macro runtime core.sortedMapBy; definition /Users/admin/src/light-cljs/research/penpot-light/vendor/instaparse/abnf.cljc:104:1 (bytes 5039..5064)
+```
+
+The macro runs instaparse's GLL parser at compile time, whose failure table is
+`(atom (sorted-map-by >))` (`instaparse/gll.cljc:212`). Native sorted maps
+support only the default comparator, so this is a missing ordered-collection
+capability rather than another missing core function or transducer; it is
+filed as light-cljs-561. A reduced `sorted-map-by >` macro fails natively the
+same way and prints `[[3 2 1] [3 :c]]` with V8. The failing runs take 98.97 s
+wall, 94.77 s user, 3.83 s system and 699,891,712 bytes maximum RSS at jobs 1,
+and 54.08 s wall, 64.50 s user, 3.92 s system and 892,026,880 bytes at jobs 4
+(the grammar macro now executes much more compile-time code before failing).
+There is no native main output to compare or successful main-build timing claim.
+
+`app.render` still builds natively at jobs 1 (13.94 s wall) and 4 (9.37 s), and
+both outputs match a fresh V8 jobs-1 build (master release binary) byte for
+byte, SHA-256 `d352af3a2bb2d35f1447f3d4fc6592de609dc30e92c3424f7321afc607a8d9a3`.
+
+### Verification
+
+On macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 26.12.1 and the
+read-only ClojureScript pin `a5e94c98`, at source commit `2b86e4f9` on master
+`8771ed4f`:
+
+- Combined native/QuickJS library and `bbp_macros` suites pass 367 and 140
+  tests (one existing ignored stress case each), with
+  `LIGHT_CLJS_STRESS_SEEDS=12`, `CARGO_BUILD_JOBS=3` and three test workers.
+- Native-only `bbp_macros` passes 138 tests (one ignored) with the same seeds.
+- `cargo test --locked -p big-boy-pants-js --all-targets -- --test-threads=3`
+  passes all 2,182 engine tests.
+- Full default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, `-j 8`) passes 2,133
+  tests and QuickJS-only nextest passes 2,056; each fails only the existing
+  worktree `playground_crate_checks_for_wasm32` workspace diagnostic.
+- Formatting passes. Strict all-target V8 and QuickJS Clippy pass; combined
+  all-target, engine all-target and native library/binary/`bbp_macros` lint pass
+  allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks` and
+  `clippy::byte_char_slices` after `-D warnings`.
+
+No native-only code was added to `src/js_runtime.js` or the default build
+path. Three alternating pairs of default V8 release builds (master `8771ed4f`
+before, this branch after) run `release bench --no-cache` on the seed-42 200k
+generated project: median wall time is **7.25 s before and 7.26 s after**
+(ranges 7.21–7.34 and 7.22–7.31 s), median user CPU 7.39/7.40 s, and maximum
+RSS 996/1,040 MiB (ranges 995–1,014 and 1,011–1,046 MiB), within run
+variation. All six outputs keep SHA-256 prefix `1a75bc87b26f3121`.
