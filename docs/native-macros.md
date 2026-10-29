@@ -3946,3 +3946,32 @@ slot returns the slot. Tests: `native_borrowed_apply_reads_call_before_arguments
 `reflect-set-receiver`), the matrix's borrowed `.apply` order rows and the
 pool-size test's presence cells through a cold declaration. Each failed
 before its fix.
+
+#### Review-fix round 3 verification
+
+On the same toolchain, at source `401d3f00` (the following commit changes
+one lint-only expression in the inherited write walk, re-linted and
+re-tested with the engine forms suite), master `a335bcef`:
+
+- Combined `bbp-macros,quickjs` `bbp_macros` passes 166 tests and the library
+  368 (one ignored stress case each); native-only `bbp_macros` passes 164
+  (one ignored) with `LIGHT_CLJS_STRESS_SEEDS=12`, the native `bbp_evaluator`
+  selection 63; engine all-targets passes 2,194 tests and the seven doctests.
+- Default V8 nextest (`LIGHT_CLJS_V8_CACHE=require`, `-j 8 --no-fail-fast`,
+  pinned ClojureScript `a5e94c98`) passes 2,133 tests in 214.2 s and fails
+  only the unchanged worktree `playground_crate_checks_for_wasm32`
+  diagnostic. Strict default Clippy passes; native and engine all-target
+  Clippy pass with the three baseline categories allowed (strict engine
+  Clippy keeps them); compiler and engine formatting pass.
+- Five alternating 200k pairs (branch first) against the fresh default V8
+  release build of master `a335bcef`, load average about 2–4: median wall
+  time **7.11 s on master and 7.10 s on the branch** (ranges 7.02–7.35 and
+  6.98–7.45 s), median user CPU 7.25/7.24 s, maximum RSS 1,012–1,052 and
+  982–1,055 MiB; all ten outputs keep SHA-256 prefix `1a75bc87b26f3121`.
+- Native `app.render` at jobs 1 (13.90 s wall, 13.30 s user, 412,581,888
+  bytes maximum RSS) and jobs 4 (9.38 s, 12.18 s user, 509,083,648 bytes)
+  stays byte-identical to the fresh V8 build (2.12 s), SHA-256
+  `8f55b0bd…374e`. `app.main` still exits 1 with the exact `re-pattern`
+  RegExp `Atom(NotShareable)` error above (light-cljs-563) at jobs 1
+  (95.51 s wall, 91.55 s user, 704,135,168 bytes) and jobs 4 (53.86 s,
+  64.11 s user, 875,790,336 bytes).
