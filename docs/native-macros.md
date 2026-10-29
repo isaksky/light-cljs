@@ -3400,7 +3400,14 @@ executes again with every answer so far. Answers are taken in the order the
 comparisons are met, and a pair decided with one is not memoized, so every
 comparison met calls the comparator once, as each legacy `=` does, and none is
 repeated. Each new comparison re-executes the (effect-free) instruction, so `n`
-such comparisons in one instruction cost `O(n^2)` engine work. Without a task
+such comparisons in one instruction cost `O(n^2)` engine work. The retained
+answers are charged to the aggregate heap budget before their buffer grows
+(a denial is the catchable heap-limit error) and released with the frame that
+holds them, also on cancellation. Inside a set comparison, as the legacy set
+`equiv` catches an `Error` its lookups throw and answers false, the frame
+catches an `Error` the runtime's `=` (or its comparator) throws and the
+innermost enclosing set comparison is unequal; any other thrown value, and a
+throw outside a set comparison, propagates. Without a task
 runtime (an embedder's `formEquals`) the comparison still raises `unsupported
 operation: native nested equality with a sorted-map-by map`. `seq`, `rseq`, `first`, `keys`,
 `vals`, `count`, `reduce`, `reduce-kv`, `into` sources, hashing, metadata and

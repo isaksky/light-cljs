@@ -600,6 +600,11 @@ form instruction starts a core-protocol frame that calls the resolver's `=`
 on the task VM and then executes the instruction again with the answers so
 far (`VmState::sorted_answers`, consumed in the order comparisons are met; a
 pair decided with one is not memoized), so no comparator call is repeated.
+The answers' buffer is admitted against the aggregate budget before it grows
+(`form::SortedAnswers`, a `GrowthCharge`). A request met inside a set
+comparison installs a native catch: an `Error` the call throws becomes a
+failed answer that makes the innermost enclosing set comparison unequal, as
+the legacy set `equiv` does; other throws propagate.
 Without a resolver the comparison raises the `unsupported operation` error.
 `formIsSortedBy` tells such a map apart also when its comparator is `null`;
 `formIsArrayMap` reports the value direction `=` uses for a left map.

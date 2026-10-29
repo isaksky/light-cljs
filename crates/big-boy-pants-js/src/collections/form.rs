@@ -1159,11 +1159,14 @@ const SORTED_BY_EQUALITY: &str = "native nested equality with a sorted-map-by ma
 
 /// The task runtime's answer to one structural comparison of a map (`left`)
 /// with a `sorted-map-by` map (`right`), made by its comparator-calling `=`.
+/// `equal` is `None` when that `=` threw an `Error` inside a set comparison:
+/// as the legacy set `equiv` catches it, the innermost enclosing set
+/// comparison is then unequal.
 #[derive(Debug, Clone)]
 pub(crate) struct SortedEquality {
     pub(crate) left: Value,
     pub(crate) right: Value,
-    pub(crate) equal: bool,
+    pub(crate) equal: Option<bool>,
 }
 
 impl Trace for SortedEquality {
@@ -1173,16 +1176,41 @@ impl Trace for SortedEquality {
     }
 }
 
+/// One form instruction's answers, retained across its executions (and the
+/// task's suspensions) by the frame that obtained them. Their storage is
+/// charged to the aggregate heap budget before it grows ([`Self::charge`]).
+#[derive(Debug, Default)]
+pub(crate) struct SortedAnswers {
+    pub(crate) items: Vec<SortedEquality>,
+    pub(crate) charge: GrowthCharge,
+}
+
+impl Trace for SortedAnswers {
+    fn trace(&self, visit: &mut dyn FnMut(TraceEdge)) {
+        self.items.iter().for_each(|answer| answer.trace(visit));
+    }
+}
+
+/// A comparison the task runtime must answer: the left map, the right
+/// `sorted-map-by` map, and whether it is met inside a set comparison
+/// (where an `Error` its `=` throws makes that set comparison unequal).
+#[derive(Debug, Clone)]
+pub(crate) struct SortedRequest {
+    pub(crate) left: Value,
+    pub(crate) right: Value,
+    pub(crate) in_set: bool,
+}
+
 #[derive(Default)]
 struct SortedEqualities {
     /// Answers for the running instruction, from its earlier executions, in
     /// the order it met the comparisons: each occurrence of a comparison
     /// takes its own answer, as each legacy `=` calls the comparator again.
-    answers: Vec<SortedEquality>,
+    answers: SortedAnswers,
     /// The next answer to take.
     next: usize,
     /// The first comparison it met without an answer.
-    request: Option<(Value, Value)>,
+    request: Option<SortedRequest>,
 }
 
 thread_local! {
@@ -1194,7 +1222,7 @@ thread_local! {
 
 /// Make `answers` available to the instruction about to run (replacing any
 /// left over).
-pub(crate) fn install_sorted_answers(answers: Vec<SortedEquality>) {
+pub(crate) fn install_sorted_answers(answers: SortedAnswers) {
     SORTED_EQUALITIES.with(|s| {
         let mut s = s.borrow_mut();
         s.answers = answers;
@@ -1203,27 +1231,27 @@ pub(crate) fn install_sorted_answers(answers: Vec<SortedEquality>) {
 }
 
 /// Take back the answers [`install_sorted_answers`] made available.
-pub(crate) fn take_sorted_answers() -> Vec<SortedEquality> {
+pub(crate) fn take_sorted_answers() -> SortedAnswers {
     SORTED_EQUALITIES.with(|s| std::mem::take(&mut s.borrow_mut().answers))
 }
 
 /// Take the recorded comparison (left map, right sorted-map-by map) that
 /// the task runtime must answer before the instruction can run again.
-pub(crate) fn take_sorted_request() -> Option<(Value, Value)> {
+pub(crate) fn take_sorted_request() -> Option<SortedRequest> {
     SORTED_EQUALITIES.with(|s| s.borrow_mut().request.take())
 }
 
 /// The answer for the next comparison met, which an execution meets in the
 /// same order as the last (the operands are immutable values; a sequence
 /// realized meanwhile only lets it go further).
-fn sorted_answer(left: &Value, right: &Value) -> Option<bool> {
+fn sorted_answer(left: &Value, right: &Value) -> Option<Option<bool>> {
     SORTED_EQUALITIES.with(|s| {
         let mut s = s.borrow_mut();
-        let answer = s.answers.get(s.next)?;
+        let answer = s.answers.items.get(s.next)?;
         if !(answer.left.same_object(left) && answer.right.same_object(right)) {
             // Not the comparison answered here: ask again from this one on.
             let next = s.next;
-            s.answers.truncate(next);
+            s.answers.items.truncate(next);
             return None;
         }
         let equal = answer.equal;
@@ -1233,11 +1261,15 @@ fn sorted_answer(left: &Value, right: &Value) -> Option<bool> {
 }
 
 /// The first unanswered comparison met wins.
-fn request_sorted(left: &Value, right: &Value) {
+fn request_sorted(left: Value, right: Value, in_set: bool) {
     SORTED_EQUALITIES.with(|s| {
         let mut s = s.borrow_mut();
         if s.request.is_none() {
-            s.request = Some((left.clone(), right.clone()));
+            s.request = Some(SortedRequest {
+                left,
+                right,
+                in_set,
+            });
         }
     });
 }
@@ -2879,11 +2911,13 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
         /// Every step must hold; `memo` is the form pair it decides.
         /// `answered` counts the task runtime's answers taken before it: a
         /// pair decided with one is not reused, since each legacy `=` with
-        /// a sorted-map-by map calls its comparator again.
+        /// a sorted-map-by map calls its comparator again. `set` marks a
+        /// set comparison, the boundary of a failed answer.
         All {
             memo: Option<(ObjectId, ObjectId)>,
             pending: Vec<Step>,
             answered: usize,
+            set: bool,
         },
         Lookup {
             key: Value,
@@ -2898,11 +2932,14 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
     enum Outcome {
         Decided(bool),
         Expand((ObjectId, ObjectId), Vec<Step>),
-        /// Decided by the task runtime's answer for a `sorted-map-by` map.
-        Answered(bool),
+        /// A set comparison: an `Error` its lookups meet makes it unequal.
+        ExpandSet((ObjectId, ObjectId), Vec<Step>),
+        /// Decided by the task runtime's answer for a `sorted-map-by` map
+        /// (`None`: its `=` threw an `Error` inside a set comparison).
+        Answered(Option<bool>),
         /// A map compared with a `sorted-map-by` map the task runtime has
-        /// not compared yet: the request is recorded.
-        Request,
+        /// not compared yet.
+        Request(Value, Value),
     }
     let map_steps =
         |p: &FormMap, q: &FormMap, values: bool, source_sorted: bool, target_sorted: bool| {
@@ -3019,7 +3056,7 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
                 if p.len() != q.len() {
                     return Outcome::Decided(false);
                 }
-                Outcome::Expand((ia, ib), map_steps(p, q, false, false, false))
+                Outcome::ExpandSet((ia, ib), map_steps(p, q, false, false, false))
             }
             (FormBody::Map(p), FormBody::Map(q)) => {
                 if p.len() != q.len() {
@@ -3030,10 +3067,7 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
                 if y.comparator.is_some() {
                     return match sorted_answer(&a, &b) {
                         Some(equal) => Outcome::Answered(equal),
-                        None => {
-                            request_sorted(&a, &b);
-                            Outcome::Request
-                        }
+                        None => Outcome::Request(a, b),
                     };
                 }
                 Outcome::Expand((ia, ib), map_steps(p, q, true, x.sorted, y.sorted))
@@ -3066,15 +3100,19 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
         memo: None,
         pending: vec![Step::Pair(a.clone(), b.clone())],
         answered,
+        set: false,
     }];
     // The result of the frame popped last, delivered to the one below it.
     let mut returned: Option<bool> = None;
     while let Some(frame) = frames.last_mut() {
+        // A failed answer: unwind to the innermost set comparison.
+        let mut failed_answer = false;
         match frame {
             Frame::All {
                 memo,
                 pending,
                 answered: before,
+                ..
             } => {
                 let failed = returned.take() == Some(false);
                 let step = if failed { None } else { pending.pop() };
@@ -3094,13 +3132,21 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
                     Some(Step::Pair(a, b)) => match compare(a, b, &equal, &unequal, &active) {
                         Outcome::Decided(true) => {}
                         Outcome::Decided(false) => returned = Some(false),
-                        Outcome::Answered(equal) => {
+                        Outcome::Answered(Some(equal)) => {
                             answered += 1;
                             if !equal {
                                 returned = Some(false);
                             }
                         }
-                        Outcome::Request => {
+                        Outcome::Answered(None) => {
+                            answered += 1;
+                            failed_answer = true;
+                        }
+                        Outcome::Request(a, b) => {
+                            let in_set = frames
+                                .iter()
+                                .any(|f| matches!(f, Frame::All { set: true, .. }));
+                            request_sorted(a, b, in_set);
                             return Err(CollectionError::Unsupported(SORTED_BY_EQUALITY));
                         }
                         Outcome::Expand(pair, steps) => {
@@ -3109,6 +3155,16 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
                                 memo: Some(pair),
                                 pending: steps,
                                 answered,
+                                set: false,
+                            });
+                        }
+                        Outcome::ExpandSet(pair, steps) => {
+                            active.insert(pair);
+                            frames.push(Frame::All {
+                                memo: Some(pair),
+                                pending: steps,
+                                answered,
+                                set: true,
                             });
                         }
                     },
@@ -3186,6 +3242,7 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
                             memo: None,
                             pending: vec![pair],
                             answered,
+                            set: false,
                         });
                     } else {
                         frames.pop();
@@ -3198,12 +3255,32 @@ pub(crate) fn try_equals(heap: &Heap, a: &Value, b: &Value) -> Result<bool, Coll
                         memo: None,
                         pending: vec![Step::Pair(key, other)],
                         answered,
+                        set: false,
                     });
                 } else {
                     frames.pop();
                     returned = Some(false);
                 }
             }
+        }
+        if failed_answer {
+            // The set comparison (memoized by no one, as an answer was
+            // taken inside it) is unequal; the frames above it end with it.
+            loop {
+                match frames.pop() {
+                    Some(Frame::All { memo, set, .. }) => {
+                        if let Some(pair) = memo {
+                            active.remove(&pair);
+                        }
+                        if set {
+                            break;
+                        }
+                    }
+                    Some(Frame::Lookup { .. }) => {}
+                    None => return Err(CollectionError::Unsupported(SORTED_BY_EQUALITY)),
+                }
+            }
+            returned = Some(false);
         }
     }
     Ok(returned.unwrap_or(true))

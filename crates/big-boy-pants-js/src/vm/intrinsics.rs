@@ -474,10 +474,10 @@ fn form_step(
         return realize::start(heap, state, instr, n, pending, answers);
     }
     // Without a task runtime to ask, the comparison's failure stands.
-    if let Some((left, right)) = sorted
+    if let Some(request) = sorted
         && state.core_resolver.is_some()
     {
-        return super::native::start_sorted_equality(state, instr, n, left, right, answers);
+        return super::native::start_sorted_equality(state, instr, n, request, answers);
     }
     state.replace(n, made?)
 }

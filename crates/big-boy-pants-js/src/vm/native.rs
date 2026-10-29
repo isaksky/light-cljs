@@ -404,7 +404,7 @@ pub(crate) enum Action {
     Retry {
         instr: Instr,
         operands: Vec<Value>,
-        answers: Vec<crate::collections::form::SortedEquality>,
+        answers: crate::collections::form::SortedAnswers,
         fallback: bool,
     },
     /// Read a dependency in the task's world, suspending if it is pending.
@@ -4076,6 +4076,7 @@ pub(crate) fn catch(
         NativeState::MathSumPrecise(sum) if sum.catches() => sum.failed(exception),
         NativeState::Generator { failed, .. } => *failed = Some(exception),
         NativeState::Realize(realize) if realize.catches() => realize.failed(exception),
+        NativeState::CoreProtocol(protocol) if protocol.catches() => protocol.failed(exception),
         _ => return Err("invalid native catch"),
     }
     frame.awaiting = Awaiting::Nothing;
@@ -4354,6 +4355,7 @@ impl NativeState {
         match self {
             Self::Async(_) => true,
             Self::Realize(realize) => realize.catches(),
+            Self::CoreProtocol(protocol) => protocol.catches(),
             Self::AsyncGenerator(a) => a.catches(),
             Self::Disposal(disposal) => disposal.catches(),
             Self::Promise(promise) => promise.catches(),
@@ -4384,7 +4386,7 @@ impl NativeState {
             NativeState::ProxyCall(proxy) => proxy.step(heap, task, input),
             NativeState::RegExp(regexp) => regexp.step(heap, task, input),
             NativeState::Realize(realize) => realize.step(heap, task, input),
-            NativeState::CoreProtocol(protocol) => protocol.step(input),
+            NativeState::CoreProtocol(protocol) => protocol.step(heap, task, input),
             // Locale parsing descends into Intl helpers. Avoid reserving the
             // unrelated step_other temporaries on 64 KiB workers.
             NativeState::StringMethods(method) => method.step(heap, task, input),

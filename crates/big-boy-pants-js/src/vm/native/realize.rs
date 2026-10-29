@@ -36,7 +36,7 @@ pub(crate) struct Realize {
     pub(super) core_resolved: bool,
     /// The task runtime's answers to the instruction's sorted-map-by
     /// comparisons so far, given back when it executes again.
-    answers: Vec<form::SortedEquality>,
+    answers: form::SortedAnswers,
     /// The lazy form, which keeps the cell alive.
     lazy: Value,
     cell: Arc<LazyCell>,
@@ -57,7 +57,7 @@ impl Realize {
         instr: Instr,
         operands: Vec<Value>,
         lazy: Value,
-        answers: Vec<form::SortedEquality>,
+        answers: form::SortedAnswers,
     ) -> Option<Realize> {
         let cell = form::form_object(heap, &lazy)?.lazy_cell()?.clone();
         Some(Realize {
@@ -316,7 +316,7 @@ impl Trace for Realize {
         for v in &self.operands {
             v.trace(visit);
         }
-        self.answers.iter().for_each(|a| a.trace(visit));
+        self.answers.trace(visit);
         if let Some(e) = &self.failed {
             e.value.trace(visit);
         }
@@ -351,7 +351,7 @@ pub(crate) fn start(
     instr: Instr,
     n: usize,
     lazy: Value,
-    answers: Vec<form::SortedEquality>,
+    answers: form::SortedAnswers,
 ) -> Result<(), Fault> {
     let ops = state.operands();
     let at = ops

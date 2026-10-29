@@ -166,6 +166,141 @@ fn nested_sorted_by_equality_asks_the_task_resolver_per_comparison() {
     assert_eq!(result.view(), ValueView::Bool(true));
 }
 
+/// The JavaScript (engine-internal resolver) for the answer-retention tests:
+/// `tree(d)` shares one vector per level, `[x x]`, over a sorted-map-by
+/// leaf, so comparing two such trees meets `2^d` sorted-map-by comparisons
+/// (each answer is retained until the instruction completes).
+const SORTED_TREES: &str = r#"
+        const leaf=()=>__rt.formSortedInsert(__rt.formSortedMapBy(null),0,1,'x');
+        const tree=d=>{let x=leaf();for(let i=0;i<d;i++)x=__rt.formVector(x,x);return x;};"#;
+
+/// Retained sorted-map-by answers are charged to the aggregate heap budget
+/// before their buffer grows: a comparison meeting thousands of them is
+/// denied with the catchable heap-limit error and stays under the limit.
+#[test]
+fn nested_sorted_by_answers_obey_heap_budget() {
+    use big_boy_pants_js::{HeapPolicy, VmLimits};
+    let policy = |bytes| HeapPolicy {
+        hard_limit_bytes: Some(bytes),
+        ..Default::default()
+    };
+    let realm = Runtime::try_with_heap_policy(VmLimits::default(), policy(usize::MAX / 2))
+        .unwrap()
+        .heap_stats()
+        .managed_bytes;
+    let limit = realm + (192 << 10);
+    let rt = Runtime::try_with_heap_policy(VmLimits::default(), policy(limit)).unwrap();
+    let src = format!(
+        r#"function f(){{{SORTED_TREES}
+        let calls=0;
+        __rt.cljCoreResolver((op,x)=>op==='formEquals'&&__rt.formIsSortedBy(x)?(l,r)=>{{calls++;return true;}}:null);
+        try{{__rt.formEquals(tree(13),tree(13));}}catch(e){{if(e==='heap byte limit exceeded'&&calls>256&&calls<8192)return true;throw e;}}
+        return false;
+    }}"#
+    );
+    assert_eq!(call(&rt, &src, &[]).view(), ValueView::Bool(true));
+    assert!(rt.heap_stats().peak_managed_bytes <= limit);
+}
+
+/// Cancelling a task parked with retained answers releases their charge at
+/// once.
+#[test]
+fn nested_sorted_by_answers_release_their_charge_on_cancellation() {
+    use big_boy_pants_js::{Budget, HeapPolicy, Host, HostCall, VmLimits};
+    struct Marker(bool);
+    impl Host for Marker {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(Primitive::Null)
+        }
+    }
+    let rt = Runtime::try_with_heap_policy(
+        VmLimits::default(),
+        HeapPolicy {
+            hard_limit_bytes: Some(16 << 20),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let answers = 1500;
+    let src = format!(
+        r#"function f(){{{SORTED_TREES}
+        let calls=0;
+        __rt.cljCoreResolver((op,x)=>op==='formEquals'&&__rt.formIsSortedBy(x)?(l,r)=>{{if(++calls==={answers})__rt.effect(7,0);return true;}}:null);
+        return __rt.formEquals(tree(11),tree(11));
+    }}"#
+    );
+    let code = compile_function(&src).unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut marker = Marker(false);
+    while !marker.0 {
+        assert!(matches!(
+            task.run_with(Budget::instructions(1000), &mut marker)
+                .unwrap(),
+            RunOutcome::Yielded
+        ));
+    }
+    rt.collect().unwrap();
+    let occupied = rt.heap_stats().managed_bytes;
+    let _ = task.cancel();
+    assert!(matches!(
+        task.run_with(Budget::instructions(1), &mut marker).unwrap(),
+        RunOutcome::Cancelled
+    ));
+    assert!(
+        occupied - rt.heap_stats().managed_bytes >= answers * 32,
+        "cancellation must release the retained answers' charge: {} -> {}",
+        occupied,
+        rt.heap_stats().managed_bytes
+    );
+}
+
+/// Answers taken before a lazy tail is realized survive the realization
+/// (and a collection while it waits): no comparison is asked again.
+#[test]
+fn nested_sorted_by_answers_survive_lazy_realization() {
+    use big_boy_pants_js::{Budget, Host, HostCall};
+    struct Marker(bool);
+    impl Host for Marker {
+        fn effect(&mut self, _: HostCall) -> Result<Primitive, String> {
+            self.0 = true;
+            Ok(Primitive::Null)
+        }
+    }
+    let rt = Runtime::new();
+    let code = compile_function(
+        r#"function f(){
+        const log=[], sorted=x=>__rt.formSortedInsert(__rt.formSortedMapBy(null),0,1,x);
+        const a=sorted('x'), b=sorted('x'), c=sorted('y'), d=sorted('y');
+        __rt.cljCoreResolver((op,x)=>op==='formEquals'&&__rt.formIsSortedBy(x)?(l,r)=>{
+          log.push(l===a?'a':l===c?'c':'?');
+          return __rt.formSortedEntry(l,0,1)===__rt.formSortedEntry(r,0,1);
+        }:null);
+        const tail=__rt.lazySeq(()=>{log.push('thunk');__rt.effect(7,0);return __rt.formList(c);});
+        const equal=__rt.formEquals(__rt.cljCons(a,tail),__rt.formVector(b,d));
+        const got=JSON.stringify([equal,log]);
+        if(got!=='[true,["a","thunk","c"]]')throw new Error(got);
+        return true;
+    }"#,
+    )
+    .unwrap();
+    let task = rt.spawn(&code, &[]).unwrap();
+    let mut marker = Marker(false);
+    let outcome = loop {
+        match task.run_with(Budget::instructions(1), &mut marker).unwrap() {
+            RunOutcome::Yielded => {
+                if marker.0 {
+                    // Parked inside the thunk with one answer retained.
+                    rt.collect().unwrap();
+                    marker.0 = false;
+                }
+            }
+            other => break other,
+        }
+    };
+    assert_eq!(complete(outcome).view(), ValueView::Bool(true));
+}
+
 /// A sorted-map-by map (light-cljs-561) retains its comparator through
 /// positional edits, metadata, realization, publication and GC. The leaves
 /// never call it; leaves that would compare its keys raise instead.

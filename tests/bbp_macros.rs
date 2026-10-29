@@ -1521,8 +1521,11 @@ fn native_nested_sorted_map_by_equality_matches_quickjs() {
           (let [a (sorted-map-by cmp 1 :a 2 :b) b (sorted-map-by cmp 2 :b 1 :a) c (sorted-map-by cmp 1 :a 2 :c)
                 x [a] y [b]
                 boom (sorted-map-by (fn [_ _] (throw (js/Error. "boom"))) 1 :a)
+                thrown (sorted-map-by (fn [_ _] (throw :thrown)) 1 :a)
+                nil-cmp (sorted-map-by nil 1 :a)
                 ;; Each result with the number of comparator calls it made.
-                run (fn [f] (reset! log []) [(try (f) (catch :default e (.-message e))) (count @log)])]
+                run (fn [f] (reset! log [])
+                      [(try (f) (catch :default e (if (keyword? e) e (.-message e)))) (count @log)])]
             (list 'quote
                   [(run #(= [a] [b])) (run #(= [a] [c])) (run #(= {:k a} {:k b})) (run #(= {:k a} {:k c}))
                    (run #(= #{a} #{b})) (run #(= (list 1 a) [1 b])) (run #(= [0 a] [1 b]))
@@ -1531,7 +1534,16 @@ fn native_nested_sorted_map_by_equality_matches_quickjs() {
                    (run #(= [[a]] [[b]])) (run #(= [a a] [b b])) (run #(= [x x] [y y])) (run #(= [a] [a]))
                    (run #(= [(sorted-map-by cmp 1 (sorted-map-by cmp 2 3))] [(sorted-map-by cmp 1 (sorted-map-by cmp 2 3))]))
                    (run #(= [{1 :a}] [boom])) (run #(= [boom] [boom])) (run #(not= [a] [b])) (run #(= [a] [b] [c]))
-                   (do (reset! log []) (= [a] [b]) @log)])))
+                   (do (reset! log []) (= [a] [b]) @log)
+                   ;; A set comparison catches an Error its lookups throw and
+                   ;; is unequal; other throws and direct comparisons propagate.
+                   (run #(= #{{1 :a}} #{nil-cmp})) (run #(= #{{1 :a}} #{boom})) (run #(= [#{{1 :a}}] [#{boom}]))
+                   (run #(= #{#{{1 :a}}} #{#{boom}})) (run #(= #{[{1 :a}]} #{[boom]})) (run #(= #{{1 :a}} #{thrown}))
+                   (run #(= [#{{1 :a}} {1 :a}] [#{boom} boom])) (run #(= [{1 :a} #{{1 :a}}] [boom #{boom}]))
+                   (run #(= #{a {1 :a}} #{b boom})) (run #(= {:k #{{1 :a}}} {:k #{boom}}))
+                   ;; Answers taken before a lazy tail is realized are kept.
+                   (do (reset! log [])
+                       [(= (cons a (lazy-seq (swap! log conj :thunk) [a])) [b b]) @log])])))
         (js/console.log (pr-str (m)))"#;
     // Each key of the left map is searched (two calls) and tested (one) in
     // the right one; a difference stops the comparison, a sorted-map-by map
@@ -1540,7 +1552,9 @@ fn native_nested_sorted_map_by_equality_matches_quickjs() {
     let expected = concat!(
         "[[true 6] [false 3] [true 6] [false 3] [true 6] [true 6] [false 0] [true 6] [true 0] [true 6] ",
         "[:found 6] [true 6] [true 6] [true 6] [true 12] [true 12] [true 0] [true 4] [\"boom\" 0] [true 0] ",
-        "[false 6] [false 9] [[1 2] [2 2] [2 2] [1 1] [2 1] [1 1]]]\n"
+        "[false 6] [false 9] [[1 2] [2 2] [2 2] [1 1] [2 1] [1 1]] ",
+        "[false 0] [false 0] [false 0] [false 0] [false 0] [:thrown 0] [false 0] [\"boom\" 0] [false 0] [false 0] ",
+        "[true [[1 2] [2 2] [2 2] [1 1] [2 1] [1 1] :thunk [1 2] [2 2] [2 2] [1 1] [2 1] [1 1]]]]\n"
     );
     assert_native_matches_legacy(source, expected);
 }
