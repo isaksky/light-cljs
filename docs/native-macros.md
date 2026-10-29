@@ -3249,7 +3249,8 @@ Penpot's `app.main.style/css-case` then reached `core.pop`: its
 `cljPop` engine leaf handles the stacks `cljPeek` observes: nil stays nil, a
 vector drops its last element and keeps its metadata (a map entry pops to a
 plain vector), an IList list is its rest, and a queue literal drops its first
-element (an empty queue is itself). Empty vectors and lists throw the legacy
+element (an empty queue is itself; an imported queue's vector payload is read
+through its occurrence wrapper). Empty vectors and lists throw the legacy
 `Can't pop empty vector`/`list` errors; other kinds, including sequence views,
 cons cells and lazy sequences, report `No protocol method IStack.-pop defined
 for this value` without being realized. The native `pop` and `-pop` core
@@ -3263,12 +3264,21 @@ reducer effect order under reduced termination, independent reducer state,
 completion arities, lazy and chunked collection demand, arity and callback
 errors. `keep_helpers_publish_and_resume_at_seeded_pool_sizes` publishes a
 composed keep/keep-indexed helper and its step function, consumes them from two
-namespaces under seeded scheduling at jobs 1/2/4/8 (two published helpers, no
-per-task reconstruction, cold waits) and matches QuickJS at each size.
+namespaces under seeded scheduling at jobs 1/2/4/8 (six published helpers, no
+per-task reconstruction, cold waits) and matches QuickJS at each size. Every
+keep and keep-indexed callback, in the transducer and lazy sequence arities,
+logs its input, demands a cold helper only it reads, and logs its result; each
+helper's initializer logs a marker with the caller's binding, so the first
+expansion's exact log shows the wait inside the callback mid-reduction, with no
+replayed, skipped or duplicated effects or indices.
 `native_pop_matches_quickjs_at_every_pool_size` covers the Penpot merge,
 metadata, map entries, user IStack types, the protocol function, the empty
-queue and unsupported kinds at jobs 1/2/4/8; the engine forms test checks the
-leaf over published occurrences and a populated queue literal.
+queue and unsupported kinds at jobs 1/2/4/8, plus a direct expansion over
+imported queue descriptors (populated, single, empty), vectors with metadata,
+lists and nil. The engine forms tests check the leaf over published
+occurrences, a populated queue literal and occurrence-wrapped queue payloads.
+Native `count` and `vec` of a queue literal remain unsupported (pre-existing,
+light-cljs-562).
 
 ### Penpot progression and next boundary
 
