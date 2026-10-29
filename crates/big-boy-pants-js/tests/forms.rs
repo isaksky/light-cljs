@@ -2763,7 +2763,10 @@ fn native_form_toprimitive_member_reads_resume_without_replay() {
 
 /// An object inheriting from a struct (`Object.create`) cannot shadow a
 /// frozen field by assignment, as with any frozen prototype; other names are
-/// added to the child, and a write with a separate receiver fails too.
+/// added to the child, and a write with a separate receiver fails too. The
+/// walk continues past the struct at `Object.prototype`: assigning
+/// `__proto__` runs its inherited setter (on the child, or on a separate
+/// `Reflect.set` receiver) instead of adding an own property.
 #[test]
 fn native_struct_inherited_writes_respect_frozen_fields() {
     let rt = Runtime::new();
@@ -2780,6 +2783,12 @@ fn native_struct_inherited_writes_respect_frozen_fields() {
       out.push([child.x, 'x' in child, Object.keys(child).join(), s.x].join());
       const grandchild=Object.create(child);
       out.push(attempt(()=>{ grandchild.x=4; return grandchild.x; }));
+      const other={marker:1}, assigned=Object.create(s);
+      out.push(attempt(()=>{ assigned.__proto__=other;
+        return [Object.getPrototypeOf(assigned)===other, Object.getOwnPropertyNames(assigned).length, assigned.marker].join(); }));
+      const kept=Object.create(s), receiver={};
+      out.push(attempt(()=>[Reflect.set(kept,'__proto__',other,receiver), Object.getPrototypeOf(receiver)===other,
+        Object.getPrototypeOf(kept)===s, Object.getOwnPropertyNames(receiver).length, Object.getOwnPropertyNames(kept).length].join()));
       return out.join('|');
     }"#,
     )
@@ -2790,8 +2799,63 @@ fn native_struct_inherited_writes_respect_frozen_fields() {
         result.string().map(|s| s.to_string_lossy()).as_deref(),
         Some(concat!(
             "error: cannot assign to read-only property 'x'|false|false|true|3|1,true,y,1|",
-            "error: cannot assign to read-only property 'x'"
+            "error: cannot assign to read-only property 'x'|true,0,1|true,true,true,0,0"
         ))
+    );
+}
+
+/// A write to an occurrence wrapper (a macro argument's provenance around a
+/// struct, a map or a keyword) is the rejection the store specifies for an
+/// occurrence, "not extensible", for a field name and any other name alike:
+/// a catchable `TypeError` in strict code, a silent no-op in sloppy code and
+/// `false` from `Reflect.set`, never an engine fault; the wrapped value is
+/// unchanged and nothing is added.
+#[test]
+fn native_occurrence_writes_reject_without_engine_fault() {
+    let rt = Runtime::new();
+    let forms = call(
+        &rt,
+        r#"function f() {
+      const T=__rt.structType('ns/T',__rt.formVector('x'),false,null);
+      return __rt.formVector(__rt.structNew(T,1), __rt.formMap('k',1), __rt.formKeyword(null,'k'));
+    }"#,
+        &[],
+    );
+    let wrapped = rt.scope(|s| {
+        let items = s.form_items(s.local(&forms).unwrap()).unwrap();
+        let wrapped: Vec<_> = items
+            .iter()
+            .enumerate()
+            .map(|(i, &item)| s.new_occurrence(item, at(1, i as u32 + 1)).unwrap())
+            .collect();
+        s.persist(s.new_form_vector(&wrapped).unwrap())
+    });
+    // Sloppy code with a strict helper: the engine's default is strict.
+    let code = big_boy_pants_js::frontend::compile_function_with(
+        r#"function f(wrapped) {
+      const out=[];
+      const strict=(o,k)=>{ 'use strict'; try { o[k]=2; return 'stored'; } catch(e) { return e.name+': '+e.message; } };
+      const sloppy=(o,k)=>{ try { o[k]=2; return 'silent'; } catch(e) { return e.name+': '+e.message; } };
+      for (let i=0;i<__rt.formCount(wrapped);i++) {
+        const o=__rt.formNth(wrapped,i);
+        if (__rt.formKind(o)!=='occurrence') throw new Error('fixture '+i);
+        out.push([strict(o,'x'), strict(o,'zz'), sloppy(o,'x'), sloppy(o,'zz'),
+          Reflect.set(o,'x',2), Reflect.set(o,'zz',2), o.zz, __rt.formValue(o).x].join(','));
+      }
+      return out.join('|');
+    }"#,
+        big_boy_pants_js::frontend::ScriptOptions::SLOPPY,
+    )
+    .unwrap();
+    let result = complete(rt.spawn(&code, &[&wrapped]).unwrap().run().unwrap());
+    let rejected = concat!(
+        "TypeError: cannot add property 'x': the object is not extensible,",
+        "TypeError: cannot add property 'zz': the object is not extensible,",
+        "silent,silent,false,false,,"
+    );
+    assert_eq!(
+        result.string().map(|s| s.to_string_lossy()),
+        Some(format!("{rejected}1|{rejected}|{rejected}"))
     );
 }
 
