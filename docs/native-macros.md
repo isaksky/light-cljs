@@ -3548,3 +3548,15 @@ binary does not contain the engine or `src/bbp_runtime.js`; three
 wall (a peer test run active) and keep SHA-256 `1a75bc87b26f3121…`. Penpot
 `app.render` at jobs 1 builds natively in 14.64 s (425 MB peak memory) and
 byte for byte matches a fresh V8 release build (2.25 s), SHA-256 `d352af3a…`.
+
+Review round 2 (set-equality `Error` boundary, budget-charged answers, answers
+across a later lazy realization), at `61aa9ac2` on master `ba7f0c89`: engine
+all-target suite 2,188 passed; combined native/QuickJS library and `bbp_macros`
+367 and 146, native-only `bbp_macros` 144 (one ignored each,
+`LIGHT_CLJS_STRESS_SEEDS=12`); default V8 nextest 2,133 of 2,134 (the same
+worktree diagnostic); formatting and the same Clippy results as above. Three
+default V8 `release bench --no-cache` runs on the seed-42 200k project take
+7.63-7.69 s wall under peer load (load average 5.5-7.6), SHA-256
+`1a75bc87b26f3121…` unchanged; the default binary contains none of the changed
+code. Penpot `app.render` builds natively in 14.46 s and matches V8 byte for
+byte (`d352af3a…`).
