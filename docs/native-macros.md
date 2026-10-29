@@ -3277,7 +3277,7 @@ queue and unsupported kinds at jobs 1/2/4/8, plus a direct expansion over
 imported queue descriptors (populated, single, empty), vectors with metadata,
 lists and nil. The engine forms tests check the leaf over published
 occurrences, a populated queue literal and occurrence-wrapped queue payloads.
-Native `count` and `vec` of a queue literal remain unsupported (pre-existing,
+Native `conj`, `count` and `vec` of a queue literal remain unsupported (pre-existing,
 light-cljs-562).
 
 ### Penpot progression and next boundary
@@ -3338,3 +3338,14 @@ generated project: median wall time is **7.25 s before and 7.26 s after**
 (ranges 7.21–7.34 and 7.22–7.31 s), median user CPU 7.39/7.40 s, and maximum
 RSS 996/1,040 MiB (ranges 995–1,014 and 1,011–1,046 MiB), within run
 variation. All six outputs keep SHA-256 prefix `1a75bc87b26f3121`.
+
+The review-fix round (imported queue pop and keep callback suspension) was
+verified at `7523d6c6` on the same toolchain: engine all-targets 2,183 tests;
+combined library/`bbp_macros` 367/140 and native-only `bbp_macros` 138 (one
+ignored each) with `LIGHT_CLJS_STRESS_SEEDS=12`; default V8 nextest 2,133
+passed with only the worktree wasm32 diagnostic failing; formatting, strict
+V8/QuickJS Clippy and the allowed-category combined/engine Clippy pass (strict
+engine Clippy keeps the nine baseline diagnostics). The fix round changes no
+default-build input: three alternating 200k pairs give median wall time
+6.96 s (master) and 6.99 s (branch). Native `app.render` at jobs 1 (13.39 s)
+and 4 (9.10 s) still matches a fresh V8 build, SHA-256 `d352af3a…a8d9a3`.
