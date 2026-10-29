@@ -324,7 +324,10 @@ const decl = (() => {
     if (rest === undefined) return null;
     const ty = __rt.structTypeOf(x), overloaded = methods.some(m=>!m[2]);
     return canonicalMember(ty,()=>__rt.fnApplyNull(function(...args) {
-      if (__rt.structTypeOf(this) === null) throw new TypeError('undefined is not a function');
+      // The single variadic method is the legacy `call` member itself and
+      // runs with any receiver; an overloaded dispatcher needs the
+      // receiver's IFn methods.
+      if (overloaded && __rt.structTypeOf(this) === null) throw new TypeError('undefined is not a function');
       return globalThis.__lightNativeRuntime.core.borrowedIFn(ty,overloaded,this,args);
     }));
   };

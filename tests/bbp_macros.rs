@@ -8784,6 +8784,7 @@ fn native_borrowed_ifn_calls_match_legacy() {
             (deftype D [] IFn (-invoke [this x] [:d x]))
             (defrecord E [] IFn (-invoke [this] :e) (-invoke [this x & xs] [:e (vec xs)]))
             (defrecord F [] IFn (-invoke [this] :f) (-invoke [this x & xs] [:f (vec xs)]))
+            (defrecord V [] IFn (-invoke [_ & xs] (vec xs)))
             (defmacro m []
               (let [a (->A) b (->B) c (->C) d (D.) e (->E) f (->F)
                     ac (.-call a) aa (.-apply a) cc (.-call c) dc (.-call d)
@@ -8798,9 +8799,12 @@ fn native_borrowed_ifn_calls_match_legacy() {
                               (.call ac b nil 1 2)
                               (.call dc c nil 2)
                               (identical? cc dc) (identical? ac (.-call b))
-                              (identical? aa (.-apply d))])))
+                              (identical? aa (.-apply d))
+                              (js* "Function.prototype.call.call(~{}, {}, null, 1, 2)" ac)
+                              (js* "Function.prototype.apply.call(~{}, {}, [null, 3, 4])" ac)
+                              (js* "Function.prototype.call.call(~{}, {}, null)" (.-call (->V)))])))
             (js/console.log (pr-str (m)))"#,
-        "[[:a [1 2]] [:c 7] [:c 8] [:a [9]] [:b [10 11]] [:d 1] [:c 2] [:b [1 2]] [:f [2]] [:a [1 2]] [:c 2] true false true]\n",
+        "[[:a [1 2]] [:c 7] [:c 8] [:a [9]] [:b [10 11]] [:d 1] [:c 2] [:b [1 2]] [:f [2]] [:a [1 2]] [:c 2] true false true [:a [1 2]] [:a [3 4]] []]\n",
     );
 }
 
@@ -9290,7 +9294,8 @@ fn native_ifn_object_member_precedence_matches_legacy() {
 /// declaration, `Object` only, a first `Object` extension, one demanded
 /// through an inheriting object, `Object` re-extensions with and without
 /// IFn, another protocol's extension rewriting the `Object` methods, a
-/// record field named `call`, `Object.prototype` members, and an extension
+/// record field named `call`, a single variadic IFn method (whose borrowed
+/// `call` runs with any receiver), `Object.prototype` members, and an extension
 /// after the macro's frontier. Each row reads every consumer cold, demands
 /// the extensions (compiled interop, or the other protocol's dispatch),
 /// then reads them warm: compiled direct calls with a literal callee and
@@ -9316,6 +9321,7 @@ fn native_member_precedence_table_matches_quickjs() {
            (extend-type X ILookup (-lookup ([_ k] k) ([_ k nf] k)))
            (defrecord F [call] IFn (-invoke [_ x] [:f-ifn x]))
            (extend-type F Object (call [_ _ x] [:f-ext x]) (toString [_] "f-ext"))
+           (defrecord S [] IFn (-invoke [_ & xs] (into [:s] xs)))
            (deftype N [])
            (extend-type N Object (valueOf [_] 42) (toString [_] "n-ext"))
            (deftype Z [] IFn (-invoke [_ x] [:z-ifn x]))
@@ -9339,6 +9345,7 @@ fn native_member_precedence_table_matches_quickjs() {
                       (row :object-re-extension (OE.) (interop (OE.)))
                       (row :other-protocol (X.) #(get (X.) :k))
                       (row :field (->F (fn [& xs] (into [:f-field] xs))) (interop (->F nil)))
+                      (row :single-variadic (->S) (interop (->S)))
                       (row :object-prototype (N.) (interop (N.)))
                       (row :after-frontier (Z.) (interop (Z.)))])))
            (js/console.log (pr-str (table)))
@@ -9353,6 +9360,7 @@ fn native_member_precedence_table_matches_quickjs() {
             "[:object-re-extension [[:oe-object 1] [:oe-object 1] [:oe-object 1] [[:oe-object 1]] [:oe-object 1] [:oe-object 1] :TypeError [:oe-object 1] true \"[object Object]\" \"[object Object]1\"] [[:oe-ext 1] [:oe-ext 1] [:oe-ext 1] [[:oe-ext 1]] [:oe-ext 1] [:oe-ext 1] :TypeError [:oe-ext 1] true \"[object Object]\" \"[object Object]1\" [:oe-ext 1] :TypeError]] ",
             "[:other-protocol [[:x-ifn 1] [:x-ifn 1] [:x-ifn 1] [[:x-ifn 1]] [:x-ifn 1] [:x-ifn 1] [:x-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:x-object 1] [:x-object 1] [:x-object 1] [[:x-object 1]] [:x-ifn 1] [:x-object 1] [:x-object 1] [:x-object 1] true \"[object Object]\" \"[object Object]1\" [:x-object 1] [:x-object 1]]] ",
             "[:field [[:f-field nil 1] [:f-field nil 1] [:f-field nil 1 2] [[:f-field nil 1]] [:f-ifn 1] [:f-field nil 1] [:f-field nil 1] [:f-field nil 1] true \"[object Object]\" \"[object Object]1\"] [[:f-field nil 1] [:f-field nil 1] [:f-field nil 1 2] [[:f-field nil 1]] [:f-ifn 1] [:f-field nil 1] [:f-field nil 1] [:f-field nil 1] true \"f-ext\" \"f-ext1\" [:f-field nil 1] [:f-field nil 1]]] ",
+            "[:single-variadic [[:s 1] [:s 1] [:s 1 2] [[:s 1]] [:s 1] [:s 1] [:s 1] [:s 1] true \"[object Object]\" \"[object Object]1\"] [[:s 1] [:s 1] [:s 1 2] [[:s 1]] [:s 1] [:s 1] [:s 1] [:s 1] true \"[object Object]\" \"[object Object]1\" [:s 1] [:s 1]]] ",
             "[:object-prototype [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"[object Object]\" \"[object Object]1\"] [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"n-ext\" 43 :TypeError :TypeError]] ",
             "[:after-frontier [[:z-ifn 1] [:z-ifn 1] [:z-ifn 1] [[:z-ifn 1]] [:z-ifn 1] [:z-ifn 1] [:z-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:z-ifn 1] [:z-ifn 1] [:z-ifn 1] [[:z-ifn 1]] [:z-ifn 1] [:z-ifn 1] [:z-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\" [:z-ifn 1] [:z-ifn 1]]]]\n",
         ),
