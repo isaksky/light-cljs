@@ -7,6 +7,19 @@
 // lookup or user equality. A table holds the extensions installed in source
 // order up to the compiler's frontier: an extension's order is its
 // declaration bundle's, and code run outside a bundle extends at order 0.
+// Internal identity bookkeeping uses SameValueZero maps and engine CAS only;
+// it never invokes user equality, effects, or publication-time task captures.
+const canonicalMember = (key, make) => {
+  let candidate;
+  for (;;) {
+    const current = __rt.atomLoad(rawMembersCell);
+    const found = current === null ? undefined : __rt.getOr(current,key,undefined);
+    if (found !== undefined) return found;
+    if (candidate === undefined) candidate = make();
+    const next = __rt.assoc(current === null ? __rt.map() : current,key,candidate);
+    if (Object.is(__rt.atomCas(rawMembersCell,current,next),current)) return candidate;
+  }
+};
 const decl = (() => {
   const tables = new Map(), extensions = new Map(), views = new Map(), frontiers = [];
   // Native lookup can resolve installed structs without repeating JavaScript
@@ -316,6 +329,20 @@ const decl = (() => {
     return views.get(__rt.structTypeOf(x))?.ifn ?? [];
   };
   const callable = x => ifnMethods(x).length > 0;
+  const callMember = x => {
+    const methods = ifnMethods(x), rest = methods.find(m=>m[2]);
+    if (rest === undefined) return null;
+    const ty = __rt.structTypeOf(x), overloaded = methods.some(m=>!m[2]);
+    return canonicalMember(ty,()=>__rt.fnApplyNull(function(...args) {
+      return globalThis.__lightNativeRuntime.core.borrowedIFn(ty,overloaded,this,args);
+    }));
+  };
+  const borrowedIFn = (ty,overloaded,receiver,args) => {
+    if (overloaded) return invokeIFn(receiver,args.slice(1));
+    declare(__rt.structNew(ty));
+    const method = views.get(ty).ifn.find(m=>m[2])[1];
+    return method.call(receiver,...args);
+  };
   const invokeIFn = (x, args) => {
     const methods=ifnMethods(x);
     if(methods.length===0)throw new TypeError('undefined is not a function');
@@ -415,7 +442,7 @@ const decl = (() => {
     return info?.mutable && info.record ? info : null;
   };
   return {extend, method, satisfies, implementsDirectly, predicate, type, viewOf, register, enter, leave, coreKeys, mutableRecord,
-    callable, invokeIFn, applyIFn,
+    callable, invokeIFn, applyIFn, callMember, borrowedIFn,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
     coreMethod:resolveCore,
@@ -551,9 +578,12 @@ const native = (() => {
   __rt.cljCoreResolver((op, x, throughLazy) => {
     if (op === 'jsCall' || op === 'jsApply') {
       const value = val(x), kind = __rt.formKind(value);
-      if ((kind === 'struct' || kind === 'record') && !multi.is(value) && !decl.callable(value)) return undefined;
+      if ((kind === 'struct' || kind === 'record') && !multi.is(value)) {
+        if (!decl.callable(value)) return undefined;
+        return op === 'jsCall' ? decl.callMember(value) ?? rawIFnCall : rawIFnApply;
+      }
       return op === 'jsCall' ? rawCalls.get(kind)
-        : (kind === 'struct' || kind === 'record') && !multi.is(value) ? rawIFnApply : rawApply;
+        : rawApply;
     }
     if(op==='cljWithExportedMeta')op='cljWithMeta';
     const record = __rt.formKind(x) === 'record', table = coreTables[op];
@@ -672,12 +702,20 @@ const native = (() => {
         || expected === 'vector' && __rt.cljIsMapEntry(this))) throw new Error('Invalid arity: -1');
     return globalThis.__lightNativeRuntime.core.invoke(this,...args);
   };
-  const rawCalls = new Map(['keyword','symbol','vector','map','set','struct','record'].map(k=>[k,rawMember(k)]));
+  const rawCalls = new Map(['keyword','symbol','vector','map','set'].map(k=>[k,canonicalMember(k,()=>rawMember(k))]));
+  const rawMultiCall = canonicalMember('multi-call',()=>function(_, ...args) {
+    return globalThis.__lightNativeRuntime.core.invokeMulti(this,args);
+  });
+  rawCalls.set('struct',rawMultiCall);
+  const rawIFnCall = canonicalMember('ifn-call',()=>function(_, ...args) {
+    return globalThis.__lightNativeRuntime.core.invokeIFn(this,args);
+  });
   const rawApplyMember = ifn => function(_, args) {
     const values = globalThis.__lightNativeRuntime.core.nativeApplyArgs(args);
     return this.call(null,...(ifn && values.length > 20 ? [...values.slice(0,20),values.slice(20)] : values));
   };
-  const rawApply = rawApplyMember(false), rawIFnApply = rawApplyMember(true);
+  const rawApply = canonicalMember('apply',()=>rawApplyMember(false)),
+    rawIFnApply = canonicalMember('ifn-apply',()=>rawApplyMember(true));
   // memoize calls its callback through Clojure apply, whose fixed function
   // receiver is the function itself. Native variadic dispatchers preserve
   // applyTo's null receiver in immutable engine metadata, so they can publish
@@ -1612,6 +1650,7 @@ const native = (() => {
     isIFn:x=>core.isFn(x)||multi.is(x)||['keyword','symbol','vector','map','set'].includes(__rt.formKind(val(x)))||decl.satisfies('IFn',x),
     invokeMulti:(m,args)=>multi.dispatch(m,args),
     invokeIFn:(x,args)=>decl.invokeIFn(x,args),
+    borrowedIFn:(ty,overloaded,x,args)=>decl.borrowedIFn(ty,overloaded,x,args),
     nativeApplyArgs:args=>{
       args=val(args);
       const kind=__rt.formKind(args);

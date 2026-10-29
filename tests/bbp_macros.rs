@@ -8284,6 +8284,31 @@ fn native_ifn_apply_uses_direct_invoke_entries() {
 }
 
 #[test]
+fn native_borrowed_ifn_calls_match_legacy() {
+    assert_native_matches_legacy(
+        r#"(defrecord A [] IFn (-invoke [this & xs] [:a (vec xs)]))
+            (defrecord B [] IFn (-invoke [this & xs] [:b (vec xs)]))
+            (defrecord C [] IFn (-invoke [this x] [:c x]))
+            (deftype D [] IFn (-invoke [this x] [:d x]))
+            (defrecord E [] IFn (-invoke [this] :e) (-invoke [this x & xs] [:e (vec xs)]))
+            (defrecord F [] IFn (-invoke [this] :f) (-invoke [this x & xs] [:f (vec xs)]))
+            (defmacro m []
+              (let [a (->A) b (->B) c (->C) d (D.) e (->E) f (->F)
+                    ac (.-call a) aa (.-apply a) cc (.-call c) dc (.-call d)
+                    ec (.-call e)]
+                (list 'quote [(js* "Function.prototype.call.call(~{},~{},null,1,2)" ac b)
+                              (js* "~{}.call(~{},null,1)" cc d)
+                              (js* "~{}.call(~{},null,2)" dc c)
+                              (js* "~{}.call(~{},null,[1,2])" aa b)
+                              (js* "~{}.call(~{},null,1,2)" ec f)
+                              (identical? cc dc) (identical? ac (.-call b))
+                              (identical? aa (.-apply d))])))
+            (js/console.log (pr-str (m)))"#,
+        "[[:a [1 2]] [:d 1] [:c 2] [:b [1 2]] [:f [2]] true false true]\n",
+    );
+}
+
+#[test]
 fn native_raw_callable_collections_match_quickjs() {
     assert_native_matches_legacy(
         r#"(defmacro m [] (let [f {"x" "y"}] (js* "~{}.call(null, 'x')" f)))
@@ -8309,6 +8334,9 @@ fn native_raw_callable_collections_match_quickjs() {
           (defmethod dispatch :ok [x & more] (cold [x (vec more)]))
           (def memo (memoize (fn [x] (cold x))))
           (def map-call @(atom (js* "~{}.call" {})))
+          (def members @(atom (mapv (fn [f] [f (.-call f) (.-apply f)])
+            [{} #{:ok} [:v] :k 'k (->Callable :record) (->Overloaded :overloaded)
+             (->Variadic :variadic) (->Mixed) dispatch memo])))
           (defn attempt [f] (try (pr-str (f)) (catch :default e (.-message e))))
           (defn inspect [f xs]
             (let [args (reduce (fn [a x] (js* "~{}.push(~{})" a x) a) (js/Array.) xs)]
@@ -8350,7 +8378,9 @@ fn native_raw_callable_collections_match_quickjs() {
                             (identical? inner (js* "~{}.call(null, 'inner')" {"inner" inner}))
                             (meta (js* "~{}.apply(null, [~{}])" utf lone))
                             (meta (js* "~{}.apply(null, ~{})" utf lone))
-                            (identical? inner (js* "~{}.call(~{}, null, 'inner')" map-call {"inner" inner})) @events])))"#,
+                            (identical? inner (js* "~{}.call(~{}, null, 'inner')" map-call {"inner" inner}))
+                            (mapv (fn [[f c a]] [(identical? c (.-call f)) (identical? a (.-apply f))]) members)
+                            @events])))"#,
         ),
         (
             "a.cljs",

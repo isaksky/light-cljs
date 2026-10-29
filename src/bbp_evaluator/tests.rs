@@ -1631,6 +1631,60 @@ fn failure_roots_survive_an_exhausted_heap() {
 /// Function roots publish with either lowered operations or consuming-task
 /// runtime reads (light-cljs-521). Mutable user captures remain task-owned.
 #[test]
+fn raw_callable_members_keep_identity_across_tasks() {
+    let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
+    let producer = shared.evaluator().unwrap();
+    let result = producer
+        .evaluate_unit(
+            "rt => {
+                const values = [__rt.formMap('key',false), __rt.formSet('key'),
+                    __rt.formVector('key'), __rt.cljKeyword('key'), __rt.cljSymbol('key')];
+                let members=__rt.vector();
+                for (const x of values) {
+                    members=__rt.conj(members,x);
+                    members=__rt.conj(members,x.call);
+                    members=__rt.conj(members,x.apply);
+                }
+                return members;
+            }",
+        )
+        .unwrap();
+    let published = producer.cx().unwrap().values.borrow()[&result.index].clone();
+    shared.0.runtime.publish(&published).unwrap();
+    producer.release(result).unwrap();
+    drop(producer);
+    shared.0.runtime.collect().unwrap();
+
+    let consumer = shared.evaluator().unwrap();
+    let input = consumer.id().unwrap();
+    consumer.request(1, input, published).unwrap();
+    let check = consumer
+        .evaluate_unit(
+            "rt => values => {
+                for (let i=0; i<15; i+=3) {
+                    const x=__rt.nth(values,i);
+                    if (__rt.nth(values,i+1)!==x.call || __rt.nth(values,i+2)!==x.apply)
+                        throw new Error('raw member changed identity across tasks');
+                }
+                const map=__rt.nth(values,0), call=__rt.nth(values,1), apply=__rt.nth(values,2);
+                if (call.call(map,null,'key')!==false || apply.call(map,null,['key'])!==false)
+                    throw new Error('published member lost its receiver');
+                return 5;
+            }",
+        )
+        .unwrap();
+    for _ in 0..2 {
+        shared.0.runtime.collect().unwrap();
+        let result = consumer.call(check, &[input]).unwrap();
+        assert!(matches!(
+            consumer.cx().unwrap().values.borrow()[&result.index].view(),
+            ValueView::Number(5.0)
+        ));
+        consumer.release(result).unwrap();
+    }
+}
+
+#[test]
 fn memoized_functions_retain_shared_results_across_gc_and_release_their_cache() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
     let producer = shared.evaluator().unwrap();

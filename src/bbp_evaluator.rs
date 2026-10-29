@@ -753,6 +753,9 @@ struct SharedRuntime {
     // One canonical immutable builtin tag table for this runtime. The
     // reader recognizes builtin handlers by identity across task migration.
     reader_tags: Rooted,
+    /// Canonical callable members, indexed by builtin family or native type
+    /// identity. Tasks share their identities and resolve dispatch locally.
+    raw_members: Rooted,
     bridge: Arc<Mutex<Bridge>>,
     control: ExecutionControl,
     next_command: AtomicU32,
@@ -1047,11 +1050,14 @@ impl BbpRuntime {
             .replace("/* NATIVE_READER */", &reader)
             .replace("/* CORE_KEYS */", &keys);
         let executable = big_boy_pants_js::frontend::compile_function(&format!(
-            "function nativeMacroTask(commandKind, beginKind, finishKind, readerTagsCell) {{ {source} }}"
+            "function nativeMacroTask(commandKind, beginKind, finishKind, readerTagsCell, rawMembersCell) {{ {source} }}"
         ))
         .map_err(error)?;
         let control = ExecutionControl::new(options)?;
         let reader_tags = runtime
+            .new_atom(&runtime.root(Primitive::Null))
+            .map_err(error)?;
+        let raw_members = runtime
             .new_atom(&runtime.root(Primitive::Null))
             .map_err(error)?;
         Ok(Self(Arc::new(SharedRuntime {
@@ -1060,6 +1066,7 @@ impl BbpRuntime {
             runtime,
             executable,
             reader_tags,
+            raw_members,
             bridge: Arc::new(Mutex::new(Bridge {
                 control: Some(control.clone()),
                 ..Default::default()
@@ -1409,7 +1416,13 @@ impl BbpEvaluator {
         let task = runtime
             .spawn(
                 &self.shared.0.executable,
-                &[&argument, &begin, &finish, &self.shared.0.reader_tags],
+                &[
+                    &argument,
+                    &begin,
+                    &finish,
+                    &self.shared.0.reader_tags,
+                    &self.shared.0.raw_members,
+                ],
             )
             .map_err(error)?;
         *self.context.borrow_mut() = Some(Rc::new(TaskContext {

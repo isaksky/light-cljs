@@ -9031,6 +9031,13 @@ impl<'a> Emitter<'a> {
                 self.output.push(')');
             }
             ExprKind::Property { receiver, property } => {
+                if self.native_forms && matches!(property.as_str(), "call" | "apply") {
+                    self.output.push_str("(__rt.formValue(");
+                    self.value(*receiver);
+                    self.output.push_str("))");
+                    self.member(property);
+                    return;
+                }
                 if self.demand_roots {
                     self.rt(RuntimeName::export("declarationReceiver"));
                     self.output.push('(');
@@ -9046,6 +9053,16 @@ impl<'a> Emitter<'a> {
                 method,
                 args,
             } => {
+                if self.native_forms && matches!(method.as_str(), "call" | "apply") {
+                    self.output.push_str("(__rt.formValue(");
+                    self.value(*receiver);
+                    self.output.push_str("))");
+                    self.member(method);
+                    self.output.push('(');
+                    self.arguments(args);
+                    self.output.push(')');
+                    return;
+                }
                 if self.demand_roots {
                     self.rt(RuntimeName::export("declarationReceiver"));
                     self.output.push('(');
