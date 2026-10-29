@@ -9325,6 +9325,11 @@ fn native_member_precedence_table_matches_quickjs() {
            (deftype N [])
            (extend-type N Object (valueOf [_] 42) (toString [_] "n-ext"))
            (deftype Z [] IFn (-invoke [_ x] [:z-ifn x]))
+           (defprotocol PP (pp [_]))
+           (deftype XP [] Object (call [_ _ x] [:xp-object x]) IFn (-invoke [_ x] [:xp-ifn x]))
+           (deftype YP [])
+           (extend-type XP PP (pp [_] :xp))
+           (extend-type YP PP (pp [_] :yp))
            (deftype AP [] IFn (-invoke [_] :ap-ifn))
            (extend-type AP Object (call [this self x] [:ap-ext (identical? this self) x]))
            (defrecord AF [call] IFn (-invoke [_] :af-ifn))
@@ -9352,6 +9357,7 @@ fn native_member_precedence_table_matches_quickjs() {
                       (row :field (->F (fn [& xs] (into [:f-field] xs))) (interop (->F nil)))
                       (row :single-variadic (->S) (interop (->S)))
                       (row :object-prototype (N.) (interop (N.)))
+                      (row :other-type-dispatch (XP.) #(pp (YP.)))
                       (row :apply-operand-method (AP.) (interop (AP.)))
                       (row :apply-operand-field (->AF (fn [self x] [:af-field (record? self) x])) (interop (->AF nil)))
                       (row :host-type-tag (js* "({__lightNativeType: 1, call(_, x) { return x + 1; }})")
@@ -9371,6 +9377,7 @@ fn native_member_precedence_table_matches_quickjs() {
             "[:field [[:f-field nil 1] [:f-field nil 1] [:f-field nil 1 2] [[:f-field nil 1]] [:f-ifn 1] [:f-field nil 1] [:f-field nil 1] [:f-field nil 1] true \"[object Object]\" \"[object Object]1\"] [[:f-field nil 1] [:f-field nil 1] [:f-field nil 1 2] [[:f-field nil 1]] [:f-ifn 1] [:f-field nil 1] [:f-field nil 1] [:f-field nil 1] true \"f-ext\" \"f-ext1\" [:f-field nil 1] [:f-field nil 1]]] ",
             "[:single-variadic [[:s 1] [:s 1] [:s 1 2] [[:s 1]] [:s 1] [:s 1] [:s 1] [:s 1] true \"[object Object]\" \"[object Object]1\"] [[:s 1] [:s 1] [:s 1 2] [[:s 1]] [:s 1] [:s 1] [:s 1] [:s 1] true \"[object Object]\" \"[object Object]1\" [:s 1] [:s 1]]] ",
             "[:object-prototype [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"[object Object]\" \"[object Object]1\"] [:TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError :TypeError false \"n-ext\" 43 :TypeError :TypeError]] ",
+            "[:other-type-dispatch [[:xp-ifn 1] [:xp-ifn 1] [:xp-ifn 1] [[:xp-ifn 1]] [:xp-ifn 1] [:xp-ifn 1] [:xp-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\"] [[:xp-ifn 1] [:xp-ifn 1] [:xp-ifn 1] [[:xp-ifn 1]] [:xp-ifn 1] [:xp-ifn 1] [:xp-ifn 1] :TypeError true \"[object Object]\" \"[object Object]1\" [:xp-ifn 1] [:xp-ifn 1]]] ",
             "[:apply-operand-method [:ap-ifn :ap-ifn :ap-ifn [:ap-ifn] :ap-ifn :ap-ifn :ap-ifn :TypeError true \"[object Object]\" \"[object Object]1\"] [[:ap-ext false 1] [:ap-ext false 1] [:ap-ext false 1] [[:ap-ext false 1]] [:ap-ext true 1] [:ap-ext false 1] [:ap-ext false 1] [:ap-ext false 1] true \"[object Object]\" \"[object Object]1\" [:ap-ext false 1] [:ap-ext false 1]]] ",
             "[:apply-operand-field [[:af-field false 1] [:af-field false 1] [:af-field false 1] [[:af-field false 1]] [:af-field true 1] [:af-field false 1] [:af-field false 1] [:af-field false 1] true \"[object Object]\" \"[object Object]1\"] [[:af-field false 1] [:af-field false 1] [:af-field false 1] [[:af-field false 1]] [:af-field true 1] [:af-field false 1] [:af-field false 1] [:af-field false 1] true \"[object Object]\" \"[object Object]1\" [:af-field false 1] [:af-field false 1]]] ",
             "[:host-type-tag [2 2 2 [2] 2 2 :TypeError 2 true \"[object Object]\" \"[object Object]1\"] [2 2 2 [2] 2 2 :TypeError 2 true \"[object Object]\" \"[object Object]1\" 2 :TypeError]] ",

@@ -66,7 +66,24 @@ const decl = (() => {
     const overlay = order === 0 ? ++overlays : 0, info = views.get(key);
     // An installation into a declared type after its declaration: it
     // rewrites the type's Object methods over its IFn adapters (`objectWins`).
-    if (info !== undefined && !info.declaring) info.installs.push({order, overlay});
+    // Installed by a bundle that only a protocol table build forced (for
+    // every type at once), it stays inactive until the legacy runtime would
+    // have installed it: a demand of one of the bundle's protocols for a
+    // type its selectors name (`demandFor`). Only installations that can
+    // change a member are tracked: Object methods, or a type whose IFn
+    // adapters compete with an Object call/apply. Until then the type
+    // leaves `declared`, so every dispatch on it takes the slow path that
+    // demands.
+    const bundle = installing[installing.length - 1];
+    const lazy = bundle !== undefined && !bundle.active && info !== undefined && !info.mutable && !info.declaring;
+    if (lazy && (specs.some(spec => spec[0].startsWith('Object/'))
+        || info.ifn.length > 0 && (info.members.has('call') || info.members.has('apply')))) {
+      if (info.pending.size === 0) declared = __rt.dissoc(declared, key);
+      info.pending.add(bundle);
+      (bundle.targets ??= new Set()).add(info);
+    }
+    const from = lazy ? bundle : null;
+    if (info !== undefined && !info.declaring) info.installs.push({order, overlay, bundle: from});
     for (const [name, arity, fn, , variadic, member, direct] of specs) {
       const object = name.startsWith('Object/');
       const n = object && variadic != null ? -1 : arity;
@@ -74,7 +91,7 @@ const decl = (() => {
       // operand. Adapt scope-sensitive legacy entries once at installation;
       // their raw JavaScript and `this-as` still see the original receiver.
       const entry = object || direct || arity === 0 ? fn : (x, ...args) => fn.call(x, x, ...args);
-      methodTable(name, n).entries.push({order, overlay, key, fn: entry});
+      methodTable(name, n).entries.push({order, overlay, key, fn: entry, bundle: object ? from : null});
       if (!object) continue;
       let arities = objectArities.get(name);
       if (arities === undefined) objectArities.set(name, arities = new Set());
@@ -85,7 +102,21 @@ const decl = (() => {
     return null;
   };
   const bundles = [], installing = [];
-  const force = b => {
+  // A bundle's installations become active (visible to member reads and
+  // precedence) once the legacy runtime would have installed it.
+  const activate = b => {
+    if (b.active) return;
+    b.active = true;
+    if (b.targets === undefined) return;
+    for (const info of b.targets) {
+      info.pending.delete(b);
+      if (info.pending.size === 0) declared = __rt.assoc(declared, info.ty, true);
+    }
+    version++;
+  };
+  // `lazy`: forced for a protocol table build, not demanded for a type.
+  const force = (b, lazy = false) => {
+    if (!lazy) activate(b);
     if (b.state === 2) return;
     if (b.state === 3) throw b.error;
     if (b.state === 1) throw new Error('bundle initialization cycle: ' + (b.names[0] ?? b.location));
@@ -113,9 +144,9 @@ const decl = (() => {
   // extension of its protocol registered up to the frontier.
   const build = t => {
     const pending = extensions.get(t.protocol);
-    if (pending !== undefined) for (const b of pending) { if (b.order > frontier) break; force(b); }
+    if (pending !== undefined) for (const b of pending) { if (b.order > frontier) break; force(b, true); }
     let map = __rt.map();
-    const visible = t.entries.filter(e => e.overlay > 0 || e.order <= frontier)
+    const visible = t.entries.filter(e => (e.overlay > 0 || e.order <= frontier) && (e.bundle == null || e.bundle.active))
       .sort((a, b) => a.overlay - b.overlay || a.order - b.order);
     for (const e of visible) map = __rt.assoc(map, e.key, e.fn);
     t.map = map; t.promise=__rt.getOr(map,'js/Promise',undefined);t.version = version; t.frontier = frontier;
@@ -140,6 +171,7 @@ const decl = (() => {
     // declaration effects, errors and dependency waits keep their order.
     declare(x);
     if (t.version !== version || t.frontier !== frontier) build(t);
+    demandFor(t.protocol, x);
     const value=t.promise===undefined?null:__rt.formValue(x);
     const promise=value!==null&&typeof value==='object'&&__rt.formKind(value)===null&&value instanceof Promise;
     let m=promise?t.promise:undefined;
@@ -236,6 +268,7 @@ const decl = (() => {
       if (m === undefined) {
         declare(x);
         if (t.version !== version || t.frontier !== frontier) build(t);
+        demandFor(t.protocol, x);
         const key = directKey(x);
         m = key === null ? null : __rt.getOr(t.map, key, null);
       }
@@ -304,7 +337,7 @@ const decl = (() => {
     // do not replace those entries or install JavaScript callable members.
     // `installs` are the later installations into the type (`extend`).
     const ifn = specs.filter(s=>s[0]==='IFn/-invoke').map(s=>[s[1],s[2],s[4]!=null,s[3]??s[2]]);
-    const info = {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, installs: [], declaring: true, mutable, record, mask0};
+    const info = {ty, view, fields, fieldMembers, names: new Set(), members: new Map(), memberFunctions: new Map(), ifn, installs: [], pending: new Set(), declaring: true, mutable, record, mask0};
     views.set(ty, info);
     declared = __rt.assoc(declared, ty, true);
     if (mutable) {
@@ -386,13 +419,24 @@ const decl = (() => {
   // so the adapters win only while no later installation is visible.
   const objectWins = (info, member) => hasObjectMember(info, member)
     && (info.ifn.length === 0 || member !== 'call' && member !== 'apply'
-      || info.installs.some(e => e.overlay > 0 || e.order <= frontier));
+      || info.installs.some(e => (e.overlay > 0 || e.order <= frontier) && (e.bundle === null || e.bundle.active)));
   // The legacy runtime's compiled-interop demand (`declarationReceiver`):
   // install the Object extension bundles registered up to the frontier for
   // the type of `x` (a struct, an object inheriting from one, or a mutable
   // type's instance), in source order. Nothing else installs them, so a raw
   // member read, a call or a presence check sees only what is installed.
   const objectBundles = [];
+  // The legacy demand of `protocol` for the struct `x`: activate its type's
+  // pending bundles with an index of that protocol whose selector names the
+  // type (or object, default, nothing), registered up to the frontier.
+  const selects = (selector, own) => selector === null || selector === '_' || selector === 'object' || selector === own;
+  const demandFor = (protocol, x) => {
+    const ty = __rt.structTypeOf(x), info = ty === null ? undefined : views.get(ty);
+    if (info === undefined || info.pending.size === 0) return;
+    const own = '@' + __rt.formName(ty);
+    for (const b of [...info.pending])
+      if (b.order <= frontier && b.indices.some(([p, s]) => p === protocol && selects(s, own))) activate(b);
+  };
   const demandObject = x => {
     if (objectBundles.length === 0) return;
     const s = structOf(x);
@@ -407,7 +451,7 @@ const decl = (() => {
     const own = '@' + __rt.formName(ty);
     for (const {b, selector} of objectBundles) {
       if (b.order > frontier) break;
-      if ((selector === null || selector === '_' || selector === 'object' || selector === own) && !installing.includes(b)) force(b);
+      if (selects(selector, own) && !installing.includes(b)) force(b);
     }
   };
   // The struct an object inheriting from one (`Object.create`) stands for.
@@ -429,7 +473,8 @@ const decl = (() => {
     return f;
   };
   const register = (names, indices, location, once, unit) => {
-    const b = {order: bundles.length + 1, names, unit, location, state: 0, error: null, products: null,
+    const b = {order: bundles.length + 1, names, unit, location, state: 0, error: null, products: null, active: false,
+      indices: indices.map(([protocol, selector = null]) => [protocol, selector]),
       multi: indices.length > 0 && indices.every(index => index[0].startsWith('multifn:'))};
     bundles.push(b);
     if (once && names.length && names.every(name => globalThis.__lightCompilerRootKept(name))) return null;

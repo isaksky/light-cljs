@@ -4017,10 +4017,26 @@ object inheriting from such a value, which the emitter wraps in
 `declarationReceiver`. That installs every bundle registered up to `F`
 whose selector is `T`, `object`, `default` or none, in source order. A raw
 `js*` read, a direct call, a callback, a presence check or a ToPrimitive
-conversion demands nothing and sees what is already installed. An
-extension of another protocol is installed when that protocol is
-dispatched. Leaving the frontier hides an installation whose bundle is
-after it, as the legacy journal undoes its patches.
+conversion demands nothing and sees what is already installed. A
+bundle extending another protocol `P` is installed when `P` is dispatched
+on a value whose type one of the bundle's `P` selectors names (the same
+selector test), or when the bundle is demanded otherwise (one of its
+products, or an `Object` demand it matches); installing a bundle installs
+everything in it, for every type it extends. Leaving the frontier hides an
+installation whose bundle is after it, as the legacy journal undoes its
+patches.
+
+The native runtime builds a protocol's dispatch table for all types at
+once, which forces every registered bundle of that protocol. Forcing is
+not installing: a bundle forced only for a table build stays inactive
+until the demand above happens, and its `Object` methods and its rewrite
+of rule 2 stay invisible meanwhile (`decl.activate`, `decl.demandFor`). A
+type with such a pending bundle leaves the protocol lookup cache's
+declared set, so every dispatch on it takes the slow path that performs
+the demand; once all its pending bundles are active it returns to the
+cache. Pending bundles are tracked only where they can change a member: a
+bundle with `Object` methods, or a type whose IFn adapters compete with an
+`Object` `call`/`apply`.
 
 **Who reads the member.** Every consumer reads the one member the rule
 gives, with nothing chosen at the call site:
@@ -4031,7 +4047,7 @@ gives, with nothing chosen at the call site:
 | Runtime invocation (`mapv`, `update`, `reduce` callbacks, `invoke`) | `f.call` |
 | Compiled `(.call f …)`, `(.apply f …)` | demand, then `f.call`, `f.apply` |
 | Raw `js*` read, `in`, `Reflect.has`, ToPrimitive | `f[name]`, no demand |
-| Clojure `apply` | the declared IFn arity entry for the count if there is one, else `f.call` |
+| Clojure `apply` | the declared IFn arity entry for the count if there is one, else `f.call`, called with `f` as receiver and first operand |
 | Borrowed adapter (`Function.prototype.call.call(m, r, …)`) | the member `m`, run with receiver `r` |
 
 Clojure `apply` is the one consumer that reads past the rule: like the
@@ -4054,16 +4070,14 @@ ordinary property read again; the `jsDirectMember` resolver op is gone)
 and compiled `.call`/`.apply`. `invokeStruct` (callbacks, `invoke`, and
 Clojure `apply` without a declared arity) applies the same predicate
 before entering the IFn methods directly. `declarationReceiver` is the
-only place that installs an `Object` extension.
+only place that installs an `Object` extension; it demands only for a
+struct, an object inheriting from one, or an instance whose type tag names
+a declared mutable type, so a host object carrying an unrelated
+`__lightNativeType` property demands nothing.
 
-**Boundary.** The native runtime builds a non-`Object` protocol's dispatch
-table for all types at once, so it installs that protocol's extension
-bundles for every type the first time any value is dispatched on it, where
-the legacy runtime installs them per type. Under rule 2 that is
-observable only for a type whose declaration has both IFn methods and an
-`Object` `call`/`apply`, extended with another protocol that is first
-dispatched on a different type: native then answers the `Object` method
-earlier than legacy does. An IFn extension (`extend-type T IFn`) installs
+**Boundary.** A mutable type's instances are host objects whose
+prototype receives `Object` methods when their bundle is forced; their
+installations are not deferred. An IFn extension (`extend-type T IFn`) installs
 no `call`/`apply` member natively; QuickJS answers the same in every probed
 cell (it does not install it before demand either).
 
