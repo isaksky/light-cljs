@@ -1141,7 +1141,8 @@ calls only at the head of a list, so `#(binding [...] ...)`, which three
 namespaces of the 200k project contain (none of the 5k or 50k ones), counted
 as a mutation operator used as a value, which marks every core function
 written. It now reads an anonymous function literal like a list; a build
-that does skip lookups now reports each namespace as a `core-write` miss.
+that does skip lookups now reports each namespace as a `core-write` miss
+and publishes nothing.
 
 Setup: the commit that fixed it on `b1ed620d`, release binaries of the V8
 build and the Pants build (`--no-default-features --features bbp-macros`),
