@@ -137,17 +137,20 @@ Rebased on ad6038e0 (macOS aarch64, Rust 1.99.1, 8 test threads), the
 suite ran 2087 tests: 1684 passed and 403 failed, with 105 skipped. Before the gates the test binaries did not
 compile; with only the compile fixes, 529 of 2167 failed. The review rework
 un-gated 93 tests (66 that run, 27 ignored audits) by gating only the session
-or QuickJS parts inside them. The 403 failures are Pants-build gaps, all with
-the signatures of two pellets:
+or QuickJS parts inside them. The 403 failures were Pants-build gaps, all with
+the signatures of two pellets. light-cljs-611 (196 then, `bootstrap macro
+NAME`) closed them as described in "Core macros on the Pants build" below:
+with it, on d766f81d, the suite ran 2090 tests (four new), 1846 passed and
+244 failed, none with that signature. Of 611's tests, 46 still fail, each now
+with one of light-cljs-612's signatures: 42 of the 178 it listed (their core
+macros expand; the macro bodies then reach 612's gaps) and iterator_name,
+positional_constructors, hash_map_source and record_map_constructor_metadata
+of the 18 the rework un-gated. One test was gated:
+compiler_bootstrap's `unused_core_environment_keeps_literal_conversion_failures`
+asserts that a core macro's definition converts the macro environment, which
+the Pants build never does.
 
-- light-cljs-611 (178 listed there, 196 now): core macro calls that native
-  expansion leaves to the bootstrap definition, which the Pants build lacks
-  (`bootstrap macro NAME`): single-source analysis outside a generated-names
-  scope (`analyze`, `--compile FILE`), calls too large to convert, and refused
-  shapes. Un-gating added bootstrap (10 tests), key_shapes (2) and one each in
-  case_char_string_accepted, case_numeric, hash_map_source, iterator_name,
-  positional_constructors and record_map_constructor_metadata.
-- light-cljs-612 (185 listed there, 207 now): compile-time runtime functions
+- light-cljs-612 (185 listed there, 207 then): compile-time runtime functions
   macros call (`native macro runtime core.NAME`), protocol definitions in the
   macro phase, compiler services (`ownValue`, `cancelDemand`, `cancelTarget`),
   and accounting, cache and stats expectations. Un-gating added
@@ -166,6 +169,43 @@ Pants-build gap. The V8 build runs the same tests as before these gates
 (2139 run, 109 skipped; only the playground check above fails). The
 `compiler` bench, which times QuickJS beside Node, requires the `quickjs`
 feature.
+
+## Core macros on the Pants build (light-cljs-611)
+
+The Pants build expands every core macro call in Rust
+(src/native_core_macros.rs); it has no core macro definitions to run. Where
+the V8 build's engine runs a definition instead, the Pants build gives the
+same result:
+
+- **Outside a scope of generated names** (`analyze`, `light-cljs --compile
+  FILE` or `--text` without `ns`, a REPL form), the names a core macro
+  allocates come from the compile-time runtime's own `gensym` count, the one
+  the definition would use, which a source macro's `gensym` shares. First
+  every unqualified symbol of the call joins the names that count skips, as
+  the engine's conversion of the call adds them. Output is byte-identical to
+  the V8 build's, including where a source spells a name like `start2`.
+- **Calls the definition rejects** fail with the V8 build's diagnostic: the
+  conversion limit for a call deeper than 128 levels or larger than the node
+  limit, each definition's own error (checked in the definition's order, so
+  `for` and `doseq` report their last invalid keyword), `if-not`'s arity
+  error, and what the engine's conversion of the expansion refuses (a missing
+  argument, the depth or the node limit) at the path of the first node it
+  refuses. A missing argument is found by building the expansion with a
+  stand-in for it. 60 rejected calls give the V8 build's text byte for byte.
+- **`selector` and `simple-benchmark`**, which only their definitions
+  expanded, expand natively. `simple-benchmark` prints its bindings and
+  expression as the engine's `pr-str` does.
+
+The V8 build is unchanged but for `(for [] x)`, which now expands natively
+there too, to the form its definition gives (both then fail analysis with
+"unsupported binding form"). Three kinds of call are still left: a `for` or
+`doseq` whose expansion the native expander bounds (more than 128 bindings,
+or nested and modified past its name budget), a `defmulti` its definition
+accepts but the native one declines (a character docstring, more than eight
+metadata keys), and a `selector` map or `simple-benchmark`
+form the engine would order by hash or print in its own number format. On
+the Pants build these fail with "the Pants build does not expand this call of
+NAME".
 
 ## Supported boundary
 

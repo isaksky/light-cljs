@@ -1473,6 +1473,13 @@ fn defmulti<const MERGE_METADATA: bool>(
         }
     };
     let qualified = match symbol_name.namespace() {
+        // `(str name)`, which only the Pants build, with no definition to
+        // leave the call to, spells here.
+        Some(qualifier) if MERGE_METADATA => format!(
+            "{}/{}",
+            String::from_utf16_lossy(qualifier),
+            String::from_utf16_lossy(symbol_name.name())
+        ),
         Some(_) => return Ok(None),
         None => format!(
             "{namespace}/{}",

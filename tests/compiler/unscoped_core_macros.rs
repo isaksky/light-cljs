@@ -109,6 +109,19 @@ fn rejected_core_macro_calls_report_the_definitions_errors() {
             "{source}\nexpected {expected:?}\nin {error}"
         );
     }
+    // Expansions the analysis of the result rejects.
+    for (source, expected) in [
+        (
+            "(defmulti user/f identity)",
+            "binding must be an unqualified symbol",
+        ),
+        ("(for [] 1)", "unsupported binding form"),
+    ] {
+        let error = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{source}\n{error}");
+    }
     // The engine's conversion of a call over the node limit.
     let mut host = MacroHost::new();
     host.limits.generated_nodes = 100;
