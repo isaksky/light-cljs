@@ -2421,6 +2421,9 @@ fn native_namespace_context_matches_quickjs_across_helpers_and_jobs() {
             let legacy = build(false);
             // Engine stack frames and the native engine's prefix differ;
             // the diagnostic message, call and definition provenance do not.
+            // QuickJS puts its stack frames between the message and the
+            // definition; V8, the reference in a build that has V8, reports
+            // no frames, so its definition follows on the message's line.
             let marker = "macro macros/diagnostic: ";
             let (native_call, native_message) = native.split_once(marker).unwrap();
             let (legacy_call, legacy_message) = legacy.split_once(marker).unwrap();
@@ -2432,7 +2435,13 @@ fn native_namespace_context_matches_quickjs_across_helpers_and_jobs() {
                     .split_once("; definition ")
                     .unwrap()
                     .0,
-                legacy_message.lines().next().unwrap(),
+                legacy_message
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .split("; definition ")
+                    .next()
+                    .unwrap(),
                 "jobs {jobs}"
             );
             assert_eq!(
@@ -10126,7 +10135,8 @@ fn native_form_member_presence_matches_quickjs() {
 }
 
 /// Every JavaScript object operation times every native form kind, against
-/// QuickJS. A struct, record or multimethod is a frozen object whose own
+/// the QuickJS reference (V8 in a build that has V8, where V8 runs the
+/// reference build's macros). A struct, record or multimethod is a frozen object whose own
 /// properties are its fields: the cells where that differs from the
 /// legacy runtime's mutable instances (writes, deletes, descriptor flags,
 /// integrity queries, the prototype) are listed with both results; the
@@ -10418,6 +10428,19 @@ fn native_form_object_operations_match_quickjs() {
     ];
     #[cfg(feature = "quickjs")]
     {
+        // A build that has V8 runs the reference build's macros in V8, which
+        // words these errors differently; they are errors on both engines.
+        let reference = |key: &str, quickjs: &'static str| -> &'static str {
+            match key {
+                "multi set-field" | "multi child-set-field" if cfg!(light_v8) => {
+                    r#""error: Cannot assign to read only property 'x' of object '#<MultiFn>'""#
+                }
+                "multi delete-field" if cfg!(light_v8) => {
+                    r#""error: Cannot delete property 'x' of #<MultiFn>""#
+                }
+                _ => quickjs,
+            }
+        };
         let legacy = program_output(&build(false, 1));
         assert_eq!(
             native.lines().count(),
@@ -10438,7 +10461,8 @@ fn native_form_object_operations_match_quickjs() {
                     .iter()
                     .find(|(key, _, _)| *key == format!("{kind} {op}"))
                 {
-                    assert_eq!((nv, lv), (*fnv, *flv), "{kind} {op}");
+                    let key = format!("{kind} {op}");
+                    assert_eq!((nv, lv), (*fnv, reference(&key, flv)), "{key}");
                     listed += 1;
                 } else if n != l {
                     differences.push(format!("(\"{kind} {op}\", {nv:?}, {lv:?}),"));
