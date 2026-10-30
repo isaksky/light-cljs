@@ -11,6 +11,7 @@ use crate::vm::{instr::FormOp, property};
 static CALL: FixedText = FixedText::new("call");
 static STATE: FixedText = FixedText::new("state");
 static PRODUCTS: FixedText = FixedText::new("products");
+static GROUP: FixedText = FixedText::new("group");
 static MULTIFN: FixedText = FixedText::new("cljs.core/MultiFn");
 
 pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool, Fault> {
@@ -48,7 +49,7 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
             // original Proxy, its target and its live task-owned overlay Map.
             // Replacing the public registry takes the ordinary property path.
             let proxy = collections::nth(heap, context.clone(), 0)?;
-            let (target, readers) = if receiver == proxy {
+            let (target, readers, missing) = if receiver == proxy {
                 let target = collections::nth(heap, context.clone(), 1)?;
                 let overlays = collections::nth(heap, context.clone(), 2)?;
                 if map_get(heap, state.diag.task, &overlays, &name)?.is_some() {
@@ -59,9 +60,12 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
                     read_result(heap, state, read, receiver)?;
                     return Ok(true);
                 }
-                (target, Some(collections::nth(heap, context, 3)?))
+                let missing = (collections::count(heap, context.clone())? > 4)
+                    .then(|| collections::nth(heap, context.clone(), 4))
+                    .transpose()?;
+                (target, Some(collections::nth(heap, context, 3)?), missing)
             } else {
-                (receiver.clone(), None)
+                (receiver.clone(), None, None)
             };
             let read = property::read(heap, state.diag.task, &target, &key)?;
             if let (
@@ -70,6 +74,10 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
             ) = (readers, &read)
                 && let Some(product) = map_get(heap, state.diag.task, &readers, getter)?
                 && let bundle = collections::nth(heap, product.clone(), 0)?
+                // Definition groups can fall back to a previous generation
+                // for a conditional product, or expose the executing owner.
+                // Their installed getter owns those decisions.
+                && data(heap, state.diag.task, &bundle, &GROUP)? != Some(Value::Bool(true))
                 && matches!(
                     data(heap, state.diag.task, &bundle, &STATE)?,
                     Some(Value::Number(2.0))
@@ -98,13 +106,18 @@ pub(crate) fn start(state: &mut VmState, heap: &Heap, op: FormOp) -> Result<bool
             // A name the target lacks is also read through the Proxy: a task
             // may install a name's catalog registrations when its Proxy is
             // first asked for it (light-cljs-590).
+            let fallback = if read.is_none() {
+                missing.as_ref().unwrap_or(&receiver)
+            } else {
+                &receiver
+            };
             let read =
                 if target != receiver && matches!(read, None | Some(property::Read::Deferred(_))) {
-                    property::read(heap, state.diag.task, &receiver, &key)?
+                    property::read(heap, state.diag.task, fallback, &key)?
                 } else {
                     read
                 };
-            read_result(heap, state, read, receiver)?;
+            read_result(heap, state, read, fallback.clone())?;
         }
         _ => return Ok(false),
     }

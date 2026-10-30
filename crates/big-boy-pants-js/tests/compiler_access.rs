@@ -161,3 +161,32 @@ fn ready_product_reads_guard_the_live_getter_and_keep_its_captured_name() {
         2,
     );
 }
+
+#[test]
+fn definition_groups_and_missing_compiler_roots_keep_their_private_readers() {
+    run(
+        r#"function f() {
+      const target={}, overlays=new Map(), readers=new Map();
+      const proxy=new Proxy(target,{get:(t,k,r)=>Reflect.get(t,k,r)});
+      const missing=new Proxy(target,{get(t,k){
+        if(k==='cold'){__rt.need(94,1);Object.defineProperty(t,k,{value:42});return 42;}
+        throw new Error('unavailable definition: '+k);
+      }});
+      const context=__rt.vector(proxy,target,overlays,readers,missing);
+      const bundle={state:2,group:true,products:{}};let calls=0;
+      const getter=()=>{calls++;__rt.need(93,1);return calls===1?7:9;};
+      readers.set(getter,__rt.vector(bundle,'x'));
+      Object.defineProperty(target,'x',{get:getter});
+      if(__rt.cljReadRoot(proxy,context,'x')!==7)throw new Error('conditional previous generation');
+      bundle.products.x=8;
+      if(__rt.cljReadRoot(proxy,context,'x')!==9)throw new Error('executing owner view');
+      if(__rt.cljReadRoot(proxy,context,'cold')!==42)throw new Error('lazy registration');
+      if(proxy.unknown!==undefined)throw new Error('public property changed');
+      let failed=false;
+      try{__rt.cljReadRoot(proxy,context,'unknown');}catch(e){failed=e.message==='unavailable definition: unknown';}
+      if(!failed)throw new Error('missing compiler root');
+      return true;
+    }"#,
+        2,
+    );
+}

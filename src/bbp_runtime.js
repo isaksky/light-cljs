@@ -268,7 +268,8 @@ const decl = (() => {
     if (!lazy) activate(b);
     if (b.state === 2) return;
     if (b.state === 3) throw b.error;
-    if (b.state === 1) throw new Error('bundle initialization cycle: ' + (b.names[0] ?? b.location));
+    if (b.state === 1) throw new Error('bundle initialization cycle: ' +
+      [...installing.map(b=>b.names[0]??b.location),...initializerNames(),b.names[0]??b.location].join(' -> '));
     const savedOrder = order, savedProducts = globalThis.__lightCompilerBundleProducts;
     b.state = 1; order = b.order;
     b.products = globalThis.__lightCompilerBundleProducts = {};
@@ -277,12 +278,19 @@ const decl = (() => {
       const factory = __rt.need(b.unit, 3);
       installing.push(b);
       try {
-        if (b.multi) globalThis.__lightInitializeCompilerValue(b.unit, () => { factory(globalThis.__lightNativeRuntime); return null; });
+        if (b.group) {
+          const products=globalThis.__lightInitializeCompilerValue(b.unit,()=>{
+            factory(globalThis.__lightNativeRuntime);
+            let result=__rt.map();for(const name of b.names)if(name in b.products)result=__rt.assoc(result,name,b.products[name]);
+            return result;
+          });
+          const absent={};b.products={};for(const name of b.names){const value=__rt.getOr(products,name,absent);if(value!==absent)b.products[name]=value;}
+        } else if (b.multi) globalThis.__lightInitializeCompilerValue(b.unit, () => { factory(globalThis.__lightNativeRuntime); return null; });
         else factory(globalThis.__lightNativeRuntime);
       } finally { installing.pop(); }
       b.state = 2;
     } catch (e) {
-      b.state = 3; b.error = e;
+      b.products={};b.state = 3; b.error = e;
       if (e instanceof Error) e.message = b.location + ': ' + (b.names[0] ?? 'extension') + ': ' + e.message;
       throw e;
     } finally {
@@ -736,7 +744,7 @@ const decl = (() => {
   // A bundle's declaration order is its position among every bundle the
   // task registered, a catalog prefix it adopted included (`lazyAdopt`).
   let bundleCount = 0;
-  const makeBundle = (names, indices, location, unit, order) => ({order, names, unit, location, state: 0, error: null, products: null, active: false,
+  const makeBundle = (names, indices, location, unit, order, group=false) => ({order, names, unit, location, group, previous:new Map(), previousReader:null, state: 0, error: null, products: null, active: false,
     indices: indices.map(([protocol, selector = null]) => [protocol, selector]),
     multi: indices.length > 0 && indices.every(index => index[0].startsWith('multifn:'))});
   // A root's initializer reads the declaration products visible at its
@@ -749,12 +757,42 @@ const decl = (() => {
     declarationFrontier = next;
     try { return f(); } finally { declarationFrontier = saved; }
   };
+  // `b.previous`: a definition group's prior root generations, which a
+  // conditional product falls back to (`captureRoot`). `b.earlier`: the
+  // getter of a name's definition before `b`, which an initializer before
+  // `b`'s declaration reads (`atDeclarationFrontier`).
+  const previous=(b,name)=>{
+    if(!b.previous.has(name))b.previous.set(name,b.previousReader===null?captureRoot(name):b.previousReader(name));
+    return b.previous.get(name);
+  };
+  const productAvailable=(b,name)=>{
+    if(!b.group)return true;
+    if(b.state!==1)force(b);
+    if(name in b.products)return true;
+    const old=previous(b,name);
+    if(old!==null)return rootAvailable(old);
+    if(b.state===1)force(b);
+    return false;
+  };
+  const readProduct=(b,name)=>{
+    if(b.group&&b.state===1){
+      if(name in b.products)return b.products[name];
+      const old=previous(b,name);if(rootAvailable(old))return readRoot(old);
+    }
+    force(b);
+    if(name in b.products)return b.products[name];
+    if(b.group){
+      const old=previous(b,name);if(rootAvailable(old))return readRoot(old);
+      throw new Error(b.location+': unavailable definition: '+name);
+    }
+    return undefined;
+  };
   const productGetter = (b, name) => () => {
     if (b.order > declarationFrontier) {
-      const previous = b.previous?.get(name) ?? (b.catalog === undefined ? undefined : catalogPrevious(b, name));
-      if (previous !== undefined) return previous();
+      const earlier = b.earlier?.get(name) ?? (b.catalog === undefined ? undefined : catalogPrevious(b, name));
+      if (earlier !== undefined) return earlier();
     }
-    force(b); return b.products[name];
+    const own=productOwner(name);return readProduct(own?.group?own:b,name);
   };
   // Index `b`'s extensions of `protocol` (every one when it is null).
   const index = (b, protocol = null) => {
@@ -772,18 +810,19 @@ const decl = (() => {
     if (lazyCatalog !== null) catalogProtocol(protocol);
     return extensions.get(protocol);
   };
-  const register = (names, indices, location, once, unit) => {
-    const b = makeBundle(names, indices, location, unit, ++bundleCount);
+  const register = (names, indices, location, once, unit, group=false) => {
+    const b = makeBundle(names, indices, location, unit, ++bundleCount,group);
     if (once && names.length && names.every(name => globalThis.__lightCompilerRootKept(name))) return null;
+    if(group)for(const name of names)if(!b.previous.has(name))b.previous.set(name,captureRoot(name));
     for (const name of names) {
       // A preloaded root (a data property) stays; a product replaces an
       // earlier definition's.
       lazyResolve(name);
       const old = Object.getOwnPropertyDescriptor(registry(), name);
-      if (old !== undefined && 'value' in old) continue;
+      if (!group && old !== undefined && 'value' in old) continue;
       // A declaration alone (`defprotocol`'s, before its bundle) is no
       // previous definition: it keeps the fast product read.
-      if (old?.get !== undefined && !declarationOnly(name)) (b.previous ??= new Map()).set(name, old.get);
+      if (old?.get !== undefined && !declarationOnly(name)) (b.earlier ??= new Map()).set(name, old.get);
       globalThis.__lightInstallCompilerProduct(name, productGetter(b, name), b);
     }
     if (lazyCatalog !== null) for (const [protocol] of b.indices) catalogProtocol(protocol);
@@ -805,20 +844,22 @@ const decl = (() => {
   };
   const keptProduct = name => {
     const b = productOwner(name);
-    return b !== null && name in b.products;
+    return b !== null && (name in b.products||b.group&&rootAvailable(previous(b,name)));
   };
   const defineProduct = (name, initialize) => {
     const b = productOwner(name);
-    if (b === null) return false;
+    if (b === null || initialize===null) return undefined;
     if (initialize !== null) {
       // A defmulti's defonce is a single-product bundle. Its initializer
       // joins the existing task-owned initializer protocol, so dispatch
       // function/hierarchy effects run once even across suspended demands.
-      b.products[name] = b.names.length === 1
+      const value = !b.group&&b.names.length === 1
         ? globalThis.__lightInitializeCompilerValue(b.unit, initialize)
         : initialize();
+      if(bindingOverlays.has(name))bindingOverlays.set(name,value);else b.products[name]=value;
+      return value;
     }
-    return true;
+    return undefined;
   };
   const mutableRecord = x => {
     if (x === null || typeof x !== 'object' || __rt.formKind(x) !== null) return null;
@@ -831,7 +872,8 @@ const decl = (() => {
     instanceMethods:instances,
     method, satisfies, implementsDirectly, predicate, masked, mask, extended, hostType, demand, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
     callable, invokeIFn, applyIFn, callMember, borrowedIFn,
-    demandMulti, keptProduct, productOwner, defineProduct,
+    demandMulti, keptProduct, productOwner, defineProduct,productAvailable,readProduct,
+    storeProduct:(name,value)=>{const b=productOwner(name);if(b?.group){b.products[name]=value;return true;}return false;},
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
     coreMethod:resolveCore,
     coreTable:methodTable, coreLookup,
@@ -2659,6 +2701,7 @@ const native = (() => {
     }],
   ],function(){},false,iterationType,['step','somef','vf','kf','initk']);
   const intoReducer = (...a) => a.length === 1 ? a[0] : a.length === 2 ? __rt.cljConj(a[0], a[1]) : arity(a.length);
+  const randInt=n=>Math.floor(Math.random()*val(n));
   const core = {
     MultiFn:multi.MultiFn, MultiFnFactory:(...a)=>new multi.MultiFn(...a),
     isFn:x=>typeof val(x)==='function'||__rt.formKind(val(x))==='type'||isVar(x)||decl.satisfies('Fn',x),
@@ -2712,7 +2755,7 @@ const native = (() => {
     addMethod:(m,k,f)=>multi.change(m,'add',k,f),removeMethod:(m,k)=>multi.change(m,'remove',k),removeAllMethods:m=>multi.change(m,'reset'),
     preferMethod:multi.prefer,getMethod:multi.getMethod,methods:m=>multi.tables(m).methods,prefers:m=>multi.tables(m).prefs,
     dispatchFn:m=>multi.field(m,'dispatch_fn'),defaultDispatchVal:m=>multi.field(m,'default_dispatch_val'),
-    assertions:true, uncheckedArrays:false,
+    assertions:true, uncheckedArrays:false,isAny:x=>true,
     gensym, rePattern, reSeq:(re,text)=>reSeq(reSeq,re,text),
     reFind:(re,text)=>reMatch(re,text,false), reMatches:(re,text)=>reMatch(re,text,true),
     isRegex:x=>val(x) instanceof RegExp,
@@ -2790,7 +2833,7 @@ const native = (() => {
     SeqIterFactory:(...a)=>a.length===2?new SeqIter(...a):arity(a.length),
     toArray:x=>arr(x).slice(),
     toArray2d:x=>arr(x).map(row=>arr(row).slice()),
-    aclone:x=>aclone(val(x)),aset:(...args)=>aset(...args.map(val)),
+    aclone:x=>aclone(val(x)),aset:(...args)=>aset(...args.map(val)),jsDelete:(object,key)=>jsDelete(val(object),val(key)),
     checkedAget:(...args)=>checkedAget(...args.map(val)),checkedAset:(...args)=>checkedAset(...args.map(val)),
     checkedAgetStrict:(...args)=>checkedAgetStrict(...args.map(val)),checkedAsetStrict:(...args)=>checkedAsetStrict(...args.map(val)),
     intoArray:(...a)=>a.length===1||a.length===2?arr(a[a.length-1]).slice():arity(a.length),
@@ -2957,7 +3000,7 @@ const native = (() => {
     identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>c===multi.MultiFn?multi.is(x):__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
     add:(...xs)=>xs.length===0?0:xs.slice(1).reduce((a,b)=>val(a)+val(b),xs[0]), subtract:(a,...xs)=>xs.length?xs.reduce((a,b)=>a-val(b),val(a)):-val(a),
     divide:(...xs)=>xs.length===0?NaN:xs.length===1?1/val(xs[0]):xs.slice(1).reduce((a,b)=>a/val(b),val(xs[0])),
-    int:x=>val(x)|0, long:x=>fix(val(x)), byte:x=>x, short:x=>x, float:x=>x, double:x=>x,
+    int:x=>val(x)|0, long:x=>fix(val(x)), byte:x=>x, short:x=>x, float:x=>x, double:x=>x,char:x=>char(val(x)),
     uncheckedInt:x=>fix(val(x)),
     uncheckedLong:x=>fix(val(x)),
     uncheckedNegate:x=>-val(x),uncheckedNegateInt:x=>-val(x),
@@ -2988,8 +3031,9 @@ const native = (() => {
       return x.length===36&&/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(x)?core.uuid(x):null;},
     randomUuid:(...a)=>a.length?arity(a.length):core.uuid('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,ch=>{const n=Math.floor(Math.random()*16);return (ch==='x'?n:n&3|8).toString(16);})),
     rand:(...a)=>a.length===0?Math.random():a.length===1?val(a[0])*Math.random():arity(a.length),
-    randInt:n=>Math.floor(Math.random()*val(n)),
-    randNth:coll=>__rt.cljNth(coll,core.randInt(__rt.cljCount(coll))),
+    randInt,
+    shuffle:coll=>{const items=arr(coll).slice();for(let i=items.length-1;i>0;i--){const j=randInt(i+1);[items[i],items[j]]=[items[j],items[i]];}return vector(items);},
+    randNth:coll=>__rt.cljNth(coll,randInt(__rt.cljCount(coll))),
     parseLong:x=>parseLong(val(x)),parseDouble:x=>parseDouble(val(x)),parseBoolean:x=>parseBoolean(val(x)),
     ExceptionInfo,
     exInfo:(...a)=>a.length===2||a.length===3?new ExceptionInfo(a[0],a[1],a.length===2?null:a[2]):arity(a.length),
@@ -3203,6 +3247,9 @@ const native = (() => {
       if(bindingOverlays.has(name))return binding||bindingOverlays.get(name)!==undefined;
       if(!(name in bindings))return false;
       if(binding)return true;
+      const own=decl.productOwner(name),descriptor=Object.getOwnPropertyDescriptor(bindings,name),product=productReaders.get(descriptor?.get);
+      if(own?.group)return decl.productAvailable(own,name)&&decl.readProduct(own,name)!==undefined;
+      if(product!==undefined){const b=__rt.nth(product,0);return decl.productAvailable(b,name)&&decl.readProduct(b,name)!==undefined;}
       if(roots.has(name)&&__rt.initializerSlotGet(roots.get(name),0)===null)return false;
       return bindings[name]!==undefined;
     },
@@ -3243,6 +3290,8 @@ const native = (() => {
     const operation=core[key],wrapper=(...args)=>operation(...args);
     Object.defineProperty(wrapper,'name',{value:name,configurable:true});core[name]=wrapper;
   }
+  for(const name of ['booleans','bytes','chars','shorts','ints','floats','doubles','longs',
+    'uncheckedByte','uncheckedShort','uncheckedFloat','uncheckedDouble','uncheckedChar'])core[name]=x=>x;
   // As the legacy runtimes: `cljs.core` follows `cljs.user`, both before
   // anything (the registry starts with them).
   currentNamespace=localNs('cljs.user',__rt.cljSymbol('cljs.user'));
@@ -3576,6 +3625,18 @@ const native = (() => {
     setFromArray:set,arraySetFromArray:set,constantSetFromArray:constantSet,literalSetFromArray:literalSet,
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
     makeIFn:f=>f, makeVar, definitionVar,
+    // The existing observation adapter reads intrinsic language brands.
+    // Arbitrary host objects remain unclassified and no getter runs here.
+    inspect:x=>{
+      const value=val(x),kind=__rt.formKind(value);
+      if(isVar(value)||__rt.cljIsAtom(value)||kind==='reduced')return {kind:'opaque'};
+      if(kind==='keyword'||kind==='symbol')return {kind,namespace:__rt.formNamespace(value),name:__rt.formName(value),spelling:kind==='keyword'?namedText(value).slice(1):namedText(value)};
+      if(kind==='vector')return {kind:'vector',items:arr(value)};
+      if(kind==='map'||kind==='record')return {kind:'map',entries:arr(__rt.formPrintItems(value)).map(arr),count:__rt.cljCount(value)};
+      if(kind==='set')return {kind:'set',items:arr(__rt.formPrintItems(value)),count:__rt.formCount(value)};
+      if(kind==='list'||kind==='cons')return {kind:__rt.cljIsList(value)?'list':'seq',items:arr(value)};
+      return null;
+    },
     compilerForms:{
       jsObj:bootstrapJsObj,
       jsArray:items=>__rt.formCompilerLiteral('js-array',vector(items)),
@@ -3604,6 +3665,7 @@ const native = (() => {
 globalThis.__lightNativeRuntime=native;
 const roots=new Map();
 const rootSetter=name=>value=>{
+  if(decl.storeProduct(name,value))return;
   const slot=roots.get(name);if(slot!==undefined)__rt.initializerSlotSet(slot,4,true);
   Object.defineProperty(registry(),name,{configurable:true,writable:true,value});
 };
@@ -3615,6 +3677,23 @@ const fastProductReaders=new Map();
 // Of each root, the unit of its definition's executable :test metadata;
 // of each unit, its root's slot.
 const rootTests=new Map(), unitSlots=new Map();
+// A previous generation retains its descriptor, without reading its value.
+// Conditional groups can fall back to it after their owner has completed.
+function captureRoot(name){
+  lazyResolve(name);
+  const descriptor=Object.getOwnPropertyDescriptor(registry(),name),slot=roots.get(name);
+  return descriptor===undefined?null:{descriptor,unit:slot===undefined?null:__rt.initializerSlotGet(slot,0)};
+}
+function rootAvailable(root){
+  if(root===null)return false;
+  const product=productReaders.get(root.descriptor.get);
+  return product===undefined?'value' in root.descriptor||root.unit!==null:decl.productAvailable(__rt.nth(product,0),__rt.nth(product,1));
+}
+function readRoot(root){
+  if('value' in root.descriptor)return root.descriptor.value;
+  const product=productReaders.get(root.descriptor.get);
+  return product===undefined?root.descriptor.get():decl.readProduct(__rt.nth(product,0),__rt.nth(product,1));
+}
 // Private task-owned slots: unit/name/state/value/defined are fields 0..4.
 // Full JS values stay traced; public roots and saved getters remain ordinary.
 // A bundle replaces an unavailable declaration's getter. Remember that it
@@ -3627,7 +3706,7 @@ globalThis.__lightInstallCompilerProduct=(name,read,bundle)=>{
   Object.defineProperty(registry(),name,{configurable:true,get:read});
   if(bundle!==undefined){
     const entry=__rt.vector(bundle,name);productReaders.set(read,entry);
-    if(!bundle.previous?.has(name))fastProductReaders.set(read,entry);
+    if(!bundle.earlier?.has(name))fastProductReaders.set(read,entry);
   }
 };
 // Each invocation of this runtime belongs to one VM task. Overlay snapshots
@@ -3658,14 +3737,16 @@ globalThis.__lightCompilerRootKept=name=>{
   lazyResolve(name);
   const bound=bindingOverlays.has(name)&&bindingOverlays.get(name)!==undefined;
   if(decl.productOwner(name)!==null)return decl.keptProduct(name)||bound;
+  const descriptor=Object.getOwnPropertyDescriptor(registry(),name),product=productReaders.get(descriptor?.get);
+  if(product!==undefined)return decl.productAvailable(__rt.nth(product,0),name)||bound;
   if(roots.has(name)){const root=roots.get(name);return __rt.initializerSlotGet(root,0)!==null||__rt.initializerSlotGet(root,4)===true||bound;}
   return Object.getOwnPropertyDescriptor(registry(),name)!==undefined||bound;
 };
 globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
   lazyResolve(name);
   if(once&&globalThis.__lightCompilerRootKept(name))return null;
-  if(decl.defineProduct(name,initialize))return globalThis.__lightCompilerBundleProducts[name];
-  if(initialize===null)return undefined;
+  if(decl.productOwner(name)!==null)return decl.defineProduct(name,initialize);
+  if(initialize===null){if(!(name in registry()))globalThis.__lightRegisterUnit(name,null);return undefined;}
   return defineRootValue(name,initialize());
 };
 const defineRootValue=(name,value)=>{
@@ -3675,6 +3756,7 @@ const defineRootValue=(name,value)=>{
 };
 let initializerSerial=0;
 const initializerStack=[];
+function initializerNames(){return initializerStack.map(unit=>{const slot=unitSlots.get(unit);return slot===undefined?String(unit):__rt.initializerSlotGet(slot,1)??String(unit);});}
 // Helper compilation uses a separate task. Initializers on this task remain
 // the innermost code; the catalog supplies the analysis ancestry in Rust.
 globalThis.__lightBuildCaller=()=>(initializerStack.length?'i':'e')+'\u0000'+initializerStack.join(',');
@@ -3704,13 +3786,16 @@ globalThis.__lightRegisterUnit=(name,unit,once=false,location='',test=null)=>{
   if(roots.has(name)&&(unit===null||__rt.initializerSlotGet(roots.get(name),0)===unit))return null;
   // A defonce keeps an earlier definition (not a declaration), as the
   // legacy runtimes' registry does.
-  if(once&&roots.has(name)&&(__rt.initializerSlotGet(roots.get(name),0)!==null||__rt.initializerSlotGet(roots.get(name),4)===true))return null;
+  const descriptor=Object.getOwnPropertyDescriptor(registry(),name),product=productReaders.get(descriptor?.get);
+  const conditional=product!==undefined&&__rt.nth(product,0).group;
+  if(once&&!conditional&&roots.has(name)&&(__rt.initializerSlotGet(roots.get(name),0)!==null||__rt.initializerSlotGet(roots.get(name),4)===true))return null;
+  const previous=once&&conditional?captureRoot(name):null;
   const slot=__rt.initializerSlot(unit,name);roots.set(name,slot);
   // The unit of the definition's executable :test metadata, whose own root
   // a Var reflects (`__lightCompilerVarMetadata`).
   rootTests.set(name,test);
   if(unit!==null)unitSlots.set(unit,slot);
-  Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot,decl.bundles())});return null;
+  Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot,decl.bundles(),previous,location)});return null;
 };
 // Whether `name`'s root is a declaration alone: no unit, never defined.
 function declarationOnly(name){
@@ -3718,9 +3803,11 @@ function declarationOnly(name){
   return slot!==undefined&&__rt.initializerSlotGet(slot,0)===null&&__rt.initializerSlotGet(slot,4)!==true;
 }
 // `frontier`: the bundles registered before the root, whose products its
-// initializer reads (`decl.atDeclarationFrontier`).
-const rootGetter=(name,unit,slot,frontier=Infinity)=>()=>{
-  if(unit===null)throw new Error('unavailable definition: '+name);
+// initializer reads (`decl.atDeclarationFrontier`). `previous`: a
+// conditional group's prior generation, which a defonce keeps.
+const rootGetter=(name,unit,slot,frontier=Infinity,previous=null,location='')=>()=>{
+  if(unit===null)throw new Error((location?location+': ':'')+'unavailable definition: '+name);
+  if(previous!==null&&rootAvailable(previous))return readRoot(previous);
   __rt.need(unit,2);
   const factory=__rt.need(unit,3);
   return decl.atDeclarationFrontier(frontier,()=>initializeValue(slot,factory));
@@ -3766,7 +3853,7 @@ const initializeValue=(slot,factory)=>{
     const unit=__rt.initializerSlotGet(slot,0),state=__rt.initializerSlotGet(slot,2);
     if(globalThis.__lightRootReads!==null)globalThis.__lightRootReads+=unit+',';
     if(state===2){__rt.need(unit,4);return __rt.initializerSlotGet(slot,3);}
-    if(state===1)throw new Error('root initialization cycle: '+(__rt.initializerSlotGet(slot,1)??unit));
+    if(state===1)throw new Error('root initialization cycle: '+[...initializerNames(),__rt.initializerSlotGet(slot,1)??unit].join(' -> '));
     if(state===3)throw __rt.initializerSlotGet(slot,3);
     __rt.initializerSlotSet(slot,2,1);
     try{
@@ -3818,7 +3905,7 @@ globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,g
   // A bundle without a unit (a test's, or an embedder's registration) keeps
   // preloaded roots and reports demand as unsupported.
   if(unit<0){for(const name of names)if(lazyResolve(name),!(name in registry()))Object.defineProperty(registry(),name,{configurable:true,get:()=>{throw new Error('unsupported operation: helper not preloaded: '+name);}});return null;}
-  return decl.register(names,indices,location,once,unit);
+  return decl.register(names,indices,location,once,unit,group);
 };
 globalThis.__lightEnterCompilerFrontier=next=>decl.enter(next);
 globalThis.__lightLeaveCompilerFrontier=()=>decl.leave();
@@ -3829,7 +3916,12 @@ globalThis.__lightCompilerRoots=new Proxy(rootTarget, {
 });
 // The compiler's bounded read intrinsic checks this live overlay Map and
 // target on every read. Ordinary interop retains the Proxy and its receiver.
-globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoots,rootTarget,bindingOverlays,fastProductReaders);
+globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoots,rootTarget,bindingOverlays,fastProductReaders,
+  new Proxy(rootTarget,{get:(target,name)=>{
+    lazyResolve(name);
+    if(!Reflect.has(target,name))throw new Error('unavailable definition: '+name);
+    return Reflect.get(rootsProxy,name);
+  }}));
 // A producer task adopts its parent's catalog snapshot instead of applying
 // it (light-cljs-590): a name gets its catalog registrations when the task
 // first uses it, and a protocol its catalog bundles, each with exactly the
@@ -3899,7 +3991,7 @@ const liveState=name=>{
     own:d!==undefined,data:d!==undefined&&'value' in d,has:d!==undefined||Reflect.has(rootTarget,name),
     // A new slot, the defined mark on the slot it had, the entry that owns
     // its property and the one that created it.
-    fresh:false,pre:false,owner:-1,first:-1};
+    fresh:false,pre:false,owner:-1,first:-1,descriptor:d,root:slot};
 };
 // Catalog entry `p` applied to a name's state `s`, as `__lightRegisterUnit`
 // and `decl.register` (through `__lightInstallCompilerProduct`) apply it.
@@ -3908,10 +4000,11 @@ const lazyStep=(c,s,p)=>{
   const e=__rt.nth(c.entries,p);
   if(__rt.nth(e,0)===0){
     const unit=__rt.nth(e,2);
-    if(!s.slot&&s.has||s.slot&&(unit===null||s.unit===unit)||__rt.nth(e,3)&&s.slot&&(s.unit!==null||s.defined))return s;
+    const conditional=s.owner>=0&&__rt.nth(__rt.nth(c.entries,s.owner),0)===1&&__rt.nth(__rt.nth(c.entries,s.owner),7);
+    if(!s.slot&&s.has||s.slot&&(unit===null||s.unit===unit)||__rt.nth(e,3)&&!conditional&&s.slot&&(s.unit!==null||s.defined))return s;
     return {slot:true,unit,defined:false,own:true,data:false,has:true,fresh:true,pre:s.pre,owner:p,first:s.own?s.first:p};
   }
-  if(!lazyEffective(c,p)||s.own&&s.data)return s;
+  if(!lazyEffective(c,p)||s.own&&s.data&&!__rt.nth(e,7))return s;
   return {slot:true,unit:s.slot?s.unit:null,defined:true,own:true,data:false,has:true,
     fresh:s.slot?s.fresh:true,pre:s.pre||s.slot&&!s.fresh,owner:p,first:s.own?s.first:p};
 };
@@ -3956,12 +4049,25 @@ const lazyBundle=(c,p)=>{
     const e=__rt.nth(c.entries,p),products=__rt.nth(e,1),extensions=__rt.nth(e,2),names=[],indices=[];
     for(let i=0;i<__rt.count(products);i++)names.push(__rt.nth(products,i));
     for(let i=0;i<__rt.count(extensions);i++)indices.push([__rt.nth(__rt.nth(extensions,i),0),__rt.nth(__rt.nth(extensions,i),1)]);
-    b=decl.makeBundle(names,indices,__rt.nth(e,3),__rt.nth(e,5),c.base+__rt.nth(e,6)+1);
+    b=decl.makeBundle(names,indices,__rt.nth(e,3),__rt.nth(e,5),c.base+__rt.nth(e,6)+1,__rt.nth(e,7));
     b.catalog=c;b.entry=p;
+    if(b.group)b.previousReader=name=>lazyPrevious(c,name,p);
     c.bundles.set(p,b);
   }
   return b;
 };
+function lazyPrevious(c,name,p){
+  const state=lazyStateBefore(c,name,p);
+  if(state.owner<0)return state.descriptor===undefined?null:{descriptor:state.descriptor,unit:state.root===undefined?null:__rt.initializerSlotGet(state.root,0)};
+  const entry=__rt.nth(c.entries,state.owner);
+  if(__rt.nth(entry,0)===0){
+    const unit=__rt.nth(entry,2),slot=__rt.initializerSlot(unit,name);
+    return {descriptor:{get:rootGetter(name,unit,slot,catalogFrontier(c,state.owner),__rt.nth(entry,3)?lazyPrevious(c,name,state.owner):null,__rt.nth(entry,5))},unit};
+  }
+  const bundle=lazyBundle(c,state.owner);
+  const read=decl.productGetter(bundle,name);productReaders.set(read,__rt.vector(bundle,name));
+  return {descriptor:{get:read},unit:-1};
+}
 // Install a name's catalog registrations, once, before its first use.
 function lazyResolve(name){
   const c=lazyCatalog;
@@ -3981,7 +4087,7 @@ function lazyResolve(name){
     // As `__lightRegisterUnit`: the :test unit Var reflection reads.
     rootTests.set(name,__rt.nth(owner,4));
     if(s.unit!==null)unitSlots.set(s.unit,slot);
-    Object.defineProperty(rootTarget,name,{configurable:true,get:rootGetter(name,s.unit,slot,catalogFrontier(c,s.owner))});
+    Object.defineProperty(rootTarget,name,{configurable:true,get:rootGetter(name,s.unit,slot,catalogFrontier(c,s.owner),__rt.nth(owner,3)?lazyPrevious(c,name,s.owner):null,__rt.nth(owner,5))});
   }else{
     const b=lazyBundle(c,s.owner),read=decl.productGetter(b,name);
     Object.defineProperty(rootTarget,name,{configurable:true,get:read});
@@ -4087,12 +4193,12 @@ for(let serial=1;;serial++){
       for(let at=__rt.nth(input,1);at<__rt.count(catalog);at++){
         const entry=__rt.nth(catalog,at);
         if(__rt.nth(entry,0)===0){
-          globalThis.__lightRegisterUnit(__rt.nth(entry,1),__rt.nth(entry,2),__rt.nth(entry,3),'',__rt.nth(entry,4));
+          globalThis.__lightRegisterUnit(__rt.nth(entry,1),__rt.nth(entry,2),__rt.nth(entry,3),__rt.nth(entry,5),__rt.nth(entry,4));
         }else{
           const products=__rt.nth(entry,1), extensions=__rt.nth(entry,2), names=[], indices=[];
           for(let i=0;i<__rt.count(products);i++)names.push(__rt.nth(products,i));
           for(let i=0;i<__rt.count(extensions);i++)indices.push([__rt.nth(__rt.nth(extensions,i),0),__rt.nth(__rt.nth(extensions,i),1)]);
-          decl.register(names,indices,__rt.nth(entry,3),__rt.nth(entry,4),__rt.nth(entry,5));
+          decl.register(names,indices,__rt.nth(entry,3),__rt.nth(entry,4),__rt.nth(entry,5),__rt.nth(entry,7));
         }
       }
     }

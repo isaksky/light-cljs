@@ -120,7 +120,7 @@ impl BbpEvaluator {
                         let position = cursor + offset;
                         let boolean = |b| s.primitive(Primitive::Bool(b));
                         let descriptor = match registration {
-                            Registration::Root(name, unit, test, once, _) => {
+                            Registration::Root(name, unit, test, once, location) => {
                                 let name = text(s, name)?;
                                 names = index(names, name, position)?;
                                 s.new_vector(&[
@@ -131,6 +131,7 @@ impl BbpEvaluator {
                                     // The unit of the definition's :test
                                     // metadata, which Var reflection reads.
                                     test.map_or_else(|| s.primitive(Primitive::Null), number),
+                                    text(s, location)?,
                                 ])
                                 .map_err(error)?
                             }
@@ -178,6 +179,7 @@ impl BbpEvaluator {
                                         bundles += 1;
                                         bundles - 1
                                     }),
+                                    boolean(bundle.group),
                                 ])
                                 .map_err(error)?
                             }

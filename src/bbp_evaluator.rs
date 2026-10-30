@@ -204,6 +204,9 @@ struct ReaderExportPath<'a> {
     path: &'a str,
     // #js payload containers use the host container's diagnostic paths.
     literal: Option<L>,
+    // Compiler data readers reject undefined. Macro forms retain the
+    // existing nil export of removed positional-literal slots.
+    reject_undefined: bool,
 }
 #[derive(Default)]
 struct Bridge {
@@ -795,6 +798,7 @@ impl Bridge {
                     path.as_deref().map(|path| ReaderExportPath {
                         path,
                         literal: Some(kind),
+                        reject_undefined: reader.is_some_and(|reader| reader.reject_undefined),
                     }),
                 )?;
                 if kind == L::JsObject {
@@ -837,10 +841,11 @@ impl Bridge {
                                         let key = if let Some(key) = s.string(value) {
                                             key
                                         } else {
+                                            if s.form_kind(value) != Some(FormKind::Keyword) {
+                                                return Err(error("Invalid JS object literal key"));
+                                            }
                                             let name = s.form_name(value).map_err(error)?;
-                                            if s.form_kind(value) != Some(FormKind::Keyword)
-                                                || name.namespace.is_some()
-                                            {
+                                            if name.namespace.is_some() {
                                                 return Err(error("Invalid JS object literal key"));
                                             }
                                             name.name
@@ -868,6 +873,8 @@ impl Bridge {
                             path.as_deref().map(|path| ReaderExportPath {
                                 path,
                                 literal: None,
+                                reject_undefined: reader
+                                    .is_some_and(|reader| reader.reject_undefined),
                             }),
                         )
                     })
@@ -883,11 +890,8 @@ impl Bridge {
                 }
             }
             None => match s.view(v) {
-                ValueView::Undefined if let Some(reader) = reader => {
-                    return Err(EvalError(format!(
-                        "Error: Unsupported macro result undefined at {}",
-                        reader.path
-                    )));
+                ValueView::Undefined if reader.is_some_and(|reader| reader.reject_undefined) => {
+                    return Err(unsupported("undefined"));
                 }
                 ValueView::Null | ValueView::Undefined => D::Nil,
                 ValueView::Bool(b) => D::Boolean(b),
@@ -913,6 +917,8 @@ impl Bridge {
                             path.as_deref().map(|path| ReaderExportPath {
                                 path,
                                 literal: None,
+                                reject_undefined: reader
+                                    .is_some_and(|reader| reader.reject_undefined),
                             }),
                         )?,
                     }
@@ -934,6 +940,7 @@ impl Bridge {
                             reader.map(|reader| ReaderExportPath {
                                 path: reader.path,
                                 literal: None,
+                                reject_undefined: reader.reject_undefined,
                             }),
                         )?,
                     }
@@ -962,6 +969,7 @@ impl Bridge {
                 path.as_deref().map(|path| ReaderExportPath {
                     path,
                     literal: None,
+                    reject_undefined: reader.is_some_and(|reader| reader.reject_undefined),
                 }),
             )?);
         } else if !matches!(data.kind(), D::Keyword(_))
@@ -1454,7 +1462,7 @@ impl BbpRuntime {
                 .join("\n")
             })
             .replace("/* SCALAR_HELPERS */", &{
-                ["stringHash", "rotateLeft", "mixK1", "mixH1", "fmix", "mixCollectionHash", "parsingString", "parseLong", "parseDouble", "parseBoolean", "jsSet", "aset", "aclone", "checkedIndex", "checkedAget", "checkedAset", "checkedAgetStrict", "checkedAsetStrict"]
+                ["stringHash", "rotateLeft", "mixK1", "mixH1", "fmix", "mixCollectionHash", "parsingString", "parseLong", "parseDouble", "parseBoolean", "char", "jsSet", "jsDelete", "aset", "aclone", "checkedIndex", "checkedAget", "checkedAset", "checkedAgetStrict", "checkedAsetStrict"]
                     .into_iter()
                     .map(|name| {
                         let unit = manifest.unit(manifest.unit_named(name).unwrap());
@@ -3528,6 +3536,7 @@ impl MacroEvaluator for BbpEvaluator {
                     Some(ReaderExportPath {
                         path: "$",
                         literal: None,
+                        reject_undefined: false,
                     }),
                 )
             })
@@ -3565,6 +3574,7 @@ impl CompilerEvaluator for BbpEvaluator {
                     Some(ReaderExportPath {
                         path: "$",
                         literal: None,
+                        reject_undefined: true,
                     }),
                 )
             })

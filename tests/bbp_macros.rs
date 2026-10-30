@@ -6198,6 +6198,114 @@ fn native_nested_updates_and_key_projections_keep_callback_contracts() {
 }
 
 #[test]
+fn native_definition_groups_keep_prior_and_completed_products() {
+    assert_native_matches_legacy(
+        r#"(def effects (atom 0))
+           (let [n (swap! effects inc)]
+             (def a n) (defn b [] a) (def c (+ a (b))))
+           (def preserved 7)
+           (if false (def preserved 99) (def present 42))
+           (let [] (defonce preserved 100) (def after (+ preserved present)))
+           (defmacro probe [] (list 'quote [a (b) c preserved present after @effects]))
+           (js/console.log (pr-str (probe)))"#,
+        "[1 1 2 7 42 49 1]\n",
+    );
+}
+
+#[test]
+fn native_definition_group_failure_stays_sticky_and_fresh_hosts_recover() {
+    let source = r#"(def effects (atom 0))
+           (let [] (def a (swap! effects inc)) (throw (js/Error. "owner failed")) (def b 2))
+           (defmacro probe []
+             (let [one (try a (catch :default e e)) two (try b (catch :default e e))]
+               (list 'quote [(identical? one two) @effects (.includes (.-message one) "owner failed")])) )
+           (js/console.log (pr-str (probe)))"#;
+    let build = |native| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let mut program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+        // The macro observes the throwing owner. Execute only its exported
+        // witness in Node; the source owner also throws in application phase.
+        let light_cljs::ExprKind::Do(forms) = &program.exprs[program.root.0].kind else {
+            panic!("top-level forms");
+        };
+        program.root = *forms.last().unwrap();
+        let js = emit_js(&program);
+        assert_eq!(program_output(&js), "[true 1 true]\n");
+        assert!(
+            light_cljs::compile_with_macros("(defmacro clean [] 42) (clean)", &mut host).is_ok()
+        );
+        js
+    };
+    let pants = build(true);
+    #[cfg(feature = "quickjs")]
+    assert_eq!(pants, build(false));
+    #[cfg(not(feature = "quickjs"))]
+    let _ = pants;
+}
+
+#[test]
+fn native_definition_groups_publish_all_products_without_replaying_effects() {
+    let root = temp_dir::TempDir::new("native-definition-group-publication");
+    for (name, source) in [
+        (
+            "state.cljs",
+            "(ns state) (def hits (atom 0)) (let [n (swap! hits inc)] (defn value [] n) (def sibling (inc n)))",
+        ),
+        (
+            "macros.cljs",
+            "(ns macros (:require [state])) (defmacro probe [] (list 'quote [(state/value) state/sibling @state/hits]))",
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [macros :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [macros :refer [probe]])) (def value (probe))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b] [state])) (js/console.log (pr-str [a/value b/value @state/hits]))",
+        ),
+    ] {
+        std::fs::write(root.join(name), source).unwrap();
+    }
+    let build = |native, threads| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().clone()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(threads).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        emit_js(&program)
+    };
+    let expected = build(true, 1);
+    assert_eq!(program_output(&expected), "[[1 2 1] [1 2 1] 1]\n");
+    for threads in [2, 4, 8] {
+        assert_eq!(build(true, threads), expected, "{threads} threads");
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            build(false, threads),
+            expected,
+            "reference, {threads} threads"
+        );
+    }
+}
+
+#[test]
 fn native_predicate_combinations_preserve_order_and_short_circuit_values() {
     assert_native_matches_legacy(
         r#"(defmacro probe []
