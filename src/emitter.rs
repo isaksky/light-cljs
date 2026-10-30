@@ -8957,9 +8957,13 @@ impl<'a> Emitter<'a> {
                     && let ExprKind::Property { receiver, property } =
                         &self.program.exprs[target.0].kind
                 {
+                    // The receiver is demanded exactly as a member read's
+                    // (`ExprKind::Property`): only in a unit with demand roots.
                     self.rt(RuntimeName::export("nativeSetProperty"));
                     self.output.push('(');
-                    self.rt(RuntimeName::export("declarationReceiver"));
+                    if self.demand_roots {
+                        self.rt(RuntimeName::export("declarationReceiver"));
+                    }
                     self.output.push('(');
                     self.interop_receiver(*receiver, property);
                     self.output.push_str("), ");
