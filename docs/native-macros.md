@@ -441,29 +441,51 @@ bits count as they do there. A mutable type's host instances carry their
 declared protocols' mask bits on their prototype. Forms, structs and the
 runtime's other values have no such properties to read.
 
-The Pants build has fewer sequence kinds than the reference has types. A
-counted sequence (`(seq [1 2])`, `(seq {:a 1})`, `(rest v)`), a chunked one
-(`(range 3)`, a long vector's `seq`), an uncounted one (`keys`, `vals`,
-`rseq`, `iterate`, a set's `seq`) and a map (array or hash map) each answer
-the protocols all the reference types they stand for share, and throw
-`unsupported operation: native macro runtime satisfies? of P of KIND` for the
-others, such as `IReversible`, `IIndexed` or `ASeq` of a counted sequence and
-`IDrop` of a map. A lazy sequence answers as a `LazySeq` and a list as a
-`List`, including the lazy sequences `repeat` and `drop` of a vector make and
-the lists `butlast` and `list*` make, where the reference makes a `Repeat`,
-an indexed seq and a `Cons`. Values the build cannot make (sorted sets,
-transients, volatiles, delays, functions with metadata) stay unsupported.
+Each value answers as the reference's type of it, which the engine keeps
+on the form (`__rt.formReferenceType`): the operation that makes a sequence
+sets it where the form's body alone does not tell, and `rest`, `next`,
+metadata copies and a lazy sequence's `seq` keep it. A short vector's or a
+string's or a record's seq is an `IndexedSeq` and a longer vector's a
+`ChunkedSeq`; an array map's, a hash map's, a sorted map's and a set's seqs
+are those maps' and set's seq types; `keys` and `vals` make key seqs, `rseq`
+of a vector a reversed seq; a finite integer `range` is an `IntegerRange`,
+another `range` a `Range`; `chunk-cons` and the chunked seq of `map` or
+`concat` a `ChunkedCons`; `repeat` and `iterate` their own types, each step
+included. A map built by `hash-map` (or grown past eight entries) is a hash
+map, which unlike an array map does not implement `IDrop`. As in the
+reference, `drop` of a value implementing `IDrop` natively (a vector, array
+map, integer range, `repeat` or their seqs) returns its seq that far on (or
+`()`), `butlast` the seq of a vector, and `list*` conses onto its last
+argument. A sequence no operation typed answers `unsupported operation:
+native macro runtime satisfies? of sequence` rather than guess; no supported
+operation makes one. Values the build cannot make (sorted sets, transients,
+volatiles, delays, functions with metadata) stay unsupported.
 
-A protocol's value is a function, as in the reference, and there is one per
-protocol name for the whole compilation. The first task that reads it
-publishes it in the runtime's shared member table, with an entry from the
-function back to the name, and every task then reads that function. Saved in
-an atom or a helper it publishes like any shareable function, and `=` and
+A protocol's value is a function, as in the reference. A core protocol has
+one for the whole compilation; a program protocol one per declaration: the
+bundle declaring it gives one value whichever task installs it, keyed by the
+bundle's unit, and a `defprotocol` that a function evaluates (in a macro body)
+makes a new one each time. The first task that makes a value publishes it in
+the runtime's shared member table, with an entry from the function back to
+its name and declaring unit, and every task then reads that function. Saved
+in an atom or a helper it publishes like any shareable function, and `=` and
 `identical?` compare it by identity. Only a function found in that table is
 a protocol: the predicates find it by identity, never with user equality or
 hashing, so another function or frozen object is not one (`satisfies?` of it
-is false). A program protocol declared again under the same name keeps its
-value; the reference makes a new one.
+is false).
+
+A protocol declared again under the same name is a new value, with only its
+own extensions: an extension extends the value the protocol's name has when it
+is installed, at once for one that macro code runs, and when a declaration
+bundle is forced for a top-level one. As the reference forces its bundles
+lazily too, a bundle forced after a redeclaration extends the new protocol. A definition's initializer
+reads the declaration products visible at its source site, as the
+reference's roots do, so `(def old P)` before a second `(defprotocol P)` (or
+`deftype`) keeps the first; the engine's fast read of a ready bundle's
+product skips the getter only for names declared once. A `defprotocol` or
+`deftype` in a macro body defines its products as a nested `def` defines its
+root, replacing a declaration installed before it (it failed with `cannot set
+property ... of undefined`).
 
 `tests/bbp_macros.rs` compares the Pants build with the QuickJS reference on
 each core protocol against every kind of value

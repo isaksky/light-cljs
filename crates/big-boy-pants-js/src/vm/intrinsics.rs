@@ -111,6 +111,8 @@
 //! | `formKeyword(ns, name)`, `formSymbol(ns, name)` | `form_op` | new keyword or symbol; `ns` a string or `null`/`undefined`, `name` a string (exact UTF-16), whose spelling splits back into `ns` and `name` at its first `/` | `WrongType`, `AmbiguousName` |
 //! | `formKind(v)` | `form_op` | `"keyword"`, `"symbol"`, `"list"`, `"vector"`, `"map"`, `"set"`, `"occurrence"`, or `null` | – |
 //! | `formSequence(v)` | `form_op` | immutable non-IList sequence sharing a positional trie or cons body; no realization | `WrongType` |
+//! | `formReferenceType(v)` | `form_op` | the QuickJS reference's type name of a form for the protocol predicates (`collections::form::reference_type`), or `null` | – |
+//! | `formWithReferenceType(s, name)` | `form_op` | a copy of the sequence `s` as the reference type `name` (a `collections::form::Brand`), sharing its body; an empty list as it is | `WrongType` |
 //! | `formNamespace(x)`, `formName(x)` | `form_op` | a keyword's or symbol's namespace (or `null`) and name | `WrongType` |
 //! | `formCount(c)` | `form_op` | element or entry count | `WrongType` |
 //! | `formNth(c, i)` | `form_op` | list or vector element at index `i` | `WrongType`, `InvalidIndex`, `IndexOutOfBounds` |
@@ -562,6 +564,10 @@ fn form_op(
     if op == FormOp::Empty {
         return form::empty(heap, &args[0]).map_err(Fault::from);
     }
+    if matches!(op, FormOp::ReferenceType | FormOp::WithReferenceType) {
+        return form::reference_type_op(heap, op == FormOp::WithReferenceType, &args)
+            .map_err(Fault::from);
+    }
     match clj_op(heap, op, &args) {
         Ok(Some(result)) => Ok(result),
         Ok(None) => Ok(strict_form_op(heap, host, op, args)?),
@@ -888,7 +894,9 @@ fn strict_form_op(
         | FormOp::CljRealizeAll
         | FormOp::CljRangeCons
         | FormOp::CljSymbolNs
-        | FormOp::Empty => Value::Undefined,
+        | FormOp::Empty
+        | FormOp::ReferenceType
+        | FormOp::WithReferenceType => Value::Undefined,
     })
 }
 

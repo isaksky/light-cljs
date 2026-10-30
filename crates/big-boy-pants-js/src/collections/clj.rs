@@ -389,30 +389,43 @@ pub(crate) fn realized_seq(heap: &Heap, v: &Value) -> Result<Value> {
         _ => list_or_nil(
             heap,
             &collection_items(heap, "seq", v)?.unwrap_or_default(),
-            copied_sequence_counted(heap, v),
+            copied_sequence(heap, v),
         ),
     }
 }
 
 /// A new list of `items`, or `nil` when there are none.
-fn list_or_nil(heap: &Heap, items: &[Value], counted: bool) -> Result<Value> {
+fn list_or_nil(
+    heap: &Heap,
+    items: &[Value],
+    (counted, brand): (bool, form::Brand),
+) -> Result<Value> {
     if items.is_empty() {
         Ok(Value::Null)
     } else {
-        Ok(form::new_sequence(heap, items, counted)?)
+        Ok(form::new_sequence(heap, items, counted, brand)?)
     }
 }
 
-/// Indexed, record and array/sorted-map views are counted; hash-map and set
+/// Whether the seq copied from `value` is counted, and its reference type:
+/// indexed, record and array/sorted-map views are counted; hash-map and set
 /// views are not. This follows the source kind, never its elements.
-fn copied_sequence_counted(heap: &Heap, value: &Value) -> bool {
+fn copied_sequence(heap: &Heap, value: &Value) -> (bool, form::Brand) {
+    use form::Brand;
     match shape(heap, value) {
         Shape::Form(_, f) => match f.body() {
-            FormBody::Map(form::FormMap::Positional(_)) => true,
-            FormBody::Map(_) | FormBody::Set(_) => false,
-            _ => true,
+            FormBody::Map(form::FormMap::Positional(_)) if f.is_sorted() => {
+                (true, Brand::SortedMapSeq)
+            }
+            FormBody::Map(form::FormMap::Positional(_)) => (true, Brand::ArrayMapSeq),
+            FormBody::Map(_) => (false, Brand::HashMapSeq),
+            FormBody::Set(_) => (false, Brand::SetSeq),
+            // A record's seq is an `IndexedSeq` of its entries.
+            FormBody::Struct(_) => (true, Brand::Indexed),
+            _ => (true, Brand::None),
         },
-        _ => true,
+        Shape::Str(_) => (true, Brand::Indexed),
+        _ => (true, Brand::None),
     }
 }
 
@@ -540,12 +553,12 @@ pub(crate) fn seq(heap: &Heap, v: &Value) -> Result<Value> {
         return list_or_nil(
             heap,
             &collection_items(heap, "seq", payload)?.unwrap_or_default(),
-            false,
+            (false, form::Brand::None),
         );
     }
     match collection_items(heap, "seq", &own)? {
         None => Ok(Value::Null),
-        Some(items) => list_or_nil(heap, &items, copied_sequence_counted(heap, &own)),
+        Some(items) => list_or_nil(heap, &items, copied_sequence(heap, &own)),
     }
 }
 
@@ -656,11 +669,10 @@ pub(crate) fn rest(heap: &Heap, v: &Value) -> Result<Value> {
     }
     match tail(heap, "rest", &v)? {
         Tail::Shared(items, source) => Ok(form::list_sharing(heap, items, &source)?),
-        Tail::Copied(items) => Ok(form::new_sequence(
-            heap,
-            &items,
-            copied_sequence_counted(heap, &v),
-        )?),
+        Tail::Copied(items) => {
+            let (counted, brand) = copied_sequence(heap, &v);
+            Ok(form::new_sequence(heap, &items, counted, brand)?)
+        }
     }
 }
 
@@ -675,7 +687,7 @@ pub(crate) fn next(heap: &Heap, v: &Value) -> Result<Value> {
     match tail(heap, "next", &v)? {
         Tail::Shared(items, _) if items.len() == 0 => Ok(Value::Null),
         Tail::Shared(items, source) => Ok(form::list_sharing(heap, items, &source)?),
-        Tail::Copied(items) => list_or_nil(heap, &items, copied_sequence_counted(heap, &v)),
+        Tail::Copied(items) => list_or_nil(heap, &items, copied_sequence(heap, &v)),
     }
 }
 

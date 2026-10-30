@@ -6894,9 +6894,10 @@ s....................................s.++.................
     );
 }
 
-/// Sequences and maps of a kind that stands for several QuickJS-reference
-/// types answer the protocols those types share, and fail explicitly on the
-/// others rather than guess.
+/// Sequences and maps answer as the QuickJS reference's type of each: a
+/// short vector's seq is an `IndexedSeq`, a map's seq an array map's, a
+/// counted range an `IntegerRange`, `keys` a key seq, and an array map
+/// (unlike a hash map) implements `IDrop`.
 #[test]
 fn native_shared_sequence_and_map_protocols_match_quickjs() {
     assert_native_matches_legacy(
@@ -6916,27 +6917,18 @@ fn native_shared_sequence_and_map_protocols_match_quickjs() {
 \"ssssssssss...........\" \"ssssssssss...........\" \"ssssssssss...........\" \"ssssssssss...........\"] \
 [\"sssssssss..\" \"sssssssss..\" \"sssssssss..\" \"sssssssss..\"]]\n",
     );
-    for (value, protocol, kind) in [
-        ("(seq [1 2])", "IReversible", "sequence"),
-        ("(seq {:a 1})", "ASeq", "sequence"),
-        ("(range 3)", "IIndexed", "sequence+chunked"),
-        ("(keys {:a 1})", "IHash", "uncounted-sequence"),
-        ("{:a 1}", "IDrop", "map"),
-    ] {
-        for predicate in ["satisfies?", "implements?"] {
-            let source = format!("(defmacro probe [] ({predicate} {protocol} {value})) (probe)");
-            let mut host = MacroHost::new();
-            host.use_native_macros();
-            let message = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
-                .err()
-                .unwrap()
-                .to_string();
-            let expected = format!(
-                "unsupported operation: native macro runtime satisfies? of {protocol} of {kind}"
-            );
-            assert!(message.contains(&expected), "{source}: {message}");
-        }
-    }
+    assert_native_matches_legacy(
+        "(defmacro probe [] \
+           (let [s satisfies? i implements?] \
+             (mapv (fn [[p x]] [(s p x) (i p x)]) \
+                   [[IReversible (seq [1 2])] [ASeq (seq {:a 1})] [IIndexed (range 3)] [IHash (keys {:a 1})] \
+                    [IDrop {:a 1}] [IDrop (apply hash-map [:a 1])] [ASeq (seq (apply hash-map [:a 1]))] [IList (butlast [1 2])] \
+                    [IIterable (repeat 2 :x)] [IReduce (seq (map inc (range 3)))] [ICounted (list* 1 [2])] \
+                    [IIndexed (drop 1 [1 2])]]))) \
+         (js/console.log (pr-str (probe)))",
+        "[[true true] [false false] [true true] [true true] [true true] [false false] [true true] [false false] \
+[false false] [false false] [false false] [true true]]\n",
+    );
 }
 
 /// User extensions of core protocols to host types, `object` and `default`,
@@ -7064,6 +7056,553 @@ fn native_string_buffer_writer_protocols_match_quickjs() {
            (s IPrintWithWriter w)]))
       (js/console.log (pr-str (probe)))"#,
         "[true true true true true false false]\n",
+    );
+}
+
+/// Values of every kind the Pants build makes, one per line: collections,
+/// the seqs of each and their rests, lazy, cons, chunked and repeated
+/// sequences, ranges, maps of each type, records, atoms, functions,
+/// primitives and host objects (light-cljs-592). The last two are made
+/// in each macro call, never published.
+const PROTOCOL_KIND_VALUES: &str = r##"(lazy-seq nil)
+(lazy-seq [1])
+(map inc [1])
+(filter odd? [1 2])
+(remove odd? [1])
+(take 1 [1 2])
+(drop 1 [1 2])
+(concat [1] [2])
+(repeat 1)
+(repeat 2 1)
+(mapcat list [1])
+(take-while odd? [1])
+(drop-while odd? [1])
+(interleave [1] [2])
+(interpose 0 [1 2])
+(partition 1 [1])
+(partition-all 1 [1])
+(map-indexed vector [1])
+(keep identity [1])
+(for [x [1]] x)
+(iterate inc 0)
+(range)
+(range 3)
+(range 0 1 0.5)
+(seq (range 3))
+(rest (range 3))
+(reverse [1 2])
+(seq #{1})
+(seq (sorted-map 1 2))
+(rest '(1 2))
+(rest (map inc [1 2]))
+(next (map inc [1 2]))
+(seq (lazy-seq [1]))
+(take 3 (range))
+(flatten [[1]])
+(rseq [1])
+(rseq (sorted-map 1 2))
+(vals {:a 1})
+(keys {:a 1})
+(seq "ab")
+(doall (map inc [1]))
+(butlast [1 2])
+(nthrest [1 2] 1)
+(partition-by odd? [1])
+(sequence [1])
+(list* 1 [2])
+(cons 1 (lazy-seq nil))
+(conj '(1) 0)
+(into () [1])
+(apply list [1])
+(seq '(1))
+(rest [1])
+(seq [1 2])
+(rest [1 2])
+(next [1 2 3])
+(seq {:a 1})
+(rest {:a 1 :b 2})
+(seq (vec (range 40)))
+(rest (vec (range 40)))
+(seq (seq [1 2]))
+(cons 1 [2])
+(cons 1 nil)
+(cons 1 '(2))
+(list)
+(list 1)
+(vec nil)
+(vector 1)
+(hash-map :a 1)
+(array-map :a 1)
+(zipmap [:a] [1])
+(into {} [[:a 1]])
+(set [1])
+(hash-set 1)
+(conj #{} 1)
+(sorted-map)
+(sorted-map-by > 1 2)
+(first {:a 1})
+(map-entry? (first {:a 1}))
+(keyword "a")
+(symbol "a")
+(with-meta 'a {:x 1})
+(with-meta [1] {:x 1})
+(atom nil)
+(reduced nil)
+(js/Date.)
+(ex-info "a" {})
+(js/Error. "a")
+(js/Object.)
+(js/Map.)
+(js/Promise.resolve 1)
+true
+1.5
+""
+js/undefined
+(js/Symbol "a")
+(js/BigInt 1)
+(fn [x] x)
+(partial + 1)
+(comp inc)
+str
+(memoize inc)
+#"x"
+(chunk-cons (chunk (chunk-buffer 1)) nil)
+(seq (map inc (range 3)))
+(keys (sorted-map 1 2))
+(rest (rest '(1 2 3)))
+(concat)
+(map vector [1] [2])
+(lazy-cat [1] [2])
+(seq (hash-map :a 1))
+(rest (hash-map :a 1 :b 2))
+(seq (zipmap (range 9) (range 9)))
+(rest (seq (zipmap (range 9) (range 9))))
+(rest #{1 2})
+(rest (keys {:a 1 :b 2}))
+(rest (rseq [1 2 3]))
+(seq (rseq [1 2]))
+(rest (repeat 3 1))
+(seq (repeat 2 1))
+(next (repeat 2 1))
+(rest (repeat 1 1))
+(rest (iterate inc 0))
+(seq (iterate inc 0))
+(drop 1 (vec (range 40)))
+(drop 5 [1 2])
+(drop 0 [1 2])
+(drop 1 {:a 1 :b 2})
+(drop 1 (range 5))
+(drop 1 (repeat 3 1))
+(drop 1 (quote (1 2)))
+(rest (seq "abc"))
+(next (range 3))
+(rest (range 40))
+(rest (rest (range 3)))
+(seq (concat [1] [2]))
+(rest (concat [1] [2]))
+(seq (concat (range 3) [2]))
+(rest (seq (map inc (range 3))))
+(seq (->R 1))
+(butlast (vec (range 40)))
+(butlast [1])
+(list* 1 2 [3])
+(list* [1])
+(list* 1 2 3 4 [5])
+(list* 1 nil)
+(seq (sorted-map 1 2 3 4))
+(rest (seq (sorted-map 1 2 3 4)))
+(repeat 0 1)
+(seq (first {:a 1}))
+(with-meta (seq [1 2]) {:a 1})
+(with-meta (range 3) {:a 1})
+(seq (with-meta (lazy-seq [1]) {:a 1}))
+(rseq (vec (range 40)))
+(rest (with-meta (quote (1 2)) {}))
+(vals (sorted-map 1 2))
+(take 2 (repeat 1))
+(nthrest (range 5) 2)
+(rest (seq (vec (range 40))))
+(seq (map inc [1 2]))
+(seq (filter odd? (range 5)))
+(seq (cons 1 (range 3)))
+(rest (cons 1 (range 3)))
+(seq (take 2 (range 5)))
+(keys (hash-map :a 1))
+(rest (seq {:a 1 :b 2 :c 3}))
+(seq (vals (zipmap (range 9) (range 9))))
+(seq (keys (->R 1)))
+(rseq (sorted-map 1 2 3 4))
+(rest (rseq (sorted-map 1 2 3 4)))
+(nthrest (repeat 3 1) 1)
+(take 3 (iterate inc 0))
+(repeat 2.5 1)
+(rest (seq [1 2 3]))
+(next (seq (vec (range 40))))
+(re-seq #"a" "aa")
+(seq (js/Array. 1))"##;
+
+/// The QuickJS reference's row for each of [`PROTOCOL_KIND_VALUES`] against
+/// [`CORE_PROTOCOL_VALUES`]: `s` satisfies and implements, `+` satisfies
+/// only, `i` implements only, `.` neither.
+const PROTOCOL_KIND_ROWS: &str = ".................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+................ss........s.s...ss.....ss.sss...s.ss......
+................ss........s.s...ss.....ss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss........sss...s.ss......
+...............s.......s.ss.s...ss....sss.sss...s.ss......
+...............ss......s.ss.s...ss....sss.sssss.s.ss......
+...............s.......s.ss.s...ss....sss.sss...s.ss......
+...............ss......s.ss.s...ss....sss.sssss.s.ss......
+...............ss......s.ss.s...ss....sss.sssss.s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+..........................s.s...ss....sss.sss...s.ss......
+..........................s.s...ss....sss.ssss..s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.........................ss.s...ss....sss.sss...s.ss......
+..........................s.s...ss....sss.ssss..s.ss......
+..........................s.s...ss.s..sss.sss...s.ss......
+..........................s.s...ss.s..sss.sss...s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+...................s.....ss.s...ss.s..sss.ssss..s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+................s.........s.s...ss....sss.ssss..s.ss......
+................s.........s.s...ss....sss.ssss..s.ss......
+..s............ss......s..s.s...ss....sss.ssss..s.ss......
+..s............ss......s..s.s...ss....sss.ssss..s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+...................s.....ss.s...ss.s..sss.ssss..s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+......s.........s....s...ss.sss.ss.ssssssss..sssssss......
+......s.........s....s...ss.sss.ss.ssssssss..sssssss......
+......s..............s...ss.ss.sss....sssss..s.s.sss......
+......s.........s....s...ss.ss.sss....sssss..s.s.sss......
+......s.........s....s...ss.ss.sss....sssss..s.s.sss......
+......s.........s....s...ss.ss.sss....sssss..s.s.sss......
+......s..................ss.....sss...sssss..s.s..ss......
+......s..................ss.....sss...sssss..s.s..ss......
+......s..................ss.....sss...sssss..s.s..ss......
+.....................ss..ss.ss.sss..s.sssss..s.s.sss......
+.....................ss..ss.ss.sss..s.sssss..s.s.sss......
+................s...ss....s.s.s.ss.ssssssss..sssssss......
+.......................................++.................
+....s.....................s..........s.sss................
+....s.....................s..........s.sss........ss......
+....s.....................s..........s.sss........ss......
+......s.........s....s...ss.sss.ss.ssssssss..sssssss......
+..........................s............ss.........s.ss...s
+..........................s............ss...........s.....
+s....................................s.++.................
+.......................................++.................
+.......................................++.................
+.......................................++.................
+.......................................++.................
+.......................................++.................
+.......................................++.................
+.......................................++.................
+.......................................++.................
+.......................................++....+............
+.......................................++.................
+.......................................++.................
+..................+....................++.........+.......
+..................+....................++.........+.......
+..................+....................++.........+.......
+..................+....................++.........+.......
+..................+....................++.........+.......
+.......................................++.................
+.......................................++....+............
+..s............s.......s..s.....ss.....ss.sss...s.ss......
+..........................s.s...ss.s..sss.sss...s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+..s.......................s.s...ss....sss.sss...s.ss......
+..s.......................s.s...ss....sss.sss...s.ss......
+..s.......................s.s...ss....sss.sss...s.ss......
+..s.......................s.s...ss....sss.sss...s.ss......
+..........................s.s...ss....sss.sss...s.ss......
+..........................s.s...ss.s..sss.sss...s.ss......
+.........................ss.s...ss....sss.sss...s.ss......
+.........................ss.s...ss....sss.sss...s.ss......
+................ss........s.s...ss.....ss.sss...s.ss......
+................ss........s.s...ss.....ss.sss...s.ss......
+................ss........s.s...ss.....ss.sss...s.ss......
+...................s.....ss.s...ss.s..sss.ssss..s.ss......
+.................s........s.s...ss........sss...s.ss......
+.................s........s.s...ss........sss...s.ss......
+..s............ss......s..s.s...ss....sss.ssss..s.ss......
+...................s.....ss.s...ss.s..sss.ssss..s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+................s.........s.s...ss....sss.ssss..s.ss......
+...............ss......s.ss.s...ss....sss.sssss.s.ss......
+................ss........s.s...ss.....ss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+...............ss......s.ss.s...ss....sss.sssss.s.ss......
+...............ss......s.ss.s...ss....sss.sssss.s.ss......
+...............ss......s.ss.s...ss....sss.sssss.s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+..s............s.......s..s.....ss.....ss.sss...s.ss......
+..s............s.......s..s.....ss.....ss.sss...s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+..s............ss......s..s.s...ss....sss.ssss..s.ss......
+.......................................++....+............
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+..........................s.s...ss....sss.ssss..s.ss......
+..........................s.s...ss....sss.ssss..s.ss......
+...................s.....ss.s...ss.s..sss.ssss..s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+...............ss......s.ss.s...ss....sss.sssss.s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+.........................ss.s...ss....sss.sss...s.ss......
+..s................s.....ss.s...ss.s..sss.ssss..s.ss......
+..........................s.s...ss.s..sss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+...............ss......s.ss.s...ss....sss.sssss.s.ss......
+..s............ss......s..s.s...ss....sss.ssss..s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+..s............s.......s..s.....ss.....ss.sss...s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+...............ss......s.ss.s...ss....sss.sssss.s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+..........................s.s...ss.s..sss.sss...s.ss......
+................s.........s.s...ss....sss.ssss..s.ss......
+..........................s.s...ss.s..sss.sss...s.ss......
+..........................s.s...ss.s..sss.sss...s.ss......
+..........................s.s...ss....sss.ssss..s.ss......
+..........................s.s...ss....sss.ssss..s.ss......
+................ss........s.s...ss.....ss.sss...s.ss......
+.................s........s.s...ss....sss.sss...s.ss......
+................ss........s.s...ss.....ss.sss...s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+..s............ss......s..s.s...ss....sss.ssss..s.ss......
+..s................s.....ss.s...ss.s..sss.sss...s.ss......
+..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+";
+
+/// Every value kind against every core protocol, with the QuickJS
+/// reference's `satisfies?` and `implements?` answers (light-cljs-592):
+/// each value made in a macro of one namespace, and the forms among them
+/// published in an atom and read again by another namespace's macros, at 1,
+/// 2, 4 and 8 threads.
+#[test]
+fn native_protocol_value_kind_table_matches_quickjs_at_all_threads() {
+    let root = temp_dir::TempDir::new("protocol-kind-table");
+    let values: Vec<&str> = PROTOCOL_KIND_VALUES.lines().collect();
+    let chunks = |macro_name: &str, n: usize| {
+        (0..n)
+            .step_by(25)
+            .map(|from| format!("({macro_name} {from} {})", (from + 25).min(n)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let shared = values.len() - 2;
+    let kinds = format!(
+        "(ns kinds) (defrecord R [a]) \
+         (def ps {CORE_PROTOCOL_VALUES}) \
+         (def row (let [s satisfies? i implements?] \
+           (fn [x] (apply str (map (fn [p] (let [a (s p x) b (i p x)] (if a (if b \"s\" \"+\") (if b \"i\" \".\")))) ps))))) \
+         (def values [{}]) \
+         (defmacro probe [from to] (mapv (fn [i] (row ((nth values i)))) (range from to))) \
+         (def saved (atom nil)) \
+         (defmacro save [] \
+           (reset! saved (filterv (fn [x] (or (coll? x) (keyword? x) (symbol? x))) (map (fn [f] (f)) (take {shared} values)))) \
+           (count @saved)) \
+         (defmacro probe-saved [from to] (mapv (fn [i] (row (nth @saved i))) (range from (min to (count @saved)))))",
+        values
+            .iter()
+            .map(|v| format!("(fn [] {v})"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    for (file, source) in [
+        ("kinds.cljs", kinds),
+        (
+            "a.cljs",
+            format!(
+                "(ns a (:require [kinds :refer [probe save probe-saved]])) \
+                 (def rows (into [] cat [{}])) (def saved (save)) (def saved-rows (into [] cat [{}]))",
+                chunks("probe", values.len()),
+                chunks("probe-saved", shared)
+            ),
+        ),
+        (
+            "b.cljs",
+            format!(
+                "(ns b (:require [a] [kinds :refer [probe-saved]])) (def rows (into [] cat [{}]))",
+                chunks("probe-saved", shared)
+            ),
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (apply str (interpose \"\\n\" a/rows))) \
+             (js/console.log a/saved (= a/saved-rows b/rows))"
+                .to_string(),
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    assert_namespaces_match_quickjs_at_all_threads(
+        &root,
+        &format!("{PROTOCOL_KIND_ROWS}151 true\n"),
+    );
+}
+
+/// Build the namespace `app` under `root` with the QuickJS reference (the
+/// Pants build in a build without one) at 1 thread, and with the Pants
+/// build at 1, 2, 4 and 8 threads (`LIGHT_CLJS_STRESS_SEEDS` seeds each);
+/// each program prints `expected`.
+fn assert_namespaces_match_quickjs_at_all_threads(root: &temp_dir::TempDir, expected: &str) {
+    let build = |pants, threads, seed| {
+        let mut host = MacroHost::new();
+        if pants {
+            host.use_native_macros();
+        }
+        host.evaluator_options.timeout = std::time::Duration::from_secs(600);
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            light_cljs::compiler::EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(threads).unwrap(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                perturbation: pants.then_some(light_cljs::scheduler::Perturbation {
+                    seed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("Pants {pants}, {threads} threads, seed {seed}: {e}"));
+        program_output(&emit_js(&program))
+    };
+    let reference = build(false, 1, 0);
+    assert!(reference == expected, "QuickJS reference: {reference}");
+    let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for threads in [1, 2, 4, 8] {
+        for seed in 1..=seeds {
+            let actual = build(true, threads, seed);
+            assert!(
+                actual == expected,
+                "{threads} threads, seed {seed}: {actual}"
+            );
+        }
+    }
+}
+
+/// Each declaration of a program protocol (or type) is a value of its own,
+/// with the extensions made while it is current, as in the QuickJS
+/// reference (light-cljs-592): a definition's initializer reads the
+/// declaration visible at its source site, published values keep their
+/// identity across namespaces, and a defprotocol in a macro body declares a
+/// new protocol each time it runs, at 1, 2, 4 and 8 threads.
+#[test]
+fn native_protocol_redeclaration_identity_matches_quickjs_at_all_threads() {
+    let root = temp_dir::TempDir::new("protocol-redeclaration");
+    for (file, source) in [
+        (
+            "state.cljs",
+            r#"(ns state)
+          (defprotocol P (p [x]))
+          (def old P)
+          (def saved (atom P))
+          (deftype T [a])
+          (def old-t T)
+          (defprotocol P (p [x]))
+          (deftype T [a])
+          (extend-protocol P string (p [_] 1))
+          (defmacro probe []
+            (let [s satisfies?]
+              [(identical? old P) (= old P) (identical? @saved old) (satisfies? old "s") (s old "s") (s P "s")
+               (s @saved "s") (identical? old-t T) (p "s")]))
+          (defmacro nested []
+            (defprotocol Q (q [x]))
+            (let [old Q s satisfies?]
+              (defprotocol Q (q [x]))
+              (extend-protocol Q string (q [_] 1))
+              [(identical? old Q) (s old "s") (s Q "s") (q "s")]))"#,
+        ),
+        (
+            "a.cljs",
+            "(ns a (:require [state :refer [probe nested]])) (def v [(probe) (nested)])",
+        ),
+        (
+            "b.cljs",
+            "(ns b (:require [state :refer [probe]])) (def v (probe))",
+        ),
+        (
+            "app.cljs",
+            "(ns app (:require [a] [b])) (js/console.log (pr-str [a/v b/v]))",
+        ),
+    ] {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    assert_namespaces_match_quickjs_at_all_threads(
+        &root,
+        "[[[false false true false false true false false 1] [false false true 1]] \
+         [false false true false false true false false 1]]\n",
+    );
+}
+
+/// A defprotocol a macro expands to, and one in a macro's body, which
+/// defines the protocol when the macro runs (light-cljs-592).
+#[test]
+fn native_defprotocol_in_a_macro_body_matches_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defmacro defp [n] `(defprotocol ~n (~(symbol "q") [~(symbol "x")])))
+      (defp Q)
+      (extend-protocol Q string (q [_] 1))
+      (defmacro probe [] [(satisfies? Q "s") (q "s")])
+      (defmacro inner [] (defprotocol R (r [x])) (deftype U [a]) [(satisfies? R "s") (.-a (U. 4))])
+      (js/console.log (pr-str [(probe) (inner)]))"#,
+        "[[true 1] [false 4]]\n",
     );
 }
 

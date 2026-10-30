@@ -165,7 +165,8 @@ const decl = (() => {
       // operand. Adapt scope-sensitive legacy entries once at installation;
       // their raw JavaScript and `this-as` still see the original receiver.
       const entry = object || direct || arity === 0 ? fn : (x, ...args) => fn.call(x, x, ...args);
-      methodTable(name, n).entries.push({order, overlay, key, fn: entry, bundle: object ? from : null});
+      methodTable(name, n).entries.push({order, overlay, key, fn: entry, bundle: object ? from : null,
+        protocol: arity === 0 && name.indexOf('/') >= 0 ? protocolNow(name) : undefined});
       if (!object) continue;
       let arities = objectArities.get(name);
       if (arities === undefined) objectArities.set(name, arities = new Set());
@@ -176,6 +177,14 @@ const decl = (() => {
     return null;
   };
   const installing = [];
+  // The value a program protocol's name has as an extension installs, which
+  // the extension extends: as the legacy bundle reads its protocol when it
+  // is forced, a bundle forced after a redeclaration extends the new one.
+  // A bundle declaring the protocol itself reads its own product.
+  const protocolNow = name => {
+    const b = installing[installing.length - 1];
+    return b !== undefined && b.names.includes(name) ? b.products[name] : registry()[name];
+  };
   // Inactive bundles whose installations can change a member, and how many
   // of them index each protocol: that protocol's tables keep no lookup
   // cache meanwhile (`build`).
@@ -377,13 +386,19 @@ const decl = (() => {
   // protocol `key` to the JavaScript type of `x` (every object, a form or a
   // struct too, is "object") or `default`, never a type's own. Demand runs
   // as dispatch's does, and the table is read after it.
-  const extended = (key, x) => {
+  // Given `p`, a program protocol's value, only its own extensions count:
+  // the legacy extensions are properties of the protocol object, and a
+  // redeclaration makes a new one (light-cljs-592).
+  const extended = (key, x, p = undefined) => {
     const t = methodTable(key, 0);
     declare(x);
     if (t.version !== version || t.frontier !== frontier) build(t);
     demandFor(t.protocol, x);
     if (t.version !== version || t.frontier !== frontier) build(t);
-    return (__rt.getOr(t.map, hostType(x), null) ?? __rt.getOr(t.map, '_', null)) !== null;
+    const host = hostType(x);
+    if (p === undefined) return (__rt.getOr(t.map, host, null) ?? __rt.getOr(t.map, '_', null)) !== null;
+    return t.entries.some(e => (e.overlay > 0 || e.order <= frontier) && (e.bundle == null || e.bundle.active)
+      && (e.key === host || e.key === '_') && e.protocol === p);
   };
   // The legacy `nativeType`: a struct type is a constructor function
   // there, and a `#js [...]` literal an array.
@@ -666,7 +681,23 @@ const decl = (() => {
   const makeBundle = (names, indices, location, unit, order) => ({order, names, unit, location, state: 0, error: null, products: null, active: false,
     indices: indices.map(([protocol, selector = null]) => [protocol, selector]),
     multi: indices.length > 0 && indices.every(index => index[0].startsWith('multifn:'))});
-  const productGetter = (b, name) => () => { force(b); return b.products[name]; };
+  // A root's initializer reads the declaration products visible at its
+  // source site, as the legacy roots' `declarationSlot` does: a product of a
+  // bundle declared after the root reads the name's previous definition
+  // (light-cljs-592). Outside initializers every bundle is visible.
+  let declarationFrontier = Infinity;
+  const atDeclarationFrontier = (next, f) => {
+    const saved = declarationFrontier;
+    declarationFrontier = next;
+    try { return f(); } finally { declarationFrontier = saved; }
+  };
+  const productGetter = (b, name) => () => {
+    if (b.order > declarationFrontier) {
+      const previous = b.previous?.get(name) ?? (b.catalog === undefined ? undefined : catalogPrevious(b, name));
+      if (previous !== undefined) return previous();
+    }
+    force(b); return b.products[name];
+  };
   // Index `b`'s extensions of `protocol` (every one when it is null).
   const index = (b, protocol = null) => {
     for (const [p, selector] of b.indices) {
@@ -692,6 +723,7 @@ const decl = (() => {
       lazyResolve(name);
       const old = Object.getOwnPropertyDescriptor(registry(), name);
       if (old !== undefined && 'value' in old) continue;
+      if (old?.get !== undefined) (b.previous ??= new Map()).set(name, old.get);
       globalThis.__lightInstallCompilerProduct(name, productGetter(b, name), b);
     }
     if (lazyCatalog !== null) for (const [protocol] of b.indices) catalogProtocol(protocol);
@@ -734,6 +766,7 @@ const decl = (() => {
     return info?.mutable && info.record ? info : null;
   };
   return {makeBundle, productGetter, index, reserve: n => { const base = bundleCount; bundleCount += n; return base; },
+    bundles: () => bundleCount, atDeclarationFrontier,
     extend, extendInstance, inheritInstance:(x,parent)=>instances.set(x,instances.get(parent)),
     instanceMethods:instances,
     method, satisfies, implementsDirectly, predicate, masked, mask, extended, hostType, demand, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
@@ -2255,8 +2288,24 @@ const native = (() => {
     if (ss === null) return null;
     return __rt.cljConcat(list(ss.map(s => __rt.cljFirst(s))), self(self, list(ss.map(s => __rt.cljRest(s)))));
   });
-  const iterateFrom = (self, f, x) => __rt.formSequence(__rt.cljCons(x, lazy(() => self(self, f, invoke(f, x)))));
+  // A sequence as the QuickJS reference's type `name` for the protocol
+  // predicates (light-cljs-592); `rest` and `seq` keep it.
+  const typed = (s, name) => val(s) === null ? s : __rt.formWithReferenceType(s, name);
+  const iterateFrom = (self, f, x) => typed(__rt.formSequence(__rt.cljCons(x, typed(lazy(() => self(self, f, invoke(f, x))), 'iterate'))), 'iterate');
   const repeatForever = (self, x) => lazy(() => __rt.cljCons(x, self(self, x)));
+  // `repeat`, `n` times or (negative) forever, as the reference's `Repeat`:
+  // each step is one, and the rest of the last is `()`.
+  const repeatN = (self, n, x) => typed(__rt.formSequence(__rt.cljCons(x, n === 1 ? null : typed(lazy(() => self(self, n - 1, x)), 'repeat'))), 'repeat');
+  // The reference's `drop` of a value implementing IDrop natively: its
+  // `-drop`, the seq `n` elements on (or `()`), the same type; else lazy.
+  const dropsNatively = new Set(['vector','map-entry','array-map','indexed-seq','array-seq','chunked-seq','array-map-seq','integer-range','repeat']);
+  const drop = (n, c) => {
+    const v = val(c);
+    if (v === null || typeof v !== 'object' || __rt.formKind(v) === null || !dropsNatively.has(__rt.formReferenceType(v))) return dropN(n, c);
+    let s = n > 0 ? c : seqOf(c);
+    for (let i = 0; i < Math.ceil(n) && s !== null; i++) s = __rt.cljNext(s);
+    return s ?? __rt.formList();
+  };
   // A range: its first chunk of 32 numbers, then the rest lazily, as the
   // runtime's `IntegerRange` (a chunked sequence without metadata); `()`
   // when empty. A thunk never assigns what it captured: that would make the
@@ -2602,7 +2651,7 @@ const native = (() => {
       if(method!==null)return method(x);
       if(!builtin)throw new Error('No protocol method IReversible.-rseq defined for this value');
       const items=arr(x).slice().reverse();
-      return items.length?__rt.formSequence(vector(items)):null;
+      return items.length?typed(__rt.formSequence(vector(items)),kind==='vector'?'reverse-seq':'sorted-map-seq'):null;
     },
     isSorted:x=>__rt.formKind(val(x))==='map'&&!__rt.cljIsEditable(x),
     seqToMap:value=>{
@@ -2623,7 +2672,14 @@ const native = (() => {
     nnext:x=>__rt.cljNext(__rt.cljNext(x)),
     pop, popProtocol,
     cons:(x,xs)=>__rt.cljCons(x,xs), concat:(...xs)=>__rt.cljConcatAll(list(xs)),
-    listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),
+    // As the reference: conses onto the last argument (its seq from four).
+    listStar:(...xs)=>{
+      if(xs.length===0)return arity(0);
+      let r=xs[xs.length-1];
+      if(xs.length===1||xs.length>=5)r=seq(r);
+      for(let i=xs.length-2;i>=0;i--)r=__rt.cljCons(xs[i],r);
+      return r;
+    },
     apply:(f,...xs)=>{
       const args=[...xs.slice(0,-1),...arr(xs[xs.length-1])];
       if(isVar(f))return core.applyVar(f,args);
@@ -2679,9 +2735,9 @@ const native = (() => {
       if(!(['map','record','vector'].includes(__rt.formKind(val(x)))||decl.satisfies('IAssociative',x))||!__rt.cljContains(x,k))return null;
       if(__rt.formKind(val(x))==='map')for(const entry of arr(x))if(__rt.formEquals(__rt.cljNth(entry,0),k))return entry;
       return __rt.formVector(k,get(x,k));},
-    keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,0))));}
-      const k=__rt.formValue(m)==null?null:__rt.formKeys(__rt.formValue(m));return k===null||__rt.formCount(k)===0?null:__rt.formSequence(k);},
-    vals:m=>{const s=__rt.cljSeq(m);return s===null?null:__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,1))));},
+    keys:m=>{if(__rt.formKind(val(m))==='record'){const s=__rt.cljSeq(m);return s===null?null:typed(__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,0)))),'key-seq');}
+      const k=__rt.formValue(m)==null?null:__rt.formKeys(__rt.formValue(m));return k===null||__rt.formCount(k)===0?null:typed(__rt.formSequence(k),'key-seq');},
+    vals:m=>{const s=__rt.cljSeq(m);return s===null?null:typed(__rt.formSequence(vector(arr(s).map(e=>__rt.formNth(e,1)))),'key-seq');},
     meta:x=>__rt.cljMeta(x), withMeta:(x,m)=>__rt.cljWithExportedMeta(x,m),
     varyMeta:(x,f,...args)=>{const m=invoke(f,__rt.cljMeta(x),...args);return val(x)==null?null:__rt.cljWithExportedMeta(x,m);},
     isKeyword:x=>__rt.formKind(val(x))==='keyword', isSymbol:x=>__rt.formKind(val(x))==='symbol',
@@ -2827,7 +2883,7 @@ const native = (() => {
     flatten:x=>flattenFrom(flattenFrom,__rt.cljIsSequential(x)?__rt.cljCons(flattenChildren(flattenWalk,x),null):null),
     partitionBy:(...a)=>a.length===1?partitionByTransform(a[0]):a.length===2?partitionByFrom(partitionByFrom,a[0],a[1]):arity(a.length),
     partitionAll:(...a)=>a.length===1?partitionAllTransform(val(a[0])):a.length===2?partitionAllFrom(partitionAllFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionAllFrom(partitionAllFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
-    take:(...a)=>a.length===1?takeTransform(val(a[0])):a.length===2?takeN(takeN,val(a[0]),a[1]):arity(a.length), drop:(n,c)=>dropN(val(n),c),
+    take:(...a)=>a.length===1?takeTransform(val(a[0])):a.length===2?takeN(takeN,val(a[0]),a[1]):arity(a.length), drop:(n,c)=>drop(val(n),c),
     nthrest:(x,n)=>{
       for(n=val(n);n>0;n--){const s=seqOf(x);if(s===null)break;x=restOf(s);}
       return x;
@@ -2844,7 +2900,7 @@ const native = (() => {
       });};
     },
     iterate:(f,x)=>iterateFrom(iterateFrom,f,x),
-    repeat:(...a)=>a.length===1?repeatForever(repeatForever,a[0]):a.length===2?takeN(takeN,val(a[0]),repeatForever(repeatForever,a[1])):arity(a.length),
+    repeat:(...a)=>a.length===1?repeatN(repeatN,-1,a[0]):a.length===2?(val(a[0])>0?repeatN(repeatN,Math.ceil(val(a[0])),a[1]):__rt.formList()):arity(a.length),
     range:(...a)=>a.length===0?rangeFrom(rangeFrom,0,Infinity,1):a.length===1?rangeFrom(rangeFrom,0,val(a[0]),1)
       :a.length<=3?rangeFrom(rangeFrom,val(a[0]),val(a[1]),a.length===3?val(a[2]):1):arity(a.length),
     partition:(...a)=>a.length===2?partitionFrom(partitionFrom,val(a[0]),val(a[0]),a[1]):a.length===3?partitionFrom(partitionFrom,val(a[0]),val(a[1]),a[2]):arity(a.length),
@@ -2867,7 +2923,7 @@ const native = (() => {
     every:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s))if(!truth(invoke(f,__rt.cljFirst(s))))return false;return true;},
     some:(f,c)=>{for(let s=seqOf(c);s!==null;s=__rt.cljNext(s)){const v=invoke(f,__rt.cljFirst(s));if(truth(v))return v;}return null;},
     notEvery:(f,c)=>!core.every(f,c), notAny:(f,c)=>!truth(core.some(f,c)),
-    last:c=>{const a=arr(c);return a.length?a[a.length-1]:null;}, butlast:c=>{const a=arr(c);return a.length>1?list(a.slice(0,-1)):null;},
+    last:c=>{const a=arr(c);return a.length?a[a.length-1]:null;}, butlast:c=>{const a=arr(c);return a.length>1?__rt.cljSeq(vector(a.slice(0,-1))):null;},
     reverse:c=>list(arr(c).reverse()),
     sort:(...a)=>{
       if(a.length!==1&&a.length!==2)return arity(a.length);
@@ -3022,68 +3078,81 @@ const native = (() => {
     // members cell under its name, beside the entry from the function back
     // to the name. Only a value found there is a protocol. The lookup is by
     // identity, never user equality, and no other frozen object qualifies.
+    // A program protocol's value is one per declaration (light-cljs-592):
+    // the bundle declaring it, whichever task installs it, gives one value,
+    // keyed by its unit; a declaration a function evaluates (a defprotocol
+    // in a macro body) a new one each time. Each value's entry is
+    // [name, unit], unit null for a core protocol or a function's.
     const local = new Map();
     const value = name => {
-      let p = local.get(name);
+      const owner = isCore(name) ? null : decl.productOwner(name);
+      const unit = owner === null ? null : owner.unit;
+      const key = 'protocol:' + name + (unit === null ? '' : '\u0000' + unit);
+      let p = isCore(name) || unit !== null ? local.get(key) : undefined;
       if (p !== undefined) return p;
       let candidate;
       for (;;) {
         const current = __rt.atomLoad(rawMembersCell);
-        const found = current === null ? undefined : __rt.getOr(current, 'protocol:' + name, undefined);
+        const found = current === null || !isCore(name) && unit === null ? undefined : __rt.getOr(current, key, undefined);
         if (found !== undefined) { p = found; break; }
         if (candidate === undefined) candidate = function () {};
-        const next = __rt.assoc(__rt.assoc(current === null ? __rt.map() : current, 'protocol:' + name, candidate), candidate, name);
+        let next = __rt.assoc(current === null ? __rt.map() : current, candidate, __rt.vector(name, unit));
+        if (isCore(name) || unit !== null) next = __rt.assoc(next, key, candidate);
         if (Object.is(__rt.atomCas(rawMembersCell, current, next), current)) { p = candidate; break; }
       }
-      local.set(name, p);
+      if (isCore(name) || unit !== null) local.set(key, p);
       return p;
     };
-    const nameOf = p => {
+    const entryOf = p => {
       if (typeof p !== 'function') return undefined;
       const current = __rt.atomLoad(rawMembersCell);
-      const name = current === null ? undefined : __rt.getOr(current, p, undefined);
-      return typeof name === 'string' ? name : undefined;
+      const entry = current === null ? undefined : __rt.getOr(current, p, undefined);
+      // Other members are functions; a protocol's entry is an engine vector.
+      return entry !== null && typeof entry === 'object' ? entry : undefined;
     };
+    const nameOf = p => { const entry = entryOf(p); return entry === undefined ? undefined : __rt.nth(entry, 0); };
     // A program protocol's name is qualified (`ns/P`), a core one's is not.
     const isCore = name => name.indexOf('/') < 0;
     // The core protocols, read through `core` (`known`), built on first use.
     let coreNames = null;
     const known = name => (coreNames ??= new Set('Inst IUUID ASeq IDerefWithTimeout INamed IMultiFn IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IEncodeJS IEncodeClojure IChunk IChunkedNext IDrop IPending Fn IList IMapEntry IFind ISorted IChunkedSeq IRecord ICloneable IPrintWithWriter IWriter IReduce IKVReduce IVector IMap ICollection IEmptyableCollection ISet IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ISeq INext ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta IDeref IAtom IReset ISwap IVolatile IWatchable'.split(' '))).has(name);
-    // The core protocols each runtime-owned kind implements natively, as the
-    // legacy runtime's type of that kind does (`builtinCoreImplementation`).
-    // A kind standing for several legacy types answers the protocols they
-    // share and fails explicitly on the others (`unsure`).
+    // The core protocols each runtime-owned value implements natively, by
+    // its QuickJS-reference type (`builtinCoreImplementation`): the form's
+    // `formReferenceType`, which the operation that made a sequence sets
+    // where its body alone does not tell (light-cljs-592).
     // Built on first use: most tasks never ask.
     let tables = null;
     const built = () => tables ??= build();
     const build = () => {
-      const native = new Map(), unsure = new Map();
-      const kinds = (tags, names, doubtful = '') => {
-        for (const tag of tags.split(' ')) {
-          native.set(tag, new Set(names.split(' ')));
-          if (doubtful !== '') unsure.set(tag, new Set(doubtful.split(' ')));
-        }
-      };
+      const native = new Map();
+      const kinds = (tags, names) => { for (const tag of tags.split(' ')) native.set(tag, new Set(names.split(' '))); };
       const seqBase = 'IPrintWithWriter IReduce ICollection IEmptyableCollection ISeqable ISeq INext ISequential IMeta IWithMeta';
+      const map = 'IEditableCollection IFind ICloneable IPrintWithWriter IReduce IKVReduce IMap ICollection IEmptyableCollection IIterable IHash IEquiv IFn ISeqable ICounted ILookup IAssociative IMeta IWithMeta';
       kinds('keyword', 'INamed IPrintWithWriter IComparable IHash IEquiv IFn');
       kinds('symbol', 'INamed IPrintWithWriter IComparable IHash IEquiv IFn IMeta IWithMeta');
       kinds('vector', 'IEditableCollection IDrop IFind ICloneable IPrintWithWriter IReduce IKVReduce IVector ICollection IEmptyableCollection IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta');
       kinds('map-entry', 'IDrop IMapEntry IFind IPrintWithWriter IReduce IVector ICollection IEmptyableCollection IStack IReversible IComparable IIterable IHash IEquiv IFn ISeqable ICounted IIndexed ILookup ISequential IAssociative IMeta IWithMeta');
-      // Array and hash maps are one kind; only array maps implement IDrop.
-      kinds('map', 'IEditableCollection IFind ICloneable IPrintWithWriter IReduce IKVReduce IMap ICollection IEmptyableCollection IIterable IHash IEquiv IFn ISeqable ICounted ILookup IAssociative IMeta IWithMeta', 'IDrop');
+      kinds('hash-map', map);
+      kinds('array-map', 'IDrop ' + map);
       kinds('sorted-map', 'IFind ISorted ICloneable IPrintWithWriter IReduce IKVReduce IMap ICollection IEmptyableCollection IReversible IIterable IHash IEquiv IFn ISeqable ICounted ILookup IAssociative IMeta IWithMeta');
       kinds('set', 'IEditableCollection ICloneable IPrintWithWriter ICollection IEmptyableCollection ISet IIterable IHash IEquiv IFn ISeqable ICounted ILookup IMeta IWithMeta');
       kinds('empty-list', 'IList ICloneable IStack IIterable IHash IEquiv ICounted ' + seqBase);
       kinds('list', 'ASeq IList ICloneable IStack IIterable IHash IEquiv ICounted ' + seqBase);
       kinds('cons', 'ASeq IList ICloneable IStack IIterable IHash IEquiv ' + seqBase);
       kinds('lazy-seq', 'IPending IIterable IHash IEquiv ' + seqBase);
-      kinds('array-seq', 'ASeq IDrop ICloneable IReversible IIterable IHash IEquiv ICounted IIndexed ' + seqBase);
-      // Counted and uncounted sequences of other kinds: indexed, chunked,
-      // map, key/value, reversed, set and iterated sequences and ranges.
-      kinds('sequence', 'IIterable IHash IEquiv ICounted ' + seqBase, 'ASeq IChunkedNext IDrop IChunkedSeq ICloneable IReversible IIndexed');
-      kinds('sequence+chunked', 'IChunkedNext IChunkedSeq IHash IEquiv ' + seqBase, 'ASeq IDrop ICloneable IReduce IIterable ICounted IIndexed');
-      kinds('uncounted-sequence', seqBase, 'IPending ICloneable IStack IIterable IHash IEquiv ICounted');
-      kinds('uncounted-sequence+chunked', 'IChunkedNext IChunkedSeq ICloneable IIterable IHash IEquiv ' + seqBase);
+      kinds('array-seq indexed-seq', 'ASeq IDrop ICloneable IReversible IIterable IHash IEquiv ICounted IIndexed ' + seqBase);
+      kinds('chunked-seq', 'ASeq IChunkedNext IDrop IChunkedSeq IIterable IHash IEquiv ICounted ' + seqBase);
+      kinds('chunked-cons', 'ASeq IChunkedNext IChunkedSeq IPrintWithWriter ICollection IEmptyableCollection IHash IEquiv ISeqable ISeq INext ISequential IMeta IWithMeta');
+      kinds('integer-range', 'IChunkedNext IDrop IChunkedSeq ICloneable IIterable IHash IEquiv ICounted IIndexed ' + seqBase);
+      kinds('range', 'IChunkedNext IChunkedSeq ICloneable IIterable IHash IEquiv ' + seqBase);
+      kinds('array-map-seq', 'IDrop IIterable IHash IEquiv ICounted ' + seqBase);
+      kinds('node-seq', 'ASeq IIterable IHash IEquiv ' + seqBase);
+      kinds('sorted-map-seq', 'IIterable IHash IEquiv ICounted ' + seqBase);
+      kinds('set-seq', 'IIterable IHash IEquiv ' + seqBase);
+      kinds('key-seq', 'IStack IIterable IHash IEquiv ' + seqBase);
+      kinds('reverse-seq', 'ICloneable IIterable IHash IEquiv ' + seqBase);
+      kinds('repeat', 'IDrop IPending IHash IEquiv ' + seqBase);
+      kinds('iterate', 'IPending ' + seqBase);
       kinds('queue', 'ICloneable IPrintWithWriter ICollection IEmptyableCollection IStack IIterable IHash IEquiv ISeqable ISeq INext ICounted ISequential IMeta IWithMeta');
       kinds('atom', 'IPrintWithWriter IHash IEquiv IMeta IDeref IAtom IWatchable');
       kinds('reduced', 'IPrintWithWriter IHash IEquiv IDeref');
@@ -3093,15 +3162,12 @@ const native = (() => {
       kinds('record', 'IRecord ICloneable IPrintWithWriter IKVReduce IMap ICollection IIterable IHash IEquiv ISeqable ICounted ILookup IAssociative IMeta IWithMeta');
       // The legacy protocol objects' own types (`IMeta.function = true`, ...).
       const defaults = new Map([['IMeta','function'],['Fn','function'],['ICounted','null'],['IHash','_'],['IEquiv','_']]);
-      let dispatchKeys = __rt.map();
-      for (const k of ['list','empty-list','sequence','uncounted-sequence','vector','map-entry','map','set','keyword','symbol','lazy-seq','cons','reduced'])
-        dispatchKeys = __rt.assoc(dispatchKeys, k, k);
       const munging = {'-':'_',':':'_COLON_','+':'_PLUS_','>':'_GT_','<':'_LT_','=':'_EQ_','~':'_TILDE_','!':'_BANG_','@':'_CIRCA_','#':'_SHARP_',"'":'_SINGLEQUOTE_','"':'_DOUBLEQUOTE_','%':'_PERCENT_','^':'_CARET_','&':'_AMPERSAND_','*':'_STAR_','|':'_BAR_','{':'_LBRACE_','}':'_RBRACE_','[':'_LBRACK_',']':'_RBRACK_','/':'$','\\':'_BSLASH_','?':'_QMARK_'};
-      return {native, unsure, defaults, dispatchKeys, munging, markers: new Map()};
+      return {native, defaults, munging, markers: new Map()};
     };
     const unsupportedKind = what => { throw new Error('unsupported operation: native macro runtime satisfies? of ' + what); };
-    // The kind of a value the runtime owns, or null: a primitive, host
-    // object, function, struct or type.
+    // The QuickJS-reference type of a value the runtime owns, or null: a
+    // primitive, host object, function, struct or type.
     const kindOf = x => {
       const v = val(x);
       if (v === null || v === undefined || typeof v !== 'object' && typeof v !== 'function') return null;
@@ -3110,17 +3176,16 @@ const native = (() => {
       if (isVar(x)) return 'var';
       if (multi.is(x)) return 'multifn';
       const k = __rt.formKind(v);
-      if (k === null || k === 'struct' || k === 'type') return null;
-      if (k === 'record') return k;
+      if (k === null) return null;
       if (k === 'compiler-literal') {
         const literal = __rt.formName(v);
         if (literal === 'regex' || literal === 'js-array' || literal === 'js-object' || literal === 'instant' || literal === 'uuid') return null;
-        return literal === 'queue' ? literal : unsupportedKind('compiler literal ' + literal);
+        if (literal !== 'queue') return unsupportedKind('compiler literal ' + literal);
       }
-      const key = __rt.cljDispatch(built().dispatchKeys, x);
-      if (key === null) return unsupportedKind(k);
-      if ((key === 'map' || key === 'set') && !__rt.cljIsEditable(x)) return key === 'map' ? 'sorted-map' : unsupportedKind('sorted set');
-      return (key === 'sequence' || key === 'uncounted-sequence') && __rt.cljChunkedSeq(x) ? key + '+chunked' : key;
+      const type = __rt.formReferenceType(v);
+      // A sequence no operation gave a reference type, or a sorted set.
+      if (type === 'sequence' || type === 'uncounted-sequence' || type === 'sorted-set') return unsupportedKind(type);
+      return type;
     };
     // A JavaScript object or function the legacy runtime would read the
     // protocol's properties of: getters and Proxy traps run as they do there.
@@ -3146,12 +3211,7 @@ const native = (() => {
       decl.demand(name, x);
       if (object) v[marker(name)];
       if (decl.implementsDirectly(name, x)) return true;
-      if (tag !== null) {
-        const {native, unsure} = built();
-        if (native.get(tag)?.has(name)) return true;
-        if (unsure.get(tag)?.has(name)) unsupportedKind(name + ' of ' + tag);
-        return false;
-      }
+      if (tag !== null) return built().native.get(tag)?.has(name) === true;
       // An instant or UUID literal is the legacy Date or UUID.
       const literal = __rt.formKind(v) === 'compiler-literal' ? __rt.formName(v) : null;
       if (literal === 'instant') return name === 'Inst' || name === 'IComparable';
@@ -3210,7 +3270,7 @@ const native = (() => {
       const name = nameOf(p) ?? key;
       const d = isCore(name) ? built().defaults.get(name) : undefined;
       if (d !== undefined && (d === '_' || d === decl.hostType(x))) return true;
-      return decl.extended(name, x);
+      return isCore(name) || nameOf(p) === undefined ? decl.extended(name, x) : decl.extended(name, x, p);
     };
     // The predicates as values capture nothing of this task, so that a
     // helper holding one publishes: each call reads the calling task's.
@@ -3305,6 +3365,13 @@ const rootSetter=name=>value=>{
   Object.defineProperty(registry(),name,{configurable:true,writable:true,value});
 };
 const productReaders=new Map();
+// A declaration product written outside its bundle (a defprotocol or deftype
+// a macro body runs again) replaces the definition, as a nested def does.
+const productSetter=name=>value=>{defineRootValue(name,value);};
+// The product getters the engine's root read may bypass once their bundle is
+// ready: not those of a name declared again, whose getter picks the
+// definition an initializer sees (`decl.atDeclarationFrontier`).
+const fastProductReaders=new Map();
 // Of each root, the unit of its definition's executable :test metadata;
 // of each unit, its root's slot.
 const rootTests=new Map(), unitSlots=new Map();
@@ -3317,8 +3384,11 @@ globalThis.__lightInstallCompilerProduct=(name,read,bundle)=>{
   const previous=roots.get(name);
   if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);
   else {const slot=__rt.initializerSlot(null,name);__rt.initializerSlotSet(slot,4,true);roots.set(name,slot);}
-  Object.defineProperty(registry(),name,{configurable:true,get:read});
-  if(bundle!==undefined)productReaders.set(read,__rt.vector(bundle,name));
+  Object.defineProperty(registry(),name,{configurable:true,get:read,set:productSetter(name)});
+  if(bundle!==undefined){
+    const entry=__rt.vector(bundle,name);productReaders.set(read,entry);
+    if(!bundle.previous?.has(name))fastProductReaders.set(read,entry);
+  }
 };
 // Each invocation of this runtime belongs to one VM task. Overlay snapshots
 // stay in its saved frames across need/producer waits and context lending;
@@ -3356,7 +3426,9 @@ globalThis.__lightDefineCompilerRoot=(name,initialize,once)=>{
   if(once&&globalThis.__lightCompilerRootKept(name))return null;
   if(decl.defineProduct(name,initialize))return globalThis.__lightCompilerBundleProducts[name];
   if(initialize===null)return undefined;
-  const value=initialize();
+  return defineRootValue(name,initialize());
+};
+const defineRootValue=(name,value)=>{
   if(bindingOverlays.has(name))bindingOverlays.set(name,value);
   else {const previous=roots.get(name);if(previous!==undefined)__rt.initializerSlotSet(previous,4,true);Object.defineProperty(registry(),name,{configurable:true,writable:true,value});}
   return value;
@@ -3394,13 +3466,15 @@ globalThis.__lightRegisterUnit=(name,unit,once=false,location='',test=null)=>{
   // a Var reflects (`__lightCompilerVarMetadata`).
   rootTests.set(name,test);
   if(unit!==null)unitSlots.set(unit,slot);
-  Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot)});return null;
+  Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot,decl.bundles())});return null;
 };
-const rootGetter=(name,unit,slot)=>()=>{
+// `frontier`: the bundles registered before the root, whose products its
+// initializer reads (`decl.atDeclarationFrontier`).
+const rootGetter=(name,unit,slot,frontier=Infinity)=>()=>{
   if(unit===null)throw new Error('unavailable definition: '+name);
   __rt.need(unit,2);
   const factory=__rt.need(unit,3);
-  return initializeValue(slot,factory);
+  return decl.atDeclarationFrontier(frontier,()=>initializeValue(slot,factory));
 };
 const demandSlot=slot=>{
   const unit=__rt.initializerSlotGet(slot,0);
@@ -3500,13 +3574,19 @@ globalThis.__lightRegisterBundle=(names,code,indices=[],location='',once=false,g
 globalThis.__lightEnterCompilerFrontier=next=>decl.enter(next);
 globalThis.__lightLeaveCompilerFrontier=()=>decl.leave();
 const rootTarget={};
+// A declaration a function evaluates outside any bundle (a defprotocol or
+// deftype in a macro body) writes its products into the roots themselves,
+// as a nested def defines its root (light-cljs-592); a bundle's
+// installation replaces this while it runs. A product already installed
+// takes the write through its setter (`productSetter`).
+globalThis.__lightCompilerBundleProducts=rootTarget;
 globalThis.__lightCompilerRoots=new Proxy(rootTarget, {
   get:(target,name,receiver)=>bindingOverlays.has(name)?bindingOverlays.get(name):(lazyCatalog!==null&&lazyResolve(name),Reflect.get(target,name,receiver)),
   has:(target,name)=>bindingOverlays.has(name)||(lazyCatalog!==null&&lazyResolve(name),Reflect.has(target,name)),
 });
 // The compiler's bounded read intrinsic checks this live overlay Map and
 // target on every read. Ordinary interop retains the Proxy and its receiver.
-globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoots,rootTarget,bindingOverlays,productReaders);
+globalThis.__lightCompilerRootContext=__rt.vector(globalThis.__lightCompilerRoots,rootTarget,bindingOverlays,fastProductReaders);
 // A producer task adopts its parent's catalog snapshot instead of applying
 // it (light-cljs-590): a name gets its catalog registrations when the task
 // first uses it, and a protocol its catalog bundles, each with exactly the
@@ -3634,6 +3714,7 @@ const lazyBundle=(c,p)=>{
     for(let i=0;i<__rt.count(products);i++)names.push(__rt.nth(products,i));
     for(let i=0;i<__rt.count(extensions);i++)indices.push([__rt.nth(__rt.nth(extensions,i),0),__rt.nth(__rt.nth(extensions,i),1)]);
     b=decl.makeBundle(names,indices,__rt.nth(e,3),__rt.nth(e,5),c.base+__rt.nth(e,6)+1);
+    b.catalog=c;b.entry=p;
     c.bundles.set(p,b);
   }
   return b;
@@ -3657,11 +3738,12 @@ function lazyResolve(name){
     // As `__lightRegisterUnit`: the :test unit Var reflection reads.
     rootTests.set(name,__rt.nth(owner,4));
     if(s.unit!==null)unitSlots.set(s.unit,slot);
-    Object.defineProperty(rootTarget,name,{configurable:true,get:rootGetter(name,s.unit,slot)});
+    Object.defineProperty(rootTarget,name,{configurable:true,get:rootGetter(name,s.unit,slot,catalogFrontier(c,s.owner))});
   }else{
     const b=lazyBundle(c,s.owner),read=decl.productGetter(b,name);
-    Object.defineProperty(rootTarget,name,{configurable:true,get:read});
-    productReaders.set(read,__rt.vector(b,name));
+    Object.defineProperty(rootTarget,name,{configurable:true,get:read,set:productSetter(name)});
+    const entry=__rt.vector(b,name);productReaders.set(read,entry);
+    if(catalogPrevious(b,name)===undefined)fastProductReaders.set(read,entry);
   }
   if(!start.own){
     // A bundle creates its products in order.
@@ -3674,6 +3756,22 @@ function lazyResolve(name){
     c.created.set(name,at);
   }
 }
+// The bundles a catalog registers before its entry `p`: a root there sees
+// their products.
+const catalogFrontier=(c,p)=>{
+  for(let q=p-1;q>=0;q--){const e=__rt.nth(c.entries,q);if(__rt.nth(e,0)===1)return c.base+__rt.nth(e,6)+1;}
+  return c.base;
+};
+// The getter of `name`'s definition before the catalog bundle `b`'s, when
+// an earlier bundle of the catalog declares it.
+const catalogPrevious=(b,name)=>{
+  const c=b.catalog,at=__rt.getOr(c.names,name,null);
+  if(at===null)return undefined;
+  let q=-1;
+  for(let i=0,n=__rt.count(at);i<n;i++){const r=__rt.nth(at,i);if(r>=b.entry)break;q=r;}
+  if(q<0||__rt.nth(__rt.nth(c.entries,q),0)!==1)return undefined;
+  return decl.productGetter(lazyBundle(c,q),name);
+};
 // Index a protocol's catalog bundles, once, before its extensions are read
 // or another bundle extends it.
 function catalogProtocol(protocol){

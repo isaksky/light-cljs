@@ -628,11 +628,86 @@ pub(crate) struct FormObject {
     /// runtime calls it: engine leaves that would compare its keys raise
     /// [`CollectionError::Unsupported`] instead of using the default order.
     comparator: Option<Value>,
+    /// The QuickJS reference's type where body and flags alone do not
+    /// tell it ([`Brand`]).
+    brand: Brand,
     /// [`hash`] of this value, computed once (metadata-independent). An
     /// interior cache, not an edge or part of the value: readers of the
     /// frozen body may race to set it, and every writer stores the same
     /// number.
     hash: OnceLock<i32>,
+}
+
+/// The QuickJS reference's type of a sequence where a form's body and flags
+/// alone do not tell it (light-cljs-592): the operation that makes the
+/// sequence sets it; metadata copies and the sequences that share its body
+/// (`rest`, `next`, a lazy sequence's `seq`) keep it. The protocol
+/// predicates read it through [`reference_type`]. It takes no part in
+/// equality, hashing or printing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Brand {
+    /// The body says: a list, cons, lazy sequence, collection or range.
+    #[default]
+    None,
+    /// `IndexedSeq`: the seq of a vector of at most 32 elements or of a
+    /// string.
+    Indexed,
+    /// `ChunkedSeq`: the seq of a longer vector.
+    Chunked,
+    /// `ChunkedCons`: `chunk-cons`, and a chunked `concat` or `map`.
+    ChunkedCons,
+    /// An array map's seq.
+    ArrayMapSeq,
+    /// A hash map's seq (`NodeSeq`).
+    HashMapSeq,
+    /// A sorted map's seq or `rseq`.
+    SortedMapSeq,
+    /// A set's seq.
+    SetSeq,
+    /// `keys` or `vals` of a map.
+    KeySeq,
+    /// `rseq` of a vector.
+    ReverseSeq,
+    /// `repeat`.
+    Repeat,
+    /// `iterate`.
+    Iterate,
+}
+
+impl Brand {
+    const ALL: [(Brand, &'static str); 12] = [
+        (Brand::Indexed, "indexed-seq"),
+        (Brand::Chunked, "chunked-seq"),
+        (Brand::ChunkedCons, "chunked-cons"),
+        (Brand::ArrayMapSeq, "array-map-seq"),
+        (Brand::HashMapSeq, "node-seq"),
+        (Brand::SortedMapSeq, "sorted-map-seq"),
+        (Brand::SetSeq, "set-seq"),
+        (Brand::KeySeq, "key-seq"),
+        (Brand::ReverseSeq, "reverse-seq"),
+        (Brand::Repeat, "repeat"),
+        (Brand::Iterate, "iterate"),
+        (Brand::None, ""),
+    ];
+
+    fn name(self) -> Option<&'static str> {
+        Brand::ALL
+            .iter()
+            .find(|(b, _)| *b == self)
+            .map(|(_, n)| *n)
+            .filter(|n| !n.is_empty())
+    }
+
+    /// The brand of a sequence sharing `source`'s body: a vector's seq is
+    /// an `IndexedSeq` up to 32 elements and a `ChunkedSeq` beyond, another
+    /// sequence keeps its own.
+    fn of_source(source: &FormObject) -> Brand {
+        match source.body() {
+            FormBody::Vector(items) if items.len() <= 32 => Brand::Indexed,
+            FormBody::Vector(_) => Brand::Chunked,
+            _ => source.brand,
+        }
+    }
 }
 
 impl FormObject {
@@ -645,6 +720,7 @@ impl FormObject {
             reader_traversal: false,
             sorted: false,
             comparator: None,
+            brand: Brand::None,
             hash: OnceLock::new(),
         }
     }
@@ -664,6 +740,7 @@ impl FormObject {
             reader_traversal: self.reader_traversal,
             sorted: self.sorted,
             comparator: self.comparator.clone(),
+            brand: self.brand,
             hash,
         }
     }
@@ -1568,11 +1645,113 @@ pub(crate) fn new_sequence(
     heap: &Heap,
     items: &[Value],
     counted: bool,
+    brand: Brand,
 ) -> Result<Value, CollectionError> {
     let body = FormBody::List(PVector::try_from_values(heap, items)?);
     let mut object = FormObject::new(body, None);
     object.sequence_view = (!items.is_empty()).then_some(counted);
+    if !items.is_empty() {
+        object.brand = brand;
+    }
     alloc(heap, object, items)
+}
+
+/// The QuickJS reference's type of `value` for the protocol predicates
+/// (light-cljs-592): `keyword`, `symbol`, `vector`, `map-entry`,
+/// `array-map`, `hash-map`, `sorted-map`, `set`, `sorted-set`, `record`,
+/// `reduced`, `queue`, `list`, `empty-list`, `cons`, `lazy-seq`, `range`
+/// (uncounted), `integer-range`, a [`Brand`]'s name, or `sequence` /
+/// `uncounted-sequence` for a sequence no operation branded; `None` for
+/// any other value (a deftype, struct type, other compiler literal or
+/// non-form).
+pub(crate) fn reference_type(heap: &Heap, value: &Value) -> Option<&'static str> {
+    let f = form_object(heap, &unwrap(heap, value.clone()))?;
+    if let Some(name) = f.brand.name() {
+        return Some(name);
+    }
+    let unbranded = |f: &FormObject| match f.sequence_view {
+        Some(false) => "uncounted-sequence",
+        _ => "sequence",
+    };
+    Some(match f.body() {
+        FormBody::Keyword(_) => "keyword",
+        FormBody::Symbol(_) => "symbol",
+        FormBody::Vector(_) if f.map_entry => "map-entry",
+        FormBody::Vector(_) => "vector",
+        FormBody::Map(_) if f.sorted => "sorted-map",
+        FormBody::Map(m) if m.positional() => "array-map",
+        FormBody::Map(_) => "hash-map",
+        FormBody::Set(_) if f.sorted => "sorted-set",
+        FormBody::Set(_) => "set",
+        FormBody::Struct(s) if s.info.record => "record",
+        FormBody::Struct(_) | FormBody::Type(_) => return None,
+        FormBody::Reduced(_) => "reduced",
+        FormBody::CompilerLiteral { tag, .. } if tag == "queue" => "queue",
+        FormBody::CompilerLiteral { .. } => return None,
+        FormBody::Lazy(_) => "lazy-seq",
+        FormBody::List(items) if items.len() == 0 => "empty-list",
+        FormBody::List(_) if f.sequence_view.is_none() => "list",
+        FormBody::List(_) => unbranded(&f),
+        FormBody::Cons(c) => match c.kind {
+            lazy::ConsKind::Concat { .. } => "lazy-seq",
+            lazy::ConsKind::Chunked => "chunked-cons",
+            lazy::ConsKind::ChunkedSeq if c.range.is_some() => "integer-range",
+            lazy::ConsKind::ChunkedSeq if f.sequence_view == Some(false) => "range",
+            // The seq of a chunked `concat` or `map` (`ConsKind::plain`).
+            lazy::ConsKind::ChunkedSeq => "chunked-cons",
+            lazy::ConsKind::Cons if f.is_list() => "cons",
+            lazy::ConsKind::Cons => unbranded(&f),
+        },
+    })
+}
+
+/// `formReferenceType(value)`, or with `with`, `formWithReferenceType(value,
+/// name)`. Kept out of line: the operation dispatcher's frame is on the
+/// stack of every nested run.
+#[inline(never)]
+pub(crate) fn reference_type_op(
+    heap: &Heap,
+    with: bool,
+    args: &[Value],
+) -> Result<Value, CollectionError> {
+    let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
+    if with {
+        return with_brand(heap, &arg(0), &arg(1));
+    }
+    Ok(reference_type(heap, &arg(0))
+        .map_or(Value::Null, |name| Value::String(JsString::from(name))))
+}
+
+/// `value`, a sequence, as the QuickJS reference's type `name` for the
+/// protocol predicates (a [`Brand`]'s name): a copy sharing its body,
+/// metadata and flags. An empty list stays as it is.
+pub(crate) fn with_brand(
+    heap: &Heap,
+    value: &Value,
+    name: &Value,
+) -> Result<Value, CollectionError> {
+    let source = unwrap(heap, value.clone());
+    let f = form_object(heap, &source).ok_or_else(|| wrong(heap, "sequence", &source))?;
+    let brand = match name {
+        Value::String(s) => Brand::ALL
+            .iter()
+            .find(|(_, n)| !n.is_empty() && s.to_string() == *n)
+            .map(|(b, _)| *b),
+        _ => None,
+    }
+    .ok_or_else(|| wrong(heap, "sequence type name", name))?;
+    match f.body() {
+        FormBody::List(items) if items.len() == 0 => return Ok(source),
+        FormBody::List(_) | FormBody::Cons(_) | FormBody::Lazy(_) => {}
+        _ => return Err(wrong(heap, "sequence", &source)),
+    }
+    if f.brand == brand {
+        return Ok(source);
+    }
+    let mut object = f.with_meta(f.meta.clone());
+    object.map_entry = false;
+    object.brand = brand;
+    alloc(heap, object, std::slice::from_ref(&source))
 }
 
 /// A non-IList sequence over an existing positional trie or cons cell. No
@@ -1611,9 +1790,14 @@ pub(crate) fn list_sharing(
             })
         })
         .flatten();
+    let brand = match form_object(heap, source) {
+        Some(f) if items.len() != 0 => Brand::of_source(&f),
+        _ => Brand::None,
+    };
     let body = FormBody::List(items);
     let mut object = FormObject::new(body, None);
     object.sequence_view = sequence_view;
+    object.brand = brand;
     alloc(heap, object, std::slice::from_ref(source))
 }
 
@@ -2549,7 +2733,8 @@ pub(crate) fn cons_sharing(
         range,
     };
     let mut object = FormObject::new(FormBody::Cons(body), None);
-    object.sequence_view = source_form.and_then(|f| f.sequence_view);
+    object.sequence_view = source_form.as_ref().and_then(|f| f.sequence_view);
+    object.brand = source_form.map_or(Brand::None, |f| Brand::of_source(&f));
     alloc(heap, object, std::slice::from_ref(source))
 }
 

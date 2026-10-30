@@ -1593,11 +1593,17 @@ pub enum FormOp {
     StructState = 107,
     /// map/set → empty collection with the same storage, order and metadata.
     Empty = 108,
+    /// value → the QuickJS reference's type name for the protocol
+    /// predicates, or null (`formReferenceType`, light-cljs-592).
+    ReferenceType = 109,
+    /// sequence name → that sequence as the reference type `name`
+    /// (`formWithReferenceType`).
+    WithReferenceType = 110,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 109] = [
+    pub const ALL: [FormOp; 111] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1707,6 +1713,8 @@ impl FormOp {
         FormOp::StructSet,
         FormOp::StructState,
         FormOp::Empty,
+        FormOp::ReferenceType,
+        FormOp::WithReferenceType,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1777,7 +1785,8 @@ impl FormOp {
             | FormOp::CljChunkNext
             | FormOp::CljRealizeAll
             | FormOp::CljSymbol
-            | FormOp::StructState => 1,
+            | FormOp::StructState
+            | FormOp::ReferenceType => 1,
             FormOp::Keyword
             | FormOp::InitializerSlot
             | FormOp::InitializerSlotGet
@@ -1785,6 +1794,7 @@ impl FormOp {
             | FormOp::CljGet2
             | FormOp::CompilerLiteral
             | FormOp::Regex
+            | FormOp::WithReferenceType
             | FormOp::Symbol
             | FormOp::Nth
             | FormOp::Dissoc
@@ -1908,6 +1918,8 @@ impl FormOp {
             FormOp::MutableStructType => "mutableStructType",
             FormOp::StructSet => "structSet",
             FormOp::StructState => "structState",
+            FormOp::ReferenceType => "formReferenceType",
+            FormOp::WithReferenceType => "formWithReferenceType",
             FormOp::StructField => "structField",
             FormOp::StructTypeOf => "structTypeOf",
             FormOp::RecordFromMap => "recordFromMap",
