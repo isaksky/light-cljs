@@ -665,7 +665,8 @@ map, integer range, `repeat` or their seqs) returns its seq that far on (or
 argument. A sequence no operation typed answers `unsupported operation:
 native macro runtime satisfies? of sequence` rather than guess; no supported
 operation makes one. Values the build cannot make (sorted sets, transients,
-volatiles, delays, functions with metadata) stay unsupported. A macro's
+volatiles, functions with metadata) stay unsupported; delays are supported
+since light-cljs-613 ("Delays" below). A macro's
 result exports a `Repeat` or `ChunkedCons` with its nil metadata, as the
 reference exports it and a `LazySeq`.
 
@@ -2643,6 +2644,46 @@ realizer's shared-atom access from waiting behind the earlier reader that needs
 its result. The pooled evaluator regression holds the realizer's queued step
 until its earlier reader is registered in the pool, then checks inherited lane
 opening, actual reader resubmission and exactly-once effects after a cold helper.
+
+### Delays (light-cljs-613)
+
+Macro code's `delay` values answer as the QuickJS reference's: `(delay
+body)` (and `(Delay. f v)`, realized to `v` when `f` is nil) makes one,
+`deref`, `@` and `force` run its body on first use and return its value
+after, `force` of anything else returns it, `realized?` and `delay?` answer
+without running it, `instance? Delay` holds, `pr-str` prints `#object[cljs.core.Delay
+{:status :pending, :val nil}]` until it is realized and `{:status :ready,
+:val v}` after, `str` gives `[object Object]`, `=` and `hash` are
+identity's, and the core protocols it satisfies and implements are
+`IPending`, `IPrintWithWriter`, `IHash`, `IEquiv` and `IDeref`. A body that
+throws propagates its exception and leaves the delay unrealized, so the
+next `deref` runs the body again.
+
+A delay is the engine's once-realized cell, the one a lazy sequence has
+("Lazy sequences" above), whose value is kept as the body returned it. The
+body runs once in the whole build, in the task that first forces it; a
+task that forces it while another runs the body parks (holding no worker)
+and reads the value when that run ends, lending its effect lane to the run
+as a lazy sequence's reader does. Readers parked on a run that throws
+observe that failure (the thrown value when it is shareable, otherwise an
+`Error` with its message); a later `deref` runs the body again. A body that
+forces its own delay fails with a catchable `RangeError` (`delay
+realization reentered its own body`), where the reference calls the body
+again.
+
+Sharing: a delay can be shared when its body can, before it is realized,
+or its value can, after. A helper's `(def d (delay ...))`, or a delay a
+macro saves in an atom, publishes like any value whose parts are
+persistent: a body that captures only shareable values (forms, atoms,
+shareable functions; definitions it reads by name are not captures)
+publishes, and every task then runs or waits for the one realization. A
+body that captures task-owned state (a mutable local, a JavaScript object)
+does not: the publication error names the path through `.thunk`, and a
+helper holding it stays per task, as any helper whose value cannot be
+shared does, each task with its own delay. A shared
+delay whose body returns a value that cannot be shared fails that run with
+a `TypeError` (`a shared delay realized a value it cannot share`), for
+the runner and every task parked on it, and stays unrealized.
 
 ### Memory limit
 

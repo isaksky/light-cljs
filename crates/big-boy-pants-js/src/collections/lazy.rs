@@ -106,6 +106,19 @@
 //! reads `O(k * n)` realized elements. Chunked sources (32 elements a cell)
 //! keep `k` small.
 //!
+//! # Delays
+//!
+//! A ClojureScript `delay` is the same once-cell in another form kind
+//! ([`FormKind::Delay`], `formKind` `"delay"`, made by `__rt.delay(thunk)`;
+//! light-cljs-613). Its realization, waiting, failure, reentry, sharing and
+//! collection rules are the ones above, but its value is kept as the thunk
+//! returned it (a vector stays a vector, `nil` is a value), and nothing
+//! reads through it: sequence operations reject it, equality and hashing
+//! are its identity's, and only `cljForce` realizes it (`cljRealized`
+//! answers without realizing). Reentry is the catchable `RangeError` `delay
+//! realization reentered its own body`, where ClojureScript calls the body
+//! again.
+//!
 //! # Thread-local requests
 //!
 //! Equality and hashing (`crate::collections::form`) are total functions

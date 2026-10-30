@@ -1,4 +1,6 @@
 //! Lazy sequence realization (light-cljs-479; `crate::collections::lazy`).
+//! A delay's (light-cljs-613) is the same frame, started by `cljForce`; its
+//! value is installed as the thunk returned it.
 //!
 //! A `__rt.clj*` operation that meets an unrealized lazy sequence records
 //! it; its instruction then starts this native frame with its operands
