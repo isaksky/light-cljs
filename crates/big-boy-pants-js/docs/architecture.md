@@ -268,8 +268,12 @@ data-sized payload is not):
 - ordinary-object properties (512 bytes per entry, covering capacity, index and
   shape metadata), array dense capacity and sparse/attribute entries, Map/Set
   and weak tables, private elements, atom versions and the property-key table;
-- string bodies (two bytes per unit plus 256 per body, ropes including their
-  possible flattened copy; a formatter's accumulated output charges each
+- string bodies (two bytes per unit plus 256 per body; a rope is charged its
+  node, plus its possible flattened copy while a string value of it remains,
+  since only such a value can flatten it: the copy takes that credit when it
+  is made, and the last value's release returns it, so a retained append
+  chain, whose earlier ropes only later ropes refer to, is charged linearly
+  in its length; a formatter's accumulated output charges each
   node once and the whole output's flattened copy, its shared first piece
   included, at the extension that makes it a rope, and the returned body keeps
   that credit for its cached copy; a string index read's one-unit result,

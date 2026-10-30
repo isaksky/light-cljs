@@ -51,6 +51,13 @@
 //! Both traversal and destruction are iterative, even for deep append/prepend
 //! chains. `code_units` flattening is synchronous O(length). `StringFlatten`
 //! supplies budgeted traversal/copying for consumers such as Date parsing.
+//!
+//! Under a byte limit, an accounted rope is charged its node and, as a
+//! credit, its possible flattened copy, since flattening is infallible. The
+//! copy takes the credit when it is made. A rope whose last handle is
+//! released and that only later ropes link to can never be flattened by
+//! itself, so its credit is released then: a retained append chain is
+//! charged linearly in its length, like the memory it holds.
 
 use std::cell::Cell;
 use std::cmp::Ordering;
@@ -92,8 +99,43 @@ pub const MAX_STRING_LEN: usize = (1 << 30) - 1;
 
 /// An immutable JavaScript string value: a sequence of UTF-16 code units.
 /// See the module docs. Cloning is O(1) and shares the body.
-#[derive(Clone)]
+///
+/// A `JsString` is a *handle*: a value some holder (a frame slot, a
+/// collection, a host copy, a traversal) can read. A rope's links to its
+/// operands are not handles ([`Link`]), and a rope counts its handles
+/// ([`Rope::handles`]): once the last one is released, nothing can read
+/// that rope on its own again, only as part of the ropes that link to it,
+/// so it can never be flattened and its flattened copy's charge is
+/// released early ([`Rope::flat_credit`]).
 pub struct JsString(Arc<Body>);
+
+/// A rope's reference to one of its operands. Not a handle: only this
+/// module's traversals (flattening, copies, [`UnitCursor`], [`StringFlatten`])
+/// read through a link. A traversal that keeps an operand takes a handle of
+/// it ([`JsString::from_link`]) but only walks it, never flattening a rope
+/// through it, so such a handle needs no credit.
+type Link = Arc<Body>;
+
+impl Clone for JsString {
+    fn clone(&self) -> Self {
+        Self::from_link(&self.0)
+    }
+}
+
+impl Drop for JsString {
+    fn drop(&mut self) {
+        if let Storage::Rope(rope) = &self.0.storage
+            && rope
+                .handles
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+                == 1
+        {
+            // The last handle: any flatten of this rope has finished (it
+            // held a handle), and none can start again.
+            drop(rope.take_flat_credit());
+        }
+    }
+}
 
 /// The immutable body of a string.
 struct Body {
@@ -107,7 +149,29 @@ struct Body {
 
 enum Storage {
     Flat(Vec<u16>),
-    Rope(Option<(JsString, JsString)>),
+    Rope(Rope),
+}
+
+struct Rope {
+    children: Option<(Link, Link)>,
+    /// The number of [`JsString`] handles of this body (links excluded).
+    handles: std::sync::atomic::AtomicUsize,
+    /// The charge of this rope's possible flattened copy (its units and its
+    /// body), taken by the copy when [`JsString::code_units`] makes it, or
+    /// released when the last handle is: a rope only another rope links to
+    /// is never flattened by itself. Charging every rope its whole length
+    /// for as long as it lives would grow quadratically with a retained
+    /// append chain (`s = s + piece`) that holds linear memory.
+    flat_credit: std::sync::Mutex<Option<crate::heap::budget::ByteReservation>>,
+}
+
+impl Rope {
+    fn take_flat_credit(&self) -> Option<crate::heap::budget::ByteReservation> {
+        self.flat_credit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
 }
 
 impl Body {
@@ -120,10 +184,10 @@ impl Body {
         }
     }
 
-    fn take_children(&mut self) -> Option<(JsString, JsString)> {
+    fn take_children(&mut self) -> Option<(Link, Link)> {
         match &mut self.storage {
             Storage::Flat(_) => None,
-            Storage::Rope(children) => children.take(),
+            Storage::Rope(rope) => rope.children.take(),
         }
     }
 }
@@ -142,7 +206,7 @@ impl Drop for Body {
             pending.push(right);
         }
         while let Some(child) = pending.pop() {
-            if let Some(mut body) = Arc::into_inner(child.0)
+            if let Some(mut body) = Arc::into_inner(child)
                 && let Some((left, right)) = body.take_children()
             {
                 pending.push(left);
@@ -154,8 +218,8 @@ impl Drop for Body {
 
 /// A formatter's output (ListFormat, DisplayNames), extended one piece at a
 /// time across native steps. [`JsString::concat_accounted`] charges the
-/// whole result on every call, which a retained rope chain would accumulate
-/// quadratically. Here each appended rope node is charged once, for itself
+/// whole result's flattened copy on every call, until the result's last
+/// handle is released. Here each appended rope node is charged once, for itself
 /// and its piece's body, and one cumulative credit covers the eventual
 /// flattened copy of the whole output: every piece's units, the shared first
 /// piece included, plus the copy's body. Flattening is infallible
@@ -384,18 +448,42 @@ impl JsString {
             .checked_add(other.len())
             .filter(|&n| n <= MAX_STRING_LEN)
             .ok_or(crate::vm::dispatch::Fault::StringTooLong)?;
-        // Include the possible flattened body now: code_units, equality and
-        // hashing are infallible and cannot attempt a later quota admission.
-        let reservation = Self::reserve(
-            heap,
-            len.checked_mul(16)
-                .ok_or(crate::vm::dispatch::Fault::HeapLimit)?,
-            2,
-        )?;
-        Ok(self
-            .concat(other)
-            .expect("checked length")
-            .with_reservation(reservation))
+        // A short result is one flat body. A rope is its node's body, plus
+        // the credit for its possible flattened copy (the units and their
+        // body), charged now because code_units, equality and hashing are
+        // infallible and cannot attempt a later quota admission. The rope
+        // keeps the credit only while a handle can still flatten it
+        // (`Rope::flat_credit`), so a retained chain of appends is charged
+        // its nodes and one copy per handle, not every prefix's length.
+        let rope = len > FLAT_CONCAT_LIMIT;
+        let mut node = Self::reserve_owned(heap, len, if rope { 2 } else { 1 })?;
+        let credit = rope.then(|| node.split(len * 2 + BODY_BYTES)).flatten();
+        let mut text = self.concat(other).expect("checked length");
+        if let Some(credit) = credit {
+            let body = Arc::get_mut(&mut text.0).expect("a fresh rope");
+            let Storage::Rope(fresh) = &mut body.storage else {
+                unreachable!("a result over the flat limit is a rope")
+            };
+            *fresh
+                .flat_credit
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(credit);
+        }
+        Ok(text.with_reservation(node.is_charged().then(|| Arc::new(node))))
+    }
+
+    /// A handle of the body `link` refers to (see [`JsString`]).
+    fn from_link(link: &Link) -> Self {
+        if let Storage::Rope(rope) = &link.storage {
+            rope.handles
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        JsString(Arc::clone(link))
+    }
+
+    /// Release this handle, keeping its body by a link.
+    fn into_link(self) -> Link {
+        Arc::clone(&self.0)
     }
     /// Transfer a preallocated, incrementally filled UTF-16 buffer without
     /// shrinking or copying its contents at a native step boundary.
@@ -444,31 +532,42 @@ impl JsString {
     /// The code units, in order. A rope flattens once, in O(length) time
     /// using an explicit traversal stack. Concurrent readers share one cache.
     pub fn code_units(&self) -> &[u16] {
-        if let Storage::Flat(units) = &self.0.storage {
-            return units;
-        }
+        let rope = match &self.0.storage {
+            Storage::Flat(units) => return units,
+            Storage::Rope(rope) => rope,
+        };
         let flat = self.0.flat.get_or_init(|| {
             let mut units = Vec::with_capacity(self.len());
             let mut pending = vec![self.0.as_ref()];
             while let Some(body) = pending.pop() {
                 match &body.storage {
                     Storage::Flat(flat) => units.extend_from_slice(flat),
-                    Storage::Rope(Some((left, right))) => {
+                    Storage::Rope(Rope {
+                        children: Some((left, right)),
+                        ..
+                    }) => {
                         if let Some(flat) = body.flat.get() {
                             pending.push(flat.0.as_ref());
                         } else {
-                            pending.push(right.0.as_ref());
-                            pending.push(left.0.as_ref());
+                            pending.push(right.as_ref());
+                            pending.push(left.as_ref());
                         }
                     }
-                    Storage::Rope(None) => unreachable!("only a dropping body loses children"),
+                    Storage::Rope(_) => unreachable!("only a dropping body loses children"),
                 }
             }
             debug_assert_eq!(units.len(), self.len());
             record_copies(units.len());
+            // The copy takes the rope's credit for it. A rope without one
+            // (a formatter's output, `StringAccumulator`) shares its node
+            // charge, which includes the copy.
+            let reservation = rope
+                .take_flat_credit()
+                .map(Arc::new)
+                .or_else(|| self.0.reservation.clone());
             Self::from_owned_code_units(units)
                 .expect("checked string length")
-                .with_reservation(self.0.reservation.clone())
+                .with_reservation(reservation)
         });
         let Storage::Flat(units) = &flat.0.storage else {
             unreachable!("the cache always holds a flat leaf")
@@ -493,11 +592,14 @@ impl JsString {
         while let Some(body) = pending.pop() {
             match &body.storage {
                 Storage::Flat(units) => out.extend_from_slice(units),
-                Storage::Rope(Some((left, right))) => {
-                    pending.push(right.0.as_ref());
-                    pending.push(left.0.as_ref());
+                Storage::Rope(Rope {
+                    children: Some((left, right)),
+                    ..
+                }) => {
+                    pending.push(right.as_ref());
+                    pending.push(left.as_ref());
                 }
-                Storage::Rope(None) => unreachable!("live rope retains its children"),
+                Storage::Rope(_) => unreachable!("live rope retains its children"),
             }
         }
         record_copies(self.len());
@@ -506,8 +608,8 @@ impl JsString {
 
     /// Reuse an existing flat leaf without retaining a flattened rope's
     /// obsolete ancestors and their caches. No code units are copied.
-    fn concat_operand(&self) -> JsString {
-        self.0.flat.get().unwrap_or(self).clone()
+    fn concat_operand(&self) -> Link {
+        Arc::clone(&self.0.flat.get().unwrap_or(self).0)
     }
 
     /// The contents as Rust text; a lone surrogate becomes U+FFFD.
@@ -533,7 +635,11 @@ impl JsString {
             return Some(JsString(Arc::new(Body {
                 len,
                 flat: OnceLock::new(),
-                storage: Storage::Rope(Some((self.concat_operand(), other.concat_operand()))),
+                storage: Storage::Rope(Rope {
+                    children: Some((self.concat_operand(), other.concat_operand())),
+                    handles: std::sync::atomic::AtomicUsize::new(1),
+                    flat_credit: std::sync::Mutex::new(None),
+                }),
                 reservation: None,
             })));
         }
@@ -654,11 +760,14 @@ impl StringFlatten {
             } else if let Some(text) = self.pending.pop_back() {
                 match &text.0.storage {
                     Storage::Flat(_) => self.leaf = Some((text, 0)),
-                    Storage::Rope(Some((left, right))) => {
-                        self.pending.push_back(right.clone());
-                        self.pending.push_back(left.clone());
+                    Storage::Rope(Rope {
+                        children: Some((left, right)),
+                        ..
+                    }) => {
+                        self.pending.push_back(JsString::from_link(right));
+                        self.pending.push_back(JsString::from_link(left));
                     }
-                    Storage::Rope(None) => unreachable!("live rope retains its children"),
+                    Storage::Rope(_) => unreachable!("live rope retains its children"),
                 }
                 // Children are retained before releasing their parent, so
                 // consuming a uniquely owned chain also releases it in steps.
@@ -702,12 +811,15 @@ impl UnitCursor {
                 self.pending.push_back((text, offset + 1));
                 CursorStep::Unit(unit)
             }
-            Storage::Rope(Some((left, right))) => {
-                self.pending.push_back((right.clone(), 0));
-                self.pending.push_back((left.clone(), 0));
+            Storage::Rope(Rope {
+                children: Some((left, right)),
+                ..
+            }) => {
+                self.pending.push_back((JsString::from_link(right), 0));
+                self.pending.push_back((JsString::from_link(left), 0));
                 CursorStep::Continue
             }
-            Storage::Rope(None) => unreachable!("live rope has children"),
+            Storage::Rope(_) => unreachable!("live rope has children"),
         }
     }
 
@@ -727,11 +839,11 @@ impl UnitCursor {
         let Some((text, _)) = self.pop() else {
             return false;
         };
-        if let Some(mut body) = Arc::into_inner(text.0)
+        if let Some(mut body) = Arc::into_inner(text.into_link())
             && let Some((left, right)) = body.take_children()
         {
-            self.pending.push_back((right, 0));
-            self.pending.push_back((left, 0));
+            self.pending.push_back((JsString::from_link(&right), 0));
+            self.pending.push_back((JsString::from_link(&left), 0));
         }
         true
     }
@@ -2133,11 +2245,14 @@ mod tests {
                 }
                 match &body.storage {
                     Storage::Flat(flat) => units += flat.len(),
-                    Storage::Rope(Some((left, right))) => {
-                        pending.push(left.0.as_ref());
-                        pending.push(right.0.as_ref());
+                    Storage::Rope(Rope {
+                        children: Some((left, right)),
+                        ..
+                    }) => {
+                        pending.push(left.as_ref());
+                        pending.push(right.as_ref());
                     }
-                    Storage::Rope(None) => unreachable!(),
+                    Storage::Rope(_) => unreachable!(),
                 }
             }
             units
@@ -2854,6 +2969,75 @@ mod byte_budget_tests {
         assert_eq!(heap.byte_budget().used(), baseline);
     }
 
+    /// `s = s + piece` retains every earlier node through the last one, but
+    /// only the last can still be flattened: the chain is charged its nodes,
+    /// its pieces and one flattened copy, linear in its length. Charging
+    /// each node 32 bytes per unit of its whole length (as every rope once
+    /// was) admits about 6.4 GB here, quadratic in the 2,000 appends, and is
+    /// denied.
+    #[test]
+    fn a_retained_append_chain_is_charged_linearly() {
+        const PIECES: usize = 2000;
+        const UNITS: usize = 100;
+        let heap = crate::heap::Heap::with_byte_limit(16 << 20);
+        let baseline = heap.byte_budget().used();
+        let mut text = JsString::from("");
+        for _ in 0..PIECES {
+            let piece = JsString::copy_units(&heap, &[120; UNITS]).unwrap();
+            text = text
+                .concat_accounted(&heap, &piece)
+                .unwrap_or_else(|_| panic!("append denied at {} units", text.len()));
+        }
+        let len = PIECES * UNITS;
+        let piece = 2 * UNITS + BODY_BYTES;
+        let linear = PIECES * (piece + BODY_BYTES) + 2 * len + BODY_BYTES;
+        let used = heap.byte_budget().used() - baseline;
+        assert!(used <= linear, "{used} bytes for a chain of {len} units");
+        // Flattening the last rope moves its credit into the copy.
+        assert_eq!(text.code_units().len(), len);
+        assert_eq!(heap.byte_budget().used() - baseline, used);
+        drop(text);
+        assert_eq!(heap.byte_budget().used(), baseline);
+    }
+
+    /// A rope keeps its flattened copy's credit while any handle remains,
+    /// as an operand of a later rope too, and releases it with its last
+    /// handle; its node stays charged while the later rope links to it.
+    #[test]
+    fn a_linked_rope_keeps_its_flat_credit_until_its_last_handle_drops() {
+        const UNITS: usize = 1000;
+        let heap = crate::heap::Heap::with_byte_limit(1 << 20);
+        let leaf = JsString::copy_units(&heap, &[120; UNITS]).unwrap();
+        let first = leaf.concat_accounted(&heap, &leaf).ok().unwrap();
+        let held = first.clone();
+        let credit = 2 * first.len() + BODY_BYTES;
+        let second = first.concat_accounted(&heap, &leaf).ok().unwrap();
+        drop(first);
+        let used = heap.byte_budget().used();
+        // `held` can still flatten its rope: the copy is already paid for.
+        assert_eq!(held.code_units().len(), 2 * UNITS);
+        assert_eq!(heap.byte_budget().used(), used);
+        drop(held);
+        assert_eq!(
+            heap.byte_budget().used(),
+            used,
+            "the copy keeps the credit it took"
+        );
+
+        let unread = leaf.concat_accounted(&heap, &leaf).ok().unwrap();
+        let third = unread.concat_accounted(&heap, &leaf).ok().unwrap();
+        let used = heap.byte_budget().used();
+        drop(unread);
+        assert_eq!(heap.byte_budget().used(), used - credit);
+        // Traversals take handles of linked ropes without recharging them.
+        let mut cursor = UnitCursor::new(third.clone());
+        while !matches!(cursor.step(), CursorStep::End) {}
+        drop(cursor);
+        assert_eq!(heap.byte_budget().used(), used - credit);
+        assert_eq!(third.code_units().len(), 3 * UNITS);
+        assert_eq!(second.code_units()[..UNITS], third.code_units()[..UNITS]);
+    }
+
     /// A large shared first piece and short later pieces: the output's
     /// flattened copy is admitted with the extension, not after it.
     fn accumulate(heap: &crate::heap::Heap, first: &JsString) -> JsString {
@@ -2900,7 +3084,7 @@ mod byte_budget_tests {
         assert_eq!(rope.code_units()[UNITS..], [44, 32, 121]);
         // The cached flat copy outlives the rope, every accumulated node and
         // the first piece, as when a later concatenation adopts it.
-        let flat = rope.concat_operand();
+        let flat = JsString::from_link(&rope.concat_operand());
         assert!(!flat.same_body(&rope));
         drop(rope);
         drop(first);

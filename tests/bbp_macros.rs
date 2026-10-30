@@ -9809,6 +9809,20 @@ fn the_macro_memory_limit_denies_allocation_catchably_and_the_build_recovers() {
     assert!(message.contains("cljs.user:2:1"), "{message}");
 }
 
+/// A macro that builds a long string by appending to it keeps every earlier
+/// rope node alive through the last one, but only the last can still be
+/// read on its own: the budget charges the chain linearly (light-cljs-632).
+/// When every node was charged 32 bytes per unit of its whole length, these
+/// 5,000 appends needed about 13 GB of the default 64 MiB budget.
+#[test]
+fn a_macro_appending_to_a_long_string_fits_the_default_memory_limit() {
+    let source = "(defmacro long-text [] (js* \"(() => { let s = ''; for (let i = 0; i < 5000; i++) s = s + 'abcdefghijklmnopqrstuvwxyz012345'; return s.length + ':' + s.charAt(100001); })()\"))\n(js/console.log (long-text))";
+    let mut host = MacroHost::new();
+    host.use_native_macros();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    assert_eq!(program_output(&emit_js(&program)), "160000:b\n");
+}
+
 #[test]
 fn a_macro_memory_limit_below_the_native_realm_fails_at_startup_with_a_diagnostic() {
     let source = "(defmacro twice [x] (list '+ x x)) (twice 21)";
