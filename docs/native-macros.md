@@ -423,6 +423,14 @@ saved in Vars, locals and atoms. The answers are the QuickJS reference's:
 - A bundle's extensions follow the expansion's declaration frontier;
   extensions that macro code runs are visible at once.
 
+`satisfies?` demands the protocol's pending declarations for the value
+before any test, as the reference's `demandProtocol` does, so a computed
+extension target initializes even when a host mask bit answers; `implements?`
+keeps the reference's mask-first order. Instant and UUID literals answer as
+the reference's Date and UUID (`Inst`/`IUUID` and `IComparable`), a `#js
+[...]` literal as an array for extensions, and a `StringBufferWriter`
+implements `IWriter` (review fixes, 2026-10-30).
+
 On a host object (a JavaScript object, array or function) the predicates
 read the properties the reference reads, in its order: the protocol's mask
 partition property, its marker property, the native test's own reads

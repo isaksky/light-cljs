@@ -7013,6 +7013,60 @@ fn native_protocol_predicates_read_host_properties_like_quickjs() {
     );
 }
 
+/// `satisfies?` demands the protocol's declarations before a host object's
+/// mask bit can answer: the computed extension target's initializer runs.
+#[test]
+fn native_protocol_satisfies_demands_before_mask_short_circuit() {
+    assert_native_matches_legacy(
+        r#"(deftype T [a])
+      (def hits (atom 0))
+      (def target (do (swap! hits inc) T))
+      (extend-type target IDerefWithTimeout (-deref-with-timeout [_ ms v] v))
+      (defmacro probe []
+        (let [o (js-obj "cljs$lang$protocol_mask$partition0$" 65536)
+              before @hits
+              r (satisfies? IDerefWithTimeout o)]
+          [before r @hits (implements? IDerefWithTimeout o)]))
+      (js/console.log (pr-str (probe)))"#,
+        "[0 true 1 true]\n",
+    );
+}
+
+/// Instant, UUID and JavaScript array/object literals answer as the
+/// reference's Date, UUID, array and object, extensions included.
+#[test]
+fn native_compiler_literal_protocols_match_quickjs() {
+    assert_native_matches_legacy(
+        r#"(extend-protocol IDeref array (-deref [_] 1))
+      (extend-protocol ICounted object (-count [_] 2))
+      (extend-protocol IFind default (-find [_ k] nil))
+      (defmacro probe [x]
+        (let [s satisfies? i implements?]
+          (mapv (fn [p] [(s p x) (i p x)]) [Inst IUUID IComparable IDeref ICounted IFind IHash IEquiv IMeta ISeqable])))
+      (js/console.log (pr-str [(probe #inst "2024-01-02T03:04:05.000Z") (probe #uuid "00000000-0000-0000-0000-000000000000")
+                               (probe #js [1]) (probe #js {:a 1}) (probe #"x")]))"#,
+        "[[[true true] [false false] [true true] [false false] [true false] [true false] [true false] [true false] [false false] [false false]] \
+[[false false] [true true] [true true] [false false] [true false] [true false] [true false] [true false] [false false] [false false]] \
+[[false false] [false false] [false false] [true false] [false false] [true false] [true false] [true false] [false false] [false false]] \
+[[false false] [false false] [false false] [false false] [true false] [true false] [true false] [true false] [false false] [false false]] \
+[[false false] [false false] [false false] [false false] [true false] [true false] [true false] [true false] [false false] [false false]]]\n",
+    );
+}
+
+/// A `StringBufferWriter` implements `IWriter`, and stays a host value
+/// for other protocols' fallbacks.
+#[test]
+fn native_string_buffer_writer_protocols_match_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+        (let [w (StringBufferWriter. nil) s satisfies? i implements?]
+          [(satisfies? IWriter w) (implements? IWriter w) (s IWriter w) (i IWriter w) (s IHash w) (i IHash w)
+           (s IPrintWithWriter w)]))
+      (js/console.log (pr-str (probe)))"#,
+        "[true true true true true false false]\n",
+    );
+}
+
 /// Protocol values, core and program, published in atoms and in helpers
 /// that other namespaces' macros call, at 1, 2, 4 and 8 threads.
 #[test]

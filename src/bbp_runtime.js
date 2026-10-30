@@ -385,10 +385,21 @@ const decl = (() => {
     if (t.version !== version || t.frontier !== frontier) build(t);
     return (__rt.getOr(t.map, hostType(x), null) ?? __rt.getOr(t.map, '_', null)) !== null;
   };
-  // The legacy `nativeType`: a struct type is a constructor function there.
+  // The legacy `nativeType`: a struct type is a constructor function
+  // there, and a `#js [...]` literal an array.
   const hostType = x => {
-    const value = __rt.formValue(x);
-    return value == null ? 'null' : Array.isArray(value) ? 'array' : __rt.formKind(value) === 'type' ? 'function' : typeof value;
+    const value = __rt.formValue(x), kind = value == null ? null : __rt.formKind(value);
+    return value == null ? 'null' : Array.isArray(value) ? 'array' : kind === 'type' ? 'function'
+      : kind === 'compiler-literal' && __rt.formName(value) === 'js-array' ? 'array' : typeof value;
+  };
+  // The legacy `demandProtocol(key, x)` alone: declare `x`'s type and
+  // install the bundles of `key`'s protocol that `x` selects, as dispatch
+  // does before it reads a table.
+  const demand = (key, x) => {
+    const t = methodTable(key, 0);
+    declare(x);
+    if (t.version !== version || t.frontier !== frontier) build(t);
+    demandFor(t.protocol, x);
   };
   // Owned core implementations precede object/default extensions. Explicit
   // extensions of the receiver's native type still replace that implementation.
@@ -585,7 +596,7 @@ const decl = (() => {
     if (pendingBundles.size === 0) return;
     const value = __rt.formValue(x), ty = __rt.structTypeOf(x), kind = __rt.formKind(value);
     const key = ty !== null ? ty : kind !== null ? formKey(value, kind) : hostKey;
-    const native = value == null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+    const native = hostType(x);
     for (const b of [...pendingBundles])
       if (b.order <= frontier && b.indices.some(([p, s]) => p === protocol
           && (s === null || s === '_' || s === native || s.startsWith('@') && key !== null && b.keys?.get(protocol)?.has(key) === true)))
@@ -725,7 +736,7 @@ const decl = (() => {
   return {makeBundle, productGetter, index, reserve: n => { const base = bundleCount; bundleCount += n; return base; },
     extend, extendInstance, inheritInstance:(x,parent)=>instances.set(x,instances.get(parent)),
     instanceMethods:instances,
-    method, satisfies, implementsDirectly, predicate, masked, mask, extended, hostType, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
+    method, satisfies, implementsDirectly, predicate, masked, mask, extended, hostType, demand, type, structInfo, objectWins, demandObject, memberFunction, register, enter, leave, coreKeys, mutableRecord,
     callable, invokeIFn, applyIFn, callMember, borrowedIFn,
     demandMulti, keptProduct, productOwner, defineProduct,
     multiOrder:()=>order, multiFrontier:()=>frontier, installingMulti:()=>installing.some(b=>b.multi),
@@ -3103,7 +3114,7 @@ const native = (() => {
       if (k === 'record') return k;
       if (k === 'compiler-literal') {
         const literal = __rt.formName(v);
-        if (literal === 'regex' || literal === 'js-array' || literal === 'js-object') return null;
+        if (literal === 'regex' || literal === 'js-array' || literal === 'js-object' || literal === 'instant' || literal === 'uuid') return null;
         return literal === 'queue' ? literal : unsupportedKind('compiler literal ' + literal);
       }
       const key = __rt.cljDispatch(built().dispatchKeys, x);
@@ -3131,10 +3142,9 @@ const native = (() => {
     // value's native implementation (`coreProtocolImplementation`).
     const implementsCore = (name, x, tag) => {
       const v = val(x), object = host(v, tag), mask = decl.mask(name);
-      if (object) {
-        if (mask !== undefined && (v[mask[0]] & mask[1])) return true;
-        v[marker(name)];
-      }
+      if (object && mask !== undefined && (v[mask[0]] & mask[1])) return true;
+      decl.demand(name, x);
+      if (object) v[marker(name)];
       if (decl.implementsDirectly(name, x)) return true;
       if (tag !== null) {
         const {native, unsure} = built();
@@ -3142,8 +3152,13 @@ const native = (() => {
         if (unsure.get(tag)?.has(name)) unsupportedKind(name + ' of ' + tag);
         return false;
       }
+      // An instant or UUID literal is the legacy Date or UUID.
+      const literal = __rt.formKind(v) === 'compiler-literal' ? __rt.formName(v) : null;
+      if (literal === 'instant') return name === 'Inst' || name === 'IComparable';
+      if (literal === 'uuid') return name === 'IUUID' || name === 'IComparable';
       if (object) switch (name) {
         case 'Inst': case 'IComparable': return v instanceof Date;
+        case 'IWriter': return writers.has(v);
         case 'IFn': Object.getPrototypeOf(v); break;
         case 'IAtom': v[marker(name)]; break;
       }
@@ -3154,6 +3169,8 @@ const native = (() => {
     // protocol's partition, an extension to its JavaScript type or
     // `default`, or the protocol's own defaults.
     const satisfiesCore = (name, x) => {
+      // The legacy `satisfies` demands the protocol before any test.
+      decl.demand(name, x);
       const tag = kindOf(x);
       if (implementsCore(name, x, tag)) return true;
       if (tag !== null) return false;
@@ -3167,6 +3184,7 @@ const native = (() => {
     // legacy `directMethod` does, then the type's own implementation.
     const implementsProgram = (key, x) => {
       const v = val(x);
+      decl.demand(key, x);
       if (host(v, kindOf(x))) v[marker(key)];
       return decl.implementsDirectly(key, x);
     };
