@@ -113,6 +113,44 @@ fn declined_doseq_expands_with_raised_node_limit() {
     assert!(without_stack(&error).contains(&expected), "{error}");
 }
 
+/// A regular expression of such a `doseq` that does not compile fails as
+/// the engine fails constructing it while it decodes the call, before any
+/// conversion limit and whatever the limits.
+#[test]
+fn declined_doseq_rejects_invalid_regex_before_conversion_limits() {
+    let bindings = "a [0] b [0] c [0] d [0] e [0] f [0] g [0] h [0] i [0]";
+    for (regex, error) in [
+        (
+            "[",
+            "Invalid regular expression: /[/: Unterminated character class",
+        ),
+        ("(?i)(?", "Invalid regular expression: /(?/i: Invalid group"),
+        (")", "Invalid regular expression: /)/: Unmatched ')'"),
+        ("(?x)a", "Invalid flags supplied to RegExp constructor 'x'"),
+    ] {
+        let source = format!("(doseq [{bindings}] #\"{regex}\")");
+        for raised in [false, true] {
+            let mut host = MacroHost::new();
+            if raised {
+                host.limits.generated_nodes = 10_000_000;
+                host.limits.expansions = 100_000;
+            }
+            let failure = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
+                .unwrap_err()
+                .to_string();
+            let expected = format!("macro cljs.core/doseq: SyntaxError: {error}; definition");
+            // The QuickJS reference words the reason in its own way, in
+            // its `RegExp` constructor all the same.
+            let found = if cfg!(all(light_quickjs, not(light_v8))) {
+                failure.contains("macro cljs.core/doseq: ") && failure.contains("at RegExp")
+            } else {
+                without_stack(&failure).contains(&expected)
+            };
+            assert!(found, "{source} raised {raised}: {failure}");
+        }
+    }
+}
+
 /// `simple-benchmark` prints its bindings and expression as the engine
 /// decodes them (keys equal there merge, larger maps and sets take their
 /// hashes' order, negative zero stays `-0.0`) and as the compile-time

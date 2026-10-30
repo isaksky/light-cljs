@@ -2443,7 +2443,11 @@ fn expand_wide_doseq(
     nodes: usize,
     gensym: Gensym<'_>,
 ) -> Result<Option<Datum>, String> {
-    if wide_sequence("doseq", call, nodes).is_err() {
+    // The engine fails decoding a regular expression that does not
+    // compile ([`rejection`]), before it converts anything back.
+    if crate::compiler_bootstrap::invalid_regex(call).is_some()
+        || wide_sequence("doseq", call, nodes).is_err()
+    {
         return Ok(None);
     }
     let args = &children(call)[1..];
@@ -2525,7 +2529,8 @@ const MISSING: &str = "\u{0}undefined";
 /// which runs no definition, reports it instead
 /// ([`crate::MacroHost::expand_core_javascript`]), as the V8 build's engine
 /// does: the engine's conversion of a call deeper than [`DEPTH`] or larger
-/// than `nodes`, and what its snapshot of the call refuses ([`Conversion`]);
+/// than `nodes`, a regular expression of the call that does not compile,
+/// and what its snapshot of the call refuses ([`Conversion`]);
 /// a definition's own error, an arity error of `if-not`, the
 /// one of its two arities, or the `pop` of `for` on an empty vector; and
 /// what the engine's conversion of the expansion refuses, a missing
@@ -2538,6 +2543,10 @@ const MISSING: &str = "\u{0}undefined";
 pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize) -> Option<String> {
     if within(call, DEPTH).is_none_or(|count| count > nodes) {
         return Some("compiler input conversion limit".into());
+    }
+    // Decoding the call constructs its regular expressions.
+    if let Some(error) = crate::compiler_bootstrap::invalid_regex(call) {
+        return Some(error);
     }
     let refused = |stop| match stop {
         Err(Stop::Refused(refusal)) => Some(format!("Error: Unsupported macro result {refusal}")),

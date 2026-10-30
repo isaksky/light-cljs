@@ -763,6 +763,89 @@ fn build_in(
     }
     Ok(bootstrap)
 }
+/// The V8 build's `RegExp` constructor's error for `pattern` with `flags`,
+/// which the Pants build's parser refuses with `message`: V8's wording of
+/// the reasons it shares, and the flags after the pattern.
+#[cfg(feature = "bbp-macros")]
+fn v8_regex_error(pattern: &str, flags: &str, message: &str) -> String {
+    if matches!(
+        message,
+        "unknown regular expression flag" | "duplicate regular expression flag"
+    ) {
+        return format!("SyntaxError: Invalid flags supplied to RegExp constructor '{flags}'");
+    }
+    let reason = match message {
+        "unmatched closing parenthesis" => "Unmatched ')'".to_owned(),
+        "quantifier range out of order" => "numbers out of order in {} quantifier".to_owned(),
+        "class range out of order" => "Range out of order in character class".to_owned(),
+        "duplicate group name" => "Duplicate capture group name".to_owned(),
+        "invalid group name" => "Invalid capture group name".to_owned(),
+        "invalid group prefix" => "Invalid group".to_owned(),
+        "duplicate group modifier" => "Repeated flag in flag group".to_owned(),
+        "invalid group modifiers" => "Invalid flag group".to_owned(),
+        "invalid named backreference" => "Invalid named reference".to_owned(),
+        "unknown named backreference" => "Invalid named capture referenced".to_owned(),
+        "invalid identity escape in u mode"
+        | "invalid hexadecimal escape"
+        | "invalid decimal backreference" => "Invalid escape".to_owned(),
+        "invalid control escape" => "Invalid Unicode escape".to_owned(),
+        "unknown Unicode property"
+        | "unknown or unsupported Unicode property"
+        | "invalid Unicode property escape" => "Invalid property name".to_owned(),
+        "class escape cannot be a range endpoint" => "Invalid character class".to_owned(),
+        // A lone `{`, `}` or `]` with the u flag.
+        "invalid quantifier" | "unexpected syntax character" => {
+            "Lone quantifier brackets".to_owned()
+        }
+        // `nothing to repeat`, `unterminated group` and the like.
+        _ => {
+            let mut chars = message.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().chain(chars).collect())
+                .unwrap_or_default()
+        }
+    };
+    format!("SyntaxError: Invalid regular expression: /{pattern}/{flags}: {reason}")
+}
+/// The error of the first regular expression literal in `data` (in the
+/// order the V8 build's engine decodes it: children, then metadata) whose
+/// pattern does not compile, as that engine's `RegExp` constructor reports
+/// it (`rePattern`: a leading `(?flags)` group gives the flags), or `None`.
+#[cfg(feature = "bbp-macros")]
+pub(crate) fn invalid_regex(data: &Datum) -> Option<String> {
+    use crate::compiler_data::{CompilerLiteralKind, DatumKind};
+    match data.kind() {
+        DatumKind::CompilerLiteral {
+            kind: CompilerLiteralKind::Regex,
+            payload,
+        } => {
+            let DatumKind::String(text) = payload.kind() else {
+                return None;
+            };
+            // `rePattern`: a leading `(?flags)` group gives the flags.
+            let text = String::from_utf16_lossy(text);
+            let (flags, pattern) = text
+                .strip_prefix("(?")
+                .and_then(|rest| rest.split_once(')'))
+                .filter(|(flags, _)| flags.bytes().all(|b| b"dgimsuxy".contains(&b)))
+                .unwrap_or(("", &text));
+            let js = |s: &str| {
+                big_boy_pants_js::JsString::from_code_units(s.encode_utf16().collect::<Vec<_>>())
+            };
+            big_boy_pants_js::regexp::parse::validate_syntax(&js(pattern)?, &js(flags)?)
+                .err()
+                .map(|error| v8_regex_error(pattern, flags, &error.message))
+        }
+        DatumKind::CompilerLiteral { payload, .. } => invalid_regex(payload),
+        DatumKind::Collection { children, .. } => children.iter().find_map(invalid_regex),
+        _ => None,
+    }
+    .or_else(|| {
+        data.metadata()
+            .and_then(|metadata| invalid_regex(&metadata))
+    })
+}
 impl MacroHost {
     /// Start the compilation's compile-time engine now, as the first
     /// JavaScript macro it expands would: at a namespace's dispatch whose
@@ -876,44 +959,7 @@ impl MacroHost {
         {
             return Ok(());
         }
-        fn invalid(data: &Datum) -> Option<String> {
-            use crate::compiler_data::{CompilerLiteralKind, DatumKind};
-            match data.kind() {
-                DatumKind::CompilerLiteral {
-                    kind: CompilerLiteralKind::Regex,
-                    payload,
-                } => {
-                    let DatumKind::String(text) = payload.kind() else {
-                        return None;
-                    };
-                    // `rePattern`: a leading `(?flags)` group gives the flags.
-                    let text = String::from_utf16_lossy(text);
-                    let (flags, pattern) = text
-                        .strip_prefix("(?")
-                        .and_then(|rest| rest.split_once(')'))
-                        .filter(|(flags, _)| flags.bytes().all(|b| b"dgimsuxy".contains(&b)))
-                        .unwrap_or(("", &text));
-                    let js = |s: &str| {
-                        big_boy_pants_js::JsString::from_code_units(
-                            s.encode_utf16().collect::<Vec<_>>(),
-                        )
-                    };
-                    big_boy_pants_js::regexp::parse::validate_syntax(&js(pattern)?, &js(flags)?)
-                        .err()
-                        .map(|error| {
-                            format!(
-                                "SyntaxError: Invalid regular expression: /{pattern}/: {}",
-                                error.message
-                            )
-                        })
-                }
-                DatumKind::CompilerLiteral { payload, .. } => invalid(payload),
-                DatumKind::Collection { children, .. } => children.iter().find_map(invalid),
-                _ => None,
-            }
-            .or_else(|| data.metadata().and_then(|metadata| invalid(&metadata)))
-        }
-        match invalid(env) {
+        match invalid_regex(env) {
             None => Ok(()),
             Some(message) => Err(crate::macro_host::expansion_failure(
                 &ExpansionOrigin {
