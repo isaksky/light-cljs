@@ -312,7 +312,10 @@ fn core_function_writes_name_their_miss() {
 /// metadata on a binding vector or a place; multi-arity, named and `letfn`
 /// functions; `#(...)` nested in a `fn`; syntax-quoted places and binding
 /// vectors in a macro; reader conditionals around or inside a binding
-/// vector; a threaded `set!`; and a `..` property place.
+/// vector; a threaded `set!`; a `..` property place; `aset` and
+/// `unchecked-set` on a core function, also as a step of `->` or `doto`; a
+/// three-operand `set!` in `->`; and a quoted `aset` a macro builds a write
+/// with.
 #[cfg(all(
     feature = "bbp-macros",
     not(feature = "v8-macros"),
@@ -430,6 +433,38 @@ fn anonymous_core_writes_reject_cached_providers() {
             redefine: "(let [before (util/sum)] (#(set! (.. cljs.core/+ -call) (fn [_ a b] 42))) [before (util/sum)])",
             expected: None,
         },
+        // `aset` and `unchecked-set` on a core function, which the analyzer
+        // indexes as resolved writes (light-cljs-586).
+        row(
+            "(let [before (util/sum)] (aset cljs.core/+ \"call\" (fn [_ a b] 42)) [before (util/sum)])",
+            "[3 42]",
+        ),
+        row(
+            "(let [before (util/sum)] (#(unchecked-set cljs.core/+ \"call\" %) (fn [_ a b] 42)) [before (util/sum)])",
+            "[3 42]",
+        ),
+        // A step of `->` or `doto` whose place is the threaded value,
+        // with and without its own place operand.
+        row(
+            "(let [before (util/sum)] (-> cljs.core/+ (aset \"call\" (fn [_ a b] 42))) [before (util/sum)])",
+            "[3 42]",
+        ),
+        row(
+            "(let [before (util/sum)] (-> cljs.core/+ (set! -call (fn [_ a b] 42))) [before (util/sum)])",
+            "[3 42]",
+        ),
+        row(
+            "(let [before (util/sum)] (doto cljs.core/+ (aset \"call\" (fn [_ a b] 42))) [before (util/sum)])",
+            "[3 42]",
+        ),
+        // A quoted `aset` a macro builds a write with.
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "(defmacro put [o k v] (list 'aset o k v)) \
+                   (defn redef-probe [] (let [before (util/sum)] (put cljs.core/+ \"call\" (fn [_ a b] 42)) [before (util/sum)]))",
+            redefine: "(redef-probe)",
+            expected: Some("[3 42]"),
+        },
     ] {
         let project = Project::new(&[
             (
@@ -485,7 +520,9 @@ fn anonymous_core_writes_reject_cached_providers() {
 /// mark no core write, so a rebuild with nothing changed still hits every
 /// namespace: metadata on a binding vector, multi-arity, named and `letfn`
 /// functions, a syntax-quoted binding vector whose places are literal, a
-/// computed property receiver and literal `js*` holes.
+/// computed property receiver, literal `js*` holes, and `aset` and
+/// `unchecked-set` on a local, in `doto` and `->`, through `apply` and on a
+/// computed receiver.
 #[cfg(all(
     feature = "bbp-macros",
     not(feature = "v8-macros"),
@@ -512,18 +549,70 @@ fn non_core_places_keep_cached_artifacts() {
             "(ns main (:require [macros :refer [scaled-all arities named letfns]] [util :refer [with-scale]])) \
              (def state #js {:n 0}) \
              (set! (.-n (identity state)) (js* \"~{} + ~{}\" 1 #js [2])) \
+             (def arr #js [0 0 0 0 0 0]) \
+             (aset arr 0 1) (doto arr (aset 1 2)) (-> arr (aset 2 3)) (apply aset arr [3 4]) \
+             (aset (identity arr) 4 5) (#(unchecked-set arr 5 %) 6) \
              (js/console.log (pr-str (scaled-all 1 2)) (arities) (named) (letfns) \
-               (with-scale 5 (util/scaled 1)) (.-n state))",
+               (with-scale 5 (util/scaled 1)) (.-n state) (pr-str (vec arr)))",
         ),
     ]);
     let oracle = project.uncached("main");
-    assert_eq!(oracle.run(), "[10 20] 2 3 4 5 12\n");
+    assert_eq!(oracle.run(), "[10 20] 2 3 4 5 12 [1 2 3 4 5 6]\n");
     let populated = project.cached("main", &[]);
     assert_eq!(populated.stat("cache.published"), 3, "{}", populated.stats);
     let warm = project.cached("main", &[]);
     assert_eq!(warm.stat("cache.hits"), 3, "{}", warm.stats);
     assert!(warm.rows().is_empty(), "{:?}", warm.rows());
     assert_eq!(warm.js, oracle.js);
+}
+
+/// A write through a computed receiver, `(set! (.-call (identity +)) f)` or
+/// `(aset (identity +) "call" f)`, is not a core write on the Pants build:
+/// the analyzer's index of resolved writes does not count it either, so
+/// with or without the cache the build prepares the same macro code and
+/// prints the same output, and the cached providers keep their hits
+/// (light-cljs-586).
+#[cfg(all(
+    feature = "bbp-macros",
+    not(feature = "v8-macros"),
+    not(feature = "quickjs")
+))]
+#[test]
+fn computed_core_receivers_match_the_uncached_build() {
+    let consumer = "(ns main (:require [util] [macros :refer [check]])) {defs} \
+                    (js/console.log (pr-str (check)) {calls})";
+    let project = Project::new(&[
+        ("util.cljs", "(ns util) (defn sum [] (+ 1 2))"),
+        (
+            "macros.cljs",
+            "(ns macros (:require [util])) (defmacro check [] (util/sum))",
+        ),
+        (
+            "main.cljs",
+            &consumer.replace("{defs}", "").replace("{calls}", ""),
+        ),
+    ]);
+    project.cached("main", &[]);
+    assert_eq!(project.cached("main", &[]).stat("cache.hits"), 3);
+    project.write(
+        "main.cljs",
+        &consumer
+            .replace(
+                "{defs}",
+                "(defmacro by-property [] (let [before (util/sum)] \
+                   (set! (.-call (identity cljs.core/+)) (fn [_ a b] 42)) [before (util/sum)])) \
+                 (defmacro by-index [] (let [before (util/sum)] \
+                   (aset (identity cljs.core/+) \"call\" (fn [_ a b] 43)) [before (util/sum)]))",
+            )
+            .replace("{calls}", "(pr-str (by-property)) (pr-str (by-index))"),
+    );
+    let oracle = project.uncached("main");
+    let edited = project.cached("main", &[]);
+    assert_eq!(edited.stat("cache.hits"), 2, "{}", edited.stats);
+    assert_eq!(edited.rows(), ["main miss source: source changed"]);
+    assert_eq!(edited.stat("cache.published"), 1, "{}", edited.stats);
+    assert_eq!(edited.js, oracle.js);
+    assert_eq!(edited.run(), oracle.run());
 }
 
 /// Forms the reader never reads mark no core write on the Pants build, so a

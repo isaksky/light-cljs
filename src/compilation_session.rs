@@ -721,31 +721,55 @@ impl SharedCatalog {
         // a tree it has not selected yet. A discarded `#_` form is in no
         // parent's children, and the arena keeps inactive branches after
         // selection; neither ever runs (light-cljs-587). Quoted and
-        // syntax-quoted forms are read like any other.
+        // syntax-quoted forms are read like any other, but each form notes
+        // whether a quote holds it, and a call's operand the call and its
+        // position there.
+        let mut quoted = vec![false; syntax.nodes.len()];
+        let mut operand_of = vec![None::<(NodeId, usize)>; syntax.nodes.len()];
         let live = {
             let mut seen = vec![false; syntax.nodes.len()];
             let mut live = Vec::new();
-            let mut pending = syntax.roots.clone();
-            while let Some(id) = pending.pop() {
+            let mut pending: Vec<(NodeId, bool)> =
+                syntax.roots.iter().map(|&root| (root, false)).collect();
+            while let Some((id, under_quote)) = pending.pop() {
                 if std::mem::replace(&mut seen[id.0], true) {
                     continue;
                 }
                 live.push(id);
-                match &syntax.nodes[id.0].kind {
-                    NodeKind::Collection { children, .. } => pending.extend(children),
-                    NodeKind::Prefix { form, .. } | NodeKind::Tagged { form, .. } => {
-                        pending.push(*form);
+                quoted[id.0] = under_quote;
+                let node = &syntax.nodes[id.0];
+                match &node.kind {
+                    NodeKind::Collection { children, .. } => {
+                        let calls = call(node).is_some();
+                        let quotes =
+                            calls && children.first().is_some_and(|&h| spelling(h) == "quote");
+                        for (position, &child) in children.iter().enumerate() {
+                            if calls {
+                                operand_of[child.0] = Some((id, position));
+                            }
+                            pending.push((child, under_quote || quotes && position > 0));
+                        }
                     }
+                    NodeKind::Prefix { kind, form } => pending.push((
+                        *form,
+                        match kind {
+                            PrefixKind::Quote | PrefixKind::SyntaxQuote => true,
+                            PrefixKind::Unquote | PrefixKind::UnquoteSplicing => false,
+                            _ => under_quote,
+                        },
+                    )),
+                    NodeKind::Tagged { form, .. } => pending.push((*form, under_quote)),
                     NodeKind::Metadata { metadata, target } => {
-                        pending.extend([*metadata, *target]);
+                        pending.extend([(*metadata, under_quote), (*target, under_quote)]);
                     }
-                    NodeKind::NamespacedMap { map, .. } => pending.push(*map),
+                    NodeKind::NamespacedMap { map, .. } => pending.push((*map, under_quote)),
                     NodeKind::Conditional { branches, .. } => pending.extend(
-                        crate::compiler_reader::selected_branch(source, syntax, *branches),
+                        crate::compiler_reader::selected_branch(source, syntax, *branches)
+                            .map(|branch| (branch, under_quote)),
                     ),
                     NodeKind::Argument {
                         index: Some(index), ..
-                    } => pending.push(*index),
+                    } => pending.push((*index, under_quote)),
                     _ => {}
                 }
             }
@@ -783,17 +807,22 @@ impl SharedCatalog {
         // A first-class mutation operator can assemble a helper's write with
         // a computed target. Its eventual IR does not exist when earlier
         // macro factories are emitted, so no core binding is proven stable.
+        // `aset` and `unchecked-set` are also functions: called as values,
+        // `(apply aset ...)`, they write no place the analyzer indexes, but
+        // a quoted one may build a write, `(list 'aset o k v)`.
+        let indexer =
+            |name: &str| matches!(name.rsplit('/').next(), Some("aset" | "unchecked-set"));
         let mutation_heads: std::collections::HashSet<usize> = nodes()
             .filter_map(|(_, node)| {
                 call(node)?
                     .first()
-                    .filter(|&&head| mutator(spelling(head)))
+                    .filter(|&&head| mutator(spelling(head)) || indexer(spelling(head)))
                     .map(|head| head.0)
             })
             .collect();
         if nodes().any(|(id, node)| {
             matches!(node.kind, NodeKind::Symbol)
-                && mutator(spelling(id))
+                && (mutator(spelling(id)) || quoted[id.0] && indexer(spelling(id)))
                 && !mutation_heads.contains(&id.0)
         }) {
             replaced.extend(
@@ -807,9 +836,11 @@ impl SharedCatalog {
         // spelling cannot show that it names none: an unquoted place, a
         // reader conditional or an unknown tagged literal. Property and
         // index places name their receiver. A computed receiver, `(set!
-        // (.-x (f)) v)`, is not a core write, as in the analyzer's index of
-        // resolved writes ([`Self::index_native_core_target`]); literals and
-        // fresh collections never are.
+        // (.-x (f)) v)` or `(aset (f) k v)`, is not a core write, as in the
+        // analyzer's index of resolved writes
+        // ([`Self::index_native_core_target`]): a build with the cache and
+        // one without prepare the same macro code around it
+        // (light-cljs-586). Literals and fresh collections never are.
         let mut found = Vec::<&'static str>::new();
         let mut target = |mut id: NodeId| -> bool {
             loop {
@@ -883,16 +914,37 @@ impl SharedCatalog {
                 }
             }
         };
-        let sure = nodes().all(|(_, node)| {
+        // A step of `->` or `doto` receives the thread's first operand
+        // first: `(-> f (aset "k" v))` is `(aset f "k" v)`. A `doto` binds
+        // it to a local, which the analyzer's index does not follow, but
+        // reading it as a place costs ordinary code nothing.
+        let threaded = |id: NodeId| -> Option<NodeId> {
+            let (parent, position) = operand_of[id.0]?;
+            let thread = call(&syntax.nodes[parent.0])?;
+            let head = spelling(thread[0]);
+            (position >= 2 && matches!(head.rsplit('/').next(), Some("->" | "doto")))
+                .then(|| thread[1])
+        };
+        let sure = nodes().all(|(id, node)| {
             let Some((&head, args)) = call(node).and_then(<[NodeId]>::split_first) else {
                 return true;
             };
             let head = spelling(head);
             let head = head.rsplit('/').next().unwrap_or(head);
             match (head, args) {
-                ("set!", [place, _, ..]) => target(*place),
-                // A threaded `(-> place (set! value))` hides its place.
-                ("set!", _) => false,
+                // `set!` names its place first, `aset` and `unchecked-set`
+                // their receiver; without that operand, as in `(-> place
+                // (set! value))`, the place is the threaded value, and any
+                // other enclosing form hides it.
+                ("set!" | "aset" | "unchecked-set", _) => {
+                    let operands = if head == "set!" { 2 } else { 3 };
+                    let threaded = threaded(id);
+                    if args.len() < operands {
+                        threaded.is_some_and(&mut target)
+                    } else {
+                        target(args[0]) && threaded.is_none_or(&mut target)
+                    }
+                }
                 ("binding" | "with-redefs", [bindings, ..]) => places(*bindings)
                     .is_some_and(|places| places.iter().step_by(2).all(|&place| target(place))),
                 ("binding" | "with-redefs", []) => false,
