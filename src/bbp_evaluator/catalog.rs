@@ -131,14 +131,20 @@ impl BbpEvaluator {
                 snapshot
             }
         };
-        self.use_catalog(snapshot, first)?;
+        self.use_catalog(snapshot, first, end)?;
         self.cx()?.catalog.set(Some(end));
         Ok(())
     }
 
     /// Apply exactly the newly registered suffix. A producer starts at zero
     /// with a fresh ordinary object and the very same immutable data root.
-    pub(super) fn use_catalog(&self, snapshot: Rooted, first: usize) -> Result<(), EvalError> {
+    pub(super) fn use_catalog(
+        &self,
+        snapshot: Rooted,
+        first: usize,
+        end: usize,
+    ) -> Result<(), EvalError> {
+        let started = crate::compile_trace::any_recording().then(std::time::Instant::now);
         let cx = self.cx()?;
         let payload = self.host_scope(|s| {
             let snapshot = s.local(&snapshot).map_err(error)?;
@@ -150,6 +156,14 @@ impl BbpEvaluator {
         // after the producer task and its context have been dropped.
         self.request(4, self.id()?, payload)?;
         *cx.catalog_snapshot.borrow_mut() = Some(snapshot);
+        if let Some(started) = started {
+            let c = &self.shared.0.counters;
+            c.catalog_uses.fetch_add(1, Ordering::Relaxed);
+            c.catalog_entries
+                .fetch_add(end.saturating_sub(first), Ordering::Relaxed);
+            c.catalog_nanos
+                .fetch_add(started.elapsed().as_nanos() as usize, Ordering::Relaxed);
+        }
         Ok(())
     }
 }

@@ -86,6 +86,19 @@ pub struct NativeHelperCounts {
     pub log_reads: usize,
     pub log_edges_copied: usize,
     pub log_edges_recorded: usize,
+    /// Catalog installs into a task (each applies the registrations after
+    /// its task's frontier), the registrations they applied and their time,
+    /// counted only while a trace records (`--stats`).
+    pub catalog_uses: usize,
+    pub catalog_entries: usize,
+    pub catalog_nanos: usize,
+    /// Helper producer tasks set up, the standalone registrations their
+    /// setup replayed, the catalog registrations it applied from the start,
+    /// and the setup's time, counted only while a trace records.
+    pub producers: usize,
+    pub producer_replayed: usize,
+    pub producer_catalog_entries: usize,
+    pub producer_nanos: usize,
 }
 
 /// What the Pants build's form bridge did to keep its import memo and its
@@ -702,6 +715,22 @@ impl CompileStats {
             line("native.log.reads", &helpers.log_reads);
             line("native.log.edges-copied", &helpers.log_edges_copied);
             line("native.log.edges-recorded", &helpers.log_edges_recorded);
+            line("native.catalog.uses", &helpers.catalog_uses);
+            line("native.catalog.entries", &helpers.catalog_entries);
+            line(
+                "native.catalog.ms",
+                &ms(Duration::from_nanos(helpers.catalog_nanos as u64)),
+            );
+            line("native.producers.setups", &helpers.producers);
+            line("native.producers.replayed", &helpers.producer_replayed);
+            line(
+                "native.producers.catalog-entries",
+                &helpers.producer_catalog_entries,
+            );
+            line(
+                "native.producers.setup-ms",
+                &ms(Duration::from_nanos(helpers.producer_nanos as u64)),
+            );
             let bridge = &helpers.bridge;
             line("native.prune.passes", &bridge.prune_passes);
             line(

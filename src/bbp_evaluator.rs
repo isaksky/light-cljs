@@ -892,6 +892,13 @@ struct NativeCounters {
     log_reads: AtomicUsize,
     log_edges_copied: AtomicUsize,
     log_edges_recorded: AtomicUsize,
+    catalog_uses: AtomicUsize,
+    catalog_entries: AtomicUsize,
+    catalog_nanos: AtomicUsize,
+    producers: AtomicUsize,
+    producer_replayed: AtomicUsize,
+    producer_catalog_entries: AtomicUsize,
+    producer_nanos: AtomicUsize,
     #[cfg(test)]
     cleanups: AtomicUsize,
 }
@@ -1266,6 +1273,13 @@ impl BbpRuntime {
             log_reads: c.log_reads.load(Ordering::Relaxed),
             log_edges_copied: c.log_edges_copied.load(Ordering::Relaxed),
             log_edges_recorded: c.log_edges_recorded.load(Ordering::Relaxed),
+            catalog_uses: c.catalog_uses.load(Ordering::Relaxed),
+            catalog_entries: c.catalog_entries.load(Ordering::Relaxed),
+            catalog_nanos: c.catalog_nanos.load(Ordering::Relaxed),
+            producers: c.producers.load(Ordering::Relaxed),
+            producer_replayed: c.producer_replayed.load(Ordering::Relaxed),
+            producer_catalog_entries: c.producer_catalog_entries.load(Ordering::Relaxed),
+            producer_nanos: c.producer_nanos.load(Ordering::Relaxed),
         }
     }
     /// The runtime's one published factory for unit `source`, compiled now
@@ -2054,6 +2068,7 @@ impl BbpEvaluator {
         *active.help.borrow_mut() = self.help.borrow().clone();
         *active.runner.borrow_mut() = self.runner.borrow().clone();
         *active.submitter.borrow_mut() = self.submitter.borrow().clone();
+        let started = crate::compile_trace::any_recording().then(std::time::Instant::now);
         let registrations = cx.registrations.borrow().clone();
         // Services and standalone registrations only. The compilation catalog
         // is imported below without parsing or evaluating registration source.
@@ -2062,10 +2077,20 @@ impl BbpEvaluator {
             active.release(value)?;
         }
         *producer_cx.registrations.borrow_mut() = registrations;
+        let replayed = producer_cx.registrations.borrow().len();
         if let Some(snapshot) = cx.catalog_snapshot.borrow().clone() {
-            active.use_catalog(snapshot, 0)?;
+            active.use_catalog(snapshot, 0, cx.catalog.get().unwrap_or(0))?;
         }
         producer_cx.catalog.set(cx.catalog.get());
+        if let Some(started) = started {
+            let c = &self.shared.0.counters;
+            c.producers.fetch_add(1, Ordering::Relaxed);
+            c.producer_replayed.fetch_add(replayed, Ordering::Relaxed);
+            c.producer_catalog_entries
+                .fetch_add(cx.catalog.get().unwrap_or(0), Ordering::Relaxed);
+            c.producer_nanos
+                .fetch_add(started.elapsed().as_nanos() as usize, Ordering::Relaxed);
+        }
         drop(producer_cx);
         Ok(active)
     }
@@ -2401,7 +2426,8 @@ impl BbpEvaluator {
             0 => "evaluate",
             1 => "adopt",
             2 => "call",
-            _ => "release",
+            3 => "release",
+            _ => "useCatalog",
         };
         crate::compile_trace::engine_exit(traced, service);
         result
