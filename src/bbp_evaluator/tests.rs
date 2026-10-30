@@ -1416,38 +1416,42 @@ fn cancelling_a_reserved_initializer_fails_its_claim_before_factory_effects() {
 #[test]
 fn concurrent_initializer_cycle_is_diagnosed_and_wakes_both_consumers() {
     let shared = BbpRuntime::new(&EvaluatorOptions::default()).unwrap();
-    let initialized = Arc::new((Mutex::new(0usize), Condvar::new()));
-    *shared.0.on_initializer.lock().unwrap() = Some(Arc::new(move |_, _| {
-        let mut count = initialized.0.lock().unwrap();
-        *count += 1;
-        initialized.1.notify_all();
-        while *count != 2 {
-            let (next, timeout) = initialized
-                .1
-                .wait_timeout(count, std::time::Duration::from_secs(5))
-                .unwrap();
-            count = next;
-            assert!(
-                !timeout.timed_out(),
-                "both initializer producers did not start"
-            );
+    // Synchronize inside the factories, after each task owns its initializer.
+    // The reservation hook runs before ownership selection: a faster task can
+    // reserve its peer's initializer too, entering that hook a third time.
+    let initialized = Arc::new(std::sync::Barrier::new(2));
+    let waiting = Arc::new(AtomicUsize::new(0));
+    let observed = waiting.clone();
+    shared.on_wait(Arc::new(move |_, key| {
+        if key.kind() == INITIALIZER {
+            observed.fetch_add(1, Ordering::Relaxed);
         }
     }));
     let outcomes = std::thread::scope(|scope| {
         ["a", "b"]
             .map(|name| {
                 let shared = &shared;
+                let initialized = initialized.clone();
                 scope.spawn(move || {
                     let evaluator = Rc::new(shared.evaluator().unwrap());
+                    evaluator
+                        .install_string_service(
+                            "initializerStarted",
+                            Rc::new(move |_| {
+                                initialized.wait();
+                                String::new()
+                            }),
+                        )
+                        .unwrap();
                     evaluator
                         .clone()
                         .install_compiler_service(
                             "__lightCompileUnit",
                             Rc::new(|_, id| {
                                 Ok(native(if id == 7 {
-                                    "(declare b) b"
+                                    "(declare b) (do (js* \"initializerStarted('')\") b)"
                                 } else {
-                                    "(declare a) a"
+                                    "(declare a) (do (js* \"initializerStarted('')\") a)"
                                 }))
                             }),
                         )
@@ -1474,8 +1478,11 @@ fn concurrent_initializer_cycle_is_diagnosed_and_wakes_both_consumers() {
             .map(|t| t.join().unwrap())
     });
     for failure in outcomes {
-        assert!(failure.contains("cycle"), "{failure}");
+        assert!(failure.contains("wait cycle of 2 demand(s)"), "{failure}");
     }
+    // One consumer parks; the other's demand diagnoses the cycle and wakes it.
+    assert_eq!(waiting.load(Ordering::Relaxed), 1);
+    assert!(shared.0.pending_initializers.lock().unwrap().is_empty());
     for id in [7, 8] {
         assert!(matches!(
             shared.0.runtime.cell_status(DependencyKey::new(
