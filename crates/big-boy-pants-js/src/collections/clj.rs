@@ -1657,6 +1657,9 @@ pub(crate) struct RealizeAll {
     results: Vec<Value>,
     memo: HashMap<ObjectId, Value>,
     active: HashSet<ObjectId>,
+    /// Largest capacity seen after insertion: removals can leave
+    /// tombstones and lower `capacity()` without freeing the table.
+    active_capacity: usize,
     charge: ByteReservation,
     charged: usize,
 }
@@ -1713,6 +1716,7 @@ impl RealizeAll {
             results: Vec::new(),
             memo: HashMap::new(),
             active: HashSet::new(),
+            active_capacity: 0,
             charge: ByteReservation::default(),
             charged: 0,
         }
@@ -1727,7 +1731,7 @@ impl RealizeAll {
             + self.pending_children * size_of::<Value>()
             + self.results.capacity() * size_of::<Value>()
             + table_bytes(self.memo.capacity(), size_of::<(ObjectId, Value)>())
-            + table_bytes(self.active.capacity(), size_of::<ObjectId>())
+            + table_bytes(self.active_capacity, size_of::<ObjectId>())
     }
 
     /// Charge the walk's storage ([`RealizeAll::storage_bytes`]) to the
@@ -1766,8 +1770,9 @@ impl RealizeAll {
 }
 
 /// An upper bound on the bytes a std `HashMap`/`HashSet` of `capacity`
-/// (as `capacity()` reports it) allocates for entries of `entry` bytes. Its
-/// table has a power of two of buckets, of which it fills 7/8 (all but one
+/// (as `capacity()` reports it before deletions) allocates for entries of
+/// `entry` bytes. Its table has a power of two of buckets, of which it
+/// fills 7/8 (all but one
 /// under eight), and keeps a control byte per bucket plus a group's width
 /// (at most 16) more, after padding to at most 16 bytes.
 fn table_bytes(capacity: usize, entry: usize) -> usize {
@@ -1923,6 +1928,7 @@ pub(crate) fn realize_all(heap: &Heap, v: &Value) -> Result<Value> {
                 if !walk.active.insert(id) {
                     return Err(CljError::Infinite);
                 }
+                walk.active_capacity = walk.active_capacity.max(walk.active.capacity());
                 let meta = f.meta().cloned();
                 // Popped last-first: the children in order, then the
                 // metadata, then the rebuild.
@@ -2028,6 +2034,65 @@ mod tests {
 
     fn n(x: f64) -> Value {
         Value::Number(x)
+    }
+
+    /// A completed nested subtree leaves tombstones in the active table
+    /// before the first pending sibling charges the walk (light-cljs-630).
+    #[test]
+    fn realize_all_active_table_tombstones_are_fully_charged() {
+        use std::hash::BuildHasher;
+
+        let heap = Arc::new(Heap::with_byte_limit(1 << 28));
+        let _scope = Scope::new(&heap);
+        let pending = form::new_lazy(&heap, Value::Null).unwrap();
+        let mut walk = RealizeAll::new(&Value::Null);
+        let hasher = walk.active.hasher().clone();
+        // 56 entries fill a 64-bucket table. Cluster them at the same
+        // bucket so removing the nested subtree retains tombstones,
+        // regardless of the set's randomly chosen hash seed.
+        let colliding_vector = |children: &[Value]| loop {
+            let v = form::new_vector(&heap, children).unwrap();
+            let Value::Object(id) = &v else {
+                unreachable!();
+            };
+            if hasher.hash_one(id) & 63 == 0 {
+                break v;
+            }
+        };
+        let mut child = Value::Null;
+        for _ in 0..55 {
+            child = colliding_vector(&[child]);
+        }
+        let root = colliding_vector(&[child, pending.clone()]);
+        walk.root = root.clone();
+        walk.work[0] = Work::Enter(root.clone());
+        install_realize_all(Some(Box::new(walk)));
+
+        let budget = heap.byte_budget();
+        let before = budget.used();
+        assert!(matches!(
+            realize_all(&heap, &root),
+            Err(CljError::Realize(v)) if v.same_object(&pending)
+        ));
+        let walk = take_realize_all().expect("walk kept at its first pending sequence");
+        assert_eq!(walk.active.len(), 1);
+        assert_eq!(walk.memo.len(), 55);
+        assert!(walk.active.capacity() < 56, "removals left tombstones");
+        let charged = budget.used() - before;
+        // Dropping just the walk frees its box and backing allocations;
+        // its values are heap identities, so no form payload is freed.
+        let live = form::test_live_bytes();
+        drop(walk);
+        let held = live - form::test_live_bytes();
+        assert_eq!(
+            budget.used(),
+            before,
+            "dropping the walk refunds its charge"
+        );
+        assert!(
+            held <= charged as i64,
+            "{held} bytes held, {charged} charged after active-set deletions"
+        );
     }
 
     #[test]

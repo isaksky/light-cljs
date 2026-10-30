@@ -4571,18 +4571,28 @@ impl<'s> Scope<'s> {
 }
 
 #[cfg(test)]
+pub(crate) use tests::allocations::live_bytes as test_live_bytes;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     // Count requested host bytes only during one comparison, on its thread.
     // Persistent payloads are built before measurement, so copying their
     // candidate entries would be visible here despite bypassing Heap's budget.
-    mod allocations {
+    // Also track allocations minus frees on this thread, as automatic_gc's
+    // counting allocator does, to check a realization walk's retained bytes.
+    pub(super) mod allocations {
         use std::alloc::{GlobalAlloc, Layout, System};
         use std::cell::Cell;
 
         thread_local! {
             static BYTES: Cell<Option<usize>> = const { Cell::new(None) };
+            static LIVE: Cell<i64> = const { Cell::new(0) };
+        }
+
+        pub(crate) fn live_bytes() -> i64 {
+            LIVE.with(Cell::get)
         }
 
         struct Counting;
@@ -4597,6 +4607,7 @@ mod tests {
                 // SAFETY: the caller supplies a valid allocation layout.
                 let ptr = unsafe { System.alloc(layout) };
                 if !ptr.is_null() {
+                    let _ = LIVE.try_with(|live| live.set(live.get() + layout.size() as i64));
                     let _ = BYTES.try_with(|bytes| {
                         if let Some(n) = bytes.get() {
                             bytes.set(Some(n + layout.size()));
@@ -4609,6 +4620,7 @@ mod tests {
             unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
                 // SAFETY: ptr and layout came from this allocator's System.
                 unsafe { System.dealloc(ptr, layout) };
+                let _ = LIVE.try_with(|live| live.set(live.get() - layout.size() as i64));
             }
         }
 
