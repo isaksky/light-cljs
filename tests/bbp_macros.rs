@@ -11519,7 +11519,15 @@ fn native_namespace_registration_frontier_matches_reference() {
     let q2 = format!("{q1} made.three q2 made.two");
     let q3 = format!("{q2} made.four q3");
     let lent = "[cljs.user cljs.core m app made.one]";
-    let cases: [(&str, &[(&str, &str)], String, &[(usize, u64, &str)]); 2] = [
+    // A fixture's name, files and output, and its threads, seeds and
+    // scheduling modes.
+    type Case = (
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        String,
+        &'static [(usize, u64, &'static str)],
+    );
+    let cases: [Case; 2] = [
         (
             "native-namespace-frontier",
             NAMESPACE_FRONTIER,
