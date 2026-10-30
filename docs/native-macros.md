@@ -96,18 +96,17 @@ reason:
 
 - **QuickJS as a second engine beside Node.** Many compiler tests run each
   program in QuickJS and in Node. On the Pants build only the QuickJS half is
-  compiled out (`// The Pants build embeds no QuickJS ...` blocks), so Node
-  still runs every program the Pants build compiles. This keeps most of
-  tests/compiler, tests/support/phase_oracle.rs and their macro coverage.
-- **Results canonicalized or compared through QuickJS** (whole tests and
-  their helpers): Node's output is checked against QuickJS's, or both are
-  canonicalized by a QuickJS context. compiler/case_*, literal_*,
-  hash_map_*, map_value_equiv, map_reader_order, runtime_map_*,
-  runtime_set_traversal, positional_constructors, record_*, iterator_name,
-  key_shapes, constant_hashes, constant_lookups, keyword_calls, cljc_prefixes,
-  public_print_helpers, ifn_public_context, declare_values, string_fixtures,
-  host_hooks, data_libraries (1), the sci_* source-context and probe suites,
-  and bootstrap (`Runs the program only in QuickJS`).
+  compiled out (`#[cfg(feature = "quickjs")]` statements and blocks), so
+  Node still runs every program the Pants build compiles. Shared helpers keep
+  this shape: the suites' `observe` helpers return only Node's observation
+  there, and tests/support/canonical_json.rs canonicalizes JSON observations
+  and reads fixture catalogs in QuickJS or, in the Pants build, in Node.
+  Where QuickJS was a test's only check (core_operations signatures,
+  bootstrap's `result`, reader syntax-quote shadowing, data_libraries), Node
+  asserts the same value. Where Node's value was compared with QuickJS's
+  (key_shapes, constant_hashes, ifn_public_context, string_fixtures), the
+  Pants build checks Node alone; the ifn observations throw in Node unless
+  the value equals its expected literal.
 - **The QuickJS evaluator is the subject**: tests/evaluation's evaluator,
   evaluator_migration and dev_session modules, macros' javascript_form_bridge,
   and the limits, cancellation, callbacks, input providers and heap retention
@@ -118,8 +117,8 @@ reason:
   `evaluator` example embeds QuickJS (`required-features`).
 - **Interactive sessions** (`EvalSession`, `--eval`, `--repl`) run in QuickJS:
   tests/evaluation's eval_sessions module and most of eval_cli, eval_nsstar,
-  eval_examples and evaluator_conformance's historical cases, two cli tests,
-  and session tests in 18 compiler modules.
+  eval_examples and evaluator_conformance's historical cases, the `--eval` parts of two cli tests,
+  and session tests or session sections of tests in 25 compiler modules.
 - **`--watch`, the dev server, the connected REPL and nREPL** compile in a
   QuickJS session, so on the Pants build every build they start fails with
   "this light-cljs build embeds no QuickJS". 87 tests in dev_watch,
@@ -134,28 +133,40 @@ reason:
   parallel_diagnostics' stack-limit test, which expects a QuickJS or V8 error
   class. The Pants build shares one runtime across threads instead.
 
-Rebased on 62dcd6f0 (macOS aarch64, Rust 1.99.1, 8 test threads), the suite ran
-2019 tests: 1656 passed and 363 failed, with 78 skipped. Before the gates the test
-binaries did not compile; with only the compile fixes, 529 of 2167 failed.
-The 363 remaining failures are Pants-build gaps, each tracked by a pellet with
-its exact signatures and test lists:
+On c8fb52e2 plus its core_operations fix, rebased on 3bc3e11b (macOS
+aarch64, Rust 1.99.1, 8 test threads), the suite ran 2085 tests: 1681 passed
+and 404 failed, with 105 skipped. Before the gates the test binaries did not
+compile; with only the compile fixes, 529 of 2167 failed. The review rework
+un-gated 93 tests (66 that run, 27 ignored audits) by gating only the session
+or QuickJS parts inside them. The 404 failures are Pants-build gaps, all with
+the signatures of two pellets:
 
-- light-cljs-611 (178): core macro calls that native expansion leaves to the
-  bootstrap definition, which the Pants build lacks (`bootstrap macro NAME`):
-  single-source analysis outside a generated-names scope (`analyze`,
-  `--compile FILE`), calls too large to convert, and refused shapes.
-- light-cljs-612 (185): compile-time runtime functions macros call (`native
-  macro runtime core.NAME`), protocol definitions in the macro phase,
-  compiler services (`ownValue`, `cancelDemand`, `cancelTarget`), and
-  accounting, cache and stats expectations.
+- light-cljs-611 (178 listed there, 196 now): core macro calls that native
+  expansion leaves to the bootstrap definition, which the Pants build lacks
+  (`bootstrap macro NAME`): single-source analysis outside a generated-names
+  scope (`analyze`, `--compile FILE`), calls too large to convert, and refused
+  shapes. Un-gating added bootstrap (10 tests), key_shapes (2) and one each in
+  case_char_string_accepted, case_numeric, hash_map_source, iterator_name,
+  positional_constructors and record_map_constructor_metadata.
+- light-cljs-612 (185 listed there, 207 now): compile-time runtime functions
+  macros call (`native macro runtime core.NAME`), protocol definitions in the
+  macro phase, compiler services (`ownValue`, `cancelDemand`, `cancelTarget`),
+  and accounting, cache and stats expectations. Un-gating added
+  ifn_public_context (5), declare_values (2, one a declaration demand error
+  the Pants build does not raise), public_print_helpers (2), and one each in
+  atom_object_equiv, hash_map_from_arrays, host_hooks, ifn_rest,
+  literal_char_string, literal_numeric, map_reader_order, map_value_equiv,
+  object_equiv, record_map_constructor_metadata, record_receiver_binding,
+  runtime_map_order and sequence_object_equiv.
 
-Until those close, compare a run's failures with those two lists: any other
+Until those close, compare a run's failures with those lists: any other
 failure is a regression. One of 612's, `cli::playground_crate_checks_for_wasm32`,
 fails in the V8 build too when the checkout is nested inside another Cargo
 workspace, as agent worktrees under `.claude/worktrees` are; it is not a
 Pants-build gap. The V8 build runs the same tests as before these gates
-(2139 run, 109 skipped on 62dcd6f0; only the playground check above fails). The `compiler` bench, which times QuickJS
-beside Node, requires the `quickjs` feature.
+(2139 run, 109 skipped; only the playground check above fails). The
+`compiler` bench, which times QuickJS beside Node, requires the `quickjs`
+feature.
 
 ## Supported boundary
 

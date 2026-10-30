@@ -258,6 +258,8 @@ mod original_reader_rejections {
         )
         .unwrap()
     }
+    // QuickJS's entry, in builds that embed it, comes before Node's.
+    #[allow(clippy::vec_init_then_push)]
     fn observe(js: &str) -> Vec<(&'static str, String)> {
         let script = format!("JSON.stringify({js})");
         #[cfg(feature = "quickjs")]

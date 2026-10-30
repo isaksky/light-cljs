@@ -21,6 +21,8 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
+// QuickJS's entry, in builds that embed it, comes before Node's.
+#[allow(clippy::vec_init_then_push)]
 fn execute(script: &str) -> Vec<(String, String)> {
     #[cfg(feature = "quickjs")]
     let rt = rquickjs::Runtime::new().unwrap();
