@@ -442,7 +442,7 @@ fn is_less_than(x: &Value, y: &Value) -> Result<Option<bool>, Fault> {
 /// callable kinds, is `"function"`; every other heap object is `"object"`
 /// (no other kind is callable, and none emulates `undefined`). It inspects the object only
 /// under the heap read lock and calls no JavaScript.
-fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
+pub(crate) fn type_of(heap: &Heap, v: &Value) -> Result<&'static str, Fault> {
     Ok(match v {
         Value::Undefined => "undefined",
         Value::Null => "object",

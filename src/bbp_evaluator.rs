@@ -747,6 +747,12 @@ impl Bridge {
         }
         *remaining -= 1;
         let v = s.form_value(v);
+        let unsupported = |category| {
+            EvalError(format!(
+                "Error: Unsupported macro result {category} at {}",
+                reader.map_or("$", |reader| reader.path)
+            ))
+        };
         let kind = match s.form_kind(v) {
             Some(FormKind::Keyword | FormKind::Symbol) => {
                 let name = s.form_name(v).map_err(error)?;
@@ -795,6 +801,11 @@ impl Bridge {
                     validate_js_object_payload(&payload)?;
                 }
                 D::CompilerLiteral { kind, payload }
+            }
+            Some(FormKind::Type) => return Err(unsupported("function")),
+            Some(FormKind::Struct) => return Err(unsupported("protocol/type instance")),
+            Some(FormKind::Reduced) => {
+                return Err(unsupported("arbitrary object (including promise)"));
             }
             Some(k) => {
                 let values = if k == FormKind::Map {
@@ -928,9 +939,14 @@ impl Bridge {
                     }
                 }
                 _ => {
-                    return Err(error(
-                        "unsupported operation: macro returned a non-form value",
-                    ));
+                    let category = match s.view(v) {
+                        ValueView::Symbol => "symbol",
+                        ValueView::BigInt => "bigint",
+                        _ if s.is_function(v) => "function",
+                        _ if s.atom_load(v).is_ok() => "atom",
+                        _ => "arbitrary object (including promise)",
+                    };
+                    return Err(unsupported(category));
                 }
             },
         };
@@ -3492,7 +3508,10 @@ impl MacroEvaluator for BbpEvaluator {
                     limits.depth,
                     &mut limits.nodes.clone(),
                     &origins,
-                    None,
+                    Some(ReaderExportPath {
+                        path: "$",
+                        literal: None,
+                    }),
                 )
             })
         });

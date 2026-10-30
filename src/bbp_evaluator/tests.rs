@@ -4796,7 +4796,12 @@ fn host_date_exports_obey_conversion_limits_and_intrinsic_branding() {
             .evaluate_unit(&format!("rt => {expression}"))
             .unwrap();
         let error = evaluator.export_data(value, limits).unwrap_err();
-        assert!(error.0.contains("non-form value"), "{expression}: {error}");
+        assert!(
+            error
+                .0
+                .contains("Unsupported macro result arbitrary object (including promise) at $"),
+            "{expression}: {error}"
+        );
         evaluator.release(value).unwrap();
     }
 }

@@ -2039,6 +2039,43 @@ const native = (() => {
     const kind=__rt.formKind(value),method=decl.coreMethod('IIterable/-iterator',1,x,kind!==null);
     return method===null?seqIter(x):method(x);
   };
+  // Each transformed traversal owns its reducer and buffered output. Probe
+  // every input before advancing any of them, and complete exactly once,
+  // including when a reducer stops before an input is exhausted.
+  const transformedIterator=(xform,sources)=>{
+    let buffer=[],offset=0,ready=false,item,completed=false;
+    const sink=(...args)=>{
+      if(args.length===0)return null;
+      if(args.length===1)return args[0];
+      if(args.length!==2)return arity(args.length);
+      buffer.push(args[1]);return args[0];
+    };
+    const xf=invoke(xform,sink);
+    return {
+      hasNext(){
+        if(ready)return true;
+        while(offset===buffer.length){
+          buffer=[];offset=0;
+          if(completed)return false;
+          if(sources.every(source=>source.hasNext())){
+            const result=invoke(xf,null,...sources.map(source=>source.next()));
+            if(!__rt.cljIsReduced(result))continue;
+          }
+          invoke(xf,null);completed=true;
+        }
+        item=buffer[offset];buffer[offset++]=null;ready=true;return true;
+      },
+      next(){if(!this.hasNext())throw new Error('No such element');const value=item;item=null;ready=false;return value;}
+    };
+  };
+  const chunkIteratorSequence=(self,iterator)=>lazy(()=>{
+    if(!iterator.hasNext())return null;
+    const values=__rt.vectorBuilder();let size=0;
+    // CLJS probes before testing the chunk size, retaining one output
+    // for the next chunk. A repeated demand reads the realized cell.
+    while(iterator.hasNext()&&size<32){__rt.builderConj(values,iterator.next());size++;}
+    return __rt.cljChunkCons(__rt.freeze(values),self(self,iterator));
+  });
   const es6Iterator=x=>{
     let current=seqOf(x);
     return {next(){if(current===null)return {value:null,done:true};const value=__rt.cljFirst(current);current=__rt.cljNext(current);return {value,done:false};}};
@@ -2699,7 +2736,11 @@ const native = (() => {
     allNs:(...a)=>a.length?arity(a.length):list(registryNames().map(key=>localNs(key))),
     theNs:name=>{const ns=findNs(name);if(ns===null)throw new Error('No namespace: '+core.str(name));return ns;},
     nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
-    sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
+    sequence:(...args)=>{
+      if(args.length===1)return nativeSeq(args[0])||core.isSeq(args[0])?args[0]:seqOf(args[0])??__rt.formList();
+      if(args.length<2)return arity(args.length);
+      return chunkIteratorSequence(chunkIteratorSequence,transformedIterator(args[0],args.slice(1).map(iter)));
+    },
     iteration:(step,...options)=>{
       const opts=core.seqToMap(list(options)),option=(name,fallback)=>get(opts,__rt.cljKeyword(name),fallback);
       return __rt.structNew(iterationType,step,option('somef',core.isSome),option('vf',core.identity),option('kf',core.identity),option('initk',null));
@@ -2955,7 +2996,11 @@ const native = (() => {
     LazySeq:function(m,f,s){const x=f==null?__rt.lazySeq(()=>s):__rt.lazySeq(f);return m==null?x:__rt.cljWithMeta(x,m);},
     realized:x=>__rt.cljRealized(x),
     mapSeq:(...a)=>a.length===0?lazy(()=>null):a.length===1?mapTransform(a[0]):a.length===2?mapOne(mapOne,a[0],a[1]):mapMany(mapMany,a[0],list(a.slice(1))),
-    mapIndexed:(f,c)=>mapIndexedFrom(mapIndexedFrom,f,c,0),
+    mapIndexed:(...args)=>{
+      if(args.length===2)return mapIndexedFrom(mapIndexedFrom,args[0],args[1],0);
+      if(args.length!==1)return arity(args.length);
+      const f=args[0];return rf=>{let i=-1;return reducing(rf,(result,x)=>invoke(rf,result,invoke(f,++i,x)));};
+    },
     keepIndexed:(...a)=>a.length===1?keepTransform(a[0],true):a.length===2?keepIndexedFrom(keepIndexedFrom,a[0],a[1],0):arity(a.length),
     filter:(...a)=>a.length===1?filterTransform(a[0]):a.length===2?select(select,a[0],a[1],0):arity(a.length),
     remove:(...a)=>a.length===1?filterTransform(x=>!truth(invoke(a[0],x))):a.length===2?select(select,a[0],a[1],1):arity(a.length),

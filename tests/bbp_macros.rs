@@ -4112,7 +4112,7 @@ fn unsupported_operations_are_explicit_and_do_not_fall_back() {
     for (source, expected) in [
         (
             "(defprotocol Sample (value [this])) (defmacro demand [] Sample) (demand)",
-            "unsupported operation: macro returned a non-form value",
+            "Unsupported macro result arbitrary object (including promise) at $",
         ),
         (
             "(defmacro lazy-result [] (take 3 (cycle [1 2]))) (lazy-result)",
@@ -6165,6 +6165,72 @@ fn native_compile_time_sequence_utilities_preserve_values_and_completion() {
            (js/console.log (pr-str (probe)))"#,
         "[[1 2 3] [1 2 3] [3 2 1] [\"a\" \"cc\" \"bbb\"] \"bb\" \"a\" [7 7 7] [[1 [2]] 1 [2] 2] 0 3 42 6 true false]\n",
     );
+}
+
+#[test]
+fn native_sequence_transforms_complete_once_and_keep_independent_traversals() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+             (let [events (atom [])
+                   input (lazy-seq (swap! events conj :source) (list 1 2 3 4))
+                   xf (fn [rf]
+                        (swap! events conj :transform)
+                        (fn
+                          ([result] (swap! events conj :complete) (rf result))
+                          ([result x] (swap! events conj x) (rf result (inc x)))))
+                   output (sequence (comp xf (take 2)) input)
+                   before @events
+                   first-run (vec output)
+                   second-run (vec output)
+                   indexed (map-indexed vector)]
+               (list 'quote [before first-run second-run @events
+                 (vec (sequence (partition-all 3) (range 5)))
+                 (vec (sequence (map +) [1 2] [10 20 30]))
+                 (vec (sequence indexed [4 5])) (vec (sequence indexed [6]))
+                 (identical? input (sequence input))])))
+           (js/console.log (pr-str (probe)))"#,
+        "[[:transform] [2 3] [2 3] [:transform :source 1 2 :complete] [[0 1 2] [3 4]] [11 22] [[0 4] [1 5]] [[0 6]] true]\n",
+    );
+}
+
+#[test]
+fn native_macro_result_errors_identify_the_value_and_container_path() {
+    for (expression, category, path) in [
+        ("(fn [] 1)", "function", "$"),
+        ("[(fn [] 1)]", "function", "$[0]"),
+        (
+            "{:bad (js* \"({get then(){throw Error('getter ran')}})\")}",
+            "arbitrary object (including promise)",
+            "$.value[0]",
+        ),
+        ("(reduced 1)", "arbitrary object (including promise)", "$"),
+        ("(atom 1)", "atom", "$"),
+    ] {
+        let source = format!("(defmacro bad [] {expression})\n(bad)");
+        let mut host = MacroHost::new();
+        host.use_native_macros();
+        let error = light_cljs::compile_with_macros(&source, &mut host)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!("Unsupported macro result {category} at {path}")),
+            "{expression}: {error}"
+        );
+        assert!(
+            error.contains("macro cljs.user/bad") && error.contains("2:1"),
+            "{error}"
+        );
+        assert!(!error.contains("getter ran"), "{error}");
+        assert!(light_cljs::compile_with_macros("(defmacro good [] 42) (good)", &mut host).is_ok());
+        #[cfg(feature = "quickjs")]
+        {
+            let error = light_cljs::compile(&source).unwrap_err().to_string();
+            assert!(
+                error.contains(&format!("Unsupported macro result {category} at {path}")),
+                "{error}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -14656,7 +14722,8 @@ fn arbitrary_host_values_remain_located_macro_errors() {
         assert!(
             message.contains("2:1")
                 && message.contains("macro cljs.user/bad")
-                && message.contains("non-form value"),
+                && message
+                    .contains("Unsupported macro result arbitrary object (including promise) at $"),
             "{message}"
         );
         #[cfg(feature = "quickjs")]

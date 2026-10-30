@@ -713,6 +713,14 @@ impl<'s> Scope<'s> {
         self.local_value(local).view()
     }
 
+    /// Whether JavaScript `typeof` classifies this value as a function.
+    /// Reads only intrinsic brands, including a proxy's target; no getters
+    /// or proxy traps run. A revoked proxy returns false.
+    pub fn is_function(&self, local: Local<'s>) -> bool {
+        crate::vm::dispatch::type_of(self.heap, &self.local_value(local))
+            .is_ok_and(|kind| kind == "function")
+    }
+
     /// The contents of a local string value (`None` for any other value).
     /// The returned [`JsString`] is immutable and outlives the scope.
     pub fn string(&self, local: Local<'s>) -> Option<JsString> {

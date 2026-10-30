@@ -4078,13 +4078,6 @@ impl<'a> Emitter<'a> {
         let (before, intrinsic, null_default, after) = match (core, args.len()) {
             (C::Count, 1) => ("", "cljCount", false, ""),
             (C::Seq, 1) => ("", "cljSeq", false, ""),
-            // `(sequence x)`: its seq, or `()` for an empty one.
-            (C::Sequence, 1) => (
-                "((items) => items === null ? __rt.formList() : items)(",
-                "cljSeq",
-                false,
-                ")",
-            ),
             (C::First, 1) => ("", "cljFirst", false, ""),
             (C::Second, 1) => ("__rt.cljFirst(", "cljNext", false, ")"),
             (C::Rest, 1) => ("", "cljRest", false, ""),
