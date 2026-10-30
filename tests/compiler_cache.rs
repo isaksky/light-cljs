@@ -1217,10 +1217,24 @@ fn parallel_resource_and_configuration_reads_match_one_thread() {
         "app.cljs",
         &format!("(ns app (:require [macros :refer [input]])) {definitions}"),
     );
-    let config = ["--config", "app/flavor=:dev"];
+    // V8 workers each reserve 64 MiB; allow four isolates so resource
+    // expansions actually run on workers in both builds.
+    let config = [
+        "--config",
+        "app/flavor=:dev",
+        "--macro-memory-limit",
+        "268435456",
+    ];
     let oracle = Project::finish(project.command("main", &config, false).output().unwrap());
     assert_eq!(oracle.run(), "one:dev\n");
-    let options = ["--jobs", "4", "--config", "app/flavor=:dev"];
+    let options = [
+        "--jobs",
+        "4",
+        "--config",
+        "app/flavor=:dev",
+        "--macro-memory-limit",
+        "268435456",
+    ];
     let cold = project.cached("main", &options);
     assert_eq!(cold.js, oracle.js);
     assert!(cold.stat("pool.worker-isolates") > 0, "{}", cold.stats);
