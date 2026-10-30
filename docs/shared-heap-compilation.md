@@ -1799,6 +1799,49 @@ what makes the build slow today, but it grows faster than the program and
 would matter once the larger terms are gone. It holds the build-wide bridge
 lock while it walks. Filed as light-cljs-591.
 
+**Update: incremental pruning (light-cljs-591).** The Pants build now records
+non-rooting reclamation notifications and caches the original reader tree's
+child links on import. A collection's prune pass examines notified imports
+and releases their references through reusable slots. It never scans surviving
+imports or walks their Datum trees. A surviving parent keeps its descendants'
+provenance and conversion costs even when their occurrence wrappers die;
+metadata, compiler literal payloads and reader entries omitted from the raw
+map remain part of that original tree.
+
+Fresh measurements at `61ace815` before and `42597219` after, with the same
+seed-42 projects, release configuration and 2 GiB macro memory limit as above:
+`cargo build --release --locked --no-default-features --features bbp-macros`,
+then `BINARY release bench --no-cache --stats --jobs 1` (**1 thread**).
+Other workers were active; an earlier measurement's load average rose above 32.
+Use the work counters to assess scaling rather than whole-build elapsed time.
+
+| Counter | Before, 200k | After, 200k | Before, 800k | After, 800k |
+| --- | ---: | ---: | ---: | ---: |
+| prune passes | 89 | 89 | 265 | 265 |
+| imports examined | 924,007 | 451,627 | 7,794,517 | 2,052,150 |
+| imports removed | 451,627 | 451,627 | 2,052,150 | 2,052,150 |
+| Datum nodes walked | 928,166 | **0** | 11,270,457 | **0** |
+| cached references released | not recorded | 978,008 | not recorded | 4,651,535 |
+| form/cost/object entries removed | 1,426,123 | 1,426,123 | 6,440,045 | 6,440,045 |
+| prune time, ms | 183.0 | 93.8 | 1,910.8 | 493.5 |
+
+`native.prune.nodes-walked` retains its original meaning: Datum nodes visited
+to rediscover reachability. It is now zero. The new
+`native.prune.references-released` counts the actual remaining work: imported
+roots and cached child links released, 2.17 and 2.27 per removed import here.
+Only a parent's last reference releases its child links. A regression test
+grows the surviving forest in eight batches while freeing one
+two-node tree per batch: at most four references are examined per pass, and
+collections with no deaths examine no imports or links. Another test compares
+all retained tables with the previous full-reachability algorithm, including
+shared subtrees, positional metadata, rewrapping and failed imports.
+
+The complete output directories are byte-identical before and after at both
+sizes; the generated configuration emits one JavaScript bundle without source
+maps. The V8 build's complete 200k output directory is also byte-identical.
+Executing the output with `main('42', '3')` gives
+`484264` at 200k and `189716` at 800k, matching the generated reference.
+
 *`&env` cache.* Every `&env` import missed (0 hits; 5,225, 10,648 and
 21,036 misses, each replacing the one cached envelope); each rebuilt about
 5.5 entries and 42-53 KB. The cost is small: 0.3, 0.8 and 2.2 s (about 1% of
