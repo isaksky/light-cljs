@@ -3208,7 +3208,8 @@ state and determinism"; this is what was delivered.
   and name metadata are per task, outside the guarantee, as host effects
   such as `println` are outside lanes.
 - **Stats.** `--stats` prints `native.lanes.entered` (activities that
-  touched an atom another activity made), `waits` (accesses that parked),
+  touched an atom another activity made or read the namespace registry),
+  `waits` (accesses that parked),
   `inherited`, `wait-ms` (total), `longest-wait-ms` and `rescued`.
 - **Tests.** `tests/bbp_macros.rs`
   `effect_lanes_keep_one_slot_atom_effects_under_seeded_scheduling_stress`

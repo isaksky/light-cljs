@@ -1517,8 +1517,7 @@ namespace is `identical?` to itself within a task; a namespace's object (and
 the metadata of its name symbol, and its `obj`) belongs to the task that made
 it, and another task that sees the name makes its own; like a mutable
 JavaScript object held in a Var, it is per task, outside the one-thread
-guarantee. A macro that reads the
-inventory declares `(b/depend-on! :namespaces)` for the cache.
+guarantee. A macro that reads the inventory declares `(b/depend-on! :namespaces)` for the cache.
 `tests/bbp_macros.rs` `native_namespace_registration_frontier_matches_reference`
 compares these views with the QuickJS reference at 1, 2, 4 and 8 threads,
 under seeded scheduling, fixed workers, delayed starts and a held unit.
