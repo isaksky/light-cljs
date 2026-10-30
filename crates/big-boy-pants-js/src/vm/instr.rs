@@ -1599,11 +1599,17 @@ pub enum FormOp {
     /// sequence name → that sequence as the reference type `name`
     /// (`formWithReferenceType`).
     WithReferenceType = 110,
+    /// coll n → `(drop n coll)` over a vector or a seq view's trie, or null
+    /// (`cljDrop`, light-cljs-592).
+    CljDrop = 111,
+    /// repeat → its remaining count, `Infinity`, or null
+    /// (`formReferencePayload`).
+    ReferencePayload = 112,
 }
 
 impl FormOp {
     /// Every operation, in selector order.
-    pub const ALL: [FormOp; 111] = [
+    pub const ALL: [FormOp; 113] = [
         FormOp::Keyword,
         FormOp::Symbol,
         FormOp::Kind,
@@ -1715,6 +1721,8 @@ impl FormOp {
         FormOp::Empty,
         FormOp::ReferenceType,
         FormOp::WithReferenceType,
+        FormOp::CljDrop,
+        FormOp::ReferencePayload,
     ];
 
     /// Decode an operand; `None` for unassigned values.
@@ -1786,7 +1794,8 @@ impl FormOp {
             | FormOp::CljRealizeAll
             | FormOp::CljSymbol
             | FormOp::StructState
-            | FormOp::ReferenceType => 1,
+            | FormOp::ReferenceType
+            | FormOp::ReferencePayload => 1,
             FormOp::Keyword
             | FormOp::InitializerSlot
             | FormOp::InitializerSlotGet
@@ -1794,7 +1803,7 @@ impl FormOp {
             | FormOp::CljGet2
             | FormOp::CompilerLiteral
             | FormOp::Regex
-            | FormOp::WithReferenceType
+            | FormOp::CljDrop
             | FormOp::Symbol
             | FormOp::Nth
             | FormOp::Dissoc
@@ -1829,7 +1838,8 @@ impl FormOp {
             | FormOp::CljAssoc
             | FormOp::SortedEntry
             | FormOp::SortedReplace
-            | FormOp::StructSet => 3,
+            | FormOp::StructSet
+            | FormOp::WithReferenceType => 3,
             FormOp::CljInvoke
             | FormOp::CljProtocolLookup
             | FormOp::CljRangeCons
@@ -1920,6 +1930,8 @@ impl FormOp {
             FormOp::StructState => "structState",
             FormOp::ReferenceType => "formReferenceType",
             FormOp::WithReferenceType => "formWithReferenceType",
+            FormOp::CljDrop => "cljDrop",
+            FormOp::ReferencePayload => "formReferencePayload",
             FormOp::StructField => "structField",
             FormOp::StructTypeOf => "structTypeOf",
             FormOp::RecordFromMap => "recordFromMap",

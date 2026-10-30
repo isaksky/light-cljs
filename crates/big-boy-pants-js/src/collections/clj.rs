@@ -289,7 +289,7 @@ pub(crate) fn is_coll(heap: &Heap, v: &Value) -> bool {
 }
 
 pub(crate) fn is_vector(heap: &Heap, v: &Value) -> bool {
-    matches!(shape(heap, v), Shape::Form(FormKind::Vector, _))
+    matches!(shape(heap, v), Shape::Form(FormKind::Vector, f) if !f.is_chunk())
 }
 
 pub(crate) fn is_map_entry(heap: &Heap, v: &Value) -> bool {
@@ -553,7 +553,7 @@ pub(crate) fn seq(heap: &Heap, v: &Value) -> Result<Value> {
         return list_or_nil(
             heap,
             &collection_items(heap, "seq", payload)?.unwrap_or_default(),
-            (false, form::Brand::None),
+            (false, form::Brand::QueueSeq),
         );
     }
     match collection_items(heap, "seq", &own)? {
@@ -1445,6 +1445,16 @@ pub(crate) fn lazy_seq(heap: &Heap, thunk: &Value) -> Result<Value> {
 pub(crate) fn realized(heap: &Heap, v: &Value) -> Result<Value> {
     let shape = shape(heap, v);
     match &shape {
+        // The reference's `Repeat` is never realized, and an `Iterate` whose
+        // seed is computed always is (light-cljs-592).
+        Shape::Form(_, f) if form::object_reference_type(f) == Some("repeat") => {
+            Ok(Value::Bool(false))
+        }
+        Shape::Form(_, f)
+            if form::object_reference_type(f) == Some("iterate") && f.lazy_cell().is_none() =>
+        {
+            Ok(Value::Bool(true))
+        }
         Shape::Form(_, f) => match f.lazy_cell() {
             Some(cell) => Ok(Value::Bool(cell.realized().is_some())),
             None => Err(unsupported("realized?", &shape)),
@@ -1491,7 +1501,13 @@ pub(crate) fn chunk_first(heap: &Heap, v: &Value) -> Result<Value> {
                 let chunk: Vec<Value> = (c.start..chunk_end(c))
                     .filter_map(|i| c.items.get(i))
                     .collect();
-                return Ok(form::new_vector(heap, &chunk)?);
+                // The reference's `IntegerRangeChunk` or `ArrayChunk`.
+                let brand = if c.range.is_some() {
+                    form::Brand::RangeChunk
+                } else {
+                    form::Brand::ArrayChunk
+                };
+                return Ok(form::new_chunk(heap, &chunk, brand)?);
             }
             _ => {}
         }

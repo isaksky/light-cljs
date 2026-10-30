@@ -463,6 +463,21 @@ volatiles, delays, functions with metadata) stay unsupported. A macro's
 result exports a `Repeat` or `ChunkedCons` with its nil metadata, as the
 reference exports it and a `LazySeq`.
 
+`chunk-first` makes the reference's `IntegerRangeChunk` (of an integer
+range) or `ArrayChunk`, and `chunk` an `ArrayChunk` too; a chunk buffer is
+one. Like the reference's, chunks and chunk buffers are neither collections
+nor sequential, and the predicates give them its defaults and extensions to
+`object`. A queue's seq is a `PersistentQueueSeq`. `realized?` of a `repeat`
+is false and of an `iterate` head true, as the reference answers. `drop`
+jumps rather than walks: a `repeat` keeps its remaining count, so an endless
+one drops to itself and a finite one to a shorter one, an integer range by
+arithmetic, a vector or a seq view by offset; an array seq still walks.
+
+The reference reads a primitive receiver's protocol properties through
+`String.prototype` and the like. In the Pants build those built-in
+prototypes are shared by all tasks and immutable (defining a property on
+one throws), so the reads could observe nothing and are not made.
+
 A protocol's value is a function, as in the reference. A core protocol has
 one for the whole compilation; a program protocol one per declaration: the
 bundle declaring it gives one value whichever task installs it, keyed by the

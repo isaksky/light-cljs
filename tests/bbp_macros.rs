@@ -7062,8 +7062,8 @@ fn native_string_buffer_writer_protocols_match_quickjs() {
 /// Values of every kind the Pants build makes, one per line: collections,
 /// the seqs of each and their rests, lazy, cons, chunked and repeated
 /// sequences, ranges, maps of each type, records, atoms, functions,
-/// primitives and host objects (light-cljs-592). The last two are made
-/// in each macro call, never published.
+/// primitives, host objects, chunks and chunk buffers (light-cljs-592). The
+/// last four are made in each macro call, never published.
 const PROTOCOL_KIND_VALUES: &str = r##"(lazy-seq nil)
 (lazy-seq [1])
 (map inc [1])
@@ -7238,8 +7238,12 @@ str
 (repeat 2.5 1)
 (rest (seq [1 2 3]))
 (next (seq (vec (range 40))))
+(chunk-first (range 3))
+(chunk-first (seq (vec (range 40))))
 (re-seq #"a" "aa")
-(seq (js/Array. 1))"##;
+(seq (js/Array. 1))
+(chunk-buffer 2)
+(chunk (doto (chunk-buffer 2) (chunk-append 1)))"##;
 
 /// The QuickJS reference's row for each of [`PROTOCOL_KIND_VALUES`] against
 /// [`CORE_PROTOCOL_VALUES`]: `s` satisfies and implements, `+` satisfies
@@ -7418,8 +7422,12 @@ s....................................s.++.................
 ................ss........s.s...ss.....ss.sss...s.ss......
 ..s.............s........ss.s...ss..s.sss.sssss.s.ss......
 ..s............ss......s..s.s...ss....sss.ssss..s.ss......
+..............s........................++..s.ss...........
+..............s.............s..........++....ss...........
 ..s................s.....ss.s...ss.s..sss.sss...s.ss......
 ..s.............s........ss.s...ss..s.sss.sssss.s.ss......
+.......................................++....s............
+..............s.............s..........++....ss...........
 ";
 
 /// Every value kind against every core protocol, with the QuickJS
@@ -7438,7 +7446,7 @@ fn native_protocol_value_kind_table_matches_quickjs_at_all_threads() {
             .collect::<Vec<_>>()
             .join(" ")
     };
-    let shared = values.len() - 2;
+    let shared = values.len() - 4;
     let kinds = format!(
         "(ns kinds) (defrecord R [a]) \
          (def ps {CORE_PROTOCOL_VALUES}) \
@@ -7606,6 +7614,29 @@ fn native_reference_typed_sequences_export_like_quickjs() {
         "[(1 2) (2 3) ([:b 2]) (1 2 3) (:a) (1) (2 1) (:z) (:w :w) ([:a 1]) (2 3 4) (\"a\" \"b\") ([1 2]) (:x :x :x) (:y :y) \
 (1 2 3) (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39) \
 (0 1 2 4) (2 3) (1 3)]\n",
+    );
+}
+
+/// `realized?` of `repeat` and `iterate` values answers as the reference's
+/// `Repeat` and `Iterate` do, and `drop` of a value implementing `IDrop`
+/// natively jumps (a repeat by its remaining count, an endless one to itself,
+/// an integer range by arithmetic, a vector or seq view by offset) instead
+/// of walking what it drops (light-cljs-592).
+#[test]
+fn native_repeat_realized_and_native_drop_match_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+  (let [x (repeat 3 :x) s satisfies?]
+    [(realized? (repeat 2 :x)) (realized? (repeat :x)) (realized? (rest (repeat 3 :x))) (do (doall x) (realized? x)) (realized? (rest x))
+     (realized? (iterate inc 0)) (realized? (rest (iterate inc 0))) (realized? (seq (repeat 2 :y)))
+     (some? (drop js/Infinity (repeat :x))) (first (drop 1000000000 (repeat :z))) (vec (drop 999999998 (repeat 1000000000 :w)))
+     (count (drop 100000 (vec (range 100010)))) (vec (drop 999999995 (range 1000000000))) (vec (drop 2 (range 10 0 -3)))
+     (vec (drop 38 (seq (vec (range 40))))) (vec (drop 2 (rest (vec (range 5))))) (vec (drop 1 (seq {:a 1 :b 2})))
+     (s IDrop (drop 3 (repeat 5 1))) (s ICounted (drop 2 (range 5))) (s IChunkedSeq (drop 1 (vec (range 40)))) (s IIndexed (drop 1 [1 2 3]))
+     (vec (drop 5 [1 2])) (seq (drop 0 [])) (vec (drop 1 (repeat 1 :v)))]))
+(js/console.log (pr-str (probe)))"#,
+        "[false false false false false true false false true :z [:w :w] 10 [999999995 999999996 999999997 999999998 999999999] \
+[4 1] [38 39] [3 4] [[:b 2]] true true true true [] nil []]\n",
     );
 }
 

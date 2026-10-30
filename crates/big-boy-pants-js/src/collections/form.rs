@@ -668,14 +668,21 @@ pub(crate) enum Brand {
     KeySeq,
     /// `rseq` of a vector.
     ReverseSeq,
-    /// `repeat`.
-    Repeat,
+    /// `repeat`, with the number of elements from here on (`u32::MAX`: forever
+    /// or too many to count), which `drop` reads.
+    Repeat(u32),
     /// `iterate`.
     Iterate,
+    /// `ArrayChunk`: `chunk-first` of a vector's seq, or `chunk`.
+    ArrayChunk,
+    /// `IntegerRangeChunk`: `chunk-first` of an integer range.
+    RangeChunk,
+    /// A queue's seq (`PersistentQueueSeq`).
+    QueueSeq,
 }
 
 impl Brand {
-    const ALL: [(Brand, &'static str); 12] = [
+    const NAMES: [(Brand, &'static str); 15] = [
         (Brand::Indexed, "indexed-seq"),
         (Brand::Chunked, "chunked-seq"),
         (Brand::ChunkedCons, "chunked-cons"),
@@ -685,17 +692,39 @@ impl Brand {
         (Brand::SetSeq, "set-seq"),
         (Brand::KeySeq, "key-seq"),
         (Brand::ReverseSeq, "reverse-seq"),
-        (Brand::Repeat, "repeat"),
+        (Brand::Repeat(0), "repeat"),
         (Brand::Iterate, "iterate"),
+        (Brand::ArrayChunk, "array-chunk"),
+        (Brand::RangeChunk, "range-chunk"),
+        (Brand::QueueSeq, "queue-seq"),
         (Brand::None, ""),
     ];
 
     fn name(self) -> Option<&'static str> {
-        Brand::ALL
+        let key = match self {
+            Brand::Repeat(_) => Brand::Repeat(0),
+            other => other,
+        };
+        Brand::NAMES
             .iter()
-            .find(|(b, _)| *b == self)
+            .find(|(b, _)| *b == key)
             .map(|(_, n)| *n)
             .filter(|n| !n.is_empty())
+    }
+
+    /// The brand named `name` (with a repeat's remaining count `payload`).
+    fn named(name: &JsString, payload: &Value) -> Option<Brand> {
+        let brand = Brand::NAMES
+            .iter()
+            .find(|(_, n)| !n.is_empty() && *name == *n)
+            .map(|(b, _)| *b)?;
+        Some(match (brand, payload) {
+            (Brand::Repeat(_), Value::Number(n)) if *n >= 0.0 && *n < f64::from(u32::MAX) => {
+                Brand::Repeat(*n as u32)
+            }
+            (Brand::Repeat(_), _) => Brand::Repeat(u32::MAX),
+            (other, _) => other,
+        })
     }
 
     /// The brand of a sequence sharing `source`'s body: a vector's seq is
@@ -816,8 +845,14 @@ impl FormObject {
         &self.body
     }
 
+    /// A chunk (`chunk-first`): the reference's chunks are neither
+    /// collections nor sequential.
+    pub(crate) fn is_chunk(&self) -> bool {
+        matches!(self.brand, Brand::ArrayChunk | Brand::RangeChunk)
+    }
+
     pub(crate) fn sequential(&self) -> bool {
-        self.kind().sequential()
+        !self.is_chunk() && self.kind().sequential()
             || matches!(&self.body, FormBody::CompilerLiteral { tag, .. } if tag == "queue")
     }
 
@@ -1665,7 +1700,21 @@ pub(crate) fn new_sequence(
 /// any other value (a deftype, struct type, other compiler literal or
 /// non-form).
 pub(crate) fn reference_type(heap: &Heap, value: &Value) -> Option<&'static str> {
-    let f = form_object(heap, &unwrap(heap, value.clone()))?;
+    let value = unwrap(heap, value.clone());
+    let Some(f) = form_object(heap, &value) else {
+        // A vector builder is a `chunk-buffer`'s, and the vector `chunk`
+        // freezes it into an `ArrayChunk`.
+        return match value {
+            Value::Object(id) => heap
+                .read(id, |o| match o {
+                    HeapObject::Builder(_) => Some("chunk-buffer"),
+                    HeapObject::Vector(_) => Some("array-chunk"),
+                    _ => None,
+                })
+                .flatten(),
+            _ => None,
+        };
+    };
     object_reference_type(&f)
 }
 
@@ -1710,21 +1759,107 @@ pub(crate) fn object_reference_type(f: &FormObject) -> Option<&'static str> {
     })
 }
 
-/// `formReferenceType(value)`, or with `with`, `formWithReferenceType(value,
-/// name)`. Kept out of line: the operation dispatcher's frame is on the
-/// stack of every nested run.
+/// The reference-type operations: `formReferenceType(value)` (0),
+/// `formWithReferenceType(value, name, payload)` (1), and
+/// `formReferencePayload(value)` (2: a repeat's remaining count, `Infinity`
+/// when it is endless or too long to count, else `null`). Kept out of line:
+/// the operation dispatcher's frame is on the stack of every nested run.
 #[inline(never)]
 pub(crate) fn reference_type_op(
     heap: &Heap,
-    with: bool,
+    mode: u8,
     args: &[Value],
 ) -> Result<Value, CollectionError> {
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
-    if with {
-        return with_brand(heap, &arg(0), &arg(1));
+    match mode {
+        1 => with_brand(heap, &arg(0), &arg(1), &arg(2)),
+        2 => Ok(
+            match form_object(heap, &unwrap(heap, arg(0))).map(|f| f.brand) {
+                Some(Brand::Repeat(u32::MAX)) => Value::Number(f64::INFINITY),
+                Some(Brand::Repeat(n)) => Value::Number(f64::from(n)),
+                _ => Value::Null,
+            },
+        ),
+        3 => {
+            let n = match unwrap(heap, arg(1)) {
+                Value::Number(n) if n >= 1.0 => n.min(usize::MAX as f64) as usize,
+                other => return Err(wrong(heap, "positive count", &other)),
+            };
+            Ok(drop_shared(heap, &arg(0), n)?.unwrap_or(Value::Null))
+        }
+        _ => Ok(reference_type(heap, &arg(0))
+            .map_or(Value::Null, |name| Value::String(JsString::from(name)))),
     }
-    Ok(reference_type(heap, &arg(0))
-        .map_or(Value::Null, |name| Value::String(JsString::from(name))))
+}
+
+/// A new vector of `items` that is the QuickJS reference's chunk `brand`
+/// (`chunk-first`).
+pub(crate) fn new_chunk(
+    heap: &Heap,
+    items: &[Value],
+    brand: Brand,
+) -> Result<Value, CollectionError> {
+    let body = FormBody::Vector(PVector::try_from_values(heap, items)?);
+    let mut object = FormObject::new(body, None);
+    object.brand = brand;
+    alloc(heap, object, items)
+}
+
+/// `(drop n v)` of a vector or of a sequence over a vector's or a seq
+/// view's trie, `n` positive, without walking the dropped elements: the
+/// sequence `n` elements on, of the same reference type, or `()`; `None`
+/// for any other value (`drop` then walks it).
+pub(crate) fn drop_shared(
+    heap: &Heap,
+    v: &Value,
+    n: usize,
+) -> Result<Option<Value>, CollectionError> {
+    let source = unwrap(heap, v.clone());
+    let Some(f) = form_object(heap, &source) else {
+        return Ok(None);
+    };
+    let shared = match f.body() {
+        FormBody::Vector(items) => Some(items),
+        FormBody::List(items)
+            if matches!(
+                f.brand,
+                Brand::Indexed | Brand::Chunked | Brand::ArrayMapSeq
+            ) =>
+        {
+            Some(items)
+        }
+        _ => None,
+    };
+    if let Some(items) = shared {
+        if n >= items.len() {
+            return new_list(heap, &[]).map(Some);
+        }
+        return list_sharing(heap, items.drop_first(n), &source).map(Some);
+    }
+    match f.body() {
+        FormBody::Cons(c)
+            if f.brand == Brand::Chunked
+                && c.kind == lazy::ConsKind::ChunkedSeq
+                && c.range.is_none() =>
+        {
+            if c.start + n >= c.items.len() && matches!(c.rest, Value::Null | Value::Undefined) {
+                return new_list(heap, &[]).map(Some);
+            }
+            if c.start + n >= c.items.len() {
+                return Ok(None);
+            }
+            cons_sharing(
+                heap,
+                c.items.clone(),
+                c.start + n,
+                c.rest.clone(),
+                c.kind,
+                &source,
+            )
+            .map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 /// `value`, a sequence, as the QuickJS reference's type `name` for the
@@ -1734,20 +1869,19 @@ pub(crate) fn with_brand(
     heap: &Heap,
     value: &Value,
     name: &Value,
+    payload: &Value,
 ) -> Result<Value, CollectionError> {
     let source = unwrap(heap, value.clone());
     let f = form_object(heap, &source).ok_or_else(|| wrong(heap, "sequence", &source))?;
     let brand = match name {
-        Value::String(s) => Brand::ALL
-            .iter()
-            .find(|(_, n)| !n.is_empty() && *s == *n)
-            .map(|(b, _)| *b),
+        Value::String(s) => Brand::named(s, payload),
         _ => None,
     }
     .ok_or_else(|| wrong(heap, "sequence type name", name))?;
-    match f.body() {
-        FormBody::List(items) if items.len() == 0 => return Ok(source),
-        FormBody::List(_) | FormBody::Cons(_) | FormBody::Lazy(_) => {}
+    match (f.body(), brand) {
+        (FormBody::List(items), _) if items.len() == 0 => return Ok(source),
+        (FormBody::List(_) | FormBody::Cons(_) | FormBody::Lazy(_), _) => {}
+        (FormBody::Vector(_), Brand::ArrayChunk | Brand::RangeChunk) if !f.map_entry => {}
         _ => return Err(wrong(heap, "sequence", &source)),
     }
     if f.brand == brand {

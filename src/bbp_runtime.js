@@ -2290,20 +2290,40 @@ const native = (() => {
   });
   // A sequence as the QuickJS reference's type `name` for the protocol
   // predicates (light-cljs-592); `rest` and `seq` keep it.
-  const typed = (s, name) => val(s) === null ? s : __rt.formWithReferenceType(s, name);
+  const typed = (s, name, count = null) => val(s) === null ? s : __rt.formWithReferenceType(s, name, count);
   const iterateFrom = (self, f, x) => typed(__rt.formSequence(__rt.cljCons(x, typed(lazy(() => self(self, f, invoke(f, x))), 'iterate'))), 'iterate');
   const repeatForever = (self, x) => lazy(() => __rt.cljCons(x, self(self, x)));
   // `repeat`, `n` times or (negative) forever, as the reference's `Repeat`:
   // each step is one, and the rest of the last is `()`.
-  const repeatN = (self, n, x) => typed(__rt.formSequence(__rt.cljCons(x, n === 1 ? null : typed(lazy(() => self(self, n - 1, x)), 'repeat'))), 'repeat');
+  // Each step records how many elements remain (negative: forever), which
+  // `drop` reads instead of walking.
+  const repeatN = (self, n, x) => typed(__rt.formSequence(__rt.cljCons(x, n === 1 ? null : typed(lazy(() => self(self, n - 1, x)), 'repeat', n < 0 ? null : n - 1))), 'repeat', n < 0 ? null : n);
   // The reference's `drop` of a value implementing IDrop natively: its
   // `-drop`, the seq `n` elements on (or `()`), the same type; else lazy.
   const dropsNatively = new Set(['vector','map-entry','array-map','indexed-seq','array-seq','chunked-seq','array-map-seq','integer-range','repeat']);
+  // Without walking what it drops: a repeat by its remaining count (an
+  // endless one is itself), an integer range by arithmetic, a vector or a
+  // seq view over a trie by offset (`cljDrop`); an array seq walks.
   const drop = (n, c) => {
     const v = val(c);
-    if (v === null || typeof v !== 'object' || __rt.formKind(v) === null || !dropsNatively.has(__rt.formReferenceType(v))) return dropN(n, c);
-    let s = n > 0 ? c : seqOf(c);
-    for (let i = 0; i < Math.ceil(n) && s !== null; i++) s = __rt.cljNext(s);
+    const type = v !== null && typeof v === 'object' && __rt.formKind(v) !== null ? __rt.formReferenceType(v) : arraySeqs.has(v) ? 'array-seq' : null;
+    if (!dropsNatively.has(type)) return dropN(n, c);
+    if (!(n > 0)) return seqOf(c) ?? __rt.formList();
+    n = Math.ceil(n);
+    if (type === 'repeat') {
+      const k = __rt.formReferencePayload(v);
+      if (k === Infinity) return c;
+      return n >= k ? __rt.formList() : repeatN(repeatN, k - n, __rt.cljFirst(c));
+    }
+    if (type === 'integer-range') {
+      const k = __rt.cljCount(c);
+      if (n >= k) return __rt.formList();
+      const f = __rt.cljFirst(c), step = k > 1 ? __rt.cljFirst(__rt.cljNext(c)) - f : 1;
+      return rangeFrom(rangeFrom, f + n * step, f + k * step, step);
+    }
+    if (type !== 'array-seq') { const d = __rt.cljDrop(c, n); if (d !== null) return d; }
+    let s = c;
+    for (let i = 0; i < n && s !== null; i++) s = __rt.cljNext(s);
     return s ?? __rt.formList();
   };
   // A range: its first chunk of 32 numbers, then the rest lazily, as the
@@ -2317,7 +2337,9 @@ const native = (() => {
     if (k === 0) return __rt.formList();
     const next = x;
     const counted = step !== 0 && Number.isInteger(start) && Number.isInteger(end) && Number.isInteger(step);
-    const result = __rt.cljRangeCons(__rt.freeze(b), lazy(() => self(self, next, end, step)),counted ? end : null,step);
+    // A counted range's last chunk ends it: its `chunk-rest` is `()`.
+    const more = !counted || (step > 0 ? next < end : next > end);
+    const result = __rt.cljRangeCons(__rt.freeze(b), more ? lazy(() => self(self, next, end, step)) : null,counted ? end : null,step);
     return counted ? result : __rt.formSequence(result);
   };
   const partitionFrom = (self, n, step, c) => lazy(() => {
@@ -3153,6 +3175,12 @@ const native = (() => {
       kinds('reverse-seq', 'ICloneable IIterable IHash IEquiv ' + seqBase);
       kinds('repeat', 'IDrop IPending IHash IEquiv ' + seqBase);
       kinds('iterate', 'IPending ' + seqBase);
+      kinds('queue-seq', 'IPrintWithWriter ICollection IEmptyableCollection ISeqable ISeq INext ISequential IMeta IWithMeta IIterable IHash IEquiv');
+      // Chunks and chunk buffers, which the reference does not own: they
+      // also take its defaults and extensions to `object` (`unowned`).
+      kinds('array-chunk', 'IChunk IReduce ICounted IIndexed');
+      kinds('range-chunk', 'IChunk ISeq ICounted IIndexed');
+      kinds('chunk-buffer', 'ICounted');
       kinds('queue', 'ICloneable IPrintWithWriter ICollection IEmptyableCollection IStack IIterable IHash IEquiv ISeqable ISeq INext ICounted ISequential IMeta IWithMeta');
       kinds('atom', 'IPrintWithWriter IHash IEquiv IMeta IDeref IAtom IWatchable');
       kinds('reduced', 'IPrintWithWriter IHash IEquiv IDeref');
@@ -3163,7 +3191,8 @@ const native = (() => {
       // The legacy protocol objects' own types (`IMeta.function = true`, ...).
       const defaults = new Map([['IMeta','function'],['Fn','function'],['ICounted','null'],['IHash','_'],['IEquiv','_']]);
       const munging = {'-':'_',':':'_COLON_','+':'_PLUS_','>':'_GT_','<':'_LT_','=':'_EQ_','~':'_TILDE_','!':'_BANG_','@':'_CIRCA_','#':'_SHARP_',"'":'_SINGLEQUOTE_','"':'_DOUBLEQUOTE_','%':'_PERCENT_','^':'_CARET_','&':'_AMPERSAND_','*':'_STAR_','|':'_BAR_','{':'_LBRACE_','}':'_RBRACE_','[':'_LBRACK_',']':'_RBRACK_','/':'$','\\':'_BSLASH_','?':'_QMARK_'};
-      return {native, defaults, munging, markers: new Map()};
+      const unowned = new Set(['array-chunk', 'range-chunk', 'chunk-buffer']);
+      return {native, unowned, defaults, munging, markers: new Map()};
     };
     const unsupportedKind = what => { throw new Error('unsupported operation: native macro runtime satisfies? of ' + what); };
     // The QuickJS-reference type of a value the runtime owns, or null: a
@@ -3176,7 +3205,8 @@ const native = (() => {
       if (isVar(x)) return 'var';
       if (multi.is(x)) return 'multifn';
       const k = __rt.formKind(v);
-      if (k === null) return null;
+      // A vector builder is a chunk buffer, and a frozen one a chunk.
+      if (k === null) return typeof v === 'object' ? __rt.formReferenceType(v) : null;
       if (k === 'compiler-literal') {
         const literal = __rt.formName(v);
         if (literal === 'regex' || literal === 'js-array' || literal === 'js-object' || literal === 'instant' || literal === 'uuid') return null;
@@ -3233,7 +3263,7 @@ const native = (() => {
       decl.demand(name, x);
       const tag = kindOf(x);
       if (implementsCore(name, x, tag)) return true;
-      if (tag !== null) return false;
+      if (tag !== null && !built().unowned.has(tag)) return false;
       const v = val(x), mask = decl.mask(name);
       if (mask !== undefined && (host(v, tag) ? v[mask[0]] : decl.masked(name, x))) return false;
       const d = built().defaults.get(name);
@@ -3772,14 +3802,21 @@ const catalogFrontier=(c,p)=>{
   return c.base;
 };
 // The getter of `name`'s definition before the catalog bundle `b`'s, when
-// an earlier bundle of the catalog declares it.
+// an earlier entry of the catalog defines it: a bundle's product, or an
+// ordinary root's initializer at its own declaration frontier.
 const catalogPrevious=(b,name)=>{
   const c=b.catalog,at=__rt.getOr(c.names,name,null);
   if(at===null)return undefined;
   let q=-1;
   for(let i=0,n=__rt.count(at);i<n;i++){const r=__rt.nth(at,i);if(r>=b.entry)break;q=r;}
-  if(q<0||__rt.nth(__rt.nth(c.entries,q),0)!==1)return undefined;
-  return decl.productGetter(lazyBundle(c,q),name);
+  if(q<0)return undefined;
+  const e=__rt.nth(c.entries,q);
+  if(__rt.nth(e,0)===1)return decl.productGetter(lazyBundle(c,q),name);
+  const unit=__rt.nth(e,2);
+  if(unit===null)return undefined;
+  let slot=unitSlots.get(unit);
+  if(slot===undefined){slot=__rt.initializerSlot(unit,name);unitSlots.set(unit,slot);}
+  return rootGetter(name,unit,slot,catalogFrontier(c,q));
 };
 // Index a protocol's catalog bundles, once, before its extensions are read
 // or another bundle extends it.
