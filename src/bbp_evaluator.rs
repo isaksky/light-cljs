@@ -1537,6 +1537,9 @@ pub(crate) struct TaskContext {
     /// The catalog frontier this task populated from shared immutable data
     /// ([`MacroEvaluator::catalog_cursor`]).
     catalog: Cell<Option<usize>>,
+    /// The namespace table whose names its runtime has, the last one
+    /// given ([`BbpEvaluator::send_namespaces`]).
+    namespaces: RefCell<crate::arena::Arena<String>>,
     /// Whether a worker view prepared it (its settings and service stubs
     /// evaluated), which a view that borrows it then does not repeat.
     prepared: Cell<bool>,
@@ -1653,6 +1656,7 @@ impl BbpEvaluator {
             native_runtime: Cell::new(None),
             gensym_scope: Cell::new(0),
             catalog: Cell::new(None),
+            namespaces: RefCell::new(crate::arena::Arena::new()),
             prepared: Cell::new(false),
             lent: RefCell::new(LentState::default()),
             logged: Cell::new(0),
@@ -2265,6 +2269,9 @@ impl BbpEvaluator {
             active.use_catalog(snapshot, 0, cx.catalog.get().unwrap_or(0), true)?;
         }
         producer_cx.catalog.set(cx.catalog.get());
+        // The namespaces its parent has, which its helper's code sees.
+        let namespaces = cx.namespaces.borrow().clone();
+        active.send_namespaces(&namespaces)?;
         if let Some(started) = started {
             let c = &self.shared.0.counters;
             c.producers.fetch_add(1, Ordering::Relaxed);
@@ -2608,7 +2615,8 @@ impl BbpEvaluator {
             1 => "adopt",
             2 => "call",
             3 => "release",
-            _ => "useCatalog",
+            4 => "useCatalog",
+            _ => "registerNamespaces",
         };
         crate::compile_trace::engine_exit(traced, service);
         result
@@ -3007,6 +3015,12 @@ impl MacroEvaluator for BbpEvaluator {
     }
     fn needs_reader_registration(&self) -> bool {
         false
+    }
+    fn register_namespaces(
+        &self,
+        namespaces: &crate::arena::Arena<String>,
+    ) -> Result<(), EvalError> {
+        self.send_namespaces(namespaces)
     }
     fn catalog_cursor(&self) -> Option<usize> {
         self.context.borrow().as_ref()?.catalog.get()

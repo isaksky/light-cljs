@@ -11033,19 +11033,244 @@ fn native_exists_does_not_suppress_an_initializer_error() {
     assert_eq!(emit_js(&program), light_cljs::compile(source).unwrap());
 }
 
+/// A declaration's Var reflects without a value (light-cljs-589); this
+/// reported the Pants build's missing Var runtime before.
 #[test]
-fn native_resolve_reports_the_missing_var_runtime() {
-    let source = "(declare absent) (defmacro m [] (resolve 'absent)) (m)";
-    let mut host = MacroHost::new();
-    host.use_native_macros();
-    let error = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
-        .err()
-        .unwrap()
-        .to_string();
-    assert!(
-        error.contains("unsupported operation: native macro runtime Var reflection"),
-        "{error}"
+fn native_resolve_reflects_a_declared_var() {
+    assert_native_matches_legacy(
+        "(declare absent) \
+         (defmacro m [] (let [v (resolve 'absent)] [(str v) (:name (meta v)) (var? v) (= v #'absent)])) \
+         (js/console.log (pr-str (m)))",
+        "[\"#'cljs.user/absent\" nil true true]\n",
     );
+    // DEFONCE_PENDING from tests/compiler/macros.rs, its last form printed.
+    assert_native_matches_legacy(
+        r#"
+          (def effects (atom 0))
+          (def pending (do (swap! effects inc) 42))
+          (defonce pending 99)
+          (def n nil) (defonce n 99)
+          (def f false) (defonce f 99)
+          (def u js/undefined) (defonce u 99)
+          (declare declared) (defonce declared 7)
+          (defmacro m []
+            (assert (= 0 @effects))
+            (assert (= 42 pending))
+            (assert (= 1 @effects))
+            (assert (nil? n)) (assert (false? f))
+            (assert (identical? js/undefined u))
+            (assert (not (exists? u)))
+            (assert (var? (resolve 'u)))
+            (assert (= 7 declared)) 42)
+          (js/console.log (= [42 42 nil false 99 7 1] [(m) pending n f u declared @effects]))"#,
+        "true\n",
+    );
+}
+
+/// Compiler Var reflection and namespace views (light-cljs-589): `doc`'s
+/// Vars, reflected by a macro of `reflect` that `a` and `b` each expand,
+/// directly (`resolve`, `#'`), through Vars saved in helper definitions and
+/// through `apply` and `.call`; their metadata, `:test` callbacks and
+/// identity; `ns-publics`/`ns-interns`; a macro's Var; a local's Var;
+/// `all-ns`, `find-ns` and `the-ns`, also from a macro expanded while a
+/// helper compiles on demand in its producer task. Reading a Var's metadata demands
+/// neither its definition (`runs` stays 0) nor its `:test` before it is
+/// read; the callbacks keep their generation, and a failed `:test` stays
+/// failed. At 2, 4 and 8 threads `a` and `b` expand on workers, which
+/// demand the helpers. The output and the emitted program match the
+/// QuickJS reference at every thread count.
+const VAR_REFLECTION: &[(&str, &str)] = &[
+    (
+        "doc.cljs",
+        r#"(ns doc)
+(def runs (atom 0))
+(def ^{:doc "one" :added "1.0"} value (do (swap! runs inc) 1))
+(defn f "adds" {:test (fn [] (swap! runs + 10) :tested)} [x y] (+ x y))
+(defn variadic [& xs] (count xs))
+(declare later)
+(def ^:private hidden 3)
+(def ^{:doc "first"} again 1)
+(defmacro twice [x] `(+ ~x ~x))"#,
+    ),
+    (
+        "reflect.cljs",
+        r#"(ns reflect (:require [doc]))
+(def saved (resolve 'doc/value))
+(def saved-f #'doc/f)
+(defmacro names-now [] (list 'quote (mapv ns-name (all-ns))))
+(defn helper-names [] (names-now))
+(defn describe [v]
+  (let [m (meta v)]
+    [(str v) (pr-str v) (:doc m) (:name m) (:ns m) (:added m) (:arglists m)
+     (fn? (:test m)) (var? v) (fn? v) (ifn? v) (= v v) (= (hash v) (hash (symbol (subs (str v) 2))))]))
+(defmacro probe []
+  (let [before @doc/runs
+        direct (describe (resolve 'doc/value))
+        deferred @doc/runs]
+    (list 'quote
+          [before direct deferred
+           (describe saved) (describe #'doc/f) (describe saved-f)
+           (= saved (resolve 'doc/value)) (= saved #'doc/f) (identical? saved saved)
+           @saved (fn? @#'doc/f) (#'doc/f 2 3) (saved-f 4 5) (.call saved-f nil 1 1)
+           (apply #'doc/f [1 2]) (apply saved-f 3 [4]) (apply #'doc/variadic 1 2 [3 4])
+           ((:test (meta #'doc/f))) (test #'doc/f) (test saved) @doc/runs
+           (str (resolve 'doc/later)) (resolve 'doc/absent) (resolve 'nope/absent)
+           (pr-str (dissoc (meta #'doc/value) :file :line :column))
+           (pr-str (dissoc (meta #'doc/f) :file :line :column :test))
+           (pr-str (meta (with-meta saved {:x 1}))) (str (with-meta saved {:x 1}))
+           (= saved (with-meta saved {:x 1}))
+           (:macro (meta (resolve 'doc/twice))) (str (resolve 'doc/twice))
+           (try @(resolve 'doc/twice) (catch :default e (.-message e)))
+           (map str (keys (ns-publics 'doc))) (map str (vals (ns-interns 'doc)))
+           (let [x 5] (dissoc (meta (resolve 'x)) :line :column))
+           (mapv ns-name (all-ns)) (str (find-ns 'doc)) (find-ns 'absent) (ns-name (the-ns 'reflect))
+           (pr-str [#'doc/value {:v saved}]) (helper-names)])))"#,
+    ),
+    (
+        "a.cljs",
+        "(ns a (:require [reflect :refer [probe]])) (def value (probe))",
+    ),
+    (
+        "b.cljs",
+        r#"(ns b (:require [reflect :refer [probe]] [doc]))
+(def ^{:doc "first"} again 1)
+(defmacro doc-now [] (:doc (meta #'again)))
+(defmacro doc-resolved [] (:doc (meta (resolve 'again))))
+(def early [(doc-now) (doc-resolved)])
+(def ^{:doc "second"} again 2)
+(def late [(doc-now) (doc-resolved)])
+(def value (probe))"#,
+    ),
+    (
+        "pending.cljs",
+        r#"(ns pending)
+(def roots (atom 0))
+(def attached (atom 0))
+(def called (atom 0))
+(def ^{:doc "kept" :test (do (swap! attached inc) (fn [] (swap! called inc) :callback))}
+  pending (do (swap! roots inc) (fn [] :ready)))
+(defn inspect []
+  (let [v #'pending
+        identity-count @attached
+        m (meta v)
+        callback (:test m)
+        before @roots
+        result (callback)]
+    [identity-count before @attached @called result
+     (identical? callback (:test (meta v))) (pending) @roots
+     (identical? callback (.-cljs$lang$test pending)) (test v) @called @attached]))
+(defmacro witness [] (list 'quote (inspect)))
+(def value (witness))
+(defn target {:test (fn [] [:old (target)])} [] 1)
+(def saved (:test (meta #'target)))
+(defmacro first-witness [] (assert (= [:old 1] (saved))) nil)
+(first-witness)
+(defn target {:test (fn [] [:new (target)])} [] 2)
+(defmacro second-witness []
+  (list 'quote [(saved) ((:test (meta #'target)))
+                (identical? saved (:test (meta #'target))) (test #'target)]))
+(def generations (second-witness))
+(def attempts (atom 0))
+(def ^{:test (do (swap! attempts inc)
+                 (when (exists? js/lightCljsBuild) (throw (ex-info "metadata failed" {}))))}
+  broken (fn [] :never))
+(defmacro sticky []
+  (let [a (try (meta #'broken) :bad (catch :default _ :failed))
+        b (try (meta #'broken) :bad (catch :default _ :failed))]
+    [a b @attempts]))
+(def failures (sticky))"#,
+    ),
+    (
+        "main.cljs",
+        r#"(ns main (:require [a] [b] [pending]))
+(doseq [x a/value] (js/console.log (pr-str x)))
+(js/console.log (pr-str (peek b/value) b/early b/late))
+(js/console.log (pr-str pending/value pending/generations pending/failures))"#,
+    ),
+];
+
+#[test]
+fn native_var_reflection_and_namespace_views_match_quickjs_at_every_pool_size() {
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
+    let root = temp_dir::TempDir::new("native-var-reflection");
+    for (file, source) in VAR_REFLECTION {
+        std::fs::write(root.join(file), source).unwrap();
+    }
+    let build = |native, jobs| {
+        let mut host = MacroHost::new();
+        if native {
+            host.use_native_macros();
+        }
+        let (program, _) = analyze_namespace_entry_recorded(
+            "main",
+            &[root.path().to_path_buf()],
+            &mut host,
+            Default::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                slots: light_cljs::scheduler::Slots::new(jobs).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("native {native}, jobs {jobs}: {e}"));
+        emit_js(&program)
+    };
+    let reference = build(true, 1);
+    let lines = [
+        "0",
+        r##"["#'doc/value" "#'doc/value" "one" value doc "1.0" () false true true true true true]"##,
+        "0",
+        r##"["#'doc/value" "#'doc/value" "one" value doc "1.0" () false true true true true true]"##,
+        r##"["#'doc/f" "#'doc/f" "adds" f doc nil ([x y]) true true true true true true]"##,
+        r##"["#'doc/f" "#'doc/f" "adds" f doc nil ([x y]) true true true true true true]"##,
+        "true",
+        "false",
+        "true",
+        "1",
+        "true",
+        "5",
+        "9",
+        "2",
+        "3",
+        "7",
+        "4",
+        ":tested",
+        ":ok",
+        ":no-test",
+        "21",
+        r##""#'doc/later""##,
+        "nil",
+        "nil",
+        r##""{:added \"1.0\", :ns doc, :name value, :arglists (), :doc \"one\", :test nil}""##,
+        r##""{:ns doc, :name f, :doc \"adds\", :arglists ([x y])}""##,
+        r##""{:x 1}""##,
+        r##""#'doc/value""##,
+        "true",
+        "true",
+        r##""#'doc/twice""##,
+        r##""compile-time macro cannot be consumed as a runtime value: doc/twice""##,
+        r##"("again" "f" "later" "runs" "twice" "value" "variadic")"##,
+        r##"("#'doc/again" "#'doc/f" "#'doc/hidden" "#'doc/later" "#'doc/runs" "#'doc/twice" "#'doc/value" "#'doc/variadic")"##,
+        "{:ns nil, :name x, :doc nil, :file nil, :test nil, :arglists ()}",
+        "[cljs.user cljs.core doc reflect a]",
+        r##""doc""##,
+        "nil",
+        "reflect",
+        r##""[#'doc/value {:v #'doc/value}]""##,
+        "[cljs.user cljs.core doc reflect]",
+        r##"[cljs.user cljs.core doc reflect] ["first" "first"] ["first" "first"]"##,
+        "[0 0 1 1 :callback true :ready 1 true :ok 2 1] [[:old 2] [:new 2] false :ok] [:failed :failed 1]",
+    ];
+    assert_eq!(program_output(&reference), lines.join("\n") + "\n");
+    for jobs in [1, 2, 4, 8] {
+        #[cfg(feature = "quickjs")]
+        assert_eq!(
+            reference,
+            build(false, jobs),
+            "QuickJS reference, jobs {jobs}"
+        );
+        assert_eq!(reference, build(true, jobs), "jobs {jobs}");
+    }
 }
 
 #[test]

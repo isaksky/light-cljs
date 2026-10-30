@@ -1209,6 +1209,7 @@ impl MacroHost {
         call: &Form,
         env: &Datum,
         engine: Option<&dyn crate::evaluator::MacroEvaluator>,
+        namespaces: Option<&crate::arena::Arena<String>>,
     ) -> Result<Form, String> {
         crate::macro_host::forbid_engine_entry(name);
         let key = self
@@ -1252,6 +1253,16 @@ impl MacroHost {
         let (ns, name) = key.split_once('/').unwrap();
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
         let function = declaration.function(engine, &self.engine)?;
+        // An engine without reader tables gets the caller's namespace
+        // inventory before each expansion: `all-ns` sees every namespace
+        // the expansion's program has, on whichever task runs it.
+        if let Some(namespaces) = namespaces
+            && !engine.needs_reader_registration()
+        {
+            engine
+                .register_namespaces(namespaces)
+                .map_err(|e| e.to_string())?;
+        }
         let reader_view;
         let env = match self.reader_view(&declaration, env, engine) {
             Some(view) => {
@@ -1495,7 +1506,7 @@ mod tests {
                 });
             for i in 0..2 {
                 let expanded = host
-                    .expand_source_javascript("cljs.user", "same", &call, &environment, None)
+                    .expand_source_javascript("cljs.user", "same", &call, &environment, None, None)
                     .unwrap();
                 assert!(std::ptr::eq(expanded.data().kind(), original.data().kind()));
                 assert_eq!(expanded.span().bytes(), original.span().bytes());

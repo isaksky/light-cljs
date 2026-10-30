@@ -120,7 +120,7 @@ impl BbpEvaluator {
                         let position = cursor + offset;
                         let boolean = |b| s.primitive(Primitive::Bool(b));
                         let descriptor = match registration {
-                            Registration::Root(name, unit, _, once, _) => {
+                            Registration::Root(name, unit, test, once, _) => {
                                 let name = text(s, name)?;
                                 names = index(names, name, position)?;
                                 s.new_vector(&[
@@ -128,6 +128,9 @@ impl BbpEvaluator {
                                     name,
                                     unit.map_or_else(|| s.primitive(Primitive::Null), number),
                                     boolean(*once),
+                                    // The unit of the definition's :test
+                                    // metadata, which Var reflection reads.
+                                    test.map_or_else(|| s.primitive(Primitive::Null), number),
                                 ])
                                 .map_err(error)?
                             }
@@ -252,5 +255,39 @@ impl BbpEvaluator {
             c.catalog_entries
                 .fetch_add(applied as usize, Ordering::Relaxed);
         }
+    }
+
+    /// Give this task the namespaces of `namespaces` it does not have, in
+    /// program order, as data: each becomes a Namespace of its runtime
+    /// (`createNs`), which `all-ns`, `find-ns` and `the-ns` see. A table that
+    /// is not an extension of the last one given sends every name again;
+    /// creating a namespace twice keeps the first.
+    pub(super) fn send_namespaces(
+        &self,
+        namespaces: &crate::arena::Arena<String>,
+    ) -> Result<(), EvalError> {
+        let cx = self.cx()?;
+        let from = {
+            let registered = cx.namespaces.borrow();
+            let shared = registered.len().min(namespaces.len());
+            if namespaces.changed_entries(&registered, shared).is_empty() {
+                registered.len()
+            } else {
+                0
+            }
+        };
+        if from >= namespaces.len() {
+            return Ok(());
+        }
+        let payload = self.host_scope(|s| {
+            let names = namespaces
+                .tail_from(from)
+                .map(|name| text(s, name))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, EvalError>(s.persist(s.new_vector(&names).map_err(error)?))
+        })?;
+        self.request(5, self.id()?, payload)?;
+        *cx.namespaces.borrow_mut() = namespaces.clone();
+        Ok(())
     }
 }

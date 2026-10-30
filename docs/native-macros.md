@@ -1386,14 +1386,33 @@ initializer's error propagates. Nil and false definitions exist, an undefined
 one does not. The differential fixtures include the unchanged
 `MUTUAL_RECURSION` source from `tests/compiler/macros.rs`.
 
-`resolve` already has analyzer-side namespace lookup. An absent binding returns
-nil, but a present one needs the Var runtime and reports
-`unsupported operation: native macro runtime Var reflection`. Completing this
-is larger than a namespace-lookup adapter: native Vars need identity by symbol,
-invocation, dereference, equality/hash, metadata, and generation-aware deferred
-`:test` metadata without demanding an initializer. `var?` is also unsupported;
-the verbatim `DEFONCE_PENDING` fixture in `tests/compiler/macros.rs` therefore
-still stops there. This work does not claim that fixture passes natively.
+Vars (light-cljs-589): `resolve`, `(var x)`/`#'x`, `ns-publics`, `ns-interns`
+and the other analyzer-side reflections give native Vars. The analyzer resolves the symbol as
+before (an absent binding gives nil, and resolving another namespace's name is
+an observed dependency); the emitted unit builds the Var with the runtime's
+`makeVar`/`definitionVar`, as in the V8 build. A native Var is an immutable
+struct of type `cljs.core/Var` with the legacy Var's slots: `val`, a thunk that
+reads the binding's root, `sym` and `_meta`. A definition's metadata is the
+legacy base map (`:ns :name :doc :file :line :column :arglists`), then the
+definition's reader metadata, then `:ns`, `:name` and `:test`. Taking a Var never
+demands the definition: its `:test` is captured by
+`__lightCompilerVarMetadata` as the legacy registry does, from a root already
+initialized or else from the definition's own `:test` unit (the catalog gives
+each root its `:test` unit), which is demanded only when the metadata is read;
+a failure there stays failed. A macro's Var (`compilerMacroVar`) has `:macro
+true` and throws when dereferenced. `deref`, invocation, `apply`, `.call`,
+`.apply`, `meta`, `with-meta`/`vary-meta`, `=`, `hash`, `str`, `pr-str`,
+`var?`, `fn?`, `ifn?` and `test` follow the legacy Var: dereferencing or
+calling reads the root then, `=` and `hash` are the symbol's, and the printed
+form is `#'ns/name`. A Var made in one task is recognized in another by its
+type's name, as a MultiFn is. As for every struct, native persistent
+collections compare and hash a Var by identity (see "Protocols and types"), so
+two Vars of one symbol are different map keys and set members, where the
+legacy runtime calls the Var's `IEquiv`/`IHash` (light-cljs-594). `tests/bbp_macros.rs`
+(`native_var_reflection_and_namespace_views_match_quickjs_at_every_pool_size`)
+checks the reflections and the namespace views below against the QuickJS
+reference at 1, 2, 4 and 8 threads, and the verbatim `DEFONCE_PENDING` fixture
+of `tests/compiler/macros.rs` now passes natively.
 
 Lowering is what lets helper values publish: a function whose body uses only
 lowered operations, literals and other compiler roots captures no task-owned
@@ -1472,6 +1491,16 @@ their source. These tables serve the legacy runtime's reader; native macros
 receive forms and reader context through the native bridge. The skipped source
 therefore cannot hit the eval limit as a project's namespace count grows.
 Macro cache identity and legacy reader registration behavior are unchanged.
+Where a legacy engine registers a program's namespaces, and before every source
+macro expansion, a native task gets the namespace names it lacks as data
+(`MacroEvaluator::register_namespaces`, command 5 of the runtime), and a
+helper's producer task gets its parent's. Each becomes a Namespace of the task's
+runtime, after `cljs.user` and `cljs.core` as in the legacy runtime, so
+`all-ns`, `find-ns` and `the-ns` see every namespace of the expanding program,
+in program order, on whichever task and thread runs the expansion. The legacy
+runtimes see what their engine registered last, which can lag the expanding
+program by the namespaces analyzed since. A macro that reads the inventory
+declares `(b/depend-on! :namespaces)` for the cache.
 
 Ordinary source helpers are compiled on demand. A macro parks at a dependency
 read while the compiler analyzes the helper using separate task state on the

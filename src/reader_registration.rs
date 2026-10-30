@@ -24,7 +24,8 @@
 //!
 //! Native form engines use no JavaScript reader tables. They skip registration
 //! before planning or emitting source, so these unused tables cannot grow past
-//! the engine's dynamic compilation limit in large projects.
+//! the engine's dynamic compilation limit in large projects. They get only
+//! the namespace names, as data (`MacroEvaluator::register_namespaces`).
 
 use crate::analyzer::{GlobalBinding, GlobalId, Program, RuntimeReaderNamespace};
 use crate::arena::Arena;
@@ -345,7 +346,7 @@ pub(crate) fn register(
     tables: &ReaderTables,
 ) -> Result<(), EvalError> {
     if !engine.needs_reader_registration() {
-        return Ok(());
+        return engine.register_namespaces(&tables.namespaces);
     }
     let Some(registered) = engine.reader_namespaces() else {
         let registration = emit_every_namespace(tables);

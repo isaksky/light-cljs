@@ -743,6 +743,54 @@ const native = (() => {
   };
   const seq = x => __rt.cljSeq(x);
   const get = function(m,k,n) { return arguments.length === 2 ? __rt.cljGet2(m,k) : __rt.cljGet(m,k,n); };
+  // Vars (light-cljs-589; docs/native-macros.md, "Vars"): an immutable
+  // struct with the legacy Var's slots. `val` is the thunk that reads the
+  // binding, `sym` its symbol and `_meta` its metadata; `__deferred`, of a
+  // definition's Var only, gives the executable :test metadata when the
+  // metadata is read, so taking a Var never demands its definition. A Var
+  // is its symbol: equality and hashing never call the thunk. Like a
+  // MultiFn, a Var another task made is recognized by its type's name.
+  const varType = __rt.structType('cljs.core/Var',__rt.formVector('val','sym','_meta','__deferred'),false,null);
+  const isVar = x => { const t = __rt.structTypeOf(val(x)); return t !== null && __rt.formName(t) === 'cljs.core/Var'; };
+  const varField = (v, k) => __rt.structField(val(v), k);
+  const varMeta = v => {
+    const m = varField(v,'_meta'), deferred = varField(v,'__deferred');
+    return deferred === null ? m : __rt.cljAssoc(m, __rt.cljKeyword('test'), deferred());
+  };
+  const symText = s => { s = val(s); const ns = __rt.formNamespace(s); return (ns === null ? '' : ns + '/') + __rt.formName(s); };
+  const varText = v => "#'" + symText(varField(v,'sym'));
+  const makeVar = (get, sym, metadata = null) => __rt.structNew(varType, get, sym, metadata, null);
+  // The metadata the legacy runtime's `definitionVar` gives: its base keys
+  // in their order, the definition's metadata, then :ns, :name and :test.
+  // Without a deferred :test the root is read, as the legacy runtime does.
+  const varBase = (sym, entries) => {
+    const ns = __rt.formNamespace(val(sym));
+    return [__rt.cljKeyword('ns'), ns === null ? null : __rt.formSymbol(null, ns), __rt.cljKeyword('name'), __rt.formSymbol(null, __rt.formName(val(sym))), ...entries];
+  };
+  const definitionVar = (get, sym, metadata = null, deferred = null) => {
+    const root = deferred === null ? val(get()) : null;
+    const k = name => __rt.cljKeyword(name), base = varBase(sym, []);
+    let m = arrayMap(varBase(sym, [k('doc'), null, k('file'), null, k('line'), null, k('column'), null, k('arglists'), __rt.formList()]));
+    if (val(metadata) != null) m = __rt.cljConj(m, metadata);
+    // A root without :test gives undefined, as in the legacy runtime.
+    const test = root != null && root !== false ? root.cljs$lang$test : null;
+    m = __rt.cljAssoc(__rt.cljAssoc(__rt.cljAssoc(m, base[0], base[1]), base[2], base[3]), k('test'), test);
+    return __rt.structNew(varType, get, sym, m, deferred);
+  };
+  const compilerMacroVar = (...a) => {
+    if (a.length !== 2) arity(a.length);
+    const [sym, metadata] = a;
+    let m = arrayMap(varBase(sym, [__rt.cljKeyword('macro'), true]));
+    if (val(metadata) != null) m = __rt.cljConj(m, metadata);
+    const text = symText(sym);
+    return makeVar(() => { throw new Error('compile-time macro cannot be consumed as a runtime value: ' + text); }, sym, m);
+  };
+  const varMethods = {
+    formEquals: (x, y) => isVar(y) && __rt.formEquals(varField(x,'sym'), varField(y,'sym')),
+    formHash: x => __rt.formHash(varField(x,'sym')),
+    cljMeta: varMeta,
+    cljWithMeta: (x, m) => __rt.structNew(__rt.structTypeOf(val(x)), varField(x,'val'), varField(x,'sym'), m, null),
+  };
   // The engine calls this task-local resolver only for native structs. The
   // selected entry runs through a rooted native callback frame, so declaration
   // demand and user methods can yield/park without replaying effects.
@@ -762,6 +810,7 @@ const native = (() => {
     if (op === 'jsMember') return jsMember(x, name);
     if(op==='cljWithExportedMeta')op='cljWithMeta';
     const kind = __rt.formKind(x);
+    if (kind === 'struct' && isVar(x) && varMethods[op] !== undefined) return varMethods[op];
     // The engine also offers sorted-map-by maps (and `=` with one, also
     // nested in another comparison) here, whatever their comparator, nil too.
     const sorted = sortedBy.methods[op];
@@ -862,6 +911,8 @@ const native = (() => {
     // callbacks in a task-owned binding cell and prevent their publication.
     if(kind==='struct'&&__rt.formName(__rt.structTypeOf(value))==='cljs.core/MultiFn')
       return (...args)=>globalThis.__lightNativeRuntime.core.invokeMulti(value,args);
+    if(kind==='struct'&&isVar(value))
+      return (...args)=>globalThis.__lightNativeRuntime.core.invokeVar(value,args);
     if (kind === 'vector' || kind === 'map' || kind === 'set' || kind === 'keyword' || kind === 'symbol') return (...args) => {
       if (kind !== 'vector' && (args.length < 1 || args.length > 2)) arity(args.length);
       return __rt.cljInvoke(f, args[0], args.length > 1 ? args[1] : null, args.length);
@@ -874,6 +925,7 @@ const native = (() => {
     if(value===globalThis.__lightNativeRuntime.intrinsicRegExp)return globalThis.__lightNativeRuntime.nativeRegExpCall(value)(...args);
     if(kind==='struct'&&__rt.formName(__rt.structTypeOf(value))==='cljs.core/MultiFn')
       return globalThis.__lightNativeRuntime.core.invokeMulti(value,args);
+    if(kind==='struct'&&isVar(value))return globalThis.__lightNativeRuntime.core.invokeVar(value,args);
     if(kind==='struct'||kind==='record')return globalThis.__lightNativeRuntime.core.invokeStruct(value,args);
     if(kind!=='vector'&&kind!=='map'&&kind!=='set'&&kind!=='keyword'&&kind!=='symbol')return value.call(null,...args);
     if(kind!=='vector'&&(args.length<1||args.length>2))arity(args.length);
@@ -911,6 +963,17 @@ const native = (() => {
   };
   const rawApplies = new Map([...families,'struct'].map(k=>[k,canonicalMember(k+'-apply',()=>rawApplyMember(false))]));
   const rawIFnApply = canonicalMember('ifn-apply',()=>rawApplyMember(true));
+  // A Var's `call`, `apply` and `toString`, as the legacy Var prototype's.
+  const rawVarMembers = new Map([
+    ['call', canonicalMember('var-call',()=>function(_, ...args) {
+      return globalThis.__lightNativeRuntime.core.invokeVar(this,args);
+    })],
+    ['apply', canonicalMember('var-apply',()=>function(_, args) {
+      return globalThis.__lightNativeRuntime.core.invokeVar(this,globalThis.__lightNativeRuntime.core.nativeApplyArgs(args));
+    })],
+    ['toString', canonicalMember('var-string',()=>function() {
+      return globalThis.__lightNativeRuntime.core.str(this);
+    })]]);
   // A native form's named member, as raw JavaScript reads it: a form is one
   // object in both worlds and no call boundary converts anything. The
   // engine itself answers a struct's fields and record slots (its own data
@@ -931,6 +994,7 @@ const native = (() => {
     if (kind !== 'struct' && kind !== 'record')
       return name === 'call' ? rawCalls.get(kind) : name === 'apply' ? rawApplies.get(kind) : undefined;
     if (multi.is(value)) return name === 'call' ? rawMultiCall : name === 'apply' ? rawApplies.get('struct') : inherited(name);
+    if (isVar(value)) return rawVarMembers.get(name) ?? inherited(name);
     return structMember(value, name);
   };
   // Rules 2 and 3 of docs/native-macros.md, "Member precedence: one rule",
@@ -1035,6 +1099,8 @@ const native = (() => {
   // applyTo's null receiver in immutable engine metadata, so they can publish
   // without a mutable JavaScript arity property record.
   const applyArgs = (f,args) => {
+    // A Var applies the value its thunk reads.
+    while(isVar(f))f=varField(f,'val')();
     const value=val(f),kind=__rt.formKind(value);
     if(kind!==null)return (kind==='struct'||kind==='record')
       && __rt.formName(__rt.structTypeOf(value))!=='cljs.core/MultiFn' ? decl.applyIFn(value,args) : invoke(f,...args);
@@ -1191,6 +1257,7 @@ const native = (() => {
       return printSequential(writer,(e,w,o)=>printSequential(w,printWriter,'',' ','',o,e),'#'+__rt.formName(record.ty).replaceAll('/','.')+'{',', ','}',options,entries);
     }
     // The legacy MultiFn constructor is unqualified; user types print their qualified name.
+    if(kind==='struct'&&isVar(x))return write(writer,varText(x));
     if(kind==='struct')return write(writer,'#object['+(multi.is(x)?'MultiFn':__rt.formName(__rt.structTypeOf(x)).replaceAll('/','.'))+' '+structString(x)+']');
     if(kind===null&&(typeof x==='object'||typeof x==='function')){
       const ty=x.__lightNativeType;
@@ -1230,18 +1297,32 @@ const native = (() => {
   function Namespace(obj,name){if(!(this instanceof Namespace))return new Namespace(obj,name);this.obj=obj;this.name=name;}
   Namespace.prototype.toString=function(){const value=val(this.name),kind=__rt.formKind(value);return kind==='symbol'||kind==='keyword'?namedText(value):String(value);};
   Namespace.prototype.getName=function(){return this.name;};
+  // The compiler's namespace inventory, vectors of names in program order
+  // (`BbpEvaluator::send_namespaces`), enters the registry before anything
+  // reads or changes it, so it costs a task nothing until then.
+  const inventory=[];
+  const registry=()=>{
+    while(inventory.length){
+      const names=inventory.shift();
+      for(let i=0,n=__rt.count(names);i<n;i++){
+        const key=__rt.nth(names,i);
+        if(!namespaces.has(key))namespaces.set(key,new Namespace(null,__rt.formSymbol(null,key)));
+      }
+    }
+    return namespaces;
+  };
   const createNs = (...a) => {
     if(a.length!==1&&a.length!==2)return arity(a.length);
     const name=a[0];if(__rt.formKind(val(name))!=='symbol')throw new TypeError('create-ns requires a symbol');
-    const key=namedText(name),obj=a.length===2?val(a[1]):null;
-    if(!namespaces.has(key))namespaces.set(key,new Namespace(obj,name));else if(obj!=null)namespaces.get(key).obj=obj;
-    return namespaces.get(key);
+    const key=namedText(name),obj=a.length===2?val(a[1]):null,registered=registry();
+    if(!registered.has(key))registered.set(key,new Namespace(obj,name));else if(obj!=null)registered.get(key).obj=obj;
+    return registered.get(key);
   };
   const findNs = (...a) => {
     if(a.length!==1)return arity(a.length);
     const name=val(a[0]);if(name==null)return null;if(name instanceof Namespace)return name;
     if(__rt.formKind(name)!=='symbol')throw new TypeError('find-ns requires a symbol or Namespace');
-    return namespaces.get(namedText(name))??null;
+    return registry().get(namedText(name))??null;
   };
   const macroReaderFunction = fn => Object.assign(function(...args){
     const env=get(args[1],__rt.cljKeyword('ns')),name=get(env,__rt.cljKeyword('name'));
@@ -1285,7 +1366,7 @@ const native = (() => {
       if (Object.is(__rt.atomCas(a, current, v), current)) return current;
     }
   };
-  const deref = a => { if (__rt.cljIsReduced(a)) return __rt.cljUnreduced(a); lane(a); return __rt.atomLoad(a); };
+  const deref = a => { if (__rt.cljIsReduced(a)) return __rt.cljUnreduced(a); if (isVar(a)) return varField(a,'val')(); lane(a); return __rt.atomLoad(a); };
   const reset = (a, v) => { lane(a); store(a, v); return v; };
   const swapPair = (a, f, args) => {
     lane(a);
@@ -1975,7 +2056,14 @@ const native = (() => {
   const intoReducer = (...a) => a.length === 1 ? a[0] : a.length === 2 ? __rt.cljConj(a[0], a[1]) : arity(a.length);
   const core = {
     MultiFn:multi.MultiFn, MultiFnFactory:(...a)=>new multi.MultiFn(...a),
-    isFn:x=>typeof val(x)==='function'||__rt.formKind(val(x))==='type'||decl.satisfies('Fn',x),
+    isFn:x=>typeof val(x)==='function'||__rt.formKind(val(x))==='type'||isVar(x)||decl.satisfies('Fn',x),
+    isVar, compilerMacroVar,
+    invokeVar:(v,args)=>invoke(varField(v,'val')(),...args),
+    test:v=>{
+      const fn=isVar(v)?get(__rt.cljMeta(v),__rt.cljKeyword('test')):val(v)==null?null:val(v).cljs$lang$test;
+      if(truth(fn)){invoke(fn);return __rt.cljKeyword('ok');}
+      return __rt.cljKeyword('no-test');
+    },
     isIFn:x=>core.isFn(x)||multi.is(x)||['keyword','symbol','vector','map','set'].includes(__rt.formKind(val(x)))||decl.satisfies('IFn',x),
     invokeMulti:(m,args)=>multi.dispatch(m,args),
     invokeIFn:(x,args)=>decl.invokeIFn(x,args),
@@ -2038,6 +2126,8 @@ const native = (() => {
       return value;
     },
     createNs, findNs, Namespace,
+    allNs:(...a)=>a.length?arity(a.length):list([...registry().values()]),
+    registerNamespaces:names=>{inventory.push(names);return null;},
     theNs:name=>{const ns=findNs(name);if(ns===null)throw new Error('No namespace: '+core.str(name));return ns;},
     nsName:(...a)=>a.length!==1?arity(a.length):__rt.formKind(val(a[0]))==='symbol'?__rt.formName(val(a[0])):val(a[0]).name,
     sequence:x=>{const items=__rt.cljSeq(x);return items===null?__rt.formList():items;},
@@ -2078,7 +2168,10 @@ const native = (() => {
     cons:(x,xs)=>__rt.cljCons(x,xs), concat:(...xs)=>__rt.cljConcatAll(list(xs)),
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),
     apply:(f,...xs)=>{
-      const args=[...xs.slice(0,-1),...arr(xs[xs.length-1])], kind=__rt.formKind(val(f));
+      const args=[...xs.slice(0,-1),...arr(xs[xs.length-1])];
+      // A Var applies the value its thunk reads, once the arguments are read.
+      while(isVar(f))f=varField(f,'val')();
+      const kind=__rt.formKind(val(f));
       return (kind==='struct'||kind==='record') && !multi.is(f)
         ? decl.applyIFn(val(f),args) : invoke(f,...args);
     },
@@ -2131,6 +2224,7 @@ const native = (() => {
       if(kind==='reduced'||__rt.cljIsAtom(x))return '[object Object]';
       if(kind==='symbol'||kind==='keyword'){const ns=__rt.formNamespace(x);return (kind==='keyword'?':':'')+(ns===null?'':ns+'/')+__rt.formName(x);}
       if(kind==='type')return __rt.formName(x);
+      if(kind==='struct'&&isVar(x))return varText(x);
       if(kind==='struct'||kind==='record')return structString(x);
       if(kind!==null){const saved=core.printReadably;core.printReadably=true;try{const {buffer,writer}=stringWriter();printWriterImpl(x,writer,null,true);flushWriter(writer);return buffer.text;}finally{core.printReadably=saved;}}return String(x);}).join('');},
     identical:(a,b)=>val(a)===val(b), isInstance:(c,x)=>c===multi.MultiFn?multi.is(x):__rt.formKind(c)==='type'?__rt.structTypeOf(x)===c:val(x) instanceof c, isRecord:x=>__rt.formKind(val(x))==='record',
@@ -2307,6 +2401,8 @@ const native = (() => {
     }}, EmptyList:{},
   };
   currentNamespace=createNs(__rt.cljSymbol('cljs.user'));
+  // As the legacy runtimes: `cljs.core` follows `cljs.user`.
+  createNs(__rt.cljSymbol('cljs.core'));
   Object.defineProperty(core,'currentNs',{
     get:()=>{
       const frame=namespaceFrames[namespaceFrames.length-1];
@@ -2364,7 +2460,7 @@ const native = (() => {
     mapShape:keys=>keys,mapFromShape:(ks,vs)=>literalMap(ks.flatMap((k,i)=>[k,vs[i]])),
     setFromArray:set,arraySetFromArray:set,constantSetFromArray:constantSet,literalSetFromArray:literalSet,
     fnRest:(args,n)=>list(Array.prototype.slice.call(args,n)),
-    makeIFn:f=>f,
+    makeIFn:f=>f, makeVar, definitionVar,
     compilerForms:{
       jsObj:bootstrapJsObj,
       jsArray:items=>__rt.formCompilerLiteral('js-array',vector(items)),
@@ -2377,7 +2473,7 @@ const native = (() => {
       namespaceContext:()=>{
         if(!(currentNamespace instanceof Namespace))return __rt.formVector(0,currentNamespace);
         const name=currentNamespace.name,kind=__rt.formKind(val(name));
-        const interned=kind==='symbol'&&namespaces.get(namedText(name))===currentNamespace;
+        const interned=kind==='symbol'&&registry().get(namedText(name))===currentNamespace;
         const context=__rt.formVector(interned?1:2,name);
         if(!interned)explicitNamespaces.set(context,currentNamespace);
         return context;
@@ -2393,6 +2489,9 @@ const native = (() => {
 globalThis.__lightNativeRuntime=native;
 const roots=new Map();
 const productReaders=new Map();
+// Of each root, the unit of its definition's executable :test metadata;
+// of each unit, its root's slot.
+const rootTests=new Map(), unitSlots=new Map();
 // Private task-owned slots: unit/name/state/value/defined are fields 0..4.
 // Full JS values stay traced; public roots and saved getters remain ordinary.
 // A bundle replaces an unavailable declaration's getter. Remember that it
@@ -2467,7 +2566,7 @@ globalThis.__lightInitializerResult=null;
 globalThis.__lightInitializerFailure=null;
 globalThis.__lightInitializerRequireShared=false;
 globalThis.__lightInitializerSelect=false;
-globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
+globalThis.__lightRegisterUnit=(name,unit,once=false,location='',test=null)=>{
   lazyResolve(name);
   if(!roots.has(name)&&(name in registry()))return null;
   if(roots.has(name)&&__rt.initializerSlotGet(roots.get(name),0)===unit)return null;
@@ -2475,6 +2574,10 @@ globalThis.__lightRegisterUnit=(name,unit,once=false)=>{
   // legacy runtimes' registry does.
   if(once&&roots.has(name)&&(__rt.initializerSlotGet(roots.get(name),0)!==null||__rt.initializerSlotGet(roots.get(name),4)===true))return null;
   const slot=__rt.initializerSlot(unit,name);roots.set(name,slot);
+  // The unit of the definition's executable :test metadata, whose own root
+  // a Var reflects (`__lightCompilerVarMetadata`).
+  rootTests.set(name,test);
+  if(unit!==null)unitSlots.set(unit,slot);
   Object.defineProperty(registry(),name,{configurable:true,get:rootGetter(name,unit,slot)});return null;
 };
 const rootGetter=(name,unit,slot)=>()=>{
@@ -2482,6 +2585,43 @@ const rootGetter=(name,unit,slot)=>()=>{
   __rt.need(unit,2);
   const factory=__rt.need(unit,3);
   return initializeValue(slot,factory);
+};
+const demandSlot=slot=>{
+  const unit=__rt.initializerSlotGet(slot,0);
+  if(unit===null)throw new Error('unavailable definition: '+__rt.initializerSlotGet(slot,1));
+  __rt.need(unit,2);
+  const factory=__rt.need(unit,3);
+  return initializeValue(slot,factory);
+};
+// A definition's executable :test metadata, from its own unit: the unit's
+// root initializes once, and a failure stays. A lazily adopted catalog
+// installs the unit's root first.
+globalThis.__lightCompilerTest=unit=>{
+  if(!unitSlots.has(unit)&&lazyCatalog!==null)materializeAll();
+  const slot=unitSlots.get(unit);
+  if(slot===undefined)throw new Error('unavailable definition: executable :test metadata');
+  return demandSlot(slot);
+};
+// A Var's deferred :test metadata. The source generation is captured
+// without demanding the root: a root already initialized gives its
+// function's :test, any other the :test unit of the definition registered
+// now, which reflection demands only when it reads the metadata.
+globalThis.__lightCompilerVarMetadata=name=>{
+  lazyResolve(name);
+  let ready=false,root;
+  const descriptor=Object.getOwnPropertyDescriptor(rootTarget,name);
+  if(bindingOverlays.has(name)){ready=true;root=bindingOverlays.get(name);}
+  else if(descriptor!==undefined&&'value' in descriptor){ready=true;root=descriptor.value;}
+  else if(descriptor!==undefined&&productReaders.has(descriptor.get)){
+    const bundle=__rt.nth(productReaders.get(descriptor.get),0);
+    if(bundle.state===2&&name in bundle.products){ready=true;root=bundle.products[name];}
+  }else if(roots.has(name)&&__rt.initializerSlotGet(roots.get(name),2)===2){ready=true;root=__rt.initializerSlotGet(roots.get(name),3);}
+  if(ready){
+    const value=__rt.formValue(root),test=value!=null&&value!==false?value.cljs$lang$test:null;
+    return ()=>test;
+  }
+  const test=productReaders.has(descriptor?.get)?null:rootTests.get(name)??null;
+  return ()=>test===null?null:globalThis.__lightCompilerTest(test);
 };
 const initializeValue=(slot,factory)=>{
     const unit=__rt.initializerSlotGet(slot,0),state=__rt.initializerSlotGet(slot,2);
@@ -2681,9 +2821,13 @@ function lazyResolve(name){
   if(s.pre)__rt.initializerSlotSet(previous,4,true);
   let slot=previous;
   if(s.fresh){slot=__rt.initializerSlot(s.unit,name);if(s.defined)__rt.initializerSlotSet(slot,4,true);roots.set(name,slot);}
-  if(__rt.nth(__rt.nth(c.entries,s.owner),0)===0)
+  const owner=__rt.nth(c.entries,s.owner);
+  if(__rt.nth(owner,0)===0){
+    // As `__lightRegisterUnit`: the :test unit Var reflection reads.
+    rootTests.set(name,__rt.nth(owner,4));
+    if(s.unit!==null)unitSlots.set(s.unit,slot);
     Object.defineProperty(rootTarget,name,{configurable:true,get:rootGetter(name,s.unit,slot)});
-  else {
+  }else{
     const b=lazyBundle(c,s.owner),read=decl.productGetter(b,name);
     Object.defineProperty(rootTarget,name,{configurable:true,get:read});
     productReaders.set(read,__rt.vector(b,name));
@@ -2763,7 +2907,7 @@ for(let serial=1;;serial++){
       for(let at=__rt.nth(input,1);at<__rt.count(catalog);at++){
         const entry=__rt.nth(catalog,at);
         if(__rt.nth(entry,0)===0){
-          globalThis.__lightRegisterUnit(__rt.nth(entry,1),__rt.nth(entry,2),__rt.nth(entry,3));
+          globalThis.__lightRegisterUnit(__rt.nth(entry,1),__rt.nth(entry,2),__rt.nth(entry,3),'',__rt.nth(entry,4));
         }else{
           const products=__rt.nth(entry,1), extensions=__rt.nth(entry,2), names=[], indices=[];
           for(let i=0;i<__rt.count(products);i++)names.push(__rt.nth(products,i));
@@ -2773,6 +2917,8 @@ for(let serial=1;;serial++){
       }
     }
     else if(op===3){if(held&&heldId===id){held=false;heldValue=null;}else values.delete(id);}
+    // The program's namespaces, in its order (`BbpEvaluator::send_namespaces`).
+    else if(op===5)native.core.registerNamespaces(input);
     else {
       if(held){values.set(heldId,heldValue);held=false;heldValue=null;}
       if(op===0) result=(0,eval)(input);

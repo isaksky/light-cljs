@@ -11302,7 +11302,14 @@ impl Analyzer<'_> {
             let _site = crate::macro_host::ExpansionSite::enter(&name, &call_span);
             let result = self
                 .macro_host
-                .expand_source_javascript(self.namespace, target, &form, &env, self.engine)
+                .expand_source_javascript(
+                    self.namespace,
+                    target,
+                    &form,
+                    &env,
+                    self.engine,
+                    Some(&self.program.namespaces),
+                )
                 .map_err(error)?;
             self.macro_host
                 .register_reader_declarations(self.pending_reader_registration.take());

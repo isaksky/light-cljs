@@ -670,6 +670,7 @@ impl InteractiveCompiler {
                     &form,
                     &env,
                     None,
+                    self.program.as_ref().map(|program| &program.namespaces),
                 )?;
                 self.host.register_reader_declarations(registration);
                 Some(expanded)

@@ -1463,6 +1463,16 @@ pub trait MacroEvaluator {
     fn needs_reader_registration(&self) -> bool {
         true
     }
+    /// For an engine without reader tables, give its runtime the program's
+    /// namespace inventory, `namespaces` in program order: what `all-ns`,
+    /// `find-ns` and `the-ns` see, as reader registration gives the
+    /// JavaScript runtimes ([`crate::reader_registration::register`]).
+    fn register_namespaces(
+        &self,
+        _namespaces: &crate::arena::Arena<String>,
+    ) -> Result<(), EvalError> {
+        Ok(())
+    }
     /// Execute all namespace registrations in order. Engines may cache the
     /// compiled chunks, but must execute every registration on every call.
     fn evaluate_registration(

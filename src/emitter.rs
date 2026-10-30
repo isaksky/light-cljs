@@ -8777,10 +8777,8 @@ impl<'a> Emitter<'a> {
                 symbol,
                 metadata,
             } => {
-                if self.native_forms {
-                    self.output.push_str("(() => { throw new Error('unsupported operation: native macro runtime Var reflection'); })()");
-                    return;
-                }
+                // The Pants build's runtime has the same two constructors,
+                // over its native Var (`bbp_runtime.js`).
                 self.rt(RuntimeName::export(if *definition {
                     "definitionVar"
                 } else {
