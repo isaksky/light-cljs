@@ -638,14 +638,9 @@ impl MacroHost {
             self.engine.bootstrap = session.bootstrap();
         }
     }
-    pub(crate) fn expand_core_javascript(
-        &mut self,
-        name: &str,
-        call: &Form,
-        env: &Datum,
-        engine: Option<&dyn crate::evaluator::MacroEvaluator>,
-    ) -> Result<Form, String> {
-        crate::macro_host::forbid_engine_entry(name);
+    /// Give the host its bootstrap, the session's or a new one, as the
+    /// first expansion of the core macro `name` that needs it does.
+    fn ensure_bootstrap(&mut self, name: &str) -> Result<(), String> {
         if self.engine.bootstrap.is_none() {
             if self.tables.bootstrap_seed && self.session_handle().is_none() {
                 return Err(format!("bootstrap primitive seed cannot expand {name}"));
@@ -657,6 +652,49 @@ impl MacroHost {
                 self.engine.bootstrap = Some(build(self, true)?);
             }
         }
+        Ok(())
+    }
+    /// The compile-time runtime in which the call `call` of the core macro
+    /// `name`, expanded natively outside every scope of generated names,
+    /// numbers its names: the one its bootstrap definition would run in
+    /// ([`Self::expand_core_javascript`]), `engine` or the bootstrap's.
+    /// Its `gensym` there skips the names that runtime decoded, which the
+    /// call's own join first ([`crate::bbp_evaluator::BbpEvaluator::unscoped_gensyms`]),
+    /// so the names are the ones the V8 build's engine gives (light-cljs-611).
+    #[cfg(feature = "bbp-macros")]
+    pub(crate) fn unscoped_gensyms<'e>(
+        &mut self,
+        name: &str,
+        engine: Option<&'e dyn crate::evaluator::MacroEvaluator>,
+    ) -> Result<impl FnMut(&Datum, &[&str]) -> Result<Vec<String>, String> + use<'e>, String> {
+        self.ensure_bootstrap(name)?;
+        let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
+        if engine.is_none()
+            && let Some(session) = self.session_handle()
+        {
+            session.attach(&bootstrap, self)?;
+        }
+        let name = name.to_owned();
+        Ok(move |call: &Datum, bases: &[&str]| {
+            engine
+                .unwrap_or(bootstrap.evaluator.as_ref())
+                .native_shell()
+                .ok_or_else(|| {
+                    format!("core macro {name} outside a scope needs the native runtime")
+                })?
+                .unscoped_gensyms(call, bases)
+                .map_err(|e| e.to_string())
+        })
+    }
+    pub(crate) fn expand_core_javascript(
+        &mut self,
+        name: &str,
+        call: &Form,
+        env: &Datum,
+        engine: Option<&dyn crate::evaluator::MacroEvaluator>,
+    ) -> Result<Form, String> {
+        crate::macro_host::forbid_engine_entry(name);
+        self.ensure_bootstrap(name)?;
         #[cfg(feature = "bbp-macros")]
         if name == "js-obj" {
             let bootstrap = self.engine.bootstrap.as_mut().unwrap();

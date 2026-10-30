@@ -413,6 +413,13 @@ pub(crate) fn serve_gensym(request: &str) -> String {
     }
 }
 
+/// Add `name`, which the compile-time runtime's `gensym` returned outside
+/// every scope, to this thread's log, if the compilation logs them.
+#[cfg(feature = "bbp-macros")]
+pub(crate) fn log_name(name: Vec<u16>) {
+    log(|| name);
+}
+
 /// Add a name to this thread's log, if the compilation logs them.
 fn log(name: impl FnOnce() -> Vec<u16>) {
     LOG.with(|log| {

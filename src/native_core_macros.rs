@@ -11,8 +11,11 @@
 //! whose equality is the engine's), is declined: [`expand`] returns
 //! `Ok(None)` before it allocates a name, and the engine expands the call,
 //! failing with its own message and position. So is a call the engine's
-//! conversion refuses, and every call outside a scope of generated names
-//! ([`crate::MacroHost::expand_core_native`]). The names a definition
+//! conversion refuses, and, on engines other than the Pants build's, every
+//! call outside a scope of generated names
+//! ([`crate::MacroHost::expand_core_native`]); the Pants build expands
+//! those with names from its runtime's own `gensym` count, which skips the
+//! names the call spells as the engine's does (light-cljs-611). The names a definition
 //! allocates are those the compile-time runtime's `gensym` gives, in the
 //! same order and with the same prefixes ([`Gensym`]), taken from the
 //! scope's count without entering an engine (light-cljs-432,
@@ -79,6 +82,8 @@ pub(crate) fn native(name: &str, native_backend: bool) -> bool {
                 | "unchecked-max"
                 | "unchecked-min"
                 | "hash-map"
+                | "selector"
+                | "simple-benchmark"
         )
 }
 
@@ -395,6 +400,16 @@ pub(crate) fn expand(
             _ => None,
         },
         "hash-map" => Some(hash_map(args)),
+        "selector" => match args {
+            [map] => selector(map, gensym)?,
+            _ => None,
+        },
+        "simple-benchmark" => match args {
+            [bindings, expr, iterations, options @ ..] => {
+                simple_benchmark(bindings, expr, iterations, options, gensym)?
+            }
+            _ => None,
+        },
         "time" => match args.first() {
             Some(expr) => Some(timed(expr, gensym)?),
             None => None,
@@ -833,6 +848,211 @@ fn js_comment(comment: &Datum) -> Option<Datum> {
         list(vec![symbol("js*"), C.string(template)]),
         C.nil(),
     ]))
+}
+
+/// The most entries a map the engine decodes, or `merge` grows, keeps in
+/// the order it was given: past it the map is a hash map, whose order is
+/// the engine's hashes'.
+const ARRAY_MAP_ENTRIES: usize = 8;
+
+/// `macro-selector`: a function destructuring its argument with `map`,
+/// each of the directives `:select`, `:excess`, `:missing` and `:all` it
+/// holds bound to a name of its own. A map larger than an array map is
+/// declined, as is every call the definition rejects.
+fn selector(map: &Datum, gensym: Gensym<'_>) -> Result<Option<Datum>, String> {
+    let Ok(entries) = map.entries() else {
+        return Ok(None);
+    };
+    let truthy =
+        |value: &Datum| !matches!(value.kind(), DatumKind::Nil | DatumKind::Boolean(false));
+    let directives = ["select", "excess", "missing", "all"]
+        .into_iter()
+        .filter(|directive| {
+            entries
+                .iter()
+                .find(|(key, _)| is_keyword(key, directive))
+                .is_some_and(|(_, value)| truthy(value))
+        })
+        .collect::<Vec<_>>();
+    let added = directives
+        .iter()
+        .filter(|directive| !entries.iter().any(|(key, _)| is_keyword(key, directive)))
+        .count();
+    if directives.is_empty() || entries.len() + added > ARRAY_MAP_ENTRIES {
+        return Ok(None);
+    }
+    let mut prefixes = vec!["G__"; directives.len()];
+    prefixes.extend(["map", "selector"]);
+    let mut names = gensym(&prefixes)?;
+    let (function, argument) = (names.pop().unwrap(), names.pop().unwrap());
+    let directives = directives
+        .iter()
+        .map(|directive| C.keyword(Name::new(None, directive)))
+        .zip(names)
+        .collect::<Vec<_>>();
+    let mut merged = map.clone();
+    for (directive, name) in &directives {
+        merged = C.assoc(&merged, directive, name)?;
+    }
+    let body = match directives.as_slice() {
+        [(_, name)] => name.clone(),
+        _ => list(vec![core("some-vals"), C.map(&directives)?]),
+    };
+    Ok(Some(list(vec![
+        core("fn"),
+        function,
+        vector(vec![argument.clone()]),
+        list(vec![core("let"), vector(vec![merged, argument]), body]),
+    ])))
+}
+
+/// `macro-simple-benchmark`: time `iterations` runs of `expr` under
+/// `bindings` and print them with `:print-fn`, `println` by default. The
+/// call's forms are printed as `pr-str` prints them in the engine; one this
+/// module cannot print so ([`printed`]) is declined, as is an odd option
+/// count, which the definition rejects.
+fn simple_benchmark(
+    bindings: &Datum,
+    expr: &Datum,
+    iterations: &Datum,
+    options: &[Datum],
+    gensym: Gensym<'_>,
+) -> Result<Option<Datum>, String> {
+    if options.len() % 2 == 1 {
+        return Ok(None);
+    }
+    // `(get (apply hash-map options) :print-fn 'println)`: the last value
+    // of the key wins.
+    let print = options
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .rev()
+        .find(|[key, _]| is_keyword(key, "print-fn"))
+        .map_or_else(|| symbol("println"), |[_, value]| value.clone());
+    let (Some(bindings_text), Some(expr_text)) = (printed(bindings), printed(expr)) else {
+        return Ok(None);
+    };
+    let names = gensym(&["start", "end", "elapsed", "ret", "_"])?;
+    let [start, end, elapsed, ret, ignored] = <[Datum; 5]>::try_from(names)
+        .map_err(|_| "simple-benchmark needs five names".to_owned())?;
+    let text = |text: &str| C.string(text.encode_utf16().collect::<Vec<_>>());
+    let time = || {
+        list(vec![
+            symbol(".getTime"),
+            list(vec![symbol("new"), C.symbol(Name::new(Some("js"), "Date"))]),
+        ])
+    };
+    Ok(Some(list(vec![
+        core("let"),
+        bindings.clone(),
+        list(vec![
+            core("let"),
+            vector(vec![
+                start.clone(),
+                time(),
+                ret,
+                list(vec![
+                    core("dotimes"),
+                    vector(vec![ignored, iterations.clone()]),
+                    expr.clone(),
+                ]),
+                end.clone(),
+                time(),
+                elapsed.clone(),
+                list(vec![core("-"), end, start]),
+            ]),
+            list(vec![
+                print,
+                list(vec![
+                    core("str"),
+                    C.string(bindings_text),
+                    text(", "),
+                    C.string(expr_text),
+                    text(", "),
+                    iterations.clone(),
+                    text(" runs, "),
+                    elapsed,
+                    text(" msecs"),
+                ]),
+            ]),
+        ]),
+    ])))
+}
+
+/// What the engine's `pr-str` prints for `datum`, as UTF-16, for the forms
+/// whose printing does not depend on the engine's number formatting or
+/// hashes: nil, booleans, integers it holds exactly, strings, symbols,
+/// keywords, lists, vectors and maps of at most [`ARRAY_MAP_ENTRIES`]
+/// entries; `None` for any other.
+fn printed(datum: &Datum) -> Option<Vec<u16>> {
+    fn name(name: &Name, out: &mut Vec<u16>) {
+        if let Some(namespace) = name.namespace() {
+            out.extend_from_slice(namespace);
+            out.push(b'/' as u16);
+        }
+        out.extend_from_slice(name.name());
+    }
+    fn print(datum: &Datum, out: &mut Vec<u16>) -> Option<()> {
+        let ascii = |text: &str, out: &mut Vec<u16>| out.extend(text.encode_utf16());
+        match datum.kind() {
+            DatumKind::Nil => ascii("nil", out),
+            DatumKind::Boolean(value) => ascii(if *value { "true" } else { "false" }, out),
+            DatumKind::Integer(value) if value.unsigned_abs() <= 1 << 53 => {
+                ascii(&value.to_string(), out)
+            }
+            DatumKind::String(text) => {
+                out.push(b'"' as u16);
+                for &unit in text.iter() {
+                    match char::from_u32(u32::from(unit)) {
+                        Some('"') => ascii("\\\"", out),
+                        Some('\\') => ascii("\\\\", out),
+                        Some('\u{8}') => ascii("\\b", out),
+                        Some('\u{c}') => ascii("\\f", out),
+                        Some('\n') => ascii("\\n", out),
+                        Some('\r') => ascii("\\r", out),
+                        Some('\t') => ascii("\\t", out),
+                        _ => out.push(unit),
+                    }
+                }
+                out.push(b'"' as u16);
+            }
+            DatumKind::Symbol(n) => name(n, out),
+            DatumKind::Keyword(n) => {
+                out.push(b':' as u16);
+                name(n, out);
+            }
+            DatumKind::Collection { kind, children } => {
+                let (open, close, separator) = match kind {
+                    CollectionKind::List => ("(", ")", " "),
+                    CollectionKind::Vector => ("[", "]", " "),
+                    CollectionKind::Map if children.len() <= 2 * ARRAY_MAP_ENTRIES => {
+                        ("{", "}", ", ")
+                    }
+                    _ => return None,
+                };
+                ascii(open, out);
+                let step = if *kind == CollectionKind::Map { 2 } else { 1 };
+                for (index, group) in children.chunks(step).enumerate() {
+                    if index > 0 {
+                        ascii(separator, out);
+                    }
+                    for (position, child) in group.iter().enumerate() {
+                        if position > 0 {
+                            ascii(" ", out);
+                        }
+                        print(child, out)?;
+                    }
+                }
+                ascii(close, out);
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+    let mut out = Vec::new();
+    print(datum, &mut out)?;
+    Some(out)
 }
 
 /// `macro-time`: retain the expression's result after printing elapsed time.
@@ -1794,21 +2014,31 @@ pub(crate) fn native_expansion(
 impl crate::MacroHost {
     /// Expand the call `form` of the core macro `name`, spelled as `site`
     /// gives it at its span, natively ([`expand`]), charged as the engine
-    /// charges an expansion; `None` if the engine expands it instead. It
-    /// never enters an engine: the names it allocates come from the scope's
-    /// count ([`scope_gensyms`]).
+    /// charges an expansion; `None` if the engine expands it instead. In a
+    /// scope of generated names it never enters an engine: the names it
+    /// allocates come from the scope's count ([`scope_gensyms`]). Outside
+    /// every scope, only on the Pants build, they come from the runtime
+    /// that would run the definition, `engine` or the bootstrap's
+    /// ([`crate::MacroHost::unscoped_gensyms`]).
     pub(crate) fn expand_core_native(
         &mut self,
         name: &str,
         form: &crate::compiler_data::Form,
         namespace: &str,
         site: (&str, &std::ops::Range<usize>),
+        engine: Option<&dyn crate::evaluator::MacroEvaluator>,
     ) -> Result<Option<crate::compiler_data::Form>, String> {
         // Outside every scope of generated names, `gensym` skips the names
-        // the heap decoded, which the engine's conversion of the call adds.
-        if !crate::generated_names::scoped() {
+        // the heap decoded, which the engine's conversion of the call adds:
+        // the Pants build takes them from its runtime, which counts and
+        // skips them as the engine would (light-cljs-611); other engines
+        // expand such a call themselves.
+        let scoped = crate::generated_names::scoped();
+        if !scoped && !self.native_macro_backend() {
             return Ok(None);
         }
+        #[cfg(not(feature = "bbp-macros"))]
+        let _ = engine;
         let call = form.data();
         // A call the engine's conversion refuses, too deep or larger than the
         // node limit (which each conversion may take whole), is left to it,
@@ -1826,7 +2056,29 @@ impl crate::MacroHost {
         if self.measures_work() {
             self.note_node_room(crate::macro_host::WorkMarks::nodes(&call));
         }
-        let expanded = expand(name, &call, namespace, &mut scope_gensyms)?;
+        // Outside every scope, the runtime's `gensym` numbers the names.
+        #[cfg(feature = "bbp-macros")]
+        let mut unscoped = if scoped {
+            None
+        } else {
+            Some(self.unscoped_gensyms(name, engine)?)
+        };
+        #[cfg(not(feature = "bbp-macros"))]
+        let mut unscoped: Option<fn(&Datum, &[&str]) -> Result<Vec<String>, String>> = None;
+        let mut decoded = false;
+        let expanded = {
+            let mut gensym = |prefixes: &[&str]| match &mut unscoped {
+                Some(allocate) => {
+                    decoded = true;
+                    Ok(allocate(&call, prefixes)?
+                        .iter()
+                        .map(|name| symbol(name))
+                        .collect())
+                }
+                None => scope_gensyms(prefixes),
+            };
+            expand(name, &call, namespace, &mut gensym)?
+        };
         #[cfg(feature = "bbp-macros")]
         let expanded = if expanded.is_none() && name == "defmulti" && self.native_macro_backend() {
             match children(&call).get(1..).and_then(|args| args.split_first()) {
@@ -1836,6 +2088,14 @@ impl crate::MacroHost {
         } else {
             expanded
         };
+        // A call that allocated no name still joins its names to those the
+        // runtime's `gensym` skips, as its conversion would.
+        if let Some(allocate) = &mut unscoped
+            && expanded.is_some()
+            && !decoded
+        {
+            allocate(&call, &[])?;
+        }
         let Some(expanded) = expanded else {
             return Ok(None);
         };
@@ -1969,7 +2229,7 @@ mod tests {
             let before = host.engine.expansions.get();
             let shape = native_expansion(&name, &call.data(), "user", host.limits.generated_nodes);
             let expanded = host
-                .expand_core_native(&name, &call, "user", (&name, &(0..source.len())))
+                .expand_core_native(&name, &call, "user", (&name, &(0..source.len())), None)
                 .unwrap();
             // The macro-free check declines exactly where expansion does,
             // and walks the same shape.
@@ -2368,7 +2628,13 @@ mod tests {
                 .unwrap();
             let _names = crate::generated_names::enter_namespace(7);
             let actual = native
-                .expand_core_native("defmulti", &call, "user", ("defmulti", &(0..source.len())))
+                .expand_core_native(
+                    "defmulti",
+                    &call,
+                    "user",
+                    ("defmulti", &(0..source.len())),
+                    None,
+                )
                 .unwrap()
                 .expect("native metadata merge");
             assert_eq!(difference(&actual, &expected, ""), None, "{source}");
@@ -2486,7 +2752,7 @@ mod tests {
             let _names = crate::generated_names::enter_namespace(7);
             let shape = native_expansion(name, &call.data(), "user", host.limits.generated_nodes);
             let expanded = host
-                .expand_core_native(name, &call, "user", (name, &(0..1)))
+                .expand_core_native(name, &call, "user", (name, &(0..1)), None)
                 .unwrap()
                 .is_some();
             assert_eq!(shape.is_some(), expanded, "{source}");
@@ -2516,7 +2782,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            host.expand_core_native("or", &call, "user", ("or", &(0..8)))
+            host.expand_core_native("or", &call, "user", ("or", &(0..8)), None)
                 .unwrap()
                 .is_none()
         );

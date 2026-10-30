@@ -11393,7 +11393,13 @@ impl Analyzer<'_> {
                 .map_err(|e| error(e.to_string()))?;
             if let Some(expanded) = self
                 .macro_host
-                .expand_core_native(core_name, &form, self.namespace, (&name, &call_span))
+                .expand_core_native(
+                    core_name,
+                    &form,
+                    self.namespace,
+                    (&name, &call_span),
+                    self.engine,
+                )
                 .map_err(error)?
             {
                 return self.import_form(&expanded).map(Some);

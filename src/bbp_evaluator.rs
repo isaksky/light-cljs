@@ -3512,6 +3512,68 @@ impl CompilerEvaluator for BbpEvaluator {
     }
 }
 impl BbpEvaluator {
+    /// The names the runtime's `gensym` returns, one for each of `bases` in
+    /// order, outside every scope of generated names, for a core macro call
+    /// `call` expanded natively there (light-cljs-611): first every
+    /// unqualified symbol of the call joins the names `gensym` skips, as
+    /// the runtime's conversion of the call would add them, then each name
+    /// takes the runtime's next count, skipping those names, and is logged
+    /// as the runtime's `gensym` logs it.
+    pub(crate) fn unscoped_gensyms(
+        &self,
+        call: &Datum,
+        bases: &[&str],
+    ) -> Result<Vec<String>, EvalError> {
+        fn decoded(data: &Datum, names: &mut Vec<Vec<u16>>) {
+            match data.kind() {
+                D::Symbol(name) if name.namespace().is_none() => {
+                    let mut key = vec![b'a' as u16];
+                    key.extend_from_slice(name.name());
+                    names.push(key);
+                }
+                D::Collection { children, .. } => {
+                    children.iter().for_each(|child| decoded(child, names))
+                }
+                D::CompilerLiteral { payload, .. } => decoded(payload, names),
+                _ => {}
+            }
+            if let Some(metadata) = data.metadata() {
+                decoded(&metadata, names);
+            }
+        }
+        self.control.poll()?;
+        let mut keys = Vec::new();
+        decoded(call, &mut keys);
+        let names = self.host_scope(|s| {
+            self.with_bridge(|b| {
+                for key in &keys {
+                    b.generated_names.insert(string(s, key)?);
+                }
+                bases
+                    .iter()
+                    .map(|base| {
+                        loop {
+                            b.gensym_counter = b
+                                .gensym_counter
+                                .checked_add(1)
+                                .ok_or_else(|| error("gensym identities exhausted"))?;
+                            let name = format!("{base}{}", b.gensym_counter);
+                            let key = std::iter::once(b'a' as u16)
+                                .chain(name.encode_utf16())
+                                .collect::<Vec<_>>();
+                            if b.generated_names.insert(string(s, &key)?) {
+                                break Ok(name);
+                            }
+                        }
+                    })
+                    .collect::<Result<Vec<_>, EvalError>>()
+            })
+        })?;
+        for name in &names {
+            crate::generated_names::log_name(name.encode_utf16().collect());
+        }
+        Ok(names)
+    }
     /// Record root `unit`'s helper definition and complete its binding cell.
     fn define_root(&self, unit: Option<usize>) -> Result<(), EvalError> {
         let Some(unit) = unit else {
