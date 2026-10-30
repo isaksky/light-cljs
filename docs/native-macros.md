@@ -373,7 +373,7 @@ engine check; Pants additionally needs the two existing feature-specific
 unused variables and `execution.rs`'s `unused_enumerate_index` allowance.
 The engine-free check passes allowing only that same enumeration lint.
 
-Review-fix verification at `7be5f2c2`, rebased onto `c92812a9`:
+Review-fix verification at `c6a6d6dc`, rebased onto `22987ca0`:
 
 | Build | Coverage | Result |
 | --- | --- | --- |
@@ -387,17 +387,26 @@ The full suites use `cargo nextest run --locked --no-fail-fast -j 8`, with
 `--lib --test bbp_macros`, with `--no-default-features --features
 bbp-macros,quickjs` and `--features bbp-macros`, respectively. Builds remain
 serialized with four Cargo build jobs and eight compiler test threads.
-The V8 full result is reused after changes confined to the engine crate and
-Pants-only tests; its compiled paths and inputs are unchanged. All new runtime
-regressions pass against both the QuickJS reference and the V8 build.
+The V8 full result is reused after production changes confined to the engine
+crate and Pants-only paths. The strengthened regex regression is rerun in all
+three engine configurations. Final mixed runs additionally select that one
+compiler test, for **667** and **711** passing tests respectively; the other
+compiler tests are covered by the full suites. All new runtime regressions pass
+against both the QuickJS reference and the V8 build.
 
-The engine's complete all-targets suite passes all **2220** tests, and all
+The engine's complete all-targets suite passes all **2223** tests, and all
 seven doctests pass, with three test threads. The unchanged 64 KiB record
 comparison regression caught stack growth from the added apply operands;
 dispatching those operations through a separate helper restores the limit.
 Both formatters and strict V8 Clippy pass. Engine, Pants and engine-free strict
 Clippy retain nine, eight and one documented diagnostics, respectively;
 checks allowing only the categories listed above pass on the final content.
+
+Fresh release compilers build the unchanged seed-42 200k fixture without cache
+at one thread. All three application files match byte for byte, with the same
+`workload.main.js` SHA-256 recorded above. Both print `530807` by default and
+`484264` for `42 3`, matching the Babashka reference. The Pants output is checked
+again after the realization-accounting and regex-diagnostic rebase.
 
 ## Core macros on the Pants build (light-cljs-611)
 
