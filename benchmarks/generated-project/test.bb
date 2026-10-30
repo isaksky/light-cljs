@@ -13,9 +13,11 @@
 (load-file (str (fs/path kit "generate.bb")))
 (load-file (str (fs/path kit "oracle.bb")))
 (load-file (str (fs/path kit "check-waste.bb")))
+(load-file (str (fs/path kit "compare.bb")))
 (alias 'gen 'generated-project.generate)
 (alias 'oracle 'generated-project.oracle)
 (alias 'waste 'generated-project.check-waste)
+(alias 'compare 'generated-project.compare)
 
 (def options
   (loop [[arg & more] *command-line-args* result {}]
@@ -157,6 +159,49 @@
             shadow (edn/read-string (slurp (fs/file dir "deps.edn")))]
         (is (= ["src" "macros"] (:source-paths light)))
         (is (= ["src" "macros" "shadow-support"] (:paths shadow)))))))
+
+(def leaf-original
+  "Bytes a text round trip would not reproduce: invalid UTF-8, CRLF, no final newline."
+  (byte-array (concat (.getBytes "(ns leaf)\r\n(def x \"" "UTF-8") [-1 -2 -128] (.getBytes "\")" "UTF-8"))))
+
+(defn leaf-bytes [dir] (vec (fs/read-all-bytes (fs/file dir "leaf.cljs"))))
+
+(deftest leaf-scenario-restores-source-after-failure
+  (let [dir (str (fs/create-temp-dir {:prefix "light-leaf-test-"}))
+        sample {:s 1.0 :user-s 1.0 :rss-gb 0.1}
+        edited? #(str/includes? (slurp (fs/file dir "leaf.cljs")) "compare-leaf-edit-")]
+    (try
+      (fs/write-bytes (fs/file dir "leaf.cljs") leaf-original)
+      (testing "a build that throws"
+        (with-redefs [compare/timed (fn [_ _] (is (edited?)) (throw (ex-info "build broke" {})))]
+          (is (thrown-with-msg? Exception #"build broke"
+                                (compare/leaf-scenario dir 2 "leaf.cljs" ["build"] (constantly {})))))
+        (is (= (vec leaf-original) (leaf-bytes dir))))
+      (testing "builds that succeed, then a check that throws"
+        (let [builds (atom 0)]
+          (with-redefs [compare/timed (fn [_ _] (is (edited?)) (swap! builds inc) sample)]
+            (is (thrown-with-msg? Exception #"check broke"
+                                  (compare/leaf-scenario dir 2 "leaf.cljs" ["build"]
+                                                         #(do (is (edited?)) (throw (ex-info "check broke" {})))))))
+          (is (= 2 @builds)))
+        (is (= (vec leaf-original) (leaf-bytes dir))))
+      (testing "a run that succeeds"
+        (with-redefs [compare/timed (constantly sample)]
+          (is (= {:ok true} (:output (compare/leaf-scenario dir 1 "leaf.cljs" ["build"] (constantly {:ok true}))))))
+        (is (= (vec leaf-original) (leaf-bytes dir))))
+      (testing "a run terminated during its build"
+        (let [script (str "(load-file " (pr-str (str (fs/path kit "compare.bb"))) ")"
+                          "(with-redefs [generated-project.compare/timed"
+                          " (fn [_ _] (println :edited) (flush) (Thread/sleep 60000))]"
+                          " (generated-project.compare/leaf-scenario " (pr-str dir) " 1 \"leaf.cljs\" [] (constantly nil)))")
+              proc (process/process {:err :inherit} "bb" "-e" script)]
+          ;; The child prints once the edit is on disk, then blocks in the build.
+          (is (= ":edited" (.readLine (java.io.BufferedReader. (java.io.InputStreamReader. (:out proc))))))
+          (is (edited?))
+          (process/destroy proc) ; SIGTERM
+          (is (not (zero? (:exit @proc))))
+          (is (= (vec leaf-original) (leaf-bytes dir)))))
+      (finally (fs/delete-tree dir)))))
 
 (defn check-results [dir model runner]
   (doseq [[input iterations] [[0 1] [1 1] [42 3] [1000002 2]]]

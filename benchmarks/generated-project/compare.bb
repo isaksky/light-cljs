@@ -78,20 +78,34 @@
                         (binding [*out* *err*] (println (str/join " " (take-last 3 cmd)) i sample))
                         sample))))))
 
+(defn with-restored
+  "Calls (f original-text) and then writes `file`'s original bytes back, also
+  when f throws or the script is interrupted (SIGINT and SIGTERM run shutdown
+  hooks, not finally blocks)."
+  [file f]
+  (let [original (fs/read-all-bytes file)
+        restore #(fs/write-bytes file original)
+        hook (Thread. ^Runnable restore)]
+    (.addShutdownHook (Runtime/getRuntime) hook)
+    (try
+      (f (String. original "UTF-8"))
+      (finally
+        (restore)
+        (try (.removeShutdownHook (Runtime/getRuntime) hook) (catch IllegalStateException _))))))
+
 (defn leaf-scenario
   "On the cache the cached scenario left: per run, a different defn appended to
   `leaf`, then a rebuild. The last output is checked; `leaf` is restored."
   [dir runs leaf cmd check]
-  (let [file (fs/file dir leaf)
-        original (slurp file)]
-    (try
+  (with-restored
+    (fs/file dir leaf)
+    (fn [original]
       (let [result (summary (vec (for [i (range runs)]
-                                   (do (spit file (str original "\n(defn compare-leaf-edit-" i " [] " i ")\n"))
+                                   (do (spit (fs/file dir leaf) (str original "\n(defn compare-leaf-edit-" i " [] " i ")\n"))
                                        (let [sample (timed dir cmd)]
                                          (binding [*out* *err*] (println "leaf" (str/join " " (take-last 3 cmd)) i sample))
                                          sample)))))]
-        (assoc result :leaf leaf :output (check)))
-      (finally (spit file original)))))
+        (assoc result :leaf leaf :output (check))))))
 
 (defn warm-jvm
   "Repeated shadow releases in one JVM, as with a running shadow-cljs server."

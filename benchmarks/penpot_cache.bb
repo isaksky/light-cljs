@@ -65,14 +65,21 @@
 
 (defn with-edit
   "Calls f with `relative` in the port changed by `change` (text to text,
-  nil deletes it), then restores the file as it was."
+  nil deletes it), then restores the file's bytes as they were, also when f
+  throws or the script is interrupted (shutdown hooks run on SIGINT/SIGTERM;
+  finally blocks do not)."
   [relative change f]
   (let [file (fs/file port relative)
-        before (when (fs/exists? file) (slurp file))]
+        before (when (fs/exists? file) (fs/read-all-bytes file))
+        restore #(if before (fs/write-bytes file before) (fs/delete-if-exists file))
+        hook (Thread. ^Runnable restore)]
+    (.addShutdownHook (Runtime/getRuntime) hook)
     (try
-      (if-let [text (change before)] (spit file text) (fs/delete-if-exists file))
+      (if-let [text (change (some-> before (String. "UTF-8")))] (spit file text) (fs/delete-if-exists file))
       (f)
-      (finally (if before (spit file before) (fs/delete-if-exists file))))))
+      (finally
+        (restore)
+        (try (.removeShutdownHook (Runtime/getRuntime) hook) (catch IllegalStateException _))))))
 
 (defn compile!
   "One --compile run as `scenario`, recorded."
