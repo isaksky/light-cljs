@@ -489,6 +489,14 @@ fn anonymous_core_writes_reject_cached_providers() {
             redefine: "(let [before (util/sum)] (doto (.-call cljs.core/+) (set! (fn [_ a b] 42))) [before (util/sum)])",
             expected: Some("[3 42]"),
         },
+        // `(js-obj)` as the first operand of `->`, here a source macro of
+        // that name that names a core function.
+        CoreWriteRow {
+            file: "main.cljs",
+            defs: "(defmacro js-obj [] 'cljs.core/+)",
+            redefine: "(let [before (util/sum)] (-> (js-obj) (aset \"call\" (fn [_ a b] 42))) [before (util/sum)])",
+            expected: Some("[3 42]"),
+        },
         // A discarded splice whose tail the reader keeps.
         CoreWriteRow {
             file: "main.cljc",

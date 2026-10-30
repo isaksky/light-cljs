@@ -1007,9 +1007,10 @@ impl SharedCatalog {
         enum Thread {
             /// Not a step of either.
             None,
-            /// The first step of `->` or any step of `doto`: the thread's
-            /// first operand.
+            /// The first step of `->`: the thread's first operand.
             Place(NodeId),
+            /// Any step of `doto`: the thread's first operand.
+            Doto(NodeId),
             /// A later step of `->`: whatever the steps before it expand
             /// to, which a macro may make a core function's name.
             Unknown,
@@ -1024,7 +1025,7 @@ impl SharedCatalog {
             match (spelling(thread[0]).rsplit('/').next(), position) {
                 (Some("->"), 2) => Thread::Place(thread[1]),
                 (Some("->"), 3..) => Thread::Unknown,
-                (Some("doto"), 2..) => Thread::Place(thread[1]),
+                (Some("doto"), 2..) => Thread::Doto(thread[1]),
                 _ => Thread::None,
             }
         };
@@ -1039,7 +1040,8 @@ impl SharedCatalog {
                 // their receiver. A step of `->` or `doto` also receives the
                 // threaded value first; without that operand, as in `(->
                 // place (set! value))`, any other enclosing form hides it.
-                // A fresh JavaScript object, `(js-obj)`, is no core function.
+                // A fresh JavaScript object, `(doto (js-obj) ...)`, is no
+                // core function.
                 ("set!" | "aset" | "unchecked-set", _) => {
                     let operands = if head == "set!" { 2 } else { 3 };
                     let thread = threaded(id);
@@ -1050,7 +1052,8 @@ impl SharedCatalog {
                     };
                     own && match thread {
                         Thread::None => true,
-                        Thread::Place(place) => {
+                        Thread::Place(place) => target(place, false),
+                        Thread::Doto(place) => {
                             call(&syntax.nodes[place.0]).is_some_and(|operands| {
                                 operands.len() == 1
                                     && matches!(
