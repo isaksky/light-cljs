@@ -2086,7 +2086,14 @@ const native = (() => {
     isFn:x=>typeof val(x)==='function'||__rt.formKind(val(x))==='type'||isVar(x)||decl.satisfies('Fn',x),
     isVar, compilerMacroVar,
     varIsMacro:v=>val(varField(v,'val')()).cljs$lang$macro,
-    invokeVar:(v,args)=>invoke(varField(v,'val')(),...args),
+    // The legacy Var's call entries: arities 0-20 call the root, arity 21
+    // applies it with the last argument as the sequence tail, and a larger
+    // arity fails before the root is read (light-cljs-602).
+    invokeVar:(v,args)=>{
+      if(args.length>21)return arity(args.length);
+      const f=varField(v,'val')();
+      return args.length<=20?invoke(f,...args):core.apply(f,...args);
+    },
     // The legacy Var's apply: up to 20 arguments it calls the value its
     // thunk reads (through that value's `call`, as a direct call does);
     // past 20 it applies the value.

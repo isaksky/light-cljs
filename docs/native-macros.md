@@ -1406,7 +1406,10 @@ true` and throws when dereferenced. `deref`, invocation, `apply`, `.call`,
 calling reads the root then, and the printed form is `#'ns/name`. `apply` of
 a Var, and its raw `.apply`, call its root through the root's `call` for up to
 20 arguments and apply the root past 20, as the legacy Var's adapters do.
-A Var's raw `.isMacro` reads the root, so it demands the definition, and gives
+Calling a Var, directly, through a saved Var or through its raw `.call`, keeps
+the legacy Var's call entries: up to 20 arguments call the root, a 21st is the
+sequence tail the root is applied with, and more fail with `Invalid arity`
+before the root is read (light-cljs-602). A Var's raw `.isMacro` reads the root, so it demands the definition, and gives
 the root's `cljs$lang$macro` property, as the legacy Var prototype's does
 (`native_var_is_macro_member_matches_quickjs`, light-cljs-603).
 `symbol` of a Var (the engine's conversion of a keyed struct, so also where

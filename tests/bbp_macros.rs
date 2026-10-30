@@ -11405,7 +11405,10 @@ fn native_var_identity_apply_and_metadata_match_quickjs() {
 /// definition), `.-sym` reads it, and `name`, `namespace` and `keyword` of
 /// a Var behave as the legacy runtime's. Its raw JavaScript `apply` calls
 /// the root's `call` up to 20 arguments and the root's `apply` past them,
-/// as `apply` does (light-cljs-589 review round 2).
+/// as `apply` does (light-cljs-589 review round 2). A call of a Var,
+/// direct, saved or through its raw `call`, calls the root with up to 20
+/// arguments, applies it with the 21st as the sequence tail, and rejects
+/// more (light-cljs-602).
 const VAR_CONVERSION: &[(&str, &str)] = &[
     (
         "doc.cljs",
@@ -11413,13 +11416,15 @@ const VAR_CONVERSION: &[(&str, &str)] = &[
 (def value 1)
 (declare later)
 (deftype F [call apply])
-(def f (F. (fn [_ & xs] [:call (count xs)]) (fn [_ xs] [:apply (count xs)])))"#,
+(def f (F. (fn [_ & xs] [:call (count xs)]) (fn [_ xs] [:apply (count xs)])))
+(defn g [& xs] (count xs))"#,
     ),
     (
         "reflect.cljs",
         r#"(ns reflect (:require [doc]))
 (def saved #'doc/value)
 (def saved-f #'doc/f)
+(def saved-g #'doc/g)
 (defn try* [f] (try (f) (catch :default e [:error (.-message e)])))
 (defmacro conv []
   (let [sym symbol]
@@ -11432,13 +11437,21 @@ const VAR_CONVERSION: &[(&str, &str)] = &[
   (list 'quote
     (vec (for [n [20 21 25]]
            [n (.apply #'doc/f nil (apply array (range n))) (.apply saved-f nil (apply array (range n)))
-            (try* #(apply #'doc/f (range n)))]))))"#,
+            (try* #(apply #'doc/f (range n)))]))))
+(defmacro calls []
+  (list 'quote
+    [(#'doc/g 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19) (saved-g 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19) (.call #'doc/g nil 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19)
+     (#'doc/g 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 [20 21]) (saved-g 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 [20 21])
+     (.call #'doc/g nil 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 [20 21]) (.call saved-g nil 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 [20 21])
+     (try* #(#'doc/g 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21)) (try* #(saved-g 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21))
+     (try* #(.call saved-g nil 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21))]))"#,
     ),
     (
         "main.cljs",
-        r#"(ns main (:require [reflect :refer [conv apl]]))
+        r#"(ns main (:require [reflect :refer [conv apl calls]]))
 (js/console.log (pr-str (conv)))
-(js/console.log (pr-str (apl)))"#,
+(js/console.log (pr-str (apl)))
+(js/console.log (pr-str (calls)))"#,
     ),
 ];
 
@@ -11451,7 +11464,9 @@ fn native_var_symbol_conversion_and_raw_apply_match_quickjs() {
          [:error \"Doesn't support name on this type\"] \
          [:error \"Doesn't support namespace on this type\"] nil]\n\
          [[20 [:call 20] [:call 20] [:call 20]] [21 [:apply 21] [:apply 21] [:apply 21]] \
-         [25 [:apply 25] [:apply 25] [:apply 25]]]\n",
+         [25 [:apply 25] [:apply 25] [:apply 25]]]\n\
+         [20 20 20 22 22 22 22 [:error \"Invalid arity: 22\"] \
+         [:error \"Invalid arity: 22\"] [:error \"Invalid arity: 22\"]]\n",
         &[1, 2, 4, 8],
     );
 }
