@@ -2656,7 +2656,7 @@ const native = (() => {
   const callableThree=(fixed,variadic)=>{
     const direct=(...args)=>args.length<=3?fixed(args):variadic(args[0],args[1],args[2],list(args.slice(3)));
     return __rt.fnWithApplyTo(direct,(prefix,tail)=>{
-      const n=prefix.length+globalThis.__lightNativeRuntime.core.boundedCount(4-prefix.length,tail);
+      const n=prefix.length+globalThis.__lightNativeRuntime.nativeBoundedCount(4-prefix.length,tail);
       let args=tail;
       for(let i=prefix.length-1;i>=0;i--)args=__rt.cljCons(prefix[i],args);
       let s=seqOf(args);
@@ -3648,6 +3648,8 @@ const native = (() => {
     return index;
   };
   const rt={core,
+    // Internal apply keeps the original helper when its public Var is rebound.
+    nativeBoundedCount:core.boundedCount,
     jsObject:pairs=>{
       const result={};
       for(let i=0;i<pairs.length;i+=2){

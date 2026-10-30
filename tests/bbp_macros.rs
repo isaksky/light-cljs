@@ -6373,7 +6373,8 @@ fn native_predicate_apply_observes_count_before_traversal() {
                    input (reify ICounted (-count [_] (swap! events conj :count) 1)
                            ISeqable (-seq [_] (swap! events conj :seq)
                              (cons 1 (lazy-seq (throw (js/Error. "unused counted tail"))))))
-                   result (apply (some-fn (constantly :found)) input)]
+                   result (binding [bounded-count (fn [& _] (throw (js/Error. "public bounded-count rebound")))]
+                            (apply (some-fn (constantly :found)) input))]
                (list 'quote [result @events])))
            (js/console.log (pr-str (probe)))"#,
         "[:found [:count :seq]]\n",
