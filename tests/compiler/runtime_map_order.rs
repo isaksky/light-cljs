@@ -33,26 +33,19 @@ fn node(script: &str) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_owned()
 }
 
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
-fn canonical(context: &rquickjs::Context, value: &str) -> String {
-    let script = format!(
-        "JSON.stringify((function sort(v) {{ if(Array.isArray(v)) return v.map(sort); if(v && typeof v==='object') {{ const out={{}}; Object.keys(v).sort().forEach(k=>out[k]=sort(v[k])); return out; }} return v; }})(JSON.parse({value:?})))"
-    );
-    context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap())
-}
+use crate::canonical_json::canonical;
 
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 fn independent_runtime_maps_preserve_complete_order_effects_and_recovery() {
+    #[cfg(feature = "quickjs")]
     let runtime = rquickjs::Runtime::new().unwrap();
+    #[cfg(feature = "quickjs")]
     let context = rquickjs::Context::full(&runtime).unwrap();
     let catalog = include_str!("../fixtures/contracts/runtime-map-traversal-contracts.json");
     let extract = format!(
         "(() => {{ const c=JSON.parse({catalog:?}); return c.sources.filter(s => !c.nonpassing_neighbors[s.id]).map(s => [s.id,s.source,JSON.stringify(c.canonical_expected.find(p=>p.id===s.id))]); }})()"
     );
-    let rows = context.with(|ctx| ctx.eval::<Vec<Vec<String>>, _>(extract.as_bytes()).unwrap());
+    let rows = crate::canonical_json::rows(&extract);
     assert!(
         rows.len() == 60,
         "missing independently accepted source contracts"
@@ -84,6 +77,7 @@ fn independent_runtime_maps_preserve_complete_order_effects_and_recovery() {
                 "(() => {{const observerRuntime={observer_runtime};const value={captured};return ({})(globalThis.lightRuntime)('{id}',()=>value);}})()",
                 include_str!("../support/sci_execution_observation.js")
             );
+            #[cfg(feature = "quickjs")]
             let raw = context.with(|ctx| {
                 ctx.eval::<String, _>(script.as_bytes())
                     .unwrap_or_else(|error| {
@@ -91,17 +85,14 @@ fn independent_runtime_maps_preserve_complete_order_effects_and_recovery() {
                     })
             });
             assert_eq!(
-                canonical(&context, &node(&script)),
-                canonical(&context, expected),
+                canonical(&node(&script)),
+                canonical(expected),
                 "Node: {id}, macro={phase}"
             );
             // Sort JSON object property names only. Collection tags, every
             // sequence position, effects and output remain exact and complete.
-            assert_eq!(
-                canonical(&context, &raw),
-                canonical(&context, expected),
-                "{id}, macro={phase}"
-            );
+            #[cfg(feature = "quickjs")]
+            assert_eq!(canonical(&raw), canonical(expected), "{id}, macro={phase}");
         }
     }
     for source in [
@@ -134,6 +125,7 @@ fn independent_runtime_maps_preserve_complete_order_effects_and_recovery() {
             )
             .unwrap();
             assert_eq!(node(&js), "42");
+            #[cfg(feature = "quickjs")]
             assert_eq!(
                 context.with(|ctx| ctx.eval::<i32, _>(js.as_bytes()).unwrap()),
                 42

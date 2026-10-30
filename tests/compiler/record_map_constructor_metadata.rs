@@ -60,8 +60,6 @@ fn node(script: &str) -> String {
     assert!(out.stderr.is_empty(), "unexpected Node stderr");
     String::from_utf8(out.stdout).unwrap().trim_end().into()
 }
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 fn record_factory_metadata_executes_in_actual_phases_and_lifecycles() {
     let artifacts = TempDir::named_by("LIGHT_RECORD_METADATA_ARTIFACTS", "record-metadata");
@@ -115,18 +113,24 @@ fn record_factory_metadata_executes_in_actual_phases_and_lifecycles() {
                     )
                 };
                 fs::write(root.join("script.js"), &script).unwrap();
+                #[cfg(feature = "quickjs")]
                 let runtime = rquickjs::Runtime::new().unwrap();
+                #[cfg(feature = "quickjs")]
                 let context = rquickjs::Context::full(&runtime).unwrap();
                 let quickjs_input = format!("(0, eval)({script:?})");
                 fs::write(root.join("quickjs.stdin"), &quickjs_input).unwrap();
+                #[cfg(feature = "quickjs")]
                 let quickjs = context.with(|ctx| {
                     ctx.eval::<String, _>(quickjs_input.as_bytes())
                         .unwrap_or_else(|e| {
                             panic!("{id} {lifecycle} {phase} observer: {e:?} {:?}", ctx.catch())
                         })
                 });
+                #[cfg(feature = "quickjs")]
                 fs::write(root.join("quickjs.raw"), &quickjs).unwrap();
+                #[cfg(feature = "quickjs")]
                 assert_eq!(quickjs, expected, "{id} {lifecycle} {phase} QuickJS");
+                #[cfg(feature = "quickjs")]
                 println!(
                     "record-metadata-observation\t{id}\t{lifecycle}\t{phase}\tQuickJS\t{quickjs}"
                 );
@@ -147,8 +151,6 @@ fn record_factory_metadata_executes_in_actual_phases_and_lifecycles() {
     }
 }
 
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 fn reflected_factory_metadata_does_not_force_unrelated_roots_and_failure_recovers() {
     for reused in [false, true] {
@@ -183,13 +185,17 @@ fn reflected_factory_metadata_does_not_force_unrelated_roots_and_failure_recover
 (pr-str (recovered))
 "#;
         let js = light_cljs::compile_with_macros(recovered, &mut host).unwrap();
-        let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-        assert_eq!(
-            evaluator
-                .string(evaluator.evaluate_js(&js).unwrap())
-                .unwrap(),
-            "true"
-        );
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+            assert_eq!(
+                evaluator
+                    .string(evaluator.evaluate_js(&js).unwrap())
+                    .unwrap(),
+                "true"
+            );
+        }
         assert_eq!(node(&format!("console.log({js});")), "true");
     }
 }

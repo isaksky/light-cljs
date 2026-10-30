@@ -260,31 +260,35 @@ mod original_record_tags {
         .unwrap();
         for reused in [false, true] {
             let lifecycle = if reused { "reused" } else { "fresh" };
-            let mut session = EvalSession::new(EvalOptions {
-                namespace: "data-readers-test.records".into(),
-                ..Default::default()
-            })
-            .unwrap();
-            if reused {
-                let warmup = session
-                    .eval_string("(defmacro initialized [] :warm) (initialized)")
-                    .unwrap();
-                session.release(warmup.value).unwrap();
-            }
-            let error = match session.eval_source(&SourceInput::new("records.cljc", source)) {
-                Err(error) => error.to_string(),
-                Ok(result) => {
-                    session.release(result.value).unwrap();
-                    panic!(
-                        "Diagnostic expectation changed; independently re-review original execution"
-                    );
+            // The Pants build embeds no QuickJS to run this half of the check.
+            #[cfg(feature = "quickjs")]
+            {
+                let mut session = EvalSession::new(EvalOptions {
+                    namespace: "data-readers-test.records".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+                if reused {
+                    let warmup = session
+                        .eval_string("(defmacro initialized [] :warm) (initialized)")
+                        .unwrap();
+                    session.release(warmup.value).unwrap();
                 }
-            };
-            assert!(
-                error.contains(":require-macros is retired"),
-                "unexpected original namespace boundary: {error}"
-            );
-            writeln!(output, "application\t{lifecycle}\t{error}").unwrap();
+                let error = match session.eval_source(&SourceInput::new("records.cljc", source)) {
+                    Err(error) => error.to_string(),
+                    Ok(result) => {
+                        session.release(result.value).unwrap();
+                        panic!(
+                            "Diagnostic expectation changed; independently re-review original execution"
+                        );
+                    }
+                };
+                assert!(
+                    error.contains(":require-macros is retired"),
+                    "unexpected original namespace boundary: {error}"
+                );
+                writeln!(output, "application\t{lifecycle}\t{error}").unwrap();
+            }
             let mut host = MacroHost::new();
             if reused {
                 let warm = root.join("warm");
@@ -315,33 +319,37 @@ mod original_record_tags {
         std::fs::write(root.join("namespace-adapted-records.cljs"), &adapted).unwrap();
         for reused in [false, true] {
             let lifecycle = if reused { "reused" } else { "fresh" };
-            let mut session = EvalSession::new(EvalOptions {
-                namespace: "data-readers-test.records".into(),
-                ..Default::default()
-            })
-            .unwrap();
-            if reused {
-                let warm = session
-                    .eval_string("(defmacro initialized [] :warm) (initialized)")
-                    .unwrap();
-                session.release(warm.value).unwrap();
-            }
-            let error = match session.eval_source(&SourceInput::new(
-                "namespace-adapted-records.cljs",
-                &adapted,
-            )) {
-                Err(error) => error.to_string(),
-                Ok(result) => {
-                    session.release(result.value).unwrap();
-                    panic!("Namespace-adapted diagnostic changed");
+            // The Pants build embeds no QuickJS to run this half of the check.
+            #[cfg(feature = "quickjs")]
+            {
+                let mut session = EvalSession::new(EvalOptions {
+                    namespace: "data-readers-test.records".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+                if reused {
+                    let warm = session
+                        .eval_string("(defmacro initialized [] :warm) (initialized)")
+                        .unwrap();
+                    session.release(warm.value).unwrap();
                 }
-            };
-            assert!(error.contains("UnknownTag"), "{error}");
-            writeln!(
-                output,
-                "namespace-adapted-application\t{lifecycle}\t{error}"
-            )
-            .unwrap();
+                let error = match session.eval_source(&SourceInput::new(
+                    "namespace-adapted-records.cljs",
+                    &adapted,
+                )) {
+                    Err(error) => error.to_string(),
+                    Ok(result) => {
+                        session.release(result.value).unwrap();
+                        panic!("Namespace-adapted diagnostic changed");
+                    }
+                };
+                assert!(error.contains("UnknownTag"), "{error}");
+                writeln!(
+                    output,
+                    "namespace-adapted-application\t{lifecycle}\t{error}"
+                )
+                .unwrap();
+            }
         }
         output.flush().unwrap();
     }

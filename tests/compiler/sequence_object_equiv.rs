@@ -68,22 +68,24 @@ fn sequence_and_name_equiv_contracts_execute_in_both_phases() {
     }
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 fn failed_sequence_equiv_leaves_reused_application_and_macro_hosts_usable() {
-    let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
-    session.eval_string("(def v (list 1 2))").unwrap();
-    let error = session
-        .eval_string(
-            "(.equiv v (map (fn [_] (throw (js/Error. \"sequence equiv failure\"))) [1 2]))",
-        )
-        .unwrap_err();
-    assert!(error.message.contains("sequence equiv failure"), "{error}");
-    let value = session
-        .eval_string("[(.equiv v [1 2]) (.equiv v [1 3]) (.equiv (with-meta v {:x 1}) v)]")
-        .unwrap();
-    assert_eq!(session.print(value.value).unwrap(), "[true false true]");
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
+        session.eval_string("(def v (list 1 2))").unwrap();
+        let error = session
+            .eval_string(
+                "(.equiv v (map (fn [_] (throw (js/Error. \"sequence equiv failure\"))) [1 2]))",
+            )
+            .unwrap_err();
+        assert!(error.message.contains("sequence equiv failure"), "{error}");
+        let value = session
+            .eval_string("[(.equiv v [1 2]) (.equiv v [1 3]) (.equiv (with-meta v {:x 1}) v)]")
+            .unwrap();
+        assert_eq!(session.print(value.value).unwrap(), "[true false true]");
+    }
     let mut host = MacroHost::new();
     assert!(light_cljs::compile_with_macros("(defmacro broken-sequence-equiv [] (.equiv (list 1) (map (fn [_] (throw (js/Error. \"sequence equiv failure\"))) [1]))) (broken-sequence-equiv)", &mut host).is_err());
     let source =

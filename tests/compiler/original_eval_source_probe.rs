@@ -16,43 +16,47 @@ fn whole_original_eval_body_uses_installed_application_service() {
     let mut output =
         fs::File::create(std::env::var("LIGHT_ORIGINAL_EVAL_OUTPUT").unwrap()).unwrap();
     for reused in [false, true] {
-        let mut session = EvalSession::new(EvalOptions {
-            namespace: "cljs.eval-test".into(),
-            ..Default::default()
-        })
-        .unwrap();
-        if reused {
-            let warmup = session
-                .eval_string("(def warmup-root (atom 0)) (defmacro warmup [] true) (warmup)")
-                .unwrap();
-            session.release(warmup.value).unwrap();
-        }
-        let observation = match session.eval_source(&SourceInput::new(
-            "original-eval-source-probe.cljs",
-            &source,
-        )) {
-            Ok(result) => {
-                let text = session.print(result.value).unwrap();
-                session.release(result.value).unwrap();
-                text
-            }
-            Err(error) => format!("top-level-error: {}", error),
-        };
-        writeln!(
-            output,
-            "{}\t{}",
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let mut session = EvalSession::new(EvalOptions {
+                namespace: "cljs.eval-test".into(),
+                ..Default::default()
+            })
+            .unwrap();
             if reused {
-                "application-reused"
-            } else {
-                "application-fresh"
-            },
-            observation
-                .as_bytes()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
-        )
-        .unwrap();
+                let warmup = session
+                    .eval_string("(def warmup-root (atom 0)) (defmacro warmup [] true) (warmup)")
+                    .unwrap();
+                session.release(warmup.value).unwrap();
+            }
+            let observation = match session.eval_source(&SourceInput::new(
+                "original-eval-source-probe.cljs",
+                &source,
+            )) {
+                Ok(result) => {
+                    let text = session.print(result.value).unwrap();
+                    session.release(result.value).unwrap();
+                    text
+                }
+                Err(error) => format!("top-level-error: {}", error),
+            };
+            writeln!(
+                output,
+                "{}\t{}",
+                if reused {
+                    "application-reused"
+                } else {
+                    "application-fresh"
+                },
+                observation
+                    .as_bytes()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            )
+            .unwrap();
+        }
         output.flush().unwrap();
     }
 }

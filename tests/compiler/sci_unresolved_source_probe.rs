@@ -21,13 +21,16 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
-fn execute(script: &str) -> [(String, String); 2] {
+fn execute(script: &str) -> Vec<(String, String)> {
+    #[cfg(feature = "quickjs")]
     let rt = rquickjs::Runtime::new().unwrap();
+    #[cfg(feature = "quickjs")]
     rt.set_memory_limit(128 * 1024 * 1024);
+    #[cfg(feature = "quickjs")]
     rt.set_max_stack_size(4 * 1024 * 1024);
+    #[cfg(feature = "quickjs")]
     let context = rquickjs::Context::full(&rt).unwrap();
+    #[cfg(feature = "quickjs")]
     let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
         Ok(s) => s,
         Err(e) => format!("HARNESS:{e:?}:{:?}", ctx.catch()),
@@ -54,10 +57,13 @@ fn execute(script: &str) -> [(String, String); 2] {
             String::from_utf8_lossy(&output.stderr)
         )
     };
-    [("QuickJS".into(), quickjs), ("Node".into(), node)]
+    let mut observed = Vec::new();
+    // The Pants build embeds no QuickJS; Node still runs the script above.
+    #[cfg(feature = "quickjs")]
+    observed.push(("QuickJS".into(), quickjs));
+    observed.push(("Node".into(), node));
+    observed
 }
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "Explicit independently owned seven-source evidence candidate"]
 fn unchanged_seven_sources_execute_actual_phases_and_lifecycles() {

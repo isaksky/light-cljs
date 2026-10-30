@@ -130,8 +130,6 @@ fn malformed_nsstar_is_located_and_failed_imports_do_not_publish_aliases() {
     assert!(reused.eval_string("only/value").is_err());
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner() {
     let root = TempDir::new("eval-nsstar");
@@ -143,6 +141,8 @@ fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner()
         "(ns syntax.library) (defmacro snapshot [] false)",
     )
     .unwrap();
+    // Interactive sessions run in QuickJS; the compiled program runs in Node below.
+    #[cfg(feature = "quickjs")]
     let reused = EvalSession::new(EvalOptions {
         source_provider: Some(Rc::new(FileSourceProvider::new(vec![root.to_path_buf()]))),
         file_provider: Some(Rc::new(|_| {
@@ -195,6 +195,7 @@ fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner()
         String::from_utf8(output.stdout).unwrap(),
         "[true [:before :after] true true true]\n"
     );
+    #[cfg(feature = "quickjs")]
     for mut current in [reused.fresh_session().unwrap(), reused] {
         assert_eq!(
             printed(&mut current, source),

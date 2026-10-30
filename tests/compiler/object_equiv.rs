@@ -87,22 +87,24 @@ fn complete_non_lite_object_equiv_body_executes_in_both_phases() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 fn failed_equiv_calls_leave_reused_application_and_macro_hosts_usable() {
-    let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
-    session
-        .eval_string("(def m {:a 1}) (def v [1 2]) (def s #{:a})")
-        .unwrap();
-    let error = session
-        .eval_string("(.equiv v (map (fn [_] (throw (js/Error. \"equiv failure\"))) [1 2]))")
-        .unwrap_err();
-    assert!(error.message.contains("equiv failure"), "{error}");
-    let value = session
-        .eval_string("[(.equiv m (hash-map :a 1)) (.equiv v '(1 2)) (.equiv s (set [:a]))]")
-        .unwrap();
-    assert_eq!(session.print(value.value).unwrap(), "[true true true]");
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
+        session
+            .eval_string("(def m {:a 1}) (def v [1 2]) (def s #{:a})")
+            .unwrap();
+        let error = session
+            .eval_string("(.equiv v (map (fn [_] (throw (js/Error. \"equiv failure\"))) [1 2]))")
+            .unwrap_err();
+        assert!(error.message.contains("equiv failure"), "{error}");
+        let value = session
+            .eval_string("[(.equiv m (hash-map :a 1)) (.equiv v '(1 2)) (.equiv s (set [:a]))]")
+            .unwrap();
+        assert_eq!(session.print(value.value).unwrap(), "[true true true]");
+    }
     let mut host = MacroHost::new();
     assert!(light_cljs::compile_with_macros("(defmacro broken-equiv [] (.equiv [1] (map (fn [_] (throw (js/Error. \"equiv failure\"))) [1]))) (broken-equiv)", &mut host).is_err());
     let source = "(defmacro restored-equiv [] (.equiv [1 2] '(1 2))) (restored-equiv)";

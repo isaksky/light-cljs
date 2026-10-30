@@ -39,17 +39,8 @@ fn unhex(value: &str) -> String {
     )
     .unwrap()
 }
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
-fn canonical(context: &rquickjs::Context, value: &str) -> String {
-    let script = format!(
-        "JSON.stringify((function sort(v) {{ if(Array.isArray(v)) return v.map(sort); if(v && typeof v==='object') {{ const result={{}}; Object.keys(v).sort().forEach(k=>result[k]=sort(v[k])); return result; }} return v; }})(JSON.parse({value:?})))"
-    );
-    context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap())
-}
+use crate::canonical_json::canonical;
 
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "Explicit exact original source and current both-pin provenance helper"]
 fn original_record_methods_execute_in_both_phases_and_lifecycles() {
@@ -108,14 +99,20 @@ fn original_record_methods_execute_in_both_phases_and_lifecycles() {
                 "(() => {{ const run = {captured}; return ({}) (globalThis.lightRuntime)('{id}',observe=>run(observe)); }})()",
                 include_str!("../support/sci_execution_observation.js")
             );
+            #[cfg(feature = "quickjs")]
             let runtime = rquickjs::Runtime::new().unwrap();
+            #[cfg(feature = "quickjs")]
             runtime.set_memory_limit(128 * 1024 * 1024);
+            #[cfg(feature = "quickjs")]
             runtime.set_max_stack_size(4 * 1024 * 1024);
+            #[cfg(feature = "quickjs")]
             let context = rquickjs::Context::full(&runtime).unwrap();
+            #[cfg(feature = "quickjs")]
             let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
+            #[cfg(feature = "quickjs")]
             assert_eq!(
-                canonical(&context, &quickjs),
-                canonical(&context, &expected),
+                canonical(&quickjs),
+                canonical(&expected),
                 "{variant} QuickJS"
             );
             let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
@@ -134,12 +131,11 @@ fn original_record_methods_execute_in_both_phases_and_lifecycles() {
             assert!(result.status.success());
             assert!(result.stderr.is_empty());
             let node = String::from_utf8(result.stdout).unwrap();
-            assert_eq!(
-                canonical(&context, &node),
-                canonical(&context, &expected),
-                "{variant} Node"
-            );
-            for (engine, raw) in [("QuickJS", quickjs), ("Node", node)] {
+            assert_eq!(canonical(&node), canonical(&expected), "{variant} Node");
+            let mut observed = vec![("Node", node)];
+            #[cfg(feature = "quickjs")]
+            observed.insert(0, ("QuickJS", quickjs));
+            for (engine, raw) in observed {
                 writeln!(
                     output,
                     "{id}\t{variant}\t{engine}\t{}\t{}\t{}\t{}",

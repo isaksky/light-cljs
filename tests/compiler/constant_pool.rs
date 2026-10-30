@@ -179,12 +179,18 @@ fn empty_literals_read_the_runtime_singletons_at_every_level() {
             .all(|line| !line.contains("EMPTY"))
     );
 
-    let mut session = EvalSession::new(EvalOptions::default()).unwrap();
-    let value = session
-        .eval_string("(defn v [] []) [(identical? (v) []) (identical? {} {}) (identical? #{} #{})]")
-        .unwrap()
-        .value;
-    assert_eq!(session.print(value).unwrap(), "[true true true]");
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let mut session = EvalSession::new(EvalOptions::default()).unwrap();
+        let value = session
+            .eval_string(
+                "(defn v [] []) [(identical? (v) []) (identical? {} {}) (identical? #{} #{})]",
+            )
+            .unwrap()
+            .value;
+        assert_eq!(session.print(value).unwrap(), "[true true true]");
+    }
 }
 
 #[test]

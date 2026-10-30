@@ -711,8 +711,6 @@ fn size_report_prints_the_retention_table_on_stderr_without_changing_output() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
 /// `--elide-asserts` omits assertions while compiling, as upstream's
 /// `:elide-asserts` does: at every level, for text and namespace compiles and
 /// for `--eval`, an `assert` compiles to the same bytes as `nil` in its place
@@ -800,20 +798,24 @@ fn elide_asserts_omits_assertions_at_every_level() {
         assert_eq!(entry(true).stdout, b"-2\n", "{level}");
     }
 
-    let output = light_cljs(&["--eval", "--text", pre]);
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("Assert failed"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let output = light_cljs(&["--eval", "--elide-asserts", "--text", pre]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(output.stdout, b"-2\n");
+    // `--eval` runs an interactive session, which runs in QuickJS.
+    #[cfg(feature = "quickjs")]
+    {
+        let output = light_cljs(&["--eval", "--text", pre]);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Assert failed"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = light_cljs(&["--eval", "--elide-asserts", "--text", pre]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"-2\n");
+    }
 
     // The flag is the only switch: `*assert*` is no `goog-define`.
     for (args, message) in [
@@ -840,8 +842,6 @@ fn elide_asserts_omits_assertions_at_every_level() {
     }
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
 /// `--elide-asserts` is also the `*assert*` that source macros read while
 /// expanding, under each of its names, as upstream's `:elide-asserts` binds
 /// `clojure.core/*assert*` while compiling: for text and namespace compiles
@@ -863,6 +863,8 @@ fn elide_asserts_reaches_the_assert_source_macros_read() {
     .unwrap();
     let root_arg = root.to_str().unwrap();
     let text = format!("(defmacro m [] {flags}) (pr-str (m))");
+    // `--eval` runs an interactive session, which runs in QuickJS.
+    #[cfg(feature = "quickjs")]
     let eval = format!("(defmacro m [] {flags}) (m)");
     let node = |js: &str| {
         let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
@@ -884,8 +886,12 @@ fn elide_asserts_reaches_the_assert_source_macros_read() {
             let args = [&["--compile"][..], flag, input].concat();
             assert_eq!(node(&compiled(&args)), expected, "{args:?}");
         }
-        let args = [&["--eval"][..], flag, &["--text", &eval]].concat();
-        assert_eq!(compiled(&args), expected, "{args:?}");
+        // `--eval` runs an interactive session, which runs in QuickJS.
+        #[cfg(feature = "quickjs")]
+        {
+            let args = [&["--eval"][..], flag, &["--text", &eval]].concat();
+            assert_eq!(compiled(&args), expected, "{args:?}");
+        }
     }
 }
 

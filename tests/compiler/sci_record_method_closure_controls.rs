@@ -4,8 +4,6 @@ use std::fs;
 const ORIGINAL: &str = "(defprotocol P (p [x])) (let [kept [40]] (defrecord R [x] P (p [this] (fn [] [x (first kept) (= this this)])))) ((p (->R 2)))";
 const WARMUP: &str = "(defmacro phase-ready [] true) (phase-ready)";
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "Explicit finite original source and phase-boundary diagnostic control"]
 fn original_closure_and_ownership_controls() {
@@ -46,10 +44,15 @@ fn original_closure_and_ownership_controls() {
                     let expected = if name == "explicit-global-control" { r#"{"$vector":[2,99,true]}"# } else { "40" };
                     let captured = javascript.replacen(" = // Original bounded runtime", " = globalThis.lightRuntime = // Original bounded runtime", 1);
                     let script = format!("(() => {{ const run = {captured}; return ({}) (globalThis.lightRuntime)('control',observe=>run(observe)); }})()", include_str!("../support/sci_execution_observation.js"));
+                    #[cfg(feature = "quickjs")]
                     let runtime = rquickjs::Runtime::new().unwrap();
+                    #[cfg(feature = "quickjs")]
                     let context = rquickjs::Context::full(&runtime).unwrap();
+                    #[cfg(feature = "quickjs")]
                     let observation = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
+                    #[cfg(feature = "quickjs")]
                     fs::write(directory.join("quickjs.json"), &observation).unwrap();
+                    #[cfg(feature = "quickjs")]
                     assert!(observation.contains(&format!("\"value\":{expected}")), "{variant}: {observation}");
                     use std::{io::Write, process::{Command, Stdio}};
                     let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into())).arg("-").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
@@ -58,7 +61,10 @@ fn original_closure_and_ownership_controls() {
                     fs::write(directory.join("node.stdout"), &result.stdout).unwrap();
                     fs::write(directory.join("node.stderr"), &result.stderr).unwrap();
                     assert!(result.status.success() && result.stderr.is_empty());
-                    assert_eq!(String::from_utf8(result.stdout).unwrap().trim(), observation);
+                    let node_observation = String::from_utf8(result.stdout).unwrap();
+                    assert!(node_observation.contains(&format!("\"value\":{expected}")), "{variant}: {node_observation}");
+                    #[cfg(feature = "quickjs")]
+                    assert_eq!(node_observation.trim(), observation);
                     println!("{variant}: actual MacroHost then Node/QuickJS observed {expected}");
                 }
                 (Err(error), None) => panic!("{variant}: unexpected {error}"),

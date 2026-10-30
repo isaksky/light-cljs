@@ -17,11 +17,13 @@ impl Sources {
         light_cljs::compile_namespace_with_macros("user", std::slice::from_ref(self.0.path()), host)
     }
 }
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 fn both(js: &str, expected: &str) {
-    let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-    assert_eq!(e.string(e.evaluate_js(js).unwrap()).unwrap(), expected);
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        assert_eq!(e.string(e.evaluate_js(js).unwrap()).unwrap(), expected);
+    }
     let out = Command::new("node")
         .args(["-e", &format!("console.log({js});")])
         .output()
@@ -67,8 +69,6 @@ const CASES: &[(&str, &str)] = &[
     ("''#?(:clj 1) 2", "(quote 2)"),
     ("[(meta '^:private #?(:clj x) z)]", "[{:private true}]"),
 ];
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn scalar_splice_and_nested_prefix_controls_execute_both_phases_and_lifecycles() {
     let sources = Sources::new();
@@ -94,12 +94,12 @@ fn scalar_splice_and_nested_prefix_controls_execute_both_phases_and_lifecycles()
         }
     }
 }
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
     let sources = Sources::new();
     let mut host = MacroHost::new();
+    // Interactive sessions run in QuickJS.
+    #[cfg(feature = "quickjs")]
     let mut session = EvalSession::new(EvalOptions::default()).unwrap();
     for (original, location) in [
         ("[0 '#?@(:cljs 1) 2]", "#?@(:cljs 1)"),
@@ -129,20 +129,25 @@ fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
                 "[42]",
             );
         }
-        let error = session
-            .eval_source(&SourceInput::new("bad.cljc", format!("\n{original}")))
-            .unwrap_err();
-        assert_eq!(error.location.as_ref().unwrap().text(), location);
-        assert!(error.to_string().starts_with("bad.cljc:2:"));
-        let value = session
-            .eval_source(&SourceInput::new("recovered.cljc", "42"))
-            .unwrap()
-            .value;
-        assert_eq!(session.print(value).unwrap(), "42");
-        session.release(value).unwrap();
+        // Interactive sessions run in QuickJS; the host checks above run in every build.
+        #[cfg(feature = "quickjs")]
+        {
+            let error = session
+                .eval_source(&SourceInput::new("bad.cljc", format!("\n{original}")))
+                .unwrap_err();
+            assert_eq!(error.location.as_ref().unwrap().text(), location);
+            assert!(error.to_string().starts_with("bad.cljc:2:"));
+            let value = session
+                .eval_source(&SourceInput::new("recovered.cljc", "42"))
+                .unwrap()
+                .value;
+            assert_eq!(session.print(value).unwrap(), "42");
+            session.release(value).unwrap();
+        }
     }
     let error = sources.compile("(ns user) #?(:cljs 1)", &mut host);
     assert!(error.is_ok());
+    #[cfg(feature = "quickjs")]
     assert!(
         session
             .eval_source(&SourceInput::new("plain.cljs", "[#?(:cljs 1)]"))
@@ -205,8 +210,6 @@ fn nested_discarded_readers_keep_canonical_effect_order() {
     }
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn nested_discarded_readers_execute_once_in_plain_and_shared_source_hosts() {
     use light_cljs::compiler_data::Name;
@@ -255,12 +258,13 @@ mod original_reader_rejections {
         )
         .unwrap()
     }
-    // Compares the Node result with the QuickJS result.
-    #[cfg(feature = "quickjs")]
-    fn observe(js: &str) -> [(&'static str, String); 2] {
+    fn observe(js: &str) -> Vec<(&'static str, String)> {
         let script = format!("JSON.stringify({js})");
+        #[cfg(feature = "quickjs")]
         let rt = rquickjs::Runtime::new().unwrap();
+        #[cfg(feature = "quickjs")]
         let ctx = rquickjs::Context::full(&rt).unwrap();
+        #[cfg(feature = "quickjs")]
         let q = ctx.with(|cx| cx.eval::<String, _>(script.as_bytes()).unwrap());
         let mut child = Command::new("node")
             .arg("-")
@@ -278,14 +282,14 @@ mod original_reader_rejections {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success());
         assert!(out.stderr.is_empty());
-        [
-            ("QuickJS", q),
-            ("Node", String::from_utf8(out.stdout).unwrap().trim().into()),
-        ]
+        let mut observed = Vec::new();
+        // The Pants build embeds no QuickJS; Node still runs the script above.
+        #[cfg(feature = "quickjs")]
+        observed.push(("QuickJS", q));
+        observed.push(("Node", String::from_utf8(out.stdout).unwrap().trim().into()));
+        observed
     }
 
-    // Compares the Node result with the QuickJS result.
-    #[cfg(feature = "quickjs")]
     #[test]
     fn unchanged_original_reader_rejections_preserve_source_and_host_recovery() {
         let supplied = std::env::var("LIGHT_CLJC_REJECTIONS_ROOT").ok();

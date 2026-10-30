@@ -148,33 +148,37 @@ fn javascript_object_prefixes_survive_depth_limits_in_both_phases_and_sessions()
     let expected = format!("[{OBSERVATIONS} 0 {OBSERVATIONS} 1]");
     both(SOURCE, &expected);
 
-    let mut session = light_cljs::EvalSession::new(light_cljs::EvalOptions::default()).unwrap();
-    for iteration in 0..2 {
-        let source = if iteration == 0 {
-            SOURCE
-        } else {
-            "[(prefix-macro) @prefix-calls (prefix-observations) @prefix-calls]"
-        };
-        let result = session.eval_string(source).unwrap().value;
-        assert_eq!(
-            session.print(result).unwrap(),
-            format!(
-                "[{OBSERVATIONS} {iteration} {OBSERVATIONS} {}]",
-                iteration + 1
-            )
-        );
-        session.release(result).unwrap();
-        let settings = session
-            .eval_string("[*print-level* *print-length* *print-readably* *print-meta*]")
-            .unwrap()
-            .value;
-        assert_eq!(session.print(settings).unwrap(), "[nil nil true false]");
-        session.release(settings).unwrap();
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let mut session = light_cljs::EvalSession::new(light_cljs::EvalOptions::default()).unwrap();
+        for iteration in 0..2 {
+            let source = if iteration == 0 {
+                SOURCE
+            } else {
+                "[(prefix-macro) @prefix-calls (prefix-observations) @prefix-calls]"
+            };
+            let result = session.eval_string(source).unwrap().value;
+            assert_eq!(
+                session.print(result).unwrap(),
+                format!(
+                    "[{OBSERVATIONS} {iteration} {OBSERVATIONS} {}]",
+                    iteration + 1
+                )
+            );
+            session.release(result).unwrap();
+            let settings = session
+                .eval_string("[*print-level* *print-length* *print-readably* *print-meta*]")
+                .unwrap()
+                .value;
+            assert_eq!(session.print(settings).unwrap(), "[nil nil true false]");
+            session.release(settings).unwrap();
+        }
+        let mut fresh = session.fresh_session().unwrap();
+        let result = fresh.eval_string(SOURCE).unwrap().value;
+        assert_eq!(fresh.print(result).unwrap(), expected);
+        fresh.release(result).unwrap();
     }
-    let mut fresh = session.fresh_session().unwrap();
-    let result = fresh.eval_string(SOURCE).unwrap().value;
-    assert_eq!(fresh.print(result).unwrap(), expected);
-    fresh.release(result).unwrap();
 }
 
 #[test]

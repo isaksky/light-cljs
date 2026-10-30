@@ -68,34 +68,36 @@ fn callable_rest_sequences_receivers_effects_and_lazy_values_match_references() 
     }
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 fn invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable() {
-    let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
-    for source in [
-        "(deftype BadRest [] IFn (-invoke [_ &] 1))",
-        "(reify IFn (-invoke [_ & x y] x))",
-        "(reify IFn (-invoke [_ & args] (inc (recur args))))",
-    ] {
-        let error = session.eval_string(source).unwrap_err();
-        assert!(
-            error
-                .location
-                .as_ref()
-                .is_some_and(|span| !span.bytes().is_empty()),
-            "{error}"
-        );
-        let result = session.eval_string("(+ 1 2)").unwrap();
-        assert_eq!(session.print(result.value).unwrap(), "3");
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
+        for source in [
+            "(deftype BadRest [] IFn (-invoke [_ &] 1))",
+            "(reify IFn (-invoke [_ & x y] x))",
+            "(reify IFn (-invoke [_ & args] (inc (recur args))))",
+        ] {
+            let error = session.eval_string(source).unwrap_err();
+            assert!(
+                error
+                    .location
+                    .as_ref()
+                    .is_some_and(|span| !span.bytes().is_empty()),
+                "{error}"
+            );
+            let result = session.eval_string("(+ 1 2)").unwrap();
+            assert_eq!(session.print(result.value).unwrap(), "3");
+        }
+        session.eval_string("(deftype RecoverRest [] IFn (-invoke [_] :fixed) (-invoke [_ x & xs] [x (vec xs)])) (def callable (RecoverRest.))").unwrap();
+        let error = session.eval_string("((reify IFn (-invoke [_ & xs] (if (= 2 (count xs)) (throw (js/Error. \"rest failure\")) :bad))) 1 2)").unwrap_err();
+        assert!(error.message.contains("rest failure"), "{error}");
+        let result = session
+            .eval_string("[(callable) (callable 1 2 3)]")
+            .unwrap();
+        assert_eq!(session.print(result.value).unwrap(), "[:fixed [1 [2 3]]]");
     }
-    session.eval_string("(deftype RecoverRest [] IFn (-invoke [_] :fixed) (-invoke [_ x & xs] [x (vec xs)])) (def callable (RecoverRest.))").unwrap();
-    let error = session.eval_string("((reify IFn (-invoke [_ & xs] (if (= 2 (count xs)) (throw (js/Error. \"rest failure\")) :bad))) 1 2)").unwrap_err();
-    assert!(error.message.contains("rest failure"), "{error}");
-    let result = session
-        .eval_string("[(callable) (callable 1 2 3)]")
-        .unwrap();
-    assert_eq!(session.print(result.value).unwrap(), "[:fixed [1 [2 3]]]");
     let mut host = MacroHost::new();
     assert!(light_cljs::compile_with_macros("(defmacro broken-rest [] ((reify IFn (-invoke [_ & xs] (throw (js/Error. \"rest failure\")))) 1)) (broken-rest)", &mut host).is_err());
     both(

@@ -20,15 +20,20 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
-fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
-    let runtime = rquickjs::Runtime::new().unwrap();
-    let context = rquickjs::Context::full(&runtime).unwrap();
-    let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
-        Ok(value) => value,
-        Err(error) => format!("HARNESS_ERROR:{error:?}: {:?}", ctx.catch()),
-    });
+fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
+    let mut observed = Vec::new();
+    // The Pants build embeds no QuickJS; Node still runs the script below.
+    #[cfg(feature = "quickjs")]
+    {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+            Ok(value) => value,
+            Err(error) => format!("HARNESS_ERROR:{error:?}: {:?}", ctx.catch()),
+        });
+        fs::write(artifact.join("quickjs.raw"), &quickjs).unwrap();
+        observed.push(("QuickJS".into(), quickjs));
+    }
     let mut child = Command::new(std::env::var("NODE").unwrap())
         .arg("-")
         .stdin(Stdio::piped())
@@ -44,7 +49,6 @@ fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
         .unwrap();
     let out = child.wait_with_output().unwrap();
     fs::write(artifact.join("script.js"), script).unwrap();
-    fs::write(artifact.join("quickjs.raw"), &quickjs).unwrap();
     fs::write(
         artifact.join("node.stdin"),
         format!("console.log({script});"),
@@ -57,20 +61,16 @@ fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
         out.status.code().unwrap_or(-1).to_string(),
     )
     .unwrap();
-    [
-        ("QuickJS".into(), quickjs),
-        (
-            "Node".into(),
-            if out.status.success() && out.stderr.is_empty() {
-                String::from_utf8(out.stdout).unwrap().trim().into()
-            } else {
-                format!("HARNESS_ERROR:{}", String::from_utf8_lossy(&out.stderr))
-            },
-        ),
-    ]
+    observed.push((
+        "Node".into(),
+        if out.status.success() && out.stderr.is_empty() {
+            String::from_utf8(out.stdout).unwrap().trim().into()
+        } else {
+            format!("HARNESS_ERROR:{}", String::from_utf8_lossy(&out.stderr))
+        },
+    ));
+    observed
 }
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit original .cljc filename and actual phase audit"]
 fn literal_numeric_sources_execute_in_fresh_and_reused_macro_hosts() {
@@ -209,17 +209,8 @@ fn literal_numeric_sources_execute_in_fresh_and_reused_macro_hosts() {
     output.flush().unwrap();
 }
 
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
-fn canonical(context: &rquickjs::Context, value: &str) -> String {
-    let script = format!(
-        "JSON.stringify((function sort(v) {{ if(Array.isArray(v)) return v.map(sort); if(v && typeof v==='object') {{ const out={{}}; Object.keys(v).sort().forEach(k=>out[k]=sort(v[k])); return out; }} return v; }})(JSON.parse({value:?})))"
-    );
-    context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap())
-}
+use crate::canonical_json::canonical;
 
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
     let mut host = MacroHost::new();
@@ -460,19 +451,19 @@ fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
                 "(() => {{const observerRuntime={observer_runtime};const value={captured};return ({})(globalThis.lightRuntime)('{id}',()=>value);}})()",
                 include_str!("../support/sci_execution_observation.js")
             );
+            #[cfg(feature = "quickjs")]
             let runtime = rquickjs::Runtime::new().unwrap();
+            #[cfg(feature = "quickjs")]
             let context = rquickjs::Context::full(&runtime).unwrap();
+            #[cfg(feature = "quickjs")]
             let raw = context.with(|ctx| {
                 ctx.eval::<String, _>(script.as_bytes())
                     .unwrap_or_else(|error| {
                         panic!("{id}, macro={phase}: {error:?}: {:?}", ctx.catch())
                     })
             });
-            assert_eq!(
-                canonical(&context, &raw),
-                canonical(&context, expected),
-                "{id}, macro={phase}"
-            );
+            #[cfg(feature = "quickjs")]
+            assert_eq!(canonical(&raw), canonical(expected), "{id}, macro={phase}");
         }
     }
     let diagnostics: &[(&str, &str)] = &[
@@ -557,8 +548,11 @@ fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
                 &mut host,
             )
             .unwrap();
+            #[cfg(feature = "quickjs")]
             let runtime = rquickjs::Runtime::new().unwrap();
+            #[cfg(feature = "quickjs")]
             let context = rquickjs::Context::full(&runtime).unwrap();
+            #[cfg(feature = "quickjs")]
             assert_eq!(
                 context.with(|ctx| ctx.eval::<i32, _>(js.as_bytes()).unwrap()),
                 42

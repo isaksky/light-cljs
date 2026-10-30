@@ -69,8 +69,6 @@ fn clocks_random_sources_and_taps_are_explicit_session_capabilities() {
     );
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn runtime_scheduler_admission_bounded_reentrancy_and_arities() {
     let checks = r#"
@@ -107,7 +105,6 @@ fn runtime_scheduler_admission_bounded_reentrancy_and_arities() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
     let expression = format!(
         r#"(() => {{
       const c = rt.core, assert = {{
@@ -119,13 +116,16 @@ fn runtime_scheduler_admission_bounded_reentrancy_and_arities() {
       return true;
     }})()"#
     );
-    let result = evaluator.evaluate_js(&expression).unwrap();
-    assert_eq!(evaluator.print(result).unwrap(), "true");
-    evaluator.release(result).unwrap();
+    // The Pants build embeds no QuickJS; Node ran the same checks above.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let result = evaluator.evaluate_js(&expression).unwrap();
+        assert_eq!(evaluator.print(result).unwrap(), "true");
+        evaluator.release(result).unwrap();
+    }
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn host_hooks_have_macro_application_phase_witnesses() {
     let source = r#"
@@ -146,11 +146,15 @@ fn host_hooks_have_macro_application_phase_witnesses() {
     "#;
     let program =
         analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new()).unwrap();
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let result = evaluator.evaluate(&program).unwrap();
     let expected = "[[true true [0 1 2 3] [true true true] true false] [true true [0 1 2 3] [true true true] true false]]";
-    assert_eq!(evaluator.print(result).unwrap(), expected);
-    evaluator.release(result).unwrap();
+    // Evaluating the analyzed program needs the QuickJS evaluator; Node runs it below.
+    #[cfg(feature = "quickjs")]
+    {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let result = evaluator.evaluate(&program).unwrap();
+        assert_eq!(evaluator.print(result).unwrap(), expected);
+        evaluator.release(result).unwrap();
+    }
     let output = Command::new("node")
         .args([
             "-e",
@@ -164,19 +168,23 @@ fn host_hooks_have_macro_application_phase_witnesses() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), expected);
-    let mut denied = EvalSession::new(EvalOptions {
-        clock: Some(Rc::new(|| Err(EvalError("clock denied".into())))),
-        ..Default::default()
-    })
-    .unwrap();
-    assert!(
-        denied
-            .eval_string("(system-time)")
-            .unwrap_err()
-            .to_string()
-            .contains("clock denied")
-    );
-    assert_eq!(printed(&mut denied, "42"), "42");
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let mut denied = EvalSession::new(EvalOptions {
+            clock: Some(Rc::new(|| Err(EvalError("clock denied".into())))),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(
+            denied
+                .eval_string("(system-time)")
+                .unwrap_err()
+                .to_string()
+                .contains("clock denied")
+        );
+        assert_eq!(printed(&mut denied, "42"), "42");
+    }
 }
 
 fn provider(requests: Rc<RefCell<Vec<FileLoadRequest>>>) -> FileProvider {

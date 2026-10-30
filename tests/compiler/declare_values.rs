@@ -40,11 +40,11 @@ fn host() -> MacroHost {
     host
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phases() {
     let mut reused = host();
+    // The Pants build embeds no QuickJS; Node runs every script below.
+    #[cfg(feature = "quickjs")]
     let evaluator = Evaluator::new(EvaluatorOptions {
         timeout: std::time::Duration::from_secs(120),
         ..EvaluatorOptions::default()
@@ -94,24 +94,32 @@ fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phase
                         let emitted = light_cljs::compile_with_macros(&computation, host).unwrap();
                         format!("eval({emitted:?})")
                     };
+                    // The Pants build embeds no QuickJS; Node runs the script below.
+                    #[cfg(feature = "quickjs")]
                     let actual = evaluator
                         .string(evaluator.evaluate_js(&script).unwrap())
                         .unwrap();
+                    #[cfg(feature = "quickjs")]
                     assert_eq!(actual, expected, "{id} {phase} {session} {cycle}");
-                    let fresh_engine = Evaluator::new(EvaluatorOptions {
-                        timeout: std::time::Duration::from_secs(120),
-                        ..EvaluatorOptions::default()
-                    })
-                    .unwrap();
-                    assert_eq!(
-                        fresh_engine
-                            .string(fresh_engine.evaluate_js(&script).unwrap())
-                            .unwrap(),
-                        expected
-                    );
+                    // The Pants build embeds no QuickJS to run this half of the check.
+                    #[cfg(feature = "quickjs")]
+                    {
+                        let fresh_engine = Evaluator::new(EvaluatorOptions {
+                            timeout: std::time::Duration::from_secs(120),
+                            ..EvaluatorOptions::default()
+                        })
+                        .unwrap();
+                        assert_eq!(
+                            fresh_engine
+                                .string(fresh_engine.evaluate_js(&script).unwrap())
+                                .unwrap(),
+                            expected
+                        );
+                    }
                     assert_eq!(node(&script), expected, "Node {id} {phase} {session}");
                     node_batch.push_str(&format!("console.log({script});\n"));
                     expected_batch.push(expected.to_owned());
+                    #[cfg(feature = "quickjs")]
                     println!("declare-value-packet\t{cycle}\t{phase}\t{session}\t{id}\t{actual}");
                 }
             }
@@ -124,8 +132,6 @@ fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phase
     );
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn declaration_demand_failures_ownership_and_generations_recover() {
     let mut host = host();
@@ -173,17 +179,21 @@ fn declaration_demand_failures_ownership_and_generations_recover() {
             node(&format!("eval({js:?})")),
             "[[[true [:pending]] 43 [:pending]] 43 [:pending :unrelated]]"
         );
-        let evaluator = Evaluator::new(EvaluatorOptions {
-            timeout: std::time::Duration::from_secs(120),
-            ..EvaluatorOptions::default()
-        })
-        .unwrap();
-        assert_eq!(
-            evaluator
-                .string(evaluator.evaluate_js(&js).unwrap())
-                .unwrap(),
-            "[[[true [:pending]] 43 [:pending]] 43 [:pending :unrelated]]"
-        );
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let evaluator = Evaluator::new(EvaluatorOptions {
+                timeout: std::time::Duration::from_secs(120),
+                ..EvaluatorOptions::default()
+            })
+            .unwrap();
+            assert_eq!(
+                evaluator
+                    .string(evaluator.evaluate_js(&js).unwrap())
+                    .unwrap(),
+                "[[[true [:pending]] 43 [:pending]] 43 [:pending :unrelated]]"
+            );
+        }
     }
     // Unlike the pins' malformed single-binding JavaScript, the production
     // definition expression supplies the same undefined value in a direct let.
@@ -191,17 +201,21 @@ fn declaration_demand_failures_ownership_and_generations_recover() {
         light_cljs::compile("(pr-str (let [d (declare single)] [(undefined? d) (nil? d)]))")
             .unwrap();
     assert_eq!(node(&format!("eval({direct:?})")), "[true true]");
-    let direct_engine = Evaluator::new(EvaluatorOptions {
-        timeout: std::time::Duration::from_secs(120),
-        ..EvaluatorOptions::default()
-    })
-    .unwrap();
-    assert_eq!(
-        direct_engine
-            .string(direct_engine.evaluate_js(&direct).unwrap())
-            .unwrap(),
-        "[true true]"
-    );
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let direct_engine = Evaluator::new(EvaluatorOptions {
+            timeout: std::time::Duration::from_secs(120),
+            ..EvaluatorOptions::default()
+        })
+        .unwrap();
+        assert_eq!(
+            direct_engine
+                .string(direct_engine.evaluate_js(&direct).unwrap())
+                .unwrap(),
+            "[true true]"
+        );
+    }
 
     // Current-namespace qualified declarations retain the established local ownership contract.
     let js = light_cljs::compile(

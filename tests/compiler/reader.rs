@@ -868,7 +868,16 @@ fn local_macro_shadows_referred_value_in_syntax_quote() {
             ),
         ],
     );
-    // Evaluating an analyzed program needs the QuickJS evaluator.
+    assert_eq!(
+        crate::canonical_json::node_stdout(&format!(
+            "const rt = {}; console.log(rt.core.prStr(({})(rt)));",
+            light_cljs::evaluator::RUNTIME_SOURCE,
+            light_cljs::emitter::emit_js_unit(&program)
+        )),
+        "[2 app/value 1]\n",
+        "Node"
+    );
+    // Evaluating an analyzed program needs the QuickJS evaluator; Node ran it above.
     #[cfg(feature = "quickjs")]
     {
         let e = light_cljs::evaluator::Evaluator::new(

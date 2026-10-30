@@ -77,10 +77,9 @@ fn node(script: &str) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-// Runs the program in QuickJS.
-#[cfg(feature = "quickjs")]
 /// The value of the JavaScript string expression `expression` in a fresh
 /// QuickJS evaluator.
+#[cfg(feature = "quickjs")]
 fn quickjs(expression: &str) -> String {
     let evaluator = Evaluator::new(EvaluatorOptions {
         memory_limit: 1 << 30,
@@ -132,13 +131,11 @@ fn shape_hashes(js: &str) -> usize {
         .sum()
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 /// Run `Advanced` output `js` with its `hashed` rewritten by [`CHECK`] and its
 /// map key shape constructors by [`SHAPE_CHECK`], in Node and in QuickJS, and
 /// return what each saw. Whatever the program does after building its
 /// constants (it may throw) is ignored.
-fn checks(js: &str) -> [Checks; 2] {
+fn checks(js: &str) -> Vec<Checks> {
     assert_eq!(
         js.matches("  function hash(value) {").count(),
         1,
@@ -167,14 +164,13 @@ fn checks(js: &str) -> [Checks; 2] {
             mismatches: lines.map(str::to_owned).collect(),
         }
     };
-    [
-        parse(&node(&format!("console.log({expression});"))),
-        parse(&quickjs(&expression)),
-    ]
+    let mut seen = vec![parse(&node(&format!("console.log({expression});")))];
+    // The Pants build embeds no QuickJS; Node's check above still runs.
+    #[cfg(feature = "quickjs")]
+    seen.push(parse(&quickjs(&expression)));
+    seen
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 /// Check every embedded hash of `Advanced` output `js` in both engines and
 /// return how many there are: each constant declared with one is built, and a
 /// mismatch names its declaration. Since light-cljs-220 the key hashes of map
@@ -218,8 +214,6 @@ fn kept(items: &str) -> Program {
     program(&format!("[cljs.core/hash\n{items}]"))
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn edge_case_constants_embed_the_runtime_hash() {
     // Each scalar sits in a vector of its own, so its hash is checked alone;
@@ -295,8 +289,6 @@ fn string_literal(units: &[u16]) -> String {
     out
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn random_scalars_embed_the_runtime_hash() {
     // Numbers from random bit patterns, integers of every magnitude and short
@@ -407,8 +399,6 @@ fn functions(rows: &[&str]) -> String {
     source
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 /// Check the embedded hashes of `rows` as one program. A chunk that does not
 /// compile, or that extends a core protocol beyond its own top-level types
 /// (which turns precomputation off), is split; such a row alone is skipped.
@@ -437,8 +427,6 @@ fn rows_agree(rows: &[&str]) -> usize {
     }
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn corpus_constants_embed_the_runtime_hash() {
     // Rows that do not compile as a function body (namespaces, macros, reader
@@ -468,8 +456,6 @@ fn corpus_constants_embed_the_runtime_hash() {
     assert!(checked > 1000, "{checked}");
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn generated_program_constants_embed_the_runtime_hash() {
     // The generator's literals are repeated, nested, carry metadata and are

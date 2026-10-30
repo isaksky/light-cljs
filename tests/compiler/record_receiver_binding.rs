@@ -61,8 +61,6 @@ fn node(script: &str) -> String {
     assert!(out.stderr.is_empty(), "unexpected Node stderr");
     String::from_utf8(out.stdout).unwrap().trim_end().into()
 }
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 fn record_receiver_binding_executes_in_actual_phases_and_lifecycles() {
     let artifacts = TempDir::named_by("LIGHT_RECORD_RECEIVER_ARTIFACTS", "record-receiver");
@@ -116,18 +114,24 @@ fn record_receiver_binding_executes_in_actual_phases_and_lifecycles() {
                     )
                 };
                 fs::write(root.join("script.js"), &script).unwrap();
+                #[cfg(feature = "quickjs")]
                 let runtime = rquickjs::Runtime::new().unwrap();
+                #[cfg(feature = "quickjs")]
                 let context = rquickjs::Context::full(&runtime).unwrap();
                 let quickjs_input = format!("(0, eval)({script:?})");
                 fs::write(root.join("quickjs.stdin"), &quickjs_input).unwrap();
+                #[cfg(feature = "quickjs")]
                 let quickjs = context.with(|ctx| {
                     ctx.eval::<String, _>(quickjs_input.as_bytes())
                         .unwrap_or_else(|e| {
                             panic!("{id} {lifecycle} {phase} observer: {e:?} {:?}", ctx.catch())
                         })
                 });
+                #[cfg(feature = "quickjs")]
                 fs::write(root.join("quickjs.raw"), &quickjs).unwrap();
+                #[cfg(feature = "quickjs")]
                 assert_eq!(quickjs, expected, "{id} {lifecycle} {phase} QuickJS");
+                #[cfg(feature = "quickjs")]
                 println!(
                     "record-receiver-observation\t{id}\t{lifecycle}\t{phase}\tQuickJS\t{quickjs}"
                 );
@@ -148,8 +152,6 @@ fn record_receiver_binding_executes_in_actual_phases_and_lifecycles() {
     }
 }
 
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 fn demanded_receiver_methods_and_failure_recover_in_same_host() {
     for reused in [false, true] {
@@ -184,19 +186,21 @@ fn demanded_receiver_methods_and_failure_recover_in_same_host() {
 (pr-str (recovered))
 "#;
         let js = light_cljs::compile_with_macros(recovered, &mut host).unwrap();
-        let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-        assert_eq!(
-            evaluator
-                .string(evaluator.evaluate_js(&js).unwrap())
-                .unwrap(),
-            "true"
-        );
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        {
+            let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+            assert_eq!(
+                evaluator
+                    .string(evaluator.evaluate_js(&js).unwrap())
+                    .unwrap(),
+                "true"
+            );
+        }
         assert_eq!(node(&format!("console.log({js});")), "true");
     }
 }
 
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "Independent replay of retained actual QuickJS inputs"]
 fn replay_actual_quickjs_inputs() {
@@ -206,14 +210,20 @@ fn replay_actual_quickjs_inputs() {
             for phase in ["application", "macro"] {
                 let folder = root.join(id).join(lifecycle).join(phase);
                 let input = fs::read(folder.join("quickjs.stdin")).unwrap();
+                #[cfg(feature = "quickjs")]
                 let runtime = rquickjs::Runtime::new().unwrap();
+                #[cfg(feature = "quickjs")]
                 let context = rquickjs::Context::full(&runtime).unwrap();
+                #[cfg(feature = "quickjs")]
                 let actual = context.with(|ctx| ctx.eval::<String, _>(input).unwrap());
+                #[cfg(feature = "quickjs")]
                 assert_eq!(actual, expected);
+                #[cfg(feature = "quickjs")]
                 assert_eq!(
                     actual,
                     fs::read_to_string(folder.join("quickjs.raw")).unwrap()
                 );
+                #[cfg(feature = "quickjs")]
                 println!("receiver-independent-quickjs\t{id}\t{lifecycle}\t{phase}\t{actual}");
             }
         }

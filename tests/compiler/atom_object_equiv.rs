@@ -68,8 +68,6 @@ fn atom_equiv_contracts_execute_in_both_phases() {
     }
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
 #[test]
 fn failed_atom_equiv_leaves_fresh_and_reused_hosts_usable() {
     const SETUP: &str = r#"(def v (atom 1))
@@ -81,19 +79,23 @@ fn failed_atom_equiv_leaves_fresh_and_reused_hosts_usable() {
     const FAILURE: &str = "(.equiv v 13)";
     const RECOVERY: &str = "[(.equiv v v) (.equiv v (atom 1)) (= v v) (swap! v inc) @v]";
     for reused in [false, true] {
-        let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
-        if reused {
-            session.eval_string(SETUP).unwrap();
+        // Interactive sessions run in QuickJS; the macro-host checks below run in every build.
+        #[cfg(feature = "quickjs")]
+        {
+            let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
+            if reused {
+                session.eval_string(SETUP).unwrap();
+            }
+            let failing = if reused {
+                FAILURE.to_string()
+            } else {
+                format!("{SETUP} {FAILURE}")
+            };
+            let error = session.eval_string(&failing).unwrap_err();
+            assert!(error.message.contains("Atom equiv failure"), "{error}");
+            let value = session.eval_string(RECOVERY).unwrap();
+            assert_eq!(session.print(value.value).unwrap(), "[true false true 2 2]");
         }
-        let failing = if reused {
-            FAILURE.to_string()
-        } else {
-            format!("{SETUP} {FAILURE}")
-        };
-        let error = session.eval_string(&failing).unwrap_err();
-        assert!(error.message.contains("Atom equiv failure"), "{error}");
-        let value = session.eval_string(RECOVERY).unwrap();
-        assert_eq!(session.print(value.value).unwrap(), "[true false true 2 2]");
 
         let mut host = MacroHost::new();
         if reused {

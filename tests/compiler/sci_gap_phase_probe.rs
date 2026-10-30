@@ -19,12 +19,16 @@ fn unhex(text: &str) -> String {
     )
     .unwrap()
 }
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
-fn observe(script: &str) -> [(String, String); 2] {
-    let runtime = rquickjs::Runtime::new().unwrap();
-    let context = rquickjs::Context::full(&runtime).unwrap();
-    let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
+fn observe(script: &str) -> Vec<(String, String)> {
+    let mut observed = Vec::new();
+    // The Pants build embeds no QuickJS; Node still runs the script below.
+    #[cfg(feature = "quickjs")]
+    {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
+        observed.push(("QuickJS".into(), quickjs));
+    }
     let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
         .stdin(Stdio::piped())
@@ -44,16 +48,12 @@ fn observe(script: &str) -> [(String, String); 2] {
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(result.stderr.is_empty());
-    [
-        ("QuickJS".into(), quickjs),
-        (
-            "Node".into(),
-            String::from_utf8(result.stdout).unwrap().trim().into(),
-        ),
-    ]
+    observed.push((
+        "Node".into(),
+        String::from_utf8(result.stdout).unwrap().trim().into(),
+    ));
+    observed
 }
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "Explicit unchanged source applications and demanded macro observation audit"]
 fn original_gap_sources_execute_through_actual_macro_hosts() {

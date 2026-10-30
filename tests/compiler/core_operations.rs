@@ -380,15 +380,20 @@ fn signatures_hold_on_sample_arguments() {
 }})()"#,
         rows = rows.join(",\n  ")
     );
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
-    {
+    let violations = {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let report = evaluator.evaluate_js(&script).unwrap();
-        let violations = evaluator.string(report).unwrap();
-        assert!(
-            violations.is_empty(),
-            "src/core_operations.tsv disagrees with the runtime:\n{violations}"
-        );
-    }
+        evaluator.string(report).unwrap()
+    };
+    // The Pants build embeds no QuickJS; Node runs the same check over the runtime.
+    #[cfg(not(feature = "quickjs"))]
+    let violations = crate::canonical_json::node_stdout(&format!(
+        "const rt = {}; process.stdout.write({script});",
+        light_cljs::evaluator::RUNTIME_SOURCE
+    ));
+    assert!(
+        violations.is_empty(),
+        "src/core_operations.tsv disagrees with the runtime:\n{violations}"
+    );
 }

@@ -49,7 +49,7 @@ fn hex(value: &[u8]) -> String {
     value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-// Canonicalizes or compares engine results with QuickJS.
+// Canonicalizes through the QuickJS evaluator for the audit below.
 #[cfg(feature = "quickjs")]
 fn canonical(evaluator: &Evaluator, expression: &str) -> String {
     let source = format!(
@@ -63,7 +63,7 @@ fn canonical(evaluator: &Evaluator, expression: &str) -> String {
         .unwrap()
 }
 
-// Canonicalizes or compares engine results with QuickJS.
+// This audit compares Node's canonical results with the QuickJS evaluator's.
 #[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "The standalone helper supplies exact 22 contexts and records fresh provenance"]

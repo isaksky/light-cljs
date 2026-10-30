@@ -48,6 +48,10 @@ mod reload_fixtures;
 #[allow(dead_code)]
 mod temp_dir;
 
+// Canonical JSON of engine observations, computed in QuickJS or, without it, Node.
+#[path = "../support/canonical_json.rs"]
+mod canonical_json;
+
 // Just enough JSON for contract rows, driver records and chunks.json.
 #[path = "../support/json.rs"]
 #[allow(dead_code)]

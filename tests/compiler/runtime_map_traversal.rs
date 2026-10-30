@@ -20,15 +20,20 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
-fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
-    let runtime = rquickjs::Runtime::new().unwrap();
-    let context = rquickjs::Context::full(&runtime).unwrap();
-    let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
-        Ok(value) => value,
-        Err(error) => format!("HARNESS_ERROR:{error:?}: {:?}", ctx.catch()),
-    });
+fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
+    let mut observed = Vec::new();
+    // The Pants build embeds no QuickJS; Node still runs the script below.
+    #[cfg(feature = "quickjs")]
+    {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+            Ok(value) => value,
+            Err(error) => format!("HARNESS_ERROR:{error:?}: {:?}", ctx.catch()),
+        });
+        fs::write(artifact.join("quickjs.raw"), &quickjs).unwrap();
+        observed.push(("QuickJS".into(), quickjs));
+    }
     let mut child = Command::new(std::env::var("NODE").unwrap())
         .arg("-")
         .stdin(Stdio::piped())
@@ -44,7 +49,6 @@ fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
         .unwrap();
     let out = child.wait_with_output().unwrap();
     fs::write(artifact.join("script.js"), script).unwrap();
-    fs::write(artifact.join("quickjs.raw"), &quickjs).unwrap();
     fs::write(
         artifact.join("node.stdin"),
         format!("console.log({script});"),
@@ -57,20 +61,16 @@ fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
         out.status.code().unwrap_or(-1).to_string(),
     )
     .unwrap();
-    [
-        ("QuickJS".into(), quickjs),
-        (
-            "Node".into(),
-            if out.status.success() && out.stderr.is_empty() {
-                String::from_utf8(out.stdout).unwrap().trim().into()
-            } else {
-                format!("HARNESS_ERROR:{}", String::from_utf8_lossy(&out.stderr))
-            },
-        ),
-    ]
+    observed.push((
+        "Node".into(),
+        if out.status.success() && out.stderr.is_empty() {
+            String::from_utf8(out.stdout).unwrap().trim().into()
+        } else {
+            format!("HARNESS_ERROR:{}", String::from_utf8_lossy(&out.stderr))
+        },
+    ));
+    observed
 }
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit original .cljc filename and actual phase audit"]
 fn runtime_map_traversal_sources_execute_in_fresh_and_reused_macro_hosts() {

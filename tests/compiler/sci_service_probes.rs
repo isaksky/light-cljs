@@ -4,6 +4,8 @@
 //! records hosted diagnostics and supplies no coverage by itself.
 use light_cljs::{EvalOptions, EvalSession};
 
+// Observes every probe in an interactive session, which runs in QuickJS.
+#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit SCI service/phase diagnostic; records macro failures, no gate coverage"]
 fn audit_original_sci_macroexpand_phase_services() {
@@ -151,35 +153,39 @@ fn quoted_expansion_contract_and_dynamic_host_service_are_independent() {
         "(defmacro macroexpand-1 [x] :custom) (macroexpand-1 '(let [] 1))",
         ":custom",
     );
-    let mut session = EvalSession::new(EvalOptions::default()).unwrap();
-    let result = session
-        .eval_string("(let [form (list 'let '[x 1] 'x)] (first (macroexpand-1 form)))")
-        .unwrap();
-    assert_eq!(session.print(result.value).unwrap(), "let*");
-    session.release(result.value).unwrap();
-    for source in [
-        "\n(macroexpand-1 '(let [x] x))",
-        "\n(macroexpand-1 (quote))",
-        "\n(macroexpand-1 '(+ 1 2) 3)",
-        "\n(defmacro broken [] (macroexpand-1 '(let [x] x))) (broken)",
-    ] {
-        let error = session.eval_string(source).unwrap_err();
-        assert!(
-            error.message.contains("expand") || error.message.contains("binding"),
-            "{error:?}"
-        );
-        assert!(
-            error.location.as_ref().is_some_and(|span| span
-                .source()
-                .line_column(span.bytes().start)
-                .unwrap()
-                .0
-                == 2),
-            "{error:?}"
-        );
-        let result = session.eval_string("(+ 20 22)").unwrap();
-        assert_eq!(session.print(result.value).unwrap(), "42");
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let mut session = EvalSession::new(EvalOptions::default()).unwrap();
+        let result = session
+            .eval_string("(let [form (list 'let '[x 1] 'x)] (first (macroexpand-1 form)))")
+            .unwrap();
+        assert_eq!(session.print(result.value).unwrap(), "let*");
         session.release(result.value).unwrap();
+        for source in [
+            "\n(macroexpand-1 '(let [x] x))",
+            "\n(macroexpand-1 (quote))",
+            "\n(macroexpand-1 '(+ 1 2) 3)",
+            "\n(defmacro broken [] (macroexpand-1 '(let [x] x))) (broken)",
+        ] {
+            let error = session.eval_string(source).unwrap_err();
+            assert!(
+                error.message.contains("expand") || error.message.contains("binding"),
+                "{error:?}"
+            );
+            assert!(
+                error.location.as_ref().is_some_and(|span| span
+                    .source()
+                    .line_column(span.bytes().start)
+                    .unwrap()
+                    .0
+                    == 2),
+                "{error:?}"
+            );
+            let result = session.eval_string("(+ 20 22)").unwrap();
+            assert_eq!(session.print(result.value).unwrap(), "42");
+            session.release(result.value).unwrap();
+        }
     }
 }
 

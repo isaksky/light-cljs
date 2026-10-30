@@ -20,15 +20,20 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
-fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
-    let runtime = rquickjs::Runtime::new().unwrap();
-    let context = rquickjs::Context::full(&runtime).unwrap();
-    let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
-        Ok(value) => value,
-        Err(error) => format!("HARNESS_ERROR:{error:?}: {:?}", ctx.catch()),
-    });
+fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
+    let mut observed = Vec::new();
+    // The Pants build embeds no QuickJS; Node still runs the script below.
+    #[cfg(feature = "quickjs")]
+    {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+            Ok(value) => value,
+            Err(error) => format!("HARNESS_ERROR:{error:?}: {:?}", ctx.catch()),
+        });
+        fs::write(artifact.join("quickjs.raw"), &quickjs).unwrap();
+        observed.push(("QuickJS".into(), quickjs));
+    }
     let mut child = Command::new(std::env::var("NODE").unwrap())
         .arg("-")
         .stdin(Stdio::piped())
@@ -44,7 +49,6 @@ fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
         .unwrap();
     let out = child.wait_with_output().unwrap();
     fs::write(artifact.join("script.js"), script).unwrap();
-    fs::write(artifact.join("quickjs.raw"), &quickjs).unwrap();
     fs::write(
         artifact.join("node.stdin"),
         format!("console.log({script});"),
@@ -57,21 +61,17 @@ fn observe(script: &str, artifact: &std::path::Path) -> [(String, String); 2] {
         out.status.code().unwrap_or(-1).to_string(),
     )
     .unwrap();
-    [
-        ("QuickJS".into(), quickjs),
-        (
-            "Node".into(),
-            if out.status.success() && out.stderr.is_empty() {
-                String::from_utf8(out.stdout).unwrap().trim().into()
-            } else {
-                format!("HARNESS_ERROR:{}", String::from_utf8_lossy(&out.stderr))
-            },
-        ),
-    ]
+    observed.push((
+        "Node".into(),
+        if out.status.success() && out.stderr.is_empty() {
+            String::from_utf8(out.stdout).unwrap().trim().into()
+        } else {
+            format!("HARNESS_ERROR:{}", String::from_utf8_lossy(&out.stderr))
+        },
+    ));
+    observed
 }
 
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
 fn both(source: &str, expected: &str, host: &mut MacroHost) {
     let js = light_cljs::compile_with_macros(source, host).unwrap();
     let anchor = " = // Original bounded runtime";
@@ -85,9 +85,13 @@ fn both(source: &str, expected: &str, host: &mut MacroHost) {
         "(() => {{const value={captured};return ({})(globalThis.lightRuntime)('regression',()=>value);}})()",
         include_str!("../support/sci_execution_observation.js")
     );
+    #[cfg(feature = "quickjs")]
     let runtime = rquickjs::Runtime::new().unwrap();
+    #[cfg(feature = "quickjs")]
     let context = rquickjs::Context::full(&runtime).unwrap();
+    #[cfg(feature = "quickjs")]
     let actual = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
+    #[cfg(feature = "quickjs")]
     assert_eq!(actual, expected, "QuickJS: {source}");
     let output = Command::new("node").args(["-p", &script]).output().unwrap();
     assert!(
@@ -102,8 +106,6 @@ fn both(source: &str, expected: &str, host: &mut MacroHost) {
     );
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn public_print_helper_contracts_preserve_callbacks_options_failures_and_sessions() {
     let mut reused = MacroHost::new();
@@ -129,8 +131,6 @@ fn public_print_helper_contracts_preserve_callbacks_options_failures_and_session
     }
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn writer_macro_results_reject_and_reused_hosts_recover_without_phase_state() {
     let mut host = MacroHost::new();
@@ -150,8 +150,6 @@ fn writer_macro_results_reject_and_reused_hosts_recover_without_phase_state() {
     both(source, expected, &mut host);
     both(source, expected, &mut host);
 }
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit public printing helper actual phase audit"]
 fn public_print_helpers_execute_in_fresh_and_reused_macro_hosts() {

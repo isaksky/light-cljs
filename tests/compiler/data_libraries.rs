@@ -121,7 +121,12 @@ fn macros_use_libraries_without_native_registration() {
         "(ns probe.main (:require [helper.lib :refer [compute]])) (= (compute) [42])",
     );
     let js = compile_namespace("probe.main", std::slice::from_ref(sources.0.path())).unwrap();
-    // The Pants build embeds no QuickJS to run the program; it still compiles it.
+    assert_eq!(
+        crate::canonical_json::node_stdout(&format!("console.log(JSON.stringify({js}));")),
+        "true\n",
+        "Node"
+    );
+    // The Pants build embeds no QuickJS; Node ran the program above.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(Default::default()).unwrap();
@@ -219,8 +224,6 @@ fn literal(value: &native_fixture::Value) -> String {
         _ => panic!("unexpected exact-number native fixture: {value:?}"),
     }
 }
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects() {
     let cases = native_fixture::cases(include_str!("../fixtures/sci-outcomes.tsv")).unwrap();
@@ -274,10 +277,18 @@ fn all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects() 
     body.push(']');
     sources.write("probe/main.cljs", &format!("(ns probe.main (:require [clojure.set :as s :refer [union]] [clojure.walk :as w :refer [postwalk]])) {body}"));
     let js = compile_namespace("probe.main", std::slice::from_ref(sources.0.path())).unwrap();
-    let e = Evaluator::new(Default::default()).unwrap();
-    let observations = e
-        .string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
-        .unwrap();
+    #[cfg(feature = "quickjs")]
+    let observations = {
+        let e = Evaluator::new(Default::default()).unwrap();
+        e.string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
+            .unwrap()
+    };
+    // The Pants build embeds no QuickJS; Node's observations are checked instead.
+    #[cfg(not(feature = "quickjs"))]
+    let observations =
+        crate::canonical_json::node_stdout(&format!("console.log(JSON.stringify({js}));"))
+            .trim()
+            .to_owned();
     let parts = observations
         .trim_matches(['[', ']'])
         .split(',')

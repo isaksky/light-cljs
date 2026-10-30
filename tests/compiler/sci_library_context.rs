@@ -52,8 +52,6 @@ fn script(
     ))
 }
 
-// Canonicalizes or compares engine results with QuickJS.
-#[cfg(feature = "quickjs")]
 fn execute(script: &str) -> (String, String) {
     let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
@@ -76,19 +74,25 @@ fn execute(script: &str) -> (String, String) {
             String::from_utf8_lossy(&result.stderr).replace(['\n', '\t'], " ")
         )
     };
+    #[cfg(feature = "quickjs")]
     let runtime = rquickjs::Runtime::new().unwrap();
+    #[cfg(feature = "quickjs")]
     runtime.set_memory_limit(128 * 1024 * 1024);
+    #[cfg(feature = "quickjs")]
     runtime.set_max_stack_size(4 * 1024 * 1024);
+    #[cfg(feature = "quickjs")]
     let context = rquickjs::Context::full(&runtime).unwrap();
+    #[cfg(feature = "quickjs")]
     let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
         Ok(value) => value,
         Err(error) => format!("HARNESS:{error:?}: {:?}", ctx.catch()).replace(['\n', '\t'], " "),
     });
+    // The Pants build embeds no QuickJS; its column stays empty there.
+    #[cfg(not(feature = "quickjs"))]
+    let quickjs = String::new();
     (node, quickjs)
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 fn execute_case(line: &str, root: &std::path::Path) -> String {
     let fields: Vec<_> = line.split('\t').collect();
     assert_eq!(fields.len(), 3);
@@ -115,8 +119,6 @@ fn execute_case(line: &str, root: &std::path::Path) -> String {
     }
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
     let root = TempDir::new("cljs-library-bridge");
@@ -155,6 +157,7 @@ fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
                     let script = script(id, declarations, source, &root.join(id)).unwrap();
                     let (node, quickjs) = execute(&script);
                     assert_eq!(node, expected, "Node {id}");
+                    #[cfg(feature = "quickjs")]
                     assert_eq!(quickjs, expected, "QuickJS {id}");
                 })
             })
@@ -165,8 +168,6 @@ fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
     });
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 #[ignore = "explicit complete SCI library/import original-contract audit"]
 fn retained_library_sources_execute_in_node_and_quickjs() {

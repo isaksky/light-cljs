@@ -257,8 +257,6 @@ fn node(script: &str) -> String {
     );
     String::from_utf8(out.stdout).unwrap()
 }
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
     let cases = native::cases(include_str!("../fixtures/sci-outcomes.tsv")).unwrap();
@@ -311,22 +309,31 @@ fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
                 continue;
             }
         };
-        let e = Evaluator::new(Default::default()).unwrap();
-        let observation = e
-            .string(
-                e.evaluate_js(&format!("JSON.stringify({javascript})"))
-                    .unwrap(),
-            )
-            .unwrap();
-        if !observation.starts_with("[true,true,") {
-            failures.push(format!("QuickJS {}: {observation}", case.id));
-        }
+        // The Pants build embeds no QuickJS to run this half of the check.
+        #[cfg(feature = "quickjs")]
+        let observation = {
+            let e = Evaluator::new(Default::default()).unwrap();
+            let observation = e
+                .string(
+                    e.evaluate_js(&format!("JSON.stringify({javascript})"))
+                        .unwrap(),
+                )
+                .unwrap();
+            if !observation.starts_with("[true,true,") {
+                failures.push(format!("QuickJS {}: {observation}", case.id));
+            }
+            observation
+        };
+        // The Pants build embeds no QuickJS; Node checks each case below.
+        #[cfg(not(feature = "quickjs"))]
+        let observation = String::new();
         scripts.push(format!("console.log(JSON.stringify({javascript}));"));
         ids.push((case.id, observation));
     }
     for (group, expected) in scripts.chunks(8).zip(ids.chunks(8)) {
         let observations = node(&group.join("\n"));
         for ((id, quickjs), node) in expected.iter().zip(observations.lines()) {
+            #[cfg(feature = "quickjs")]
             assert_eq!(node, quickjs, "Node/QuickJS {id}");
             if !node.starts_with("[true,true,") {
                 failures.push(format!("Node {id}: {node}"));
@@ -354,8 +361,6 @@ fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
     );
 }
 
-// Compares the Node result with the QuickJS result.
-#[cfg(feature = "quickjs")]
 #[test]
 fn verbatim_pinned_upstream_string_api_and_capitalization_property_execute() {
     let sources = Sources::new();
@@ -396,20 +401,24 @@ fn verbatim_pinned_upstream_string_api_and_capitalization_property_execute() {
             include_str!("../fixtures/compiler-upstream-string-tests.cljs")
         ))
         .unwrap();
-    let e = Evaluator::new(light_cljs::evaluator::EvaluatorOptions {
-        timeout: std::time::Duration::from_secs(60),
-        ..Default::default()
-    })
-    .unwrap();
-    let observation = e
-        .string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
+    // The Pants build embeds no QuickJS to run this half of the check.
+    #[cfg(feature = "quickjs")]
+    {
+        let e = Evaluator::new(light_cljs::evaluator::EvaluatorOptions {
+            timeout: std::time::Duration::from_secs(60),
+            ..Default::default()
+        })
         .unwrap();
-    assert_eq!(observation, "[true,95,true,1000]");
-    assert_eq!(
-        node(&format!("console.log(JSON.stringify({js}));")).trim(),
-        observation
-    );
-    println!("Upstream API/property observations: {observation}");
+        let observation = e
+            .string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
+            .unwrap();
+        assert_eq!(observation, "[true,95,true,1000]");
+        assert_eq!(
+            node(&format!("console.log(JSON.stringify({js}));")).trim(),
+            observation
+        );
+        println!("Upstream API/property observations: {observation}");
+    }
 }
 
 #[test]
