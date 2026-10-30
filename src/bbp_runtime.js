@@ -3580,7 +3580,11 @@ globalThis.__lightInitializerSelect=false;
 globalThis.__lightRegisterUnit=(name,unit,once=false,location='',test=null)=>{
   lazyResolve(name);
   if(!roots.has(name)&&(name in registry()))return null;
-  if(roots.has(name)&&__rt.initializerSlotGet(roots.get(name),0)===unit)return null;
+  // A declaration (no unit) keeps any definition the name has, as the
+  // reference's registry does: `(def P 1)` then `(defprotocol P ...)`, whose
+  // declaration precedes its bundle, leaves the root `P` an initializer
+  // before the bundle reads (light-cljs-592).
+  if(roots.has(name)&&(unit===null||__rt.initializerSlotGet(roots.get(name),0)===unit))return null;
   // A defonce keeps an earlier definition (not a declaration), as the
   // legacy runtimes' registry does.
   if(once&&roots.has(name)&&(__rt.initializerSlotGet(roots.get(name),0)!==null||__rt.initializerSlotGet(roots.get(name),4)===true))return null;
@@ -3782,7 +3786,7 @@ const lazyStep=(c,s,p)=>{
   const e=__rt.nth(c.entries,p);
   if(__rt.nth(e,0)===0){
     const unit=__rt.nth(e,2);
-    if(!s.slot&&s.has||s.slot&&s.unit===unit||__rt.nth(e,3)&&s.slot&&(s.unit!==null||s.defined))return s;
+    if(!s.slot&&s.has||s.slot&&(unit===null||s.unit===unit)||__rt.nth(e,3)&&s.slot&&(s.unit!==null||s.defined))return s;
     return {slot:true,unit,defined:false,own:true,data:false,has:true,fresh:true,pre:s.pre,owner:p,first:s.own?s.first:p};
   }
   if(!lazyEffective(c,p)||s.own&&s.data)return s;
@@ -3880,21 +3884,20 @@ const catalogFrontier=(c,p)=>{
   return c.base;
 };
 // The getter of `name`'s definition before the catalog bundle `b`'s, when
-// an earlier entry of the catalog defines it: a bundle's product, or an
-// ordinary root's initializer at its own declaration frontier.
+// an earlier entry of the catalog defines it: the entry that owns the name
+// just before `b` (`lazyStateBefore`, where a declaration keeps an earlier
+// definition): a bundle's product, or an ordinary root's initializer at
+// its own declaration frontier, which fails for a declaration alone.
 const catalogPrevious=(b,name)=>{
-  const c=b.catalog,at=__rt.getOr(c.names,name,null);
-  if(at===null)return undefined;
-  let q=-1;
-  for(let i=0,n=__rt.count(at);i<n;i++){const r=__rt.nth(at,i);if(r>=b.entry)break;q=r;}
+  const c=b.catalog;
+  if(__rt.getOr(c.names,name,null)===null)return undefined;
+  const s=lazyStateBefore(c,name,b.entry),q=s.owner;
   if(q<0)return undefined;
-  const e=__rt.nth(c.entries,q);
-  if(__rt.nth(e,0)===1)return decl.productGetter(lazyBundle(c,q),name);
-  const unit=__rt.nth(e,2);
-  if(unit===null)return undefined;
-  let slot=unitSlots.get(unit);
-  if(slot===undefined){slot=__rt.initializerSlot(unit,name);unitSlots.set(unit,slot);}
-  return rootGetter(name,unit,slot,catalogFrontier(c,q));
+  if(__rt.nth(__rt.nth(c.entries,q),0)===1)return decl.productGetter(lazyBundle(c,q),name);
+  if(s.unit===null)return rootGetter(name,null,null);
+  let slot=unitSlots.get(s.unit);
+  if(slot===undefined){slot=__rt.initializerSlot(s.unit,name);unitSlots.set(s.unit,slot);}
+  return rootGetter(name,s.unit,slot,catalogFrontier(c,q));
 };
 // Index a protocol's catalog bundles, once, before its extensions are read
 // or another bundle extends it.

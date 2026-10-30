@@ -7597,6 +7597,8 @@ fn native_protocol_redeclaration_identity_matches_quickjs_at_all_threads() {
         (
             "state.cljs",
             r#"(ns state)
+          (def P :before)
+          (def before P)
           (defprotocol P (p [x]))
           (def old P)
           (def saved (atom P))
@@ -7608,7 +7610,7 @@ fn native_protocol_redeclaration_identity_matches_quickjs_at_all_threads() {
           (defmacro probe []
             (let [s satisfies?]
               [(identical? old P) (= old P) (identical? @saved old) (satisfies? old "s") (s old "s") (s P "s")
-               (s @saved "s") (identical? old-t T) (p "s")]))
+               (s @saved "s") (identical? old-t T) (p "s") (= before :before)]))
           (defmacro nested []
             (defprotocol Q (q [x]))
             (let [old Q s satisfies?]
@@ -7633,8 +7635,8 @@ fn native_protocol_redeclaration_identity_matches_quickjs_at_all_threads() {
     }
     assert_namespaces_match_quickjs_at_all_threads(
         &root,
-        "[[[false false true false false true false false 1] [false false true 1]] \
-         [false false true false false true false false 1]]\n",
+        "[[[false false true false false true false false 1 true] [false false true 1]] \
+         [false false true false false true false false 1 true]]\n",
     );
 }
 

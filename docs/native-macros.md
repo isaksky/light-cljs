@@ -498,8 +498,12 @@ bundle is forced for a top-level one. As the reference forces its bundles
 lazily too, a bundle forced after a redeclaration extends the new protocol. A definition's initializer
 reads the declaration products visible at its source site, as the
 reference's roots do, so `(def old P)` before a second `(defprotocol P)` (or
-`deftype`) keeps the first; the engine's fast read of a ready bundle's
-product skips the getter only for names declared once. A `defprotocol` or
+`deftype`) keeps the first, and `(def old P)` after `(def P 1)` but before
+`(defprotocol P)` keeps `1`: as in the reference's registry, the declaration
+that `defprotocol` registers before its bundle keeps a name's earlier
+definition instead of replacing it with an unavailable one. The engine's fast
+read of a ready bundle's product skips the getter only for names declared
+once. A `defprotocol` or
 `deftype` in a macro body defines its products as a nested `def` defines its
 root, replacing a declaration installed before it (it failed with `cannot set
 property ... of undefined`).
@@ -5166,11 +5170,19 @@ object), and `min`/`max` at `core.min`. The publication reduction compares
 the Pants build with the QuickJS reference at 1, 2, 4 and 8 threads under 12
 scheduling seeds, with every helper published and none per task.
 
-The protocol tables, the mask table and the set of core protocol names are
-built on a task's first predicate or protocol read, and a core protocol's
-getter is the one the unsupported entry already had: a task's starting heap
-is unchanged, which the 4 MiB evaluator tests in `src/bbp_evaluator/tests.rs`
-check (building the tables at startup failed three of them).
+The protocol tables, the mask positions and the set of core protocol names
+are code (switches over string literals and word searches in one string),
+not Sets or Maps a task builds: the parts of a `split` share the split's
+reservation of 512 bytes per input character, a Map entry reserves 2 KiB
+and a concatenation a multiple of its length, and a kept table would hold
+them for the task's life. A core protocol's getter is the one the
+unsupported entry already had. A Pants task's starting heap is 3.12 MB
+against master's 3.52 MB (the first version of this pellet built a mask
+table from a `split` and started at 3.87 MB, failing the 4 MiB
+`native_gensym_reservations_count_against_the_shared_heap_limit`; master's
+own partition-zero Set went the same way), and a task's first `satisfies?`
+keeps 13 KB (`native_protocol_tables_stay_small_in_the_shared_heap`; built
+as Sets and Maps, the tables exhausted a 4 MiB heap on that first call).
 
 Penpot, from Pants and V8 release builds rebased on master `ad6038e0`, with
 the five read-only roots, every budget above and `--source-map
