@@ -459,7 +459,9 @@ map, integer range, `repeat` or their seqs) returns its seq that far on (or
 argument. A sequence no operation typed answers `unsupported operation:
 native macro runtime satisfies? of sequence` rather than guess; no supported
 operation makes one. Values the build cannot make (sorted sets, transients,
-volatiles, delays, functions with metadata) stay unsupported.
+volatiles, delays, functions with metadata) stay unsupported. A macro's
+result exports a `Repeat` or `ChunkedCons` with its nil metadata, as the
+reference exports it and a `LazySeq`.
 
 A protocol's value is a function, as in the reference. A core protocol has
 one for the whole compilation; a program protocol one per declaration: the

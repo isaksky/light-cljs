@@ -754,11 +754,6 @@ impl FormObject {
         object
     }
 
-    /// The QuickJS reference's type where the body alone does not tell it.
-    pub(crate) fn brand(&self) -> Brand {
-        self.brand
-    }
-
     pub(crate) fn is_sorted(&self) -> bool {
         self.sorted
     }
@@ -1701,7 +1696,7 @@ pub(crate) fn object_reference_type(f: &FormObject) -> Option<&'static str> {
         FormBody::Lazy(_) => "lazy-seq",
         FormBody::List(items) if items.len() == 0 => "empty-list",
         FormBody::List(_) if f.sequence_view.is_none() => "list",
-        FormBody::List(_) => unbranded(&f),
+        FormBody::List(_) => unbranded(f),
         FormBody::Cons(c) => match c.kind {
             lazy::ConsKind::Concat { .. } => "lazy-seq",
             lazy::ConsKind::Chunked => "chunked-cons",
@@ -1710,7 +1705,7 @@ pub(crate) fn object_reference_type(f: &FormObject) -> Option<&'static str> {
             // The seq of a chunked `concat` or `map` (`ConsKind::plain`).
             lazy::ConsKind::ChunkedSeq => "chunked-cons",
             lazy::ConsKind::Cons if f.is_list() => "cons",
-            lazy::ConsKind::Cons => unbranded(&f),
+            lazy::ConsKind::Cons => unbranded(f),
         },
     })
 }
