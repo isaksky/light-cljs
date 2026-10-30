@@ -2248,6 +2248,8 @@ const native = (() => {
     count:x=>__rt.cljCount(x),
     seq, isEmpty:x=>__rt.cljSeq(x)===null,
     rest:x=>__rt.cljRest(x), next:x=>__rt.cljNext(x), peek:x=>__rt.cljPeek(x), peekProtocol,
+    // The doseq definition steps its bindings in pairs (light-cljs-611).
+    nnext:x=>__rt.cljNext(__rt.cljNext(x)),
     pop, popProtocol,
     cons:(x,xs)=>__rt.cljCons(x,xs), concat:(...xs)=>__rt.cljConcatAll(list(xs)),
     listStar:(...xs)=>list([...xs.slice(0,-1),...arr(xs[xs.length-1])]),

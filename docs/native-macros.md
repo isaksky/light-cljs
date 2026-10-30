@@ -204,19 +204,24 @@ instead, the Pants build gives the same result:
   receives reader-order literal forms, so where a definition computes from
   them (`simple-benchmark` printing them, `selector` and `defmulti`
   merging into them) the Pants build's copy decodes them first
-  (`macro-decoded`). `simple-benchmark` thus prints with the runtime's
-  printer, honouring `*print-length*` and the other settings a source macro
-  set, and keeps `-0.0`.
+  (`macro-decoded`): equal keys merge, a map of more than eight reader
+  entries is a hash map even where keys merge below that, and metadata
+  decodes too. `simple-benchmark` thus prints with the runtime's printer,
+  honouring `*print-length*`, `*print-meta*` and the other settings a source
+  macro set, and keeps `-0.0`. The definitions' own helpers stay local to
+  their units, so a program's `cljs.user/macro-...` definitions are
+  untouched, and a call the definition rejects is checked every time, not
+  only before the definition is first loaded.
 
 The V8 build is unchanged but for `(for [] x)`, which now expands natively
 there too, to the form its definition gives (both then fail analysis with
 "unsupported binding form"). A `doseq` past the native expander's name budget
 is one the V8 build rejects too, at its default node limit (its expansion's
 conversion runs out, or the expansion exceeds the generated-node limit); on
-the Pants build its definition needs `core.nnext`, which the runtime lacks
-(light-cljs-612), and is too slow there to reach that limit. With a raised
+the Pants build its definition runs (the runtime now has the `core.nnext` it
+needs) but is far too slow there to reach that limit. With a raised
 `--macro-nodes`, the V8 build can expand such a `doseq` where the Pants build
-cannot yet.
+cannot yet (light-cljs-620).
 
 ## Supported boundary
 

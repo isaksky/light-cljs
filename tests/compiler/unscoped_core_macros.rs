@@ -95,6 +95,54 @@ fn benchmark_printing_matches_the_engine() {
         output(&source),
         "[m {\"a\" 2} n {1 :d} z -0.0], -0.0, 1\n[m {:e 5, :g 7, :c 3, :h 8, :b 2, :d 4, :f 6, :i 9, :a 1} s #{3 1 2 :x \"y\"}], m, 1\n[x ...], [x ...], 1\n"
     );
+    // Nine reader entries that the engine merges to eight still take
+    // hash order, and metadata decodes too when it prints.
+    let source = format!(
+        r#"{PRINTED}
+        (simple-benchmark [m {{\a 1 "a" 2 :b 3 :c 4 :d 5 :e 6 :f 7 :g 8 :h 9}}] 0 1 :print-fn p)
+        (defmacro with-meta-printed [] (set! *print-meta* true) nil)
+        (with-meta-printed)
+        (simple-benchmark [] ^{{\a 1 "a" 2}} [1] 1 :print-fn p)"#
+    );
+    assert_eq!(
+        output(&source),
+        "[m {:e 6, :g 8, :c 4, \"a\" 2, :h 9, :b 3, :d 5, :f 7}], 0, 1\n[], ^{\"a\" 2} [1], 1\n"
+    );
+}
+
+/// Loading a core macro's definition leaves the program's own definitions
+/// of the same names alone.
+#[test]
+fn core_definition_fallback_preserves_user_helpers() {
+    let source = format!(
+        r#"{PRINTED}
+        (defn macro-decoded [x] 42)
+        (defn macro-simple-benchmark [& _] 43)
+        (defmacro use-helpers [] [(macro-decoded 1) (macro-simple-benchmark 1)])
+        (js/console.log (pr-str (use-helpers)))
+        (simple-benchmark [] 0 1 :print-fn p)
+        (js/console.log (pr-str (use-helpers)))"#
+    );
+    assert_eq!(output(&source), "[42 43]\n[], 0, 1\n[42 43]\n");
+}
+
+/// A call its definition rejects fails as the V8 build reports it, also
+/// after an earlier call of the macro ran the definition.
+#[test]
+fn cached_core_definitions_keep_rejection_checks() {
+    let expected = "macro cljs.core/simple-benchmark: Error: Unsupported macro result undefined at $[2][1][3][1][1]; definition compiler_core_macros.cljs:238:1";
+    for source in [
+        "(simple-benchmark [] 1)",
+        "(simple-benchmark [] 0 1 :print-fn identity) (simple-benchmark [] 1)",
+    ] {
+        let error = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            without_stack(&error).contains(expected),
+            "{source}\n{error}"
+        );
+    }
 }
 
 /// `light-cljs --compile FILE` with core macros and no namespace.

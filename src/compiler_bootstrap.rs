@@ -511,7 +511,7 @@ fn native_definitions() -> Result<&'static NativeDefinitions, String> {
     host.tables.bootstrap_seed = true;
     let compile = |source: &str, host: &mut MacroHost| {
         compile_with(source, host, |program| {
-            crate::emitter::emit_native_macro_unit(program, true, &[])
+            crate::emitter::emit_native_macro_unit(program, false, &[])
         })
     };
     let getter = compile("(fn* [m k] (get m k))", &mut host)?;
@@ -564,12 +564,14 @@ fn native_core_source() -> Result<String, String> {
     const DECODED: &str = r#"
 (defn macro-decoded [x]
   (let [decoded (cond
-                  (map? x) (into {} (map (fn [entry] [(macro-decoded (key entry)) (macro-decoded (val entry))]) x))
+                  (map? x) (into (if (> (count x) 8) (hash-map) {})
+                             (map (fn [entry] [(macro-decoded (key entry)) (macro-decoded (val entry))]) x))
                   (set? x) (into #{} (map macro-decoded x))
                   (vector? x) (mapv macro-decoded x)
                   (seq? x) (apply list (map macro-decoded x))
-                  :else x)]
-    (if (and (not (identical? decoded x)) (meta x)) (with-meta decoded (meta x)) decoded)))
+                  :else x)
+        metadata (meta x)]
+    (if (some? metadata) (with-meta decoded (macro-decoded metadata)) decoded)))
 "#;
     // Where a definition computes from its arguments' maps: what
     // `simple-benchmark` prints, the map `selector` merges its names into
@@ -955,15 +957,25 @@ impl MacroHost {
             }
         }
         // On the Pants build a call native expansion declines that the
-        // definition rejects fails as the V8 build's engine reports it; any
-        // other runs the definition, installed in the runtime on first use.
+        // definition rejects fails as the V8 build's engine reports it, every
+        // time, as the Pants runtime's conversions do not refuse what the
+        // engine's do; any other runs the definition, installed in the
+        // runtime on first use.
         #[cfg(feature = "bbp-macros")]
+        if name != "js-obj"
+            && self
+                .engine
+                .bootstrap
+                .as_ref()
+                .unwrap()
+                .evaluator
+                .native_forms()
         {
+            if let Some(rejected) = self.reject_core_call(name, call) {
+                return Err(rejected);
+            }
             let bootstrap = self.engine.bootstrap.as_mut().unwrap();
-            if bootstrap.evaluator.native_forms() && !bootstrap.functions.contains_key(name) {
-                if let Some(rejected) = self.reject_core_call(name, call) {
-                    return Err(rejected);
-                }
+            if !bootstrap.functions.contains_key(name) {
                 let (identity, source, reads_environment) = native_definitions()?
                     .get(name)
                     .ok_or_else(|| format!("core macro {name} is not a compiler declaration"))?;
