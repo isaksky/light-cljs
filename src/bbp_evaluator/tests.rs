@@ -2210,6 +2210,82 @@ fn weak_bridge_pruning_only_walks_changes_among_growing_retained_trees() {
 }
 
 #[test]
+fn weak_bridge_pruning_retains_reclaimed_literal_payload_provenance() {
+    let rt = Runtime::new();
+    let payload = Datum::new(D::String("9007199254740993".encode_utf16().collect()));
+    let data = Datum::new(D::CompilerLiteral {
+        kind: L::BigInteger,
+        payload: payload.clone(),
+    });
+    let form = Form::from_data(
+        data.clone(),
+        crate::compiler_data::Source::new("reclaimed-payload.cljs", "9007199254740993N")
+            .span(0..17)
+            .unwrap(),
+        crate::compiler_data::Origin::Source,
+    );
+    let mut bridge = Bridge::default();
+    let (root, parent_occurrence, payload_occurrence) = rt.scope(|s| {
+        bridge.remember(&form, 128, &mut 1000).unwrap();
+        let value = bridge.import(s, &data, 128, &mut 1000).unwrap();
+        (
+            s.persist(value),
+            bridge.imports[&data.identity()].occurrence.clone(),
+            bridge.imports[&payload.identity()].occurrence.clone(),
+        )
+    });
+    assert!(payload_occurrence.is_live());
+    assert_eq!(bridge.cost(payload.identity()), Some((1, 1)));
+    assert_eq!(bridge.cost(data.identity()), Some((2, 2)));
+
+    // BigInteger conversion replaces its decimal payload with a number.
+    // Only the parent occurrence is rooted; it cannot trace the payload.
+    rt.collect().unwrap();
+    assert!(parent_occurrence.is_live());
+    assert!(!payload_occurrence.is_live());
+    rt.scope(|s| {
+        bridge.prune(rt.heap_stats().collections);
+        assert_eq!(bridge.imports.len(), 1);
+        assert!(bridge.imports.contains_key(&data.identity()));
+        assert!(!bridge.imports.contains_key(&payload.identity()));
+        assert!(bridge.retained.contains_key(&payload.identity()));
+        assert_eq!(bridge.cost(payload.identity()), Some((1, 1)));
+        assert_eq!(bridge.cost(data.identity()), Some((2, 2)));
+        assert_eq!(bridge.cost_entries, 2);
+        let remembered = &bridge.forms[&payload.identity()];
+        let original = form.at(form.node().compiler_payload.unwrap()).unwrap();
+        assert_eq!(remembered.data().identity(), original.data().identity());
+        assert_eq!(
+            remembered.span().source().name(),
+            original.span().source().name()
+        );
+        assert_eq!(remembered.span().bytes(), original.span().bytes());
+        assert_eq!(remembered.node().origin, original.node().origin);
+
+        // Export must restore the exact reader data, beyond f64 precision.
+        let exported = bridge
+            .export(s, s.local(&root).unwrap(), 2, &mut 2)
+            .unwrap();
+        assert_eq!(exported.identity(), data.identity());
+        assert_eq!(
+            exported.compiler_literal_data().unwrap().identity(),
+            payload.identity()
+        );
+    });
+
+    drop(root);
+    rt.collect().unwrap();
+    assert!(!parent_occurrence.is_live());
+    rt.scope(|_| bridge.prune(rt.heap_stats().collections));
+    assert!(bridge.imports.is_empty());
+    assert!(bridge.forms.is_empty());
+    assert!(bridge.retained.is_empty());
+    assert_eq!(bridge.cost_entries, 0);
+    assert_eq!(bridge.cost(payload.identity()), None);
+    assert_eq!(bridge.cost(data.identity()), None);
+}
+
+#[test]
 fn weak_bridge_incremental_pruning_matches_full_reachability() {
     fn check(rt: &Runtime, bridge: &mut Bridge) {
         rt.collect().unwrap();
