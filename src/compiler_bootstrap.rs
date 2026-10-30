@@ -808,13 +808,15 @@ fn v8_regex_error(
                         && !before[open..].contains(&unit(b')'))
                 });
     // After a completed quantifier (`a*`, `a*?`, `a{1}`, ...), a malformed
-    // `{` starts a new term. Probe the prefix with another quantifier so the
+    // `{` starts a new term. Probe that position with another quantifier so the
     // parser distinguishes these from escaped characters (`\*`), classes,
-    // and braced escapes (`\u{31}`) that still take a quantifier. Only this
-    // error path needs a second parse.
+    // and braced escapes (`\u{31}`) that still take a quantifier. Keep later
+    // captures so forward references stay valid. Only this error path needs
+    // a second parse.
     let quantified_term = || {
-        let mut probe = before.to_vec();
-        probe.push(unit(b'*'));
+        let mut probe = pattern.to_vec();
+        // An invalid quantifier's offset points at its opening `{`.
+        probe[at] = unit(b'*');
         big_boy_pants_js::JsString::from_code_units(probe).is_some_and(|probe| {
             big_boy_pants_js::regexp::parse::validate_syntax(
                 &probe,

@@ -159,6 +159,10 @@ fn declined_doseq_rejects_invalid_regex_before_conversion_limits() {
             "Invalid regular expression: /a{1}?{/u: Lone quantifier brackets",
         ),
         (
+            "(?u)\\1*{(a)",
+            "Invalid regular expression: /\\1*{(a)/u: Lone quantifier brackets",
+        ),
+        (
             "(?u)a\\*{",
             "Invalid regular expression: /a\\*{/u: Incomplete quantifier",
         ),
@@ -169,6 +173,10 @@ fn declined_doseq_rejects_invalid_regex_before_conversion_limits() {
         (
             "(?u)\\u{31}{",
             "Invalid regular expression: /\\u{31}{/u: Incomplete quantifier",
+        ),
+        (
+            "(?u)\\1{(a)",
+            "Invalid regular expression: /\\1{(a)/u: Incomplete quantifier",
         ),
         (
             "(?i-i:a)",
