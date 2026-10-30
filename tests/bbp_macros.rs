@@ -15910,6 +15910,56 @@ fn compiler_literal_first_entry_helper_matches_quickjs() {
 }
 
 #[test]
+fn fnext_and_nfirst_match_quickjs_at_all_threads() {
+    for (label, fnext_call, nfirst_call) in [
+        ("direct", "(fnext x)", "(nfirst x)"),
+        ("saved", "(f x)", "(n x)"),
+        ("apply", "(apply f [x])", "(apply n [x])"),
+    ] {
+        let macros = r#"(ns macros)
+(defmacro probe []
+  (let [f fnext n nfirst
+        first-next (fn [x] FNEXT)
+        next-first (fn [x] NFIRST)
+        seen (atom [])
+        past (lazy-seq (throw (js/Error. "read past the second element")))
+        inner (lazy-seq (swap! seen conj :inner)
+                (cons :a (lazy-seq (swap! seen conj :inner-next) (cons :b past))))
+        outer (lazy-seq (swap! seen conj :outer)
+                (cons inner (lazy-seq (swap! seen conj :outer-next) (cons :next past))))
+        next-value (first (next-first outer))
+        first-value (first-next outer)
+        repeated [(first (next-first outer)) (first-next outer)]
+        chunks (atom [])
+        chunked (map (fn [x] (swap! chunks conj x) x) (vec (range 40)))
+        chunk-value (first-next chunked)
+        chunk-tail (vec (take 3 (next-first [chunked])))
+        before (count @chunks)
+        boundary (first-next (drop 31 chunked))]
+    (list 'quote
+      [(mapv first-next [nil '() [] '(1) [1 2 3] "ab"])
+       (mapv next-first [nil '() [] '(nil) '((1)) '((1 2 3) (4)) ["ab"]])
+       [next-value first-value repeated @seen]
+       [chunk-value chunk-tail before boundary (count @chunks)]])))"#
+            .replace("FNEXT", fnext_call)
+            .replace("NFIRST", nfirst_call);
+        assert_entry_matches_quickjs(
+            &format!("native-fnext-nfirst-{label}"),
+            &[
+                ("macros.cljs", &macros),
+                (
+                    "main.cljs",
+                    "(ns main (:require [macros :refer [probe]])) (js/console.log (pr-str (probe)))",
+                ),
+            ],
+            "[[nil nil nil nil 2 \"b\"] [nil nil nil nil nil (2 3) (\"b\")] \
+             [:b :next [:b :next] [:outer :inner :inner-next :outer-next]] [1 [1 2 3] 32 32 40]]\n",
+            &[1, 2, 4, 8],
+        );
+    }
+}
+
+#[test]
 fn compiler_literal_constructors_keep_depth_and_operand_bounds() {
     let mut literal = "42".to_owned();
     for i in 0..60 {
