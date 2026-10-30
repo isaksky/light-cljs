@@ -1380,6 +1380,11 @@ const native = (() => {
   const chain = (xs, test) => { if (xs.length === 0) arity(0); for (let i = 1; i < xs.length; i++) if (!test(val(xs[i - 1]), val(xs[i]))) return false; return true; };
   const fix = x => x >= 0 ? Math.floor(x) : Math.ceil(x);
   const multiplyInt = Math.imul;
+  const bitOp = op => (x,y,...more) => {
+    let result=op(val(x),val(y));
+    for(const value of more)result=op(result,val(value));
+    return result;
+  };
   const quot = (n,d) => fix((n-n%d)/d);
   const each = (op, x, xs) => { for (const y of xs) x = op(x, y); return x; };
   // Compile-time atoms are engine atoms (light-cljs-480): one shared atom
@@ -2265,6 +2270,12 @@ const native = (() => {
     equal:(...xs)=>xs.every((x,i)=>i===0||__rt.formEquals(xs[i-1],x)), hash:x=>__rt.formHash(x),
     imul:(a,b)=>multiplyInt(val(a),val(b)),
     rotateLeft:(x,d)=>(val(x)<<val(d))|(val(x)>>>(32-val(d))),
+    bitOr:bitOp((x,y)=>x|y),bitAnd:bitOp((x,y)=>x&y),bitXor:bitOp((x,y)=>x^y),bitAndNot:bitOp((x,y)=>x&~y),
+    bitNot:x=>~val(x),bitClear:(x,n)=>val(x)&~(1<<val(n)),bitFlip:(x,n)=>val(x)^(1<<val(n)),
+    bitSet:(x,n)=>val(x)|(1<<val(n)),bitTest:(x,n)=>(val(x)&(1<<val(n)))!==0,
+    bitShiftLeft:(x,n)=>val(x)<<val(n),bitShiftRight:(x,n)=>val(x)>>val(n),
+    bitShiftRightZeroFill:(x,n)=>val(x)>>>val(n),unsignedBitShiftRight:(x,n)=>val(x)>>>val(n),
+    bitCount:x=>{let v=val(x);v=v-((v>>1)&0x55555555);v=(v&0x33333333)+((v>>2)&0x33333333);return (((v+(v>>4))&0x0f0f0f0f)*0x01010101)>>24;},
     notEqual:(...xs)=>!core.equal(...xs),
     name:x=>{if(typeof val(x)==='string')return x;if(__rt.formKind(val(x))==='compiler-literal'||isVar(x))throw new Error("Doesn't support name on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support name: '+__rt.formName(val(x)));return __rt.formName(val(x));},
     namespace:x=>{if(__rt.formKind(val(x))==='compiler-literal'||isVar(x))throw new Error("Doesn't support namespace on this type");if(__rt.formKind(val(x))==='type')throw new Error('Doesn\'t support namespace: '+__rt.formName(val(x)));return __rt.formNamespace(val(x));},

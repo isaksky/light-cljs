@@ -6149,6 +6149,30 @@ fn native_integer_rotation_matches_quickjs() {
 }
 
 #[test]
+fn native_bit_operations_match_quickjs() {
+    assert_native_matches_legacy(
+        r#"(defmacro probe []
+      (let [seen (js/Array.)
+            a (js* "({valueOf(){~{}.push('a'); return 1;}})" seen)
+            b (js* "({valueOf(){~{}.push('b'); return 2;}})" seen)
+            c (js* "({valueOf(){~{}.push('c'); return 4;}})" seen)
+            d (js* "({valueOf(){~{}.push('count'); return 3;}})" seen)
+            combined (bit-or a b c) n (bit-count d)]
+        (list 'quote
+          [[(bit-or 1 2 4) (let [f bit-or] (f 4294967295 0)) (apply bit-or [1 2 4])
+            (bit-and 255 15 7) (bit-xor 1 3 7) (bit-and-not 255 3 12)]
+           [(bit-not 0) (bit-clear 15 1) (bit-flip 8 3) (bit-set 0 31)
+            (bit-test 8 3) (bit-test 8 4) (bit-shift-left 1 33)
+            (bit-shift-right -8 2) (unsigned-bit-shift-right -1 1)]
+           (mapv bit-count [0 -1 2147483648 4294967295 305419896])
+           (let [f bit-or g bit-and h bit-and-not] [(f) (f 5) (g) (g 5) (h 5)])
+           combined n (vec seen)])))
+      (js/console.log (pr-str (probe)))"#,
+        "[[7 -1 7 7 5 240] [-1 13 0 -2147483648 true false 2 -2 2147483647] [0 32 1 32 13] [0 5 0 0 5] 7 2 [\"a\" \"b\" \"c\" \"count\" \"count\"]]\n",
+    );
+}
+
+#[test]
 fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
     let root = temp_dir::TempDir::new("mutable-deftype-sharing");
     for (file, source) in [
@@ -6165,7 +6189,8 @@ fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
           (def listeners (atom [(let [b (Box. 10)] (fn [v] (let [old (read-cell b)] (write-cell b v) [old (read-cell b)])))]))
           (def multiply imul)
           (def rotate int-rotate-left)
-          (defmacro probe [v] (list 'quote [(saved v) ((first @listeners) (+ v 10)) (multiply v 5) (rotate v 3)]))"#,
+          (def combine bit-or)
+          (defmacro probe [v] (list 'quote [(saved v) ((first @listeners) (+ v 10)) (multiply v 5) (rotate v 3) (combine v 4 8)]))"#,
         ),
         (
             "a.cljs",
@@ -6211,7 +6236,7 @@ fn native_mutable_deftype_published_helper_matches_quickjs_at_all_threads() {
     let (reference, _) = build(false, 1, 0);
     assert_eq!(
         program_output(&reference),
-        "[[[0 1 0 1 true false] [10 11] 5 8] [[1 2 1 2 true false] [11 12] 10 16]]\n"
+        "[[[0 1 0 1 true false] [10 11] 5 8 13] [[1 2 1 2 true false] [11 12] 10 16 14]]\n"
     );
     let seeds = std::env::var("LIGHT_CLJS_STRESS_SEEDS")
         .ok()
