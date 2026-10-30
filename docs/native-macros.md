@@ -234,6 +234,16 @@ pass. Product code is unchanged by that rebase; the full-suite results above
 are reused. Final V8 strict Clippy, Pants and engine-free diagnostic isolation,
 and formatting checks pass with the same limitations above.
 
+The seed-42 generated 200k project (199129 nonblank lines) builds without
+cache at 1 thread with both debug compiler binaries: Pants at `274b2426`
+and V8 at `dd6cd1c3`. All three optimized application output files compare
+byte for byte. `workload.main.js` retains the previously recorded V8 SHA-256
+`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`.
+Node prints `530807` with default arguments and `484264` with arguments
+`42 3`; both match the generated Babashka oracle. These are output checks,
+not release compiler timings. A sample of the long Pants debug build points
+to the unchanged `program_fragment::Remap::shares_prefix` path.
+
 ## Core macros on the Pants build (light-cljs-611)
 
 The Pants build expands core macro calls in Rust
